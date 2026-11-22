@@ -50,6 +50,13 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "def f():\n    kw = {}\n    kw |= {'temperature': 0.2}\n    return create_chat_llm(**kw)\n",
         "def f(flag):\n    if flag:\n        kw = {'temperature': 0.2}\n    else:\n        kw = {}\n    return create_chat_llm(**kw)\n",
         "def f(items):\n    kw = {}\n    for _ in items:\n        create_chat_llm(**kw)\n        kw['temperature'] = 0.2\n",
+        "def f(items):\n    a = {}\n    b = {}\n    c = {}\n    for _ in items:\n        create_chat_llm(**a)\n        a = b\n        b = c\n        c = {'temperature': 0.2}\n",
+        "async def f(items):\n    a = {}\n    b = {}\n    c = {}\n    async for _ in items:\n        create_chat_llm(**a)\n        a = b\n        b = c\n        c = {'temperature': 0.2}\n",
+        "def f(cond):\n    a = {}\n    b = {}\n    c = {}\n    while cond:\n        create_chat_llm(**a)\n        a = b\n        b = c\n        c = {'temperature': 0.2}\n",
+        "def f():\n    d = {'temperature': 0.2}\n    d2 = d.copy()\n    return create_chat_llm(**d2)\n",
+        "create_chat_llm(**{'temperature': 0.2}.copy())\n",
+        "class C:\n    opts = {'temperature': 0.2}\n    client = create_chat_llm(**opts)\n",
+        "def f(**kwargs):\n    kwargs['temperature'] = 0.2\n    return create_chat_llm(**kwargs)\n",
         "MOD_KW = {'temperature': 0.2}\ndef f():\n    return create_chat_llm(**MOD_KW)\n",
     ],
 )
@@ -71,13 +78,27 @@ def test_flags_unpacked_dict_kwarg_call():
     "snippet",
     [
         "def wrap(**kwargs):\n    return create_chat_llm(**kwargs)\n",
+        "kwargs = {'temperature': 0.2}\ndef forward(**kwargs):\n    return create_chat_llm(**kwargs)\n",
+        "opts = {'temperature': 0.2}\ndef forward(opts, /, a, *args, kw=None, **extra):\n    return create_chat_llm(**opts)\n",
+        "opts = {'temperature': 0.2}\ndef forward(*, opts):\n    return create_chat_llm(**opts)\n",
+        "opts = {'temperature': 0.2}\ndef forward(*opts):\n    return create_chat_llm(**opts)\n",
+        "kwargs = {'temperature': 0.2}\nfn = lambda **kwargs: create_chat_llm(**kwargs)\n",
+        "kwargs = {'temperature': 0.2}\ndef f(items):\n    return [create_chat_llm(**kwargs) for kwargs in items]\n",
+        "kwargs = {'temperature': 0.2}\ndef f(items):\n    return {create_chat_llm(**kwargs) for kwargs in items}\n",
+        "kwargs = {'temperature': 0.2}\ndef f(items):\n    return list(create_chat_llm(**kwargs) for kwargs in items)\n",
+        "kwargs = {'temperature': 0.2}\ndef f(items):\n    return {i: create_chat_llm(**kwargs) for i, kwargs in items}\n",
+        "kw = {'temperature': 0.2}\ndef f(items):\n    for kw in items:\n        create_chat_llm(**kw)\n",
+        "kw = {'temperature': 0.2}\ndef f(items):\n    for _, kw in items:\n        create_chat_llm(**kw)\n",
+        "class C:\n    kwargs = {'temperature': 0.2}\n    def method(self, **kwargs):\n        return create_chat_llm(**kwargs)\n",
+        "class C:\n    opts = {'temperature': 0.2}\n    def method(self):\n        return create_chat_llm(**opts)\n",
         "def f():\n    kw = {'max_tokens': 100}\n    return create_chat_llm(**kw)\n",
         "def f():\n    kw = {'temperature': 0.2}\n    kw = {}\n    return create_chat_llm(**kw)\n",
         "def f():\n    kw = {'temperature': 0.2}\n    kw.clear()\n    return create_chat_llm(**kw)\n",
+        "def f():\n    d = {'temperature': 0.2}\n    d2 = d.copy()\n    d2.clear()\n    return create_chat_llm(**d2)\n",
     ],
 )
 def test_allows_legitimate_forwarding_and_cleared_dicts(snippet: str):
-    """B33-004: opaque **kwargs forwarding and safe/cleared local dicts must not false-positive."""
+    """B33-004: opaque **kwargs forwarding, shadowed targets, and safe/cleared local dicts must not false-positive."""
     assert _check(snippet) == []
 
 

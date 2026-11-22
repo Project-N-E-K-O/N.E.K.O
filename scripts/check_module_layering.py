@@ -223,10 +223,10 @@ def find_forbidden_edges(edges: List["EdgeRecord"]) -> List[Tuple["EdgeRecord", 
     found: list[tuple[EdgeRecord, str]] = []
     for edge in edges:
         path, _, _, _, dst, _ = edge
-        try:
-            rel = path.relative_to(REPO_ROOT).as_posix()
-        except ValueError:
+        rel_path = _relative_to_root(path, None)
+        if rel_path is None:
             continue
+        rel = rel_path.as_posix()
         for prefix, forbidden, reason in FORBIDDEN_EDGES:
             if dst == forbidden and rel.startswith(prefix):
                 found.append((edge, reason))
@@ -278,10 +278,10 @@ def package_of_file(path: Path) -> Optional[str]:
     """Return the top-level package owning ``path``, or ``None`` if outside
     the layering scope (and therefore not subject to the rules).
     """
-    try:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
+    rel_path = _relative_to_root(path, None)
+    if rel_path is None:
         return None
+    rel = rel_path.as_posix()
     # Top-level launcher.py is its own "package" so we can place it in L6.
     if rel == "launcher.py":
         return "launcher"
@@ -749,10 +749,10 @@ def _strongly_connected_components(
 
 
 def _format_path(path: Path) -> str:
-    try:
-        return path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        return str(path)
+    rel_path = _relative_to_root(path, None)
+    if rel_path is not None:
+        return rel_path.as_posix()
+    return str(path)
 
 
 def main(argv: list[str] | None = None) -> int:

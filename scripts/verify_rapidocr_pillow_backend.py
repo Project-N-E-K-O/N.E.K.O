@@ -562,90 +562,90 @@ def check_helper_parity(results: list[CheckResult]) -> None:
         for name, ok in comparisons.items():
             _emit_result(results, name, "PASS" if ok else "FAIL", "pixel exact")
 
-    points = np.array([[2.0, 1.0], [8.0, 2.0], [7.0, 6.0], [1.0, 5.0]], dtype=np.float32)
-    polygon = Polygon(points)
-    _emit_result(
-        results,
-        "polygon_area",
-        "PASS" if abs(pillow_cv.polygon_area(points) - polygon.area) < 1e-9 else "FAIL",
-        f"pillow={pillow_cv.polygon_area(points):.9f} shapely={polygon.area:.9f}",
-    )
-    _emit_result(
-        results,
-        "polygon_perimeter",
-        "PASS" if abs(pillow_cv.polygon_perimeter(points) - polygon.length) < 1e-9 else "FAIL",
-        f"pillow={pillow_cv.polygon_perimeter(points):.9f} shapely={polygon.length:.9f}",
-    )
+        points = np.array([[2.0, 1.0], [8.0, 2.0], [7.0, 6.0], [1.0, 5.0]], dtype=np.float32)
+        polygon = Polygon(points)
+        _emit_result(
+            results,
+            "polygon_area",
+            "PASS" if abs(pillow_cv.polygon_area(points) - polygon.area) < 1e-9 else "FAIL",
+            f"pillow={pillow_cv.polygon_area(points):.9f} shapely={polygon.area:.9f}",
+        )
+        _emit_result(
+            results,
+            "polygon_perimeter",
+            "PASS" if abs(pillow_cv.polygon_perimeter(points) - polygon.length) < 1e-9 else "FAIL",
+            f"pillow={pillow_cv.polygon_perimeter(points):.9f} shapely={polygon.length:.9f}",
+        )
 
-    box, min_side = pillow_cv.min_area_box(points)
-    cv_rect = cv2.minAreaRect(points)
-    cv_box = cv2.boxPoints(cv_rect)
-    pillow_area = pillow_cv.polygon_area(box)
-    cv_area = cv2.contourArea(cv_box.astype(np.float32))
-    cv_min_side = min(cv_rect[1])
-    _emit_result(
-        results,
-        "min_area_box_area",
-        "PASS" if abs(pillow_area - cv_area) < 1e-4 else "FAIL",
-        f"pillow={pillow_area:.6f} cv2={cv_area:.6f}",
-    )
-    _emit_result(
-        results,
-        "min_area_box_min_side",
-        "PASS" if abs(min_side - cv_min_side) < 1e-4 else "FAIL",
-        f"pillow={min_side:.6f} cv2={cv_min_side:.6f}",
-    )
+        box, min_side = pillow_cv.min_area_box(points)
+        cv_rect = cv2.minAreaRect(points)
+        cv_box = cv2.boxPoints(cv_rect)
+        pillow_area = pillow_cv.polygon_area(box)
+        cv_area = cv2.contourArea(cv_box.astype(np.float32))
+        cv_min_side = min(cv_rect[1])
+        _emit_result(
+            results,
+            "min_area_box_area",
+            "PASS" if abs(pillow_area - cv_area) < 1e-4 else "FAIL",
+            f"pillow={pillow_area:.6f} cv2={cv_area:.6f}",
+        )
+        _emit_result(
+            results,
+            "min_area_box_min_side",
+            "PASS" if abs(min_side - cv_min_side) < 1e-4 else "FAIL",
+            f"pillow={min_side:.6f} cv2={cv_min_side:.6f}",
+        )
 
-    src = np.array([[1, 1], [22, 3], [20, 15], [2, 13]], dtype=np.float32)
-    dst = np.array([[0, 0], [31, 0], [31, 19], [0, 19]], dtype=np.float32)
-    matrix = pillow_cv.perspective_transform_matrix(src, dst)
-    cv_matrix = cv2.getPerspectiveTransform(src, dst)
-    transformed = (np.column_stack((src, np.ones(len(src)))) @ matrix.T)
-    transformed = transformed[:, :2] / transformed[:, 2:]
-    max_point_diff = float(np.max(np.abs(transformed - dst)))
-    _emit_result(
-        results,
-        "perspective_maps_points",
-        "PASS" if max_point_diff < 1e-6 else "FAIL",
-        f"max_point_diff={max_point_diff:.9f}",
-    )
+        src = np.array([[1, 1], [22, 3], [20, 15], [2, 13]], dtype=np.float32)
+        dst = np.array([[0, 0], [31, 0], [31, 19], [0, 19]], dtype=np.float32)
+        matrix = pillow_cv.perspective_transform_matrix(src, dst)
+        cv_matrix = cv2.getPerspectiveTransform(src, dst)
+        transformed = (np.column_stack((src, np.ones(len(src)))) @ matrix.T)
+        transformed = transformed[:, :2] / transformed[:, 2:]
+        max_point_diff = float(np.max(np.abs(transformed - dst)))
+        _emit_result(
+            results,
+            "perspective_maps_points",
+            "PASS" if max_point_diff < 1e-6 else "FAIL",
+            f"max_point_diff={max_point_diff:.9f}",
+        )
 
-    resized = pillow_cv.resize(color, (31, 19))
-    cv_resized = cv2.resize(color, (31, 19), interpolation=cv2.INTER_LINEAR)
-    resize_max = int(np.max(np.abs(resized.astype(np.int16) - cv_resized.astype(np.int16))))
-    _emit_result(
-        results,
-        "resize_close",
-        "PASS" if resize_max <= 1 else "FAIL",
-        f"maxdiff={resize_max}",
-    )
+        resized = pillow_cv.resize(color, (31, 19))
+        cv_resized = cv2.resize(color, (31, 19), interpolation=cv2.INTER_LINEAR)
+        resize_max = int(np.max(np.abs(resized.astype(np.int16) - cv_resized.astype(np.int16))))
+        _emit_result(
+            results,
+            "resize_close",
+            "PASS" if resize_max <= 1 else "FAIL",
+            f"maxdiff={resize_max}",
+        )
 
-    warped = pillow_cv.warp_perspective(color, matrix, (31, 19))
-    inverse = np.linalg.inv(matrix)
-    inverse = inverse / inverse[2, 2]
-    src_start = inverse @ np.array([0.0, 0.0, 1.0])
-    src_end = inverse @ np.array([31.0, 0.0, 1.0])
-    src_start = src_start[:2] / src_start[2]
-    src_end = src_end[:2] / src_end[2]
-    src_delta = src_end - src_start
-    angle = abs(np.degrees(np.arctan2(src_delta[1], src_delta[0])))
-    cv_interpolation = cv2.INTER_CUBIC if angle >= 8.0 else cv2.INTER_LINEAR
-    cv_warped = cv2.warpPerspective(
-        color,
-        cv_matrix,
-        (31, 19),
-        flags=cv_interpolation,
-        borderMode=cv2.BORDER_REPLICATE,
-    )
-    warp_abs = np.abs(warped.astype(np.int16) - cv_warped.astype(np.int16))
-    warp_max = int(np.max(warp_abs))
-    warp_mean = float(np.mean(warp_abs))
-    _emit_result(
-        results,
-        "warp_perspective_bounded",
-        "PASS" if warp_max <= 96 and warp_mean <= 25.0 else "FAIL",
-        f"maxdiff={warp_max} meandiff={warp_mean:.3f} angle={angle:.2f}",
-    )
+        warped = pillow_cv.warp_perspective(color, matrix, (31, 19))
+        inverse = np.linalg.inv(matrix)
+        inverse = inverse / inverse[2, 2]
+        src_start = inverse @ np.array([0.0, 0.0, 1.0])
+        src_end = inverse @ np.array([31.0, 0.0, 1.0])
+        src_start = src_start[:2] / src_start[2]
+        src_end = src_end[:2] / src_end[2]
+        src_delta = src_end - src_start
+        angle = abs(np.degrees(np.arctan2(src_delta[1], src_delta[0])))
+        cv_interpolation = cv2.INTER_CUBIC if angle >= 8.0 else cv2.INTER_LINEAR
+        cv_warped = cv2.warpPerspective(
+            color,
+            cv_matrix,
+            (31, 19),
+            flags=cv_interpolation,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+        warp_abs = np.abs(warped.astype(np.int16) - cv_warped.astype(np.int16))
+        warp_max = int(np.max(warp_abs))
+        warp_mean = float(np.mean(warp_abs))
+        _emit_result(
+            results,
+            "warp_perspective_bounded",
+            "PASS" if warp_max <= 96 and warp_mean <= 25.0 else "FAIL",
+            f"maxdiff={warp_max} meandiff={warp_mean:.3f} angle={angle:.2f}",
+        )
 
 
 def _iter_images(image_paths: Sequence[Path]) -> list[Path]:

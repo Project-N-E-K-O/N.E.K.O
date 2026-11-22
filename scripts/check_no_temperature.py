@@ -150,14 +150,56 @@ def _pair_has_temperature(node: ast.AST) -> bool:
     )
 
 
+def _arg_names(args: ast.arguments) -> list[str]:
+    names = [a.arg for a in args.posonlyargs]
+    names.extend(a.arg for a in args.args)
+    if args.vararg is not None:
+        names.append(args.vararg.arg)
+    names.extend(a.arg for a in args.kwonlyargs)
+    if args.kwarg is not None:
+        names.append(args.kwarg.arg)
+    return names
+
+
+def _extract_target_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for elt in target.elts:
+            names.extend(_extract_target_names(elt))
+        return names
+    if isinstance(target, ast.Starred):
+        return _extract_target_names(target.value)
+    return []
+
+
 class TemperatureKwargChecker(ast.NodeVisitor):
     def __init__(self, path: Path) -> None:
         self.path = path
         self.violations: set[tuple[int, int, str]] = set()
         self.scopes: list[dict[str, bool]] = [{}]
+        self._scope_is_class: list[bool] = [False]
+
+    def _push_scope(
+        self,
+        initial: dict[str, bool] | None = None,
+        *,
+        is_class: bool = False,
+    ) -> None:
+        self.scopes.append(dict(initial) if initial else {})
+        self._scope_is_class.append(is_class)
+
+    def _pop_scope(self) -> None:
+        self.scopes.pop()
+        self._scope_is_class.pop()
 
     def _lookup(self, name: str) -> bool:
-        for scope in reversed(self.scopes):
+        top_idx = len(self.scopes) - 1
+        for idx in range(top_idx, -1, -1):
+            if idx != top_idx and self._scope_is_class[idx]:
+                continue
+            scope = self.scopes[idx]
             if name in scope:
                 return scope[name]
         return False
@@ -226,6 +268,13 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                         isinstance(elt, ast.Constant) and elt.value == "temperature"
                         for elt in arg0.elts
                     )
+            if (
+                isinstance(expr.func, ast.Attribute)
+                and expr.func.attr == "copy"
+                and not expr.args
+                and not expr.keywords
+            ):
+                return self._expr_contains_temperature(expr.func.value)
         return False
 
     def _visit_stmt_list(self, stmts: list[ast.stmt]) -> None:
@@ -246,11 +295,25 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         for kw_default in node.args.kw_defaults:
             if kw_default is not None:
                 self.visit(kw_default)
-        self.scopes.append({})
+        params = {name: False for name in _arg_names(node.args)}
+        self._push_scope(params, is_class=False)
         try:
             self._visit_stmt_list(node.body)
         finally:
-            self.scopes.pop()
+            self._pop_scope()
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in node.args.defaults:
+            self.visit(default)
+        for kw_default in node.args.kw_defaults:
+            if kw_default is not None:
+                self.visit(kw_default)
+        params = {name: False for name in _arg_names(node.args)}
+        self._push_scope(params, is_class=False)
+        try:
+            self.visit(node.body)
+        finally:
+            self._pop_scope()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         for dec in node.decorator_list:
@@ -259,11 +322,44 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             self.visit(base)
         for kw in node.keywords:
             self.visit(kw.value)
-        self.scopes.append({})
+        self._push_scope(is_class=True)
         try:
             self._visit_stmt_list(node.body)
         finally:
-            self.scopes.pop()
+            self._pop_scope()
+
+    def _visit_comprehension(
+        self,
+        generators: list[ast.comprehension],
+        *exprs: ast.expr,
+    ) -> None:
+        if generators:
+            self.visit(generators[0].iter)
+        self._push_scope(is_class=False)
+        try:
+            for idx, comp in enumerate(generators):
+                if idx > 0:
+                    self.visit(comp.iter)
+                for name in _extract_target_names(comp.target):
+                    self._set_local(name, False)
+                for if_expr in comp.ifs:
+                    self.visit(if_expr)
+            for expr in exprs:
+                self.visit(expr)
+        finally:
+            self._pop_scope()
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node.generators, node.elt)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node.generators, node.elt)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node.generators, node.elt)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node.generators, node.key, node.value)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
@@ -378,24 +474,37 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         body: list[ast.stmt],
         orelse: list[ast.stmt],
         test: ast.expr | None = None,
+        target: ast.AST | None = None,
     ) -> None:
         before = dict(self.scopes[-1])
-        for _ in range(2):
+        target_names = _extract_target_names(target) if target is not None else []
+        state = dict(before)
+        iters = 0
+        while True:
+            iters += 1
+            self.scopes[-1] = dict(state)
+            for name in target_names:
+                self._set_local(name, False)
             if test is not None:
                 self.visit(test)
             self._visit_stmt_list(body)
-            self.scopes[-1] = self._merge_scopes([before, dict(self.scopes[-1])])
+            next_state = self._merge_scopes([before, dict(self.scopes[-1])])
+            if next_state == state or iters >= max(len(next_state) + 64, 256):
+                self.scopes[-1] = next_state
+                break
+            state = next_state
         if orelse:
+            after_loop = dict(self.scopes[-1])
             self._visit_stmt_list(orelse)
-            self.scopes[-1] = self._merge_scopes([before, dict(self.scopes[-1])])
+            self.scopes[-1] = self._merge_scopes([after_loop, dict(self.scopes[-1])])
 
     def visit_For(self, node: ast.For) -> None:
         self.visit(node.iter)
-        self._visit_loop(node.body, node.orelse)
+        self._visit_loop(node.body, node.orelse, target=node.target)
 
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
         self.visit(node.iter)
-        self._visit_loop(node.body, node.orelse)
+        self._visit_loop(node.body, node.orelse, target=node.target)
 
     def visit_While(self, node: ast.While) -> None:
         self._visit_loop(node.body, node.orelse, test=node.test)

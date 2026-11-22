@@ -528,3 +528,44 @@ def test_repo_under_excluded_ancestor_still_collects_edges(
     edges = script_module.collect_edges([fake_root])
     inversions, _cycles = script_module.find_violations(edges)
     assert any(edge[0] == utils_file and edge[3] == "utils" and edge[4] == "memory" for edge in inversions)
+
+
+@pytest.mark.unit
+def test_symlinked_repo_path_resolves_package_forbidden_edges_and_format(
+    script_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """F0326: symlinked paths to REPO_ROOT must map to packages, forbidden edges, and formatted paths."""
+    real_repo = tmp_path / "build" / "NEKO"
+    bad_utils = real_repo / "utils" / "bad.py"
+    bad_utils.parent.mkdir(parents=True)
+    bad_utils.write_text("import memory\n", encoding="utf-8")
+
+    bad_forbidden = real_repo / "main_logic" / "bad_knowledge.py"
+    bad_forbidden.parent.mkdir(parents=True)
+    bad_forbidden.write_text("import knowledge\n", encoding="utf-8")
+
+    sym_repo = tmp_path / "sym_repo"
+    try:
+        sym_repo.symlink_to(real_repo, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported in test environment: {exc}")
+
+    monkeypatch.setattr(script_module, "REPO_ROOT", real_repo.resolve())
+
+    sym_utils_file = sym_repo / "utils" / "bad.py"
+    sym_forbidden_file = sym_repo / "main_logic" / "bad_knowledge.py"
+    assert script_module.package_of_file(sym_utils_file) == "utils"
+    assert script_module._format_path(sym_utils_file) == "utils/bad.py"
+
+    forbidden = script_module.find_forbidden_edges(
+        [(sym_forbidden_file, 1, 1, "main_logic", "knowledge", "import knowledge")]
+    )
+    assert len(forbidden) == 1
+
+    assert script_module.main([str(sym_repo / "utils")]) == 1
+    out = capsys.readouterr().out
+    assert "utils/bad.py:1:1  LAYER_INVERSION" in out
+
+    assert script_module.main([str(sym_repo / "main_logic")]) == 1
+    out_forbidden = capsys.readouterr().out
+    assert "main_logic/bad_knowledge.py:1:1  FORBIDDEN_EDGE" in out_forbidden
