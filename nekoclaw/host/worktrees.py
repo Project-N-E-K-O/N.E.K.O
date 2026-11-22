@@ -537,8 +537,13 @@ class WorktreeManager:
             )
             only_here = [*now.skipped, *(_decode(name) for name in ignored.stdout.split(b"\0") if name)]
             if only_here:
-                paths = [_decode(name) for name in names]
-                hit = [name for name in only_here if any(_overlap(path, name.rstrip("/")) for path in paths)]
+                # Only what the merge has and the worktree's snapshot has not
+                # is written anew; the rest is the worktree's own already
+                # (an ignored file its start had is in the snapshot).
+                held = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", now.tree)
+                hit = await asyncio.to_thread(
+                    _overlapping, set(names) - set(held.stdout.split(b"\0")), only_here
+                )
                 if hit:
                     raise WorktreeError(
                         f"preparing would overwrite what only the worktree has (ignored, too large, or a "
@@ -1323,9 +1328,24 @@ def _worktree_id(target: Path) -> str:
     return worktree_name(target.name)
 
 
-def _overlap(left: str, right: str) -> bool:
-    """Return whether two repository paths are the same, or one is inside the other."""
-    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
+def _overlapping(written: set[bytes], entries: list[str]) -> list[str]:
+    """Return the entries a checkout writing ``written`` would overwrite: the same path, inside it, or around it.
+
+    Entries are paths, a directory's ending in ``/``. Each path is looked up
+    with its parent directories, so this takes about (paths + entries) x
+    depth, not paths x entries.
+    """
+    paths = {_decode(path) for path in written if path}
+    by_key = {entry.rstrip("/"): entry for entry in entries}
+    hit = {entry for key, entry in by_key.items() if key in paths or any(up in paths for up in _parents(key))}
+    hit |= {by_key[up] for path in paths for up in _parents(path) if up in by_key}
+    return sorted(hit)
+
+
+def _parents(path: str) -> list[str]:
+    """Return the directories ``path`` is in, outermost first: ``a/b/c`` gives ``a`` and ``a/b``."""
+    parts = path.split("/")
+    return ["/".join(parts[:index]) for index in range(1, len(parts))]
 
 
 def _start_ref(worktree_id: str) -> str:

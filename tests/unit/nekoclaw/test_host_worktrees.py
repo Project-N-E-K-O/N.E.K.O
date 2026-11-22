@@ -2144,11 +2144,17 @@ async def test_preparing_does_not_replace_a_directory_holding_what_only_the_work
 
 
 def test_paths_overlap() -> None:
-    assert worktrees._overlap("data", "data")
-    assert worktrees._overlap("data/blob.bin", "data")
-    assert worktrees._overlap("data", "data/blob.bin")
-    assert not worktrees._overlap("database", "data")
-    assert not worktrees._overlap("data", "database/x")
+    def hits(written: list[str], entries: list[str]) -> list[str]:
+        return worktrees._overlapping({path.encode() for path in written}, entries)
+
+    assert hits(["data"], ["data"]) == ["data"]
+    assert hits(["data/blob.bin"], ["data/"]) == ["data/"]  # written inside an entry
+    assert hits(["data"], ["data/blob.bin"]) == ["data/blob.bin"]  # written around an entry
+    assert hits(["a/b/c/d.txt"], ["a/b/"]) == ["a/b/"]
+    assert hits(["database"], ["data/"]) == []
+    assert hits(["data"], ["database/x"]) == []
+    assert hits([], ["data/"]) == []
+    assert worktrees._parents("a/b/c") == ["a", "a/b"] and worktrees._parents("a") == []
 
 
 async def test_cancelled_while_putting_back_says_what_could_not_be(
@@ -2565,3 +2571,19 @@ async def test_cleaning_up_after_a_failed_make_is_not_cut_short(
     assert not exists(base / "w1")
     assert "w1" not in registered(repo)
     assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_a_landed_file_ignored_since_does_not_stop_preparing(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "note.txt", "the worktree's\n")
+    assert (await manager.merge_back(tree)).status == "landed"
+    write(tree.path / ".gitignore", "ignored/\n*.log\nnote.txt\n")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    prepared = await manager.prepare_conflicts(tree, conflict)
+    assert "<<<<<<<" in read(prepared.path / "a.txt").decode()
+    assert read(prepared.path / "note.txt") == b"the worktree's\n"
