@@ -401,8 +401,9 @@ class WorktreeManager:
         ``path`` must not exist yet (an empty directory is accepted) and must
         lie outside the repository; its last part becomes the worktree's id.
         Raises WorktreeUnavailable when the directory does not qualify or the
-        disk is too full, WorktreeError when ``path`` cannot be used, GitError
-        when git fails; nothing is left behind then.
+        disk is too full, WorktreeError when ``path`` cannot be used (or made)
+        or the start has no such directory as ``project_dir``, GitError when
+        git fails; nothing is left behind then.
         """
         found = await self._usable(project_dir)
         assert found.repo_root is not None
@@ -428,6 +429,10 @@ class WorktreeManager:
         if await self._ref_exists(repo_root, ref):
             raise WorktreeError(f"a worktree named {worktree_id!r} already exists in {repo_root}")
         commit = await start.commit(self, repo_root)
+        if subpath:  # the project's directory, which the worktree is worked in
+            kind = await self._git(repo_root, "cat-file", "-t", f"{commit}:{subpath}", check=False)
+            if kind.lines()[:1] != ["tree"]:
+                raise WorktreeError(f"{commit} has no directory {subpath}: the worktree would have nowhere to work")
         disk = await self.check_disk(target, await self._checkout_size(repo_root, commit))
         if not disk.enough:
             raise WorktreeUnavailable(DISK_SPACE, f"{disk.free} bytes free, {disk.needed} needed")
@@ -516,6 +521,12 @@ class WorktreeManager:
             unfinished = await self._unfinished(worktree.path)
             if unfinished:
                 return MergeResult("failed", detail=f"{unfinished} in the worktree; finish or abort it first")
+            # Made one since the worktree was: merging would read objects it
+            # may lack, and fetch them.
+            if await self._partial_clone(worktree.repo_root):
+                return MergeResult(
+                    "failed", detail="the repository has become a partial clone: merging could fetch from its remote"
+                )
             start = await self._start(worktree)
             result = await self._snapshot(worktree.path, "nekoclaw: worktree result", start)
             return await (landing or WorkingFiles()).land(self, worktree, result)
@@ -581,6 +592,13 @@ class WorktreeManager:
             now = await self._snapshot(worktree.path, "nekoclaw: worktree result", start)
             if now.tree != conflict.result_tree:
                 raise WorktreeError("the worktree changed after the merge was tried; merge again")
+            # Checking the conflicts out replaces the index: a version only
+            # staged there would be gone.
+            if await self._staged_only(worktree.path, start, now.tree):
+                raise WorktreeError(
+                    "the worktree's index holds a version its files do not (staged, then changed in the file); "
+                    "commit or unstage it, then merge again"
+                )
             listed = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", conflict.merged_tree)
             names = [name for name in listed.stdout.split(b"\0") if name]
             # A filter and a file it applies to may meet only in the merge; a
@@ -908,6 +926,18 @@ class WorktreeManager:
             return False
         return asked.ok and asked.lines()[:1] == ["true"]
 
+    async def _partial_clone(self, root: Path) -> bool:
+        """Return whether the repository is a partial clone.
+
+        Objects missing from one are fetched when read; git before 2.44 does
+        not let that be turned off (GIT_NO_LAZY_FETCH).
+        """
+        extension = await self._git(root, "config", "--get", "extensions.partialClone", check=False)
+        promisors = await self._git(
+            root, "config", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$", check=False
+        )
+        return bool(extension.decode().strip()) or any(line.endswith(" true") for line in promisors.lines())
+
     async def _qualify(self, top: Path, subpath: str, git_dir: Path) -> Probe | None:
         """Return why a repository's work tree does not qualify, or None when it does."""
 
@@ -924,13 +954,7 @@ class WorktreeManager:
         sparse = await self._git(top, "config", "--type=bool", "--get", "core.sparseCheckout", check=False)
         if sparse.decode().strip() == "true":
             return unusable(SPARSE_CHECKOUT, "the repository uses a sparse checkout")
-        # Objects missing from a partial clone are fetched when read; git
-        # before 2.44 does not let that be turned off (GIT_NO_LAZY_FETCH).
-        extension = await self._git(top, "config", "--get", "extensions.partialClone", check=False)
-        promisors = await self._git(
-            top, "config", "--type=bool", "--get-regexp", r"^remote\..*\.promisor$", check=False
-        )
-        if extension.decode().strip() or any(line.endswith(" true") for line in promisors.lines()):
+        if await self._partial_clone(top):
             return unusable(PARTIAL_CLONE, "the repository is a partial clone")
         if await self._has_submodules(top):
             return unusable(SUBMODULES, "the repository has submodules")
@@ -1126,12 +1150,13 @@ class WorktreeManager:
             return True
         return await self._staged_only(path, start)
 
-    async def _staged_only(self, path: Path, start: str) -> bool:
-        """Return whether the worktree's own index holds what neither its HEAD nor its start has.
+    async def _staged_only(self, path: Path, start: str, files_tree: str | None = None) -> bool:
+        """Return whether the worktree's own index holds what neither its HEAD, its start nor its files have.
 
-        Asked once its files are found to be its start: a snapshot is taken
-        of its files, not of what was staged, so a version staged and then
-        undone in the file would go with the worktree.
+        A snapshot is taken of its files, not of what was staged: a version
+        staged and then undone in the file would go with the worktree, or be
+        replaced when conflicts are checked out. ``files_tree`` is left out
+        where its files are its start.
         """
         index = Path((await self._git(path, "rev-parse", "--path-format=absolute", "--git-path", "index")).lines()[0])
         if not await asyncio.to_thread(index.exists):
@@ -1142,7 +1167,7 @@ class WorktreeManager:
         staged = written.lines()[0]
         head = await self._try_resolve(path, "HEAD^{tree}")
         differing: set[bytes] | None = None
-        for other in (start, head):
+        for other in (start, head, files_tree):
             if other is None:
                 continue
             listed = await self._git(

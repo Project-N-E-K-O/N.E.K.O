@@ -2318,6 +2318,18 @@ HOLDS_PIPES = (
 )
 
 
+async def started_or_ended(started: list[Any], running: asyncio.Future) -> None:  # type: ignore[type-arg]
+    """Wait until ``started`` has the process, or ``running`` ended without one (its error raised)."""
+    for _ in range(600):
+        if started:
+            return
+        if running.done():
+            running.result()
+            raise AssertionError("git ended before it was seen started")
+        await asyncio.sleep(0.05)
+    raise AssertionError("git was not seen started within 30 seconds")
+
+
 def spawn_one_that_holds_its_pipes(monkeypatch: Any) -> list[Any]:
     """Whatever git command is asked for, start a process whose child keeps its pipes open."""
     started: list[Any] = []
@@ -2362,8 +2374,7 @@ async def test_a_cancellation_is_not_held_up_by_what_git_started(
 ) -> None:
     started = spawn_one_that_holds_its_pipes(monkeypatch)
     running = asyncio.ensure_future(manager._git(repo, "status"))
-    while not started:
-        await asyncio.sleep(0.05)
+    await started_or_ended(started, running)
     await asyncio.sleep(0.5)
     monkeypatch.setattr("config.nekoclaw_settings.WORKTREE_GIT_STOP_SECONDS", 20.0)
     began = asyncio.get_running_loop().time()
@@ -2402,8 +2413,7 @@ async def test_stopping_git_is_not_cut_short_by_another_cancellation(
 
     monkeypatch.setattr(worktrees, "_kill_tree", slow_kill_tree)
     running = asyncio.ensure_future(manager._git(repo, "status"))
-    while not started:
-        await asyncio.sleep(0.05)
+    await started_or_ended(started, running)
     running.cancel()  # the first: stopping begins
     began = await asyncio.to_thread(killing.wait, 30)
     assert began
@@ -2642,11 +2652,28 @@ async def test_a_cleanup_that_falls_short_says_so(
     assert "cleaning up fell short" in notes and f"{REF_PREFIX}w1/start" in notes
 
 
-async def test_has_changes_after_a_removal_queued_first(repo: Path, manager: WorktreeManager, base: Path) -> None:
+async def test_has_changes_after_a_removal_queued_first(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    import threading
+
     tree = await manager.create(repo, base / "w1")
     write(tree.path / "work.txt", "x\n")
+    real = worktrees._remove_tree
+    holding = threading.Event()
+    go_on = threading.Event()
+
+    def held_while_removing(path: Path) -> None:  # called under the lock
+        holding.set()
+        go_on.wait(30)
+        real(path)
+
+    monkeypatch.setattr(worktrees, "_remove_tree", held_while_removing)
     removing = asyncio.ensure_future(manager.remove(tree))
+    assert await asyncio.to_thread(holding.wait, 30)
     asking = asyncio.ensure_future(manager.has_changes(tree))
+    await asyncio.sleep(0.2)
+    go_on.set()
     await removing
     assert await asking is False
 
@@ -2742,9 +2769,9 @@ async def test_a_failed_preparing_puts_the_worktrees_own_head_and_index_back(
     repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
 ) -> None:
     tree = await manager.create(repo, base / "w1")
-    write(tree.path / "a.txt", "staged\n")
-    git(tree.path, "add", "a.txt")
     write(tree.path / "a.txt", "working\n")
+    git(tree.path, "add", "a.txt")  # staged as it is in the file: nothing only staged
+    git(tree.path, "update-index", "--assume-unchanged", "a.txt")  # what only its index says
     write(repo / "a.txt", "project\n")
     conflict = await manager.merge_back(tree)
     assert conflict.status == "conflict"
@@ -2761,7 +2788,7 @@ async def test_a_failed_preparing_puts_the_worktrees_own_head_and_index_back(
         await manager.prepare_conflicts(tree, conflict)
     monkeypatch.setattr(manager, "_git", original)
     assert git(tree.path, "rev-parse", "HEAD").strip() == head
-    assert git(tree.path, "show", ":a.txt") == "staged\n"
+    assert git(tree.path, "ls-files", "-v", "a.txt").startswith("h ")
     assert read(tree.path / "a.txt") == b"working\n"
 
 
@@ -2837,9 +2864,9 @@ async def test_an_index_that_cannot_be_put_back_is_kept_and_said(
     repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
 ) -> None:
     tree = await manager.create(repo, base / "w1")
-    write(tree.path / "a.txt", "staged\n")
-    git(tree.path, "add", "a.txt")
     write(tree.path / "a.txt", "working\n")
+    git(tree.path, "add", "a.txt")  # staged as it is in the file: nothing only staged
+    git(tree.path, "update-index", "--assume-unchanged", "a.txt")  # what only its index says
     write(repo / "a.txt", "project\n")
     conflict = await manager.merge_back(tree)
     original = manager._git
@@ -2919,9 +2946,9 @@ async def test_a_head_that_cannot_be_put_back_does_not_stop_the_rest(
     repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
 ) -> None:
     tree = await manager.create(repo, base / "w1")
-    write(tree.path / "a.txt", "staged\n")
-    git(tree.path, "add", "a.txt")
     write(tree.path / "a.txt", "working\n")
+    git(tree.path, "add", "a.txt")  # staged as it is in the file: nothing only staged
+    git(tree.path, "update-index", "--assume-unchanged", "a.txt")  # what only its index says
     write(repo / "a.txt", "project\n")
     conflict = await manager.merge_back(tree)
     original = manager._git
@@ -2941,7 +2968,7 @@ async def test_a_head_that_cannot_be_put_back_does_not_stop_the_rest(
     monkeypatch.setattr(manager, "_git", original)
     notes = " ".join(getattr(raised.value, "__notes__", []))
     assert "HEAD could not be put back" in notes
-    assert git(tree.path, "show", ":a.txt") == "staged\n"  # the index went back all the same
+    assert git(tree.path, "ls-files", "-v", "a.txt").startswith("h ")  # the index went back all the same
     assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.base  # and the start
 
 
@@ -2990,9 +3017,9 @@ async def test_a_put_back_checkout_that_never_answers_does_not_stop_the_rest(
     repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
 ) -> None:
     tree = await manager.create(repo, base / "w1")
-    write(tree.path / "a.txt", "staged\n")
-    git(tree.path, "add", "a.txt")
     write(tree.path / "a.txt", "working\n")
+    git(tree.path, "add", "a.txt")  # staged as it is in the file: nothing only staged
+    git(tree.path, "update-index", "--assume-unchanged", "a.txt")  # what only its index says
     write(repo / "a.txt", "project\n")
     conflict = await manager.merge_back(tree)
     head = git(tree.path, "rev-parse", "HEAD").strip()
@@ -3011,7 +3038,7 @@ async def test_a_put_back_checkout_that_never_answers_does_not_stop_the_rest(
     monkeypatch.setattr(manager, "_git", original)
     notes = " ".join(getattr(raised.value, "__notes__", []))
     assert "the worktree could not be put back: git checkout --force timed out" in notes
-    assert git(tree.path, "show", ":a.txt") == "staged\n"
+    assert git(tree.path, "ls-files", "-v", "a.txt").startswith("h ")
     assert git(tree.path, "rev-parse", "HEAD").strip() == head
     assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.base
 
@@ -3445,3 +3472,51 @@ async def test_a_make_cancelled_while_claiming_leaves_no_directory(
     assert made == [True]  # made after all, then removed again
     assert not exists(base / "w1")
     assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_no_landing_once_the_repository_became_a_partial_clone(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    git(repo, "config", "remote.origin.url", "https://example.invalid/x.git")
+    git(repo, "config", "remote.origin.promisor", "true")
+    before = digest(repo)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed" and "partial clone" in result.detail
+    assert digest(repo) == before
+
+
+async def test_a_start_without_the_projects_directory_is_refused(
+    tmp_path: Path, manager: WorktreeManager, base: Path
+) -> None:
+    repo = make_repo(tmp_path / "nested-project")
+    git(repo, "tag", "before-sub")
+    write(repo / "sub" / "x.txt", "x\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "sub")
+    with pytest.raises(WorktreeError, match="has no directory sub"):
+        await manager.create(repo / "sub", base / "w1", FromRef("before-sub"))
+    assert not exists(base / "w1")
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+    assert (await manager.create(repo / "sub", base / "w2")).subpath == "sub"
+
+
+async def test_no_preparing_over_a_version_only_staged(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    original = read(tree.path / "b.txt")
+    write(tree.path / "b.txt", "staged only\n")
+    git(tree.path, "add", "b.txt")
+    write(tree.path / "b.txt", original)  # back in the file; the staged version only in the index
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    with pytest.raises(WorktreeError, match="commit or unstage it"):
+        await manager.prepare_conflicts(tree, conflict)
+    assert git(tree.path, "show", ":b.txt") == "staged only\n"
+    assert read(tree.path / "a.txt") == b"worktree\n"
+    git(tree.path, "add", "b.txt")  # unstaged by staging the file as it is
+    assert "<<<<<<<" in read((await manager.prepare_conflicts(tree, conflict)).path / "a.txt").decode()
