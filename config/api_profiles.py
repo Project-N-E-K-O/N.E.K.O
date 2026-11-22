@@ -88,7 +88,7 @@ DEFAULT_CORE_API_PROFILES = {
     },
     'step': {
         'CORE_URL': "wss://api.stepfun.com/v1/realtime",
-        'CORE_MODEL': "stepaudio-3-realtime-preview",
+        'CORE_MODEL': "stepaudio-3-realtime",
     },
     'gemini': {
         # Gemini uses google-genai SDK rather than native WebSocket.
@@ -175,7 +175,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
         'CONVERSATION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
         'SUMMARY_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
-        'EMOTION_MODEL': "inclusionAI/Ling-mini-2.0",
+        'EMOTION_MODEL': "Qwen/Qwen3.5-35B-A3B",
         'DECISION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
         'DECISION_PROTOCOL': "chat_fallback",
         'VISION_MODEL': "Qwen/Qwen3.5-122B-A10B",
@@ -194,13 +194,13 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'kimi': {
         'OPENROUTER_URL': "https://api.moonshot.cn/v1",
-        'CONVERSATION_MODEL': "kimi-k2.6",
-        'SUMMARY_MODEL': "kimi-k2.6",
-        'EMOTION_MODEL': "kimi-k2.6",
-        'DECISION_MODEL': "kimi-k2.6",
+        'CONVERSATION_MODEL': "kimi-k3",
+        'SUMMARY_MODEL': "kimi-k3",
+        'EMOTION_MODEL': "kimi-k3",
+        'DECISION_MODEL': "kimi-k3",
         'DECISION_PROTOCOL': "chat_fallback",
-        'VISION_MODEL': "kimi-k2.6",
-        'AGENT_MODEL': "kimi-k2.6",
+        'VISION_MODEL': "kimi-k3",
+        'AGENT_MODEL': "kimi-k3",
     },
     'kimi_code': {
         'OPENROUTER_URL': "https://api.kimi.com/coding",

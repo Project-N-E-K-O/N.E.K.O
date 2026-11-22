@@ -575,6 +575,62 @@ def test_step_reasoning_effort_stays_low():
         assert focus_extra_body(model) == {"reasoning_effort": "low"}
 
 
+def test_kimi_preset_slots_disable_thinking_and_focus_at_low_effort():
+    """Every shipped Kimi preset slot must name a model registered with the K3 body.
+
+    K3 is documented as always-thinking, but the live API honours
+    ``thinking.disabled``; the owner chose that cheaper form (2026-11-22). Focus
+    must not send ``thinking.enabled`` alone: without an effort K3 thinks at
+    max. Pin the constant identity, since ``_THINKING_ENABLE_FORM`` pairs by id().
+    """
+    import json
+    from pathlib import Path
+
+    from config.api_profiles import DEFAULT_ASSIST_API_PROFILES
+    from config.providers import (
+        EXTRA_BODY_KIMI_K3, MODELS_EXTRA_BODY_MAP, focus_extra_body, get_extra_body,
+    )
+
+    root = Path(__file__).resolve().parents[2]
+    shipped = json.loads((root / "config" / "api_providers.json").read_text(encoding="utf-8"))
+    json_models = {
+        v for k, v in shipped["assist_api_providers"]["kimi"].items() if k.endswith("_model")
+    }
+    py_models = {
+        v for k, v in DEFAULT_ASSIST_API_PROFILES["kimi"].items() if k.endswith("_MODEL")
+    }
+    assert json_models and py_models
+    for model in json_models | py_models:
+        assert MODELS_EXTRA_BODY_MAP.get(model) is EXTRA_BODY_KIMI_K3, model
+        assert get_extra_body(model) == {"thinking": {"type": "disabled"}}
+        assert focus_extra_body(model) == {"reasoning_effort": "low"}
+
+    # K2.x keeps the thinking.type pair until it retires.
+    assert focus_extra_body("kimi-k2.6") == {"thinking": {"type": "enabled"}}
+
+
+def test_silicon_preset_slots_all_send_enable_thinking_false():
+    """SiliconFlow hybrid models think by default; an unregistered preset model
+    would send no extra_body and think on every emotion / rerank / keyword call.
+    The emotion slot (Qwen3.5-35B-A3B, replacing delisted Ling-mini-2.0) is the
+    one most sensitive to latency."""
+    import json
+    from pathlib import Path
+
+    from config.api_profiles import DEFAULT_ASSIST_API_PROFILES
+    from config.providers import EXTRA_BODY_OPENAI, MODELS_EXTRA_BODY_MAP, get_extra_body
+
+    root = Path(__file__).resolve().parents[2]
+    shipped = json.loads((root / "config" / "api_providers.json").read_text(encoding="utf-8"))
+    json_slots = {k: v for k, v in shipped["assist_api_providers"]["silicon"].items() if k.endswith("_model")}
+    py_slots = {k: v for k, v in DEFAULT_ASSIST_API_PROFILES["silicon"].items() if k.endswith("_MODEL")}
+    assert json_slots["emotion_model"] == py_slots["EMOTION_MODEL"] == "Qwen/Qwen3.5-35B-A3B"
+    base_url = shipped["assist_api_providers"]["silicon"]["openrouter_url"]
+    for model in set(json_slots.values()) | set(py_slots.values()):
+        assert MODELS_EXTRA_BODY_MAP.get(model) is EXTRA_BODY_OPENAI, model
+        assert get_extra_body(model, base_url) == {"enable_thinking": False}, model
+
+
 def test_official_deepseek_v4_registers_the_thinking_type_dialect():
     """Official DeepSeek V4 defaults to thinking-on, so it belongs in the map.
 
