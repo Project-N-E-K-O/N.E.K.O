@@ -443,6 +443,11 @@ class WorktreeManager:
                 commit,
                 timeout=settings.WORKTREE_GIT_WORK_SECONDS,
             )
+            # Which directory it is, beside its registration: a removal
+            # that stopped half way (its .git gone) is told from a
+            # directory put there after the worktree went.
+            admin = Path((await self._git(target, "rev-parse", "--absolute-git-dir")).lines()[0])
+            await asyncio.to_thread(_note_directory, admin, target)
         except BaseException as error:
             # Nothing left behind, done to the end even when cancelled again.
             async def clean() -> None:
@@ -604,8 +609,12 @@ class WorktreeManager:
                     worktree.path, [start, own_head, conflict.result, half_done]
                 )
                 (saved / "files").mkdir()
-                files_saved = await asyncio.to_thread(_back_up, worktree.path, touched, saved / "files")
-                had_index = await asyncio.to_thread(_copy_index, index, saved / "index")
+                # Waited for to the end: what a copy still writes could not be
+                # removed below (Windows), and would be left unreported.
+                files_saved = await _to_the_end(
+                    asyncio.to_thread(_back_up, worktree.path, touched, saved / "files")
+                )
+                had_index = await _to_the_end(asyncio.to_thread(_copy_index, index, saved / "index"))
             except BaseException:
                 await _to_the_end(asyncio.to_thread(shutil.rmtree, saved, True))
                 raise
@@ -1310,8 +1319,9 @@ class WorktreeManager:
         common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
         if registered and not remove_directory and await asyncio.to_thread(_taken_over, path, common):
             # Still listed, but what is there now is not that worktree (its
-            # .git does not point back here): only the stale registration
-            # and the refs go.
+            # .git does not point back here, and it is not the directory
+            # the worktree was made in): only the stale registration and
+            # the refs go.
             await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
             if not theirs:
                 await self._delete_refs(repo_root, worktree_id)
@@ -1797,8 +1807,69 @@ def _points_into(path: Path, common_dir: Path) -> bool:
 
 
 def _taken_over(path: Path, common_dir: Path) -> bool:
-    """Return whether something is at ``path`` that is not a worktree of this repository."""
-    return os.path.lexists(_fs(path)) and not _points_into(path, common_dir)
+    """Return whether something is at ``path`` that is not a worktree of this repository.
+
+    One whose ``.git`` went (a removal that stopped half way, or removed by
+    hand) is still the worktree when it is the very directory noted when
+    it was made.
+    """
+    if not os.path.lexists(_fs(path)) or _points_into(path, common_dir):
+        return False
+    return not _is_the_noted_directory(path, common_dir)
+
+
+_DIRECTORY_NOTE = "nekoclaw-directory"
+
+
+def _directory_identity(path: Path) -> dict[str, int] | None:
+    """Return what tells this directory from one made later at the same path, or None when nothing does."""
+    found = os.stat(_fs(path))
+    if not found.st_ino:  # a file system without them
+        return None
+    identity = {"dev": found.st_dev, "ino": found.st_ino}
+    birth = getattr(found, "st_birthtime_ns", None)
+    if birth:
+        identity["birth"] = birth
+    return identity
+
+
+def _note_directory(admin: Path, path: Path) -> None:
+    identity = _directory_identity(path)
+    if identity is not None:
+        (admin / _DIRECTORY_NOTE).write_text(json.dumps(identity), encoding="utf-8")
+
+
+def _is_the_noted_directory(path: Path, common_dir: Path) -> bool:
+    entry = _registration_of(common_dir, path)
+    if entry is None:
+        return False
+    try:
+        noted = json.loads((entry / _DIRECTORY_NOTE).read_text(encoding="utf-8"))
+        now = _directory_identity(path)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(noted, dict) or now is None:
+        return False
+    shared = set(noted) & set(now)
+    return {"dev", "ino"} <= shared and all(noted[key] == now[key] for key in shared)
+
+
+def _registration_of(common_dir: Path, path: Path) -> Path | None:
+    """Return the registration directory of the worktree at ``path``, matched by where it was, or None."""
+    admin = common_dir / "worktrees"
+    if not admin.is_dir():
+        return None
+    for entry in admin.iterdir():
+        try:
+            pointed = (entry / "gitdir").read_text(encoding="utf-8", errors="surrogateescape").strip()
+        except OSError:
+            continue
+        where = Path(pointed)
+        if not where.is_absolute():  # relative to the registration
+            where = entry / where
+        if _same_path(where.parent, path):
+            return entry
+    return None
 
 
 def _drop_registration(common_dir: Path, path: Path) -> None:
