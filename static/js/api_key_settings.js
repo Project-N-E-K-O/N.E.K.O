@@ -1551,7 +1551,10 @@ function getResolvedCustomModelId(modelType, providerMode) {
         : '';
     if (fixedModel) return fixedModel;
     const input = document.getElementById(`${modelType}ModelId`);
-    return input ? input.value.trim() : '';
+    const typed = input ? input.value.trim() : '';
+    // 使魔模型·小留空时后端从识别模型补齐：连通性测试要测的就是占位文字里那个模型
+    if (!typed && modelType === 'agentSmall') return resolveSlotModelState('agentSmall').defaultModelId;
+    return typed;
 }
 
 function populateModelProviderDropdowns() {

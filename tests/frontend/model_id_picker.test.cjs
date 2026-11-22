@@ -375,11 +375,15 @@ test('the small familiar slot mirrors the recognition slot by default, the famil
     setSlot('agentSmall', 'follow_assist', 'ignored');
     assert.equal(context.resolveSlotModelState('agentSmall').defaultModelId, 'qwen/qwen3.5-9b');
 
-    // custom with a blank model ID runs the recognition model resolved for the emotion slot.
+    // custom with a blank model ID runs the recognition model resolved for the emotion slot;
+    // the connectivity check must test that same model, not an empty one.
     setSlot('agentSmall', 'custom', '');
     assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
         defaultModelId: 'my-small-model', acceptsTypedModelId: true, fixedModelProvider: '',
     });
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'custom'), 'my-small-model');
+    setSlot('agentSmall', 'custom', 'typed-small');
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'custom'), 'typed-small');
 });
 
 test('following the familiar slot on a fixed-model provider resolves the familiar tier model', () => {
