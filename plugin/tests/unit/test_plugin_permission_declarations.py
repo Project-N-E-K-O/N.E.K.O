@@ -890,3 +890,14 @@ def test_release_check_passes_validation_without_a_table_and_says_it_will_become
     [warning] = [message for level, message in messages if level == "warning" and "no [permissions] table" in message]
     assert "will become an error" in warning
     _assert_all_locales(warning)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nos.environ['PATH'] += ':extra'\n",
+        "from os import environ\nenviron['PATH'] += ':extra'\n",
+    ],
+)
+def test_augmented_assignment_to_the_environment_is_a_read(tmp_path, source):
+    assert _errors(_scan(tmp_path, source)) == ["system.env:read"]

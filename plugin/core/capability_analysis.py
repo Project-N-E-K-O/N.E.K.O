@@ -288,10 +288,16 @@ def _written_targets(nodes, walker) -> set[int]:
 
     For a mutating method call both the receiver and the bound method count.
     """
+    # x[k] += v reads x[k] before storing it, so it is not write-only.
+    augmented = {id(node.target) for node in nodes if isinstance(node, ast.AugAssign)}
     written = set()
     for node in nodes:
         walker.check()
-        if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+            and id(node) not in augmented
+        ):
             written.add(id(node.value))
         elif (
             isinstance(node, ast.Call)
