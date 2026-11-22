@@ -296,6 +296,8 @@ class NekoClawHost:
         self._shut_down = False
         # Held while a familiar is made for the user: the name is looked for and taken in one go.
         self._open_session_lock = asyncio.Lock()
+        # Held while where a project works is changed: its sessions and its record are written as one.
+        self._project_workdir_lock = asyncio.Lock()
         # Held while a page's settings of a model are written: one request's going back does not undo another's.
         self._model_window_lock = asyncio.Lock()
         # Set by the first call that does work; see ``_first_use``.
@@ -839,20 +841,23 @@ class NekoClawHost:
         ``ProjectBusy`` while something is at work in the project.
         """
         wanted = await self._working_directory(workdir)
-        if await self.space.get_project(project) is None:
-            raise LookupError(project)
-        busy = await self._project_busy(project)
-        if busy is not None:
-            raise ProjectBusy(busy)
-        # The project's own sessions of every character first, looked at once more and written in
-        # one go: each starts from the directory it keeps, so a commission that begins from here
-        # on begins in the new one, and one that began since the look above stops the change.
-        if not await self.ledger.move_project(project, str(wanted)):
-            raise ProjectBusy("at_work")
-        changed = await self.space.set_project_workdir(project, str(wanted))
-        if changed is None:
-            raise LookupError(project)
-        return changed.to_json()
+        # One change at a time: of two asked for at once, the sessions and the project's record
+        # end up saying the same directory, the one asked for last.
+        async with self._project_workdir_lock:
+            if await self.space.get_project(project) is None:
+                raise LookupError(project)
+            busy = await self._project_busy(project)
+            if busy is not None:
+                raise ProjectBusy(busy)
+            # The project's own sessions of every character first, looked at once more and written in
+            # one go: each starts from the directory it keeps, so a commission that begins from here
+            # on begins in the new one, and one that began since the look above stops the change.
+            if not await self.ledger.move_project(project, str(wanted)):
+                raise ProjectBusy("at_work")
+            changed = await self.space.set_project_workdir(project, str(wanted))
+            if changed is None:
+                raise LookupError(project)
+            return changed.to_json()
 
     def places(self) -> list[dict[str, Any]]:
         """Return where the host keeps what, for showing it: ``key`` and ``path``, in the order shown."""

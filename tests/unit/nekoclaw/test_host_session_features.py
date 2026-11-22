@@ -5931,3 +5931,29 @@ async def test_a_commission_that_began_after_the_look_stops_the_change_of_where_
     host._project_busy = looked
     assert (await host.set_project_workdir("Budget app", str(new)))["workdir"] == str(new)
     assert (await host.ledger.get_session(mei.id)).workdir == str(new)
+
+
+async def test_two_changes_of_where_a_project_works_asked_for_at_once_leave_one_directory(hosts, tmp_path):
+    """Its record and its sessions say the same place, whichever of the two came last."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    # The record is written a moment after the sessions: slowed for the first, the second would come between.
+    write = host.space.set_project_workdir
+
+    async def slowly(name: str, workdir: str) -> Any:
+        if workdir == str(first):
+            await asyncio.sleep(0.05)
+        return await write(name, workdir)
+
+    host.space.set_project_workdir = slowly
+    await asyncio.gather(
+        host.set_project_workdir("Budget app", str(first)), host.set_project_workdir("Budget app", str(second)),
+    )
+    record = (await host.space.get_project("Budget app")).workdir
+    assert record in (str(first), str(second))
+    assert (await host.ledger.get_session(lan.id)).workdir == record
