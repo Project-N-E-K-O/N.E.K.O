@@ -170,7 +170,9 @@ def test_narrowing_must_be_a_subset_of_the_declarations():
 # --- analyzer -------------------------------------------------------------------
 
 
-def _scan(tmp_path: Path, source: str, manifest: str = "", **files: str) -> dict:
+# An empty [permissions] table: the plugin opted in, so definite undeclared
+# use is an error (without the table it is a transition warning).
+def _scan(tmp_path: Path, source: str, manifest: str = "[permissions]\n", **files: str) -> dict:
     (tmp_path / "main.py").write_text(source, encoding="utf-8")
     for name, text in files.items():
         path = tmp_path / name
@@ -530,7 +532,7 @@ def _assert_all_locales(message: str) -> None:
 
 
 def test_cli_reports_undeclared_use_as_an_error_in_every_locale(tmp_path):
-    plugin_dir = _plugin(tmp_path, "import os\nKEY = os.environ.get('KEY')\n")
+    plugin_dir = _plugin(tmp_path, "import os\nKEY = os.environ.get('KEY')\n", "[permissions]\n")
     errors = _issues(plugin_dir, "error")
     [error] = [message for message in errors if "system.env:read" in message]
     assert error.startswith("the code uses system.env:read (worker.py:2)")
@@ -613,7 +615,7 @@ def test_cli_reports_declaration_errors_in_every_locale(tmp_path):
 
 
 def test_release_check_blocks_on_undeclared_use(tmp_path, capsys):
-    plugin_dir = _plugin(tmp_path, "import subprocess\nsubprocess.run(['ls'])\n")
+    plugin_dir = _plugin(tmp_path, "import subprocess\nsubprocess.run(['ls'])\n", "[permissions]\n")
     exit_code = neko_plugin_cli.main(
         ["check", "-r", str(plugin_dir), "--skip-tests", "--target-dir", str(tmp_path / "target")]
     )
@@ -642,14 +644,15 @@ def test_every_issue_code_has_a_message_in_all_locales():
         "unknown_field", "reason_missing", "text_empty", "text_type", "text_translation_type",
         "text_translation_empty", "background_type", "background_on_require", "background_reason_missing",
         "background_reason_unused", "hosts_type", "hosts_unused", "narrowing_type", "narrowing_not_declared",
-        "narrowing_unconfirmed", "used_undeclared", "used_undeclared_possible", "declared_unused",
+        "narrowing_unconfirmed", "used_undeclared", "used_undeclared_possible", "used_undeclared_no_table",
+        "declared_unused", "narrowing_runtime_unsupported",
     }
     assert codes <= permission_messages.message_codes()
     source = Path(capability_analysis.__file__).read_text(encoding="utf-8") + Path(
         parse_permission_declarations.__code__.co_filename
     ).read_text(encoding="utf-8")
     emitted = set(re.findall(r'PermissionIssue\(\s*"(?:error|warning|info)",\s*"([a-z_]+)"', source))
-    emitted |= set(re.findall(r'"(used_undeclared(?:_possible)?|declared_unused)"', source))
+    emitted |= set(re.findall(r'"(used_undeclared(?:_possible|_no_table)?|declared_unused)"', source))
     assert emitted <= permission_messages.message_codes()
     for kind in capability_analysis.BLIND_SPOT_TYPES:
         labels = {permission_messages.blind_spot_label(kind, locale) for locale in LOCALES}
@@ -863,4 +866,27 @@ def test_cli_warns_that_the_sdk_does_not_take_permissions_yet(tmp_path):
     warnings = _issues(plugin_dir, "warning")
     [warning] = [message for message in warnings if "does not accept permissions=" in message]
     assert warning.startswith("@plugin_entry in worker.py:4:")
+    _assert_all_locales(warning)
+
+
+
+# --- transition for plugins without a [permissions] table --------------------------------
+
+
+def test_definite_undeclared_use_is_an_error_once_the_table_exists():
+    used = {"system.env:read": {"declared": None, "findings": [_finding("resolved_call")], "basis": "resolved_call"}}
+    assert _codes(compare_declarations(_report(used, declarations="declared"))) == [("error", "used_undeclared")]
+
+
+def test_definite_undeclared_use_is_a_warning_without_a_table():
+    used = {"system.env:read": {"declared": None, "findings": [_finding("resolved_call")], "basis": "resolved_call"}}
+    assert _codes(compare_declarations(_report(used, declarations="none"))) == [("warning", "used_undeclared_no_table")]
+
+
+def test_release_check_passes_validation_without_a_table_and_says_it_will_become_an_error(tmp_path):
+    plugin_dir = _plugin(tmp_path, "import subprocess\nsubprocess.run(['ls'])\n")
+    messages = validate_plugin_dir(plugin_dir)
+    assert not [message for level, message in messages if level == "error"]
+    [warning] = [message for level, message in messages if level == "warning" and "no [permissions] table" in message]
+    assert "will become an error" in warning
     _assert_all_locales(warning)

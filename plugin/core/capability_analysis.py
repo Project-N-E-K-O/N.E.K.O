@@ -1148,6 +1148,8 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
 
     Used but not declared: an error when the evidence resolves to an SDK or
     standard-library origin, otherwise a warning (it may be a false match).
+    Transition: a plugin without any [permissions] table gets a warning
+    instead of that error, saying it will become an error later.
     Declared but not found: a warning, since dynamic use is invisible to the
     scan. Blind spots are reported separately (see ``blind_spot_issues``).
     """
@@ -1164,10 +1166,16 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
             locations = [f"{row['file']}:{row['line']}" for row in shown[:3]]
             if len(shown) > len(locations):
                 locations.append(f"+{len(shown) - len(locations)}")
+            if not definite:
+                severity, code = "warning", "used_undeclared_possible"
+            elif report.get("declarations") == "declared":
+                severity, code = "error", "used_undeclared"
+            else:
+                severity, code = "warning", "used_undeclared_no_table"
             issues.append(
                 PermissionIssue(
-                    "error" if definite else "warning",
-                    "used_undeclared" if definite else "used_undeclared_possible",
+                    severity,
+                    code,
                     {
                         "permission": permission,
                         "locations": ", ".join(locations),

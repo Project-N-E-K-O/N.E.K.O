@@ -312,7 +312,7 @@ Permission ids:
 
 `neko-plugin check` and `check -r` compare the declarations with a scan of the plugin's Python code:
 
-- Code that clearly uses a permission the plugin does not declare is an error and fails `check -r` (and therefore Market CI). Add the declaration with a reason.
+- Code that clearly uses a permission the plugin does not declare is an error and fails `check -r` (and therefore Market CI). Add the declaration with a reason. For now, a plugin with no `[permissions]` table at all gets a warning instead; this will become an error in a later release.
 - A possible use the scan cannot be sure about (an unresolved receiver, an import only, a file path that may be the plugin's own data) is a warning.
 - A declaration the scan found no use for is a warning; it is fine when the use is dynamic.
 - Code the scan cannot see through (dynamic imports, `getattr` with a computed name, `eval`/`exec`, `ctypes`, threads, `vendor/`, non-Python files) is listed as info. "No findings" never means the plugin was proven harmless.

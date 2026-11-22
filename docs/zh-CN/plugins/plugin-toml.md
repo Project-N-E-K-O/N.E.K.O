@@ -307,7 +307,7 @@ permissions = ["state:read"]
 
 `neko-plugin check` 和 `check -r` 会把声明和对插件 Python 代码的扫描结果做比对：
 
-- 代码明确用到、但没有声明的权限是 error，`check -r`（也就是市场 CI）过不了。补上声明并写 reason 即可。
+- 代码明确用到、但没有声明的权限是 error，`check -r`（也就是市场 CI）过不了。补上声明并写 reason 即可。目前完全没有 `[permissions]` 表的插件先给 warning，以后的版本会改成 error。
 - 扫描不能确定的可能用法（接收者解析不出来、只有 import、文件路径可能是插件自己的数据）是 warning。
 - 声明了但扫描没发现用到的，是 warning；动态用法扫不到是正常的。
 - 扫描看不透的代码（动态 import、名字是算出来的 `getattr`、`eval`/`exec`、`ctypes`、线程、`vendor/`、非 Python 文件）以 info 列出。“没发现”不代表证明了插件无害。

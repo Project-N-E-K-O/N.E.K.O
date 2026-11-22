@@ -241,6 +241,24 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "pt": "o código usa {permission} ({locations}), mas o plugin.toml não o declara; "
         "adicione-o a [permissions.require] ou [permissions.ask] com um reason",
     },
+    "used_undeclared_no_table": {
+        "en": "the code uses {permission} ({locations}) but plugin.toml has no [permissions] table yet; "
+        "this will become an error in a later release, so add it to [permissions.require] or [permissions.ask] with a reason",
+        "zh-CN": "代码用到了 {permission}（{locations}），但 plugin.toml 还没有 [permissions] 表；"
+        "以后的版本会把这里变成 error，请把它加到 [permissions.require] 或 [permissions.ask] 并写上 reason",
+        "zh-TW": "程式碼用到了 {permission}（{locations}），但 plugin.toml 還沒有 [permissions] 表；"
+        "之後的版本會把這裡變成 error，請把它加到 [permissions.require] 或 [permissions.ask] 並寫上 reason",
+        "ja": "コードが {permission} を使っています（{locations}）が、plugin.toml にはまだ [permissions] テーブルがありません。"
+        "今後のリリースでエラーになるため、reason を付けて [permissions.require] か [permissions.ask] に追加してください",
+        "ko": "코드가 {permission}을(를) 사용하지만({locations}) plugin.toml에 아직 [permissions] 테이블이 없습니다. "
+        "이후 릴리스에서 오류가 되므로 reason과 함께 [permissions.require] 또는 [permissions.ask]에 추가하세요",
+        "ru": "код использует {permission} ({locations}), но в plugin.toml ещё нет таблицы [permissions]; "
+        "в одном из следующих выпусков это станет ошибкой, поэтому добавьте его в [permissions.require] или [permissions.ask] с reason",
+        "es": "el código usa {permission} ({locations}) pero plugin.toml todavía no tiene una tabla [permissions]; "
+        "en una versión posterior esto será un error, así que añádelo a [permissions.require] o [permissions.ask] con un reason",
+        "pt": "o código usa {permission} ({locations}), mas o plugin.toml ainda não tem uma tabela [permissions]; "
+        "em uma versão futura isso será um erro, então adicione-o a [permissions.require] ou [permissions.ask] com um reason",
+    },
     "used_undeclared_possible": {
         "en": "the code may use {permission} ({locations}) but plugin.toml does not declare it; "
         "the scan is not certain here, so declare it if the plugin really does this",
