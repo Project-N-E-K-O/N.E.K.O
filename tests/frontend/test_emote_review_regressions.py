@@ -26,7 +26,7 @@ def editor(page, running_server, emote_template_library_dir):
         restoreStageImages,
         switchTemplate, downloadPng, refreshTemplateArchiveSizes,
         pickedAnimations: () => [...pickedAnimations],
-        syncWardrobePlacements, wardrobeSnapshot,
+        syncWardrobePlacements, wardrobeSnapshot, removeStageImage,
         templateRemovalPending: key => pendingTemplateRemovals.has(key),
         queuedCaptureKinds: () => stageQueue.map(job => job.kind),
         stageImages: () => [...stageUserImages].map(([id,image])=>({id,name:image.name})),
@@ -168,6 +168,62 @@ def test_png_image_pack_uses_the_selected_range_and_timing(editor, pack_format, 
 def test_png_image_pack_short_boundaries_obey_format_timing_limits(
         editor, pack_format, start, seconds, expected_frames, gif_delays):
     _assert_png_image_pack_timing(editor, pack_format, 30, start, seconds, expected_frames, gif_delays)
+
+
+@pytest.mark.parametrize('pack_format', ['flat', 'layered'])
+@pytest.mark.parametrize('other_state', ['talking_image', 'click_image', 'happy_image'])
+def test_missing_idle_image_never_exports_another_state_as_idle_and_rebinding_recovers(
+        editor, pack_format, other_state):
+    from PIL import Image
+
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async ([format,otherState]) => {
+        const q=reviewEditor,canvas=document.createElement('canvas');
+        canvas.width=canvas.height=16;
+        const context=canvas.getContext('2d');context.fillStyle='#00ff00';context.fillRect(0,0,16,16);
+        const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+        window.reviewIdleFile=new File([blob],'idle.png',{type:'image/png'});
+        await q.importStageImages([reviewIdleFile]);
+        const id=q.stageImages()[0].id,scene=q.getImportedScenes()[0];
+        Object.assign(q.state,{packFormat:format,packMode:'graph',exportResolution:64,exportFps:10,
+            nodeGraph:NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1,nodes:[
+                {id:'root',type:'source.default',params:{}},
+                {id:'idle-source',type:'source.image',params:{imageIds:[id],imageId:id}},
+                {id:'other-source',type:'source.scene',params:{sceneId:scene.id}},
+                {id:'idle',type:'output.state',params:{stateKey:'idle_image'}},
+                {id:'other',type:'output.state',params:{stateKey:otherState}},
+            ],links:[['idle-source','idle'],['other-source','other']].map(([from,to])=>({
+                from,to,fromSocket:'look',toSocket:'look'}))})});
+        await q.removeStageImage(id);
+        const stale=q.state.nodeGraph.nodes.find(n=>n.id==='idle-source').params.imageIds;
+        const baked=await q.bakePackJobs([{stateKey:otherState,sceneId:scene.id,look:q.currentLookDefaults(),
+            frames:1,timeWindow:{from:0,to:.1}}],{fps:10,edge:64});
+        return {missing:q.stageImages().length===0,staleBinding:stale.includes(id),
+            otherUsable:baked[0].frames.length>0,blocked:(await q.buildPngtuberPackage())===null};
+    }''', [pack_format, other_state])
+    assert result == {'missing':True,'staleBinding':True,'otherUsable':True,'blocked':True}
+    assert editor.locator('#emote-toast').inner_text() == '先给「待机」挑一个动作。'
+    recovered = editor.evaluate('''async () => {
+        const q=reviewEditor;
+        await q.importStageImages([reviewIdleFile]);
+        const id=q.stageImages()[0].id,source=q.state.nodeGraph.nodes.find(n=>n.id==='idle-source');
+        source.params.imageIds=[id];source.params.imageId=id;
+        const idleNode=q.state.nodeGraph.nodes.find(node=>node.id==='idle');
+        q.state.nodeGraph.nodes=q.state.nodeGraph.nodes.filter(node=>node.id!=='idle').concat(idleNode);
+        const built=await q.buildPngtuberPackage();
+        if(!built) throw new Error('valid-idle-rebinding-failed');
+        if(q.state.packFormat==='layered') {
+            const file=built.files.find(f=>f.path.split('/').pop()==='metadata.json');
+            const catalog=JSON.parse(new TextDecoder().decode(file.data)).state_catalog;
+            if(catalog[0].name!=='idle_image' || catalog[0].state_index!==0)
+                throw new Error('non-idle-first-layered-state');
+        }
+        return built.files.filter(f=>/\\/idle\\.(gif|png)$/.test(f.path)).map(f=>({
+            path:f.path,data:btoa(String.fromCharCode(...f.data))}));
+    }''')
+    assert len(recovered) == 1
+    with Image.open(io.BytesIO(base64.b64decode(recovered[0]['data']))) as idle:
+        assert idle.convert('RGBA').getpixel((32, 32)) == (0, 255, 0, 255)
 
 
 def _assert_png_image_pack_timing(editor, pack_format, fps, start, seconds, expected_frames, gif_delays=None):

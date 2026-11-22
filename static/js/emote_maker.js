@@ -7547,12 +7547,15 @@
     }
 
     async function layeredStates(baked, displayName) {
+        const idleJob = baked.find((item) => item.stateKey === 'idle_image');
+        // The runtime returns to state 0, regardless of graph traversal order.
+        const ordered = [idleJob, ...baked.filter((item) => item !== idleJob)];
         const sheet = window.NekoEmoteSheet;
         const layeredModule = window.NekoEmotePngtuberLayered;
         const packModule = window.NekoEmotePngtuberPack;
         const states = [];
         const extras = [];
-        for (const item of baked) {
+        for (const item of ordered) {
             // eslint-disable-next-line no-await-in-loop
             const composed = sheet.composeSheetCanvas(item.frames, (w, h) => {
                 const canvas = document.createElement('canvas');
@@ -7592,7 +7595,6 @@
             states,
         });
         // 分层包也必须带一张平铺回落图：服务端要求 idle_image 非空且真实存在。
-        const idleJob = baked.find((item) => item.stateKey === 'idle_image') || baked[0];
         const fallbackBytes = await sheet.canvasToPngBytes(
             sheet.firstFrameCanvas(idleJob.frames[0]),
         );
@@ -7733,8 +7735,8 @@
             await stageImagesReady;
             if (generation !== spineRendererGeneration) return null;
             const baked = await bakePackJobsNow(jobs, { format: packFormat });
-            if (!baked.length) {
-                showToast(t('emoteMaker.packZipFailed'));
+            if (!baked.some((item) => item.stateKey === 'idle_image' && item.frames?.length)) {
+                showToast(interpolate(t('emoteMaker.packIdleRequired'), { state: t('emoteMaker.packStateIdle') }));
                 return null;
             }
             if (packFormat === 'layered') {
