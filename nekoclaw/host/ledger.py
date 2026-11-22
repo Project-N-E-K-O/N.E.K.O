@@ -68,6 +68,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from nekoclaw.host import call_audit
+from nekoclaw.host.timeline import parse_cursor, question_text, read_timeline, read_waits
 
 logger = logging.getLogger(__name__)
 
@@ -1558,7 +1559,16 @@ class Ledger:
             f"UPDATE commissions SET {assignments} WHERE id = ?",
             [*changes.values(), commission_id],
         )
-        self._event(conn, commission_id, "status", {"from": current.status, "to": status, "reason": reason})
+        moved: dict[str, Any] = {"from": current.status, "to": status, "reason": reason}
+        # The question it waits on: the one given with the move, or else the
+        # one it has (written before, with ``update``).
+        asked = changes["pending_question"] if "pending_question" in changes else current.pending_question
+        if status == "waiting_user" and asked:
+            # What it asks, kept with the move: the commission keeps its
+            # question only while it waits, and a replay shows it after.
+            # Never what it would do or with what (``question_text``).
+            moved["question"], moved["question_kind"] = question_text(asked)
+        self._event(conn, commission_id, "status", moved)
         if status in ENDED_STATUSES:
             # What it asked to be woken for goes with it, in the same
             # transaction: nothing wakes a commission that is over, and
@@ -1647,15 +1657,44 @@ class Ledger:
         if unknown:
             raise ValueError(f"fields that cannot be updated: {sorted(unknown)}")
 
+        return await self.run(lambda conn: self._write(conn, commission_id, values))
+
+    def _write(self, conn: sqlite3.Connection, commission_id: str, values: dict[str, Any]) -> Commission | None:
+        """Write these columns (none of them the status) and return the commission; None for an unknown one."""
+        if values:
+            changes = {**values, "updated_at": self._clock()}
+            assignments = ", ".join(f"{name} = ?" for name in changes)
+            conn.execute(
+                f"UPDATE commissions SET {assignments} WHERE id = ?",
+                [*changes.values(), commission_id],
+            )
+        return _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
+
+    async def file_under_project(self, commission_id: str, project: str, **values: Any) -> Commission | None:
+        """Put a commission filed with no project under one, and note it, in one transaction.
+
+        Noted as an event of its own (``filed_under_project``): whoever
+        read what happened in the project and passed over its filing, as
+        it was no project's then, finds this after where it read up to.
+        Both are on record, or neither. ``values`` are other columns
+        written with it (its working directory; the session and the
+        commission it goes on with). Once only: a commission that is a
+        project's already keeps it, and only ``values`` are written. None
+        for an unknown commission.
+        """
+        unknown = set(values) - _UPDATABLE
+        if unknown:
+            raise ValueError(f"fields that cannot be written with the project: {sorted(unknown)}")
+
         def work(conn: sqlite3.Connection) -> Commission | None:
-            if values:
-                changes = {**values, "updated_at": self._clock()}
-                assignments = ", ".join(f"{name} = ?" for name in changes)
-                conn.execute(
-                    f"UPDATE commissions SET {assignments} WHERE id = ?",
-                    [*changes.values(), commission_id],
-                )
-            return _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
+            current = _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
+            if current is None:
+                return None
+            if current.project is not None:
+                return self._write(conn, commission_id, values)
+            filed = self._write(conn, commission_id, {**values, "project": project})
+            self._event(conn, commission_id, "filed_under_project", {"project": project})
+            return filed
 
         return await self.run(work)
 
@@ -3559,6 +3598,39 @@ class Ledger:
             ]
 
         return await self.run(work)
+
+    # -- what happened between sessions, for a screen ------------------------
+
+    async def timeline(
+        self,
+        *,
+        project: str | None = None,
+        lanlan_name: str | None = None,
+        after: str | None = None,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Return a page of what happened, in order; ``timeline.read_timeline``. Reads only.
+
+        Texts are as recorded: shortening them here would hold the ledger's
+        one thread, and every write waiting on it, for each of them. Like
+        any first use, the first call opens the ledger, which puts right what
+        an earlier host process left (``_reconcile``); a cursor that is not
+        one is refused before that.
+        """
+        parse_cursor(after)
+        return await self.run(
+            lambda conn: read_timeline(conn, project=project, lanlan_name=lanlan_name, after=after, limit=limit)
+        )
+
+    async def waits(
+        self,
+        *,
+        project: str | None = None,
+        lanlan_name: str | None = None,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Return who waits for whom now; ``timeline.read_waits``. Reads only; texts as recorded."""
+        return await self.run(lambda conn: read_waits(conn, project=project, lanlan_name=lanlan_name, limit=limit))
 
     # -- outbox -----------------------------------------------------------
 

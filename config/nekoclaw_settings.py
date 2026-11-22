@@ -752,6 +752,23 @@ SESSION_NOTICE_TEXT_MAX_TOKENS = 300
 """Cap on what the sender of a note is told of how the turn it began ended:
 the last words of that turn."""
 
+TIMELINE_PAGE_ROWS = 200
+"""Entries of the timeline of sessions (``NekoClawHost.timeline``) in a page
+when the caller does not say how many."""
+
+TIMELINE_PAGE_MAX_ROWS = 1000
+"""Most entries of the timeline in one page; a caller that asks for more gets
+this many."""
+
+TIMELINE_TEXT_MAX_TOKENS = 120
+"""Cap on the text of one timeline entry or wait (what was asked, said,
+reported, written): enough for a line on a screen, not the whole of it."""
+
+WAITS_MAX_ROWS = 500
+"""Most waits ``NekoClawHost.waits`` gives at once, the longest waiting
+first. The task agents at work at one time, with their children, questions
+and queues, come to far fewer."""
+
 SESSION_WAKE_BATCH_ROWS = 10
 """How many waiting things (notes, times that came) are handed to a session
 in one go. What is left over follows with the next."""
