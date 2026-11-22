@@ -211,7 +211,7 @@ def mirror_consent_decision(
     )
 
     def undo() -> None:
-        permission_store.restore(plugin_id, previous)
+        restore_permissions(plugin_id, previous)
 
     return undo
 
@@ -383,6 +383,7 @@ def permission_snapshot(plugin_id: str) -> dict:
     with _snapshot_lock:
         revision = next(_snapshot_revision)
         removals = _removals.get(plugin_id, 0)
+    read_failed = False
     try:
         record: dict | None = permission_record(plugin_id)
         with _snapshot_lock:
@@ -395,6 +396,7 @@ def permission_snapshot(plugin_id: str) -> dict:
                 _last_records[plugin_id] = (revision, copy.deepcopy(record))
     except Exception as exc:
         code = getattr(exc, "code", None)
+        read_failed = True
         with _snapshot_lock:
             record = copy.deepcopy(_last_records.get(plugin_id, (0, None))[1])
         logger.error(
@@ -413,4 +415,8 @@ def permission_snapshot(plugin_id: str) -> dict:
         permission: state_to_wire(_resolve_state(permission, record, checks_off=checks_off))
         for permission in PERMISSIONS
     }
-    return {"revision": revision, "states": states}
+    snapshot: dict = {"revision": revision, "states": states}
+    if read_failed:
+        # Host-side marker (not sent): the push service retries until a read works.
+        snapshot["read_failed"] = True
+    return snapshot
