@@ -444,6 +444,10 @@ class TtsRuntimeMixin:
         """
         if not getattr(self, "_tts_preconnect_supported", False):
             return False
+        if not getattr(self, "use_tts", True):
+            # Replies are not spoken through this worker (it may still be alive
+            # for the mirror channel, see _clear_tts_pipeline).
+            return False
         if getattr(self, "_tts_quota_blocked", False):
             # Every connect is refused until the quota window passes.
             return False
