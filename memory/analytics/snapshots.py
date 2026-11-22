@@ -659,7 +659,6 @@ def _restore_snapshot_files_sync(
 # (voided), and restores whose swap completed (completed).
 _VOIDED_RESTORES_FILENAME = "voided_restores.json"
 _COMPLETED_RESTORES_FILENAME = "completed_restores.json"
-_RESTORE_OUTCOMES_KEEP = 50
 
 
 def _restore_outcomes(char_dir: Path, filename: str) -> set[str]:
@@ -667,13 +666,43 @@ def _restore_outcomes(char_dir: Path, filename: str) -> set[str]:
     return {item for item in data if isinstance(item, str)} if isinstance(data, list) else set()
 
 
+def _restore_ids_in_journal(char_dir: Path) -> set[str] | None:
+    """Pre-restore ids of every restore record still in the event journal; None if unreadable."""
+    from memory.event_log import _iter_journal_lines
+
+    path = char_dir / "events.ndjson"
+    if not path.is_file():
+        return set()
+    ids: set[str] = set()
+    try:
+        for _lineno, _raw, rec in _iter_journal_lines(str(path)):
+            if rec is None or rec.get("type") != EVT_MEMORY_SNAPSHOT_RESTORED:
+                continue
+            payload = rec.get("payload")
+            pre_id = payload.get("pre_restore_snapshot_id") if isinstance(payload, dict) else None
+            if isinstance(pre_id, str):
+                ids.add(pre_id)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return ids
+
+
 def _mark_restore_outcome(char_dir: Path, pre_restore_id: str, filename: str) -> None:
+    """Add an id; ids are dropped only once their restore record left the journal.
+
+    An outcome must outlive every replay that can still read its restore
+    record, so the list is trimmed against the journal, never by count.
+    Compaction keeps few restore records, which bounds it.
+    """
     path = _snapshots_root(char_dir) / filename
     data = _read_json_safe(path, [])
     ids = [item for item in data if isinstance(item, str)] if isinstance(data, list) else []
+    in_journal = _restore_ids_in_journal(char_dir)
+    if in_journal is not None:
+        ids = [item for item in ids if item in in_journal]
     if pre_restore_id not in ids:
         ids.append(pre_restore_id)
-    atomic_write_json(str(path), ids[-_RESTORE_OUTCOMES_KEEP:], ensure_ascii=False)
+    atomic_write_json(str(path), ids, ensure_ascii=False)
 
 
 def _record_restore_outcome(char_dir: Path, payload: dict, filename: str) -> bool:
@@ -916,6 +945,11 @@ def make_snapshot_restore_handler(
                 )
                 return False
             if state == _RESTORE_DONE:
+                # A crash after the last file and before the completion mark
+                # leaves a finished restore unmarked; mark it now, before a
+                # startup step can change a file and hide that it finished.
+                if not _is_completed(char_dir, payload):
+                    _record_restore_outcome(char_dir, payload, _COMPLETED_RESTORES_FILENAME)
                 return False
 
             source = _load_matching_snapshot(char_dir, snapshot_id, target)

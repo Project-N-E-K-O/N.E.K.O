@@ -1024,3 +1024,37 @@ async def test_cancelled_restore_keeps_older_unapplied_events(tmp_path):
     await reconciler.areconcile(NAME)
     assert seen == ["pending"]
     assert _read_json(char_dir / "persona.json")["master"]["facts"][0]["text"] == "likes jazz"
+
+
+
+@pytest.mark.asyncio
+async def test_restore_finished_before_its_completion_mark_is_marked_on_replay(tmp_path):
+    from memory.analytics.snapshots import make_snapshot_restore_in_effect
+
+    _log, char_dir, _meta, _pre, _target, payload = await _restored_with_event(tmp_path)
+    completed = char_dir / "browser_snapshots" / "completed_restores.json"
+    completed.unlink()  # crash after the last file, before the mark
+    handler = _restore_handler(tmp_path)
+    assert handler(NAME, payload) is False
+    assert _read_json(completed) == [payload["pre_restore_snapshot_id"]]
+    # A startup step changing a file afterwards no longer hides that the restore finished.
+    _write_json(char_dir / "facts.json", [{"id": "f9", "text": "card sync"}])
+    assert make_snapshot_restore_in_effect(memory_dir_fn=lambda: tmp_path)(NAME, payload) is True
+
+
+def test_restore_outcome_ids_are_trimmed_against_the_journal_not_by_count(tmp_path):
+    from memory.analytics.snapshots import _mark_restore_outcome, _restore_outcomes
+    from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED
+
+    log = _event_log(tmp_path)
+    char_dir = tmp_path / NAME
+    (char_dir / "browser_snapshots").mkdir(parents=True)
+    for i in range(60):
+        log.append(NAME, EVT_MEMORY_SNAPSHOT_RESTORED, {"pre_restore_snapshot_id": f"p{i}"})
+        _mark_restore_outcome(char_dir, f"p{i}", "voided_restores.json")
+    assert len(_restore_outcomes(char_dir, "voided_restores.json")) == 60
+    # Once the journal no longer holds a restore record, its id goes on the next write.
+    (char_dir / "events.ndjson").write_bytes(b"")
+    log.append(NAME, EVT_MEMORY_SNAPSHOT_RESTORED, {"pre_restore_snapshot_id": "p_new"})
+    _mark_restore_outcome(char_dir, "p_new", "voided_restores.json")
+    assert _restore_outcomes(char_dir, "voided_restores.json") == {"p_new"}
