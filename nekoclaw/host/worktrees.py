@@ -466,7 +466,9 @@ class WorktreeManager:
             # that stopped half way (its .git gone) is told from a
             # directory put there after the worktree went.
             admin = Path((await self._git(target, "rev-parse", "--absolute-git-dir")).lines()[0])
-            await asyncio.to_thread(_note_directory, admin, target)
+            # Waited for to the end: a late write could land on the
+            # registration of another made by the same name after cleanup.
+            await _to_the_end(asyncio.to_thread(_note_directory, admin, target))
         except BaseException as error:
             # Nothing left behind, done to the end even when cancelled again.
             async def clean() -> None:
@@ -637,7 +639,7 @@ class WorktreeManager:
             index = Path(
                 (await self._git(worktree.path, "rev-parse", "--path-format=absolute", "--git-path", "index")).lines()[0]
             )
-            saved = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
+            saved = await _temporary_directory("nekoclaw-index-")
             # The bytes of every file the checkouts may write: checking the
             # result out again gives back its content, not its bytes (line
             # endings an eol rule converts, for one).
@@ -645,6 +647,14 @@ class WorktreeManager:
                 touched = await self._touched_by_preparing(
                     worktree.path, [start, own_head, conflict.result, half_done]
                 )
+                # And what differs from the index only in bytes git reads
+                # away (line endings an eol rule converts): no tree shows
+                # it, but the forced checkout writes it all the same.
+                # diff-files only reads the index.
+                dirty = await self._git(
+                    worktree.path, "diff-files", "--name-only", "-z", timeout=settings.WORKTREE_GIT_WORK_SECONDS
+                )
+                touched = sorted({*touched, *(_decode(name) for name in dirty.stdout.split(b"\0") if name)})
                 (saved / "files").mkdir()
                 # Waited for to the end: what a copy still writes could not be
                 # removed below (Windows), and would be left unreported.
@@ -807,10 +817,10 @@ class WorktreeManager:
             for path in registered:
                 if not _same_path(path.parent, base) or path.name in known_ids:
                     continue
-                start = await self._try_resolve(repo_root, _start_ref(path.name))
-                if start is None:
-                    continue  # no ref of ours: not known to be one of ours
                 try:
+                    start = await self._try_resolve(repo_root, _start_ref(path.name))
+                    if start is None:
+                        continue  # no ref of ours: not known to be one of ours
                     if await asyncio.to_thread(path.is_dir) and await self._has_changes(
                         repo_root, path, path.name, start
                     ):
@@ -1042,7 +1052,7 @@ class WorktreeManager:
         it is the worktree's own, and leaving it out would read as deleting it.
         """
         head = await self._try_resolve(root, "HEAD")
-        scratch = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
+        scratch = await _temporary_directory("nekoclaw-index-")
         try:
             env = {"GIT_INDEX_FILE": str(scratch / "index")}
             # A copy of the real index keeps what git knows of each file's
@@ -1271,7 +1281,7 @@ class WorktreeManager:
         checked = await self._git(root, *_APPLY, "--check", input=patch.stdout, check=False)
         if checked.returncode != 0:
             return MergeResult("failed", detail=_failure("the changes do not apply", checked.stderr), **counted)
-        backup = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-landing-"))
+        backup = await _temporary_directory("nekoclaw-landing-")
         keep = False
         try:
             try:
@@ -1344,7 +1354,7 @@ class WorktreeManager:
         present = [change.path for change in files if change.status != "deleted"]
         if not present:
             return True
-        scratch = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
+        scratch = await _temporary_directory("nekoclaw-index-")
         try:
             env = {"GIT_INDEX_FILE": str(scratch / "index")}
             await self._git(root, "read-tree", merged_tree, env=env)
@@ -1604,7 +1614,7 @@ def _in_the_way(root: Path, written: list[str], held: set[str], nested: set[str]
     as it should. Overwritten are a file at one of those paths, a directory
     there holding anything ``held`` has not, a file not ``held`` where one
     needs a directory, and anything inside a repository of its own
-    (``nested``, directories).
+    (``nested``, directories, or any with a ``.git`` of its own).
     """
     hit: set[str] = set()
     for path in written:
@@ -1612,7 +1622,9 @@ def _in_the_way(root: Path, written: list[str], held: set[str], nested: set[str]
         if _is_file_or_link(full) or (os.path.isdir(full) and _holds_unsaved(root, path, held)):
             hit.add(path)
         for up in _parents(path):
-            if up in nested:
+            # One in an ignored directory is not in ``nested`` (the
+            # snapshot never looked there): its .git tells.
+            if up in nested or os.path.lexists(_fs(root / up / ".git")):
                 hit.add(up + "/")
             elif up not in held and _is_file_or_link(_fs(root / up)):
                 hit.add(up)
@@ -1704,6 +1716,16 @@ def _cancelled_after(error: BaseException) -> asyncio.CancelledError:
     for note in getattr(error, "__notes__", ()):
         stopped.add_note(note)
     return stopped
+
+
+async def _temporary_directory(prefix: str) -> Path:
+    """Make a temporary directory; cancelled meanwhile, it is removed again once made."""
+    making = asyncio.ensure_future(asyncio.to_thread(tempfile.mkdtemp, prefix=prefix))
+    if await _settle(making):
+        if making.exception() is None:
+            await _to_the_end(asyncio.to_thread(shutil.rmtree, making.result(), True))
+        raise asyncio.CancelledError
+    return Path(making.result())
 
 
 async def _to_the_end(awaitable):  # type: ignore[no-untyped-def]
@@ -2007,6 +2029,7 @@ class _Saved:
     name: str
     copy: Path | None  # None: the file did not exist before
     made_dirs: tuple[str, ...] = ()
+    was_directory: bool = False  # an (empty) directory was where the file goes
 
 
 def _back_up(root: Path, names: list[str], backup: Path) -> list[_Saved]:
@@ -2020,6 +2043,9 @@ def _back_up(root: Path, names: list[str], backup: Path) -> list[_Saved]:
             shutil.copy2(source, _fs(copy), follow_symlinks=False)
             saved.append(_Saved(name, copy))
             manifest[str(index)] = name
+            continue
+        if os.path.isdir(source) and not os.path.islink(source):
+            saved.append(_Saved(name, None, was_directory=True))
             continue
         made = []
         parent = (root / name).parent
@@ -2049,6 +2075,11 @@ def _restore(root: Path, saved: list[_Saved]) -> list[str]:
     for entry in saved:
         if entry.copy is not None and not _restore_one(root, entry):
             left.append(entry.name)
+        elif entry.was_directory:
+            try:
+                os.makedirs(_fs(root / entry.name), exist_ok=True)
+            except OSError:
+                left.append(entry.name)
     return sorted(set(left))
 
 

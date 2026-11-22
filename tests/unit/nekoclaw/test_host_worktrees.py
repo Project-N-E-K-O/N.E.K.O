@@ -30,6 +30,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,18 @@ from nekoclaw.host.worktrees import (
 
 GIT = shutil.which("git")
 pytestmark = pytest.mark.skipif(GIT is None, reason="git is not installed on this machine")
+
+
+def _git_version() -> tuple[int, int, int] | None:
+    if GIT is None:
+        return None
+    found = subprocess.run([GIT, "--version"], capture_output=True, text=True, check=False)
+    return parse_git_version(found.stdout)
+
+
+# What needs a real git of the version the module asks for skips below it
+# (make_repo is where every such test begins); the rest still runs.
+REAL_GIT_TOO_OLD = (_git_version() or (0, 0, 0)) < worktrees.settings.WORKTREE_GIT_MIN_VERSION
 
 WINDOWS = sys.platform == "win32"
 USER = {
@@ -170,6 +183,8 @@ def repository_state(repo: Path) -> dict[str, Any]:
 
 
 def make_repo(path: Path, files: dict[str, str | bytes] | None = None, **config: str) -> Path:
+    if REAL_GIT_TOO_OLD:
+        pytest.skip(f"git {_git_version()} is older than the module needs")
     path.mkdir(parents=True, exist_ok=True)
     git(path, "init", "-q", "-b", "main")
     git(path, "config", "core.autocrlf", "false")
@@ -562,9 +577,7 @@ async def test_failed_worktree_add_leaves_nothing(repo: Path, manager: WorktreeM
     async def failing(cwd: Path, *args: str, **kwargs: Any) -> Any:
         if args[:2] == ("worktree", "add"):
             # Half made, as a checkout that stopped part way leaves it.
-            target = Path(args[3])
-            if not exists(target):
-                write(target / "partial.txt", "partial\n")
+            write(Path(args[3]) / "partial.txt", "partial\n")
             raise worktrees.GitError(args, 128, b"simulated")
         return await original(cwd, *args, **kwargs)
 
@@ -573,11 +586,24 @@ async def test_failed_worktree_add_leaves_nothing(repo: Path, manager: WorktreeM
         await manager.create(repo, base / "w1")
     assert git(repo, "for-each-ref", REF_PREFIX) == ""
     assert not exists(base / "w1")
-    # A directory that was there (empty) before stays.
-    (base / "given").mkdir()
+
+
+async def test_a_given_empty_directory_stays_after_a_failed_add(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    original = manager._git
+
+    async def failing(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("worktree", "add"):
+            raise worktrees.GitError(args, 128, b"simulated")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", failing)
+    (base / "given").mkdir(parents=True)
     with pytest.raises(worktrees.GitError):
         await manager.create(repo, base / "given")
-    assert (base / "given").is_dir()
+    assert (base / "given").is_dir() and not os.listdir(base / "given")
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
     assert git(repo, "for-each-ref", REF_PREFIX) == ""
 
 
@@ -3534,3 +3560,147 @@ async def test_a_file_no_longer_tracked_does_not_stop_preparing(
     prepared = await manager.prepare_conflicts(tree, conflict)
     assert "<<<<<<<" in read(prepared.path / "a.txt").decode()
     assert exists(prepared.path / "b.txt")
+
+
+async def test_a_make_cancelled_while_noting_its_directory_waits_for_the_note(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    import threading
+    import time
+
+    real = worktrees._note_directory
+    noting = threading.Event()
+    noted = []
+
+    def slow(admin: Path, path: Path) -> None:
+        noting.set()
+        time.sleep(0.5)
+        real(admin, path)
+        noted.append(admin)
+
+    monkeypatch.setattr(worktrees, "_note_directory", slow)
+    making = asyncio.ensure_future(manager.create(repo, base / "w1"))
+    assert await asyncio.to_thread(noting.wait, 30)
+    making.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await making
+    assert noted  # written before cleaning up began, so nothing comes after it
+    assert not exists(noted[0])  # and cleaned up with the registration
+    assert not exists(base / "w1")
+
+
+async def test_preparing_does_not_write_into_an_ignored_repository_of_its_own(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    git(tree.path, "init", "-q", "ignored/lib")  # a repository of its own, in an ignored directory
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    write(repo / "ignored" / "lib" / "new.txt", "the project's\n")
+    git(repo, "add", "-f", "ignored/lib/new.txt")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    with pytest.raises(WorktreeError, match="ignored/lib/"):
+        await manager.prepare_conflicts(tree, conflict)
+    assert not exists(tree.path / "ignored" / "lib" / "new.txt")
+
+
+async def test_a_temporary_directory_made_while_cancelled_is_removed(monkeypatch: Any, tmp_path: Path) -> None:
+    import threading
+    import time
+
+    real = tempfile.mkdtemp
+    making = threading.Event()
+    made: list[str] = []
+
+    def slow(*args: Any, **kwargs: Any) -> str:
+        making.set()
+        time.sleep(0.5)
+        made.append(real(*args, dir=str(tmp_path), **kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(worktrees.tempfile, "mkdtemp", slow)
+    task = asyncio.ensure_future(worktrees._temporary_directory("nekoclaw-index-"))
+    assert await asyncio.to_thread(making.wait, 30)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert made and not exists(Path(made[0]))
+
+
+async def test_reconcile_goes_on_past_a_start_it_cannot_read(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    stuck = await manager.create(repo, base / "w1")
+    clean = await manager.create(repo, base / "w2")
+    original = manager._try_resolve
+
+    async def times_out(root: Path, name: str) -> str | None:
+        if name == f"{REF_PREFIX}w1/start":
+            raise worktrees.GitError(["rev-parse"], None, b"no answer within 30 seconds")
+        return await original(root, name)
+
+    monkeypatch.setattr(manager, "_try_resolve", times_out)
+    report = await manager.reconcile(repo, base, [])
+    assert [path.name for path, _ in report.failed] == ["w1"] and exists(stuck.path)
+    assert report.removed == ["w2"] and not exists(clean.path)
+
+
+async def test_an_empty_directory_a_landed_file_replaced_comes_back(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    (repo / "pkg").mkdir()  # empty: git does not see it
+    write(tree.path / "pkg", "a file now\n")
+    original = manager._git
+
+    async def ref_locked(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start"):
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", ref_locked)
+    try:
+        result = await manager.merge_back(tree)
+    except worktrees.GitError:
+        result = None
+    assert result is None or result.status == "failed"
+    assert (repo / "pkg").is_dir() and not os.listdir(repo / "pkg")
+
+
+async def test_a_failed_prepare_puts_back_bytes_only_the_file_has(
+    tmp_path: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    repo = make_repo(tmp_path / "lf", {".gitattributes": "* text eol=lf\n", "a": "base\n", "b": "base\n"})
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a", "worktree\n")
+    write(tree.path / "b", b"base\r\n")  # the same once git reads it: no tree tells it apart
+    write(repo / "a", "project\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    original = manager._git
+
+    async def ref_locked(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start") and args[2] == conflict.current:
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", ref_locked)
+    with pytest.raises(worktrees.GitError):
+        await manager.prepare_conflicts(tree, conflict)
+    assert read(tree.path / "b") == b"base\r\n"
+    assert read(tree.path / "a") == b"worktree\n"
+
+
+def test_putting_back_makes_an_empty_directory_a_file_replaced_again(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    (root / "pkg").mkdir(parents=True)
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    saved = worktrees._back_up(root, ["pkg", "new.txt"], backup)
+    os.rmdir(root / "pkg")  # as git apply does on Linux before writing the file there
+    write(root / "pkg", "a file now\n")
+    write(root / "new.txt", "landed\n")
+    assert worktrees._restore(root, saved) == []
+    assert (root / "pkg").is_dir() and not os.listdir(root / "pkg")
+    assert not exists(root / "new.txt")  # what was not there is not there again
