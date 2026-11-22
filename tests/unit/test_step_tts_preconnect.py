@@ -449,6 +449,41 @@ def test_speech_connects_only_after_a_cut_off_spare_finished_closing(monkeypatch
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
+def test_interrupt_during_the_wait_for_a_spare_close_drops_the_connect(monkeypatch):
+    # The speech waits for a cut-off spare to finish closing before it
+    # connects; an interrupt arriving in that wait must win, not wait out the
+    # close and then let the interrupted speech connect anyway.
+    _route_to_lanlan_app(monkeypatch)
+    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.1)
+    stuck = _SlowCloseStatefulSocket([])  # connects, never confirms, slow to close
+    fresh = _socket("fresh", final_events=_app_round_end("fresh"))
+    connects = _install_sockets(monkeypatch, _warmup_socket(), stuck, fresh)
+    requests = queue.Queue()  # live queue: the interrupt lands while the worker waits
+    for item in (_PRECONNECT, ("speech-1", _OPENING), (None, None)):
+        requests.put(item)
+
+    def interrupt_once_waiting():
+        _wait(lambda: stuck.closing)()
+        time.sleep(0.2)  # the finish is now waiting for the close
+        requests.put(("__interrupt__", None))
+        time.sleep(0.3)
+        stuck.release.set()
+        requests.put((_step_protocol.TTS_SHUTDOWN_SENTINEL, None))
+
+    driver = threading.Thread(target=interrupt_once_waiting, daemon=True)
+    driver.start()
+    backstop = threading.Timer(5.0, stuck.release.set)
+    backstop.start()
+    try:
+        _run(requests, queue.Queue())
+    finally:
+        backstop.cancel()
+        driver.join(timeout=5)
+
+    assert fresh not in connects, "the interrupted speech still connected"
+    assert stuck.closed.is_set()
+
+
 def test_no_new_spare_while_a_retired_one_is_still_closing(monkeypatch):
     _route_to_lanlan_app(monkeypatch)
     monkeypatch.setattr(_step_protocol, "_PRECONNECT_IDLE_SECONDS", 0.05)

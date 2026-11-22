@@ -410,8 +410,14 @@ def run_step_protocol_tts_worker(
                 except Exception as close_exc:
                     logger.debug("关闭失效 TTS WebSocket 失败: %s", close_exc)
 
+            if not await _await_spare_cleanup():
+                # A queued interrupt/shutdown owns this boundary; leave the
+                # retained text to it rather than reconnecting.
+                ws = None
+                session_id = None
+                session_created = False
+                return False
             try:
-                await _await_spare_cleanup()
                 ws = await websockets.connect(tts_url, additional_headers=headers)
                 session_id = None
                 session_ready.clear()
@@ -626,19 +632,23 @@ def run_step_protocol_tts_worker(
                 logger.debug("预建 TTS 连接 %.0fs 内未被使用，关闭", _PRECONNECT_IDLE_SECONDS)
                 _discard_spare_socket(from_expiry=True)
 
-        async def _await_spare_cleanup() -> None:
+        async def _await_spare_cleanup() -> bool:
             """Let retired spares finish closing before the speech connects.
 
             The speech path has always closed its old socket before opening
             the next one, so the free server, which limits connections per IP,
             never sees two. A retired spare closes in the background so the
-            cut-off itself returns at once (a queued interrupt is handled
-            meanwhile); this is where the speech now waits for it. Each close
-            is bounded by websockets' own close_timeout, as the old socket's
-            close on this path is.
+            cut-off itself returns at once; this is where the speech waits for
+            it. A close can take websockets' whole close_timeout, and an
+            interrupt or shutdown must not wait on it: returns False, with the
+            control message moved to the front, when one is queued meanwhile,
+            and the caller drops this connect.
             """
-            if spare_cleanup_tasks:
-                await asyncio.wait(set(spare_cleanup_tasks))
+            while spare_cleanup_tasks:
+                await asyncio.wait(set(spare_cleanup_tasks), timeout=0.05)
+                if _defer_queued_work_until_control():
+                    return False
+            return True
 
         def _keep_until_done(task) -> None:
             spare_cleanup_tasks.add(task)
@@ -1142,7 +1152,9 @@ def run_step_protocol_tts_worker(
                         if spare is not None:
                             candidate_ws, candidate_session_id = spare
                         elif not handshake_timed_out:
-                            await _await_spare_cleanup()
+                            if not await _await_spare_cleanup():
+                                # A queued interrupt/shutdown owns this boundary.
+                                continue
                             candidate_ws = await websockets.connect(
                                 tts_url,
                                 additional_headers=headers,
