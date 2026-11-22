@@ -3067,3 +3067,80 @@ async def test_crashed_memory_on_visit_without_lines_is_abandoned_not_retried(tm
     before = spool.state_path.stat().st_mtime_ns
     await _recover(tmp_path, render_chips=chips, summary_llm=llm)
     assert chips.calls == [] and spool.state_path.stat().st_mtime_ns == before
+
+
+async def test_f0184_sealed_upload_with_stamp_end_extra_rows_and_metadata_is_preserved(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(130)
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    sealed_path = _spool_dir(tmp_path) / f"{v}.upload.json"
+
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    # Simulate UploadJournal.seal(): _stamp_end moves ended_at/duration_s past last line ts,
+    # plus in-memory buffered line, higher usage/anomalies, and upload retry/rejection metadata.
+    doc["request"]["ended_at"] += 25.0
+    doc["request"]["usage"]["duration_s"] += 25
+    doc["request"]["usage"]["tts_chars"] += 120
+    doc["request"]["anomalies"] += 1
+    doc["request"]["lines"].append({
+        "lp": 99, "side": "host", "from": "own_cat",
+        "ts": doc["request"]["ended_at"] - 1.0, "text": "in-memory tail", "truncated": False,
+    })
+    doc["parts"] = {"head": "p1"}
+    doc["accepted_parts"] = ["head"]
+    doc["rejected"] = {"code": "already_settled"}
+    sealed_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (uploaded_vid, uploaded_doc), = uploads.calls
+    assert uploaded_vid == v
+    assert uploaded_doc == doc
+    assert not stream.exists()
+
+
+async def test_f0184_valid_sealed_upload_kept_when_reseal_fails_with_envelope_incomplete(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(131)
+    records = _stream_records(v)
+    # Remove own_char_uid from stream header & make state.json unreadable so resealing raises _EnvelopeIncomplete
+    records_no_char = [{k: val for k, val in records[0].items() if k != "own_char_uid"}, *records[1:]]
+    _write_stream(tmp_path, v, records_no_char)
+    (_spool_dir(tmp_path) / f"{v}.state.json").write_text("{corrupt", encoding="utf-8")
+
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    # Force a stream mismatch (extra line in stream not in sealed) so recovery tries to reseal.
+    records_with_extra = [*records_no_char, {
+        "kind": "line", "lp": 99, "side": "host", "from": "own_cat",
+        "ts": doc["request"]["ended_at"] + 1.0, "text": "extra-in-stream", "truncated": False,
+    }]
+    _write_stream(tmp_path, v, records_with_extra)
+    sealed_path = _spool_dir(tmp_path) / f"{v}.upload.json"
+    sealed_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    assert len(uploads.calls) == 1
+    assert uploads.calls[0][0] == v
+    assert uploads.calls[0][1] == doc
+
+
+async def test_f0184_truncated_sealed_upload_is_still_resealed_from_stream(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(132)
+    records = _stream_records(v)
+    _write_stream(tmp_path, v, records)
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    doc["request"]["ended_at"] = doc["request"]["started_at"]  # Truncated timestamp
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (_, uploaded), = uploads.calls
+    expected = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    assert uploaded["request"]["ended_at"] == expected["request"]["ended_at"]
+

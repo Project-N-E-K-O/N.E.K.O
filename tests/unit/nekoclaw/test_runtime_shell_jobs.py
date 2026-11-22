@@ -751,6 +751,54 @@ async def test_completion_notice_inlines_small_output_and_defers_large_output(tm
     assert finished == [small, large]
 
 
+def test_f0255_output_buffer_marks_spill_truncation_at_cap(tmp_path: Path) -> None:
+    exact_target = tmp_path / "exact.log"
+    exact_buf = procs.OutputBuffer(10, lambda: exact_target, max_spill_bytes=20)
+    exact_buf.feed(b"a" * 20)
+    assert exact_buf.spill_truncated is False
+    exact_buf.close()
+    assert exact_target.read_bytes() == b"a" * 20
+
+    # Feeding 1 more byte beyond cap triggers marker and stops further writes
+    chunk_target = tmp_path / "chunk.log"
+    chunk_buf = procs.OutputBuffer(10, lambda: chunk_target, max_spill_bytes=20)
+    chunk_buf.feed(b"b" * 20)
+    assert chunk_buf.spill_truncated is False
+    chunk_buf.feed(b"c")
+    assert chunk_buf.spill_truncated is True
+    chunk_buf.feed(b"d" * 50)
+    chunk_buf.close()
+    content = chunk_target.read_bytes()
+    assert content == b"b" * 20 + b"\n[output truncated at 20 bytes]\n"
+
+    # Single oversized feed truncates at cap + marker
+    over_target = tmp_path / "over.log"
+    over_buf = procs.OutputBuffer(10, lambda: over_target, max_spill_bytes=20)
+    over_buf.feed(b"x" * 35)
+    assert over_buf.spill_truncated is True
+    over_buf.close()
+    assert over_target.read_bytes() == b"x" * 20 + b"\n[output truncated at 20 bytes]\n"
+
+
+def test_f0255_shell_stream_text_and_jobs_render_delta_report_partial_when_spill_capped(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "capped.log"
+    buf = procs.OutputBuffer(5, lambda: target, max_spill_bytes=12)
+    buf.feed(b"0123456789abcdef")
+    buf.close()
+
+    rendered_shell = shell._stream_text(buf)
+    assert "partial output (capped at 12 bytes)" in rendered_shell
+    assert "full output" not in rendered_shell
+
+    rendered_delta = render_delta("", "", True, [str(target)], spill_truncated=True)
+    assert rendered_delta == f"[some output was dropped from memory; partial output (spill capped): {target}]"
+    assert render_delta("", "", True, [str(target)], spill_truncated=False) == (
+        f"[some output was dropped from memory; full output: {target}]"
+    )
+
+
 async def test_refused_job_output_is_unread_until_delivered(tmp_path):
     tools = {}
     count = 0

@@ -112,6 +112,8 @@ def _stream_text(buffer: procs.OutputBuffer) -> str:
     if not truncated:
         return text
     where = buffer.spill_path if buffer.spill_path is not None else "(unavailable)"
+    if buffer.spill_path is not None and buffer.spill_truncated:
+        return f"{text}\n[output truncated; partial output (capped at {buffer.max_spill_bytes} bytes): {where}]"
     return f"{text}\n[output truncated; full output: {where}]"
 
 

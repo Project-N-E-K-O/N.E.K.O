@@ -58,6 +58,9 @@ introspection_tasks: dict[str, asyncio.Task] = {}
 # the same way: a release cancels a check waiting on the model before it
 # writes into the released identity's directory.
 pinned_review_tasks: dict[str, asyncio.Task] = {}
+# Periodic persona/reflection/scoped refine runs (refine_loops), registered under
+# the review spawn lock so character rename/delete cancels and drains in-flight passes.
+refine_tasks: dict[str, asyncio.Task] = {}
 
 
 # Phase C: prevent spawn races; /process /renew /settle / IdleMaint share maybe_spawn_review,
@@ -133,7 +136,11 @@ async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
 
     candidates = []
     for registry in (
-        correction_tasks, compress_backup_tasks, introspection_tasks, pinned_review_tasks,
+        correction_tasks,
+        compress_backup_tasks,
+        introspection_tasks,
+        pinned_review_tasks,
+        refine_tasks,
     ):
         task = registry.get(lanlan_name)
         if task is not None and not task.done() and task not in candidates:
@@ -153,7 +160,11 @@ async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
             )
 
     for registry in (
-        correction_tasks, compress_backup_tasks, introspection_tasks, pinned_review_tasks,
+        correction_tasks,
+        compress_backup_tasks,
+        introspection_tasks,
+        pinned_review_tasks,
+        refine_tasks,
     ):
         task = registry.get(lanlan_name)
         if task is None or task.done():

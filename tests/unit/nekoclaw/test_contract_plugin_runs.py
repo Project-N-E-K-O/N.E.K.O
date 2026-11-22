@@ -480,3 +480,107 @@ async def test_entry_named_in_the_arguments_is_used_and_removed(server, caller):
     assert outcome["success"] is True
     assert server.run_requests[0]["entry_id"] == "today"
     assert "_entry" not in server.run_requests[0]["args"]
+
+
+async def test_f0094_intermediate_json_export_does_not_shadow_trigger_response(server, caller):
+    import time
+    from plugin.runs.manager import ExportItem
+
+    async def run(call_args: dict[str, Any]) -> dict[str, Any]:
+        run_id = call_args["_ctx"]["run_id"]
+        server._manager._export_store.append(
+            ExportItem.model_validate(
+                {
+                    "export_item_id": "mid-1",
+                    "run_id": run_id,
+                    "type": "json",
+                    "category": "user",
+                    "created_at": float(time.time()),
+                    "label": "intermediate",
+                    "json": {"data": {"wrong": True}, "meta": {"bad": True}},
+                    "metadata": {"kind": "progress_snapshot"},
+                }
+            )
+        )
+        return finish({"ok": 1}, meta={"custom_tag": "from-finish"})
+
+    server.add_plugin(plugin("multiexp", "Exports mid-run JSON", [entry("run", "Run")]), run=run)
+
+    outcome = await caller.call("multiexp", "run", {})
+    assert outcome["success"] is True
+    assert outcome["run_data"] == {"ok": 1}
+    assert outcome["meta"]["custom_tag"] == "from-finish"
+
+
+async def test_f0094_trigger_response_beyond_first_export_page_is_found(server, caller):
+    import time
+    from plugin.runs.manager import ExportItem
+
+    async def run(call_args: dict[str, Any]) -> dict[str, Any]:
+        run_id = call_args["_ctx"]["run_id"]
+        for i in range(55):
+            server._manager._export_store.append(
+                ExportItem.model_validate(
+                    {
+                        "export_item_id": f"mid-{i:03d}",
+                        "run_id": run_id,
+                        "type": "json",
+                        "category": "user",
+                        "created_at": float(time.time()) + i * 0.001,
+                        "label": "intermediate",
+                        "json": {"data": {"idx": i}},
+                    }
+                )
+            )
+        return finish({"page2": True})
+
+    server.add_plugin(plugin("paged", "Exports >50 items", [entry("run", "Run")]), run=run)
+
+    outcome = await caller.call("paged", "run", {})
+    assert outcome["success"] is True
+    assert outcome["run_data"] == {"page2": True}
+
+
+async def test_f0094_export_falls_back_to_first_json_dict_when_trigger_response_absent(monkeypatch):
+    import httpx
+    from nekoclaw.host.plugin_runs import PluginCatalog, PluginRunner
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/plugins":
+            return httpx.Response(200, json={"plugins": [plugin("fb", "Fallback", [entry("run", "Run")])]})
+        if request.method == "POST" and request.url.path == "/runs":
+            return httpx.Response(
+                201,
+                json={"run_id": "run-fb", "run_token": "tok-fb", "status": "queued"},
+            )
+        if request.method == "GET" and request.url.path == "/runs/run-fb":
+            return httpx.Response(200, json={"run_id": "run-fb", "status": "succeeded"})
+        if request.method == "GET" and request.url.path == "/runs/run-fb/export":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "export_item_id": "exp-1",
+                            "run_id": "run-fb",
+                            "type": "json",
+                            "json": {"data": {"fallback": 42}, "meta": {"source": "fallback"}},
+                        }
+                    ],
+                    "next_after": None,
+                },
+            )
+        raise AssertionError(f"unexpected request {request.method} {request.url}")
+
+    def client_factory(**kwargs):
+        kwargs.pop("proxy", None)
+        kwargs.pop("trust_env", None)
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs)
+
+    catalog = PluginCatalog(client_factory=client_factory)
+    runner = PluginRunner(catalog, client_factory=client_factory)
+    outcome = await runner.run_entry(commission_id="c1", plugin_id="fb", entry_id="run", args={})
+    assert outcome.success is True
+    assert outcome.data == {"fallback": 42}
+    assert outcome.meta == {"source": "fallback"}
+

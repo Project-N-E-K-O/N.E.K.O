@@ -901,6 +901,32 @@ def _count_and_rmtree(path: Path) -> int:
     return count
 
 
+def _delete_subdir_model_sync(safe_path: Path, top_subdir: Path) -> int:
+    """Delete an MMD model in a subdirectory, removing the directory only if no sibling model remains."""
+    resolved_target = safe_path.resolve()
+    resolved_top = top_subdir.resolve()
+    has_sibling_model = any(
+        candidate.is_file()
+        and candidate.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
+        and candidate.resolve() != resolved_target
+        for candidate in top_subdir.rglob("*")
+    )
+    if not has_sibling_model:
+        return _count_and_rmtree(top_subdir)
+
+    safe_path.unlink()
+    cur = safe_path.parent.resolve()
+    while cur != resolved_top.parent and cur.is_relative_to(resolved_top):
+        try:
+            if any(cur.iterdir()):
+                break
+            cur.rmdir()
+        except OSError:
+            break
+        cur = cur.parent
+    return 1
+
+
 @router.delete('/model')
 async def delete_mmd_model(request: Request):
     """Delete an MMD model file (and the associated resources in its directory)."""
@@ -969,8 +995,8 @@ async def delete_mmd_model(request: Request):
                 return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
             if top_subdir.name.lower() in RESERVED_DIRS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "不能删除保留目录"})
-            deleted_files = await asyncio.to_thread(_count_and_rmtree, top_subdir)
-            logger.info(f"删除 MMD 模型目录: {top_subdir.name} ({deleted_files} 个文件)")
+            deleted_files = await asyncio.to_thread(_delete_subdir_model_sync, safe_path, top_subdir)
+            logger.info(f"删除 MMD 模型: {safe_path.name} ({deleted_files} 个文件)")
         else:
             # Top-level model: delete model file only.
             if safe_path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:

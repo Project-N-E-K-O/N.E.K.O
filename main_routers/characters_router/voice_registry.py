@@ -36,6 +36,9 @@ from main_logic.tts_client import (
     get_custom_tts_voices,
     CustomTTSVoiceFetchError,
 )
+from utils.asyncio_retirement import await_retirement
+from utils.character_memory import character_config_mutation_lock
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import (
     ensure_default_yui_voice_for_free_api,
     get_reserved,
@@ -82,41 +85,43 @@ async def update_catgirl_voice_id(name: str, request: Request):
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    characters = await _config_manager.aload_characters()
-    if name not in characters.get('猫娘', {}):
-        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     voice_id = str(data.get('voice_id') or '').strip()
-    old_voice_id = read_legacy_voice_id(get_reserved(
-        characters['猫娘'][name],
-        'voice_id',
-        default='',
-        legacy_keys=('voice_id',)
-    ))
+    async with character_config_mutation_lock:
+        characters = await _config_manager.aload_characters()
+        if name not in characters.get('猫娘', {}):
+            return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+        old_voice_id = read_legacy_voice_id(get_reserved(
+            characters['猫娘'][name],
+            'voice_id',
+            default='',
+            legacy_keys=('voice_id',)
+        ))
 
-    # Idempotency guard: return immediately when the submitted value is unchanged, avoiding a session reset with no actual change.
-    if old_voice_id == voice_id:
-        logger.info("猫娘 %s 的 voice_id 未变化，跳过会话重置流程", name)
-        return {"success": True, "session_restarted": False, "voice_id_changed": False}
+        # Idempotency guard: return immediately when the submitted value is unchanged, avoiding a session reset with no actual change.
+        if old_voice_id == voice_id:
+            logger.info("猫娘 %s 的 voice_id 未变化，跳过会话重置流程", name)
+            return {"success": True, "session_restarted": False, "voice_id_changed": False}
 
-    if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
-        return _voice_session_starting_response()
+        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+            return _voice_session_starting_response()
 
-    # Check whether voice_id exists in voice_storage.
-    if not _config_manager.validate_voice_id(voice_id):
-        voices = _config_manager.get_voices_for_current_api()
-        available_voices = list(voices.keys())
-        return JSONResponse({
-            'success': False,
-            'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
-            'available_voices': available_voices
-        }, status_code=400)
+        # Check whether voice_id exists in voice_storage.
+        if not _config_manager.validate_voice_id(voice_id):
+            voices = _config_manager.get_voices_for_current_api()
+            available_voices = list(voices.keys())
+            return JSONResponse({
+                'success': False,
+                'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
+                'available_voices': available_voices
+            }, status_code=400)
 
-    # User-selected voice: lazily migrate this entry to the structured object (migrate each entry only when used; see voice_id_to_storage_value).
-    set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
-    await _config_manager.asave_characters(characters)
+        # User-selected voice: lazily migrate this entry to the structured object (migrate each entry only when used; see voice_id_to_storage_value).
+        set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
+        await await_retirement(_config_manager.asave_characters(characters))
+
+        is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
     # If this is the currently active neko, notify the frontend first, then close the session.
-    is_current_catgirl = (name == characters.get('当前猫娘', ''))
     session_ended = False
 
     if is_current_catgirl and name in session_manager:
@@ -211,24 +216,26 @@ async def unregister_voice(name: str):
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
-        characters = await _config_manager.aload_characters()
-        if name not in characters.get('猫娘', {}):
-            return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
+            if name not in characters.get('猫娘', {}):
+                return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
-        # Check whether voice_id is already set.
-        old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
-        if not old_voice_id:
-            return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
+            # Check whether voice_id is already set.
+            old_voice_id = read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',)))
+            if not old_voice_id:
+                return JSONResponse({'success': False, 'error': 'TTS_VOICE_NOT_REGISTERED', 'code': 'TTS_VOICE_NOT_REGISTERED'}, status_code=400)
 
-        if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
-            return _voice_session_starting_response()
+            if _is_current_catgirl_voice_session_starting(name, characters, session_manager):
+                return _voice_session_starting_response()
 
-        # COMPAT(v1->v2): consistently store in _reserved.voice_id; the legacy flat voice_id is no longer written or deleted.
-        set_reserved(characters['猫娘'][name], 'voice_id', '')
-        await _config_manager.asave_characters(characters)
+            # COMPAT(v1->v2): consistently store in _reserved.voice_id; the legacy flat voice_id is no longer written or deleted.
+            set_reserved(characters['猫娘'][name], 'voice_id', '')
+            await await_retirement(_config_manager.asave_characters(characters))
+
+            is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
         # If this is the currently active neko, notify the frontend first, then close the session.
-        is_current_catgirl = (name == characters.get('当前猫娘', ''))
         session_ended = False
 
         if is_current_catgirl and name in session_manager:
@@ -256,6 +263,8 @@ async def unregister_voice(name: str):
         logger.info(f"已解除猫娘 '{name}' 的声音注册")
         return {"success": True, "message": "声音注册已解除", "session_restarted": session_ended, "voice_id_changed": True}
 
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"解除声音注册时出错: {e}")
         return JSONResponse({'success': False, 'error': f'解除注册失败: {str(e)}'}, status_code=500)
@@ -266,18 +275,19 @@ async def clear_voice_ids():
     """Clear all characters' local voice ID records."""
     try:
         _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
-        cleared_count = 0
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
+            cleared_count = 0
 
-        # Clear voice_id for all nekos.
-        if '猫娘' in characters:
-            for name in characters['猫娘']:
-                if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))):
-                    set_reserved(characters['猫娘'][name], 'voice_id', '')
-                    cleared_count += 1
+            # Clear voice_id for all nekos.
+            if '猫娘' in characters:
+                for name in characters['猫娘']:
+                    if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))):
+                        set_reserved(characters['猫娘'][name], 'voice_id', '')
+                        cleared_count += 1
 
-        await _config_manager.asave_characters(characters)
-        await ensure_default_yui_voice_for_free_api(_config_manager)
+            await await_retirement(_config_manager.asave_characters(characters))
+            await await_retirement(ensure_default_yui_voice_for_free_api(_config_manager))
         # Automatically reload the configuration.
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
@@ -287,6 +297,8 @@ async def clear_voice_ids():
             'message': f'已清除 {cleared_count} 个角色的Voice ID记录',
             'cleared_count': cleared_count
         })
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         return JSONResponse({
             'success': False,
@@ -424,23 +436,25 @@ async def delete_voice(voice_id: str):
             # Remove references to this voice from all characters.
             _config_manager = get_config_manager()
             session_manager = get_session_manager()
-            characters = await _config_manager.aload_characters()
             cleaned_count = 0
             affected_active_names = []
 
-            if '猫娘' in characters:
-                for name in characters['猫娘']:
-                    if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))) == voice_id:
-                        set_reserved(characters['猫娘'][name], 'voice_id', '')
-                        cleaned_count += 1
+            async with character_config_mutation_lock:
+                characters = await _config_manager.aload_characters()
+                if '猫娘' in characters:
+                    for name in characters['猫娘']:
+                        if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))) == voice_id:
+                            set_reserved(characters['猫娘'][name], 'voice_id', '')
+                            cleaned_count += 1
 
-                        # Check whether this character has the currently active session.
-                        if name in session_manager and session_manager[name].is_active:
-                            affected_active_names.append(name)
+                            # Check whether this character has the currently active session.
+                            if name in session_manager and session_manager[name].is_active:
+                                affected_active_names.append(name)
+
+                if cleaned_count > 0:
+                    await await_retirement(_config_manager.asave_characters(characters))
 
             if cleaned_count > 0:
-                await _config_manager.asave_characters(characters)
-
                 # For affected active characters, notify and end sessions in parallel (each end_session takes about 1 second).
                 async def _refresh_one(name):
                     logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备结束当前语音会话...")
@@ -478,6 +492,8 @@ async def delete_voice(voice_id: str):
                 'success': False,
                 'error': '音色不存在或删除失败'
             }, status_code=404)
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"删除音色时出错: {e}")
         return JSONResponse({

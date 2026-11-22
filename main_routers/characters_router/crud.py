@@ -1711,37 +1711,38 @@ async def update_master(request: Request):
         return JSONResponse({'success': False, 'error': '请求体必须是JSON对象'}, status_code=400)
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
-    characters = await _config_manager.aload_characters()
-    previous_master = characters.get('主人') if isinstance(characters.get('主人'), dict) else {}
-    previous_profile_name = ""
-    if isinstance(previous_master, dict):
-        previous_profile_name = str(previous_master.get('档案名') or '').strip()
-    requested_profile_name = str(data.get('档案名') or '').strip()
-    profile_name = previous_profile_name or requested_profile_name
-    renamed_via_body_fallback = False
-    if (
-        previous_profile_name
-        and requested_profile_name
-        and requested_profile_name != previous_profile_name
-        and _profile_name_contains_path_separator(previous_profile_name)
-    ):
-        profile_name = requested_profile_name
-        renamed_via_body_fallback = True
-    err = _validate_profile_name(profile_name)
-    if err:
-        return JSONResponse({'success': False, 'error': err}, status_code=400)
-    next_master = {
-        k: v
-        for k, v in data.items()
-        if v and k not in CHARACTER_RESERVED_FIELD_SET and k != '档案名'
-    }
-    next_master['档案名'] = profile_name
-    if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
-        next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
-    if renamed_via_body_fallback:
-        _append_profile_rename_event(next_master, previous_profile_name, profile_name)
-    characters['主人'] = next_master
-    await _config_manager.asave_characters(characters)
+    async with character_config_mutation_lock:
+        characters = await _config_manager.aload_characters()
+        previous_master = characters.get('主人') if isinstance(characters.get('主人'), dict) else {}
+        previous_profile_name = ""
+        if isinstance(previous_master, dict):
+            previous_profile_name = str(previous_master.get('档案名') or '').strip()
+        requested_profile_name = str(data.get('档案名') or '').strip()
+        profile_name = previous_profile_name or requested_profile_name
+        renamed_via_body_fallback = False
+        if (
+            previous_profile_name
+            and requested_profile_name
+            and requested_profile_name != previous_profile_name
+            and _profile_name_contains_path_separator(previous_profile_name)
+        ):
+            profile_name = requested_profile_name
+            renamed_via_body_fallback = True
+        err = _validate_profile_name(profile_name)
+        if err:
+            return JSONResponse({'success': False, 'error': err}, status_code=400)
+        next_master = {
+            k: v
+            for k, v in data.items()
+            if v and k not in CHARACTER_RESERVED_FIELD_SET and k != '档案名'
+        }
+        next_master['档案名'] = profile_name
+        if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
+            next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
+        if renamed_via_body_fallback:
+            _append_profile_rename_event(next_master, previous_profile_name, profile_name)
+        characters['主人'] = next_master
+        await await_retirement(_config_manager.asave_characters(characters))
     # Automatically reload configuration.
     await initialize_character_data()
     return {"success": True}
@@ -2590,17 +2591,20 @@ async def set_microphone(request: Request):
 
         # Use standard load/save helpers.
         _config_manager = get_config_manager()
-        characters_data = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters_data = await _config_manager.aload_characters()
 
-        # Add or update microphone selection.
-        characters_data['当前麦克风'] = microphone_id
+            # Add or update microphone selection.
+            characters_data['当前麦克风'] = microphone_id
 
-        # Save configuration
-        await _config_manager.asave_characters(characters_data)
+            # Save configuration
+            await await_retirement(_config_manager.asave_characters(characters_data))
         # Microphone ID is frontend-only (read solely by get_microphone), affecting no neko prompt /
         # voice_id / session_manager, so no initialization is needed.
 
         return {"success": True}
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"保存麦克风选择失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

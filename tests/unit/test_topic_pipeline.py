@@ -3206,3 +3206,53 @@ async def test_topic_pool_success_still_clears_when_only_a_new_turn_arrived():
     assert "妮可" not in pool._analyzer_failures
     assert "妮可" not in pool._analyzer_retry_not_before
     assert pool.get_ready_materials("妮可") == []
+
+
+def test_f0176_load_used_topics_ignores_nonfinite_and_out_of_range_used_at(tmp_path):
+    import json
+    import math
+    import time
+
+    signal_path = tmp_path / "topic_signals.json"
+    used_path = tmp_path / "topic_signals.used_topics.json"
+    now = time.time()
+    used_path.write_text(
+        '{"version": 1, "characters": {"妮可": ['
+        '{"used_at": NaN, "hook_id": "h-nan"}, '
+        '{"used_at": Infinity, "hook_id": "h-inf"}, '
+        '{"used_at": -Infinity, "hook_id": "h-ninf"}, '
+        '{"used_at": true, "hook_id": "h-bool"}, '
+        '{"used_at": -1, "hook_id": "h-neg"}, '
+        '{"used_at": 0, "hook_id": "h-zero"}, '
+        f'{{"used_at": {10**400}, "hook_id": "h-huge"}}, '
+        '{"used_at": 1e20, "hook_id": "h-far"}, '
+        f'{{"used_at": {now}, "hook_id": "h-valid", "interest": "有效话题"}}'
+        ']}}',
+        encoding="utf-8",
+    )
+
+    pool = TopicHookPool(auto_schedule=False, signal_store_path=signal_path)
+    records = pool._used_topics.get("妮可", [])
+    assert len(records) == 1
+    assert math.isfinite(records[0]["used_at"])
+    assert records[0]["used_at"] == pytest.approx(now)
+
+
+def test_f0176_prune_used_topics_drops_nonfinite_in_memory_record(tmp_path):
+    import time
+
+    signal_path = tmp_path / "topic_signals.json"
+    pool = TopicHookPool(auto_schedule=False, signal_store_path=signal_path)
+    now = time.time()
+    with pool._used_topics_lock:
+        pool._used_topics["妮可"] = [
+            {"used_at": float("nan"), "weight": 1.0},
+            {"used_at": float("inf"), "weight": 1.0},
+            {"used_at": now, "weight": 1.0},
+        ]
+
+    today = pool._prune_used_topics("妮可", now=now)
+    assert len(today) == 1
+    assert today[0]["used_at"] == pytest.approx(now)
+    assert len(pool._used_topics["妮可"]) == 1
+

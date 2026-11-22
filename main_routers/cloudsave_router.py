@@ -638,6 +638,15 @@ async def post_cloudsave_character_download(name: str, request: Request):
     overwrite = overwrite_val
     backup_before_overwrite = backup_val
     force_val = (body or {}).get("force", False)
+    if "force" in (body or {}) and not isinstance(force_val, bool):
+        return _cloudsave_error_response(
+            "INVALID_PARAMETER",
+            "Invalid parameter: force must be boolean.",
+            status_code=400,
+            character_name=name,
+            message_key="cloudsave.error.invalidBooleanParameter",
+            message_params={"parameter": "force"},
+        )
     released_memory_handle = False
     release_needs_resume = False
     release_claim_token = create_derived_task_claim_token()
@@ -723,7 +732,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 status_code=503,
                 character_name=name,
             )
-    if local_exists and overwrite and not force_val:
+    if local_exists and overwrite and not released_memory_handle:
         released_memory_handle = await _release_local_handle(
             f"云存档下载前释放 SQLite 句柄: {name}",
         )

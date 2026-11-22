@@ -1098,23 +1098,24 @@ async def update_catgirl_touch_set(name: str, request: Request):
             )
 
         _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
 
-        if '猫娘' not in characters or name not in characters['猫娘']:
-            return JSONResponse(
-                content={'success': False, 'error': '角色不存在'},
-                status_code=404
-            )
+            if '猫娘' not in characters or name not in characters['猫娘']:
+                return JSONResponse(
+                    content={'success': False, 'error': '角色不存在'},
+                    status_code=404
+                )
 
-        existing_touch_set = get_reserved(characters['猫娘'][name], 'touch_set', default={})
+            existing_touch_set = get_reserved(characters['猫娘'][name], 'touch_set', default={})
 
-        if not existing_touch_set:
-            existing_touch_set = {}
+            if not existing_touch_set:
+                existing_touch_set = {}
 
-        existing_touch_set[model_name] = touch_set_data
+            existing_touch_set[model_name] = touch_set_data
 
-        set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
-        await _config_manager.asave_characters(characters)
+            set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
+            await await_retirement(_config_manager.asave_characters(characters))
 
         # Fast path: refresh only the edited character's session_manager (touch_set), without iterating over the other N-1 entries.
         init_one_catgirl = get_init_one_catgirl()
@@ -1129,6 +1130,8 @@ async def update_catgirl_touch_set(name: str, request: Request):
             'touch_set': existing_touch_set
         })
 
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.exception("更新触摸配置失败")
         return JSONResponse(content={
@@ -1156,83 +1159,81 @@ async def update_catgirl_lighting(name: str, request: Request):
             apply_runtime = query_params.get('apply_runtime', '').lower() in ('true', '1', 'yes')
 
         _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
 
-        if '猫娘' not in characters or name not in characters['猫娘']:
-            return JSONResponse(content={
-                'success': False,
-                'error': '角色不存在'
-            }, status_code=404)
-
-        model_type = get_reserved(
-            characters['猫娘'][name],
-            'avatar',
-            'model_type',
-            default='live2d',
-            legacy_keys=('model_type',),
-        )
-        # Normalize with .lower() so case differences / empty values do not cause a false mismatch.
-        model_type_normalized = str(model_type).lower() if model_type else 'live2d'
-        if model_type_normalized not in ('vrm', 'live3d'):
-            logger.warning(f"角色 {name} 不是VRM/Live3D模型，但仍保存打光配置")
-
-        from config import get_default_vrm_lighting
-        existing_lighting = get_reserved(
-            characters['猫娘'][name],
-            'avatar',
-            'vrm',
-            'lighting',
-            default=None,
-            legacy_keys=('lighting',),
-        )
-        if isinstance(existing_lighting, dict):
-            base_lighting = existing_lighting
-        else:
-            base_lighting = get_default_vrm_lighting()
-
-        if not isinstance(lighting, dict):
-            return JSONResponse(content={
-                'success': False,
-                'error': 'lighting 必须是对象'
-            }, status_code=400)
-
-        lighting = {**base_lighting, **lighting}
-
-        from config import VRM_LIGHTING_RANGES
-        lighting_ranges = VRM_LIGHTING_RANGES
-
-        for key, (min_val, max_val) in lighting_ranges.items():
-            if key not in lighting:
+            if '猫娘' not in characters or name not in characters['猫娘']:
                 return JSONResponse(content={
                     'success': False,
-                    'error': f'缺少打光参数: {key}'
-                }, status_code=400)
+                    'error': '角色不存在'
+                }, status_code=404)
 
-            val = lighting[key]
-            if not isinstance(val, (int, float)) or not (min_val <= val <= max_val):
+            model_type = get_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'model_type',
+                default='live2d',
+                legacy_keys=('model_type',),
+            )
+            # Normalize with .lower() so case differences / empty values do not cause a false mismatch.
+            model_type_normalized = str(model_type).lower() if model_type else 'live2d'
+            if model_type_normalized not in ('vrm', 'live3d'):
+                logger.warning(f"角色 {name} 不是VRM/Live3D模型，但仍保存打光配置")
+
+            from config import get_default_vrm_lighting
+            existing_lighting = get_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'vrm',
+                'lighting',
+                default=None,
+                legacy_keys=('lighting',),
+            )
+            if isinstance(existing_lighting, dict):
+                base_lighting = existing_lighting
+            else:
+                base_lighting = get_default_vrm_lighting()
+
+            if not isinstance(lighting, dict):
                 return JSONResponse(content={
                     'success': False,
-                    'error': f'打光参数 {key} 超出范围 ({min_val}-{max_val})'
+                    'error': 'lighting 必须是对象'
                 }, status_code=400)
 
+            lighting = {**base_lighting, **lighting}
 
-        set_reserved(
-            characters['猫娘'][name],
-            'avatar',
-            'vrm',
-            'lighting',
-            {key: float(lighting[key]) for key in lighting_ranges.keys()},
-        )
+            from config import VRM_LIGHTING_RANGES
+            lighting_ranges = VRM_LIGHTING_RANGES
 
+            for key, (min_val, max_val) in lighting_ranges.items():
+                if key not in lighting:
+                    return JSONResponse(content={
+                        'success': False,
+                        'error': f'缺少打光参数: {key}'
+                    }, status_code=400)
 
+                val = lighting[key]
+                if not isinstance(val, (int, float)) or not (min_val <= val <= max_val):
+                    return JSONResponse(content={
+                        'success': False,
+                        'error': f'打光参数 {key} 超出范围 ({min_val}-{max_val})'
+                    }, status_code=400)
 
-        logger.info(
-            "已保存角色 %s 的打光配置: %s",
-            name,
-            get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
-        )
+            set_reserved(
+                characters['猫娘'][name],
+                'avatar',
+                'vrm',
+                'lighting',
+                {key: float(lighting[key]) for key in lighting_ranges.keys()},
+            )
 
-        await _config_manager.asave_characters(characters)
+            logger.info(
+                "已保存角色 %s 的打光配置: %s",
+                name,
+                get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
+            )
+
+            await await_retirement(_config_manager.asave_characters(characters))
 
         if apply_runtime:
             # Fast path: refresh only the edited character's session_manager (lighting), without iterating over the other N-1 entries.
@@ -1255,6 +1256,8 @@ async def update_catgirl_lighting(name: str, request: Request):
             'needs_reload': not apply_runtime
         })
 
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"保存打光配置失败: {e}")
         return JSONResponse(content={
@@ -1277,73 +1280,74 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
         data = await request.json()
 
         _config_manager = get_config_manager()
-        characters = await _config_manager.aload_characters()
+        async with character_config_mutation_lock:
+            characters = await _config_manager.aload_characters()
 
-        if '猫娘' not in characters or name not in characters['猫娘']:
-            return JSONResponse(content={
-                'success': False,
-                'error': '角色不存在'
-            }, status_code=404)
+            if '猫娘' not in characters or name not in characters['猫娘']:
+                return JSONResponse(content={
+                    'success': False,
+                    'error': '角色不存在'
+                }, status_code=404)
 
-        from config import (
-            get_default_mmd_settings,
-            MMD_LIGHTING_RANGES,
-            MMD_RENDERING_RANGES,
-            MMD_PHYSICS_RANGES,
-            MMD_CURSOR_FOLLOW_RANGES,
-        )
+            from config import (
+                get_default_mmd_settings,
+                MMD_LIGHTING_RANGES,
+                MMD_RENDERING_RANGES,
+                MMD_PHYSICS_RANGES,
+                MMD_CURSOR_FOLLOW_RANGES,
+            )
 
-        defaults = get_default_mmd_settings()
+            defaults = get_default_mmd_settings()
 
-        # --- Lighting ---
-        if 'lighting' in data and isinstance(data['lighting'], dict):
-            lighting = {**defaults['lighting'], **data['lighting']}
-            for key, (min_val, max_val) in MMD_LIGHTING_RANGES.items():
-                if key in lighting:
-                    val = lighting[key]
-                    if isinstance(val, (int, float)):
-                        lighting[key] = max(min_val, min(max_val, float(val)))
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'lighting', lighting)
+            # --- Lighting ---
+            if 'lighting' in data and isinstance(data['lighting'], dict):
+                lighting = {**defaults['lighting'], **data['lighting']}
+                for key, (min_val, max_val) in MMD_LIGHTING_RANGES.items():
+                    if key in lighting:
+                        val = lighting[key]
+                        if isinstance(val, (int, float)):
+                            lighting[key] = max(min_val, min(max_val, float(val)))
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'lighting', lighting)
 
-        # --- Rendering ---
-        if 'rendering' in data and isinstance(data['rendering'], dict):
-            rendering = {**defaults['rendering'], **data['rendering']}
-            for key, (min_val, max_val) in MMD_RENDERING_RANGES.items():
-                if key in rendering:
-                    val = rendering[key]
-                    if isinstance(val, (int, float)):
-                        rendering[key] = max(min_val, min(max_val, float(val)))
-            if 'outline' in rendering:
-                rendering['outline'] = _to_bool(rendering['outline'])
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'rendering', rendering)
+            # --- Rendering ---
+            if 'rendering' in data and isinstance(data['rendering'], dict):
+                rendering = {**defaults['rendering'], **data['rendering']}
+                for key, (min_val, max_val) in MMD_RENDERING_RANGES.items():
+                    if key in rendering:
+                        val = rendering[key]
+                        if isinstance(val, (int, float)):
+                            rendering[key] = max(min_val, min(max_val, float(val)))
+                if 'outline' in rendering:
+                    rendering['outline'] = _to_bool(rendering['outline'])
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'rendering', rendering)
 
-        # --- Physics ---
-        if 'physics' in data and isinstance(data['physics'], dict):
-            physics = {**defaults['physics'], **data['physics']}
-            if 'enabled' in physics:
-                physics['enabled'] = _to_bool(physics['enabled'])
-            for key, (min_val, max_val) in MMD_PHYSICS_RANGES.items():
-                if key in physics:
-                    val = physics[key]
-                    if isinstance(val, (int, float)):
-                        physics[key] = max(min_val, min(max_val, float(val)))
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'physics', physics)
+            # --- Physics ---
+            if 'physics' in data and isinstance(data['physics'], dict):
+                physics = {**defaults['physics'], **data['physics']}
+                if 'enabled' in physics:
+                    physics['enabled'] = _to_bool(physics['enabled'])
+                for key, (min_val, max_val) in MMD_PHYSICS_RANGES.items():
+                    if key in physics:
+                        val = physics[key]
+                        if isinstance(val, (int, float)):
+                            physics[key] = max(min_val, min(max_val, float(val)))
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'physics', physics)
 
-        # --- Mouse tracking ---
-        # The frontend sends camelCase (cursorFollow); also support snake_case (cursor_follow).
-        cursor_follow_data = data.get('cursorFollow') or data.get('cursor_follow')
-        if cursor_follow_data and isinstance(cursor_follow_data, dict):
-            cursor_follow = {**defaults['cursor_follow'], **cursor_follow_data}
-            for key, (min_val, max_val) in MMD_CURSOR_FOLLOW_RANGES.items():
-                if key in cursor_follow:
-                    val = cursor_follow[key]
-                    if isinstance(val, (int, float)):
-                        cursor_follow[key] = max(min_val, min(max_val, float(val)))
-            if 'enabled' in cursor_follow:
-                cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
-            set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
+            # --- Mouse tracking ---
+            # The frontend sends camelCase (cursorFollow); also support snake_case (cursor_follow).
+            cursor_follow_data = data.get('cursorFollow') or data.get('cursor_follow')
+            if cursor_follow_data and isinstance(cursor_follow_data, dict):
+                cursor_follow = {**defaults['cursor_follow'], **cursor_follow_data}
+                for key, (min_val, max_val) in MMD_CURSOR_FOLLOW_RANGES.items():
+                    if key in cursor_follow:
+                        val = cursor_follow[key]
+                        if isinstance(val, (int, float)):
+                            cursor_follow[key] = max(min_val, min(max_val, float(val)))
+                if 'enabled' in cursor_follow:
+                    cursor_follow['enabled'] = _to_bool(cursor_follow['enabled'])
+                set_reserved(characters['猫娘'][name], 'avatar', 'mmd', 'cursor_follow', cursor_follow)
 
-        await _config_manager.asave_characters(characters)
+            await await_retirement(_config_manager.asave_characters(characters))
 
         logger.info("已保存角色 %s 的MMD模型设置", name)
         return JSONResponse(content={
@@ -1351,6 +1355,8 @@ async def update_catgirl_mmd_settings(name: str, request: Request):
             'message': f'已保存角色 {name} 的MMD模型设置'
         })
 
+    except MaintenanceModeError:
+        raise
     except Exception as e:
         logger.error(f"保存MMD设置失败: {e}")
         return JSONResponse(content={

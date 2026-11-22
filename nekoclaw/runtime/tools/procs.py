@@ -103,6 +103,11 @@ class OutputBuffer:
         self._spill_written = 0
         self.total = 0
         self.spill_path: Path | None = None
+        self.spill_truncated: bool = False
+
+    @property
+    def max_spill_bytes(self) -> int:
+        return self._max_spill_bytes
 
     def feed(self, data: bytes) -> None:
         if not data:
@@ -133,15 +138,25 @@ class OutputBuffer:
         self._write_spill(bytes(self._tail))
 
     def _write_spill(self, data: bytes) -> None:
-        if self._spill_file is None:
+        if not data or self._spill_file is None or self.spill_truncated:
             return
-        room = self._max_spill_bytes - self._spill_written
-        if room <= 0:
-            return
-        try:
-            self._spill_file.write(data[:room])
-            self._spill_written += min(len(data), room)
-        except OSError:
+        room = max(0, self._max_spill_bytes - self._spill_written)
+        if room > 0:
+            to_write = data[:room]
+            try:
+                self._spill_file.write(to_write)
+                self._spill_written += len(to_write)
+            except OSError:
+                self.spill_truncated = True
+                self._close_spill()
+                return
+        if len(data) > room:
+            marker = f"\n[output truncated at {self._max_spill_bytes} bytes]\n".encode("utf-8")
+            try:
+                self._spill_file.write(marker)
+            except OSError:
+                pass
+            self.spill_truncated = True
             self._close_spill()
 
     def _close_spill(self) -> None:

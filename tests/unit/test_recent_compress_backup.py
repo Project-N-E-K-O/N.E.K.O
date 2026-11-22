@@ -564,6 +564,9 @@ def test_every_memory_server_background_spawn_is_drainable():
         # Weekly introspection: registered by character in review.introspection_tasks,
         # drained the same way (test_character_release_cancels_a_running_introspection).
         ("refine_loops.py", "_run_introspection_tick"),
+        # Periodic persona/reflection/scoped refine runs: registered by character in
+        # review.refine_tasks, drained by cancel_character_derived_tasks.
+        ("refine_loops.py", "_run_tracked_refine_character"),
         # Daily pinned-section check: registered by character in
         # review.pinned_review_tasks, drained the same way
         # (test_a_release_cancels_a_check_waiting_on_the_model).
