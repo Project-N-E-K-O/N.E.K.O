@@ -645,6 +645,7 @@ def test_router_roundtrip_uses_our_names_and_self_contained_zip(client, tmp_path
     assert response.json()["entry"]["key"] == key
     listed = client.get("/api/emote-maker/library").json()
     assert listed["totalBytes"] > 0
+    assert listed["entries"][0]["sourceName"] == "external-name.zip"
     archive = client.get("/api/emote-maker/library/archive", params={"key": key})
     assert archive.status_code == 200
     assert archive.headers["X-Archive-Filename"] == key + ".zip"
@@ -1091,6 +1092,7 @@ def test_content_ids_name_directories_and_keep_original_name_as_metadata(store):
     assert store.archive_name(key) == key + ".zip"
     meta = __import__("json").loads((store.archive_path(key).parent / "meta.json").read_text(encoding="utf-8"))
     assert meta["sourceName"] == "external-file.zip"
+    assert store.list()[0]["sourceName"] == "external-file.zip"
 
 
 def test_reimport_keeps_session_artwork_and_rejects_external_model_textures(client, store):

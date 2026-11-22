@@ -244,6 +244,7 @@ class EmoteTemplateArchiveStore:
                 continue
             entries.append({
                 "key": str(meta["key"]),
+                "sourceName": str(meta.get("sourceName") or "")[:200],
                 "savedAt": int(meta.get("savedAt") or 0),
                 "bytes": _dir_size(entry_dir),
             })

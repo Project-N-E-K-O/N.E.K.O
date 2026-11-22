@@ -177,15 +177,42 @@ test('quota failure never removes the least recently used template', () => {
     assert.equal(store.entries.length, 3);
 });
 
-test('owned archives missing from an older recent cache regain cards without overwriting edits', () => {
+test('archive cards do not allocate sessions or mutate the persisted library', () => {
     const a = `spine-${'a'.repeat(64)}`, b = `spine-${'b'.repeat(64)}`;
     const store = library.upsert(library.emptyStore(), entry(a, {session: {groups: [{name:'keep'}]}}));
-    const restored = library.restoreArchives(store, [{key:a,savedAt:1},{key:b,savedAt:2}]);
-    assert.equal(restored.entries.length, 2);
-    assert.equal(library.find(restored, a).session.groups[0].name, 'keep');
-    assert.equal(library.find(restored, b).lastUsedAt, 2);
+    const before = library.serialize(store);
+    const archives = library.archiveEntries([{key:a,savedAt:1},{key:b,savedAt:2,sourceName:'原模板.zip'},{key:'invalid'}]);
+    assert.deepEqual(archives.map(item => item.key), [a,b]);
+    assert.ok(archives.every(item => item.session === null));
+    assert.equal(library.entryLabel(archives[1]), '原模板');
+    assert.equal(library.serialize(store), before);
     assert.equal(store.entries.length, 1);
-    assert.equal(library.restoreArchives(restored, [{key:a},{key:b}]), restored);
+    assert.equal(library.find(store, a).session.groups[0].name, 'keep');
+});
+
+test('session recovery uses the newer complete revision and preserves it through serialization', () => {
+    const saved = {saveRevision:20,adjustments:{x:23},nodeGraph:{nodes:[]}};
+    const recent = {saveRevision:10,adjustments:{x:10},groups:[{id:'stale'}]};
+    assert.equal(library.selectSession(saved,recent), saved);
+    assert.equal(library.selectSession(recent,saved), saved);
+    assert.equal(library.selectSession(saved,{...recent,saveRevision:20}), saved);
+    const store = library.upsert(library.emptyStore(),entry('saved',{session:saved}));
+    assert.equal(library.parse(library.serialize(store)).entries[0].session.saveRevision,20);
+    assert.equal(library.selectSession(null,saved),saved);
+    assert.equal(library.selectSession(saved,null),saved);
+});
+
+test('legacy migration prefers versioned copies and merges recent fields only for unversioned pairs', () => {
+    const legacy = {adjustments:{x:10},groups:[{id:'old'}]};
+    const current = {saveRevision:1,adjustments:{x:23}};
+    assert.equal(library.selectSession(current,legacy),current);
+    assert.equal(library.selectSession(legacy,current),current);
+    assert.deepEqual(library.selectSession(legacy,{adjustments:{x:23}}),
+        {adjustments:{x:23},groups:[{id:'old'}]});
+    for (const value of [NaN,Infinity,-1,2.5,'42'])
+        assert.equal(library.normalizeSession({saveRevision:value}).saveRevision,0);
+    const future = Date.now()+100000;
+    assert.equal(library.nextSessionRevision({saveRevision:future},{saveRevision:'invalid'}),future+1);
 });
 
 test('failed oversized save leaves the previously persisted library untouched', () => {

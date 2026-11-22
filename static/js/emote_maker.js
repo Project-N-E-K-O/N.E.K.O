@@ -91,6 +91,7 @@
     let groupExportBusy = false;
     let groupExportPicking = false;
     let groupExportAbort = false;
+    let groupExportController = null;
     // 预览列表里的多选集合（动画 id）。批量加组靠它，不然一个个右键点太累。
     const pickedAnimations = new Set();
     // ── 模板库 ────────────────────────────────────────────────────────────────
@@ -1080,7 +1081,7 @@
         // 双击（整张卡都行，当前使用中的那条打开按钮是灰的也要能改名）= 就地改名；
         // 点在移除上不算。双击要先取消那个"单击切换"的定时器。
         card.addEventListener('dblclick', (event) => {
-            if (entry.builtIn || event.target.closest('.template-lib-remove') || pendingTemplateRemovals.has(entry.key)) return;
+            if (entry.builtIn || !entry.session || event.target.closest('.template-lib-remove') || pendingTemplateRemovals.has(entry.key)) return;
             event.preventDefault();
             clearTimeout(openTimer);
             beginTemplateRename(entry.key, card);
@@ -1153,10 +1154,11 @@
         if (!assetSectionTitle || !assetGrid) return;
         assetGrid.classList.add('is-template-library');
         assetSectionTitle.textContent = t('emoteMaker.templateLibrary');
-        const entries = [
-            ...[...builtinTemplates.keys()].map(findTemplateLibraryEntry),
-            ...(templateLibraryState?.entries || []).filter((entry) => !entry.key.startsWith('builtin:')),
-        ];
+        const keys = new Set([...builtinTemplates.keys(),
+            ...(templateLibraryState?.entries || []).map((entry) => entry.key).filter((key) => !key.startsWith('builtin:')),
+            ...templateArchiveEntries.keys(),
+        ]);
+        const entries = [...keys].map(findTemplateLibraryEntry).filter(Boolean);
         const query = String(state.assetQuery || '').trim().toLocaleLowerCase();
         const shown = query
             ? entries.filter((entry) => `${templateLibraryModule.entryLabel(entry)} ${entry.displayName || ''} ${entry.packageName || ''}`
@@ -4281,13 +4283,19 @@
         }
         groupExportBusy = true;
         groupExportAbort = false;
+        const controller = new AbortController();
+        groupExportController = controller;
         setPackBusy(true);
         const trigger = exportTrigger && exportTrigger.nodeType === 1 ? exportTrigger : null;
         const triggerLabel = trigger ? trigger.textContent : '';
         if (trigger) trigger.textContent = t('emoteMaker.groupExportCancel');
         try {
-            return await exportGroupNow(group, directoryPick);
+            return await exportGroupNow(group, directoryPick, controller.signal);
+        } catch (error) {
+            if (!controller.signal.aborted) throw error;
+            showToast(t('emoteMaker.groupExportCancelled'));
         } finally {
+            if (groupExportController === controller) groupExportController = null;
             groupExportBusy = false;
             setPackBusy(false);
             setGroupExportStatus('');
@@ -4296,10 +4304,23 @@
         }
     }
 
-    async function exportGroupNow(group, directoryPick) {
+    async function awaitGroupPreparation(pending, signal) {
+        let onAbort;
+        try {
+            return await Promise.race([pending, new Promise((_, reject) => {
+                onAbort = () => reject(new DOMException('Export cancelled', 'AbortError'));
+                if (signal.aborted) onAbort();
+                else signal.addEventListener('abort', onAbort, { once: true });
+            })]);
+        } finally {
+            signal.removeEventListener('abort', onAbort);
+        }
+    }
+
+    async function exportGroupNow(group, directoryPick, signal) {
         const generation = spineRendererGeneration;
         // 点击处已经把选择框打开了。这里再调一次只作为没经过那次点击的退路。
-        const picked = await (directoryPick || requestExportDirectory());
+        const picked = await awaitGroupPreparation(directoryPick || requestExportDirectory(), signal);
         if (picked === 'cancelled' || groupExportAbort || generation !== spineRendererGeneration) return;
         const savingToFolder = Boolean(picked);
         const planned = planGroupExportFor(
@@ -4318,83 +4339,92 @@
         let disk = null;
         if (picked && picked.kind === 'path') {
             try {
-                const prepared = await prepareExportFolder(
+                const prepared = await awaitGroupPreparation(prepareExportFolder(
                     picked.path,
                     groupLibrary.sanitizeFileName(group.name, 'group'),
-                );
+                ), signal);
                 if (generation !== spineRendererGeneration) return;
                 disk = { path: prepared.directory, folder: prepared.folder };
                 folderName = prepared.folder;
                 folder = disk;
             } catch (error) {
+                if (signal.aborted) throw error;
                 console.warn('[emote-maker] 创建导出文件夹失败', error);
                 showToast(t('emoteMaker.groupExportPickFailed'));
                 plan = planGroupExportFor(group, groupLibrary.MAX_BATCH, format).plan;
             }
         } else if (picked) {
             try {
-                folderName = await uniqueChildName(
+                folderName = await awaitGroupPreparation(uniqueChildName(
                     picked,
                     groupLibrary.sanitizeFileName(group.name, 'group'),
-                );
+                ), signal);
                 if (generation !== spineRendererGeneration) return;
-                folder = await picked.getDirectoryHandle(folderName, { create: true });
+                folder = await awaitGroupPreparation(picked.getDirectoryHandle(folderName, { create: true }), signal);
             } catch (error) {
+                if (signal.aborted) throw error;
                 console.warn('[emote-maker] 创建导出文件夹失败', error);
                 showToast(t('emoteMaker.groupExportPickFailed'));
                 plan = planGroupExportFor(group, groupLibrary.MAX_BATCH, format).plan;
             }
         }
         if (generation !== spineRendererGeneration || groupExportAbort) return;
-        const previousSceneId = state.selectedSceneId;
-        const previousAnimationId = state.animationId;
-        const previousProgress = state.animationProgress;
-        const previousOverwrite = state.adjustOverwrite;
-        const previousPlaying = state.animationPlaying;
         let result = null;
         try {
-            result = await groupLibrary.runGroupExport({
-                plan,
-                produce: (item) => produceGroupFile(group, item, format),
-                store: disk ? (file) => writeExportFile(disk, file) : folder ? async (file) => {
-                    const handle = await folder.getFileHandle(file.path, { create: true });
-                    const stream = await handle.createWritable();
-                    try {
-                        await stream.write(file.data);
-                        await stream.close();
-                    } catch (error) {
-                        try { await stream.abort(); } catch (_) { /* 这张没写完就丢掉 */ }
-                        throw error;
+            result = await queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export', async () => {
+                if (signal.aborted || groupExportAbort || generation !== spineRendererGeneration) return null;
+                const previousSceneId = state.selectedSceneId;
+                const previousAnimationId = state.animationId;
+                const previousProgress = state.animationProgress;
+                const previousOverwrite = state.adjustOverwrite;
+                const previousPlaying = state.animationPlaying;
+                const releaseEditorView = retainCaptureEditorView();
+                try {
+                    return await groupLibrary.runGroupExport({
+                        plan,
+                        produce: (item) => produceGroupFileNow(group, item, format),
+                        store: disk ? (file) => writeExportFile(disk, file) : folder ? async (file) => {
+                            const handle = await folder.getFileHandle(file.path, { create: true });
+                            const stream = await handle.createWritable();
+                            try {
+                                await stream.write(file.data);
+                                await stream.close();
+                            } catch (error) {
+                                try { await stream.abort(); } catch (_) { /* 这张没写完就丢掉 */ }
+                                throw error;
+                            }
+                        } : undefined,
+                        zipStored: disk ? async (names) => {
+                            setGroupExportStatus(t('emoteMaker.groupExportZipping'));
+                            await zipExportFolder(disk, names);
+                        } : folder ? async (names) => {
+                            setGroupExportStatus(t('emoteMaker.groupExportZipping'));
+                            await writeStoredZip(picked, folder, names, `${folderName}.zip`);
+                        } : undefined,
+                        zip: async (files) => {
+                            const entries = {};
+                            files.forEach((file) => { entries[file.path] = file.data; });
+                            return new Blob([window.fflate.zipSync(entries, { level: 6 })], { type: 'application/zip' });
+                        },
+                        shouldAbort: () => signal.aborted || groupExportAbort || generation !== spineRendererGeneration,
+                        onProgress: ({ done, total }) => setGroupExportStatus(
+                            interpolate(t('emoteMaker.groupExporting'), { done, total })),
+                    });
+                } finally {
+                    releaseEditorView();
+                    if (generation === spineRendererGeneration) {
+                        state.adjustOverwrite = previousOverwrite;
+                        state.selectedSceneId = previousSceneId;
+                        state.animationId = previousAnimationId;
+                        state.animationProgress = previousProgress;
+                        state.animationPlaying = previousPlaying;
+                        syncLiveCanvas({ autoplay: previousPlaying });
                     }
-                } : undefined,
-                zipStored: disk ? async (names) => {
-                    setGroupExportStatus(t('emoteMaker.groupExportZipping'));
-                    await zipExportFolder(disk, names);
-                } : folder ? async (names) => {
-                    setGroupExportStatus(t('emoteMaker.groupExportZipping'));
-                    await writeStoredZip(picked, folder, names, `${folderName}.zip`);
-                } : undefined,
-                zip: async (files) => {
-                    const entries = {};
-                    files.forEach((file) => { entries[file.path] = file.data; });
-                    return new Blob([window.fflate.zipSync(entries, { level: 6 })], { type: 'application/zip' });
-                },
-                shouldAbort: () => groupExportAbort || generation !== spineRendererGeneration,
-                onProgress: ({ done, total }) => setGroupExportStatus(
-                    interpolate(t('emoteMaker.groupExporting'), { done, total })),
+                }
             });
         } catch (error) {
             console.warn('[emote-maker] 整组导出失败', error);
             showToast(t(folder ? 'emoteMaker.groupExportZipFailed' : 'emoteMaker.exportGifFailed'));
-        } finally {
-            if (generation === spineRendererGeneration) {
-                state.adjustOverwrite = previousOverwrite;
-                state.selectedSceneId = previousSceneId;
-                state.animationId = previousAnimationId;
-                state.animationProgress = previousProgress;
-                state.animationPlaying = previousPlaying;
-                syncLiveCanvas({ autoplay: previousPlaying });
-            }
         }
         if (!result) return;
         if (result.blob) {
@@ -5686,6 +5716,7 @@
      */
     const stageQueue = [];
     let stageQueueRunning = false;
+    let stageActiveJob = null;
     let stagePersistTimer = 0;
     let exportEditingLock = null;
 
@@ -5778,6 +5809,7 @@
             while (stageQueue.length) {
                 stageQueue.sort((a, b) => b.priority - a.priority);
                 const job = stageQueue.shift();
+                stageActiveJob = job;
                 const unlock = job.kind === 'export' ? lockExportEditing() : () => {};
                 try {
                     if (job.kind === 'export' && job.generation !== spineRendererGeneration) {
@@ -5788,6 +5820,8 @@
                     job.reject(error);
                 } finally {
                     unlock();
+                    job.unlockOnClose?.();
+                    if (stageActiveJob === job) stageActiveJob = null;
                 }
             }
         } finally {
@@ -5797,11 +5831,22 @@
 
     /** 选择器收起：还没跑到的缩略图直接丢掉，别继续占着渲染器。*/
     function dropQueuedThumbs() {
+        dropQueuedCaptures(['thumb']);
+    }
+
+    function finishClosedStageCaptures() {
+        if (stageActiveJob && ['frames', 'thumb'].includes(stageActiveJob.kind) && !stageActiveJob.unlockOnClose) {
+            stageActiveJob.unlockOnClose = lockExportEditing();
+        }
+        dropQueuedCaptures(['frames', 'thumb']);
+    }
+
+    function dropQueuedCaptures(kinds) {
         for (let i = stageQueue.length - 1; i >= 0; i -= 1) {
-            if (stageQueue[i].kind === 'thumb') {
+            if (kinds.includes(stageQueue[i].kind)) {
                 const dropped = stageQueue.splice(i, 1)[0];
                 stagePending.delete(dropped.key);
-                dropped.resolve('');
+                dropped.resolve([]);
             }
         }
     }
@@ -5989,17 +6034,25 @@
             const paths = (list.paths || []).filter(
                 (path) => String(path).startsWith(STAGE_IMAGE_PREFIX) && /\.(png|gif)$/i.test(path));
             const names = loadStageImageNames();
+            let readFailed = false;
             for (const path of paths) {
                 const id = path.slice(STAGE_IMAGE_PREFIX.length, -4);
                 const extension = path.slice(-3).toLowerCase();
-                const blob = await readTemplateTexture(key, path);
-                if (!blob) continue;
-                const dataUrl = await readStageImage(blob);
+                let dataUrl;
+                try {
+                    const blob = await readTemplateTexture(key, path);
+                    if (!blob) continue;
+                    dataUrl = await readStageImage(blob);
+                } catch (_) {
+                    readFailed = true;
+                    continue;
+                }
                 if (currentTemplateKey() !== key || stageImagesReady !== restore) return;
                 if (dataUrl) stageUserImages.set(
                     id, { name: names[id] || id, dataUrl, extension });
             }
             if (paths.length && currentTemplateKey() === key && stageImagesReady === restore) pushStageUserImages();
+            if (readFailed && stageImagesReady === restore) stageImagesReady = null;
         })().catch(() => { if (stageImagesReady === restore) stageImagesReady = null; });
         stageImagesReady = restore;
         return restore;
@@ -6312,6 +6365,7 @@
                 rememberHistory(before, after, restoreStageGraph);
             },
             onClose: () => {
+                finishClosedStageCaptures();
                 if (stateStageSession) stateStageSession.dispose();
                 stateStageSession = null;
                 window.clearTimeout(stagePersistTimer);
@@ -6355,6 +6409,7 @@
     // 状态的程度：指纹、名字、导入方式、选中的场景、皮肤、色组、调整与映射。
     const LAST_TEMPLATE_KEY = 'neko-emote-maker-last-template';
     let lastTemplate = null;
+    let templateSaveWarningShown = false;
 
     function templateFingerprint(pkg) {
         return pkg?.id || '';
@@ -6473,9 +6528,17 @@
         }
     }
 
+    function reportTemplateSaveFailure() {
+        if (!templateSaveWarningShown) showToast(t('emoteMaker.archiveSaveFailed'));
+        templateSaveWarningShown = true;
+    }
+
     function persistTemplateToLibrary({ withThumb = false, sourceName = '' } = {}) {
         const snapshot = snapshotTemplateSession();
         if (!snapshot) return;
+        const key = currentTemplateKey();
+        const existing = templateLibraryModule?.find(templateLibraryState, key);
+        snapshot.saveRevision = templateLibraryModule?.nextSessionRevision(lastTemplate, existing?.session) || Date.now();
         // Every save entry point writes the same complete snapshot to both
         // stores before a later restore can choose either copy.
         lastTemplate = snapshot;
@@ -6483,9 +6546,7 @@
             localStorage.setItem(LAST_TEMPLATE_KEY, JSON.stringify(snapshot));
         } catch (_) { /* In-memory recovery remains available. */ }
         if (!templateLibraryModule) return;
-        const key = currentTemplateKey();
         if (!key) return;
-        const existing = templateLibraryModule.find(templateLibraryState, key);
         const thumb = withThumb ? templateThumbDataUrl() : '';
         try {
             let next = templateLibraryModule.upsert(templateLibraryState, templateLibraryModule.makeEntry({
@@ -6508,8 +6569,9 @@
             next = templateLibraryModule.touch(next, key);
             templateLibraryState = next;
             templateLibraryModule.save(localStorage, templateLibraryState);
+            templateSaveWarningShown = false;
         } catch (_) {
-            showToast(t('emoteMaker.archiveSaveFailed'));
+            reportTemplateSaveFailure();
         }
     }
 
@@ -6538,13 +6600,14 @@
     const pendingTemplateWrites = new Map();
     const pendingTemplateRemovals = new Set();
     let templateArchiveBytes = new Map();
+    let templateArchiveEntries = new Map();
     let templateArchiveTotalBytes = 0;
     let archiveSizeRequest = 0;
 
     function findTemplateLibraryEntry(key) {
         const saved = templateLibraryModule?.find(templateLibraryState, key);
         const pkg = builtinTemplates.get(key);
-        if (!pkg) return saved;
+        if (!pkg) return saved || templateArchiveEntries.get(key) || null;
         const entry = templateLibraryModule.makeEntry({ pkg, sourceName: pkg.model.displayName });
         return {
             ...entry, ...saved, builtIn: true,
@@ -6585,18 +6648,11 @@
             const same = nextTotal === templateArchiveTotalBytes
                 && next.size === templateArchiveBytes.size
                 && [...next].every(([key, bytes]) => templateArchiveBytes.get(key) === bytes);
-            const restored = templateLibraryModule.restoreArchives(templateLibraryState,
-                payload.entries.filter((entry) => !pendingTemplateRemovals.has(entry.key)));
-            const recovered = restored !== templateLibraryState;
-            if (recovered) {
-                templateLibraryState = restored;
-                try {
-                    templateLibraryModule.save(localStorage, templateLibraryState);
-                } catch (_) {
-                    showToast(t('emoteMaker.archiveSaveFailed'));
-                }
-            }
-            if (same && !recovered) return;
+            templateArchiveEntries = new Map((templateLibraryModule?.archiveEntries(
+                payload.entries.filter((entry) => !pendingTemplateRemovals.has(entry.key)))
+                || [])
+                .map((entry) => [entry.key, entry]));
+            if (same) return;
             templateArchiveBytes = next;
             templateArchiveTotalBytes = nextTotal;
             renderTemplateLibraryGrid();
@@ -6714,10 +6770,11 @@
         }
     }
 
-    function applyTemplateFromRegistryNow(key) {
+    async function applyTemplateFromRegistryNow(key) {
         const held = loadedTemplates.get(key);
         const entry = findTemplateLibraryEntry(key);
         if (!held || !entry) return false;
+        if (key === currentTemplateKey()) return true;
         persistTemplateToLibrary();
         groupPreview = null;
         spineRendererGeneration += 1;
@@ -6748,10 +6805,15 @@
         history.length = 0;
         future.length = 0;
         templateLibraryState = templateLibraryModule.touch(templateLibraryState, key);
-        templateLibraryModule.save(localStorage, templateLibraryState);
+        try {
+            templateLibraryModule.save(localStorage, templateLibraryState);
+            templateSaveWarningShown = false;
+        } catch (_) {
+            reportTemplateSaveFailure();
+        }
         renderAll();
-        void activateNativeSpineRenderer();
-        return true;
+        await activateNativeSpineRenderer();
+        return hasSpineRenderer();
     }
 
     /**
@@ -6764,7 +6826,9 @@
         if (key === currentTemplateKey()) return;
         if (!findTemplateLibraryEntry(key)) return;
         const needsArchive = await queueTemplateChange(async () => {
-            if (applyTemplateFromRegistryNow(key)) {
+            if (key === currentTemplateKey() || packBusy || pendingTemplateRemovals.has(key)
+                || !findTemplateLibraryEntry(key)) return;
+            if (await applyTemplateFromRegistryNow(key)) {
                 showToast(t('emoteMaker.templateSwitched'));
                 return;
             }
@@ -6832,12 +6896,12 @@
     async function removeTemplate(key) {
         if (!templateLibraryModule || !key || key.startsWith('builtin:') || pendingTemplateRemovals.has(key)) return;
         // 删的是用户攒的模板 + 它的本地副本，得先问一句；名字用卡片上那个
-        const entry = templateLibraryModule.find(templateLibraryState, key);
+        const entry = findTemplateLibraryEntry(key);
         const label = templateLibraryModule.entryLabel(entry) || key;
         if (!(await confirmModal(interpolate(t('emoteMaker.removeTemplateConfirm'), { name: label })))) {
             return;
         }
-        if (pendingTemplateRemovals.has(key) || !templateLibraryModule.find(templateLibraryState, key)) return;
+        if (pendingTemplateRemovals.has(key) || !findTemplateLibraryEntry(key)) return;
         pendingTemplateRemovals.add(key);
         renderTemplateLibraryGrid();
         try {
@@ -6852,6 +6916,8 @@
         const held = loadedTemplates.get(key);
         const isCurrent = key === currentTemplateKey();
         loadedTemplates.delete(key);
+        templateArchiveEntries.delete(key);
+        templateArchiveBytes.delete(key);
         // 移除的是当前正用着的那个时，store 归页面自己收尾，不能留着读不到的字节
         if (held && !isCurrent && !holdsTemplateStore(held.store)) releaseAssetStore(held.store);
         templateLibraryState = templateLibraryModule.remove(templateLibraryState, key);
@@ -7422,12 +7488,12 @@
         } finally {
             releaseEditorView();
             if (generation === spineRendererGeneration) {
-                if (!previewFps) setPackStatus('');
                 state.selectedSceneId = previousSceneId;
                 state.animationId = previousAnimationId;
                 Object.assign(state, previousLook);
                 syncLiveCanvas({ autoplay: previousPlaying });
             }
+            if (!previewFps) setPackStatus('');
         }
         if (missingImages > 0) {
             showToast(interpolate(t('emoteMaker.stageImagesMissing'), { count: missingImages }));
@@ -7525,6 +7591,7 @@
             return await queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export',
                 buildPngtuberPackageNow);
         } catch (error) {
+            if (error?.message === 'template_changed') return null;
             console.warn('[emote-maker] 形象包生成失败', error);
             showToast(t('emoteMaker.packZipFailed'));
             return null;
@@ -7626,7 +7693,7 @@
                 stateKey: output.stateKey,
                 sceneId: output.look.sceneId,
                 look: output.look,
-                frames: still ? 1 : packFrameBudget(timeWindow.to - timeWindow.from, fps),
+                frames: still ? 1 : packFrameBudget(Math.max(timeWindow.to - timeWindow.from, 1 / fps), fps),
                 timeWindow,
                 scale: output.scale,
                 rotation: output.rotation,
@@ -8168,7 +8235,11 @@
     }
 
     async function downloadPng() {
-        return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export', downloadPngNow);
+        try {
+            return await queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export', downloadPngNow);
+        } catch (_) {
+            showToast(t('emoteMaker.exportPngFailed'));
+        }
     }
 
     async function downloadPngNow() {
@@ -8596,9 +8667,8 @@
             const saved = templateLibraryModule?.find(templateLibraryState, restoreKey || nextKey);
             const fingerprint = templateFingerprint(nextPackage);
             const sameSession = lastTemplate?.fingerprint === fingerprint;
-            const restoredSession = saved?.session
-                ? { ...saved.session, ...(sameSession ? lastTemplate : {}), fingerprint }
-                : (sameSession ? lastTemplate : null);
+            const chosenSession = templateLibraryModule?.selectSession(saved?.session, sameSession ? lastTemplate : null);
+            const restoredSession = chosenSession ? { ...chosenSession, fingerprint } : null;
             const savedGraph = restoredSession && Object.hasOwn(restoredSession, 'nodeGraph')
                 ? restoredSession.nodeGraph : (sameSession ? state.nodeGraph : null);
             resetTemplateSession();
@@ -8786,6 +8856,7 @@
             if (groupExportBusy) {
                 // 同一颗按钮在跑的时候就是停止：一批可能上百张，得能中途停
                 groupExportAbort = true;
+                groupExportController?.abort();
                 return;
             }
             // aria-expanded 只由 renderGroupPicker 写：两处各写一份的话，

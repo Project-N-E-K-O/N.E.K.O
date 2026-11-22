@@ -70,9 +70,19 @@
         return { schemaVersion: SCHEMA_VERSION, entries: [], currentKey: '' };
     }
 
+    function sessionRevision(session) {
+        const value = session?.saveRevision;
+        return Number.isSafeInteger(value) && value > 0 ? value : 0;
+    }
+
+    function nextSessionRevision(...sessions) {
+        return Math.max(Date.now(), ...sessions.map((session) => sessionRevision(session) + 1));
+    }
+
     function normalizeSession(session) {
         const src = session && typeof session === 'object' ? session : {};
         return {
+            saveRevision: sessionRevision(src),
             sceneId: text(src.sceneId),
             groupId: text(src.groupId),
             groups: Array.isArray(src.groups) ? [...src.groups] : [],
@@ -162,17 +172,27 @@
         return next;
     }
 
-    /** 旧缓存曾淘汰过卡片时，仍让磁盘上归用户所有的副本可以重开或删除。 */
-    function restoreArchives(store, archives) {
-        let next = store;
+    /** 磁盘副本只提供入口；未编辑的归档不生成或持久化默认会话。 */
+    function archiveEntries(archives) {
+        const entries = [];
         for (const archive of archives || []) {
             const key = text(archive.key);
-            if (!/^(?:spine-[0-9a-f]{64}|builtin:[a-z0-9]+(?:[.-][a-z0-9]+)*)$/.test(key)
-                || find(next, key)) continue;
-            next = upsert(next, makeEntry({ key, displayName: key,
-                addedAt: archive.savedAt, lastUsedAt: archive.savedAt }));
+            if (!/^spine-[0-9a-f]{64}$/.test(key)) continue;
+            entries.push({ key, displayName: key,
+                sourceName: text(archive.sourceName).replace(/\.zip$/i, '').slice(0, MAX_LABEL_CHARS), session: null });
         }
-        return next;
+        return entries;
+    }
+
+    function selectSession(saved, recent) {
+        if (!saved) return recent;
+        if (!recent) return saved;
+        const savedRevision = sessionRevision(saved);
+        const recentRevision = sessionRevision(recent);
+        if (savedRevision || recentRevision) return recentRevision > savedRevision ? recent : saved;
+        // Pre-version pages updated only the recent snapshot. Retain that
+        // migration rule only when neither complete snapshot has a version.
+        return { ...saved, ...recent };
     }
 
     function remove(store, key) {
@@ -304,9 +324,11 @@
         emptyStore,
         makeEntry,
         normalizeSession,
+        nextSessionRevision,
         find,
         upsert,
-        restoreArchives,
+        archiveEntries,
+        selectSession,
         remove,
         touch,
         markCurrent,
