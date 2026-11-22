@@ -2,8 +2,12 @@ import asyncio
 import hashlib
 import io
 import json
+import os
+import shutil
+import tempfile
 import threading
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -353,4 +357,444 @@ async def test_f0020_cancelled_error_mid_stage_upload_waits_for_retirement_and_c
     assert stream.closed
     assert not stream.closed_before_read_finished
     assert list(target_dir.glob(".tmp_upload_*")) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["songs", "actions"])
+async def test_f0020_cancelled_error_mid_os_replace_after_partial_batch_move(
+    monkeypatch, tmp_path, kind
+):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(jukebox_router, "extract_audio_metadata", lambda _p: {})
+    cfg = jukebox_router.JukeboxConfig(cm)
+
+    target_dir = cfg.songs_dir if kind == "songs" else cfg.actions_dir
+    ext = ".mp3" if kind == "songs" else ".vmd"
+
+    replace_calls = 0
+    second_started = threading.Event()
+    second_release = threading.Event()
+    second_finished = threading.Event()
+    second_error = None
+    orig_replace = os.replace
+
+    def _paused_second_replace(src, dst):
+        nonlocal replace_calls, second_error
+        replace_calls += 1
+        if replace_calls == 2:
+            second_started.set()
+            assert second_release.wait(5)
+            try:
+                return orig_replace(src, dst)
+            except BaseException as exc:
+                second_error = exc
+                raise
+            finally:
+                second_finished.set()
+        return orig_replace(src, dst)
+
+    monkeypatch.setattr(jukebox_router.os, "replace", _paused_second_replace)
+
+    files = [
+        _upload_file(f"part1{ext}", b"part1-bytes"),
+        _upload_file(f"part2{ext}", b"part2-bytes"),
+        _upload_file(f"part3{ext}", b"part3-bytes"),
+    ]
+    coro = (
+        jukebox_router.upload_songs(files=files, metadata="[]")
+        if kind == "songs"
+        else jukebox_router.upload_actions(files=files, metadata="[]")
+    )
+    upload_task = asyncio.create_task(coro)
+    await asyncio.to_thread(second_started.wait, 5)
+
+    upload_task.cancel()
+    await asyncio.sleep(0.02)
+    assert not upload_task.done()
+
+    second_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await upload_task
+
+    assert second_finished.is_set()
+    assert second_error is None
+    assert list(target_dir.glob(".tmp_upload_*")) == []
+
+    disk_files = sorted(p.name for p in target_dir.iterdir() if p.is_file())
+    reloaded = jukebox_router.JukeboxConfig(cm)
+    collection = reloaded.data["songs"] if kind == "songs" else reloaded.data["actions"]
+    field = "audio" if kind == "songs" else "file"
+    config_files = sorted(
+        Path(entry[field]).name
+        for entry in collection.values()
+        if not entry.get("isBuiltin", False)
+    )
+    assert disk_files == [f"part1{ext}"]
+    assert config_files == [f"part1{ext}"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["songs", "actions"])
+async def test_f0020_cancelled_error_mid_dup_unlink_after_partial_batch_move(
+    monkeypatch, tmp_path, kind
+):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(jukebox_router, "extract_audio_metadata", lambda _p: {})
+    cfg = jukebox_router.JukeboxConfig(cm)
+
+    target_dir = cfg.songs_dir if kind == "songs" else cfg.actions_dir
+    ext = ".mp3" if kind == "songs" else ".vmd"
+    existing_bytes = b"already-present"
+    existing_md5 = hashlib.md5(existing_bytes).hexdigest()
+    (target_dir / f"existing{ext}").write_bytes(existing_bytes)
+    if kind == "songs":
+        cfg.data["songs"]["existing"] = {
+            "id": "existing",
+            "name": "Existing",
+            "audio": f"songs/existing{ext}",
+            "audioMd5": existing_md5,
+            "visible": True,
+        }
+        cfg.data["md5Index"]["songs"][existing_md5] = "existing"
+    else:
+        cfg.data["actions"]["existing"] = {
+            "id": "existing",
+            "name": "Existing",
+            "file": f"actions/existing{ext}",
+            "fileMd5": existing_md5,
+            "visible": True,
+        }
+        cfg.data["md5Index"]["actions"][existing_md5] = "existing"
+    cfg.save()
+
+    dup_unlink_started = threading.Event()
+    dup_unlink_release = threading.Event()
+    dup_unlink_finished = threading.Event()
+    dup_unlink_error = None
+    orig_unlink = Path.unlink
+    unlink_intercepted = False
+
+    def _paused_dup_unlink(self, *args, **kwargs):
+        nonlocal unlink_intercepted, dup_unlink_error
+        if (
+            not unlink_intercepted
+            and self.parent == target_dir
+            and self.name.startswith(".tmp_upload_")
+        ):
+            unlink_intercepted = True
+            dup_unlink_started.set()
+            assert dup_unlink_release.wait(5)
+            try:
+                return orig_unlink(self, *args, **kwargs)
+            except BaseException as exc:
+                dup_unlink_error = exc
+                raise
+            finally:
+                dup_unlink_finished.set()
+        return orig_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _paused_dup_unlink)
+
+    files = [
+        _upload_file(f"new_part1{ext}", b"brand-new-1"),
+        _upload_file(f"dup_existing{ext}", existing_bytes),
+        _upload_file(f"new_part3{ext}", b"brand-new-3"),
+    ]
+    coro = (
+        jukebox_router.upload_songs(files=files, metadata="[]")
+        if kind == "songs"
+        else jukebox_router.upload_actions(files=files, metadata="[]")
+    )
+    upload_task = asyncio.create_task(coro)
+    await asyncio.to_thread(dup_unlink_started.wait, 5)
+
+    upload_task.cancel()
+    await asyncio.sleep(0.02)
+    assert not upload_task.done()
+
+    dup_unlink_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await upload_task
+
+    assert dup_unlink_finished.is_set()
+    assert dup_unlink_error is None
+    assert list(target_dir.glob(".tmp_upload_*")) == []
+
+    disk_files = sorted(p.name for p in target_dir.iterdir() if p.is_file())
+    reloaded = jukebox_router.JukeboxConfig(cm)
+    collection = reloaded.data["songs"] if kind == "songs" else reloaded.data["actions"]
+    field = "audio" if kind == "songs" else "file"
+    config_files = sorted(
+        Path(entry[field]).name
+        for entry in collection.values()
+        if not entry.get("isBuiltin", False)
+    )
+    assert disk_files == sorted([f"existing{ext}", f"new_part1{ext}"])
+    assert config_files == sorted([f"existing{ext}", f"new_part1{ext}"])
+
+
+@pytest.mark.asyncio
+async def test_f0020_import_config_cancelled_error_mid_copy2_retires_and_rolls_back(
+    monkeypatch, tmp_path
+):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    cfg = jukebox_router.JukeboxConfig(cm)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("songs/imp1.mp3", b"imp1-bytes")
+        zf.writestr("songs/imp2.mp3", b"imp2-bytes")
+        zf.writestr("actions/act1.vmd", b"act1-bytes")
+        zf.writestr(
+            "config.json",
+            json.dumps(
+                {
+                    "songs": {
+                        "imp1": {"id": "imp1", "name": "Imp1", "audio": "songs/imp1.mp3"},
+                        "imp2": {"id": "imp2", "name": "Imp2", "audio": "songs/imp2.mp3"},
+                    },
+                    "actions": {
+                        "act1": {"id": "act1", "name": "Act1", "file": "actions/act1.vmd"},
+                    },
+                    "bindings": {},
+                }
+            ),
+        )
+    buf.seek(0)
+
+    copy2_calls = 0
+    second_started = threading.Event()
+    second_release = threading.Event()
+    second_finished = threading.Event()
+    second_error = None
+    orig_copy2 = shutil.copy2
+
+    def _paused_second_copy2(src, dst, *args, **kwargs):
+        nonlocal copy2_calls, second_error
+        copy2_calls += 1
+        if copy2_calls == 2:
+            second_started.set()
+            assert second_release.wait(5)
+            try:
+                return orig_copy2(src, dst, *args, **kwargs)
+            except BaseException as exc:
+                second_error = exc
+                raise
+            finally:
+                second_finished.set()
+        return orig_copy2(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(jukebox_router.shutil, "copy2", _paused_second_copy2)
+
+    import_task = asyncio.create_task(
+        jukebox_router.import_config(UploadFile(filename="pack.zip", file=buf))
+    )
+    await asyncio.to_thread(second_started.wait, 5)
+
+    import_task.cancel()
+    await asyncio.sleep(0.02)
+    assert not import_task.done()
+
+    second_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await import_task
+
+    assert second_finished.is_set()
+    assert second_error is None
+    assert [p for p in cfg.songs_dir.iterdir() if p.is_file()] == []
+    assert [p for p in cfg.actions_dir.iterdir() if p.is_file()] == []
+    reloaded = jukebox_router.JukeboxConfig(cm)
+    assert all(s.get("isBuiltin", False) for s in reloaded.data["songs"].values())
+    assert all(a.get("isBuiltin", False) for a in reloaded.data["actions"].values())
+
+
+@pytest.mark.asyncio
+async def test_f0020_import_config_cancelled_error_mid_copyfileobj_retires_before_temp_cleanup(
+    monkeypatch, tmp_path
+):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("songs/imp1.mp3", b"imp1-bytes")
+        zf.writestr("config.json", json.dumps({"songs": {}, "actions": {}, "bindings": {}}))
+
+    copy_started = threading.Event()
+    copy_release = threading.Event()
+    stream = _BlockingUploadStream(buf.getvalue(), copy_started, copy_release)
+
+    import_task = asyncio.create_task(
+        jukebox_router.import_config(UploadFile(filename="pack.zip", file=stream))
+    )
+    assert await asyncio.to_thread(copy_started.wait, 5)
+
+    import_task.cancel()
+    await asyncio.sleep(0.02)
+    assert not import_task.done()
+
+    copy_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await import_task
+
+    assert stream.read_finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_f0020_import_config_cancelled_error_mid_zip_extract_copyfileobj_retires(
+    monkeypatch, tmp_path
+):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("songs/imp1.mp3", b"imp1-bytes")
+        zf.writestr("config.json", json.dumps({"songs": {}, "actions": {}, "bindings": {}}))
+    buf.seek(0)
+
+    copy_calls = 0
+    extract_started = threading.Event()
+    extract_release = threading.Event()
+    extract_finished = threading.Event()
+    extract_error = None
+    orig_copyfileobj = shutil.copyfileobj
+
+    def _paused_second_copyfileobj(src, dst, *args, **kwargs):
+        nonlocal copy_calls, extract_error
+        copy_calls += 1
+        if copy_calls == 2:
+            extract_started.set()
+            assert extract_release.wait(5)
+            try:
+                return orig_copyfileobj(src, dst, *args, **kwargs)
+            except BaseException as exc:
+                extract_error = exc
+                raise
+            finally:
+                extract_finished.set()
+        return orig_copyfileobj(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(jukebox_router.shutil, "copyfileobj", _paused_second_copyfileobj)
+
+    import_task = asyncio.create_task(
+        jukebox_router.import_config(UploadFile(filename="pack.zip", file=buf))
+    )
+    assert await asyncio.to_thread(extract_started.wait, 5)
+
+    import_task.cancel()
+    await asyncio.sleep(0.02)
+    assert not import_task.done()
+
+    extract_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await import_task
+
+    assert extract_finished.is_set()
+    assert extract_error is None
+
+
+@pytest.mark.asyncio
+async def test_f0020_export_config_cancelled_error_retires_copy2_and_cleans_temp_dir(
+    monkeypatch, tmp_path
+):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    cfg = jukebox_router.JukeboxConfig(cm)
+    (cfg.songs_dir / "track.mp3").write_bytes(b"audio-bytes")
+    cfg.data["songs"]["track"] = {
+        "id": "track",
+        "name": "Track",
+        "audio": "songs/track.mp3",
+        "audioMd5": hashlib.md5(b"audio-bytes").hexdigest(),
+        "visible": True,
+    }
+    cfg.save()
+
+    created_temp_dirs = []
+    orig_mkdtemp = tempfile.mkdtemp
+
+    def _spy_mkdtemp(*args, **kwargs):
+        d = orig_mkdtemp(*args, **kwargs)
+        created_temp_dirs.append(Path(d))
+        return d
+
+    monkeypatch.setattr(jukebox_router.tempfile, "mkdtemp", _spy_mkdtemp)
+
+    copy2_started = threading.Event()
+    copy2_release = threading.Event()
+    copy2_finished = threading.Event()
+    copy2_error = None
+    orig_copy2 = shutil.copy2
+
+    def _paused_copy2(src, dst, *args, **kwargs):
+        nonlocal copy2_error
+        copy2_started.set()
+        assert copy2_release.wait(5)
+        try:
+            return orig_copy2(src, dst, *args, **kwargs)
+        except BaseException as exc:
+            copy2_error = exc
+            raise
+        finally:
+            copy2_finished.set()
+
+    monkeypatch.setattr(jukebox_router.shutil, "copy2", _paused_copy2)
+
+    export_task = asyncio.create_task(
+        jukebox_router.export_config(songIds=None, actionIds=None, includeHidden=True)
+    )
+    assert await asyncio.to_thread(copy2_started.wait, 5)
+
+    export_task.cancel()
+    await asyncio.sleep(0.02)
+    assert not export_task.done()
+
+    copy2_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await export_task
+
+    assert copy2_finished.is_set()
+    assert copy2_error is None
+    assert len(created_temp_dirs) == 1
+    assert not created_temp_dirs[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_f0020_pack_folder_cancelled_error_retires_copyfileobj_and_cleans_temp_dir(
+    monkeypatch, tmp_path
+):
+    created_temp_dirs = []
+    orig_mkdtemp = tempfile.mkdtemp
+
+    def _spy_mkdtemp(*args, **kwargs):
+        d = orig_mkdtemp(*args, **kwargs)
+        created_temp_dirs.append(Path(d))
+        return d
+
+    monkeypatch.setattr(jukebox_router.tempfile, "mkdtemp", _spy_mkdtemp)
+
+    copy_started = threading.Event()
+    copy_release = threading.Event()
+    stream = _BlockingUploadStream(b"folder-file-bytes", copy_started, copy_release)
+
+    pack_task = asyncio.create_task(
+        jukebox_router.pack_folder(files=[UploadFile(filename="sub/file.txt", file=stream)])
+    )
+    await asyncio.to_thread(copy_started.wait, 5)
+
+    pack_task.cancel()
+    await asyncio.sleep(0.02)
+    assert not pack_task.done()
+
+    copy_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pack_task
+
+    assert stream.read_finished.is_set()
+    assert len(created_temp_dirs) == 1
+    assert not created_temp_dirs[0].exists()
 

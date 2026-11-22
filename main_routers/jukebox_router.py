@@ -107,6 +107,24 @@ def _collect_unmoved_temp_paths(created_paths: List[Path], staged_items: List[di
         )
     )
 
+
+def _replace_file_tracking(src_path: Path, dst_path: Path, state: dict) -> None:
+    """Move src_path onto dst_path and record completion before returning."""
+    os.replace(src_path, dst_path)
+    state["moved"] = True
+
+
+async def _replace_or_rollback(item: dict, tmp_path: Path, target_path: Path) -> None:
+    """Move tmp_path to target_path with retirement protection and rollback on cancellation."""
+    move_state = {"moved": False}
+    try:
+        await await_retirement(asyncio.to_thread(_replace_file_tracking, tmp_path, target_path, move_state))
+    except asyncio.CancelledError:
+        if move_state["moved"]:
+            await await_retirement(asyncio.to_thread(target_path.unlink, missing_ok=True))
+            item["moved"] = True
+        raise
+
 # Upload constants.
 MAX_FILE_SIZE = 1 * 1024 * 1024 * 1024  # 1 GB per song/animation file.
 MAX_ZIP_SIZE = 10 * 1024 * 1024 * 1024  # 10 GB archive import/export.
@@ -756,7 +774,7 @@ async def upload_songs(
                 tmp_path = None
             except Exception as e:
                 if tmp_path is not None:
-                    await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
+                    await await_retirement(asyncio.to_thread(tmp_path.unlink, missing_ok=True))
                 logger.error(f"上传第 {i+1} 首歌曲失败: {e}")
                 results[i] = {"success": False, "error": str(e)}
             finally:
@@ -766,64 +784,67 @@ async def upload_songs(
             jukebox_config = JukeboxConfig(config_mgr)
             any_added = False
 
-            for item in staged_items:
-                idx = item["index"]
-                tmp_path = item["tmp_path"]
-                file_md5 = item["file_md5"]
-                try:
-                    existing_song_id = jukebox_config.data["md5Index"]["songs"].get(file_md5)
-                    if existing_song_id:
-                        await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
+            try:
+                for item in staged_items:
+                    idx = item["index"]
+                    tmp_path = item["tmp_path"]
+                    file_md5 = item["file_md5"]
+                    try:
+                        existing_song_id = jukebox_config.data["md5Index"]["songs"].get(file_md5)
+                        if existing_song_id:
+                            await await_retirement(asyncio.to_thread(tmp_path.unlink, missing_ok=True))
+                            item["moved"] = True
+                            results[idx] = {"success": False, "error": f"歌曲已存在: {existing_song_id}"}
+                            continue
+
+                        song_id = sanitize_filename(item["raw_filename"])
+                        base_id = song_id
+                        counter = 1
+                        while song_id in jukebox_config.data["songs"]:
+                            song_id = f"{base_id}_{counter}"
+                            counter += 1
+
+                        target_filename = get_unique_filename(jukebox_config.songs_dir, item["original_filename"])
+                        target_path = jukebox_config.songs_dir / target_filename
+
+                        meta = item["meta"]
+                        audio_metadata = item["audio_metadata"]
+                        song_name = (
+                            _clean_audio_metadata_value(meta.get("name"))
+                            or audio_metadata.get("name")
+                            or Path(target_filename).stem
+                        )
+                        song_artist = (
+                            _clean_audio_metadata_value(meta.get("artist"))
+                            or audio_metadata.get("artist")
+                            or "未知"
+                        )
+
+                        song = Song(
+                            id=song_id,
+                            name=song_name,
+                            artist=song_artist,
+                            audio=f"songs/{target_filename}",
+                            audioMd5=file_md5,
+                            audioFormat=item["file_ext"].lstrip("."),
+                            visible=True,
+                            uploadDate=datetime.now().isoformat()
+                        )
+                        song_dict = asdict(song)
+
+                        await _replace_or_rollback(item, tmp_path, target_path)
                         item["moved"] = True
-                        results[idx] = {"success": False, "error": f"歌曲已存在: {existing_song_id}"}
-                        continue
 
-                    song_id = sanitize_filename(item["raw_filename"])
-                    base_id = song_id
-                    counter = 1
-                    while song_id in jukebox_config.data["songs"]:
-                        song_id = f"{base_id}_{counter}"
-                        counter += 1
-
-                    target_filename = get_unique_filename(jukebox_config.songs_dir, item["original_filename"])
-                    target_path = jukebox_config.songs_dir / target_filename
-                    await asyncio.to_thread(os.replace, tmp_path, target_path)
-                    item["moved"] = True
-
-                    meta = item["meta"]
-                    audio_metadata = item["audio_metadata"]
-                    song_name = (
-                        _clean_audio_metadata_value(meta.get("name"))
-                        or audio_metadata.get("name")
-                        or Path(target_filename).stem
-                    )
-                    song_artist = (
-                        _clean_audio_metadata_value(meta.get("artist"))
-                        or audio_metadata.get("artist")
-                        or "未知"
-                    )
-
-                    song = Song(
-                        id=song_id,
-                        name=song_name,
-                        artist=song_artist,
-                        audio=f"songs/{target_filename}",
-                        audioMd5=file_md5,
-                        audioFormat=item["file_ext"].lstrip("."),
-                        visible=True,
-                        uploadDate=datetime.now().isoformat()
-                    )
-
-                    jukebox_config.data["songs"][song_id] = asdict(song)
-                    jukebox_config.data["md5Index"]["songs"][file_md5] = song_id
-                    any_added = True
-                    results[idx] = {"success": True, "song": asdict(song)}
-                except Exception as e:
-                    logger.error(f"上传第 {idx+1} 首歌曲失败: {e}")
-                    results[idx] = {"success": False, "error": str(e)}
-
-            if any_added:
-                await await_retirement(jukebox_config.asave())
+                        jukebox_config.data["songs"][song_id] = song_dict
+                        jukebox_config.data["md5Index"]["songs"][file_md5] = song_id
+                        any_added = True
+                        results[idx] = {"success": True, "song": song_dict}
+                    except Exception as e:
+                        logger.error(f"上传第 {idx+1} 首歌曲失败: {e}")
+                        results[idx] = {"success": False, "error": str(e)}
+            finally:
+                if any_added:
+                    await await_retirement(jukebox_config.asave())
     finally:
         unmoved = _collect_unmoved_temp_paths(created_paths, staged_items)
         if unmoved:
@@ -1115,7 +1136,7 @@ async def upload_actions(
                 tmp_path = None
             except Exception as e:
                 if tmp_path is not None:
-                    await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
+                    await await_retirement(asyncio.to_thread(tmp_path.unlink, missing_ok=True))
                 logger.error(f"上传第 {i+1} 个动画失败: {e}")
                 results[i] = {"success": False, "error": str(e)}
             finally:
@@ -1125,52 +1146,55 @@ async def upload_actions(
             jukebox_config = JukeboxConfig(config_mgr)
             any_added = False
 
-            for item in staged_items:
-                idx = item["index"]
-                tmp_path = item["tmp_path"]
-                file_md5 = item["file_md5"]
-                try:
-                    existing_action_id = jukebox_config.data["md5Index"]["actions"].get(file_md5)
-                    if existing_action_id:
-                        await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
+            try:
+                for item in staged_items:
+                    idx = item["index"]
+                    tmp_path = item["tmp_path"]
+                    file_md5 = item["file_md5"]
+                    try:
+                        existing_action_id = jukebox_config.data["md5Index"]["actions"].get(file_md5)
+                        if existing_action_id:
+                            await await_retirement(asyncio.to_thread(tmp_path.unlink, missing_ok=True))
+                            item["moved"] = True
+                            results[idx] = {"success": False, "error": f"动画已存在: {existing_action_id}"}
+                            continue
+
+                        action_id = sanitize_filename(item["raw_filename"])
+                        base_id = action_id
+                        counter = 1
+                        while action_id in jukebox_config.data["actions"]:
+                            action_id = f"{base_id}_{counter}"
+                            counter += 1
+
+                        target_filename = get_unique_filename(jukebox_config.actions_dir, item["original_filename"])
+                        target_path = jukebox_config.actions_dir / target_filename
+
+                        action_name = item["meta"].get("name") or Path(target_filename).stem
+
+                        action = Action(
+                            id=action_id,
+                            name=action_name,
+                            file=f"actions/{target_filename}",
+                            fileMd5=file_md5,
+                            format=item["file_ext"].lstrip("."),
+                            uploadDate=datetime.now().isoformat(),
+                            missing=False
+                        )
+                        action_dict = asdict(action)
+
+                        await _replace_or_rollback(item, tmp_path, target_path)
                         item["moved"] = True
-                        results[idx] = {"success": False, "error": f"动画已存在: {existing_action_id}"}
-                        continue
 
-                    action_id = sanitize_filename(item["raw_filename"])
-                    base_id = action_id
-                    counter = 1
-                    while action_id in jukebox_config.data["actions"]:
-                        action_id = f"{base_id}_{counter}"
-                        counter += 1
-
-                    target_filename = get_unique_filename(jukebox_config.actions_dir, item["original_filename"])
-                    target_path = jukebox_config.actions_dir / target_filename
-                    await asyncio.to_thread(os.replace, tmp_path, target_path)
-                    item["moved"] = True
-
-                    action_name = item["meta"].get("name") or Path(target_filename).stem
-
-                    action = Action(
-                        id=action_id,
-                        name=action_name,
-                        file=f"actions/{target_filename}",
-                        fileMd5=file_md5,
-                        format=item["file_ext"].lstrip("."),
-                        uploadDate=datetime.now().isoformat(),
-                        missing=False
-                    )
-
-                    jukebox_config.data["actions"][action_id] = asdict(action)
-                    jukebox_config.data["md5Index"]["actions"][file_md5] = action_id
-                    any_added = True
-                    results[idx] = {"success": True, "action": asdict(action)}
-                except Exception as e:
-                    logger.error(f"上传第 {idx+1} 个动画失败: {e}")
-                    results[idx] = {"success": False, "error": str(e)}
-
-            if any_added:
-                await await_retirement(jukebox_config.asave())
+                        jukebox_config.data["actions"][action_id] = action_dict
+                        jukebox_config.data["md5Index"]["actions"][file_md5] = action_id
+                        any_added = True
+                        results[idx] = {"success": True, "action": action_dict}
+                    except Exception as e:
+                        logger.error(f"上传第 {idx+1} 个动画失败: {e}")
+                        results[idx] = {"success": False, "error": str(e)}
+            finally:
+                if any_added:
+                    await await_retirement(jukebox_config.asave())
     finally:
         unmoved = _collect_unmoved_temp_paths(created_paths, staged_items)
         if unmoved:
@@ -1490,7 +1514,7 @@ async def export_config(
             if src_path.exists():
                 dst_path = export_dir / song["audio"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.copy2, src_path, dst_path)
+                await await_retirement(asyncio.to_thread(shutil.copy2, src_path, dst_path))
 
         # Export animations.
         for action_id in action_ids_to_export:
@@ -1520,7 +1544,7 @@ async def export_config(
             if src_path.exists():
                 dst_path = export_dir / action["file"]
                 dst_path.parent.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.copy2, src_path, dst_path)
+                await await_retirement(asyncio.to_thread(shutil.copy2, src_path, dst_path))
 
         if not includeHidden:
             for song in export_data["songs"].values():
@@ -1599,9 +1623,9 @@ async def export_config(
             headers={"Content-Disposition": "attachment; filename=jukebox_export.zip"},
             background=BackgroundTask(cleanup_temp_path, str(temp_dir))
         )
-    except Exception:
-        # Clean temporary directories on exceptions.
-        await asyncio.to_thread(cleanup_temp_path, str(temp_dir))
+    except BaseException:
+        # Clean temporary directories on exceptions or task cancellation.
+        await await_retirement(asyncio.to_thread(cleanup_temp_path, str(temp_dir)))
         raise
 
 
@@ -1639,7 +1663,7 @@ async def import_config(file: UploadFile = File(...)):
         zip_path = temp_path / "import.zip"
 
         with open(zip_path, "wb") as buffer:
-            await asyncio.to_thread(shutil.copyfileobj, file.file, buffer)
+            await await_retirement(asyncio.to_thread(shutil.copyfileobj, file.file, buffer))
 
         extract_dir = temp_path / "extracted"
         extract_dir.mkdir()
@@ -1671,14 +1695,14 @@ async def import_config(file: UploadFile = File(...)):
                 else:
                     member_path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(member) as src, open(member_path, 'wb') as dst:
-                        await asyncio.to_thread(shutil.copyfileobj, src, dst)
+                        await await_retirement(asyncio.to_thread(shutil.copyfileobj, src, dst))
 
         config_path = extract_dir / "config.json"
         if not config_path.exists():
             raise HTTPException(400, "导入包中缺少 config.json")
 
         try:
-            import_data = await read_json_async(config_path)
+            import_data = await await_retirement(read_json_async(config_path))
         except json.JSONDecodeError as err:
             raise HTTPException(400, "config.json 不是有效的 JSON") from err
 
@@ -1692,7 +1716,7 @@ async def import_config(file: UploadFile = File(...)):
                 continue
 
             if src_audio.exists():
-                file_md5 = await asyncio.to_thread(calculate_md5, src_audio)
+                file_md5 = await await_retirement(asyncio.to_thread(calculate_md5, src_audio))
                 song["audioMd5"] = file_md5
             else:
                 file_md5 = song.get("audioMd5", "")
@@ -1711,7 +1735,7 @@ async def import_config(file: UploadFile = File(...)):
                 continue
 
             if src_file.exists():
-                file_md5 = await asyncio.to_thread(calculate_md5, src_file)
+                file_md5 = await await_retirement(asyncio.to_thread(calculate_md5, src_file))
                 action["fileMd5"] = file_md5
             else:
                 file_md5 = action.get("fileMd5", "")
@@ -1733,140 +1757,154 @@ async def import_config(file: UploadFile = File(...)):
 
         async with _get_jukebox_config_lock():
             jukebox_config = JukeboxConfig(config_mgr)
+            copied_targets: List[Path] = []
+            save_completed = False
 
-            # Step 1: import songs against fresh config snapshot.
-            for song_id, song, src_audio, file_md5 in prepared_songs:
-                existing_id = jukebox_config.data["md5Index"]["songs"].get(file_md5) if file_md5 else None
+            try:
+                # Step 1: import songs against fresh config snapshot.
+                for song_id, song, src_audio, file_md5 in prepared_songs:
+                    existing_id = jukebox_config.data["md5Index"]["songs"].get(file_md5) if file_md5 else None
 
-                if existing_id:
-                    stats["songsMerged"] += 1
-                    id_mapping["songs"][song_id] = existing_id
-                elif src_audio.exists():
-                    original_filename = Path(song["audio"]).name
-                    target_filename = get_unique_filename(jukebox_config.songs_dir, original_filename)
-                    dst_audio = jukebox_config.songs_dir / target_filename
-                    dst_audio.parent.mkdir(parents=True, exist_ok=True)
-                    await asyncio.to_thread(shutil.copy2, src_audio, dst_audio)
+                    if existing_id:
+                        stats["songsMerged"] += 1
+                        id_mapping["songs"][song_id] = existing_id
+                    elif src_audio.exists():
+                        original_filename = Path(song["audio"]).name
+                        target_filename = get_unique_filename(jukebox_config.songs_dir, original_filename)
+                        dst_audio = jukebox_config.songs_dir / target_filename
+                        dst_audio.parent.mkdir(parents=True, exist_ok=True)
+                        copied_targets.append(dst_audio)
+                        await await_retirement(asyncio.to_thread(shutil.copy2, src_audio, dst_audio))
 
-                    new_id = sanitize_filename(target_filename)
-                    base_id = new_id
-                    counter = 1
-                    while new_id in jukebox_config.data["songs"]:
-                        new_id = f"{base_id}_{counter}"
-                        counter += 1
+                        new_id = sanitize_filename(target_filename)
+                        base_id = new_id
+                        counter = 1
+                        while new_id in jukebox_config.data["songs"]:
+                            new_id = f"{base_id}_{counter}"
+                            counter += 1
 
-                    song["id"] = new_id
-                    song["audio"] = f"songs/{target_filename}"
-                    original_stem = Path(original_filename).stem
-                    if song.get("name") == original_stem:
-                        song["name"] = Path(target_filename).stem
+                        song["id"] = new_id
+                        song["audio"] = f"songs/{target_filename}"
+                        original_stem = Path(original_filename).stem
+                        if song.get("name") == original_stem:
+                            song["name"] = Path(target_filename).stem
 
-                    # Clear imported defaultAction IDs, invalid locally.
-                    # Steps 3/4 restore defaults through bindings.
-                    song.pop("defaultAction", None)
-                    jukebox_config.data["songs"][new_id] = song
-                    jukebox_config.data["md5Index"]["songs"][file_md5] = new_id
-                    stats["songsAdded"] += 1
-                    id_mapping["songs"][song_id] = new_id
+                        # Clear imported defaultAction IDs, invalid locally.
+                        # Steps 3/4 restore defaults through bindings.
+                        song.pop("defaultAction", None)
+                        jukebox_config.data["songs"][new_id] = song
+                        jukebox_config.data["md5Index"]["songs"][file_md5] = new_id
+                        stats["songsAdded"] += 1
+                        id_mapping["songs"][song_id] = new_id
 
-            # Step 2: import animations against fresh config snapshot.
-            for action_id, action, src_file, file_md5 in prepared_actions:
-                if action.get("isBuiltin", False):
-                    local_action_id = jukebox_config.data["md5Index"]["actions"].get(file_md5)
-                    if local_action_id:
-                        local_action = jukebox_config.data["actions"].get(local_action_id)
-                        if local_action and local_action.get("isBuiltin", False):
-                            id_mapping["actions"][action_id] = local_action_id
-                            stats["actionsMerged"] += 1
-                            logger.info(f"导入映射内置动作: {action_id} -> {local_action_id}")
-                    continue
-
-                existing_id = jukebox_config.data["md5Index"]["actions"].get(file_md5) if file_md5 else None
-
-                if existing_id:
-                    stats["actionsMerged"] += 1
-                    id_mapping["actions"][action_id] = existing_id
-                elif src_file is not None and src_file.exists():
-                    original_filename = Path(action["file"]).name
-                    target_filename = get_unique_filename(jukebox_config.actions_dir, original_filename)
-                    dst_file = jukebox_config.actions_dir / target_filename
-                    dst_file.parent.mkdir(parents=True, exist_ok=True)
-                    await asyncio.to_thread(shutil.copy2, src_file, dst_file)
-
-                    new_id = sanitize_filename(target_filename)
-                    base_id = new_id
-                    counter = 1
-                    while new_id in jukebox_config.data["actions"]:
-                        new_id = f"{base_id}_{counter}"
-                        counter += 1
-
-                    action["id"] = new_id
-                    action["file"] = f"actions/{target_filename}"
-                    original_stem = Path(original_filename).stem
-                    if action.get("name") == original_stem:
-                        action["name"] = Path(target_filename).stem
-
-                    jukebox_config.data["actions"][new_id] = action
-                    jukebox_config.data["md5Index"]["actions"][file_md5] = new_id
-                    stats["actionsAdded"] += 1
-                    id_mapping["actions"][action_id] = new_id
-
-            # Step 3: import MD5 bindings, converting to ID-based storage.
-            # Import format: bindings[songMd5][actionMd5] = {"offset": 0}.
-            # Storage format: bindings[songId][actionId] = {"offset": 0}.
-            for song_md5, action_bindings in import_data.get("bindings", {}).items():
-                song_id = jukebox_config.data["md5Index"]["songs"].get(song_md5)
-                if not song_id:
-                    continue
-
-                if song_id not in jukebox_config.data["bindings"]:
-                    jukebox_config.data["bindings"][song_id] = {}
-
-                for action_md5, binding_data in action_bindings.items():
-                    action_id = jukebox_config.data["md5Index"]["actions"].get(action_md5)
-                    if not action_id:
+                # Step 2: import animations against fresh config snapshot.
+                for action_id, action, src_file, file_md5 in prepared_actions:
+                    if action.get("isBuiltin", False):
+                        local_action_id = jukebox_config.data["md5Index"]["actions"].get(file_md5)
+                        if local_action_id:
+                            local_action = jukebox_config.data["actions"].get(local_action_id)
+                            if local_action and local_action.get("isBuiltin", False):
+                                id_mapping["actions"][action_id] = local_action_id
+                                stats["actionsMerged"] += 1
+                                logger.info(f"导入映射内置动作: {action_id} -> {local_action_id}")
                         continue
 
-                    if action_id not in jukebox_config.data["bindings"][song_id]:
-                        jukebox_config.data["bindings"][song_id][action_id] = {
-                            "offset": binding_data.get("offset", 0)
-                        }
-                        stats["bindingsAdded"] += 1
+                    existing_id = jukebox_config.data["md5Index"]["actions"].get(file_md5) if file_md5 else None
 
-                        song = jukebox_config.data["songs"][song_id]
-                        current_default = song.get("defaultAction", "")
+                    if existing_id:
+                        stats["actionsMerged"] += 1
+                        id_mapping["actions"][action_id] = existing_id
+                    elif src_file is not None and src_file.exists():
+                        original_filename = Path(action["file"]).name
+                        target_filename = get_unique_filename(jukebox_config.actions_dir, original_filename)
+                        dst_file = jukebox_config.actions_dir / target_filename
+                        dst_file.parent.mkdir(parents=True, exist_ok=True)
+                        copied_targets.append(dst_file)
+                        await await_retirement(asyncio.to_thread(shutil.copy2, src_file, dst_file))
 
-                        if not current_default:
-                            song["defaultAction"] = action_id
-                            logger.info(f"导入设置默认动画: {song_id} -> {action_id} (首次绑定)")
-                        elif current_default not in jukebox_config.data["actions"]:
-                            song["defaultAction"] = action_id
-                            logger.info(f"导入设置默认动画: {song_id} -> {action_id} (原默认动画不存在)")
+                        new_id = sanitize_filename(target_filename)
+                        base_id = new_id
+                        counter = 1
+                        while new_id in jukebox_config.data["actions"]:
+                            new_id = f"{base_id}_{counter}"
+                            counter += 1
 
-            # Step 4: map defaultAction.
-            for old_song_id, song in import_data.get("songs", {}).items():
-                old_default_action = song.get("defaultAction", "")
-                if not old_default_action:
-                    continue
+                        action["id"] = new_id
+                        action["file"] = f"actions/{target_filename}"
+                        original_stem = Path(original_filename).stem
+                        if action.get("name") == original_stem:
+                            action["name"] = Path(target_filename).stem
 
-                local_song_id = id_mapping["songs"].get(old_song_id)
-                if not local_song_id:
-                    continue
+                        jukebox_config.data["actions"][new_id] = action
+                        jukebox_config.data["md5Index"]["actions"][file_md5] = new_id
+                        stats["actionsAdded"] += 1
+                        id_mapping["actions"][action_id] = new_id
 
-                local_action_id = id_mapping["actions"].get(old_default_action)
-                if not local_action_id:
-                    continue
+                # Step 3: import MD5 bindings, converting to ID-based storage.
+                # Import format: bindings[songMd5][actionMd5] = {"offset": 0}.
+                # Storage format: bindings[songId][actionId] = {"offset": 0}.
+                for song_md5, action_bindings in import_data.get("bindings", {}).items():
+                    song_id = jukebox_config.data["md5Index"]["songs"].get(song_md5)
+                    if not song_id:
+                        continue
 
-                local_song = jukebox_config.data["songs"].get(local_song_id)
-                if not local_song:
-                    continue
+                    if song_id not in jukebox_config.data["bindings"]:
+                        jukebox_config.data["bindings"][song_id] = {}
 
-                bindings = jukebox_config.data["bindings"].get(local_song_id, {})
-                if local_action_id in bindings:
-                    local_song["defaultAction"] = local_action_id
-                    logger.info(f"导入映射默认动画: {local_song_id} -> {local_action_id}")
+                    for action_md5, binding_data in action_bindings.items():
+                        action_id = jukebox_config.data["md5Index"]["actions"].get(action_md5)
+                        if not action_id:
+                            continue
 
-            await await_retirement(jukebox_config.asave())
+                        if action_id not in jukebox_config.data["bindings"][song_id]:
+                            jukebox_config.data["bindings"][song_id][action_id] = {
+                                "offset": binding_data.get("offset", 0)
+                            }
+                            stats["bindingsAdded"] += 1
+
+                            song = jukebox_config.data["songs"][song_id]
+                            current_default = song.get("defaultAction", "")
+
+                            if not current_default:
+                                song["defaultAction"] = action_id
+                                logger.info(f"导入设置默认动画: {song_id} -> {action_id} (首次绑定)")
+                            elif current_default not in jukebox_config.data["actions"]:
+                                song["defaultAction"] = action_id
+                                logger.info(f"导入设置默认动画: {song_id} -> {action_id} (原默认动画不存在)")
+
+                # Step 4: map defaultAction.
+                for old_song_id, song in import_data.get("songs", {}).items():
+                    old_default_action = song.get("defaultAction", "")
+                    if not old_default_action:
+                        continue
+
+                    local_song_id = id_mapping["songs"].get(old_song_id)
+                    if not local_song_id:
+                        continue
+
+                    local_action_id = id_mapping["actions"].get(old_default_action)
+                    if not local_action_id:
+                        continue
+
+                    local_song = jukebox_config.data["songs"].get(local_song_id)
+                    if not local_song:
+                        continue
+
+                    bindings = jukebox_config.data["bindings"].get(local_song_id, {})
+                    if local_action_id in bindings:
+                        local_song["defaultAction"] = local_action_id
+                        logger.info(f"导入映射默认动画: {local_song_id} -> {local_action_id}")
+
+                async def _save_imported_config() -> None:
+                    nonlocal save_completed
+                    await jukebox_config.asave()
+                    save_completed = True
+
+                await await_retirement(_save_imported_config())
+            except BaseException:
+                if not save_completed and copied_targets:
+                    await await_retirement(asyncio.to_thread(_cleanup_temp_paths, copied_targets))
+                raise
 
         logger.info(f"导入完成: {stats}")
         return {"success": True, "stats": stats}
@@ -1897,7 +1935,7 @@ async def pack_folder(files: List[UploadFile] = File(...)):
                 raise HTTPException(400, f"文件名包含非法路径: {file.filename}") from err
             file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "wb") as f:
-                await asyncio.to_thread(shutil.copyfileobj, file.file, f)
+                await await_retirement(asyncio.to_thread(shutil.copyfileobj, file.file, f))
 
         # Create ZIP files.
         zip_path = temp_path / "packed.zip"
@@ -1915,7 +1953,7 @@ async def pack_folder(files: List[UploadFile] = File(...)):
             headers={"Content-Disposition": "attachment; filename=packed.zip"},
             background=BackgroundTask(cleanup_temp_path, str(temp_dir))
         )
-    except Exception:
-        # Clean temporary directories on exceptions.
-        await asyncio.to_thread(cleanup_temp_path, str(temp_dir))
+    except BaseException:
+        # Clean temporary directories on exceptions or task cancellation.
+        await await_retirement(asyncio.to_thread(cleanup_temp_path, str(temp_dir)))
         raise
