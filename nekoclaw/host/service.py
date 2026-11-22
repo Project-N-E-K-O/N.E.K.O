@@ -103,6 +103,10 @@ async def configured_task_agent_model() -> dict[str, Any] | None:
     }
 
 
+# The states of a session in which something is being done with it.
+_SESSION_AT_WORK = ("running", "waiting", "compacting")
+
+
 class ProjectBusy(RuntimeError):
     """Something is at work in a project, so where it works cannot be changed now. Its text is why (a code)."""
 
@@ -695,7 +699,7 @@ class NekoClawHost:
         assert window is not None
         return window
 
-    async def _project_busy(self, project: str, lanlan_name: str | None = None) -> str | None:
+    async def _project_busy(self, project: str) -> str | None:
         """Return why a project's working directory cannot be changed now, or None when it can.
 
         ``"at_work"`` while a session of the project is open in a runtime
@@ -705,15 +709,15 @@ class NekoClawHost:
         to be in the middle of something (a session writing in a copy of
         the directory, a copy not brought back yet) adds it here.
         """
-        # More of each session's commissions than a page shows: one that waits may be older than the last few.
-        rows = await self.ledger.find_sessions(
-            lanlan_name=lanlan_name, project=project, limit=500, commissions_each=50
-        )
-        for row in rows:
-            if row.session.status in ("running", "waiting", "compacting"):
-                return "at_work"
-            if any(commission.status in ("queued", "working", "waiting_user") for commission in row.commissions):
-                return "at_work"
+        # Of every character: the directory is the project's, not one character's.
+        rows = await self.ledger.find_sessions(project=project, limit=500, commissions_each=0)
+        if any(row.session.status in _SESSION_AT_WORK for row in rows):
+            return "at_work"
+        # Every commission under way, not the last few of each session: one that waits may be old.
+        sessions = {row.session.id for row in rows}
+        under_way = await self.ledger.select(statuses=("queued", "working", "waiting_user"))
+        if any(commission.project == project or commission.session_id in sessions for commission in under_way):
+            return "at_work"
         return None
 
     async def working_directory(self, workdir: Any) -> Path:
@@ -811,7 +815,7 @@ class NekoClawHost:
             )
         return {"project": project.to_json(), "session_id": session.id}
 
-    async def set_project_workdir(self, project: str, workdir: str, *, lanlan_name: str | None = None) -> dict[str, Any]:
+    async def set_project_workdir(self, project: str, workdir: str) -> dict[str, Any]:
         """Change where the task agents of a project work, as the user asks; returns the project as a page shows it.
 
         ``workdir`` is a directory that is there, given whole (not relative
@@ -830,14 +834,18 @@ class NekoClawHost:
         wanted = await self._working_directory(workdir)
         if await self.space.get_project(project) is None:
             raise LookupError(project)
-        busy = await self._project_busy(project, lanlan_name)
+        busy = await self._project_busy(project)
         if busy is not None:
             raise ProjectBusy(busy)
         changed = await self.space.set_project_workdir(project, str(wanted))
         if changed is None:
             raise LookupError(project)
-        rows = await self.ledger.find_sessions(lanlan_name=lanlan_name, project=project, kind="project", limit=500)
+        # The project's own sessions of every character: each starts from the directory it keeps.
+        rows = await self.ledger.find_sessions(project=project, kind="project", limit=500, commissions_each=0)
         for row in rows:
+            # One that came to be at work since the look above goes on where it began.
+            if row.session.status in _SESSION_AT_WORK:
+                continue
             await self.ledger.update_session(row.session.id, workdir=str(wanted))
         return changed.to_json()
 

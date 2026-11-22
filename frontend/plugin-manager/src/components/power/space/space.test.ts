@@ -186,6 +186,20 @@ describe('the notes', () => {
     expect(api.fileEntry).not.toHaveBeenCalled()
   })
 
+  it('of an archived project are read and not changed or removed', async () => {
+    api.listEntries.mockResolvedValue({ entries: [entry()] })
+    api.readEntry.mockResolvedValue({ entry: entry({ content: 'Use D:/py312/python.exe.', evidence: ['D:/py312/python.exe'] }) })
+    const { container } = await mount(NotesPane, { scope: { project: 'moving', archive_year: '2026' }, readonly: true })
+    const row = container.querySelector('[data-entry="python-path"]')!
+    expect(buttonSaying(row, words.space.notes.remove)).toBeUndefined()
+    expect(byTest('notes-add')).toBeNull()
+    await click(buttonSaying(row, words.space.notes.open))
+    expect(api.readEntry).toHaveBeenCalledWith('python-path', { project: 'moving', archive_year: '2026' })
+    expect(document.body.textContent).toContain('D:/py312/python.exe')
+    expect(byTest('note-save')).toBeNull()
+    expect((document.querySelector('[data-testid="note-title"] input, input[data-testid="note-title"]') as HTMLInputElement).disabled).toBe(true)
+  })
+
   it('a new one needs a title and text before anything is sent', async () => {
     api.listEntries.mockResolvedValue({ entries: [] })
     api.fileEntry.mockResolvedValue({ entry: entry() })

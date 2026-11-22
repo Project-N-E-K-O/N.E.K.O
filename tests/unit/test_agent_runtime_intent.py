@@ -1415,3 +1415,33 @@ async def test_restore_proceeds_when_master_intent_on(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert user_plugin_calls == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kept", "plugins_on"), [(False, False), (None, True), (True, True)])
+async def test_a_restore_at_start_leaves_plugins_the_user_switched_off_as_they_are(
+    agent_state_isolation, isolated_intent_store: Path, kept, plugins_on
+):
+    """Replaying the switch at start is not the user switching it on.
+
+    Plugins the user switched off by their own switch stay off; where
+    nothing was kept of that switch, they come on with the one for all.
+    """
+    srv = agent_state_isolation
+    import app.agent_runtime_intent as ari
+
+    ari.set_intent("analyzer_enabled", True)
+    if kept is not None:
+        ari.set_intent("user_plugin_enabled", kept)
+    before = set(srv.Modules._persistent_tasks)
+    with patch.object(
+        srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        answer = await srv.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+    # Whatever it started (nothing, where the plugins stay off).
+    await asyncio.gather(*(set(srv.Modules._persistent_tasks) - before))
+
+    assert answer["success"] is True and srv.Modules.analyzer_enabled is True
+    assert bool(srv.Modules.agent_flags.get("user_plugin_enabled")) is plugins_on
+    # What was kept is as it was.
+    assert ari.get_intent("user_plugin_enabled") is kept

@@ -516,11 +516,17 @@ async def agent_command(payload: Dict[str, Any]):
             # all of it, and each plugin has its own. Master OFF stops the
             # plugin lifecycle; this schedules a new, generation-owned
             # startup for the re-enabled master.
-            await set_agent_flags({
-                "user_plugin_enabled": True,
-                "lanlan_name": lanlan_name,
-                "_persist_intent": False,
-            })
+            # A restore at start replays the switch (``_persist_intent``
+            # False) and is not the user switching it on: plugins the user
+            # switched off by their own switch since then stay off.
+            from app.agent_runtime_intent import get_intent
+
+            if persist_intent or get_intent("user_plugin_enabled") is not False:
+                await set_agent_flags({
+                    "user_plugin_enabled": True,
+                    "lanlan_name": lanlan_name,
+                    "_persist_intent": False,
+                })
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}

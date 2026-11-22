@@ -75,6 +75,8 @@ const drafting = ref(false)
 const making = ref(false)
 const picking = ref(false)
 const error = ref('')
+// Counts the times the form was opened or closed: what was asked for one form is not put into the next.
+let turn = 0
 
 /** The kinds that can be chosen. Until the list is read (or when it cannot be), the one every familiar can be. */
 const presets = computed<Array<Pick<FamiliarTemplate, 'name' | 'label'>>>(() => {
@@ -97,29 +99,34 @@ function describe(failure: unknown): string {
 }
 
 async function pick() {
+  const mine = turn
   picking.value = true
   try {
     const chosen = await pickDirectory(workdir.value.trim() || undefined)
+    if (mine !== turn) return
     if (chosen.path) workdir.value = chosen.path
     error.value = ''
   } catch (failure) {
-    error.value = describe(failure)
+    if (mine === turn) error.value = describe(failure)
   } finally {
-    picking.value = false
+    if (mine === turn) picking.value = false
   }
 }
 
 async function fill() {
+  const mine = turn
   drafting.value = true
   try {
     const draft = (await draftFamiliar(about.value.trim(), workdir.value.trim())).draft
+    // The form was closed, or closed and opened again, meanwhile: the draft was for the other one.
+    if (mine !== turn) return
     // What the model drafted takes the place of what is in the form; a kind that cannot be chosen is left as it was.
     Object.assign(form, { ...draft, preset: presets.value.some(item => item.name === draft.preset) ? draft.preset : form.preset })
     error.value = ''
   } catch (failure) {
-    error.value = describe(failure)
+    if (mine === turn) error.value = describe(failure)
   } finally {
-    drafting.value = false
+    if (mine === turn) drafting.value = false
   }
 }
 
@@ -143,6 +150,9 @@ async function make() {
 
 // Opened: an empty form, and the kinds as they are now.
 watch(() => props.modelValue, async (open) => {
+  turn++
+  drafting.value = false
+  picking.value = false
   if (!open) return
   about.value = ''
   workdir.value = ''

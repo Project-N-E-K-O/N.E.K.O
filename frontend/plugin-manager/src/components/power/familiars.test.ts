@@ -134,6 +134,23 @@ describe('making a familiar', () => {
     expect(closed).not.toHaveBeenCalled()
   })
 
+  it('does not put a draft into a form that was closed and opened again meanwhile', async () => {
+    let answer!: (value: unknown) => void
+    api.draftFamiliar.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    const { state } = await mount(NewFamiliarDialog, { modelValue: true })
+    await type('familiar-about', 'looks after the ledger tool')
+    await click(byTest('familiar-fill'))
+    state.props = { modelValue: false }
+    await flush()
+    state.props = { modelValue: true }
+    await flush()
+    await type('familiar-name', 'Travel plans')
+    answer({ draft: { name: 'Ledger tool', title: 'Keeper of the books', preset: 'boss', duty: '', description: '', rules: '' } })
+    await flush()
+    expect(field('familiar-name').value).toBe('Travel plans')
+    expect(field('familiar-title').value).toBe('')
+  })
+
   it('keeps the kind that was chosen when the model drafts one that cannot be', async () => {
     api.draftFamiliar.mockResolvedValue({ draft: { name: 'N', title: '', preset: 'broken', duty: '', description: '', rules: '' } })
     api.makeFamiliar.mockResolvedValue({ project: { name: 'N' }, session_id: 's3' })
@@ -264,6 +281,20 @@ describe('a familiar up close', () => {
     expect(api.getProjectBoard).toHaveBeenLastCalledWith('Ledger tool', 'r1')
     await click(byTest('card-save'))
     expect(api.writeCard).toHaveBeenCalledWith('s1', { title: 'Bookkeeper' })
+  })
+
+  it('writes a card for the familiar its editor was opened for, whichever is chosen by then', async () => {
+    const other = card({ id: 's2', name: 'Look it up', kind: 'child', preset: 'scout', leader: false, parent: 's1', title: 'Scout' })
+    const { state } = await show([card(), other])
+    api.writeCard.mockResolvedValue({ written: ['title'] })
+    await click(byTest('card-edit'))
+    await type('card-title', 'Bookkeeper')
+    state.props = { ...state.props, selectedId: 's2' }
+    await flush()
+    // The editor is on its way out; a press that still reaches it writes for the one it was opened for.
+    const save = byTest('card-save')
+    if (save) await click(save)
+    expect(api.writeCard.mock.calls.every(call => call[0] === 's1')).toBe(true)
   })
 
   it('shows those that belong to no project when no project is named, and reads anew for another', async () => {

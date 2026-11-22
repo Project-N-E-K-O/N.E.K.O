@@ -5843,3 +5843,41 @@ async def test_a_directory_that_will_not_do_and_a_project_that_is_not_there_chan
         await host.set_project_workdir("No such project", str(elsewhere))
     with pytest.raises(ValueError):
         await host.set_project_workdir("../outside", str(elsewhere))
+
+
+async def test_where_a_project_works_is_the_projects_and_not_one_characters(hosts, tmp_path):
+    """Changed for the sessions of every character, and not while any of them has something under way."""
+    from nekoclaw.host.service import ProjectBusy
+
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    mei, _ = await host.ledger.project_session("Mei", "Budget app")
+    new = tmp_path / "code"
+    new.mkdir()
+
+    # Another character's session is open with a run under way.
+    await host.ledger.update_session(mei.id, status="running")
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    await host.ledger.update_session(mei.id, status="idle")
+
+    # A commission that still waits, older than the last few of its session.
+    waiting, _ = await host.ledger.create(
+        lanlan_name="Mei", title="first", dispatch_text="first", source="dispatch", session_id=mei.id, project="Budget app",
+    )
+    for number in range(4):
+        later, _ = await host.ledger.create(
+            lanlan_name="Mei", title=f"later {number}", dispatch_text="later", source="dispatch", session_id=mei.id,
+            project="Budget app",
+        )
+        assert (await host.ledger.transition(later.id, "cancelled")).applied
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    assert (await host.ledger.transition(waiting.id, "cancelled")).applied
+
+    changed = await host.set_project_workdir("Budget app", str(new))
+    assert changed["workdir"] == str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir == str(new)
+    assert (await host.ledger.get_session(mei.id)).workdir == str(new)

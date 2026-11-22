@@ -276,6 +276,8 @@ watch(() => props.project, () => {
   void load()
 }, { immediate: true })
 watch(() => props.selectedId, () => {
+  // The editor was opened for the one the user has left.
+  editing.value = false
   note.value = ''
   sentence.value = ''
   reply.value = ''

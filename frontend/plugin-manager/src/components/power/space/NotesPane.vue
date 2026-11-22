@@ -35,14 +35,15 @@
           <td class="muted">{{ t('power.space.notes.seenTimes', { count: entry.seen }) }}</td>
           <td class="act">
             <el-button size="small" @click="open(entry)">{{ t('power.space.notes.open') }}</el-button>
-            <el-button size="small" type="danger" plain @click="askRemove(entry)">{{ t('power.space.notes.remove') }}</el-button>
+            <el-button v-if="!readonly" size="small" type="danger" plain @click="askRemove(entry)">{{ t('power.space.notes.remove') }}</el-button>
           </td>
         </tr>
       </tbody>
     </table>
 
     <el-dialog v-model="editing" :title="t(form.id ? 'power.space.notes.edit' : 'power.space.notes.create')" width="640px">
-      <el-form label-position="top" @submit.prevent>
+      <!-- Of an archived project they are shown as they were: nothing of them is changed. -->
+      <el-form label-position="top" :disabled="readonly" @submit.prevent>
         <el-form-item :label="t('power.space.notes.title')">
           <el-input v-model="form.title" maxlength="200" data-testid="note-title" />
         </el-form-item>
@@ -64,7 +65,7 @@
       <el-alert v-if="formError" :title="formError" type="error" :closable="false" show-icon />
       <template #footer>
         <el-button @click="editing = false">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="saving" data-testid="note-save" @click="save">{{ t('power.space.notes.save') }}</el-button>
+        <el-button v-if="!readonly" type="primary" :loading="saving" data-testid="note-save" @click="save">{{ t('power.space.notes.save') }}</el-button>
       </template>
     </el-dialog>
 
@@ -167,6 +168,7 @@ async function open(entry: SpaceEntry) {
 }
 
 async function save() {
+  if (props.readonly) return
   if (!form.title.trim() || !form.content.trim()) {
     formError.value = t('power.space.notes.required')
     return
@@ -187,13 +189,14 @@ async function save() {
 }
 
 function askRemove(entry: SpaceEntry) {
+  if (props.readonly) return
   targetScope = { ...props.scope }
   target.value = entry
   removing.value = true
 }
 
 async function remove() {
-  if (!target.value) return
+  if (!target.value || props.readonly) return
   saving.value = true
   let failed = false
   try {
@@ -235,7 +238,8 @@ async function showRemoved() {
 
 watch(() => [props.scope.project, props.scope.archive_year], () => {
   scopeTurn++
-  // What was open belongs to the scope the user left.
+  // What was open, and what was listed, belongs to the scope the user left.
+  entries.value = []
   editing.value = false
   removing.value = false
   target.value = null
