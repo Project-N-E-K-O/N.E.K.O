@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -433,14 +432,11 @@ async def switch_builtin_source(
         if not plugin_promoted or not await asyncio.to_thread(
             request.target_plugin_dir.exists
         ):
-            # Only a plugin start reconciles grants (see replace_plugin).
-            if not await asyncio.to_thread(
-                functools.partial(
-                    permissions_before.restore,
-                    request.plugin_id,
-                    store_may_have_changed=was_running,
-                )
-            ):
+            # Unlike replace_plugin, the install source switches inside this
+            # transaction, so a concurrent first-use import may bind grants to
+            # the Market source even while the plugin is stopped: a missing
+            # snapshot always leaves the rollback incomplete.
+            if not await asyncio.to_thread(permissions_before.restore, request.plugin_id):
                 rollback_code = "override_rollback_incomplete"
         else:
             rollback_code = "override_rollback_incomplete"

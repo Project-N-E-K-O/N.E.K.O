@@ -693,3 +693,54 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
         with state.acquire_plugins_write_lock():
             state.plugins.clear()
             state.plugins.update(plugins_backup)
+
+
+@pytest.mark.asyncio
+async def test_switch_rollback_without_a_snapshot_is_incomplete_even_when_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The source switches inside the transaction, so a concurrent first-use
+    import can bind grants to the Market source; without a snapshot the
+    rollback cannot claim the builtin's grants are back."""
+    from plugin.server.application.plugins import permission_service
+
+    monkeypatch.setattr(
+        permission_service,
+        "snapshot_permissions",
+        lambda _plugin_id: permission_service.PermissionSnapshot("unavailable"),
+    )
+    exec_root = tmp_path / "exec"
+    staging = exec_root / ".study_companion.staging-test"
+    target = exec_root / "study_companion"
+    staging.mkdir(parents=True)
+    (staging / "plugin.toml").write_text("new", encoding="utf-8")
+    plugins_backup = copy.deepcopy(state.plugins)
+
+    async def failing_validation() -> None:
+        raise RuntimeError("promoted source rejected")
+
+    try:
+        with pytest.raises(SourceSwitchError) as exc_info:
+            await switch_builtin_source(
+                SourceSwitchRequest(
+                    plugin_id="study_companion",
+                    staged_plugin_dir=staging,
+                    target_plugin_dir=target,
+                    confirmation_token="token",
+                ),
+                rebuild_plan=lambda: _async_value(_plan("token")),
+                read_lock_snapshot=lambda: _async_value({"source": "builtin"}),
+                commit_lock=lambda: _async_value(None),
+                restore_lock=lambda _snapshot: _async_value(None),
+                clear_user_source=lambda: _async_value(None),
+                refresh_registry=lambda: _async_value(None),
+                validate_promoted_source=failing_validation,
+                is_running=lambda _plugin_id: _async_value(False),
+                stop=lambda _plugin_id: _async_value(None),
+                start=lambda _plugin_id: _async_value(None),
+            )
+        assert exc_info.value.rollback_code == "override_rollback_incomplete"
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
