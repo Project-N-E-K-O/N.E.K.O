@@ -8729,10 +8729,10 @@ async def browser_restore_persona_version(request: _BrowserPersonaRestoreRequest
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
-        except LookupError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
         except (IndexError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Persona entry not found")
     return {"success": True, "entry": updated}

@@ -7,6 +7,7 @@
     let activeCharacter = '';
     let activeProfileFilter = 'about_you';
     let overviewData = null;
+    let overviewCharacter = '';
     let starMapData = null;
     let searchResults = null;
     let searchQuery = '';
@@ -294,6 +295,7 @@
     async function fetchOverview(characterName) {
         if (!characterName) {
             overviewData = null;
+            overviewCharacter = '';
             overviewError = '';
             starMapData = null;
             relatedCheckContext = null;
@@ -308,9 +310,12 @@
         }
         const reqId = ++loadingRequestId;
         overviewError = '';
-        overviewData = null;
-        renderImprintPanel();
-        renderProfilePanel();
+        if (overviewCharacter !== characterName) {
+            overviewData = null;
+            overviewCharacter = characterName;
+            renderImprintPanel();
+            renderProfilePanel();
+        }
         fetchStarMap(characterName);
         fetchSnapshots(characterName);
         try {
@@ -880,6 +885,9 @@
             }
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.operationFailed', '操作失败'), true);
+                if (resp.status === 409) {
+                    await fetchOverview(targetChar);
+                }
                 return false;
             }
             if (successToast) {

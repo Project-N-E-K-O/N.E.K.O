@@ -1493,7 +1493,7 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
                         "source": "reflection",
                         "version_history": [
                             {"text": "版本二", "replaced_at": "2026-05-02T10:00:00", "reason": "manual_edit"},
-                            {"text": "版本三", "replaced_at": "2026-05-03T10:00:00", "reason": "manual_edit"},
+                            {"text": "版本三", "replaced_at": None, "reason": "cloud_sync"},
                         ],
                     }
                 ]
@@ -1518,6 +1518,23 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
                 expected_text="版本一",
                 expected_replaced_at="2026-05-01T10:00:00",
             )
+        with pytest.raises(IndexError):
+            await pm.arestore_persona_version(
+                char_name,
+                "master",
+                "p_hist",
+                99,
+            )
+        # Missing/None replaced_at normalizes to "" to match frontend payload
+        restored_no_ts = await pm.arestore_persona_version(
+            char_name,
+            "master",
+            "p_hist",
+            1,
+            expected_text="版本三",
+            expected_replaced_at="",
+        )
+        assert restored_no_ts is not None and restored_no_ts["text"] == "版本三"
         restored = await pm.arestore_persona_version(
             char_name,
             "master",

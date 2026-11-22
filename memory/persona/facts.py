@@ -1409,11 +1409,11 @@ class FactsMixin:
             if not restored_text:
                 raise ValueError("Target version snapshot is empty")
             actual_replaced_at = str(
-                target_snap.get('replaced_at') if isinstance(target_snap, dict) else ''
+                (target_snap.get('replaced_at') if isinstance(target_snap, dict) else '') or ''
             )
             if expected_text is not None and restored_text != str(expected_text).strip():
                 raise LookupError("Version history changed; selected snapshot no longer matches")
-            if expected_replaced_at is not None and actual_replaced_at != str(expected_replaced_at):
+            if expected_replaced_at is not None and actual_replaced_at != str(expected_replaced_at or ''):
                 raise LookupError("Version history changed; selected snapshot timestamp no longer matches")
 
             current_text = str(entry.get('text') or '').strip()
