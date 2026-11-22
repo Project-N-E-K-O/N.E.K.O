@@ -292,3 +292,54 @@ async def test_taking_a_switch_back_leaves_what_another_request_wrote_meanwhile(
     answer = await agent_router.post_agent_command(Asked())
     assert answer.status_code == 502
     assert manager.agent_flags == {"agent_enabled": True, "browser_use_enabled": False, "computer_use_enabled": True}
+
+
+@pytest.mark.asyncio
+async def test_two_switches_that_never_reached_the_agent_process_leave_the_session_as_it_was(monkeypatch):
+    """One command at a time: the second does not take the first one's unconfirmed value for what was there."""
+    import asyncio
+
+    import httpx
+
+    from main_routers import agent_router
+
+    class Manager:
+        def __init__(self) -> None:
+            self.agent_flags: dict = {"agent_enabled": True, "browser_use_enabled": False}
+
+        def update_agent_flags(self, flags: dict) -> None:
+            self.agent_flags.update(flags)
+
+    class Config:
+        def get_character_data(self):
+            return (None, "Lan", None, None, None, None, None, None, None)
+
+        def is_agent_free(self) -> bool:
+            return False
+
+    manager = Manager()
+
+    async def agent(request: httpx.Request) -> httpx.Response:
+        # Not reached; the other request gets its turn meanwhile.
+        await asyncio.sleep(0.02)
+        raise httpx.ConnectError("refused", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(agent))
+    monkeypatch.setattr(agent_router, "_remote_backend_block", lambda: None)
+    monkeypatch.setattr(agent_router, "get_session_manager", lambda: {"Lan": manager})
+    monkeypatch.setattr(agent_router, "get_config_manager", lambda: Config())
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: client)
+    monkeypatch.setattr(agent_router, "_command_lock", None)
+
+    class Asked:
+        def __init__(self, value: bool) -> None:
+            self.value = value
+
+        async def json(self) -> dict:
+            return {"command": "set_flag", "key": "browser_use_enabled", "value": self.value}
+
+    on, off = await asyncio.gather(
+        agent_router.post_agent_command(Asked(True)), agent_router.post_agent_command(Asked(False)),
+    )
+    assert on.status_code == 502 and off.status_code == 502
+    assert manager.agent_flags == {"agent_enabled": True, "browser_use_enabled": False}

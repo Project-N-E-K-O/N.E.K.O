@@ -28,6 +28,7 @@ See ``main_routers/characters_router.py`` docstring or
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import asyncio
 import os
 import time
 import uuid
@@ -280,12 +281,27 @@ async def get_computer_use_native_capture_available():
     return {"success": True, "available": native_wayland_capture_available()}
 
 
+# Held from where a command writes the session's switches to where it is
+# known whether the agent process took it: one that is not taken puts back
+# what it wrote, and no other command reads or writes in between.
+_command_lock: asyncio.Lock | None = None
+
+
 @router.post('/command')
 async def post_agent_command(request: Request):
     """Unified command entry point; the frontend only sends commands and never toggles the individual switches directly."""
     blocked = _remote_backend_block()
     if blocked is not None:
         return blocked
+    global _command_lock
+    if _command_lock is None:
+        _command_lock = asyncio.Lock()
+    async with _command_lock:
+        return await _forward_agent_command(request)
+
+
+async def _forward_agent_command(request: Request):
+    """Write the session's switches as a command says, send it on, and put them back when it was not taken."""
     t0 = time.perf_counter()
     try:
         data = await request.json()

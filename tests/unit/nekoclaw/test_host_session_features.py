@@ -6003,7 +6003,17 @@ async def test_a_change_of_where_a_project_works_is_carried_through_when_whoever
 
     host.space.set_project_workdir = held
     asked = asyncio.ensure_future(host.set_project_workdir("Budget app", str(new)))
-    await reached.wait()
+    waiting = asyncio.ensure_future(reached.wait())
+    try:
+        done, _ = await asyncio.wait({asked, waiting}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+        # Ended before it came to write the record: what it raised is told here, not waited for.
+        assert asked not in done, asked.exception() if asked.done() and not asked.cancelled() else "ended early"
+        assert waiting in done, "the change never came to write the record"
+    except BaseException:
+        go_on.set()
+        raise
+    finally:
+        waiting.cancel()
     # The sessions say the new place already; the record does not yet. The request is given up here.
     asked.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -6088,3 +6098,36 @@ async def test_a_session_that_began_work_before_the_change_was_undone_stays_wher
     assert (await host.ledger.get_session(lan.id)).workdir == str(old)
     assert (await host.ledger.get_session(mei.id)).workdir == str(new)
     assert (await host.ledger.get_session(kim.id)).workdir == str(new)
+
+
+async def test_a_change_of_where_a_project_works_is_settled_before_the_host_shuts_down(hosts, tmp_path):
+    """The ledger is closed after it: a change whose record cannot be written still puts the sessions back."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    old = tmp_path / "old"
+    old.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(old))
+    lan, _ = await host.ledger.project_session("Lan", "Budget app", workdir=str(old))
+    new = tmp_path / "new"
+    new.mkdir()
+    reached = asyncio.Event()
+    put_back: list[str] = []
+    restore = host.ledger.restore_project
+
+    async def noted(before: dict, workdir: str) -> Any:
+        left = await restore(before, workdir)
+        put_back.append(workdir)
+        return left
+
+    async def fails_slowly(name: str, workdir: str) -> Any:
+        reached.set()
+        await asyncio.sleep(0.1)
+        raise OSError("the record cannot be written")
+
+    host.ledger.restore_project = noted
+    host.space.set_project_workdir = fails_slowly
+    asked = asyncio.ensure_future(host.set_project_workdir("Budget app", str(new)))
+    await asyncio.wait_for(reached.wait(), timeout=10)
+    await host.shutdown()
+    # Over by the time the host is shut down, with the sessions put back while the ledger was open.
+    assert asked.done() and isinstance(asked.exception(), OSError)
+    assert put_back == [str(new)]

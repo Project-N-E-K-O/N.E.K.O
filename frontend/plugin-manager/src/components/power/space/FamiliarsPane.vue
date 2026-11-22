@@ -92,7 +92,7 @@
         </el-form-item>
       </el-form>
       <!-- Said here as well: the page behind the editor is covered by it. -->
-      <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon data-testid="card-error" />
+      <el-alert v-if="cardError" :title="cardError" type="error" :closable="false" show-icon data-testid="card-error" />
       <template #footer>
         <el-button @click="editing = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="busy === 'card'" data-testid="card-save" @click="saveCard">{{ t('power.space.familiars.save') }}</el-button>
@@ -125,6 +125,8 @@ const { t, te } = useI18n()
 const board = ref<Board | null>(null)
 const loaded = ref(false)
 const error = ref('')
+// Why the card was not taken, for its editor alone: reading the board anew neither clears nor sets it.
+const cardError = ref('')
 const note = ref('')
 const busy = ref('')
 const sentence = ref('')
@@ -252,6 +254,7 @@ function edit() {
   if (!card) return
   Object.assign(opened, { id: card.id, title: card.title, duty: card.duty, summary: card.summary ?? '' })
   Object.assign(draft, { title: opened.title, duty: opened.duty, summary: opened.summary })
+  cardError.value = ''
   editing.value = true
 }
 
@@ -265,7 +268,11 @@ async function saveCard() {
   if (draft.summary !== opened.summary) lines.summary = draft.summary
   const id = opened.id
   // Not taken: the editor stays open with what was typed, and why is said.
-  if (Object.keys(lines).length && !(await act('card', () => writeCard(id, lines)))) return
+  cardError.value = ''
+  if (Object.keys(lines).length && !(await act('card', () => writeCard(id, lines)))) {
+    cardError.value = error.value
+    return
+  }
   editing.value = false
 }
 

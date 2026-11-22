@@ -942,6 +942,11 @@ class NekoClawHost:
             self._shutdown_task = asyncio.ensure_future(self._shutdown_steps())
         await asyncio.shield(self._shutdown_task)
 
+    async def _settle_changes(self) -> None:
+        """Wait for the changes of where a project works that have begun; what they raise is theirs to tell."""
+        if self._changes:
+            await asyncio.gather(*list(self._changes), return_exceptions=True)
+
     async def _release_builtins(self) -> None:
         """Give the desktop and the browser back and let the provider clean up after them."""
         self.leases.release_all()
@@ -949,6 +954,9 @@ class NekoClawHost:
 
     async def _shutdown_steps(self) -> None:
         steps = (
+            # First: a change of where a project works that is under way is carried
+            # through (or undone) while the ledger it writes to is still open.
+            ("changes under way", self._settle_changes),
             # Before the task agents are stopped: every commission that ends
             # by that would start work for the space that is then cut off.
             ("task agent space, no new work", self.space_keeper.stand_down),
