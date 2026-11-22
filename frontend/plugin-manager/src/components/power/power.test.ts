@@ -145,6 +145,33 @@ describe('the runtime tab', () => {
     expect(byTest('dsh-install')?.textContent).toContain(words.runtime.dsh.retry)
   })
 
+  it('goes on asking about a download after a change of the runtime was not taken, and shows a change that was', async () => {
+    vi.useFakeTimers()
+    api.getRuntime.mockResolvedValueOnce(runtime({ downloading: true, downloaded_bytes: 1000 }))
+    await mount(RuntimeTab)
+    const builtin = () => document.querySelector('[data-testid="runtime-preference"] input[value="builtin"]') as HTMLInputElement
+
+    // Not taken (the connection dropped): the download is still asked about.
+    api.setRuntimePreference.mockRejectedValueOnce(refusal('agent_unreachable'))
+    api.getRuntime.mockResolvedValueOnce(runtime({ downloading: true, downloaded_bytes: 41930392 }))
+    await click(builtin())
+    expect(document.body.textContent).toContain(words.errors.agent_unreachable)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(byTest('dsh-progress')?.textContent).toContain('40.0 MB / 80.0 MB')
+
+    // Taken: what it answers is shown, and what was asked for before it came back is not shown over it.
+    let late!: (value: unknown) => void
+    api.getRuntime.mockReturnValueOnce(new Promise(resolve => { late = resolve }))
+    await vi.advanceTimersByTimeAsync(1000)
+    api.setRuntimePreference.mockResolvedValueOnce(runtime({ downloading: false, installed: true, preference: 'builtin' }))
+    await click(builtin())
+    late(runtime({ downloading: true, downloaded_bytes: 41930392, preference: 'auto' }))
+    await flush()
+    expect(builtin().checked).toBe(true)
+    expect(byTest('dsh-state')?.textContent).toContain(words.runtime.dsh.installed)
+  })
+
   it('does not offer to remove dsh while a task runs in it, and passes on what else goes', async () => {
     api.getRuntime.mockResolvedValue(runtime({ installed: true, sessions: 1 }))
     await mount(RuntimeTab)

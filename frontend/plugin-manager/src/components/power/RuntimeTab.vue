@@ -187,6 +187,8 @@ async function act(work: () => Promise<RuntimeView>) {
     return true
   } catch (failure) {
     error.value = describeConsoleError(failure, t, te)
+    // The change was not taken, and nothing asks any more: a download that runs is asked about again.
+    if (view.value?.dsh.downloading && alive && !timer) timer = setTimeout(() => void load(true), POLL_MS)
     return false
   } finally {
     busy.value = false
