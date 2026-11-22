@@ -515,3 +515,25 @@ async def test_get_character_data_falls_back_on_non_dict_catgirls_without_overwr
     async_res = await cm.aget_character_data()
     assert async_res[1] == her_name
     assert path.read_text(encoding="utf-8") == raw
+
+
+@pytest.mark.asyncio
+async def test_get_character_data_falls_back_on_empty_catgirls_dict_without_overwriting_disk(
+    tmp_path,
+):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    path = Path(cm.get_runtime_config_path("characters.json"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps({"当前猫娘": "Other", "猫娘": {}}, ensure_ascii=False)
+    path.write_text(raw, encoding="utf-8")
+
+    master_name, her_name, _, catgirls, _, _, _, _, _ = cm.get_character_data()
+    assert master_name
+    assert her_name
+    assert isinstance(catgirls, dict) and catgirls
+    assert path.read_text(encoding="utf-8") == raw
+
+    async_res = await cm.aget_character_data()
+    assert async_res[1] == her_name
+    assert path.read_text(encoding="utf-8") == raw

@@ -238,5 +238,23 @@ def test_no_strip_commitment_phrases_in_natural_speech() -> None:
         "答应过的事我可没忘，蛋糕买好了",
         "Promise I kept: I bought the cake",
         "約束はちゃんと覚えてるよ",
+        "Promise (due 2026-11-03) is something (aside) / wrote",
+        "/Promise (due 2026-11-03)something",
     ):
         assert _strip_proactive_intent_label_leak(txt) == txt
+
+
+def test_strip_slash_prefix_templated_commitment_labels_all_locales() -> None:
+    from config.prompts.prompts_activity import TOPIC_COMMITMENT_CUE_LABELS
+
+    for lang, tmpl in TOPIC_COMMITMENT_CUE_LABELS.items():
+        rendered = tmpl.format(due="2026-11-03")
+        assert _strip_proactive_intent_label_leak(f"{rendered} / Hello there") == "Hello there", lang
+        assert _strip_proactive_intent_label_leak(f"/{rendered} Hello there") == "Hello there", lang
+
+    # Static intro prefix must not shadow the longer templated {due} label.
+    assert _strip_proactive_intent_label_leak("/答应过的事（期限 2026-11-03）你好") == "你好"
+    # Nested parentheses inside {due} must remain balanced on the same line.
+    assert _strip_proactive_intent_label_leak("Promise (due Nov 3 (Mon)) / Hello there") == "Hello there"
+    assert _strip_proactive_intent_label_leak("/Promise (due Nov 3 (Mon)) Hello there") == "Hello there"
+    assert _strip_proactive_intent_label_leak("/答应过的事（期限 11月3日（周一））你好") == "你好"

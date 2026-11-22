@@ -497,7 +497,7 @@ class CharactersMixin:
                 character_data['当前猫娘'] = her_name
                 # Rare path (corrupt configuration / deleted neko only): persist synchronously so the fix survives restart.
                 # save_characters refreshes the cache internally; no manual synchronization is needed here.
-                if catgirls_is_valid_dict:
+                if catgirls_is_valid_dict and bool(raw_catgirls):
                     try:
                         self.save_characters(character_data)
                     except Exception as persist_err:

@@ -21,7 +21,7 @@ import logging
 import unicodedata
 import re
 from dataclasses import dataclass
-from functools import partial
+from functools import lru_cache, partial
 from itertools import zip_longest
 from typing import Any, Callable
 
@@ -2436,17 +2436,59 @@ def _strip_proactive_label_tail(rest: str) -> str:
     return body.lstrip()
 
 
+@lru_cache(maxsize=32)
+def _compile_label_prefix_pattern(pattern: re.Pattern[str]) -> re.Pattern[str]:
+    pattern_text = pattern.pattern
+    if pattern_text.endswith("$"):
+        return re.compile(pattern_text[:-1], pattern.flags)
+    return pattern
+
+
+def _match_label_pattern_prefix(text: str, pattern: re.Pattern[str]) -> str | None:
+    """Match a compiled full-line label pattern as a same-line prefix."""
+    prefix_pattern = _compile_label_prefix_pattern(pattern)
+    match = prefix_pattern.match(text)
+    if not match:
+        return None
+    end = match.end()
+    balance = 0
+    for ch in text[:end]:
+        if ch in "(（":
+            balance += 1
+        elif ch in ")）":
+            balance -= 1
+    while balance > 0 and end < len(text) and text[end] not in "\r\n":
+        ch = text[end]
+        if ch in "(（":
+            balance += 1
+        elif ch in ")）":
+            balance -= 1
+        end += 1
+    if balance != 0:
+        return None
+    candidate = text[:end]
+    if not pattern.match(candidate):
+        return None
+    return candidate
+
+
 def _strip_proactive_label_slash_prefix(
     body: str,
     labels: frozenset[str],
+    label_patterns: tuple[re.Pattern[str], ...] = (),
 ) -> str | None:
     """Strip a known label using an ASCII or full-width slash separator."""
     if not body:
         return None
+    best_len = -1
+    best_rest: str | None = None
+
     folded = body.casefold()
     for label in sorted(labels, key=len, reverse=True):
         if not label:
             continue
+        if len(label) <= best_len:
+            break
         if folded.startswith(label):
             rest = _normalize_proactive_label_gap(body[len(label) :])
             sep = re.match(
@@ -2455,13 +2497,56 @@ def _strip_proactive_label_slash_prefix(
                 rest,
             )
             if sep:
-                return _strip_proactive_label_tail(rest)
-        if body.startswith(tuple(_PROACTIVE_SLASHES)) and folded[1:].startswith(
-            label
-        ):
-            rest = _normalize_proactive_label_gap(body[1 + len(label) :])
-            if _label_prefix_boundary_ok(label, rest):
-                return _strip_proactive_label_tail(rest)
+                best_len = len(label)
+                best_rest = rest
+                break
+
+    if label_patterns:
+        for pattern in label_patterns:
+            matched = _match_label_pattern_prefix(body, pattern)
+            if matched and len(matched) > best_len:
+                rest = _normalize_proactive_label_gap(body[len(matched) :])
+                sep = re.match(
+                    rf"{_PROACTIVE_HSPACE_PATTERN}*"
+                    rf"[{re.escape(_PROACTIVE_SLASHES)}]",
+                    rest,
+                )
+                if sep:
+                    best_len = len(matched)
+                    best_rest = rest
+
+    if best_rest is not None:
+        return _strip_proactive_label_tail(best_rest)
+
+    if body.startswith(tuple(_PROACTIVE_SLASHES)):
+        after_slash = body[1:]
+        folded_after = folded[1:]
+        for label in sorted(labels, key=len, reverse=True):
+            if not label:
+                continue
+            if len(label) <= best_len:
+                break
+            if folded_after.startswith(label):
+                rest = _normalize_proactive_label_gap(after_slash[len(label) :])
+                if _label_prefix_boundary_ok(label, rest):
+                    best_len = len(label)
+                    best_rest = rest
+                    break
+
+        if label_patterns:
+            for pattern in label_patterns:
+                matched = _match_label_pattern_prefix(after_slash, pattern)
+                if matched and len(matched) > best_len:
+                    rest = _normalize_proactive_label_gap(
+                        after_slash[len(matched) :]
+                    )
+                    if _label_prefix_boundary_ok(matched, rest):
+                        best_len = len(matched)
+                        best_rest = rest
+
+        if best_rest is not None:
+            return _strip_proactive_label_tail(best_rest)
+
     return None
 
 
@@ -2605,6 +2690,7 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
         cleaned = _strip_proactive_label_slash_prefix(
             body,
             context_labels,
+            label_patterns,
         )
         source_tag = "CHAT"
         if cleaned is None:
@@ -2796,7 +2882,11 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
         body = text.lstrip()
         if not body:
             break
-        slash_cleaned = _strip_proactive_label_slash_prefix(body, slash_labels)
+        slash_cleaned = _strip_proactive_label_slash_prefix(
+            body,
+            slash_labels,
+            label_patterns,
+        )
         if slash_cleaned is not None:
             text = slash_cleaned
             continue

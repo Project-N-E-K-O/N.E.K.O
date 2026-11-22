@@ -303,7 +303,7 @@ Objetivo: escolher, de toda a conversa/eventos de uma partida, o que realmente m
 O formato de saída deve ser:
 {"important_records":[],"important_game_events":[],"state_carryback":"","postgame_tone":"","memory_summary":""}
 Regras:
-- important_records: escolha 0-3 diálogos ativos valiosos para o jogador, a relação, emoções/preferências do jogador, promesas ou chats posteriores.
+- important_records: escolha 0-3 diálogos ativos valiosos para o jogador, a relação, emoções/preferências do jogador, promessas ou chats posteriores.
 - important_game_events: escolha 0-3 eventos da sessão significativos para o personagem, como uma virada importante no resultado, aliviar/ficar sério ou mudança de emoção/dificuldade.
 - state_carryback: 0-1 frase sobre o estado da NEKO que deve continuar naturalmente após o jogo; deixe vazio sem evidência confiável.
 - postgame_tone: uma frase curta para o tom pós-jogo, como normal, orgulhosa, emburrada, um pouco menos abatida; deixe vazio sem evidência confiável.

@@ -175,17 +175,31 @@ def test_mixed_ascii_cjk_aliases_match_contiguous_cjk_titles():
         '芒果TV播放',
         '崩坏3攻略',
         '玩COD',
+        '剑网3无界',
+        'CS2比赛',
+        '玩LoL',
     ):
         res = ak.classify_window_title(title)
         assert res.category != 'unknown', f'expected non-unknown for {title!r}'
 
     assert ak.classify_window_title('B站视频').canonical == 'Bilibili'
     assert ak.classify_window_title('看B站').canonical == 'Bilibili'
-    assert ak.classify_window_title('B站直播中').canonical == 'Bilibili'
+    live_res = ak.classify_window_title('B站直播中')
+    assert (live_res.category, live_res.subcategory, live_res.canonical) == (
+        'entertainment', 'live', 'Bilibili Live'
+    )
     assert ak.classify_window_title('A站视频').canonical == 'AcFun'
+    assert ak.classify_window_title('163邮箱收件箱').canonical == 'NetEase 163'
+    assert ak.classify_window_title('芒果TV播放').canonical == '芒果TV'
     assert ak.classify_window_title('崩坏3攻略').canonical == 'Honkai Impact 3rd'
     assert ak.classify_window_title('玩COD').canonical == 'Call of Duty'
-    assert ak._match(ak._make_needle('QQ音乐'), 'qq音乐播放器') is True
+    assert ak.classify_window_title('剑网3无界').canonical == 'JX3 / Jian Wang 3'
+    assert ak.classify_window_title('CS2比赛').canonical == 'Counter-Strike 2'
+    assert ak.classify_window_title('玩LoL').canonical == 'League of Legends'
+    qq_music_res = ak.classify_window_title('QQ音乐播放器')
+    assert (qq_music_res.category, qq_music_res.subcategory, qq_music_res.canonical) == (
+        'entertainment', 'music', 'QQ音乐'
+    )
 
     # Negative ASCII boundary guards must still hold.
     assert ak.classify_window_title('AB站').category == 'unknown'
@@ -200,6 +214,50 @@ def test_mixed_ascii_cjk_aliases_match_contiguous_cjk_titles():
     assert fallback.category == 'entertainment'
     assert fallback.subcategory == 'video'
     assert fallback.canonical == 'Bilibili'
+
+
+@pytest.mark.parametrize('title, expected', [
+    ('QQ音乐', ('entertainment', 'music', 'QQ音乐')),
+    ('QQ音樂', ('entertainment', 'music', 'QQ音乐')),
+    ('QQ音乐播放器', ('entertainment', 'music', 'QQ音乐')),
+    ('LINEマンガ', ('entertainment', 'comic', 'LINEマンガ')),
+    ('LINEマンガ - 無料漫画', ('entertainment', 'comic', 'LINEマンガ')),
+    ('QQ邮箱', ('communication', 'webmail', 'QQ Mail')),
+    ('QQ郵箱 - 收件匣', ('communication', 'webmail', 'QQ Mail')),
+    ('B站漫画', ('entertainment', 'comic', '哔哩哔哩漫画')),
+    ('B站漫畫 - 免费漫画', ('entertainment', 'comic', '哔哩哔哩漫画')),
+    ('B站直播', ('entertainment', 'live', 'Bilibili Live')),
+    ('B站直播中', ('entertainment', 'live', 'Bilibili Live')),
+    ('剑网3缘起', ('gaming', 'game', 'JX3 Online HD')),
+    ('劍網3緣起客户端', ('gaming', 'game', 'JX3 Online HD')),
+    ('看LINE Webtoon', ('entertainment', 'comic', 'LINE Webtoon')),
+    ('看Visual Studio Code - Insiders', ('work', 'ide', 'VS Code Insiders')),
+    ('看Hollow Knight: Silksong', ('gaming', 'game', 'Hollow Knight: Silksong')),
+])
+def test_compound_aliases_not_shadowed_by_short_prefixes(title, expected):
+    """Longer compound aliases must not be shadowed by short ASCII prefix needles."""
+    res = ak.classify_window_title(title)
+    assert (res.category, res.subcategory, res.canonical) == expected
+
+
+@pytest.mark.parametrize('title, expected', [
+    # Disjoint spans must preserve category priority (private > own_app > gaming > work > communication > entertainment).
+    ('QQ - QQ音乐', ('communication', 'im', 'QQ')),
+    ('QQ音乐 - QQ', ('communication', 'im', 'QQ')),
+    ('QQ音乐 - Zoom Meeting', ('communication', 'meeting', 'Zoom Meeting')),
+    ('Visual Studio Code - Bilibili', ('work', 'ide', 'VS Code')),
+    ('KeePass - QQ音乐', ('private', None, 'KeePass')),
+    ('Project N.E.K.O - QQ音乐', ('own_app', None, 'N.E.K.O')),
+    # Delimiter-padded lower-category aliases must not override higher-priority entries.
+    ('Origin - Store', ('gaming', 'launcher', 'EA App')),
+    ('#general - Discord', ('communication', 'im', 'Discord')),
+    ('LINE - Alice', ('communication', 'im', 'LINE')),
+    ('Outlook - Inbox', ('communication', 'email', 'Microsoft Outlook')),
+])
+def test_disjoint_category_priority_and_delimiter_padding_preserved(title, expected):
+    """Disjoint matches and delimiter-padded aliases must preserve table category priority."""
+    res = ak.classify_window_title(title)
+    assert (res.category, res.subcategory, res.canonical) == expected
 
 
 def test_the_fold_map_is_well_formed():
