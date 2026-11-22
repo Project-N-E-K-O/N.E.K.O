@@ -22,11 +22,17 @@ from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_IN_USE,
+    CORRUPT,
+    UNSUPPORTED_VERSION,
     PluginPermissionStore,
     PluginSource,
 )
 
 logger = get_logger("server.plugins.permissions")
+
+# A damaged or newer-version store: every read and write fails, so it holds
+# no grant that could apply and there is nothing to bind or drop.
+_UNUSABLE_STORE_CODES = (CORRUPT, UNSUPPORTED_VERSION)
 
 
 class _SourceUnknown(Exception):
@@ -167,8 +173,8 @@ def _installed_plugin_ids(result: dict) -> list[str | None]:
     """
     try:
         unpacked = result.get("unpack", result.get("install", result))
-        installed = list(unpacked.get("installed_plugins", []))
-    except AttributeError:
+        installed = list(unpacked.get("installed_plugins") or [])
+    except (AttributeError, TypeError):
         return []
     plugin_ids: list[str | None] = []
     for entry in installed:
@@ -209,6 +215,16 @@ def forget_installed_plugins(result: dict, *, plugin_ids: tuple[str, ...] = ()) 
     for plugin_id in sorted(targets):
         try:
             forget_permissions(plugin_id)
+        except ServerDomainError as exc:
+            if exc.code in _UNUSABLE_STORE_CODES:
+                # Holds no usable grant, same as bind_permission_source.
+                continue
+            logger.error(
+                "plugin permission grants could not be dropped plugin_id={} code={}",
+                plugin_id,
+                exc.code,
+            )
+            complete = False
         except Exception as exc:
             logger.error(
                 "plugin permission grants could not be dropped plugin_id={} err_type={}",
@@ -272,19 +288,25 @@ def bind_permission_source(plugin_id: str, source: PluginSource) -> None:
     Raises ``ServerDomainError`` when the store cannot be read or saved. A
     damaged or newer store holds no usable grant and is skipped.
     """
-    from plugin.server.infrastructure.plugin_permissions import (
-        CORRUPT,
-        UNSUPPORTED_VERSION,
-    )
-
     try:
         permission_store.bind_unbound_source(plugin_id, source)
     except ServerDomainError as exc:
-        if exc.code not in (CORRUPT, UNSUPPORTED_VERSION):
+        if exc.code not in _UNUSABLE_STORE_CODES:
             raise
         logger.warning(
             "plugin permission source not bound plugin_id={} code={}", plugin_id, exc.code
         )
+
+
+def bind_current_permission_source(plugin_id: str) -> None:
+    """Before a replacement: bind a record still without a source to the
+    plugin's current source, so the replacement's source counts as a source
+    change rather than a first binding. Nothing happens when the current
+    source is unknown. Raises like :func:`bind_permission_source`.
+    """
+    source = current_source(plugin_id)
+    if source is not None:
+        bind_permission_source(plugin_id, source)
 
 
 def forget_permissions(plugin_id: str) -> dict | None:

@@ -399,3 +399,96 @@ async def test_local_upgrade_reports_grants_it_could_not_drop(environment, monke
     assert "permission grants of the previous package could not be cleared" in result[
         "install_source_warning"
     ]
+
+
+@pytest.mark.asyncio
+async def test_local_upgrade_binds_a_source_less_record_before_replacing(environment):
+    """A grant record without a source is bound to the installed package
+    first, so the upgraded package is a source change, not a first binding."""
+    from plugin.server.application.plugins import permission_service
+
+    env = environment
+    first_package = env.packages / "original.neko-plugin"
+    build_plugin(_source(env.root / "original"), first_package)
+    await env.service.install(package=str(first_package), install_source="imported")
+    permission = "plugin_sdk.main_agent.memory:read"
+    permission_service.permission_store.decide(PLUGIN_ID, permission, "granted", source=None)
+    package = env.packages / "replacement.neko-plugin"
+    build_plugin(_source(env.root / "replacement", version="2.0.0"), package)
+    plan = await env.service.plan_install(package=str(package))
+
+    result = await env.service.install(
+        package=str(package), install_source="imported", confirm_upgrade=True,
+        confirmation_token=plan["confirmation_token"],
+    )
+
+    assert not result.get("install_source_warning")
+    record = permission_service.permission_store.read(PLUGIN_ID)
+    assert record["source"] == permission_service.current_source(PLUGIN_ID).to_dict()
+    assert permission not in record["permissions"]
+
+
+@pytest.mark.asyncio
+async def test_local_upgrade_stops_unchanged_when_the_binding_cannot_be_saved(
+    environment, monkeypatch,
+):
+    from plugin.server.application.plugins import permission_service
+
+    env = environment
+    first_package = env.packages / "original.neko-plugin"
+    build_plugin(_source(env.root / "original"), first_package)
+    await env.service.install(package=str(first_package), install_source="imported")
+    package = env.packages / "replacement.neko-plugin"
+    build_plugin(_source(env.root / "replacement", version="2.0.0"), package)
+    plan = await env.service.plan_install(package=str(package))
+
+    def cannot_bind(_plugin_id, _source):
+        raise ServerDomainError("PLUGIN_PERMISSIONS_WRITE_FAILED", "store unavailable", 503)
+
+    monkeypatch.setattr(permission_service.permission_store, "bind_unbound_source", cannot_bind)
+
+    with pytest.raises(ServerDomainError) as captured:
+        await env.service.install(
+            package=str(package), install_source="imported", confirm_upgrade=True,
+            confirmation_token=plan["confirmation_token"],
+        )
+
+    assert captured.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+    assert 'version="1.0.0"' in (env.user / PLUGIN_ID / "plugin.toml").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code", ["PLUGIN_PERMISSIONS_CORRUPT", "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"]
+)
+async def test_local_upgrade_does_not_report_grants_of_an_unusable_store(
+    environment, monkeypatch, code,
+):
+    """A damaged or newer store holds no usable grant: nothing is left to drop."""
+    from plugin.server.application.plugins import permission_service
+
+    env = environment
+    first_package = env.packages / "original.neko-plugin"
+    build_plugin(_source(env.root / "original"), first_package)
+    await env.service.install(package=str(first_package), install_source="imported")
+    package = env.packages / "replacement.neko-plugin"
+    build_plugin(_source(env.root / "replacement", version="2.0.0"), package)
+    plan = await env.service.plan_install(package=str(package))
+
+    def cannot_record(*_args, **_kwargs):
+        raise OSError("lock file is busy")
+
+    def unusable(*_args, **_kwargs):
+        raise ServerDomainError(code, "permission store unusable", 500)
+
+    monkeypatch.setattr(cli, "_record_install_source_for_install_result", cannot_record)
+    monkeypatch.setattr(permission_service.permission_store, "bind_unbound_source", unusable)
+    monkeypatch.setattr(permission_service, "forget_permissions", unusable)
+
+    result = await env.service.install(
+        package=str(package), install_source="imported", confirm_upgrade=True,
+        confirmation_token=plan["confirmation_token"],
+    )
+
+    assert result["install_source_warning"]
+    assert "could not be cleared" not in result["install_source_warning"]

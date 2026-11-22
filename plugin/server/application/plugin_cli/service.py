@@ -64,7 +64,10 @@ from plugin.server.application.plugins.source_switch import (
     switch_builtin_source,
 )
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
-from plugin.server.application.plugins.permission_service import forget_installed_plugins
+from plugin.server.application.plugins.permission_service import (
+    bind_current_permission_source,
+    forget_installed_plugins,
+)
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -585,6 +588,12 @@ class PluginCliService:
                 status_code=409,
                 details=asdict(plan),
             )
+
+        # Before anything changes: a grant record without a source yet is
+        # bound to the plugin's current source, so the new package's source
+        # is a source change rather than a first binding. A failed save stops
+        # the replacement here, unchanged.
+        await asyncio.to_thread(bind_current_permission_source, plan.plugin_id)
 
         # If the target directory contains only config/data/cache and no plugin.toml, install_plan
         # chooses reinstall — but by definition that replacement path does not register pending approval. Yet no plugin code was previously installed there:

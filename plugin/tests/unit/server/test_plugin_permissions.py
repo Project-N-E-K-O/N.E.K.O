@@ -1365,3 +1365,8 @@ def test_bind_unbound_source_saves_a_pending_import_of_a_bound_record(manager):
     assert store.bind_unbound_source("x", PluginSource("builtin")) is False
     on_disk = json.loads((manager.root / "plugin_permissions.json").read_text(encoding="utf-8"))
     assert on_disk["plugins"]["x"]["source"] == {"channel": "builtin", "fingerprint": None}
+
+
+@pytest.mark.parametrize("installed", [None, 3])
+def test_forget_installed_plugins_tolerates_a_malformed_install_result(installed):
+    assert permission_service.forget_installed_plugins({"installed_plugins": installed}) is True
