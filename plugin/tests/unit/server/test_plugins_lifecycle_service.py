@@ -605,6 +605,22 @@ async def test_start_plugin_refreshes_registry_before_loading(
             "create_plugin_host", "scan_plugin_metadata_isolated", "install_isolated_plugin_metadata"
         }
         assert all(thread is not loop_thread for thread in capability_threads.values())
+
+        # With the push service running the post-registration push is queued
+        # on it instead of awaited under the operation lock.
+        from plugin.server.application.plugins import permission_push as push_module
+
+        queued: list[str] = []
+        monkeypatch.setattr(
+            push_module.permission_push_service, "push_soon", lambda plugin_id: queued.append(plugin_id) or True
+        )
+        created_hosts.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+        response = await service.start_plugin("refresh_adapter")
+        assert response["success"] is True
+        (host,) = created_hosts
+        assert queued == ["refresh_adapter"] and host.permission_pushes == []
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()

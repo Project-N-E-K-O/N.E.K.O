@@ -43,7 +43,10 @@ from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.server.application.plugins.consent_service import denied_plugin_ids
-from plugin.server.application.plugins.permission_push import push_permissions
+from plugin.server.application.plugins.permission_push import (
+    permission_push_service,
+    push_permissions,
+)
 from plugin.server.application.plugins.permission_service import (
     permission_snapshot,
     reconcile_permission_source,
@@ -1538,7 +1541,12 @@ class PluginLifecycleService:
             registered_plugin_id = current_plugin_id
             # A change written after the launch snapshot was built found no
             # registered host to update; send the current state once now.
-            await push_permissions(current_plugin_id, host_obj)
+            # Queued on the push service (which retries) so the start does not
+            # wait on the child's downlink under the operation lock; pushed
+            # inline only when the service is not running (then nothing would
+            # retry a failed push either, which only happens before startup).
+            if not permission_push_service.push_soon(current_plugin_id):
+                await push_permissions(current_plugin_id, host_obj)
 
             _emit_lifecycle_event(event_type="plugin_started", plugin_id=current_plugin_id)
             response: dict[str, object] = {
