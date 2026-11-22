@@ -117,6 +117,7 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
         # Unpersisted incremental data (cleared after a successful save)
         self._delta_daily: dict = {}
         self._delta_records: deque = deque(maxlen=200)
+        self._pending_records: deque = deque()
 
         # Persistence controls
         self._save_interval = 60  # Seconds
@@ -135,8 +136,8 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
         # seen_batches can deduplicate retries after a network timeout when the server already committed.
         # Clear after a successful 200; allocate a new seq for the next window. Persist alongside _unsent_daily.
         self._pending_batch_seq: Optional[str] = None
-        self._pending_daily: dict = {}
-        self._pending_records: list = []
+        self._pending_report_daily: dict = {}
+        self._pending_report_records: list = []
         self._unsent_queue_loaded = False
         self._storage_dir_sync_pending: bool = False
         self._storage_dir_sync_epoch: int = 0

@@ -213,6 +213,322 @@ def test_forward_reference_is_resolved_against_the_owner_class():
     assert _meta_of(Demo.forward).output_model is Demo.Reply
 
 
+def _class_and_static_entry_owners() -> list[type]:
+    class WithClassmethod:
+        @classmethod
+        @plugin_decorators.plugin_entry(id="forward")
+        async def forward(cls, ask: "Ask") -> "Reply":
+            return cls.Reply(ok=ask.flag)
+
+        class Ask(BaseModel):
+            flag: bool
+
+        class Reply(BaseModel):
+            ok: bool
+
+    class WithStaticmethod:
+        @staticmethod
+        @plugin_decorators.plugin_entry(id="forward")
+        async def forward(ask: "Ask") -> "Reply":
+            return WithStaticmethod.Reply(ok=ask.flag)
+
+        class Ask(BaseModel):
+            flag: bool
+
+        class Reply(BaseModel):
+            ok: bool
+
+    return [WithClassmethod, WithStaticmethod]
+
+
+@pytest.mark.parametrize("index", [0, 1], ids=["classmethod", "staticmethod"])
+async def test_classmethod_and_staticmethod_entries_are_finished_by_the_class_marker(index):
+    Demo = _class_and_static_entry_owners()[index]
+    meta = _meta_of(vars(Demo)["forward"].__func__)
+    assert (meta.output_schema, meta.llm_result_schema, meta.params) == (None, None, None)
+    neko_plugin(Demo)
+    assert meta.output_model is Demo.Reply
+    assert meta.output_schema == Demo.Reply.model_json_schema()
+    assert meta.llm_result_model is Demo.Reply
+    assert meta.llm_result_fields == ["ok"]
+    # params inference is finished by the same pass, as for plain methods.
+    assert meta.params is Demo.Ask
+    assert meta.input_schema == Demo.Ask.model_json_schema()
+    # The handler the entry collectors bind (getattr on the instance) is callable.
+    handler = getattr(Demo(), "forward")
+    assert await handler(ask=Demo.Ask(flag=True)) == Demo.Reply(ok=True)
+
+
+def test_router_forward_reference_is_resolved_against_the_router_class():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class DemoRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="forward")
+        async def forward(self) -> "Reply":
+            return self.Reply(ok=True)
+
+        class Reply(BaseModel):
+            ok: bool
+
+    shared = _meta_of(DemoRouter.forward)
+    meta = DemoRouter(prefix="r_").collect_entries()["r_forward"].meta
+    assert meta.output_model is DemoRouter.Reply
+    assert meta.output_schema == DemoRouter.Reply.model_json_schema()
+    assert meta.llm_result_model is DemoRouter.Reply
+    assert meta.llm_result_fields == ["ok"]
+    assert build_output_check(meta) is not None
+    # Only the router's own copy carries the inference.
+    assert (shared.output_schema, shared.output_model, shared.llm_result_schema) == (None, None, None)
+
+
+def test_inherited_router_entry_resolves_in_the_class_that_defines_it():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class BaseRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="forward")
+        async def forward(self) -> "Later":
+            return None
+
+        class Later(BaseModel):
+            ok: bool
+
+    class ChildRouter(BaseRouter):
+        # A namesake in the subclass must not replace the model the entry names.
+        class Later(BaseModel):
+            other: int
+
+    for router in (BaseRouter(), ChildRouter()):
+        meta = router.collect_entries()["forward"].meta
+        assert meta.output_model is BaseRouter.Later
+        assert meta.llm_result_fields == ["ok"]
+
+
+def _too_deep_schema() -> dict[str, object]:
+    schema: dict[str, object] = {"type": "object"}
+    for _ in range(200):
+        schema = {"type": "object", "properties": {"x": schema}}
+    return schema
+
+
+class TooDeep(BaseModel):
+    x: int = 0
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):  # type: ignore[override]
+        return _too_deep_schema()
+
+
+def test_too_deep_inferred_output_schema_is_rejected_like_an_explicit_one():
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        @plugin_decorators.plugin_entry(id="deep")
+        async def deep() -> TooDeep:
+            return TooDeep()
+
+    class Demo:
+        @plugin_decorators.plugin_entry(id="deep_later")
+        async def deep_later(self) -> "Later":
+            return None
+
+        class Later(TooDeep):
+            pass
+
+    meta = _meta_of(Demo.deep_later)
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        neko_plugin(Demo)
+    assert meta.output_schema is None
+
+
+def test_explicit_schema_is_snapshotted_when_checked():
+    nested: dict[str, object] = {"type": "object"}
+    schema: dict[str, object] = {"type": "object", "properties": {"x": nested}}
+    factory = plugin_decorators.plugin_entry(id="snap", output_schema=schema)
+    # Made too deep after the check but before the decorator reads it, at the
+    # root and inside a nested level.
+    schema["extra"] = _too_deep_schema()
+    nested["properties"] = {"y": _too_deep_schema()}
+
+    @factory
+    async def snap():
+        return {}
+
+    assert _meta_of(snap).output_schema == {"type": "object", "properties": {"x": {"type": "object"}}}
+
+
+def test_snapshot_copies_through_tuples_when_deepcopy_falls_back():
+    from types import MappingProxyType
+
+    inner: dict[str, object] = {"type": "string"}
+    proxy = MappingProxyType({"k": "v"})
+    # The mappingproxy cannot be deep-copied, which forces the per-level copy,
+    # and the tuple holding it cannot be deep-copied as a whole either.
+    schema = {"anyOf": (inner, proxy)}
+    factory = plugin_decorators.plugin_entry(id="snap_tuple", output_schema=schema)
+    inner["items"] = _too_deep_schema()
+
+    @factory
+    async def snap_tuple():
+        return {}
+
+    assert _meta_of(snap_tuple).output_schema["anyOf"] == ({"type": "string"}, proxy)
+
+
+def test_router_inference_is_finished_when_bound():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class LateRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="late")
+        async def late(self) -> "Late":
+            return None
+
+    router = LateRouter()
+    assert router.collect_entries()["late"].meta.output_schema is None
+
+    class Late(BaseModel):
+        ok: bool
+
+    # Defined after the router (e.g. later in the module): still picked up
+    # while unbound, then fixed at binding.
+    LateRouter.Late = Late
+    assert router.collect_entries()["late"].meta.output_model is Late
+    router._bind(object())
+    del LateRouter.Late
+    assert router.collect_entries()["late"].meta.output_model is Late
+
+    class DeepRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="deep")
+        async def deep(self) -> "Deep":
+            return None
+
+        class Deep(TooDeep):
+            pass
+
+    deep_router = DeepRouter()
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        deep_router._bind(object())
+    assert deep_router.is_bound is False
+
+
+def test_failed_bind_caches_nothing_and_a_later_bind_infers_again():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class FixableRouter(PluginRouter):
+        # Collected (and inferred) in name order: "a_good" before "b_deep".
+        @plugin_decorators.plugin_entry(id="a_good")
+        async def a_good(self) -> "Good":
+            return None
+
+        @plugin_decorators.plugin_entry(id="b_deep")
+        async def b_deep(self) -> "Deep":
+            return None
+
+        class Deep(TooDeep):
+            pass
+
+    router = FixableRouter()
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        router._bind(object())
+    assert router._deferred_inference == {}
+
+    class Good(BaseModel):
+        ok: bool
+
+    class Deep(BaseModel):
+        fine: bool
+
+    FixableRouter.Good = Good
+    FixableRouter.Deep = Deep
+    router._bind(object())
+    assert len(router._deferred_inference) == 2
+    entries = router.collect_entries()
+    assert entries["a_good"].meta.output_model is Good
+    assert entries["b_deep"].meta.output_model is Deep
+
+
+def test_failed_include_router_keeps_the_prefix():
+    from plugin.sdk.shared.core.base import NekoPluginBase as SharedBase
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class DeepRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="deep")
+        async def deep(self) -> "Deep":
+            return None
+
+        class Deep(TooDeep):
+            pass
+
+    host = SharedBase.__new__(SharedBase)
+    host._routers = []
+    router = DeepRouter(prefix="old_")
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        SharedBase.include_router(host, router, prefix="new_")
+    assert router.prefix == "old_"
+    assert host._routers == []
+
+
+def test_router_cache_accepts_an_unhashable_callable_entry():
+    import dataclasses
+
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    @dataclasses.dataclass  # eq=True without frozen: instances are unhashable
+    class Handler:
+        __name__ = "callable_entry"
+
+        async def __call__(self):
+            return {}
+
+    handler = plugin_decorators.plugin_entry(id="callable_entry")(Handler())
+    with pytest.raises(TypeError):
+        hash(handler)
+
+    class DemoRouter(PluginRouter):
+        callable_entry = handler
+
+    router = DemoRouter()
+    assert router.entry_ids == ["callable_entry"]
+    assert router.collect_entries()["callable_entry"].handler is handler
+
+
+def test_deferred_inference_never_replaces_explicit_contracts():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    explicit_schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+
+    def entries():
+        @plugin_decorators.plugin_entry(id="explicit", output_schema=explicit_schema, llm_result_fields=["count"])
+        async def explicit(self) -> "Reply":
+            return None
+
+        @classmethod
+        @plugin_decorators.plugin_entry(id="cls_explicit", output_schema=explicit_schema, llm_result_fields=["count"])
+        async def cls_explicit(cls) -> "Reply":
+            return None
+
+        return explicit, cls_explicit
+
+    class Demo:
+        explicit, cls_explicit = entries()
+
+        class Reply(BaseModel):
+            ok: bool
+
+    class DemoRouter(PluginRouter):
+        explicit, cls_explicit = entries()
+
+        class Reply(BaseModel):
+            ok: bool
+
+    neko_plugin(Demo)
+    metas = [_meta_of(Demo.explicit), _meta_of(vars(Demo)["cls_explicit"].__func__)]
+    metas += [handler.meta for handler in DemoRouter().collect_entries().values()]
+    assert len(metas) == 4
+    for meta in metas:
+        assert meta.output_schema == explicit_schema
+        assert meta.output_model is None
+        assert meta.llm_result_fields == ["count"]
+        assert meta.llm_result_model is None
+
+
 def test_explicit_output_schema_wins_and_is_published_only():
     schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
 

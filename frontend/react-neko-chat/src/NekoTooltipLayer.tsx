@@ -57,6 +57,15 @@ function findTooltipAnchor(target: EventTarget | null): HTMLElement | null {
     : null;
 }
 
+// #3474: regions marked data-neko-capture-mask are painted over before a
+// screen frame reaches the model. The tooltip is portaled to <body>, outside
+// that region, so it inherits the mask of its anchor; unmasked anchors keep an
+// unmarked tooltip.
+function captureMaskOfAnchor(anchor: HTMLElement): string | undefined {
+  const region = anchor.closest<HTMLElement>('[data-neko-capture-mask]');
+  return region?.getAttribute('data-neko-capture-mask') || undefined;
+}
+
 function isInsideAnchor(anchor: HTMLElement, target: EventTarget | null): boolean {
   return target instanceof Node && anchor.contains(target);
 }
@@ -262,6 +271,7 @@ export default function NekoTooltipLayer() {
       data-placement={layout.placement}
       data-variant={target.variant}
       data-ready={layout.ready ? 'true' : 'false'}
+      data-neko-capture-mask={captureMaskOfAnchor(target.anchor)}
       style={{ left: layout.left, top: layout.top }}
     >
       {target.text}

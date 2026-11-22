@@ -5431,8 +5431,14 @@
                 // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
+                        // 应答属于收到请求的这条连接：截图和遮罩期间 S.socket 可能被换掉（例如切换角色），
+                        // 不能把旧会话的截图发到新连接上。
+                        var requestSocket = S.socket;
                         function sendScreenshotReply(reply) {
-                            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                            if (!S.socket || S.socket !== requestSocket || S.socket.readyState !== WebSocket.OPEN) {
+                                if (S.socket !== requestSocket) console.log('[截图请求] 截图期间连接已更换，不发送应答');
+                                return;
+                            }
                             // Echo the ID for every reply, including privacy/tutorial
                             // declines and the legacy capture-function path.
                             if (typeof response.request_id === 'string' && response.request_id) {
@@ -5443,10 +5449,19 @@
                         function replySuppressedScreenshot() {
                             var tutorialBlocked = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                                 && window.isNekoHomeTutorialProactiveSuppressed();
-                            var privacyBlocked = window.appProactive
-                                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
-                                ? !window.appProactive.isProactiveVisionEnabledNow()
-                                : S.proactiveVisionEnabled === false;
+                            // Screen consent from both this window's value and the
+                            // latest saved setting (appProactive.isVisionConsentHeldNow):
+                            // a revocation on either side declines.
+                            var proactiveApi = window.appProactive;
+                            var privacyBlocked;
+                            if (proactiveApi && typeof proactiveApi.isVisionConsentHeldNow === 'function') {
+                                privacyBlocked = !proactiveApi.isVisionConsentHeldNow();
+                            } else {
+                                privacyBlocked = S.proactiveVisionEnabled === false
+                                    || (!!proactiveApi
+                                        && typeof proactiveApi.isProactiveVisionEnabledNow === 'function'
+                                        && !proactiveApi.isProactiveVisionEnabledNow());
+                            }
                             if (!tutorialBlocked && !privacyBlocked) return false;
                             sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
                             return true;
@@ -5458,6 +5473,8 @@
                             // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
                             var shotCaptureType = null;
                             var hasPairedCaptureType = false;
+                            var pinnedAvatarPos = null;
+                            var hasPinnedAvatarPos = false;
                             if (window.appProactive
                                 && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
                                 var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
@@ -5468,10 +5485,18 @@
                                 dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
                                 shotCaptureType = shot ? (shot.captureType || null) : null;
                                 hasPairedCaptureType = true;
+                                // 截图函数在拿到原图后、遮罩之前算好的 Avatar 位置（遮罩是异步的，事后再读会对不上）。
+                                if (shot && shot.avatarPositionPinned === true) {
+                                    pinnedAvatarPos = shot.avatarPosition || null;
+                                    hasPinnedAvatarPos = true;
+                                }
                             } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (replySuppressedScreenshot()) return;
+                            // 拿不到图（dataUrl 为空）时不回应答，后端超时后会自己截整屏兜底（不遮）。
+                            // 若以后遮罩的退化策略改成丢帧，这里要对被丢的帧回 declined: true，
+                            // 见 app-capture-mask.js 的 decideWhenGeometryUnavailable。
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
                                 // null = 窗口截图或无法确定 → 不叠加
@@ -5494,8 +5519,10 @@
                                         captureType = 'screen';
                                     }
                                 }
-                                var avatarPos = typeof window.getAvatarScreenPosition === 'function'
-                                    ? window.getAvatarScreenPosition(captureType) : null;
+                                var avatarPos = hasPinnedAvatarPos
+                                    ? pinnedAvatarPos
+                                    : (typeof window.getAvatarScreenPosition === 'function'
+                                        ? window.getAvatarScreenPosition(captureType) : null);
                                 if (avatarPos) {
                                     respMsg.avatar_position = avatarPos;
                                 }

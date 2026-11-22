@@ -201,3 +201,66 @@ def test_concurrent_writability_probes_from_separate_processes_all_succeed(tmp_p
     unwritable = [int(stdout.strip().splitlines()[-1]) for stdout, _ in outputs]
     assert unwritable == [0] * 8, f"probes reported unwritable per process: {unwritable}"
     assert list(directory.iterdir()) == []
+
+
+class _MissingSelfParentPath:
+    """Fake Path-like object simulating a non-existent root where parent == self."""
+
+    def __init__(self, parts: tuple[str, ...], index: int | None = None):
+        self._parts = parts
+        self._index = len(parts) - 1 if index is None else index
+        self.exists_calls = 0
+
+    def exists(self) -> bool:
+        self.exists_calls += 1
+        return False
+
+    @property
+    def parent(self) -> "_MissingSelfParentPath":
+        if self._index <= 0:
+            return self
+        return _MissingSelfParentPath(self._parts, self._index - 1)
+
+    def mkdir(self, exist_ok: bool = False) -> None:
+        raise AssertionError("mkdir must not be called for missing self-parent root")
+
+    def __str__(self) -> str:
+        return "/".join(self._parts[: self._index + 1])
+
+
+@pytest.mark.unit
+def test_test_directory_writable_terminates_on_missing_self_parent_root():
+    from utils.logger_config import RobustLoggerConfig
+
+    fake_dir = _MissingSelfParentPath(("Z:", "NEKO", "logs"))
+    assert RobustLoggerConfig._test_directory_writable(None, fake_dir) is False
+    assert fake_dir.exists_calls == 1
+
+
+@pytest.mark.unit
+def test_ensure_log_directory_raises_instead_of_looping_on_missing_self_parent_root():
+    from utils.logger_config import RobustLoggerConfig
+
+    fake_dir = _MissingSelfParentPath(("Z:", "NEKO", "logs"))
+    stub = RobustLoggerConfig.__new__(RobustLoggerConfig)
+    stub.log_dir = fake_dir
+    with pytest.raises(FileNotFoundError, match="Root directory does not exist"):
+        stub._ensure_log_directory()
+
+
+@pytest.mark.unit
+def test_get_log_directory_falls_back_when_first_candidate_has_missing_root(tmp_path, monkeypatch):
+    from utils import logger_config as backend
+
+    missing_selected = _MissingSelfParentPath(("Z:", "selected", "logs"))
+    fallback_docs = tmp_path / "documents"
+
+    monkeypatch.setattr(
+        backend,
+        "log_directory_candidates",
+        lambda *args, **kwargs: iter([missing_selected, fallback_docs / "N.E.K.O" / "logs"]),
+    )
+    stub = backend.RobustLoggerConfig.__new__(backend.RobustLoggerConfig)
+    stub.app_name = "N.E.K.O"
+    chosen = stub._get_log_directory()
+    assert chosen == fallback_docs / "N.E.K.O" / "logs"

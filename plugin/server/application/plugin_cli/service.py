@@ -64,6 +64,10 @@ from plugin.server.application.plugins.source_switch import (
     switch_builtin_source,
 )
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.permission_service import (
+    bind_current_permission_source,
+    forget_installed_plugins,
+)
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -91,7 +95,7 @@ _UPLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
 _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 from plugin.server.application.plugins.capability_analysis_service import (
-    notify_install_committed,
+    notify_install_committed_async,
 )
 
 logger = get_logger("server.application.plugin_cli")
@@ -515,7 +519,7 @@ class PluginCliService:
                 source=install_source,
             )
             if _analyze_after_commit:
-                notify_install_committed(result)
+                await notify_install_committed_async(result)
             return result
 
         if action == "override_builtin":
@@ -584,6 +588,15 @@ class PluginCliService:
                 status_code=409,
                 details=asdict(plan),
             )
+
+        # Before anything changes, on the paths that record a new source (a
+        # requested install source, a manual takeover): a grant record without
+        # a source yet is bound to the plugin's current source, so the new
+        # package's source is a source change rather than a first binding. A
+        # failed save stops the replacement here, unchanged. A replacement
+        # that records no source keeps the current one, so it needs no binding.
+        if install_source is not None or plan.reason == "manual_takeover":
+            await asyncio.to_thread(bind_current_permission_source, plan.plugin_id)
 
         # If the target directory contains only config/data/cache and no plugin.toml, install_plan
         # chooses reinstall — but by definition that replacement path does not register pending approval. Yet no plugin code was previously installed there:
@@ -786,14 +799,24 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
-        if manual_manager is None:
-            response = await self._record_requested_install_source(
+        if manual_manager is None and install_source is not None:
+            warning = await self._requested_install_source_warning(
                 install_result=response,
                 package=package,
-                source=install_source,
             )
+            if warning is not None:
+                # The new package runs, but its source still reads as the
+                # previous package's, so the grants given to that package
+                # would carry over. Drop them; the plugin is asked again.
+                if not await asyncio.to_thread(
+                    forget_installed_plugins,
+                    response,
+                    plugin_ids=(plan.plugin_id,),
+                ):
+                    warning += "; permission grants of the previous package could not be cleared"
+                response = {**response, "install_source_warning": warning}
         if _analyze_after_commit:
-            notify_install_committed(response)
+            await notify_install_committed_async(response)
         return response
 
     @serialized_plugin_operation
@@ -1032,7 +1055,7 @@ class PluginCliService:
             }
         )
         if _analyze_after_commit:
-            notify_install_committed(staged_result)
+            await notify_install_committed_async(staged_result)
         return staged_result
 
     async def _install_market_builtin_replacement(
@@ -1135,7 +1158,22 @@ class PluginCliService:
     ) -> dict[str, object]:
         if source is None:
             return install_result
+        warning = await self._requested_install_source_warning(
+            install_result=install_result,
+            package=package,
+        )
+        if warning is None:
+            return install_result
+        return {**install_result, "install_source_warning": warning}
 
+    async def _requested_install_source_warning(
+        self,
+        *,
+        install_result: dict[str, object],
+        package: str,
+    ) -> str | None:
+        """Record ``package`` as the imported source; ``None`` on success,
+        otherwise the ``install_source_warning`` text. Never raises."""
         try:
             package_path = self._resolve_package_path(package)
             package_sha256 = await asyncio.to_thread(self._sha256_file, package_path)
@@ -1145,19 +1183,13 @@ class PluginCliService:
                 type(exc).__name__,
                 str(exc),
             )
-            return {
-                **install_result,
-                "install_source_warning": f"install_source_prepare_failed: {exc}",
-            }
-        warning = await self._record_install_source_best_effort(
+            return f"install_source_prepare_failed: {exc}"
+        return await self._record_install_source_best_effort(
             install_result=install_result,
             package_filename=package_path.name,
             package_sha256=package_sha256,
             override=None,
         )
-        if warning is None:
-            return install_result
-        return {**install_result, "install_source_warning": warning}
 
     async def _record_manual_takeover_source(
         self,
@@ -1336,7 +1368,7 @@ class PluginCliService:
                 if warning is not None:
                     payload["install_source_warning"] = warning
                 if _analyze_after_commit:
-                    notify_install_committed(payload)
+                    await notify_install_committed_async(payload)
                 return payload
             except Exception:
                 self._cleanup_after_failure(
@@ -1414,7 +1446,7 @@ class PluginCliService:
                     warnings=[str(warning)] if warning else [],
                 )
                 if _analyze_after_commit:
-                    notify_install_committed(result)
+                    await notify_install_committed_async(result)
                 return result
             forced_directory_name = install_source_override.get("directory_name")
             use_staging = install_mode == "install" or isinstance(
@@ -1500,7 +1532,7 @@ class PluginCliService:
                     warnings=warnings,
                 )
                 if _analyze_after_commit:
-                    notify_install_committed(result)
+                    await notify_install_committed_async(result)
                 return result
 
             # Step 4b — plugin identity consistency check.
@@ -1641,7 +1673,7 @@ class PluginCliService:
                 warnings=warnings,
             )
             if _analyze_after_commit:
-                notify_install_committed(result)
+                await notify_install_committed_async(result)
             return result
 
         except InstallSourceError:

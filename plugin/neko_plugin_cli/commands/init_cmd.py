@@ -14,11 +14,13 @@ from plugin._types.plugin_types import SCAFFOLDABLE_PLUGIN_TYPES
 
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
+from ..git_env import git_env
 from ..repo_state import git_output
 from ..templates import agent_kit
 from ..templates.generator import PluginSpec, generate_repo_support_files
 from ..core.plugin_source import load_plugin_source
 from ..core.project import create_project
+from . import release_cmd
 from ._resolve import parse_github_repository_remote
 
 _MARKET_PLUGIN_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -518,7 +520,7 @@ def _existing_origin_url(plugin_dir: Path) -> str | None:
 
 
 def _git_command(plugin_dir: Path, arguments: str) -> str:
-    return f'git -C "{plugin_dir}" {arguments}'
+    return f"git -C {release_cmd._plugin_dir_argument(plugin_dir, '')} {arguments}"
 
 
 def _current_branch(plugin_dir: Path) -> str:
@@ -565,11 +567,29 @@ def _print_push_next_step(plugin_dir: Path) -> None:
             "ブランチを push して上流ブランチを設定します：",
         )
     )
-    for command in [
-        *_first_commit_steps(plugin_dir),
-        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
-    ]:
+    _print_git_commands(
+        plugin_dir,
+        [
+            *_first_commit_steps(plugin_dir),
+            _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+        ],
+    )
+
+
+def _print_git_commands(plugin_dir: Path, commands: list[str]) -> None:
+    for command in commands:
         print(f"       {command}")
+    fill_in = release_cmd._placeholder_path(plugin_dir)
+    if fill_in and commands:
+        # The commands show "<plugin directory>": say which one it is.
+        print(
+            "       "
+            + _tri(
+                f"(plugin directory: {fill_in})",
+                f"（插件目录：{fill_in}）",
+                f"（プラグインディレクトリ：{fill_in}）",
+            )
+        )
 
 
 def _gh_available() -> bool:
@@ -658,6 +678,8 @@ def _gh_create_repository(plugin_dir: Path, *, slug: str, private: bool) -> None
         completed = subprocess.run(
             ["gh", "repo", "create", slug, visibility, "--source", ".", "--remote", "origin"],
             cwd=plugin_dir,
+            # gh runs git in --source to add the remote.
+            env=git_env(),
             encoding="utf-8",
             errors="replace",
             stdout=subprocess.PIPE,
@@ -702,12 +724,14 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
             "その URL をコピーして origin に設定し、push します：",
         )
     )
-    for command in [
-        *_first_commit_steps(plugin_dir),
-        _git_command(plugin_dir, "remote add origin <repository-url>"),
-        _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
-    ]:
-        print(f"       {command}")
+    _print_git_commands(
+        plugin_dir,
+        [
+            *_first_commit_steps(plugin_dir),
+            _git_command(plugin_dir, "remote add origin <repository-url>"),
+            _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+        ],
+    )
 
 
 def _resolve_plugins_root(args: argparse.Namespace, *, defaults: CliDefaults) -> Path:
@@ -757,6 +781,7 @@ def _existing_repository_remote_message(target_dir: Path, remote: str) -> str:
     return (
         "--remote can only be used when initializing a new git repository; "
         f"to add origin to the existing one run: {_git_command(target_dir, f'remote add origin {remote}')}"
+        f"{release_cmd._placeholder_note(target_dir)}"
     )
 
 
@@ -765,6 +790,7 @@ def _run_git(command: list[str], *, cwd: Path) -> None:
         subprocess.run(
             ["git", *command],
             cwd=cwd,
+            env=git_env(),
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

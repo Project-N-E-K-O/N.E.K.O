@@ -1040,6 +1040,7 @@ async def test_open_project_brings_an_archived_one_back_instead_of_making_a_seco
 async def test_an_empty_space_adds_nothing(space, root):
     assert await space.brief(None) == ""
     assert await space.brief("blog") == ""
+    assert await space.brief("blog", rules_only=True) == ""
     # Asking does not make the directory either.
     assert not root.exists()
 

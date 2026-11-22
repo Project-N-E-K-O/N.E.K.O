@@ -14,7 +14,7 @@ from ..contracts.memory import (
     decode_persona,
     decode_search,
 )
-from ..models.exceptions import SdkError
+from ..models.exceptions import PermissionDeniedError, SdkError
 from ..models.result import Ok, Err, Result
 
 
@@ -129,6 +129,9 @@ class MemoryClient:
         except (ValueError, TypeError, KeyError) as exc:
             return Err(SdkError(str(exc), code="MEMORY_PROTOCOL_ERROR"))
         except Exception as exc:
+            denied = PermissionDeniedError.from_exception(exc)
+            if denied is not None:
+                return Err(denied)
             code = getattr(exc, "code", None) or "MEMORY_TRANSPORT_ERROR"
             if code == "UNKNOWN_OPERATION":
                 code = "CAPABILITY_UNAVAILABLE"

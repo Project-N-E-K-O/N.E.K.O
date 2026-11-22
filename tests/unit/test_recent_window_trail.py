@@ -136,3 +136,60 @@ def test_recent_window_trail_dwell_not_inflated_by_noncanonical_gap():
     trail = sm.recent_window_trail(now=t0 + 130, limit=5)
     assert trail[0] == ('A', 50.0)   # not 100.0 — the gap's 50s is dropped, not added
     assert trail[1] == ('B', 30.0)
+
+
+def test_recent_window_trail_stops_dwell_on_signal_loss():
+    """F0153: update_window(None) appends a boundary so dwell stops at disconnect time."""
+    sm = _sm()
+    t0 = 1000.0
+    sm.update_window(_win('VS Code', 'work', 'ide'), now=t0)
+    sm.update_window(_win('Chrome', 'entertainment', 'browser'), now=t0 + 60.0)
+    # Signal lost at t0 + 90.0
+    sm.update_window(None, now=t0 + 90.0)
+
+    trail = sm.recent_window_trail(now=t0 + 500.0)
+    assert trail == [('VS Code', 60.0), ('Chrome', 30.0)]
+
+
+def test_same_window_after_signal_loss_resets_dwell_without_counting_a_switch():
+    from dataclasses import replace
+    from main_logic.activity.system_signals import SystemSnapshot
+
+    sm = _sm()
+    live = SystemSnapshot(1000, 0, 0, 0, None, None)
+    work = _win('VS Code', 'work', 'ide')
+    sm.update_system(live)
+    sm.update_window(work, now=1000)
+    sm.update_window(None, now=1080)
+    assert sm.get_snapshot(now=1095).state == "focused_work"
+    for t in range(1100, 1180, 20):
+        sm.update_system(replace(live, os_signals_available=False))
+        sm.update_window(None, now=t)
+        sm.update_system(live)
+        sm.update_window(work, now=t + 10)
+    snap = sm.get_snapshot(now=1175)
+    assert snap.window_switch_rate_5min == 1
+    assert snap.state != "focused_work"
+    sm.update_window(_win('Chrome', 'entertainment', 'browser'), now=1180)
+    assert sm.get_snapshot(now=1180).window_switch_rate_5min == 2
+
+
+def test_recent_window_trail_merges_same_app_after_signal_loss_gap():
+    """Recovery to the same canonical app after >15s signal loss merges dwell without repeating."""
+    sm = _sm()
+    fake = SimpleNamespace(_sm=sm)
+    work = _win('VS Code', 'work', 'ide')
+
+    sm.update_window(work, now=1000.0)
+    sm.update_window(None, now=1060.0)
+    sm.update_window(work, now=1120.0)
+
+    # Gap [1060, 1120] is excluded; active dwell is (1060-1000) + (1150-1120) = 90s.
+    assert sm.recent_window_trail(now=1150.0, limit=5) == [('VS Code', 90.0)]
+    assert UserActivityTracker._format_window_trail(fake, now=1150.0) is None
+
+    sm.update_window(_win('Chrome', 'entertainment', 'browser'), now=1150.0)
+    assert sm.recent_window_trail(now=1210.0, limit=5) == [
+        ('VS Code', 90.0),
+        ('Chrome', 60.0),
+    ]

@@ -675,8 +675,9 @@ async def test_what_is_sent_for_a_review_stays_within_its_cap(world):
     system, user = (message["content"] for message in world.llm.last(TIER_REVIEW))
     total = count_tokens(system) + count_tokens(user)
     assert total <= TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
-    # What the owner was told: one call per commission, 7000 tokens in at most.
-    assert TASK_AGENT_REVIEW_INPUT_MAX_TOKENS == 7000
+    # What the owner was told: one call per commission, 7600 tokens in at most
+    # (7000, and 600 for the card of the session the same call writes).
+    assert TASK_AGENT_REVIEW_INPUT_MAX_TOKENS == 7600
     # The account keeps how it began and how it ended.
     process = user.split("What the task agent did:\n", 1)[1].split("\n\nAlready filed", 1)[0]
     assert count_tokens(process) <= TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS
@@ -716,12 +717,13 @@ def test_the_parts_of_a_review_fit_its_cap_so_that_none_is_cut_off_at_the_end():
     system = texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT.format(language="Traditional Chinese", max_entries=settings.TASK_AGENT_REVIEW_MAX_ENTRIES)
     frame = texts.TASK_AGENT_REVIEW_USER_TEMPLATE.format(
         dispatch_text="", user_text="", status="cancelled", result="", project="", process="", filed="",
-        projects="", global_index="", project_index="",
+        projects="", global_index="", project_index="", card="",
     )
     parts = (
         settings.DISPATCH_TEXT_MAX_TOKENS
         + settings.DISPATCH_USER_TEXT_MAX_TOKENS
         + settings.TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
+        + settings.TASK_AGENT_REVIEW_CARD_MAX_TOKENS
         + settings.TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS
         + settings.TASK_AGENT_REVIEW_FILED_MAX_TOKENS
         + settings.TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS
@@ -739,7 +741,7 @@ def test_the_review_asks_for_no_more_output_than_was_agreed():
         TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
     )
 
-    assert TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS <= 1500
+    assert TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS <= 1900
     assert SPACE_ARCHIVE_OUTPUT_MAX_TOKENS <= 1800
     assert SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS <= 750
 
@@ -771,9 +773,12 @@ def test_the_calls_of_the_space_are_metered_under_their_own_names(monkeypatch):
     asyncio.run(run())
 
     assert named == ["task_agent_review", "task_agent_archive", "task_agent_consolidate", "agent"]
-    assert seen[:3] == [(TIER_REVIEW, 1500), (TIER_ARCHIVE, 1800), (TIER_CONSOLIDATE, 750)]
-    # All run on the summary model, like the fine selection.
-    assert {TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE, decision.TIER_FINE} == decision._SUMMARY_TIERS
+    assert seen[:3] == [(TIER_REVIEW, 1900), (TIER_ARCHIVE, 1800), (TIER_CONSOLIDATE, 750)]
+    # All run on the summary model, like the fine selection; so does the
+    # form of a new session (``test_host_board.py``).
+    assert {
+        TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE, decision.TIER_FINE, decision.TIER_SESSION_DRAFT,
+    } == decision._SUMMARY_TIERS
 
 
 # ---------------------------------------------------------------------------
@@ -2396,6 +2401,13 @@ def test_what_may_be_kept_of_a_review_fits_into_what_the_model_may_write():
         * settings.TASK_AGENT_REVIEW_MAX_ENTRIES,
         "project": words(settings.SPACE_PROJECT_NAME_MAX_TOKENS),
         "project_description": words(settings.SPACE_PROJECT_DESCRIPTION_MAX_TOKENS),
+        # The card of the session, which the same answer writes anew.
+        "card": {
+            "title": words(settings.CARD_TITLE_MAX_TOKENS),
+            "duty": words(settings.CARD_DUTY_MAX_TOKENS),
+            "summary": words(settings.CARD_SUMMARY_MAX_TOKENS),
+            "description": words(settings.SPACE_PROJECT_DESCRIPTION_MAX_TOKENS),
+        },
     }
 
     full = count_tokens(json.dumps(answer))

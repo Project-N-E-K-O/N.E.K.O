@@ -278,6 +278,27 @@ def _reset_icebreaker_routes(request):
 
 
 @pytest.fixture(autouse=True)
+def _reset_steam_workshop_library_roots():
+    """Keep Steam library roots registered by one test out of the next.
+
+    The registry lives on the config manager singleton, which outlives a test;
+    a root left behind (usually a tmp_path) would make later /workshop lookups
+    search it. Only an already-built singleton is touched, never constructed here.
+    """
+    module = sys.modules.get("utils.config_manager")
+    manager = getattr(module, "_config_manager", None) if module is not None else None
+    snapshot = list(getattr(manager, "_steam_workshop_library_roots", None) or [])
+    try:
+        yield
+    finally:
+        # Re-read: the module may have been imported for the first time by this test.
+        module = sys.modules.get("utils.config_manager")
+        manager = getattr(module, "_config_manager", None) if module is not None else None
+        if manager is not None:
+            manager._steam_workshop_library_roots = list(snapshot)
+
+
+@pytest.fixture(autouse=True)
 def _reset_theater_activity():
     """Keep the in-memory theater activity signal from leaking between tests."""
     module = sys.modules.get("utils.theater_activity")

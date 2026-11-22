@@ -287,9 +287,8 @@ reflection の合成を要求し、適用される自動昇格経路をスケジ
 | 処理 | 現在の tier またはランタイム |
 |---|---|
 | 任意の cosine 想起および重複排除候補用のローカルテキスト embeddings | `data/embedding_models/<profile>/` 内の CPU ONNX profile。API モデル tier は不使用 |
-| 最近の履歴圧縮、事実抽出、証拠シグナル検出、reflection 合成とフィードバックチェック、fact 重複排除判断、内部 LLM recall リランキング | `summary` |
-| 最近の履歴レビュー、persona 修正/精錬、reflection 精錬、reflection promotion merge | `correction` |
-| ネガティブキーワードの対象分類 | `emotion` |
+| 最近の履歴圧縮とレビュー、事実抽出、証拠シグナル検出、reflection 合成・精錬とフィードバックチェック、fact 重複排除判断、persona 修正/精錬、reflection promotion merge | `summary`（レビュー、修正、精錬、マージの呼び出しは thinking を有効のまま） |
+| ネガティブキーワードの対象分類、および recall リランキングのチャット LLM フォールバック（レイテンシ重視） | `emotion` |
 | ユーザー向け `POST /query_memory` の統合 | LLM tier なし。BM25 + 任意の cosine + reciprocal-rank fusion |
 
 これらは現在の実装既定値であり、API の保証ではありません。運用者は tier ごとに、基盤モデル、base URL、認証情報を設定します。

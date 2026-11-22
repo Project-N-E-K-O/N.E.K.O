@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare correction-model thinking depth on one synthetic history review.
+"""Compare summary-model thinking depth on one synthetic history review.
 
 Three calls, same dialogue, same output cap as the real review:
   baseline       — review prompt without its reasoning-limit paragraph,
@@ -93,12 +93,12 @@ def _run(client: OpenAI, model: str, name: str, *, shallow: bool, extra_body: di
 
 
 def main() -> int:
-    cfg = get_config_manager().get_model_api_config("correction")
+    cfg = get_config_manager().get_model_api_config("summary")
     model = str(cfg.get("model") or "").strip()
     base_url = str(cfg.get("base_url") or "").strip()
     api_key = str(cfg.get("api_key") or "").strip()
     if not model or not api_key:
-        print("correction model or api key missing")
+        print("summary model or api key missing")
         return 2
     print(f"model={model}")
     client = OpenAI(api_key=api_key, base_url=base_url or None)

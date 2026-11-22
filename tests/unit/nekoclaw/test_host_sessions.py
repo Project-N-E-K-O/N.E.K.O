@@ -44,6 +44,16 @@ from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, plug
 from tests.unit.nekoclaw.plugin_server_fake import finish as plugin_result
 
 
+@pytest.fixture(autouse=True)
+def _one_after_the_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Commissions of one session are worked on in it one after the other here.
+
+    A later one is not carried on in a copy of the session meanwhile; that is
+    ``test_host_fork_continue.py``'s.
+    """
+    monkeypatch.setattr("config.nekoclaw_settings.TASK_AGENT_FORK_CONTINUE_ENABLED", False)
+
+
 @pytest.fixture
 async def hosts() -> Any:
     made: list[Any] = []

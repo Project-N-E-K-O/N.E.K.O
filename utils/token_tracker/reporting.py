@@ -310,6 +310,23 @@ class ReportingMixin:
             # A final instrument flush is best-effort during interpreter shutdown.
             pass
 
+        # ── 3c) Flush any deferred records queued while save() held self._lock ──
+        # A stream generator finalized while step 3 / 3b held self._lock queues
+        # into _pending_records via non-blocking acquire to avoid self-deadlock.
+        # Persist those trailing entries before exit (bounded so a live daemon
+        # thread cannot stall shutdown).
+        try:
+            for _ in range(3):
+                if not getattr(self, "_pending_records", None):
+                    break
+                with self._lock:
+                    self._last_report_time = 0.0
+                    self._bypass_report_interval = True
+                self.save()
+        except Exception:
+            # Best-effort trailing flush during interpreter shutdown.
+            pass
+
         # ── 4) Flush event_logger: local jsonl, outside remote instrument delivery ──
         try:
             from utils.event_logger import EventLogger
@@ -382,8 +399,8 @@ class ReportingMixin:
                 return True
 
             self._pending_batch_seq = pending_seq
-            self._pending_daily = pending_daily
-            self._pending_records = pending_records
+            self._pending_report_daily = pending_daily
+            self._pending_report_records = pending_records
             self._unsent_daily = merged_daily
             self._unsent_records = merged_records
             self._unsent_queue_loaded = True
@@ -406,7 +423,7 @@ class ReportingMixin:
             "records": self._unsent_records,
         }
         if self._pending_batch_seq:
-            data.update(daily=self._pending_daily, records=self._pending_records,
+            data.update(daily=self._pending_report_daily, records=self._pending_report_records,
                         next_daily=self._unsent_daily, next_records=self._unsent_records)
         try:
             if self._pending_batch_seq or self._unsent_daily or self._unsent_records:
@@ -449,6 +466,7 @@ class ReportingMixin:
         """
         report_options = {} if report_timeout is None else {"timeout": report_timeout}
         with self._lock:
+            self._drain_pending_locked()
             needs_dir_sync = bool(getattr(self, "_storage_dir_sync_pending", False))
             dir_sync_epoch = int(getattr(self, "_storage_dir_sync_epoch", 0))
             if not self._dirty:
@@ -610,14 +628,14 @@ class ReportingMixin:
                 return
             while True:
                 if not is_retry and (self._unsent_daily or self._unsent_records):
-                    self._pending_daily, self._unsent_daily = self._unsent_daily, {}
-                    self._pending_records, self._unsent_records = self._unsent_records, []
+                    self._pending_report_daily, self._unsent_daily = self._unsent_daily, {}
+                    self._pending_report_records, self._unsent_records = self._unsent_records, []
                     self._pending_batch_seq = secrets.token_hex(8)
                 if self._pending_batch_seq and not self._save_unsent_queue():
                     return
                 try:
                     self._send_report(
-                        self._pending_daily, self._pending_records,
+                        self._pending_report_daily, self._pending_report_records,
                         self._pending_batch_seq or secrets.token_hex(8), is_retry, timeout,
                     )
                 except Exception as exc:
@@ -628,7 +646,7 @@ class ReportingMixin:
                 if self._pending_batch_seq is None:
                     return  # Instrument-only reports have no disk queue.
                 self._pending_batch_seq = None
-                self._pending_daily, self._pending_records = {}, []
+                self._pending_report_daily, self._pending_report_records = {}, []
                 if not (self._unsent_daily or self._unsent_records):
                     self._save_unsent_queue()
                     return
@@ -753,7 +771,11 @@ class ReportingMixin:
     def _needs_periodic_save(self) -> bool:
         """Return whether the periodic save loop has local sync, telemetry, or instrument work."""
         with self._lock:
-            if self._dirty or getattr(self, "_storage_dir_sync_pending", False):
+            if (
+                self._dirty
+                or bool(getattr(self, "_pending_records", None))
+                or getattr(self, "_storage_dir_sync_pending", False)
+            ):
                 return True
             if self._pending_batch_seq or self._unsent_daily or self._unsent_records:
                 return True

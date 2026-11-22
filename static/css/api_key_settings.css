@@ -1184,19 +1184,19 @@ padding-left: 4px;
     }
 
     .custom-api-container
-        > .model-config-container:has(> #vision-model-content, > #correction-model-content, > #omni-model-content, > #tts-model-content, > #image-model-content)
+        > .model-config-container:has(> #summary-model-content, > #decision-model-content, > #tts-model-content, > #agent-small-model-content, > #image-model-content)
         > .model-content.expanded {
         margin-left: calc(-100% - 18px);
     }
 
-    .custom-api-container:has(#conversation-model-content:is(.expanded, .is-collapsing)):has(#vision-model-content:is(.expanded, .is-collapsing))
-        :is(#conversation-model-content, #vision-model-content):is(.expanded, .is-collapsing),
-    .custom-api-container:has(#summary-model-content:is(.expanded, .is-collapsing)):has(#correction-model-content:is(.expanded, .is-collapsing))
-        :is(#summary-model-content, #correction-model-content):is(.expanded, .is-collapsing),
-    .custom-api-container:has(#emotion-model-content:is(.expanded, .is-collapsing)):has(#omni-model-content:is(.expanded, .is-collapsing))
-        :is(#emotion-model-content, #omni-model-content):is(.expanded, .is-collapsing),
-    .custom-api-container:has(#agent-model-content:is(.expanded, .is-collapsing)):has(#tts-model-content:is(.expanded, .is-collapsing))
-        :is(#agent-model-content, #tts-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#conversation-model-content:is(.expanded, .is-collapsing)):has(#summary-model-content:is(.expanded, .is-collapsing))
+        :is(#conversation-model-content, #summary-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#emotion-model-content:is(.expanded, .is-collapsing)):has(#decision-model-content:is(.expanded, .is-collapsing))
+        :is(#emotion-model-content, #decision-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#omni-model-content:is(.expanded, .is-collapsing)):has(#tts-model-content:is(.expanded, .is-collapsing))
+        :is(#omni-model-content, #tts-model-content):is(.expanded, .is-collapsing),
+    .custom-api-container:has(#agent-model-content:is(.expanded, .is-collapsing)):has(#agent-small-model-content:is(.expanded, .is-collapsing))
+        :is(#agent-model-content, #agent-small-model-content):is(.expanded, .is-collapsing),
     .custom-api-container:has(#game-model-content:is(.expanded, .is-collapsing)):has(#image-model-content:is(.expanded, .is-collapsing))
         :is(#game-model-content, #image-model-content):is(.expanded, .is-collapsing) {
         width: 100%;
@@ -1204,34 +1204,34 @@ padding-left: 4px;
     }
 
     .custom-api-container:has(#conversation-model-content.expanded)
-        > .model-config-container:has(> #vision-model-content)
-        > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#vision-model-content.expanded)
-        > .model-config-container:has(> #conversation-model-content)
-        > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#summary-model-content.expanded)
-        > .model-config-container:has(> #correction-model-content)
-        > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#correction-model-content.expanded)
         > .model-config-container:has(> #summary-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#emotion-model-content.expanded)
-        > .model-config-container:has(> #omni-model-content)
+    .custom-api-container:has(#summary-model-content.expanded)
+        > .model-config-container:has(> #conversation-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#omni-model-content.expanded)
+    .custom-api-container:has(#emotion-model-content.expanded)
+        > .model-config-container:has(> #decision-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#decision-model-content.expanded)
         > .model-config-container:has(> #emotion-model-content)
         > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#agent-model-content.expanded)
+    .custom-api-container:has(#omni-model-content.expanded)
         > .model-config-container:has(> #tts-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#tts-model-content.expanded)
+        > .model-config-container:has(> #omni-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#agent-model-content.expanded)
+        > .model-config-container:has(> #agent-small-model-content)
+        > .model-header[aria-expanded="false"],
+    .custom-api-container:has(#agent-small-model-content.expanded)
+        > .model-config-container:has(> #agent-model-content)
         > .model-header[aria-expanded="false"],
     .custom-api-container:has(#game-model-content.expanded)
         > .model-config-container:has(> #image-model-content)
         > .model-header[aria-expanded="false"],
     .custom-api-container:has(#image-model-content.expanded)
         > .model-config-container:has(> #game-model-content)
-        > .model-header[aria-expanded="false"],
-    .custom-api-container:has(#tts-model-content.expanded)
-        > .model-config-container:has(> #agent-model-content)
         > .model-header[aria-expanded="false"] {
         opacity: 0.62;
         filter: saturate(0.55);

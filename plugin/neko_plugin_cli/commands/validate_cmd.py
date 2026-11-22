@@ -8,6 +8,7 @@ import math
 import os
 import re
 import stat
+from collections.abc import Collection
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from pydantic import TypeAdapter, ValidationError
@@ -24,6 +25,7 @@ from plugin._types.plugin_types import (
 )
 from plugin.config.schema import PluginModelRequirementSchema, PluginModelUsageId
 from plugin.core.entry_points import plugin_package_matches_directory
+from plugin.core.ui_manifest import PERMISSIONS as UI_PERMISSIONS
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
     LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS,
@@ -35,9 +37,10 @@ from plugin.sdk.shared.storage.database import PluginDatabase
 from plugin.sdk.shared.storage.state import PluginStatePersistence
 
 from plugin.utils.source_paths import iter_plugin_python_files
-from ..core.build_rules import reraise_walk_error
+from ..core.build_rules import BuildRuleSet, load_build_rules, reraise_walk_error, should_skip_path
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
+from .deps_cmd import _is_link
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 _PLUGIN_ENTRIES_MAX = 1024
@@ -134,7 +137,10 @@ def validate_plugin_dir(
     *,
     strict: bool = False,
     require_matching_directory_name: bool = False,
+    ignored_paths: Collection[str] = (),
 ) -> list[tuple[str, str]]:
+    """``ignored_paths``: plugin-relative paths git ignores (see
+    repo_state.ignored_untracked_paths); the link scan skips them."""
     issues: list[tuple[str, str]] = []
     config_example_path = plugin_dir / "config.example.toml"
     config_example: dict[str, object] | None = None
@@ -219,7 +225,12 @@ def validate_plugin_dir(
 
     _check_gitignore(plugin_dir / ".gitignore", issues, strict=strict)
     _check_python_decorators(plugin_dir, issues)
-    _check_symlink_tree(plugin_dir, issues)
+    _check_symlink_tree(
+        plugin_dir,
+        issues,
+        ignored_paths=ignored_paths,
+        build_rules=_build_rules_or_defaults(source.pyproject_toml) if ignored_paths else None,
+    )
 
     return issues
 
@@ -1070,9 +1081,10 @@ def _check_ui_surface(plugin_dir: Path, value: object, label: str, issues: list[
     if permissions is not None:
         _check_string_list(permissions, f"{label}.permissions", issues, required=False)
         if isinstance(permissions, list):
-            allowed = {"state:read", "config:read", "config:write", "action:call", "logs:read", "runs:read"}
+            # Same set and stripping the runtime uses, so check cannot drift from it.
+            # Blank entries already got the non-empty error from _check_string_list.
             for index, permission in enumerate(permissions):
-                if isinstance(permission, str) and permission not in allowed:
+                if isinstance(permission, str) and permission.strip() and permission.strip() not in UI_PERMISSIONS:
                     issues.append(("warning", f"{label}.permissions[{index}] is not a recognized permission: {permission}"))
     _check_optional_bool(value, "available", f"{label}.available", issues)
 
@@ -1523,27 +1535,110 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
             issues.append(("warning", f".gitignore should include {pattern}"))
 
 
-def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+# Start of the error for links in the plugin source (other commands match it).
+SYMLINK_ERROR = "plugin source must not contain symbolic links"
+
+
+def _build_rules_or_defaults(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
+    try:
+        return load_build_rules(pyproject_toml)
+    except (TypeError, ValueError):
+        # An invalid [tool.neko.build] fails the build elsewhere; count with
+        # the built-in excludes alone.
+        return BuildRuleSet()
+
+
+def _check_symlink_tree(
+    plugin_dir: Path,
+    issues: list[tuple[str, str]],
+    *,
+    ignored_paths: Collection[str] = (),
+    build_rules: BuildRuleSet | None = None,
+) -> None:
     # Market CI rejects any symlink in the mounted source; report the same
     # rule locally so the upload is not the first place it surfaces. CI scans
     # the checkout before dependency sync, so vendor/ (which pip may populate
-    # with link wrappers) and .git/ are out of scope here too.
+    # with link wrappers) and .git/ are out of scope here too, and so is
+    # anything git ignores (e.g. node_modules/): a checkout never holds it.
+    # Those links are still counted into one warning when a local
+    # ``neko-plugin build`` would package them (it ignores .gitignore and
+    # copies a link's target); links the build excludes anyway (.venv/ and
+    # the like, ``build_rules``) are not. Symlinks and Windows junctions
+    # follow the same rule.
+    ignored = {plugin_dir / path.rstrip("/") for path in ignored_paths}
+    rules = build_rules or BuildRuleSet()
+    # Without "exclude" (which matches a path, not its subtree), a skipped
+    # directory means the build skips everything below it as well.
+    tree_rules = rules.model_copy(update={"exclude": []})
+    links: list[Path] = []
+    ignored_links: list[Path] = []
     try:
-        links = []
         for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
             base = Path(root)
             if base == plugin_dir:
                 directories[:] = [name for name in directories if name not in {"vendor", ".git"}]
                 files = [name for name in files if name not in {"vendor", ".git"}]
-            links.extend(base / name for name in (*directories, *files) if (base / name).is_symlink())
+            base_ignored = base in ignored
+            if base_ignored:
+                # Everything below an ignored directory is ignored too.
+                ignored.update(base / name for name in directories)
+            # Ignored directories the build skips whole hold nothing to report.
+            directories[:] = [
+                name
+                for name in directories
+                if not (
+                    (base_ignored or base / name in ignored)
+                    and should_skip_path((base / name).relative_to(plugin_dir), is_dir=True, rules=tree_rules)
+                )
+            ]
+            # _is_link also catches a Windows junction, which is_symlink()
+            # misses on Python 3.11 (and which os.walk would descend into).
+            # Junctions are always directories, so files need only is_symlink().
+            linked = {name for name in directories if _is_link(base / name)}
+            linked.update(name for name in files if (base / name).is_symlink())
+            for name in (*directories, *files):
+                if name in linked:
+                    path = base / name
+                    if not (base_ignored or path in ignored):
+                        links.append(path)
+                    else:
+                        try:
+                            # Follows the link, as the build's walk does.
+                            link_is_dir = path.is_dir()
+                        except OSError:
+                            # e.g. a target in a directory we cannot enter:
+                            # count it as a file link, and keep scanning.
+                            link_is_dir = False
+                        # A directory link is judged as a subtree, like the
+                        # pruning above.
+                        link_rules = tree_rules if link_is_dir else rules
+                        if not should_skip_path(path.relative_to(plugin_dir), is_dir=link_is_dir, rules=link_rules):
+                            ignored_links.append(path)
+            directories[:] = [name for name in directories if name not in linked]
     except OSError as exc:
+        # Still report the links found before the failure.
         issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
-        return
-    if not links:
-        return
-    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
-    suffix = f" (+{len(links) - 5} more)" if len(links) > 5 else ""
-    issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))
+    if ignored_links:
+        issues.append(
+            (
+                "warning",
+                f"{len(ignored_links)} symbolic link(s) in gitignored paths "
+                f"({_shown_paths(plugin_dir, ignored_links)}): Market CI will not see them, "
+                "but a local neko-plugin build may copy their targets",
+            )
+        )
+    if links:
+        issues.append(
+            ("error", f"{SYMLINK_ERROR}: {_shown_paths(plugin_dir, links)}")
+        )
+
+
+def _shown_paths(plugin_dir: Path, paths: list[Path]) -> str:
+    # Sorted: os.walk order depends on the filesystem.
+    paths = sorted(paths)
+    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in paths[:5])
+    suffix = f" (+{len(paths) - 5} more)" if len(paths) > 5 else ""
+    return f"{shown}{suffix}"
 
 
 # --- Advisory checks -------------------------------------------------------

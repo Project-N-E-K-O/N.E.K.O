@@ -4138,3 +4138,67 @@ async def test_a_topic_teaser_is_retracted_when_only_a_tool_answered_it(said_som
     mgr.send_topic_hint.assert_awaited_once()
     assert mgr.send_cancel_topic_hint.await_count == (0 if said_something else 1)
     assert mgr.pending_agent_callbacks == []
+
+
+async def test_voice_retraction_before_media_releases_inflight_noop():
+    """F0161: retracting voice callbacks before media/inject must call release_inflight_noop."""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    from main_logic.proactive_delivery import ProactiveDeliveryManager
+
+    voice_sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    voice_sess.is_active_response = lambda: False
+    voice_sess.on_sid_rotate = AsyncMock()
+    voice_sess.inject_text_and_request_response = AsyncMock()
+
+    mgr = _make_mgr(session=voice_sess)
+    mgr.is_active = True
+    mgr.input_mode = "audio"
+    mgr.use_tts = False
+    mgr.tts_thread = None
+
+    cb1 = {
+        "_callback_delivery_id": "id-voice-retract-1",
+        "status": "completed",
+        "summary": "cue 1",
+        "coalesce_key": "k-voice",
+    }
+    mgr.pending_agent_callbacks = [cb1]
+
+    def _retract_all(snapshot):
+        for item in snapshot:
+            item[DELIVERY_RETRACTED_KEY] = True
+
+    mgr._retract_stale_coalesced = _retract_all
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+    assert delivered is False
+    voice_sess.on_sid_rotate.assert_not_awaited()
+    voice_sess.inject_text_and_request_response.assert_not_awaited()
+    mgr.proactive_manager.release_inflight_noop.assert_called_once()
+
+    # Verify with real ProactiveDeliveryManager that a newer coalesced cue releases immediately.
+    released = []
+    first_entered = asyncio.Event()
+    allow_first_finish = asyncio.Event()
+    gate = asyncio.Event()
+    pm_ref = []
+
+    async def _deliver(batch):
+        if batch[0]["id"] == "c1":
+            first_entered.set()
+            await allow_first_finish.wait()
+            pm_ref[0].release_inflight_noop()
+            return False
+        released.append(list(batch))
+        gate.set()
+        return True
+
+    pm = ProactiveDeliveryManager(deliver=_deliver, min_gap_s=0.0, inflight_timeout_s=12.0)
+    pm_ref.append(pm)
+    pm.submit({"id": "c1"}, coalesce_key="k")
+    await asyncio.wait_for(first_entered.wait(), timeout=0.5)
+    pm.submit({"id": "c2"}, coalesce_key="k")
+    allow_first_finish.set()
+    await asyncio.wait_for(gate.wait(), timeout=0.5)
+    assert [c["id"] for c in released[0]] == ["c2"]
+    pm.reset_gate()
