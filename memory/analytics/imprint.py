@@ -722,6 +722,8 @@ def build_memory_overview(
                 recent_30d_activity += 1
 
         embed_audit_pool.append(("fact", f))
+        if fid:
+            dedup_fallback_pool.append(("fact", entity, fid, text, _entry_subject_scope_key(f)))
         if not f.get("absorbed"):
             unabsorbed_facts += 1
         imp = int(f.get("importance") or 5)

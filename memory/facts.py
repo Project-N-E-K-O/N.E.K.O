@@ -7128,13 +7128,15 @@ class FactStore:
                     target=f"memory/{name}/facts.json",
                 )
                 current = self._load_facts_locked(name)
-                target = None
-                for fact in current:
-                    if isinstance(fact, dict) and fact.get("id") == fact_id:
-                        target = fact
-                        break
-                if target is None:
+                matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == fact_id
+                ]
+                if not matches:
                     return None
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                target = matches[0]
                 target["text"] = cleaned
                 target["hash"] = self._recompute_fact_hash(target, cleaned)
                 clear_embedding_fields(target)
@@ -7167,15 +7169,17 @@ class FactStore:
                     target=f"memory/{name}/facts_archive.json",
                 )
                 current = self._load_facts_locked(name)
-                kept: list[dict] = []
-                removed: dict | None = None
-                for fact in current:
-                    if removed is None and isinstance(fact, dict) and fact.get("id") == fact_id:
-                        removed = dict(fact)
-                        continue
-                    kept.append(fact)
-                if removed is None:
+                matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == fact_id
+                ]
+                if not matches:
                     return False
+                if len(matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                target = matches[0]
+                removed = dict(target)
+                kept = [fact for fact in current if fact is not target]
                 now_iso = datetime.now().isoformat()
                 removed["archived_at"] = now_iso
                 removed["arbitration_archived_at"] = now_iso

@@ -1279,3 +1279,121 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
     assert redacted_struct["nested"]["api_key"] == "[REDACTED]"
     assert redacted_struct["nested"]["token_count"] == 42
     assert redacted_struct["nested"]["label"] == "normal text"
+
+
+@pytest.mark.asyncio
+async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_path: Path):
+    """Regression tests for Round 5 review fixes:
+    1. UserDirectivesManager detects cross-process disk updates via stat check and invalidate_cache.
+    2. FactStore.aedit_fact_manual and aarchive_fact_manual reject ambiguous duplicate fact_ids.
+    3. TimeIndexedMemory.rebuild_fact_index skips malformed non-scalar IDs safely.
+    4. Facts with stale embeddings still pair via current-text fallback in overview duplicates.
+    """
+    import base64
+    import numpy as np
+    from memory.facts import FactStore
+    from memory.timeindex import TimeIndexedMemory
+    from memory.user_directives import UserDirectivesManager
+
+    cm = _FakeConfigManager(tmp_path)
+    char_name = "同步猫"
+    char_dir = cm.memory_dir / char_name
+    char_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Cross-process UserDirectivesManager cache coherence
+    dm_main = UserDirectivesManager()
+    dm_mem = UserDirectivesManager()
+    dm_main._config_manager = cm
+    dm_mem._config_manager = cm
+    base_ts = 1_700_100_000.0
+    assert dm_main.get_active_terms(char_name, now=base_ts) == []
+    await dm_mem.arecord(char_name, locale="zh", kind="ban_topic", term="加班", now=base_ts)
+    assert "加班" in dm_main.get_active_terms(char_name, now=base_ts + 1)
+    assert await dm_mem.aremove(char_name, "加班") is True
+    assert dm_main.get_active_terms(char_name, now=base_ts + 2) == []
+    dm_main.invalidate_cache(char_name)
+    assert dm_main.get_active_terms(char_name, now=base_ts + 3) == []
+
+    # 2. Ambiguous duplicate fact_id rejected in aedit_fact_manual & aarchive_fact_manual
+    _write_json(
+        char_dir / "facts.json",
+        [
+            {"id": "dup_f1", "entity": "master", "subject_id": "self", "text": "喜欢乌龙茶"},
+            {"id": "dup_f1", "entity": "master", "subject_id": "friend", "text": "朋友喜欢绿茶"},
+        ],
+    )
+    fs = FactStore(config_manager=cm)
+    with pytest.raises(ValueError, match="Ambiguous"):
+        await fs.aedit_fact_manual(char_name, "dup_f1", "改喝美式")
+    with pytest.raises(ValueError, match="Ambiguous"):
+        await fs.aarchive_fact_manual(char_name, "dup_f1")
+
+    # 3. rebuild_fact_index skips malformed dict/list/bool IDs without raising TypeError
+    ti = TimeIndexedMemory.__new__(TimeIndexedMemory)
+    ti.engines = {}
+    ti._ensure_engine_exists = lambda _name: True
+    ti._ensure_fts_table = lambda _name: True
+    ti.FACTS_FTS_TABLE = "facts_fts"
+    inserted: list[tuple[object, str]] = []
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, stmt, params=None):
+            if params and "fid" in params:
+                inserted.append((params["fid"], params["content"]))
+
+        def commit(self):
+            return None
+
+    class _FakeEngine:
+        def connect(self):
+            return _FakeConn()
+
+    ti.engines[char_name] = _FakeEngine()
+    count = ti.rebuild_fact_index(
+        char_name,
+        [
+            {"id": ["bad"], "text": "malformed list id"},
+            {"id": {"k": "v"}, "text": "malformed dict id"},
+            {"id": True, "text": "malformed bool id"},
+            {"id": "ok_str", "text": "valid string fact"},
+            {"id": 42, "text": "valid int fact"},
+        ],
+    )
+    assert count == 2
+    assert [fid for fid, _ in inserted] == ["ok_str", 42]
+
+    # 4. Facts with stale vectors still pair via current-text fallback
+    stale_vec = base64.b64encode(np.ones(8, dtype=np.float16).tobytes()).decode("ascii")
+    _write_json(
+        char_dir / "facts.json",
+        [
+            {
+                "id": "sf1",
+                "entity": "master",
+                "text": "周末经常去城北那家安静的旧书店看书喝茶",
+                "embedding": stale_vec,
+                "embedding_text_sha256": "0" * 64,
+            },
+            {
+                "id": "sf2",
+                "entity": "master",
+                "text": "周末经常去城北那家安静的旧书店看书喝茶发呆",
+                "embedding": stale_vec,
+                "embedding_text_sha256": "1" * 64,
+            },
+        ],
+    )
+    overview = build_memory_overview(char_name, memory_dir=cm.memory_dir)
+    dup_pairs = {
+        frozenset((d["entry_a"]["id"], d["entry_b"]["id"]))
+        for d in overview["duplicate_suggestions"]
+        if d.get("kind") == "fact"
+    }
+    assert frozenset(("sf1", "sf2")) in dup_pairs
+

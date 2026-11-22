@@ -2183,7 +2183,7 @@ class TimeIndexedMemory:
             if not isinstance(f, dict):
                 continue
             fid = f.get("id")
-            if fid is None or fid == "":
+            if not isinstance(fid, (str, int, float)) or isinstance(fid, bool) or fid == "":
                 continue
             content = str(f.get("text") or "").strip()
             if not content:

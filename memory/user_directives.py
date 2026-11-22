@@ -224,6 +224,7 @@ class UserDirectivesManager:
     def __init__(self) -> None:
         self._config_manager = get_config_manager()
         self._cache: Dict[str, List[Dict[str, Any]]] = {}
+        self._cache_stat: Dict[str, Optional[tuple[int, int]]] = {}
         self._locks: Dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
         # Process-local flags for characters with newly persisted directives not yet injected into live sessions.
@@ -251,14 +252,33 @@ class UserDirectivesManager:
                     self._locks[name] = threading.Lock()
         return self._locks[name]
 
+    @staticmethod
+    def _stat_path(path: str) -> Optional[tuple[int, int]]:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def invalidate_cache(self, name: str) -> None:
+        """Drop cached directives for ``name`` so the next read reloads from disk."""
+        if not name:
+            return
+        with self._get_lock(name):
+            self._cache.pop(name, None)
+            self._cache_stat.pop(name, None)
+
     # -- Load/save under caller-held locks --
 
     def _load_unlocked(self, name: str) -> List[Dict[str, Any]]:
-        if name in self._cache:
+        path = self._file_path(name)
+        disk_stat = self._stat_path(path)
+        if name in self._cache and (
+            name not in self._cache_stat or self._cache_stat[name] == disk_stat
+        ):
             return self._cache[name]
         directives: List[Dict[str, Any]] = []
-        path = self._file_path(name)
-        if os.path.exists(path):
+        if disk_stat is not None:
             try:
                 import json
                 with open(path, encoding="utf-8") as f:
@@ -276,6 +296,7 @@ class UserDirectivesManager:
                 )
                 directives = []
         self._cache[name] = directives
+        self._cache_stat[name] = self._stat_path(path)
         return directives
 
     def _save_unlocked(self, name: str, *, raise_on_error: bool = False) -> None:
@@ -307,6 +328,7 @@ class UserDirectivesManager:
         }
         try:
             atomic_write_json(path, payload, indent=2, ensure_ascii=False)  # noqa: ASYNC_BLOCK — Synchronous fan-out contract, documented above.
+            self._cache_stat[name] = self._stat_path(path)
         except Exception as exc:
             logger.warning("[UserDirectives] save failed for %s: %s", name, exc)
             if raise_on_error:

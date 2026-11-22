@@ -628,9 +628,9 @@
         }
     }
 
-    async function checkRelatedMemoriesAfterMutation(kind, entryId, text) {
-        const targetChar = activeCharacter;
-        if (!targetChar || !text) return;
+    async function checkRelatedMemoriesAfterMutation(kind, entryId, text, expectedChar) {
+        const targetChar = expectedChar || activeCharacter;
+        if (!targetChar || targetChar !== activeCharacter || !text) return;
         try {
             const resp = await postJsonWithCsrf(
                 '/api/memory/related/' + encodeURIComponent(targetChar),
@@ -1836,30 +1836,31 @@
                 onClick: async function () {
                     const nextText = editArea.value.trim();
                     if (!nextText) return;
+                    const targetChar = activeCharacter;
                     let ok = false;
                     if (item.kind === 'persona') {
                         ok = await postMutation('/api/memory/persona/edit', {
-                            character_name: activeCharacter,
+                            character_name: targetChar,
                             entity: item.entity,
                             entry_id: item.id,
                             text: nextText,
                         }, tr('memory.savedToast', '已保存修改'));
                     } else if (item.kind === 'reflection') {
                         ok = await postMutation('/api/memory/reflection/review', {
-                            character_name: activeCharacter,
+                            character_name: targetChar,
                             reflection_id: item.id,
                             decision: 'edit',
                             edited_text: nextText,
                         }, tr('memory.savedToast', '已保存修改'));
                     } else {
                         ok = await postMutation('/api/memory/fact/edit', {
-                            character_name: activeCharacter,
+                            character_name: targetChar,
                             fact_id: item.id,
                             text: nextText,
                         }, tr('memory.savedToast', '已保存修改'));
                     }
-                    if (ok) {
-                        checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text || nextText);
+                    if (ok && targetChar === activeCharacter) {
+                        checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text || nextText, targetChar);
                     }
                 },
             });
@@ -1944,27 +1945,28 @@
                 className: 'memory-pill-btn is-danger is-sm',
                 textContent: tr('memory.actionForget', '遗忘'),
                 onClick: async function () {
+                    const targetChar = activeCharacter;
                     let ok = false;
                     if (item.kind === 'persona') {
                         ok = await postMutation('/api/memory/persona/archive', {
-                            character_name: activeCharacter,
+                            character_name: targetChar,
                             entity: item.entity,
                             entry_id: item.id,
                         }, tr('memory.forgottenToast', '已遗忘该条记忆'));
                     } else if (item.kind === 'reflection') {
                         ok = await postMutation('/api/memory/reflection/review', {
-                            character_name: activeCharacter,
+                            character_name: targetChar,
                             reflection_id: item.id,
                             decision: 'forget',
                         }, tr('memory.forgottenToast', '已遗忘该条记忆'));
                     } else {
                         ok = await postMutation('/api/memory/fact/archive', {
-                            character_name: activeCharacter,
+                            character_name: targetChar,
                             fact_id: item.id,
                         }, tr('memory.forgottenToast', '已遗忘该条记忆'));
                     }
-                    if (ok) {
-                        checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text);
+                    if (ok && targetChar === activeCharacter) {
+                        checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text, targetChar);
                     }
                 },
             }));

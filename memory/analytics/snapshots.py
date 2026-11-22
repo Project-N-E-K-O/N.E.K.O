@@ -335,6 +335,9 @@ def _restore_snapshot_files_sync(
             dm_cache = getattr(directives_manager, "_cache", None)
             if isinstance(dm_cache, dict):
                 dm_cache.pop(character_name, None)
+            dm_stat = getattr(directives_manager, "_cache_stat", None)
+            if isinstance(dm_stat, dict):
+                dm_stat.pop(character_name, None)
 
     return {
         "restored_snapshot_id": snapshot_id,

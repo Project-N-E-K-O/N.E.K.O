@@ -2760,7 +2760,24 @@ async def search_character_memory(catgirl_name: str, request: Request):
     )
 
 
-async def _proxy_character_mutation(request: Request, internal_path: str) -> JSONResponse:
+def _sync_local_directives_cache(character_name: str, *, mark_pending: bool = False) -> None:
+    """Refresh this process's UserDirectivesManager after a memory_server mutation."""
+    try:
+        from memory.user_directives import get_user_directives_manager
+        dm = get_user_directives_manager()
+        dm.invalidate_cache(character_name)
+        if mark_pending:
+            dm.mark_pending_injection(character_name)
+    except Exception as exc:
+        logger.debug("Local directives cache sync skipped for %s: %s", character_name, exc)
+
+
+async def _proxy_character_mutation(
+    request: Request,
+    internal_path: str,
+    *,
+    on_success=None,
+) -> JSONResponse:
     payload, post_err = await _parse_and_validate_browser_post(request)
     if post_err is not None:
         return post_err
@@ -2768,7 +2785,10 @@ async def _proxy_character_mutation(request: Request, internal_path: str) -> JSO
     err_resp = _validate_browser_character_or_400(character_name)
     if err_resp is not None:
         return err_resp
-    return await _proxy_memory_browser("POST", internal_path, json_body=payload, timeout=25.0)
+    resp = await _proxy_memory_browser("POST", internal_path, json_body=payload, timeout=25.0)
+    if on_success is not None and 200 <= resp.status_code < 300:
+        on_success(character_name)
+    return resp
 
 
 @router.post('/persona/edit')
@@ -2818,12 +2838,20 @@ async def merge_duplicate_memory(request: Request):
 
 @router.post('/directive/add')
 async def add_memory_directive(request: Request):
-    return await _proxy_character_mutation(request, "/internal/memory/browser/directive/add")
+    return await _proxy_character_mutation(
+        request,
+        "/internal/memory/browser/directive/add",
+        on_success=lambda name: _sync_local_directives_cache(name, mark_pending=True),
+    )
 
 
 @router.post('/directive/remove')
 async def remove_memory_directive(request: Request):
-    return await _proxy_character_mutation(request, "/internal/memory/browser/directive/remove")
+    return await _proxy_character_mutation(
+        request,
+        "/internal/memory/browser/directive/remove",
+        on_success=lambda name: _sync_local_directives_cache(name, mark_pending=False),
+    )
 
 
 @router.get('/star_map/{catgirl_name}')
@@ -2940,12 +2968,15 @@ async def restore_memory_snapshot(catgirl_name: str, request: Request):
     if not (payload or {}).get("snapshot_id"):
         return JSONResponse({"success": False, "error": "snapshot_id is required"}, status_code=400)
     from urllib.parse import quote
-    return await _proxy_memory_browser(
+    resp = await _proxy_memory_browser(
         "POST",
         f"/internal/memory/browser/snapshots/restore/{quote(catgirl_name, safe='')}",
         json_body=payload,
         timeout=30.0,
     )
+    if 200 <= resp.status_code < 300:
+        _sync_local_directives_cache(catgirl_name, mark_pending=False)
+    return resp
 
 
 @router.get('/export/{catgirl_name}')

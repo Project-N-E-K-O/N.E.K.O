@@ -8786,7 +8786,10 @@ async def browser_archive_fact(request: _BrowserFactArchiveRequest):
     if runtime.fact_store is None:
         raise HTTPException(status_code=503, detail="FactStore not ready")
     with _admit_browser_character_write(name):
-        ok = await runtime.fact_store.aarchive_fact_manual(name, request.fact_id)
+        try:
+            ok = await runtime.fact_store.aarchive_fact_manual(name, request.fact_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=404, detail="Fact not found")
     return {"success": True}
