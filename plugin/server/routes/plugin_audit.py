@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from plugin.core.capability_policy import current_mode
+from plugin.core.capability_policy import checks_disabled_sources, current_mode
 from plugin.server.application.plugins import call_audit, capability_gate
 from plugin.server.infrastructure.mutation_auth import _local_request
 
@@ -24,10 +24,10 @@ async def get_call_chain_audit(request: Request) -> dict[str, object]:
     from_browser = "origin" in request.headers or (fetch_site is not None and fetch_site != "none")
     if from_browser or not _local_request(request):
         raise HTTPException(status_code=403, detail={"code": "LOCAL_ONLY"})
-    mode = current_mode()
     return {
-        "mode": mode,
-        "entries": [] if mode == "off" else call_audit.entries(),  # both rings are bounded (1500 total)
+        "mode": current_mode(),
+        "checks_disabled_sources": list(checks_disabled_sources()),
+        "entries": call_audit.entries(),  # both rings are bounded (1500 total)
         "dropped": call_audit.dropped,
         "registry_full": capability_gate.registry.registry_full,
     }

@@ -104,8 +104,8 @@ def test_vllm_clone_configuration_warning_names_active_tts_provider(mock_page: P
             })"""
         )
 
-        assert "跟随辅助API" in warning
-        assert "自定义 API 已关闭" in warning
+        assert "跟随通用模型供应商" in warning
+        assert "「按功能单独指定模型」已关闭" in warning
         assert configured_warning == ""
         assert legacy_enabled_warning == ""
         assert "TTS 已全局关闭" in globally_disabled_warning

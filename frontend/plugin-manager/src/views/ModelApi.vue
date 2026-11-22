@@ -100,6 +100,7 @@
           <el-form-item :label="t('modelApi.hostApiLabel')" required>
             <el-select v-model="form.host_api" data-testid="slot-host-api" :disabled="saving">
               <el-option :label="t('modelApi.hostApi.agent')" value="agent" />
+              <el-option :label="t('modelApi.hostApi.agent_small')" value="agent_small" />
             </el-select>
             <p class="field-hint">{{ t(`modelApi.hostHint.${form.host_api}`) }}</p>
           </el-form-item>

@@ -994,6 +994,46 @@ async def _periodic_slow_memory_recheck_loop():
 # an extra first sweep after restart is idempotent).
 _subject_archive_last_run: dict[str, datetime] = {}
 
+# Star Map 周级主题缓存刷新的进程内日粒度节流（真正的 7 天 + corpus_hash 门控
+# 持久化在 star_map_clusters_cache.json 内，进程内节流只为避免每小时重扫磁盘）。
+_star_map_label_last_probe: dict[str, datetime] = {}
+_STAR_MAP_LABEL_PROBE_MIN_INTERVAL_SECONDS = 86400
+
+
+async def _amaybe_refresh_star_map_labels(name: str, now: datetime) -> None:
+    """Weekly low-cost Star Map theme label cache refresh piggybacked on ArchiveSweep.
+
+    Runs regardless of ``powerful_memory_enabled``; skips at zero LLM cost when
+    fewer than ``STAR_MAP_MIN_EMBEDDED_ENTRIES`` entries have vectors, when the
+    corpus hash has not changed, or when cached labels are newer than 7 days.
+    """
+    last = _star_map_label_last_probe.get(name)
+    if (
+        last is not None
+        and (now - last).total_seconds() < _STAR_MAP_LABEL_PROBE_MIN_INTERVAL_SECONDS
+    ):
+        return
+    _star_map_label_last_probe[name] = now
+    try:
+        from memory.analytics import alabel_star_map_clusters
+
+        async def _op(character_name: str):
+            return await alabel_star_map_clusters(
+                character_name,
+                config_manager=runtime._config_manager,
+                force=False,
+                now=now,
+            )
+
+        res = await run_with_character_prompt_locale(name, _op, name)
+        if isinstance(res, dict) and not res.get("skipped"):
+            logger.info(
+                f"[StarMapCache] {name}: 周级自动刷新星云主题缓存 "
+                f"({len(res.get('labels') or {})} 个主题)"
+            )
+    except Exception as e:
+        logger.debug(f"[StarMapCache] {name}: 周级主题刷新跳过/失败 (非致命): {e}")
+
 
 async def _amaybe_sweep_subject_archive(name: str, now: datetime) -> None:
     """Scoped subject time-driven archival stage inside the archive sweep.
@@ -1133,7 +1173,7 @@ async def _periodic_archive_sweep_loop():
                     for entry in section.get('facts', []):
                         if not isinstance(entry, dict):
                             continue
-                        if entry.get('protected'):
+                        if entry.get('protected') or entry.get('user_pinned'):
                             continue
                         eid = entry.get('id')
                         if not eid:
@@ -1158,7 +1198,7 @@ async def _periodic_archive_sweep_loop():
                     if effective_sz >= EVIDENCE_ARCHIVE_DAYS:
                         try:
                             await runtime.persona_manager.aarchive_persona_entry(
-                                name, entity_key, eid,
+                                name, entity_key, eid, skip_pinned=True,
                             )
                         except Exception as e:
                             logger.warning(
@@ -1167,6 +1207,9 @@ async def _periodic_archive_sweep_loop():
 
                 # -- Scoped subjects (time-driven, group-memory series 5/7). --
                 await _amaybe_sweep_subject_archive(name, now)
+
+                # ── Star Map 周级主题缓存刷新（7 天 + corpus_hash 门控，零成本跳过） ──
+                await _amaybe_refresh_star_map_labels(name, now)
             except Exception as e:
                 logger.debug(f"[ArchiveSweep] {name}: 扫描失败，跳过: {e}")
 

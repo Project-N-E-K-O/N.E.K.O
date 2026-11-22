@@ -31,7 +31,7 @@ description: コードが書けなくても N.E.K.O プラグインは作れま�
 
    ![初回にモデル API を入力する画面](/images/plugins/onboarding/neko-api-setup-ja.png)
 
-   1. コア API のサービスを選ぶ。
+   1. 音声モデルのプロバイダーを選ぶ。
    2. 自分の API Key を入力する。
    3. 「設定を保存」を押す。
 
