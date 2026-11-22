@@ -327,7 +327,7 @@ class ToolCallingMixin:
     # ------------------------------------------------------------------
     # Built-in tools: dispatch_task / query_tasks
     # ------------------------------------------------------------------
-    # Her two task tools. They exist only while NekoClaw is switched on for
+    # Her two task tools. They exist only while NekoPower is switched on for
     # this session (``_is_agent_enabled``), so a session without it does not
     # carry their definitions. Both take one sentence and no identifier: the
     # task brain in the agent process keeps the record and works out which
@@ -413,7 +413,7 @@ class ToolCallingMixin:
         import httpx
 
         from config import TOOL_SERVER_PORT
-        from config.nekoclaw_settings import TASK_TOOL_TIMEOUT_SECONDS
+        from config.nekopower_settings import TASK_TOOL_TIMEOUT_SECONDS
 
         try:
             from utils.internal_http_client import get_internal_http_client
@@ -472,7 +472,7 @@ class ToolCallingMixin:
         dispatch_turn = getattr(owner, "speech_id", None) or current_turn
         user_text = getattr(self, "_latest_user_utterance", "") if dispatch_turn == current_turn else ""
         data, may_have_arrived = await self._post_to_task_system(
-            "/nekoclaw/dispatch",
+            "/nekopower/dispatch",
             {
                 "text": task,
                 "lanlan_name": self.lanlan_name,
@@ -501,7 +501,7 @@ class ToolCallingMixin:
         question = args_dict.get("question")
         question = question.strip() if isinstance(question, str) else ""
         data, _may_have_arrived = await self._post_to_task_system(
-            "/nekoclaw/query",
+            "/nekopower/query",
             {"text": question, "lanlan_name": self.lanlan_name, "language": self.user_language},
         )
         text = str((data or {}).get("text") or "").strip()

@@ -16,6 +16,7 @@ from plugin._types.entry_metadata import MAX_SCHEMA_DEPTH, entry_contract_fields
 from plugin._types.exceptions import PluginExecutionError
 from plugin.core.call_registry import CallLink, current_delivery_link
 from plugin.core.rpc import RpcPeer, RpcRemoteError
+from plugin.sdk.shared.permissions.runtime import PERMISSIONS_UPDATE
 from plugin.core.zmq_transport import (
     CH_COMM,
     CH_MSG,
@@ -503,6 +504,20 @@ class PluginCommunicationResourceManager:
             await self.transport.send_command(msg)
         except Exception as e:
             raise RuntimeError(f"Failed to push BUS_CHANGE to plugin {self.plugin_id}: {e}") from e
+
+    async def push_permissions(self, snapshot: Dict[str, Any]) -> None:
+        await self._run_on_owner_loop(self._push_permissions_local(snapshot))
+
+    async def _push_permissions_local(self, snapshot: Dict[str, Any]) -> None:
+        msg = {
+            "type": PERMISSIONS_UPDATE,
+            "revision": snapshot.get("revision"),
+            "states": dict(snapshot.get("states") or {}),
+        }
+        try:
+            await self.transport.send_command(msg)
+        except Exception as e:
+            raise RuntimeError(f"Failed to push PERMISSIONS_UPDATE to plugin {self.plugin_id}: {e}") from e
 
     async def send_stop_command(self, timeout: float = 0.5) -> None:
         await self._run_on_owner_loop(self._send_stop_command_local(timeout))

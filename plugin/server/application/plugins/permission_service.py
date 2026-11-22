@@ -15,20 +15,27 @@ sources differ.
 from __future__ import annotations
 
 import copy
+import itertools
+import threading
 from pathlib import Path
 from typing import Callable
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
+from plugin.sdk.shared.permissions.catalog import PERMISSIONS
+from plugin.sdk.shared.permissions.state import PermissionState
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_IN_USE,
     CORRUPT,
     UNSUPPORTED_VERSION,
+    add_change_listener,
     PluginPermissionStore,
     PluginSource,
 )
 
 logger = get_logger("server.plugins.permissions")
+
+MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
 
 # A damaged or newer-version store: every read and write fails, so it holds
 # no grant that could apply and there is nothing to bind or drop. The records
@@ -265,7 +272,7 @@ def mirror_consent_decision(
     )
 
     def undo() -> None:
-        permission_store.restore(plugin_id, previous)
+        restore_permissions(plugin_id, previous)
 
     return undo
 
@@ -316,6 +323,8 @@ def bind_current_permission_source(plugin_id: str) -> None:
 
 def forget_permissions(plugin_id: str) -> dict | None:
     """Drop all grants of an uninstalled plugin; returns the removed record."""
+    # The store's change notification drops the remembered record (see
+    # _on_store_change), in order with any later write.
     return permission_store.forget(plugin_id)
 
 
@@ -391,3 +400,178 @@ def snapshot_permissions(plugin_id: str) -> PermissionSnapshot:
 def restore_permissions(plugin_id: str, record: dict | None) -> None:
     """Put back an earlier record; ``None`` removes the plugin's record."""
     permission_store.restore(plugin_id, record)
+
+
+# ----------------------------------------------------------------------
+# Snapshots sent down to plugin processes (``ctx.permissions``)
+# ----------------------------------------------------------------------
+
+_snapshot_lock = threading.Lock()
+_snapshot_revision = itertools.count(1)
+# Last record read successfully per plugin, with the revision of the snapshot
+# that read it: a later read failure keeps using it.
+_last_records: dict[str, tuple[int, dict]] = {}
+# Bumped whenever a plugin's stored grants change (``_reloads`` when the
+# whole store is (re)loaded): a read that started before the change must not
+# put the older record back into ``_last_records``.
+_removals: dict[str, int] = {}
+_reloads = 0
+# Consecutive failed reads per plugin: the first is logged as an error, then
+# one line per READ_FAILURE_LOG_EVERY more (the push service retries them).
+READ_FAILURE_LOG_EVERY = 10
+_read_failures: dict[str, int] = {}
+
+
+def _invalidate_last_records(plugin_ids: frozenset[str] | None) -> None:
+    """The one place remembered records are dropped: forget them and advance
+    the generation, so reads that started earlier cannot write them back.
+    ``None`` means every plugin (the store was (re)loaded)."""
+    global _reloads
+    with _snapshot_lock:
+        if plugin_ids is None:
+            _last_records.clear()
+            _reloads += 1
+            return
+        for plugin_id in plugin_ids:
+            _last_records.pop(plugin_id, None)
+            _removals[plugin_id] = _removals.get(plugin_id, 0) + 1
+
+
+def _on_store_change(plugin_ids: frozenset[str] | None) -> None:
+    """Store change listener: drop remembered records the write made stale,
+    so a later read failure never reports a removed or replaced grant."""
+    _invalidate_last_records(plugin_ids)
+
+
+def _generation(plugin_id: str) -> tuple[int, int]:
+    return _reloads, _removals.get(plugin_id, 0)
+
+
+def _read_and_remember(plugin_id: str, revision: int) -> dict:
+    """Read the plugin's record and remember it for read failures, unless its
+    grants changed while reading. A store (re)load during the read, usually
+    triggered by this very read, gets one re-read under the new generation;
+    if that re-read fails, the first read is used but not remembered."""
+    with _snapshot_lock:
+        generation = _generation(plugin_id)
+    record = permission_record(plugin_id)
+    with _snapshot_lock:
+        current = _generation(plugin_id)
+        if current == generation:
+            _remember(plugin_id, revision, record)
+            return record
+    if current[1] != generation[1]:
+        # This plugin's grants changed meanwhile: use the read for this
+        # snapshot, remember nothing (the change schedules a new push).
+        return record
+    generation = current
+    try:
+        again = permission_record(plugin_id)
+    except Exception as exc:
+        logger.warning(
+            "plugin permissions re-read after a store reload failed; using the first read: plugin_id={}, error={}",
+            plugin_id,
+            getattr(exc, "code", None) or type(exc).__name__,
+        )
+        return record
+    with _snapshot_lock:
+        if _generation(plugin_id) == generation:
+            _remember(plugin_id, revision, again)
+    return again
+
+
+def _remember(plugin_id: str, revision: int, record: dict) -> None:
+    # Caller holds _snapshot_lock. Snapshots read concurrently: only a newer
+    # read replaces an older one.
+    if _last_records.get(plugin_id, (0, None))[0] < revision:
+        _last_records[plugin_id] = (revision, copy.deepcopy(record))
+
+
+add_change_listener(_on_store_change)
+
+
+def _resolve_state(permission: str, record: dict | None, *, checks_off: bool) -> PermissionState:
+    from plugin.sdk.shared.permissions.runtime import unavailable_state
+    from plugin.server.infrastructure.plugin_permissions import (
+        CONDITION_ANYTIME,
+        LEGACY_DENIED,
+        STATE_GRANTED,
+    )
+
+    spec = PERMISSIONS[permission]
+    if record is None:
+        return unavailable_state(permission, checks_disabled=checks_off)
+    enforced = spec.enforced and not checks_off
+    entry = (record.get("permissions") or {}).get(permission)
+    if isinstance(entry, dict):
+        status = entry.get("state")
+        background = status == STATE_GRANTED and entry.get("condition") == CONDITION_ANYTIME
+    elif record.get(LEGACY_DENIED) and spec.legacy_name is not None:
+        # A whole-plugin denial from the earlier consent flow covers the
+        # permissions that flow knew about; later ones are undecided.
+        status, background = "denied", False
+    else:
+        status, background = "undecided", False
+    if status not in ("granted", "denied", "undecided"):
+        status, background = "undecided", False
+    if permission == MESSAGES_PUSH and status != "granted":
+        # Disclosure only: either the user approved it or it is undecided.
+        status = "undecided"
+    return PermissionState(status, background=background, enforced=enforced)
+
+
+def permission_snapshot(plugin_id: str) -> dict:
+    """The plugin's resolved permission states, in the shape the plugin
+    process takes (see ``plugin.sdk.shared.permissions.runtime``). Never raises.
+
+    When the grants cannot be read, the last record read for this plugin is
+    used; when none was ever read, enforced permissions are denied and
+    disclosure-only ones undecided. While the master switch is on every
+    permission is ``enforced=False``.
+    """
+    from plugin.core.capability_policy import checks_disabled
+    from plugin.sdk.shared.permissions.runtime import state_to_wire
+
+    # Numbered before reading: a snapshot that starts after a write always
+    # outranks one that may have read the data from before it.
+    with _snapshot_lock:
+        revision = next(_snapshot_revision)
+    read_failed = False
+    try:
+        record: dict | None = _read_and_remember(plugin_id, revision)
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        read_failed = True
+        with _snapshot_lock:
+            record = copy.deepcopy(_last_records.get(plugin_id, (0, None))[1])
+            failures = _read_failures.get(plugin_id, 0) + 1
+            _read_failures[plugin_id] = failures
+        if failures == 1 or failures % READ_FAILURE_LOG_EVERY == 0:
+            logger.error(
+                "plugin permissions could not be read for the plugin process: plugin_id={}, error={}, using={}, "
+                "failures_in_a_row={}",
+                plugin_id,
+                code or type(exc).__name__,
+                "last read" if record is not None else "nothing (enforced permissions count as denied)",
+                failures,
+            )
+    else:
+        with _snapshot_lock:
+            recovered = _read_failures.pop(plugin_id, None)
+        if recovered:
+            logger.info("plugin permissions can be read again: plugin_id={}", plugin_id)
+    try:
+        checks_off = checks_disabled()
+    except Exception as exc:
+        # The switch only ever turns checks off; if it cannot be read, keep them on.
+        logger.error("permission master switch could not be read: error={}", type(exc).__name__)
+        checks_off = False
+    states = {
+        permission: state_to_wire(_resolve_state(permission, record, checks_off=checks_off))
+        for permission in PERMISSIONS
+    }
+    snapshot: dict = {"revision": revision, "states": states}
+    if read_failed:
+        # Host-side marker (not sent): the push service retries until a read works.
+        snapshot["read_failed"] = True
+    return snapshot

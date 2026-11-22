@@ -72,7 +72,7 @@ def _remote() -> bool:
 
 # Routes that wait for the user or for a model: the folder dialog is open
 # for up to two minutes (``utils.native_directory``), a draft is given 45
-# seconds (``nekoclaw.host.drafts``).
+# seconds (``nekopower.host.drafts``).
 _SLOW = {
     "space/pick-directory": httpx.Timeout(135.0, connect=3.0),
     "familiars/draft": httpx.Timeout(60.0, connect=3.0),
@@ -137,7 +137,7 @@ _TASK_HUD_KEY = "task_hud_visible"
 
 @router.post("/switch", dependencies=[Depends(require_plugin_mutation_access)])
 async def set_switch(request: Request) -> JSONResponse:
-    """Switch NekoClaw on or off, one of the two device switches, or the task HUD.
+    """Switch NekoPower on or off, one of the two device switches, or the task HUD.
 
     ``{"enabled": bool}`` for all of it; ``{"key": ..., "value": bool}``
     for the keyboard and mouse, the browser, or whether the main page shows

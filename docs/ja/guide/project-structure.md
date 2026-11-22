@@ -12,7 +12,7 @@ N.E.K.O/
 ├── main_logic/              # conversation/clients/TTS/buses
 ├── main_routers/            # Main FastAPI routes
 ├── memory/                  # fact/recall/persona/reflection/event/outbox
-├── nekoclaw/                # task brain/host (host/), agent runtime (runtime/), keyboard-and-mouse/browser tools (builtin/)
+├── nekopower/                # task brain/host (host/), agent runtime (runtime/), keyboard-and-mouse/browser tools (builtin/)
 ├── plugin/                  # SDK/host/built-ins/tools
 ├── services/                # domain services: chat sync/theater runtime
 ├── utils/config_manager/    # writable config/storage

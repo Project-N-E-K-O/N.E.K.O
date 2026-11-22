@@ -77,6 +77,53 @@ SCOPE_ALL = "all"
 LEGACY_DENIED = "legacy_denied"
 
 
+ChangeListener = Callable[["frozenset[str] | None"], None]
+_change_listeners: list[ChangeListener] = []
+_listeners_lock = threading.Lock()
+
+
+def add_change_listener(listener: ChangeListener) -> None:
+    """Call ``listener`` after any store write that changed stored grants.
+
+    It receives the ids of the plugins whose records changed, or ``None``
+    when the whole document was (re)loaded and any plugin may differ. It runs
+    on the writing thread while the store lock is held, so it must only
+    schedule work and return.
+    """
+    with _listeners_lock:
+        if listener not in _change_listeners:
+            _change_listeners.append(listener)
+
+
+def remove_change_listener(listener: ChangeListener) -> None:
+    with _listeners_lock:
+        if listener in _change_listeners:
+            _change_listeners.remove(listener)
+
+
+def _notify_change(plugin_ids: "frozenset[str] | None") -> None:
+    if plugin_ids is not None and not plugin_ids:
+        return
+    with _listeners_lock:
+        listeners = list(_change_listeners)
+    for listener in listeners:
+        try:
+            listener(plugin_ids)
+        except Exception as exc:
+            logger.error(
+                "plugin permission change listener failed: error={}",
+                type(exc).__name__,
+            )
+
+
+def _changed_plugins(before: dict | None, after: dict) -> frozenset[str]:
+    old = (before or {}).get("plugins") or {}
+    new = after.get("plugins") or {}
+    return frozenset(
+        plugin_id for plugin_id in old.keys() | new.keys() if old.get(plugin_id) != new.get(plugin_id)
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -225,6 +272,8 @@ class PluginPermissionStore:
                 unsaved = True
         self._path, self._document = path, document
         self._unsaved = unsaved
+        # Anything read before (or under another path) may differ now.
+        _notify_change(None)
         return manager
 
     def _load_for_write(self):
@@ -361,8 +410,9 @@ class PluginPermissionStore:
     def _commit(self, manager, document: dict) -> None:
         # Persist first; the cache only moves once the disk has the change.
         self._save(manager, document)
-        self._document = document
+        before, self._document = self._document, document
         self._unsaved = False
+        _notify_change(_changed_plugins(before, document))
 
     # ------------------------------------------------------------------
     # Public API

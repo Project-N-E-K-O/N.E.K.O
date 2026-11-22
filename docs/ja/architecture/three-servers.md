@@ -64,7 +64,7 @@ Memory Server はキャラクター別の永続メモリを管理します。liv
 
 ## Agent Server（`app/agent_server/`、ポート 48915 / 48916）
 
-`app/agent_server/__main__.py` は package の Tool Server FastAPI app を `127.0.0.1:48915` で起動します。実装は `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekoclaw_mount.py`、`nekoclaw_builtins.py` に分割されています。タスクを記録して実行する NekoPower ホストは `nekoclaw/host/` にあります。
+`app/agent_server/__main__.py` は package の Tool Server FastAPI app を `127.0.0.1:48915` で起動します。実装は `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekopower_mount.py`、`nekopower_builtins.py` に分割されています。タスクを記録して実行する NekoPower ホストは `nekopower/host/` にあります。
 
 Agent startup では capability state、Agent 側 ZeroMQ bridge、agent モデルの接続確認を初期化し、NekoPower ホストを登録します。登録では何も作りません。ホストの台帳、agent runtime、能力ゲートウェイは、最初に必要になった時点で作られます。`plugin_host.py` は isolated thread で embedded user-plugin FastAPI listener を `127.0.0.1:48916` に起動します。Listener が同一 process にあっても、user-plugin execution は feature flag と plugin lifecycle gate の対象です。
 
@@ -87,10 +87,10 @@ Agent は対応 SUB/PULL/PUSH mirror socket に connect します。Bridge は s
 
 ### Task execution path
 
-1. メインの対話モデルが `dispatch_task` ツールを呼びます。`main_logic/core/tool_calling.py` がその一文を `:48915` の `/nekoclaw/dispatch` へ POST し、レシートをモデルへ返します。
-2. タスクブレイン（`nekoclaw/host/task_brain.py`）が台帳に依頼を登録します。第一ラウンドはローカルで行い、およそ 1 秒以内にレシートを返します。第二ラウンドはバックグラウンドで進みます。
+1. メインの対話モデルが `dispatch_task` ツールを呼びます。`main_logic/core/tool_calling.py` がその一文を `:48915` の `/nekopower/dispatch` へ POST し、レシートをモデルへ返します。
+2. タスクブレイン（`nekopower/host/task_brain.py`）が台帳に依頼を登録します。第一ラウンドはローカルで行い、およそ 1 秒以内にレシートを返します。第二ラウンドはバックグラウンドで進みます。
 3. 判断モデルがプラグインエントリを選び、プラグインサービスの `/runs` プロトコルで直接呼びます。合うエントリがない、または複数ステップが必要な場合は、依頼を task agent（画面上では「使い魔」）へ渡します。
-4. task agent は agent runtime（`nekoclaw/runtime/`）で動き、能力ゲートウェイ経由でプラグインエントリ、MCP ツール、キーボード・マウス、ブラウザーを使います。
+4. task agent は agent runtime（`nekopower/runtime/`）で動き、能力ゲートウェイ経由でプラグインエントリ、MCP ツール、キーボード・マウス、ブラウザーを使います。
 5. 状態が変わるたびに `task_update` を送ります。結果、質問、訂正はまず outbox に書き、`:48962` で送ります。Main bridge が browser を更新し、モデルに見せる報告を対応する `LLMSessionManager` へ queue します。
 6. ユーザーが始めたターンが、実際に手を動かすツールを呼ばずに終わると、`main_logic/cross_server.py` が `:48963` で `turn_check_request` を送ります。Main bridge は ACK を待ち、timeout 時に一度 retry します。
 
