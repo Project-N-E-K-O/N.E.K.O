@@ -10,10 +10,13 @@ import os
 # remote) see the same repository.
 #
 # Configuration passed through the environment (GIT_CONFIG_COUNT with
-# GIT_CONFIG_KEY_<n> / _VALUE_<n>, GIT_CONFIG_PARAMETERS, GIT_CONFIG) is kept
-# on purpose: CI uses it for credentials and safe.directory. So are the
-# behaviour switches GIT_NO_REPLACE_OBJECTS and GIT_REPLACE_REF_BASE.
+# GIT_CONFIG_KEY_<n> / _VALUE_<n>, GIT_CONFIG_PARAMETERS) is kept on purpose:
+# CI uses it for credentials and safe.directory. So are the behaviour switches
+# GIT_NO_REPLACE_OBJECTS and GIT_REPLACE_REF_BASE. Plain GIT_CONFIG carries no
+# settings but redirects `git config` to another file, so it goes, as git
+# itself drops it when it switches repositories.
 REPOSITORY_ENV_VARS = (
+    "GIT_CONFIG",
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_IMPLICIT_WORK_TREE",

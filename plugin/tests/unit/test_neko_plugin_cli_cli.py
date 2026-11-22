@@ -3754,8 +3754,13 @@ def test_every_cli_git_call_ignores_an_inherited_repository_location(
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "neko.fromenv")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "kept")
+    # Plain GIT_CONFIG redirects `git config` to another file: dropped.
+    elsewhere = tmp_path / "elsewhere.gitconfig"
+    elsewhere.write_text("[neko]\n\telsewhere = leaked\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG", str(elsewhere))
 
     assert publish_cmd._git_config_values(plugin_dir, "neko.fromenv") == ["kept"]
+    assert publish_cmd._git_config_values(plugin_dir, "neko.elsewhere") == []
     assert Path(publish_cmd._git(plugin_dir, "rev-parse", "--show-toplevel")).resolve() == plugin_dir.resolve()
     init_cmd._run_git(["config", "neko.test", "init"], cwd=plugin_dir)
     project._run_git(["config", "neko.test2", "project"], cwd=plugin_dir)
