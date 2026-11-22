@@ -38,7 +38,7 @@ from utils.config_manager import (
     get_reserved,
     set_reserved,
 )
-from utils.frontend_utils import find_models, find_model_directory
+from utils.frontend_utils import find_models, find_model_directory, model_url_dir
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError
 from config import (
@@ -483,7 +483,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         if model_files:
                             model_file = model_files[0]
 
-                            # Build model_path using the saved item_id; get saved_item_id from the earlier logic.
+                            # The saved item_id is reported as metadata only; get it from the earlier logic.
                             saved_item_id = (
                                 get_reserved(
                                     catgirl_data,
@@ -494,18 +494,12 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                                 ) if 'catgirl_data' in locals() else ''
                             )
 
-                            # If an item_id was saved, use it to build the path.
-                            if saved_item_id:
-                                if url_prefix == '/workshop':
-                                    model_subdir = os.path.basename(model_dir.rstrip('/\\'))
-                                    model_path = encode_url_path(f'{url_prefix}/{saved_item_id}/{model_subdir}/{model_file}')
-                                else:
-                                    model_path = encode_url_path(f'{url_prefix}/{saved_item_id}/{model_file}')
-                                logger.debug(f"使用保存的item_id构建模型路径: {model_path}")
-                            else:
-                                # Original path construction logic.
-                                model_path = encode_url_path(f'{url_prefix}/{live2d_model_name}/{model_file}')
-                                logger.debug(f"使用模型名称构建路径: {model_path}")
+                            # model_dir was found by name, so build the URL from where it really
+                            # sits under its mount (same as find_model_config_file), not from the
+                            # saved item_id, which need not be the folder that was found.
+                            url_dir = model_url_dir(model_dir, url_prefix, live2d_model_name)
+                            model_path = encode_url_path(f'{url_prefix}/{url_dir}/{model_file}')
+                            logger.debug(f"按模型目录构建路径: {model_path}")
 
                             model_info = {
                                 'name': live2d_model_name,
@@ -549,7 +543,8 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
-                            model_path = f'{url_prefix}/{DEFAULT_LIVE2D_MODEL_NAME}/{model_file}'
+                            url_dir = model_url_dir(model_dir, url_prefix, DEFAULT_LIVE2D_MODEL_NAME)
+                            model_path = f'{url_prefix}/{url_dir}/{model_file}'
                             model_info = {
                                 'name': DEFAULT_LIVE2D_MODEL_NAME,
                                 'path': model_path,
