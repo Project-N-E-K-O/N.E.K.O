@@ -149,14 +149,17 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         ) -> None:
             """Advance the bounded reconnect counter, or retire the speech round."""
             nonlocal pending, reconnect_attempts
+            if (
+                deferred_requests
+                and deferred_requests[0][0] in {TTS_SHUTDOWN_SENTINEL, "__interrupt__"}
+            ) or _defer_queued_work_until_control():
+                return
             reconnect_attempts += 1
             if reconnect_attempts >= _QWEN_MAX_RECONNECT_ATTEMPTS:
                 _fail_incomplete_speech(sid_value, err)
                 return
             pending = pending_item
             response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
-            if _defer_queued_work_until_control():
-                return
             delay = min(2.0, 0.5 * (2 ** (reconnect_attempts - 1)))
             await asyncio.sleep(delay)
             _defer_queued_work_until_control()

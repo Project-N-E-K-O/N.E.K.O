@@ -113,7 +113,7 @@ def _coerce_used_at(record: Mapping[str, Any]) -> float | None:
     raw = record.get("used_at")
     try:
         value = float(0.0 if raw is None else raw)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     if not math.isfinite(value):
         return None
@@ -871,6 +871,33 @@ class TopicHookPool:
             name=f"topic_trigger_{name}",
         )
 
+    async def _check_trigger_usage_gates(
+        self,
+        name: str,
+        current_material: dict[str, Any],
+        lang: str,
+    ) -> bool:
+        if self._daily_quota_reached(name):
+            logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
+            self._reschedule_trigger_retry(name, current_material, lang)
+            return False
+        if self._topic_was_recently_used(name, current_material):
+            current_material["status"] = "skipped"
+            self._materials[name] = []
+            await self._discard_delivered_signals_async(name, current_material)
+            logger.info("[%s] topic material trigger skipped: already used", name)
+            return False
+        trigger_gap_seconds = self._seconds_until_next_topic_trigger(name)
+        if trigger_gap_seconds > 0:
+            self._reschedule_trigger_after_delay(
+                name,
+                current_material,
+                lang,
+                trigger_gap_seconds,
+            )
+            return False
+        return True
+
     async def _run_trigger_when_available(
         self,
         name: str,
@@ -888,24 +915,7 @@ class TopicHookPool:
                 return
             if current_material.get("status") != "pending":
                 return
-            if self._daily_quota_reached(name):
-                logger.debug("[%s] topic material trigger waiting: daily quota reached", name)
-                self._reschedule_trigger_retry(name, current_material, lang)
-                return
-            if self._topic_was_recently_used(name, current_material):
-                current_material["status"] = "skipped"
-                self._materials[name] = []
-                await self._discard_delivered_signals_async(name, current_material)
-                logger.info("[%s] topic material trigger skipped: already used", name)
-                return
-            trigger_gap_seconds = self._seconds_until_next_topic_trigger(name)
-            if trigger_gap_seconds > 0:
-                self._reschedule_trigger_after_delay(
-                    name,
-                    current_material,
-                    lang,
-                    trigger_gap_seconds,
-                )
+            if not await self._check_trigger_usage_gates(name, current_material, lang):
                 return
             # "Search first, then chat": once the delivery bridge looks open,
             # prepare a deeper online lead off the user hot path. A later gate
@@ -915,6 +925,13 @@ class TopicHookPool:
                 self._reschedule_trigger_retry(name, current_material, lang)
                 return
             await self._deepen_material(name, current_material, lang)
+            current_after = self._materials.get(name) or []
+            if not current_after or current_after[0] is not current_material:
+                return
+            if current_material.get("status") != "pending":
+                return
+            if not await self._check_trigger_usage_gates(name, current_material, lang):
+                return
             if not self._delivery_available_now(name):
                 logger.debug("[%s] topic material trigger waiting: delivery gate closed after prepare", name)
                 self._reschedule_trigger_retry(name, current_material, lang)
@@ -1265,7 +1282,9 @@ class TopicHookPool:
                     continue
                 try:
                     used_at = float(entry.get("used_at"))
-                except (TypeError, ValueError):
+                except (OverflowError, TypeError, ValueError):
+                    continue
+                if not math.isfinite(used_at):
                     continue
                 loaded.append(
                     {

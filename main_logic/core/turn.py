@@ -1532,6 +1532,7 @@ class TurnMixin:
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
             owns_speech = reply_turn is None or self.current_speech_id == reply_turn.speech_id
+            expected_speech_id = self.current_speech_id if owns_speech else None
             # Release the old turn before either await can admit a successor.
             if reply_turn is None or getattr(self, "_pending_turn_meta", None) is reply_turn.meta:
                 self._pending_turn_meta = None
@@ -1544,7 +1545,9 @@ class TurnMixin:
                 self._active_text_request_id = None
             try:
                 if owns_speech:
-                    await self._clear_tts_pipeline()
+                    await self._clear_tts_pipeline(
+                        still_owned=lambda: self.current_speech_id == expected_speech_id,
+                    )
             finally:
                 if active_request_id:
                     await self._send_turn_abandoned(active_request_id)

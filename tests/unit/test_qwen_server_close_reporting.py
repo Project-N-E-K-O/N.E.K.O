@@ -798,3 +798,71 @@ def test_partial_audio_before_commit_failure_is_never_replayed(monkeypatch):
     assert connect_count == 2
     assert emitted.count(("__tts_sentence_failed__", _SID, "")) == 1
     assert emitted.count(("__audio_done__", _SID)) == 1
+
+
+def test_qwen_interrupt_during_final_reconnect_failure_skips_failure_and_audio_done(
+    monkeypatch,
+):
+    """F0180: __interrupt__ arriving on the 3rd reconnect failure must preempt exhaustion."""
+    initial = _FakeQwenSocket()
+    recovered = _FakeQwenSocket()
+    recovered._on_send = {
+        "session.update": [{"type": "session.updated"}],
+        "input_text_buffer.commit": [{"type": "response.done"}],
+    }
+    attempts = 0
+    resp_q = queue.Queue()
+
+    def wait_for_speech2_done():
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with resp_q.mutex:
+                if ("__audio_done__", "speech-2") in resp_q.queue:
+                    return
+            time.sleep(0.005)
+
+    req_q = _Requests((_SID, "第三次重连时被中断。"), (None, None))
+
+    async def fake_connect(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return initial
+        if attempts < 1 + qwen_mod._QWEN_MAX_RECONNECT_ATTEMPTS:
+            raise OSError(f"transient connect failure {attempts}")
+        if attempts == 1 + qwen_mod._QWEN_MAX_RECONNECT_ATTEMPTS:
+            req_q._items.extend([
+                ("__interrupt__", None),
+                ("speech-2", "中断后的新句子。"),
+                (None, None),
+                wait_for_speech2_done,
+            ])
+            raise OSError("final connect failure with queued interrupt")
+        return recovered
+
+    real_sleep = qwen_mod.asyncio.sleep
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
+
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect)
+    monkeypatch.setattr(qwen_mod.asyncio, "sleep", fast_sleep)
+
+    qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
+
+    emitted = list(resp_q.queue)
+    assert attempts == 1 + qwen_mod._QWEN_MAX_RECONNECT_ATTEMPTS + 1
+    assert ("__audio_done__", _SID) not in emitted
+    assert ("__tts_sentence_failed__", _SID, "") not in emitted
+    errors = [
+        json.loads(item[1])
+        for item in emitted
+        if isinstance(item, tuple) and item[0] == "__error__"
+    ]
+    assert [err.get("code") for err in errors] == []
+    assert [
+        p.get("text")
+        for p in recovered.sent
+        if p.get("type") == "input_text_buffer.append"
+    ] == ["中断后的新句子。"]
+    assert emitted.count(("__audio_done__", "speech-2")) == 1

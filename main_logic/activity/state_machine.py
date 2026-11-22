@@ -389,8 +389,8 @@ class ActivityStateMachine:
 
     Expected call pattern:
 
-        sm.update_window(observation_from_system(collector.snapshot()))
         sm.update_system(collector.snapshot())
+        sm.update_window(observation_from_system(collector.snapshot()))
         sm.update_user_message(time.time())
         ...
         snap = sm.get_snapshot(now=time.time())
