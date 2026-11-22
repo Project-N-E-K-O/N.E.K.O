@@ -19,10 +19,11 @@ Access paths:
 """
 import asyncio
 import json
+import math
 import mimetypes
 import os
 import re
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -643,6 +644,20 @@ async def plugin_hosted_ui_source(
     return JSONResponse(source)
 
 
+def _sanitize_json_value(value: object) -> object:
+    """Replace non-finite floats with None recursively so allow_nan=False succeeds."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {
+            (k if isinstance(k, str) else str(k)): _sanitize_json_value(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_json_value(item) for item in value]
+    return value
+
+
 @router.get("/plugin/{plugin_id}/hosted-ui/context")
 async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str = "main", locale: str | None = None):
     """Get read-only hosted surface context."""
@@ -655,7 +670,31 @@ async def plugin_hosted_ui_context(plugin_id: str, kind: str = "panel", id: str 
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
-    return JSONResponse(context)
+    try:
+        return JSONResponse(context)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "Hosted UI context payload was not JSON-compliant for plugin '{}' ({}:{}): {}",
+            plugin_id,
+            kind,
+            id,
+            str(exc),
+        )
+        sanitized = json.loads(
+            json.dumps(_sanitize_json_value(context), default=str, ensure_ascii=False, allow_nan=False)
+        )
+        if not isinstance(sanitized, dict):
+            sanitized = {"state": {}, "warnings": []}
+        warnings = sanitized.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        warnings.append({
+            "path": f"plugin.ui.{kind}.{id}.context",
+            "code": "ui_context_failed",
+            "message": f"Sanitized non-JSON-compliant UI context payload: {exc}",
+        })
+        sanitized["warnings"] = warnings
+        return JSONResponse(sanitized)
 
 
 @mutation_router.post("/plugin/{plugin_id}/hosted-ui/action/{action_id}")

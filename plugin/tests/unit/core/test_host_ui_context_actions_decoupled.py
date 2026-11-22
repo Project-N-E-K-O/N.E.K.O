@@ -8,6 +8,7 @@ every panel button then returned unrelated 500 errors.
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 
 import pytest
@@ -227,3 +228,26 @@ async def test_concurrent_card_helpers_use_invocation_target_in_both_context_api
         assert no_custom_target == ([None] * 4 + ["Explicit"]) * 2
     finally:
         await host.shutdown(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_non_finite_floats_in_ui_context_and_actions_are_sanitized_to_null(tmp_path) -> None:
+    result = await _run_fixture(
+        tmp_path,
+        "ui_ctx_non_finite",
+        "NonFiniteFloatUiContextFixturePlugin",
+    )
+
+    assert result.get("context_error") is None
+    assert result.get("state") == {
+        "finite": 2.5,
+        "nan_val": None,
+        "inf_val": None,
+    }
+    schema_props = (result.get("state_schema") or {}).get("properties", {})
+    assert schema_props["nan_val"]["default"] is None
+    assert schema_props["inf_val"]["default"] is None
+    actions = result.get("actions") or []
+    assert len(actions) == 1
+    assert actions[0]["confirm"] == {"title": "Proceed?", "threshold": None}
+    json.dumps(result, allow_nan=False)

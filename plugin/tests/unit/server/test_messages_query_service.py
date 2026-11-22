@@ -255,3 +255,47 @@ def test_url_only_image_part_serializes_no_binary_data() -> None:
 
     assert serialized["binary_data"] is None
     assert serialized["binary_url"] == "http://host/i.png"
+
+
+@pytest.mark.plugin_unit
+def test_filtered_query_refreshes_beyond_smaller_ttl_cache_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.core.state import GlobalState
+
+    test_state = GlobalState()
+    history = [
+        {
+            "plugin_id": "target" if idx < 50 else "other",
+            "priority": 5,
+            "content": f"msg-{idx}",
+            "time": f"2026-01-01T00:{idx // 60:02d}:{idx % 60:02d}Z",
+            "message_id": f"m-{idx}",
+        }
+        for idx in range(150)
+    ]
+    rpc_calls: list[int] = []
+
+    def _fake_rpc(*, limit: int, timeout: float):
+        del timeout
+        rpc_calls.append(limit)
+        return history[-limit:] if limit > 0 else []
+
+    monkeypatch.setattr(test_state, "_message_plane_rpc_get_recent_messages", _fake_rpc)
+    monkeypatch.setattr(module, "state", test_state)
+
+    # 1. Unfiltered query populates cache with limit=100 (only "other" messages).
+    unfiltered = module._query_messages_sync(plugin_id=None, max_count=100, priority_min=None)
+    assert len(unfiltered) == 100
+    assert rpc_calls == [100]
+
+    # 2. Filtered query immediately within TTL requests limit=1000 and must NOT reuse limit=100 cache.
+    filtered = module._query_messages_sync(plugin_id="target", max_count=10, priority_min=None)
+    assert len(filtered) == 10
+    assert all(item["plugin_id"] == "target" for item in filtered)
+    assert rpc_calls == [100, 1000]
+
+    # 3. Smaller-limit query immediately within TTL hits the limit=1000 cache without extra RPC.
+    smaller = module._query_messages_sync(plugin_id=None, max_count=50, priority_min=None)
+    assert len(smaller) == 50
+    assert rpc_calls == [100, 1000]

@@ -318,3 +318,85 @@ async def test_context_update_own_config_keeps_optimistic_config_when_result_is_
     assert instance.refreshed == [
         {"plugin": {"store": {"enabled": True}}},
     ]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_context_profile_write_methods_wire_rpcs_and_invalidate_cache(
+    tmp_path: Path,
+) -> None:
+    from plugin.sdk.shared.core.config import PluginConfig
+    from plugin.sdk.shared.core.context import SdkContext
+
+    ctx = PluginContext(
+        plugin_id="demo",
+        config_path=tmp_path / "demo" / "plugin.toml",
+        logger=_Logger(),  # type: ignore[arg-type]
+        status_queue=None,
+    )
+    ctx._effective_config = {"stale": True}
+    profiles: dict[str, dict[str, object]] = {}
+    active_state: dict[str, str | None] = {"active": None}
+    sent_rpcs: list[tuple[str, dict[str, object]]] = []
+
+    async def _fake_rpc(
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, object],
+        timeout: float,
+        wrap_result: bool,
+    ) -> dict[str, object]:
+        del method_name, timeout, wrap_result
+        sent_rpcs.append((request_type, dict(request_data)))
+        if request_type == "PLUGIN_CONFIG_PROFILE_UPSERT":
+            name = str(request_data["profile_name"])
+            cfg = dict(request_data["config"])  # type: ignore[arg-type]
+            profiles[name] = cfg
+            if request_data.get("make_active") or active_state["active"] is None:
+                active_state["active"] = name
+            return {"config": cfg}
+        if request_type == "PLUGIN_CONFIG_PROFILE_ACTIVATE":
+            name = str(request_data["profile_name"])
+            active_state["active"] = name
+            return {"config_profiles": {"active": name, "files": {k: {} for k in profiles}}}
+        if request_type == "PLUGIN_CONFIG_PROFILE_DELETE":
+            name = str(request_data["profile_name"])
+            removed = name in profiles
+            profiles.pop(name, None)
+            if active_state["active"] == name:
+                active_state["active"] = None
+            return {"removed": removed}
+        if request_type == "PLUGIN_CONFIG_PROFILES_GET":
+            return {"config_profiles": {"active": active_state["active"], "files": {k: {} for k in profiles}}}
+        if request_type == "PLUGIN_CONFIG_PROFILE_GET":
+            name = str(request_data["profile_name"])
+            return {"config": dict(profiles.get(name, {}))}
+        raise AssertionError(f"Unexpected RPC {request_type}")
+
+    ctx._send_request_and_wait_async = _fake_rpc  # type: ignore[method-assign]
+    # Force RPC path instead of local disk ConfigQueryService.
+    async def _no_local(**_kwargs: object) -> None:
+        return None
+    ctx._get_local_config_payload = _no_local  # type: ignore[method-assign]
+
+    sdk_config = PluginConfig(SdkContext(ctx))
+    created = await sdk_config.profile_create("work", {"a": 1}, make_active=True)
+    assert created == {"a": 1}
+    assert ctx._effective_config is None
+
+    ctx._effective_config = {"stale": True}
+    updated = await sdk_config.profile_update("work", {"b": 2})
+    assert updated == {"a": 1, "b": 2}
+    assert ctx._effective_config is None
+
+    await sdk_config.profile_create("home", {"a": 9}, make_active=False)
+    assert await sdk_config.profile_activate("home") is True
+    assert active_state["active"] == "home"
+
+    assert await sdk_config.profile_delete("work") is True
+    assert [op for op, _ in sent_rpcs[:3]] == [
+        "PLUGIN_CONFIG_PROFILE_UPSERT",
+        "PLUGIN_CONFIG_PROFILE_GET",
+        "PLUGIN_CONFIG_PROFILE_UPSERT",
+    ]

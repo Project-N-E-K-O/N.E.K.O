@@ -407,6 +407,36 @@
       },
       "timeout": null
     },
+    "memo_reminder:lifecycle:config_change": {
+      "auto_start": false,
+      "description": "",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "lifecycle",
+      "extra": {},
+      "id": "config_change",
+      "input_schema": {
+        "properties": {
+          "new_config": {
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "kind": "lifecycle",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
+      "metadata": {},
+      "model_validate": true,
+      "name": "config_change",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": null
+    },
     "memo_reminder:lifecycle:shutdown": {
       "auto_start": false,
       "description": "",
@@ -676,7 +706,7 @@
   },
   "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 38370,
+  "source_bytes": 39791,
   "source_files": [
     "__init__.py",
     "config.schema.json",
@@ -690,5 +720,5 @@
     "i18n/zh-TW.json",
     "plugin.toml"
   ],
-  "source_sha256": "50e0fb45f1074383f36f67d38138c1bcaac5f03131e53a56c5f6b9df687eb1ef"
+  "source_sha256": "d31134ec739ba903046003fc8571641a097ffb675469b408aa77590da3c37019"
 }

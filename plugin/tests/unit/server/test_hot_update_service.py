@@ -107,3 +107,90 @@ async def test_hot_update_drops_reserved_permissions_table(
 
     assert host.configs == [{"runtime": {"enabled": True}}]
     assert persisted == ([{"runtime": {"enabled": True}}] if mode == "permanent" else [])
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_permanent_update_with_profile_targets_profile_not_base_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_calls: list[object] = []
+    profile_calls: list[tuple[str, str, dict[str, object]]] = []
+
+    class _RunningHost:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+
+        async def send_config_update(
+            self,
+            *,
+            config: dict[str, object],
+            mode: str = "temporary",
+            profile: str | None = None,
+            timeout: float = 10.0,
+        ) -> dict[str, object]:
+            self.sent.append({"config": config, "mode": mode, "profile": profile, "timeout": timeout})
+            return {"handler_called": True}
+
+    def _fake_update_profile(*, plugin_id: str, profile_name: str, updates: dict[str, object]) -> dict[str, object]:
+        profile_calls.append((plugin_id, profile_name, updates))
+        return {
+            "success": True,
+            "plugin_id": plugin_id,
+            "profile": profile_name,
+            "active_profile": "work",
+            "config": updates,
+        }
+
+    monkeypatch.setattr(module, "update_plugin_config", lambda *a, **k: base_calls.append((a, k)))
+    monkeypatch.setattr(module, "update_profile_config", _fake_update_profile)
+    monkeypatch.setattr(module, "load_plugin_config", lambda _pid: {"config": {"feature": {"x": 2}}})
+
+    # 1. Host stopped -> writes profile, does not touch base config.
+    monkeypatch.setattr(state, "plugin_hosts", {})
+    stopped_res = await module.hot_update_plugin_config(
+        plugin_id="demo",
+        updates={"feature": {"x": 2}},
+        mode="permanent",
+        profile="work",
+    )
+    assert stopped_res["hot_reloaded"] is False
+    assert stopped_res["profile"] == "work"
+    assert base_calls == []
+    assert len(profile_calls) == 1
+
+    # 2. Host running and profile != active_profile -> updates profile only, skips live reload.
+    host = _RunningHost()
+    monkeypatch.setattr(state, "plugin_hosts", {"demo": host})
+    inactive_res = await module.hot_update_plugin_config(
+        plugin_id="demo",
+        updates={"feature": {"x": 9}},
+        mode="permanent",
+        profile="other",
+    )
+    assert inactive_res["hot_reloaded"] is False
+    assert inactive_res["profile"] == "other"
+    assert host.sent == []
+    assert base_calls == []
+
+    # 3. Host running and profile == active_profile -> updates profile and hot reloads live host.
+    active_res = await module.hot_update_plugin_config(
+        plugin_id="demo",
+        updates={"feature": {"x": 2}},
+        mode="permanent",
+        profile="work",
+    )
+    assert active_res["hot_reloaded"] is True
+    assert active_res["profile"] == "work"
+    assert host.sent == [{"config": {"feature": {"x": 2}}, "mode": "temporary", "profile": "work", "timeout": 10.0}]
+    assert base_calls == []
+
+    # 4. Whitespace profile raises INVALID_ARGUMENT.
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.hot_update_plugin_config(
+            plugin_id="demo",
+            updates={"feature": {"x": 2}},
+            mode="permanent",
+            profile="   ",
+        )
+    assert exc_info.value.code == "INVALID_ARGUMENT"

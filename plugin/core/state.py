@@ -1022,6 +1022,11 @@ class GlobalState:
                 object.__setattr__(self, "_messages_cache_last_sync_ts", 0.0)
             except Exception:
                 self._messages_cache_last_sync_ts = 0.0  # type: ignore[attr-defined]
+        if not hasattr(self, "_messages_cache_limit"):
+            try:
+                object.__setattr__(self, "_messages_cache_limit", 0)
+            except Exception:
+                self._messages_cache_limit = 0  # type: ignore[attr-defined]
         if not hasattr(self, "_messages_cache_sync_lock"):
             lock = threading.Lock()
             try:
@@ -1120,13 +1125,25 @@ class GlobalState:
         This is intentionally low-frequency: guarded by TTL + mutex to prevent UI request storms.
         """
         self._ensure_messages_cache_state()
+        requested_limit = max(0, int(limit))
         try:
             last_ts = float(getattr(self, "_messages_cache_last_sync_ts", 0.0) or 0.0)
         except Exception:
             last_ts = 0.0
+        try:
+            cached_limit = int(getattr(self, "_messages_cache_limit", 0) or 0)
+        except Exception:
+            cached_limit = 0
 
         now_ts = time.time()
-        if not force and ttl_seconds is not None and ttl_seconds > 0 and (now_ts - last_ts) < float(ttl_seconds):
+        if (
+            not force
+            and ttl_seconds is not None
+            and ttl_seconds > 0
+            and last_ts > 0.0
+            and cached_limit >= requested_limit
+            and (now_ts - last_ts) < float(ttl_seconds)
+        ):
             try:
                 return int(self.message_store_len())
             except Exception:
@@ -1146,14 +1163,25 @@ class GlobalState:
                 last_ts2 = float(getattr(self, "_messages_cache_last_sync_ts", 0.0) or 0.0)
             except Exception:
                 last_ts2 = 0.0
+            try:
+                cached_limit2 = int(getattr(self, "_messages_cache_limit", 0) or 0)
+            except Exception:
+                cached_limit2 = 0
             now_ts2 = time.time()
-            if not force and ttl_seconds is not None and ttl_seconds > 0 and (now_ts2 - last_ts2) < float(ttl_seconds):
+            if (
+                not force
+                and ttl_seconds is not None
+                and ttl_seconds > 0
+                and last_ts2 > 0.0
+                and cached_limit2 >= requested_limit
+                and (now_ts2 - last_ts2) < float(ttl_seconds)
+            ):
                 try:
                     return int(self.message_store_len())
                 except Exception:
                     return 0
 
-            items = self._message_plane_rpc_get_recent_messages(limit=int(limit), timeout=float(timeout))
+            items = self._message_plane_rpc_get_recent_messages(limit=requested_limit, timeout=float(timeout))
             with self._bus_store_lock:
                 try:
                     self._message_store.clear()
@@ -1161,6 +1189,11 @@ class GlobalState:
                     self._message_store = deque(maxlen=self._message_store.maxlen)
                 for rec in items:
                     self._message_store.append(rec)
+            # Update cached limit before timestamp so lock-free readers never see a fresh ts with a stale limit.
+            try:
+                object.__setattr__(self, "_messages_cache_limit", requested_limit)
+            except Exception:
+                self._messages_cache_limit = requested_limit  # type: ignore[attr-defined]
             try:
                 object.__setattr__(self, "_messages_cache_last_sync_ts", float(time.time()))
             except Exception:

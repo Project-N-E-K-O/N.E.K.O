@@ -82,6 +82,20 @@ from utils import process_creation
 from plugin.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
 
 
+def _sanitize_json_value(value: Any) -> Any:
+    """Replace non-finite floats with None recursively so allow_nan=False succeeds."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {
+            (k if isinstance(k, str) else str(k)): _sanitize_json_value(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_json_value(item) for item in value]
+    return value
+
+
 def _resolve_current_storage_layout() -> dict[str, Any]:
     from utils.config_manager import get_config_manager
     from utils.storage_layout import build_storage_layout
@@ -1369,7 +1383,13 @@ def _plugin_process_runner(
             # including action whitelists, from sending, leaving parents waiting until timeout.
             # Custom classes unavailable to parent imports also fail pickle.loads. Failing here
             # becomes ordinary context_error at callers, symmetric with provider exceptions.
-            data = json.loads(json.dumps(data, default=str, ensure_ascii=False))
+            data = json.loads(
+                json.dumps(_sanitize_json_value(data), default=str, ensure_ascii=False, allow_nan=False)
+            )
+            if schema is not None:
+                schema = json.loads(
+                    json.dumps(_sanitize_json_value(schema), default=str, ensure_ascii=False, allow_nan=False)
+                )
             return {"state": data, "state_schema": schema}
 
         def _get_ui_action_meta(member: Any) -> dict[str, Any] | None:
@@ -1425,7 +1445,12 @@ def _plugin_process_runner(
             # json.dumps would let default=str turn it into
             # a useless string.
             return json.loads(
-                json.dumps(normalize_structured_data(actions), default=str, ensure_ascii=False)
+                json.dumps(
+                    _sanitize_json_value(normalize_structured_data(actions)),
+                    default=str,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
             )
 
         def _rebuild_entry_map() -> None:

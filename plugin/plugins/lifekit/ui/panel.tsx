@@ -174,6 +174,8 @@ export default function LifeKitPanel(props: PluginSurfaceProps<LifeKitDashboardS
           ? { baidu_map_key: configForm.values.baidu_map_key.trim() }
           : {}),
       })
+      configForm.setField("amap_key", "")
+      configForm.setField("baidu_map_key", "")
       await props.api.refresh()
       toast.success(t("panel.messages.configSaved"))
     } catch (err) {

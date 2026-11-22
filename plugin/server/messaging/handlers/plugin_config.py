@@ -244,3 +244,46 @@ async def handle_plugin_config_replace(
             }
         )
     return payload
+
+
+async def handle_plugin_config_profile_upsert(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(
+        ctx, request, "Permission denied: can only update own config profile"
+    )
+    profile_name = _normalize_profile_name(request.get("profile_name"))
+    config = _normalize_updates_payload(request.get("config"))
+    make_active = request.get("make_active")
+    return await config_command_service.upsert_plugin_profile_config(
+        plugin_id=target_plugin_id,
+        profile_name=profile_name,
+        config=config,
+        make_active=make_active,
+    )
+
+
+async def handle_plugin_config_profile_delete(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(
+        ctx, request, "Permission denied: can only delete own config profile"
+    )
+    profile_name = _normalize_profile_name(request.get("profile_name"))
+    return await config_command_service.delete_plugin_profile_config(
+        plugin_id=target_plugin_id,
+        profile_name=profile_name,
+    )
+
+
+async def handle_plugin_config_profile_activate(
+    ctx: RpcContext, request: dict[str, object]
+) -> object:
+    target_plugin_id = _own_target_plugin_id(
+        ctx, request, "Permission denied: can only activate own config profile"
+    )
+    profile_name = _normalize_profile_name(request.get("profile_name"))
+    return await config_command_service.set_plugin_active_profile(
+        plugin_id=target_plugin_id,
+        profile_name=profile_name,
+    )

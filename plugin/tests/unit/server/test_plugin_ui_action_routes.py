@@ -132,3 +132,32 @@ def test_hosted_action_returns_normally_before_client_disconnect(
         "action_id": "status",
         "result": {"ok": True},
     }
+
+
+def test_hosted_ui_context_sanitizes_non_finite_floats_instead_of_500(monkeypatch) -> None:
+    async def _fake_context(*_args, **_kwargs):
+        return {
+            "plugin_id": "demo",
+            "kind": "panel",
+            "surface_id": "main",
+            "state": {"bad_nan": float("nan"), "bad_inf": float("inf"), "ok": 42.0},
+            "config": {"value": {"threshold": float("-inf")}},
+            "actions": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        plugin_ui.plugin_ui_query_service,
+        "get_surface_context",
+        _fake_context,
+    )
+    app = FastAPI()
+    app.include_router(plugin_ui.router)
+    with TestClient(app) as client:
+        response = client.get("/plugin/demo/hosted-ui/context")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == {"bad_nan": None, "bad_inf": None, "ok": 42.0}
+    assert payload["config"] == {"value": {"threshold": None}}
+    assert any(w.get("code") == "ui_context_failed" for w in payload["warnings"])

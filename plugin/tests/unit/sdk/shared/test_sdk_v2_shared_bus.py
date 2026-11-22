@@ -1064,3 +1064,109 @@ def test_sdk_frame_record_captured_at_falls_back_like_timestamp() -> None:
     record = SdkBusFrameRecord.from_raw({"id": "f2", "timestamp": 7.0})
 
     assert record.captured_at == 7.0 and record.timestamp == 7.0
+
+
+def test_sdk_bus_list_filter_splits_host_bus_filter_and_sdk_record_fields() -> None:
+    from plugin.core.bus.conversations import ConversationList, ConversationRecord
+    from plugin.core.bus.events import EventRecord
+
+    raw_events = EventList([
+        EventRecord(kind="event", type="plugin_entry", timestamp=10.0, source="alpha", event_id="evt-1"),
+        EventRecord(kind="event", type="plugin_entry", timestamp=20.0, source="alpha", event_id="evt-2"),
+        EventRecord(kind="event", type="plugin_entry", timestamp=30.0, source="beta", event_id="evt-1"),
+    ])
+    sdk_events = SdkBusList.from_raw(
+        raw_events,
+        namespace="events",
+        record_factory=SdkBusEventRecord,
+        host_ctx=object(),
+    )
+
+    by_event_id = sdk_events.filter(event_id="evt-1")
+    assert [item.source for item in by_event_id] == ["alpha", "beta"]
+
+    mixed = sdk_events.filter(source_re="^a", event_id="evt-1")
+    assert len(mixed) == 1
+    assert mixed[0].event_id == "evt-1"
+    assert mixed[0].source == "alpha"
+    with pytest.raises(TypeError, match=r"watch\(\) is not available"):
+        mixed.watch()
+
+    # Pure BusFilter kwargs continue delegating to raw_filter directly.
+    pure_host = sdk_events.filter(source="alpha")
+    assert len(pure_host) == 2
+    assert isinstance(pure_host._raw_list, EventList)
+
+    raw_conv = ConversationList([
+        ConversationRecord(kind="conversation", type="chat", timestamp=10.0, conversation_id="c1"),
+        ConversationRecord(kind="conversation", type="chat", timestamp=25.0, conversation_id="c2"),
+    ])
+    sdk_conv = SdkBusList.from_raw(
+        raw_conv,
+        namespace="conversations",
+        record_factory=SdkBusConversationRecord,
+        host_ctx=object(),
+    )
+    assert [item.conversation_id for item in sdk_conv.filter(conversation_id="c1")] == ["c1"]
+    assert [item.conversation_id for item in sdk_conv.filter(timestamp_min=20.0)] == ["c2"]
+
+
+@pytest.mark.asyncio
+async def test_sdk_bus_list_filter_works_inside_async_event_loop_on_fetched_lists() -> None:
+    import warnings
+
+    payloads = [
+        {"event_id": "ev-1", "type": "plugin_entry", "timestamp": 10.0, "source": "ui_panel"},
+        {"event_id": "ev-2", "type": "plugin_entry", "timestamp": 20.0, "source": "ui_card"},
+        {"event_id": "ev-1", "type": "plugin_entry", "timestamp": 30.0, "source": "chat_tool"},
+    ]
+
+    class _RpcClient:
+        @staticmethod
+        def _resp() -> dict[str, object]:
+            return {
+                "ok": True,
+                "error": None,
+                "result": {"items": [{"payload": dict(p)} for p in payloads]},
+            }
+
+        def request(self, *, op: str, args: dict[str, object], timeout: float) -> dict[str, object]:
+            del op, args, timeout
+            return self._resp()
+
+        async def request_async(
+            self,
+            *,
+            op: str,
+            args: dict[str, object],
+            timeout: float,
+        ) -> dict[str, object]:
+            del op, args, timeout
+            return self._resp()
+
+    host_ctx = SimpleNamespace(plugin_id="demo", _mp_rpc_client=_RpcClient())
+    events_client = EventClient(host_ctx)
+    host_ctx.bus = SimpleNamespace(events=events_client)
+    sdk_events = SdkEventsBus(events_client, host_ctx=host_ctx)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sdk_list = await sdk_events.get(max_count=10)
+
+        pure_filtered = sdk_list.filter(source_re="^ui_")
+        assert [item.event_id for item in pure_filtered] == ["ev-1", "ev-2"]
+        assert isinstance(pure_filtered._raw_list, EventList)
+
+        mixed_filtered = sdk_list.filter(source_re="^ui_", event_id="ev-1")
+        assert len(mixed_filtered) == 1
+        assert mixed_filtered[0].event_id == "ev-1"
+        assert mixed_filtered[0].source == "ui_panel"
+        with pytest.raises(TypeError, match=r"watch\(\) is not available"):
+            mixed_filtered.watch()
+
+    leaked = [
+        w
+        for w in caught
+        if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)
+    ]
+    assert leaked == []

@@ -2031,3 +2031,94 @@ class PluginContext:
                 self._refresh_instance_runtime_config({})
             self._effective_config_uncertain = old_effective_config_uncertain
             raise
+
+    async def upsert_own_profile_config(
+        self,
+        profile_name: str,
+        config: Dict[str, Any],
+        *,
+        make_active: bool = False,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise ValueError("profile_name must be a non-empty string")
+        if not isinstance(config, dict):
+            raise TypeError("config must be a dict")
+        try:
+            payload = await self._send_request_and_wait_async(
+                method_name="upsert_own_profile_config",
+                request_type="PLUGIN_CONFIG_PROFILE_UPSERT",
+                request_data={
+                    "plugin_id": self.plugin_id,
+                    "profile_name": profile_name.strip(),
+                    "config": config,
+                    "make_active": bool(make_active),
+                },
+                timeout=timeout,
+                wrap_result=True,
+            )
+            self._effective_config = None
+            self._effective_config_uncertain = False
+            return payload
+        except TimeoutError as e:
+            self._effective_config_uncertain = True
+            raise TimeoutError(f"Plugin profile config upsert timed out after {timeout}s") from e
+        except asyncio.CancelledError:
+            self._effective_config_uncertain = True
+            raise
+
+    async def delete_own_profile_config(
+        self,
+        profile_name: str,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise ValueError("profile_name must be a non-empty string")
+        try:
+            payload = await self._send_request_and_wait_async(
+                method_name="delete_own_profile_config",
+                request_type="PLUGIN_CONFIG_PROFILE_DELETE",
+                request_data={
+                    "plugin_id": self.plugin_id,
+                    "profile_name": profile_name.strip(),
+                },
+                timeout=timeout,
+                wrap_result=True,
+            )
+            self._effective_config = None
+            self._effective_config_uncertain = False
+            return payload
+        except TimeoutError as e:
+            self._effective_config_uncertain = True
+            raise TimeoutError(f"Plugin profile config delete timed out after {timeout}s") from e
+        except asyncio.CancelledError:
+            self._effective_config_uncertain = True
+            raise
+
+    async def set_own_active_profile(
+        self,
+        profile_name: str,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise ValueError("profile_name must be a non-empty string")
+        try:
+            payload = await self._send_request_and_wait_async(
+                method_name="set_own_active_profile",
+                request_type="PLUGIN_CONFIG_PROFILE_ACTIVATE",
+                request_data={
+                    "plugin_id": self.plugin_id,
+                    "profile_name": profile_name.strip(),
+                },
+                timeout=timeout,
+                wrap_result=True,
+            )
+            self._effective_config = None
+            self._effective_config_uncertain = False
+            return payload
+        except TimeoutError as e:
+            self._effective_config_uncertain = True
+            raise TimeoutError(f"Plugin active profile update timed out after {timeout}s") from e
+        except asyncio.CancelledError:
+            self._effective_config_uncertain = True
+            raise

@@ -228,3 +228,71 @@ async def test_plugin_config_replace_uses_replace_command(
 
     assert send.calls[-1][2] == {"config": {"replacement": {"enabled": True}}}
     assert send.calls[-1][3] is None
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_plugin_config_profile_write_handlers_enforce_scope_and_delegate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    send = _Recorder()
+
+    await _invoke(
+        plugin_config_module.handle_plugin_config_profile_upsert,
+        {"from_plugin": "p1", "request_id": "r1", "plugin_id": "p2", "profile_name": "work", "config": {}},
+        send,
+    )
+    assert send.calls[-1][3]["code"] == "PERMISSION_DENIED"
+
+    await _invoke(
+        plugin_config_module.handle_plugin_config_profile_delete,
+        {"from_plugin": "p1", "request_id": "r2", "plugin_id": "p2", "profile_name": "work"},
+        send,
+    )
+    assert send.calls[-1][3]["code"] == "PERMISSION_DENIED"
+
+    await _invoke(
+        plugin_config_module.handle_plugin_config_profile_activate,
+        {"from_plugin": "p1", "request_id": "r3", "plugin_id": "p2", "profile_name": "work"},
+        send,
+    )
+    assert send.calls[-1][3]["code"] == "PERMISSION_DENIED"
+
+    async def _upsert(**kwargs: object) -> dict[str, object]:
+        return {"upserted": kwargs}
+
+    async def _delete(**kwargs: object) -> dict[str, object]:
+        return {"removed": True, "profile": kwargs["profile_name"]}
+
+    async def _activate(**kwargs: object) -> dict[str, object]:
+        return {"config_profiles": {"active": kwargs["profile_name"]}}
+
+    monkeypatch.setattr(plugin_config_module.config_command_service, "upsert_plugin_profile_config", _upsert)
+    monkeypatch.setattr(plugin_config_module.config_command_service, "delete_plugin_profile_config", _delete)
+    monkeypatch.setattr(plugin_config_module.config_command_service, "set_plugin_active_profile", _activate)
+
+    await _invoke(
+        plugin_config_module.handle_plugin_config_profile_upsert,
+        {"from_plugin": "p1", "request_id": "r4", "profile_name": "work", "config": {"k": 1}, "make_active": True},
+        send,
+    )
+    assert send.calls[-1][2]["upserted"] == {
+        "plugin_id": "p1",
+        "profile_name": "work",
+        "config": {"k": 1},
+        "make_active": True,
+    }
+
+    await _invoke(
+        plugin_config_module.handle_plugin_config_profile_delete,
+        {"from_plugin": "p1", "request_id": "r5", "profile_name": "work"},
+        send,
+    )
+    assert send.calls[-1][2] == {"removed": True, "profile": "work"}
+
+    await _invoke(
+        plugin_config_module.handle_plugin_config_profile_activate,
+        {"from_plugin": "p1", "request_id": "r6", "profile_name": "home"},
+        send,
+    )
+    assert send.calls[-1][2] == {"config_profiles": {"active": "home"}}

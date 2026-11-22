@@ -154,3 +154,49 @@ def test_upsert_profile_config_drops_reserved_permissions_table(
     )
 
     assert written["dev.toml"] == {"runtime": {"level": 1}}
+
+
+@pytest.mark.plugin_unit
+def test_update_profile_config_merges_updates_and_preserves_active_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tomllib
+    from fastapi import HTTPException
+
+    plugin_dir = tmp_path / "demo"
+    profiles_dir = plugin_dir / "profiles"
+    profiles_dir.mkdir(parents=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "[plugin]\nid='demo'\n[plugin.config_profiles]\nactive='home'\n"
+        "[plugin.config_profiles.files]\nhome='profiles/home.toml'\nwork='profiles/work.toml'\n",
+        encoding="utf-8",
+    )
+    (profiles_dir / "work.toml").write_text(
+        "[feature]\nkeep=1\nremove_me=2\noverride='old'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda _pid: config_path)
+
+    with pytest.raises(HTTPException) as exc_info:
+        module.update_profile_config(
+            plugin_id="demo",
+            profile_name="work",
+            updates={"plugin": {"id": "hijack"}},
+        )
+    assert exc_info.value.status_code == 400
+
+    res = module.update_profile_config(
+        plugin_id="demo",
+        profile_name="work",
+        updates={"feature": {"override": "new", "remove_me": "__DELETE__", "added": 3}},
+    )
+    assert res["profile"] == "work"
+    assert res["active_profile"] == "home"
+    assert res["config"] == {"feature": {"keep": 1, "override": "new", "added": 3}}
+
+    persisted_work = tomllib.loads((profiles_dir / "work.toml").read_text(encoding="utf-8"))
+    assert persisted_work == {"feature": {"keep": 1, "override": "new", "added": 3}}
+    persisted_profiles = tomllib.loads((plugin_dir / "profiles.toml").read_text(encoding="utf-8"))
+    assert persisted_profiles["config_profiles"]["active"] == "home"
+    assert set(persisted_profiles["config_profiles"]["files"]) == {"home", "work"}

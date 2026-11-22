@@ -10,6 +10,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.config_queries import load_plugin_config
 from plugin.server.infrastructure.config_access import get_config_access
 from plugin.server.infrastructure.config_merge import strip_reserved_sections
+from plugin.server.infrastructure.config_profiles_write import update_profile_config
 from plugin.server.infrastructure.config_updates import update_plugin_config
 
 logger = get_logger("server.application.config.hot_update")
@@ -72,6 +73,16 @@ async def hot_update_plugin_config(
     # Reserved tables are never part of the effective config, so a temporary
     # update must not push them into the running plugin either.
     normalized_updates = strip_reserved_sections(_ensure_mapping(updates, field="updates"))
+    profile_name: str | None = None
+    if profile is not None:
+        if not isinstance(profile, str) or not profile.strip():
+            raise ServerDomainError(
+                code="INVALID_ARGUMENT",
+                message="profile_name is required",
+                status_code=400,
+                details={"field": "profile"},
+            )
+        profile_name = profile.strip()
     host = await asyncio.to_thread(_get_host_sync, plugin_id)
 
     if host is None:
@@ -82,13 +93,41 @@ async def hot_update_plugin_config(
                 status_code=400,
                 details={"plugin_id": plugin_id, "mode": mode},
             )
-        persisted = await asyncio.to_thread(update_plugin_config, plugin_id, normalized_updates)
+        if profile_name is not None:
+            persisted = await asyncio.to_thread(
+                update_profile_config,
+                plugin_id=plugin_id,
+                profile_name=profile_name,
+                updates=normalized_updates,
+            )
+            persisted["profile"] = profile_name
+        else:
+            persisted = await asyncio.to_thread(update_plugin_config, plugin_id, normalized_updates)
         persisted["hot_reloaded"] = False
         persisted["mode"] = mode
         return persisted
 
     if mode == "permanent":
-        await asyncio.to_thread(update_plugin_config, plugin_id, normalized_updates)
+        if profile_name is not None:
+            persisted = await asyncio.to_thread(
+                update_profile_config,
+                plugin_id=plugin_id,
+                profile_name=profile_name,
+                updates=normalized_updates,
+            )
+            if profile_name != persisted.get("active_profile"):
+                return {
+                    "success": True,
+                    "plugin_id": plugin_id,
+                    "mode": mode,
+                    "profile": profile_name,
+                    "hot_reloaded": False,
+                    "requires_reload": False,
+                    "handler_called": False,
+                    "message": f"Profile '{profile_name}' updated; live plugin active profile is unchanged",
+                }
+        else:
+            await asyncio.to_thread(update_plugin_config, plugin_id, normalized_updates)
 
     if not hasattr(host, "send_config_update"):
         raise ServerDomainError(
@@ -119,12 +158,12 @@ async def hot_update_plugin_config(
         result_obj = await host_adapter.send_config_update(
             config=full_config,
             mode=update_mode,
-            profile=profile,
+            profile=profile_name,
             timeout=timeout,
         )
     except TimeoutError:
         logger.warning("Timeout waiting for CONFIG_UPDATE response from plugin {}", plugin_id)
-        return {
+        response_payload: dict[str, object] = {
             "success": True,
             "plugin_id": plugin_id,
             "mode": mode,
@@ -132,6 +171,9 @@ async def hot_update_plugin_config(
             "requires_reload": False,
             "message": "Config update sent (response timeout, may have been applied)",
         }
+        if profile_name is not None:
+            response_payload["profile"] = profile_name
+        return response_payload
     except IO_RUNTIME_ERRORS as exc:
         logger.warning(
             "CONFIG_UPDATE command failed for plugin {}: err_type={}, err={}",
@@ -152,7 +194,7 @@ async def hot_update_plugin_config(
         if isinstance(handler_called_obj, bool):
             handler_called = handler_called_obj
 
-    return {
+    response_payload = {
         "success": True,
         "plugin_id": plugin_id,
         "mode": mode,
@@ -161,3 +203,6 @@ async def hot_update_plugin_config(
         "handler_called": handler_called,
         "message": "Config hot-updated successfully",
     }
+    if profile_name is not None:
+        response_payload["profile"] = profile_name
+    return response_payload

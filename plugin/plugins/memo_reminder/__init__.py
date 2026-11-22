@@ -9,6 +9,7 @@ Data persists in PluginStore (SQLite KV) across restarts.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import re
 import threading
 import time
@@ -31,6 +32,20 @@ _STORE_KEY = "reminders"
 
 _TZ_UTC = timezone.utc
 _DEFAULT_TZ = "Asia/Shanghai"
+_DEFAULT_MAX_REMINDERS = 200
+
+
+def _parse_max_reminders(value: object) -> int:
+    """Parse [memo].max_reminders, allowing 0 and falling back to 200 on invalid input."""
+    if value is None or isinstance(value, bool):
+        return _DEFAULT_MAX_REMINDERS
+    if isinstance(value, float):
+        return _DEFAULT_MAX_REMINDERS
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_REMINDERS
+    return parsed if parsed >= 0 else _DEFAULT_MAX_REMINDERS
 
 _FORMATS_WITH_DATE = (
     ("%Y-%m-%d %H:%M:%S", True),
@@ -135,6 +150,8 @@ class MemoReminderPlugin(NekoPluginBase):
         self._wake_event = threading.Event()
         self._checker_thread: Optional[threading.Thread] = None
         self._reminders_lock = threading.Lock()
+        self._memo_cfg: Dict[str, Any] = {}
+        self._max_reminders = _DEFAULT_MAX_REMINDERS
 
     def _store_get_sync(self, key: str, default: Any = None) -> Any:
         if not self.store.enabled:
@@ -208,11 +225,34 @@ class MemoReminderPlugin(NekoPluginBase):
             self._checker_thread.start()
         self._wake_event.set()
 
+    async def _reload_config(self, cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        if isinstance(cfg, Mapping):
+            resolved_cfg: Dict[str, Any] = dict(cfg)
+        else:
+            dumped = await self.config.dump(timeout=5.0)
+            resolved_cfg = dict(dumped) if isinstance(dumped, Mapping) else {}
+        memo_cfg = resolved_cfg.get("memo") if isinstance(resolved_cfg.get("memo"), Mapping) else {}
+        self._memo_cfg = dict(memo_cfg)
+        self._max_reminders = _parse_max_reminders(
+            memo_cfg.get("max_reminders", _DEFAULT_MAX_REMINDERS)
+        )
+
+        tz_name = str(memo_cfg.get("timezone", _DEFAULT_TZ)).strip()
+        try:
+            self._tz: timezone | ZoneInfo = ZoneInfo(tz_name)
+        except Exception as e:
+            self._tz = ZoneInfo(_DEFAULT_TZ)
+            self.logger.warning("Invalid timezone {!r}, falling back to {} ({})", tz_name, _DEFAULT_TZ, e)
+        return resolved_cfg
+
+    @lifecycle(id="config_change")
+    async def on_config_change(self, new_config: Any = None, **_):
+        await self._reload_config(new_config if isinstance(new_config, Mapping) else None)
+        return Ok({"status": "reloaded", "max_reminders": self._max_reminders, "timezone": str(self._tz)})
+
     @lifecycle(id="startup")
     async def startup(self, **_):
-        cfg = await self.config.dump(timeout=5.0)
-        cfg = cfg if isinstance(cfg, dict) else {}
-        memo_cfg = cfg.get("memo") if isinstance(cfg.get("memo"), dict) else {}
+        cfg = await self._reload_config()
 
         if not self.store.enabled:
             store_cfg = cfg.get("plugin", {})
@@ -223,13 +263,6 @@ class MemoReminderPlugin(NekoPluginBase):
             else:
                 self.store.enabled = True
                 self.logger.warning("Store force-enabled (config missing plugin.store.enabled)")
-
-        tz_name = str(memo_cfg.get("timezone", _DEFAULT_TZ)).strip()
-        try:
-            self._tz: timezone | ZoneInfo = ZoneInfo(tz_name)
-        except Exception as e:
-            self._tz = ZoneInfo(_DEFAULT_TZ)
-            self.logger.warning("Invalid timezone {!r}, falling back to {} ({})", tz_name, _DEFAULT_TZ, e)
 
         self._stop_event.clear()
         self._wake_event.clear()
@@ -660,9 +693,8 @@ class MemoReminderPlugin(NekoPluginBase):
         """Returns error message string, or None on success."""
         with self._reminders_lock:
             reminders = self._load_reminders_unlocked()
-            cfg = self._store_get_sync("_memo_cfg", {})
-            max_r = int(cfg.get("max_reminders", 200)) if isinstance(cfg, dict) else 200
-            if len(reminders) >= max_r:
+            max_r = _parse_max_reminders(getattr(self, "_max_reminders", _DEFAULT_MAX_REMINDERS))
+            if max_r <= 0 or len(reminders) >= max_r:
                 return f"提醒数量已达上限 ({max_r})"
             reminders.append(reminder)
             self._save_reminders_unlocked(reminders)

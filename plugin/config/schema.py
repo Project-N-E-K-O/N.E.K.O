@@ -199,10 +199,22 @@ class PluginDependencySchema(BaseModel):
 
     @model_validator(mode="after")
     def validate_dependency(self) -> "PluginDependencySchema":
-        if not any([self.id, self.entry, self.custom_event, self.providers]):
+        has_id = isinstance(self.id, str) and bool(self.id.strip())
+        has_entry = isinstance(self.entry, str) and bool(self.entry.strip())
+        has_custom_event = isinstance(self.custom_event, str) and bool(self.custom_event.strip())
+        has_providers = isinstance(self.providers, list) and any(
+            isinstance(item, str) and bool(item.strip()) for item in self.providers
+        )
+        if not any([has_id, has_entry, has_custom_event, has_providers]):
             raise ValueError("依赖配置至少需要提供 id、entry、custom_event 或 providers 中的一个")
         if self.entry is not None and self.custom_event is not None:
             raise ValueError("entry 和 custom_event 不能同时使用")
+        if self.conflicts is True:
+            if not has_id:
+                raise ValueError("dependency with conflicts=true requires 'id' field")
+            return self
+        if self.untested is None:
+            raise ValueError("使用依赖配置时必须提供 untested 版本范围")
         return self
 
 
@@ -226,7 +238,27 @@ class PluginSectionSchema(BaseModel):
     safety: Optional[PluginSafetySchema] = None
     install: Optional[PluginInstallSchema] = None
     models: Dict[PluginModelUsageId, PluginModelRequirementSchema] = Field(default_factory=dict)
-    dependencies: Optional[List[PluginDependencySchema]] = None
+    dependencies: Optional[List[StrictStr]] = None
+    dependency: Optional[List[PluginDependencySchema]] = None
+
+    @field_validator("dependencies")
+    @classmethod
+    def validate_dependencies(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return None
+        cleaned: List[str] = []
+        for item in v:
+            stripped = item.strip()
+            if not stripped:
+                raise ValueError("plugin.dependencies 条目不能为空")
+            cleaned.append(stripped)
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_dependencies_not_self(self) -> "PluginSectionSchema":
+        if self.dependencies and self.id in self.dependencies:
+            raise ValueError("plugin.dependencies 不能包含插件自身")
+        return self
 
     @model_validator(mode="before")
     @classmethod

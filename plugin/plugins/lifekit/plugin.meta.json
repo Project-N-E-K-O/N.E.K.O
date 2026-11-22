@@ -40,12 +40,6 @@
       "id": "update_config",
       "input_schema": {
         "properties": {
-          "amap_key": {
-            "type": "string"
-          },
-          "baidu_map_key": {
-            "type": "string"
-          },
           "cache_ttl_seconds": {
             "type": "integer"
           },
@@ -5615,12 +5609,6 @@
       "id": "update_config",
       "input_schema": {
         "properties": {
-          "amap_key": {
-            "type": "string"
-          },
-          "baidu_map_key": {
-            "type": "string"
-          },
           "cache_ttl_seconds": {
             "type": "integer"
           },
@@ -8657,12 +8645,6 @@
       "id": "update_config",
       "input_schema": {
         "properties": {
-          "amap_key": {
-            "type": "string"
-          },
-          "baidu_map_key": {
-            "type": "string"
-          },
           "cache_ttl_seconds": {
             "type": "integer"
           },
@@ -8851,7 +8833,7 @@
   },
   "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 713409,
+  "source_bytes": 716270,
   "source_files": [
     ".github/workflows/release.yml",
     ".github/workflows/verify.yml",
@@ -8929,5 +8911,5 @@
     "tests/test_smoke.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "e8bb3752a26ef9f410bc0268491202470256dc0bbfacc7b4f982020368feec3f"
+  "source_sha256": "02f78f79aa5731cfcd0320dff1a0913865aafca5757c56dd5e4b8758a4f14579"
 }

@@ -8,9 +8,11 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from plugin.logging_config import get_logger
-from plugin.server.infrastructure.config_merge import strip_reserved_sections
+from plugin.server.infrastructure.config_merge import deep_merge, strip_reserved_sections
 from plugin.server.infrastructure.config_paths import ensure_plugin_runtime_config, get_plugin_config_path
 from plugin.server.infrastructure.config_profiles import (
+    _resolve_active_profile_name,
+    _resolve_profiles_cfg,
     get_profile_config,
     get_profiles_state,
     resolve_profile_path,
@@ -215,6 +217,116 @@ def upsert_profile_config(
             profile_name=profile_name,
             config_path=config_path,
         )
+
+
+def update_profile_config(
+    *,
+    plugin_id: str,
+    profile_name: str,
+    updates: dict[str, object],
+) -> dict[str, object]:
+    _require_toml_read_write()
+    if "plugin" in updates:
+        raise HTTPException(
+            status_code=400,
+            detail="Profile config must not define top-level 'plugin' section.",
+        )
+    # Reserved tables are read from plugin.toml only and are ignored in a
+    # profile; drop them so a save does not keep dead settings around.
+    updates = strip_reserved_sections(updates)
+    if not profile_name:
+        raise HTTPException(status_code=400, detail="profile_name is required")
+
+    lock = _get_plugin_lock(plugin_id)
+    config_path = get_plugin_config_path(plugin_id)
+    with lock, plugin_config_file_lock(ensure_plugin_runtime_config(plugin_id, manifest_path=config_path)):
+        base_dir = config_path.parent
+        profiles_path = base_dir / "profiles.toml"
+
+        if profiles_path.exists():
+            data = _load_profiles_file_for_update(
+                plugin_id=plugin_id,
+                profiles_path=profiles_path,
+                op="update",
+            )
+        else:
+            seeded_cfg = _resolve_profiles_cfg(
+                plugin_id=plugin_id,
+                config_path=config_path,
+            )
+            data = {"config_profiles": dict(seeded_cfg)} if isinstance(seeded_cfg, dict) else {}
+
+        profiles_cfg, files_map = _normalize_profiles_config(data)
+        raw_path = files_map.get(profile_name)
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            if "/" in profile_name or "\\" in profile_name or profile_name in {".", ".."}:
+                raise HTTPException(status_code=400, detail="Invalid profile_name")
+            raw_path = f"profiles/{profile_name}.toml"
+            files_map[profile_name] = raw_path
+
+        data["config_profiles"] = profiles_cfg
+
+        profile_path = resolve_profile_path(raw_path, base_dir)
+        if profile_path is None:
+            raise HTTPException(status_code=400, detail="Invalid profile path")
+
+        existing_profile: dict[str, object] = {}
+        if profile_path.exists():
+            assert tomllib is not None
+            try:
+                with profile_path.open("rb") as profile_file:
+                    loaded = tomllib.load(profile_file)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to parse profile '{profile_name}'",
+                ) from exc
+            except (OSError, RuntimeError) as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to read profile '{profile_name}'",
+                ) from exc
+            if isinstance(loaded, dict):
+                existing_profile = {
+                    k: v for k, v in loaded.items() if isinstance(k, str)
+                }
+
+        merged = deep_merge(existing_profile, updates)
+        if "plugin" in merged:
+            raise HTTPException(
+                status_code=400,
+                detail="Profile config must not define top-level 'plugin' section.",
+            )
+
+        try:
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create profile directory: {profile_path.parent}",
+            ) from exc
+
+        _atomic_dump_toml(
+            target_path=profile_path,
+            payload=merged,
+            prefix=".profile_",
+        )
+        _atomic_dump_toml(
+            target_path=profiles_path,
+            payload=data,
+            prefix=".profiles_",
+        )
+
+        active_name = _resolve_active_profile_name(plugin_id, profiles_cfg)
+        return {
+            "success": True,
+            "plugin_id": plugin_id,
+            "profile": profile_name,
+            "active_profile": active_name,
+            "config": merged,
+            "requires_reload": True,
+            "message": "Config updated successfully",
+        }
 
 
 def delete_profile_config(

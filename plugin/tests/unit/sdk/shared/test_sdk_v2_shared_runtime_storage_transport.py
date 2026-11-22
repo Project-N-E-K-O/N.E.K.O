@@ -399,3 +399,62 @@ async def test_plugin_database_configure_database_name_preserves_active_sessions
     assert (await db.kv.set("k", "new")).is_ok()
     assert (await db.kv.get("k")).unwrap() == "new"
     assert (plugin_dir / "new.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_message_plane_rpc_client_accepts_ok_and_ignores_legacy_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ormsgpack
+    from plugin.message_plane.protocol import err_response, ok_response
+
+    client = message_plane.MessagePlaneRpcClient(plugin_id="demo", endpoint="tcp://127.0.0.1:1")
+    sent_requests: list[dict[str, object]] = []
+    queued_frames: list[bytes] = []
+
+    class _FakeAsyncSock:
+        async def send(self, data: bytes, **_kwargs: object) -> None:
+            req = ormsgpack.unpackb(data)
+            sent_requests.append(req)
+            req_id = req["req_id"]
+            if req["op"] == "bus.get_recent":
+                # Ignore wrong req_id, wrong version, and legacy {"success": True} without bool "ok".
+                queued_frames.append(ormsgpack.packb({"v": 1, "req_id": "wrong", "ok": True, "result": {}}))
+                queued_frames.append(ormsgpack.packb({"v": 99, "req_id": req_id, "ok": True, "result": {}}))
+                queued_frames.append(ormsgpack.packb({"v": 1, "req_id": req_id, "success": True, "result": {}}))
+                queued_frames.append(ormsgpack.packb(ok_response(req_id, {"items": [{"id": "m1"}]})))
+            else:
+                queued_frames.append(
+                    ormsgpack.packb(err_response(req_id, "missing item", code="NOT_FOUND"))
+                )
+
+        async def poll(self, timeout: int = 0, flags: int = 0) -> int:
+            del timeout, flags
+            return 1 if queued_frames else 0
+
+        async def recv(self, **_kwargs: object) -> bytes:
+            return queued_frames.pop(0)
+
+    fake_sock = _FakeAsyncSock()
+
+    async def _get_sock():
+        return fake_sock
+
+    monkeypatch.setattr(client, "_get_async_sock", _get_sock)
+
+    ok_resp = await client.request(op="bus.get_recent", args={"store": "messages"}, timeout=1.0)
+    assert ok_resp is not None
+    assert ok_resp["ok"] is True
+    assert ok_resp["result"] == {"items": [{"id": "m1"}]}
+
+    batch = await client.batch_request(
+        [
+            {"op": "bus.get_recent", "args": {}},
+            {"op": "bus.get_unknown", "args": {}},
+        ],
+        timeout=1.0,
+    )
+    assert len(batch) == 2
+    assert batch[0] is not None and batch[0]["ok"] is True
+    assert batch[1] is not None and batch[1]["ok"] is False
+    assert batch[1]["error"]["code"] == "NOT_FOUND"

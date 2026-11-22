@@ -89,6 +89,10 @@ def _detect_activity_type(user_msg: str, tools_used: List[str]) -> str:
 
 # ── Inbox queue ────────────────────────────────────────────────────────────
 
+class InboxFullError(RuntimeError):
+    """Raised when the inbox is at capacity with unread pending messages."""
+
+
 class InboxQueue:
     """Thread-safe message queue with file persistence. Used for NEKO → Claude messaging."""
 
@@ -144,7 +148,7 @@ class InboxQueue:
                     # Inbox is full (all messages unread); reject the new message
                     self._messages.pop()  # Remove the message just added
                     self._save()
-                    return {"error": "inbox is full of pending messages"}
+                    raise InboxFullError("inbox is full of pending messages")
                 self._messages = kept
             self._save()
         return msg
@@ -390,11 +394,21 @@ class _HookHTTPHandler(BaseHTTPRequestHandler):
 
     def _handle_inbox_send(self, data: dict):
         """Handle a request to send a message from NEKO to the inbox."""
-        if self.plugin_instance:
-            result = self.plugin_instance._on_inbox_send(data)
-            self._respond(200, result)
+        if not self.plugin_instance:
+            self._respond(500, {"status": "error", "error": "Plugin not initialized"})
+            return
+        result = self.plugin_instance._on_inbox_send(data)
+        err = result.get("error") if isinstance(result, dict) else None
+        if err == "inbox_full":
+            self._respond(409, result)
+        elif err == "content_required":
+            self._respond(400, result)
+        elif err == "inbox_not_initialized":
+            self._respond(503, result)
+        elif err:
+            self._respond(400, result)
         else:
-            self._respond(500, {"error": "Plugin not initialized"})
+            self._respond(200, result)
 
     def _handle_inbox_pending(self):
         """Handle a request to query pending messages."""
@@ -850,13 +864,28 @@ class ClaudeCompanionPlugin(NekoPluginBase):
     def _on_inbox_send(self, data: dict) -> dict:
         """Send a message from NEKO to Claude."""
         if self._inbox is None:
-            return {"error": "inbox not initialized"}
+            return {
+                "status": "error",
+                "error": "inbox_not_initialized",
+                "message": "inbox not initialized",
+            }
         content = data.get("content", "")
         if not content:
-            return {"error": "content is required"}
+            return {
+                "status": "error",
+                "error": "content_required",
+                "message": "content is required",
+            }
         source = data.get("source", "neko")
         msg_type = data.get("type", "message")
-        msg = self._inbox.add(content, source=source, msg_type=msg_type)
+        try:
+            msg = self._inbox.add(content, source=source, msg_type=msg_type)
+        except InboxFullError as exc:
+            return {
+                "status": "error",
+                "error": "inbox_full",
+                "message": str(exc),
+            }
         self.logger.info("Inbox: new message from {}: {}", source, content[:80])
         return {"status": "ok", "message": msg}
 
