@@ -208,3 +208,357 @@ def test_cli_exits_nonzero_when_required_command_fails(
     out = capsys.readouterr().out
     assert f"[FAIL] {required} exited with status 1" in out
     assert "[OK]" not in out
+
+
+_MIMEAPPS_BEFORE = (
+    "[Default Applications]\n"
+    "text/html=firefox.desktop\n"
+    "x-scheme-handler/neko=neko-protocol-handler.desktop\n"
+    "\n"
+    "[Added Associations]\n"
+    "x-scheme-handler/neko=other-neko.desktop;neko-protocol-handler.desktop;\n"
+    "image/png=viewer.desktop;\n"
+)
+_MIMEAPPS_AFTER = (
+    "[Default Applications]\n"
+    "text/html=firefox.desktop\n"
+    "\n"
+    "[Added Associations]\n"
+    "x-scheme-handler/neko=other-neko.desktop;\n"
+    "image/png=viewer.desktop;\n"
+)
+
+
+def _linux_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    apps_dir = tmp_path / ".local" / "share" / "applications"
+    apps_dir.mkdir(parents=True)
+    desktop_file = apps_dir / "neko-protocol-handler.desktop"
+    desktop_file.write_text("[Desktop Entry]\n", encoding="utf-8")
+    return apps_dir, desktop_file
+
+
+def test_linux_remove_drops_default_association(monkeypatch, tmp_path) -> None:
+    apps_dir, desktop_file = _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_text(_MIMEAPPS_BEFORE, encoding="utf-8")
+    legacy_list = apps_dir / "mimeapps.list"
+    legacy_list.write_text(
+        "[Default Applications]\nx-scheme-handler/neko = neko-protocol-handler.desktop\n",
+        encoding="utf-8",
+    )
+    calls = _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_text(encoding="utf-8") == _MIMEAPPS_AFTER
+    assert legacy_list.read_text(encoding="utf-8") == "[Default Applications]\n"
+    assert not desktop_file.exists()
+    assert calls == [["update-desktop-database", str(apps_dir)]]
+    assert sorted(p.name for p in config_list.parent.iterdir()) == ["mimeapps.list"]
+
+
+def test_linux_remove_leaves_unrelated_mimeapps_untouched(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    # Our handler in an unrelated group or for another type is not ours to drop.
+    original = (
+        "[Removed Associations]\n"
+        "x-scheme-handler/neko=neko-protocol-handler.desktop\n"
+        "[Default Applications]\n"
+        "x-scheme-handler/other=neko-protocol-handler.desktop\n"
+    )
+    config_list.write_text(original, encoding="utf-8")
+    before = config_list.stat().st_mtime_ns
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_text(encoding="utf-8") == original
+    assert config_list.stat().st_mtime_ns == before
+
+
+def test_linux_mimeapps_paths_ignore_relative_xdg_config_home(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative/config")
+
+    assert register_protocol._linux_mimeapps_paths()[0] == tmp_path / ".config" / "mimeapps.list"
+
+
+def test_linux_remove_reports_association_write_failure(
+    monkeypatch, tmp_path, capsys,
+) -> None:
+    _, desktop_file = _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_text(_MIMEAPPS_BEFORE, encoding="utf-8")
+    _fake_commands(monkeypatch)
+
+    def fail_replace(*_args):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(register_protocol.os, "replace", fail_replace)
+
+    assert register_protocol._remove_linux() is False
+
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "[OK]" not in out
+    # The user's file is intact and no temporary file is left behind.
+    assert config_list.read_text(encoding="utf-8") == _MIMEAPPS_BEFORE
+    assert sorted(p.name for p in config_list.parent.iterdir()) == ["mimeapps.list"]
+    assert not desktop_file.exists()
+
+
+def _macos_app(monkeypatch, tmp_path):
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    app_dir = tmp_path / "Applications" / "NekoProtocolHandler.app"
+    (app_dir / "Contents").mkdir(parents=True)
+    return app_dir
+
+
+def test_macos_remove_unregisters_before_deleting(monkeypatch, tmp_path) -> None:
+    app_dir = _macos_app(monkeypatch, tmp_path)
+    seen_existing: list[bool] = []
+    calls = _fake_commands(monkeypatch)
+    original_run = register_protocol.subprocess.run
+
+    def run_and_check_bundle(args, **kwargs):
+        seen_existing.append(app_dir.exists())
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(register_protocol.subprocess, "run", run_and_check_bundle)
+
+    assert register_protocol._remove_macos() is True
+
+    assert calls == [[register_protocol.LSREGISTER, "-u", str(app_dir)]]
+    assert seen_existing == [True]
+    assert not app_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("returncodes", "missing"),
+    [({"lsregister": 1}, ()), ({}, ("lsregister",))],
+    ids=["nonzero", "missing"],
+)
+def test_macos_remove_reports_unregister_failure(
+    monkeypatch, tmp_path, capsys, returncodes, missing,
+) -> None:
+    app_dir = _macos_app(monkeypatch, tmp_path)
+    _fake_commands(monkeypatch, returncodes=returncodes, missing=missing)
+
+    assert register_protocol._remove_macos() is False
+
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "[OK]" not in out
+    # The bundle is kept so a rerun of --remove can still unregister it.
+    assert app_dir.exists()
+    assert f"rm -rf '{app_dir}'" in out
+    assert "Only if lsregister is" in out
+
+
+def test_macos_remove_without_app_skips_lsregister(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    calls = _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_macos() is True
+    assert calls == []
+
+
+def test_linux_remove_preserves_crlf_and_missing_final_newline(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_bytes(
+        b"[Default Applications]\r\n"
+        b"text/html=firefox.desktop\r\n"
+        b"x-scheme-handler/neko=other.desktop;neko-protocol-handler.desktop\r\n"
+        b"# comment \xc3\xa9\x0c kept\r\n"
+        b"image/png=viewer.desktop"
+    )
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_bytes() == (
+        b"[Default Applications]\r\n"
+        b"text/html=firefox.desktop\r\n"
+        b"x-scheme-handler/neko=other.desktop\r\n"
+        b"# comment \xc3\xa9\x0c kept\r\n"
+        b"image/png=viewer.desktop"
+    )
+
+
+def test_linux_remove_edits_symlinked_mimeapps_in_place(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    target = dotfiles / "mimeapps.list"
+    target.write_text(_MIMEAPPS_BEFORE, encoding="utf-8")
+    link = tmp_path / "xdg-config" / "mimeapps.list"
+    link.parent.mkdir()
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks are not available on this host")
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert link.is_symlink()
+    assert target.read_text(encoding="utf-8") == _MIMEAPPS_AFTER
+    assert sorted(p.name for p in dotfiles.iterdir()) == ["mimeapps.list"]
+
+
+def test_linux_remove_covers_desktop_specific_mimeapps(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_dir = tmp_path / "xdg-config"
+    config_dir.mkdir()
+    gnome_list = config_dir / "gnome-mimeapps.list"
+    gnome_list.write_text(_MIMEAPPS_BEFORE, encoding="utf-8")
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert gnome_list.read_text(encoding="utf-8") == _MIMEAPPS_AFTER
+
+
+def test_linux_remove_skips_non_utf8_file_without_neko_entry(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_dir = tmp_path / "xdg-config"
+    config_dir.mkdir()
+    kde_list = config_dir / "kde-mimeapps.list"
+    original = b"[Default Applications]\ntext/plain=caf\xe9.desktop\n"
+    kde_list.write_bytes(original)
+    before = kde_list.stat().st_mtime_ns
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert kde_list.read_bytes() == original
+    assert kde_list.stat().st_mtime_ns == before
+
+
+def test_linux_remove_keeps_non_utf8_bytes_when_dropping_entry(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_bytes(
+        b"[Default Applications]\n"
+        b"text/plain=caf\xe9.desktop\n"
+        b"x-scheme-handler/neko=\xff.desktop;neko-protocol-handler.desktop\n"
+    )
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_bytes() == (
+        b"[Default Applications]\n"
+        b"text/plain=caf\xe9.desktop\n"
+        b"x-scheme-handler/neko=\xff.desktop\n"
+    )
+
+
+def test_linux_remove_crlf_unterminated_last_line_leaves_no_stray_cr(
+    monkeypatch, tmp_path,
+) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_bytes(
+        b"[Default Applications]\r\n"
+        b"text/html=firefox.desktop\r\n"
+        b"x-scheme-handler/neko=neko-protocol-handler.desktop"
+    )
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_bytes() == (
+        b"[Default Applications]\r\n"
+        b"text/html=firefox.desktop"
+    )
+
+
+def test_linux_remove_refreshes_database_when_desktop_file_already_gone(
+    monkeypatch, tmp_path,
+) -> None:
+    apps_dir, desktop_file = _linux_home(monkeypatch, tmp_path)
+    desktop_file.unlink()
+    calls = _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+    assert calls == [["update-desktop-database", str(apps_dir)]]
+
+
+def test_linux_remove_keeps_surviving_handler_text(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_text(
+        "[Added Associations]\n"
+        "x-scheme-handler/neko=other.desktop; another.desktop;neko-protocol-handler.desktop;\n"
+        "[Default Applications]\n"
+        "x-scheme-handler/neko= neko-protocol-handler.desktop ;other.desktop\n",
+        encoding="utf-8",
+    )
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_text(encoding="utf-8") == (
+        "[Added Associations]\n"
+        "x-scheme-handler/neko=other.desktop; another.desktop;\n"
+        "[Default Applications]\n"
+        "x-scheme-handler/neko=other.desktop\n"
+    )
+
+
+def test_linux_remove_does_not_follow_planted_temp_symlink(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_dir = tmp_path / "xdg-config"
+    config_dir.mkdir()
+    config_list = config_dir / "mimeapps.list"
+    config_list.write_text(_MIMEAPPS_BEFORE, encoding="utf-8")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    # The old fixed temporary name; a symlink there must not be written through.
+    planted = config_dir / "mimeapps.list.neko-tmp"
+    try:
+        planted.symlink_to(victim)
+    except OSError:
+        pytest.skip("symlinks are not available on this host")
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    assert planted.is_symlink()
+    assert config_list.read_text(encoding="utf-8") == _MIMEAPPS_AFTER
+    assert sorted(p.name for p in config_dir.iterdir()) == [
+        "mimeapps.list",
+        "mimeapps.list.neko-tmp",
+    ]
+
+
+def test_linux_remove_handles_utf8_bom(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_bytes(
+        b"\xef\xbb\xbf[Default Applications]\n"
+        b"x-scheme-handler/neko=neko-protocol-handler.desktop\n"
+        b"text/html=firefox.desktop\n"
+    )
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_bytes() == (
+        b"\xef\xbb\xbf[Default Applications]\n"
+        b"text/html=firefox.desktop\n"
+    )

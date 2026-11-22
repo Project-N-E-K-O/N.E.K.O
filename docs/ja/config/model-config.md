@@ -2,7 +2,7 @@
 
 N.E.K.O. は単一の global model ではなく **role** 単位で解決します。選択 Provider profile が defaults を提供し、`core_config.json` の対応値が個別 role を上書きできます。
 
-主な fields は `CORE_MODEL`、`CONVERSATION_MODEL`、`SUMMARY_MODEL`（記憶整理。旧 summary と correction を統合）、`EMOTION_MODEL`、`VISION_MODEL`、`AGENT_MODEL`、`AGENT_SMALL_MODEL`、`REALTIME_MODEL`、`TTS_MODEL` です。
+主な fields は `CORE_MODEL`、`CONVERSATION_MODEL`、`SUMMARY_MODEL`（記憶整理。旧 summary と correction を統合）、`EMOTION_MODEL`、`VISION_MODEL`、`AGENT_MODEL`、`AGENT_SMALL_MODEL`、`REALTIME_MODEL`、`TTS_MODEL` です。`VISION_MODEL` は非推奨です。画像はチャットモデルに送られます。以前に個別設定した画像認識モデルがある場合は正式版までそちらが優先され、非推奨の警告と起動ごとに一度の通知が出ます。
 
 Web UI で音声モデルのプロバイダー（Core）と汎用モデルのプロバイダー（Assist）、credential を設定し、connectivity check 後に必要な supported role の model/URL/key を設定します。保存済み endpoint は current profile candidates に含まれる間だけ再利用されます。
 

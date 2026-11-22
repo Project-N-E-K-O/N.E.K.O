@@ -66,11 +66,14 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         model (str):
             Model to use for chat.
         vision_model (str):
-            Model to use for vision tasks.
+            Retired, separately configured vision model; images switch to it
+            while it is set. Empty when images go to the chat model.
         vision_base_url (str):
             Optional separate base URL for vision model API.
         vision_api_key (str):
             Optional separate API key for vision model.
+        image_choice:
+            ``utils.legacy_vision.ImageModelChoice`` for this session, or None.
         llm (ChatOpenAI):
             ChatOpenAI client for streaming text generation.
         on_text_delta (Callable[[str, bool], Awaitable[None]]):
@@ -121,6 +124,7 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         max_tool_iterations: int = 3,
         enable_long_response_summary: bool = False,
         user_language_provider: Optional[Callable[[], Optional[str]]] = None,
+        image_choice: Any = None,
     ):
         # Use base_url directly without conversion
         self.base_url = base_url
@@ -128,6 +132,9 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching
+        # Images go to the chat model; ``vision_model`` is set only for a retired,
+        # separately configured vision route (see utils.legacy_vision).
+        self._image_choice = image_choice
         # Independent vision-model configuration: URL and Key must fall back **as a pair**.
         #
         # These two lines originally checked for emptiness independently, so when "the visual slot had its own URL but no Key,"

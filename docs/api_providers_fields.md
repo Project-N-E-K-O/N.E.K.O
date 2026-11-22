@@ -46,7 +46,7 @@ Common display metadata includes `key`, `name`, `description`, and feature flags
 | `conversation_model` | `CONVERSATION_MODEL` |
 | `summary_model` | `SUMMARY_MODEL` |
 | `emotion_model` | `EMOTION_MODEL` |
-| `vision_model` | `VISION_MODEL` |
+| `vision_model` | `VISION_MODEL` (deprecated; keep equal to `conversation_model`) |
 | `agent_model` | `AGENT_MODEL` |
 | `audio_api_key` | `AUDIO_API_KEY` |
 | `openrouter_api_key` | `OPENROUTER_API_KEY` |
