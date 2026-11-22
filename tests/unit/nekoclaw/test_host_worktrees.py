@@ -2589,22 +2589,28 @@ async def test_a_landed_file_ignored_since_is_not_taken_for_deleted(
 async def test_cleaning_up_after_a_failed_make_is_not_cut_short(
     repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
 ) -> None:
-    original = manager._git
-    removing = asyncio.Event()
+    import threading
+    import time
 
-    async def cancelled_then_slow_to_clean(cwd: Path, *args: str, **kwargs: Any) -> Any:
-        if args[:2] == ("worktree", "remove"):
-            removing.set()
-            await asyncio.sleep(0.5)  # cancelled again meanwhile
-            return await original(cwd, *args, **kwargs)
+    original = manager._git
+    real = worktrees._remove_tree
+    removing = threading.Event()
+
+    def slow_to_clean(path: Path) -> None:
+        removing.set()
+        time.sleep(0.5)  # cancelled again meanwhile
+        real(path)
+
+    async def cancelled(cwd: Path, *args: str, **kwargs: Any) -> Any:
         done = await original(cwd, *args, **kwargs)
         if args[:2] == ("worktree", "add"):
             raise asyncio.CancelledError
         return done
 
-    monkeypatch.setattr(manager, "_git", cancelled_then_slow_to_clean)
+    monkeypatch.setattr(manager, "_git", cancelled)
+    monkeypatch.setattr(worktrees, "_remove_tree", slow_to_clean)
     making = asyncio.ensure_future(manager.create(repo, base / "w1"))
-    await asyncio.wait_for(removing.wait(), 30)
+    assert await asyncio.to_thread(removing.wait, 30)
     making.cancel()
     with pytest.raises(asyncio.CancelledError):
         await making
@@ -3295,5 +3301,45 @@ async def test_removing_leaves_what_nothing_tells_from_the_worktree(
     assert git(repo, "for-each-ref", f"{REF_PREFIX}w1/").strip()
     shutil.rmtree(tree.path)  # by hand, as it says
     await manager.remove(tree)
+    assert "w1" not in registered(repo)
+    assert not git(repo, "for-each-ref", f"{REF_PREFIX}w1/").strip()
+
+
+async def test_a_removal_stopped_half_way_keeps_what_finds_it_again(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "locked.txt", "held by an editor\n")
+    real = worktrees._remove_tree
+
+    def held(path: Path) -> None:  # .git first (it sorts first), then all but the held file
+        for entry in sorted(os.listdir(path)):
+            if entry != "locked.txt":
+                target = path / entry
+                real(target) if target.is_dir() else os.remove(target)
+
+    original = manager._git
+
+    async def as_git_does(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        # `git worktree remove --force` with a file held: its files go but
+        # that one, its registration goes all the same, and it exits 255.
+        if args[:2] == ("worktree", "remove"):
+            await asyncio.to_thread(held, tree.path)
+            await asyncio.to_thread(shutil.rmtree, _fs(repo / ".git" / "worktrees" / "w1"))
+            return worktrees._Run(255, b"", b"error: failed to delete")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", as_git_does)
+    monkeypatch.setattr(worktrees, "_remove_tree", held)
+    with pytest.raises(WorktreeError, match="its registration and refs are kept"):
+        await manager.remove(tree)
+    monkeypatch.setattr(manager, "_git", original)
+    assert "w1" in registered(repo)  # as it says
+    assert git(repo, "for-each-ref", f"{REF_PREFIX}w1/").strip()
+    monkeypatch.setattr(worktrees, "_remove_tree", real)
+    if worktrees._directory_identity(tree.path) is None:  # nothing tells it: by hand, as it would say
+        shutil.rmtree(tree.path)
+    await manager.remove(tree)
+    assert not exists(tree.path)
     assert "w1" not in registered(repo)
     assert not git(repo, "for-each-ref", f"{REF_PREFIX}w1/").strip()

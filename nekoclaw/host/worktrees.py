@@ -1334,26 +1334,18 @@ class WorktreeManager:
                 f"made in was not noted); it is left, and so are its registration and refs: remove the "
                 f"directory by hand, then remove the worktree again"
             )
-        removed_by_git = False
-        if registered:
-            removed = await self._git(
-                repo_root,
-                "worktree",
-                "remove",
-                "--force",
-                str(path),
-                check=False,
-                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
-            )
-            removed_by_git = removed.returncode == 0
-        # Ours: registered, made by this call, or (git dropped the
-        # registration before it gave up) its .git file still points here.
+        # Not `git worktree remove`: when it cannot remove every file it
+        # drops the registration all the same (and with it the note of
+        # which directory it was), so a second try would not know the rest.
+        # The directory goes first; the registration only once it is gone.
+        # Ours: registered (and known to be ours above), made by this call,
+        # or its .git file still points here.
         if registered or remove_directory or await asyncio.to_thread(_points_into, path, common):
             # Waited for to the end: the lock is not let go while it runs.
             await _to_the_end(asyncio.to_thread(_remove_tree, path))
             if await asyncio.to_thread(os.path.lexists, _fs(path)):
                 raise WorktreeError(f"{path} could not be removed entirely; its registration and refs are kept")
-        if registered and not removed_by_git:
+        if registered:
             await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
         if not theirs:
             await self._delete_refs(repo_root, worktree_id)
