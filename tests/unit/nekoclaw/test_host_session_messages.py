@@ -1200,9 +1200,13 @@ async def test_sessions_are_listed_with_whose_they_are_and_where_they_stand(host
     # The one last in use first, a page at a time; sessions of every character, each row saying whose.
     assert first[0] == words.SESSION_LIST_HEADER.format(page=1, pages=2, total=3)
     assert len(first) == 3
-    assert first[1].startswith(f'"watch the deployment" [{watching.commission_id[:8]}] · it works for Lan · no project · resting until ')
+    # Each with which preset it is and what its card says it takes: here what it was made for.
+    assert first[1].startswith(
+        f'"watch the deployment" [{watching.commission_id[:8]}] · it works for Lan · no project · '
+        "general, takes: watch the deployment · resting until "
+    )
     assert first[2].startswith(f'"paint the fence" [{fence.session_id[:8]}] · it works for Mia, not for the companion you work for · ')
-    assert " · not running · latest: paint the fence · last in use " in first[2]
+    assert " · general, takes: paint the fence · not running · latest: paint the fence · last in use " in first[2]
     second = (await listing(chart.session_id, {"page": 2}))["text"].splitlines()
     assert len(second) == 2 and second[1].endswith(words.SESSION_LIST_THIS)
     # By words: in names and in the titles of what was worked on.
