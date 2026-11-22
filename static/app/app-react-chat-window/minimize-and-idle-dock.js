@@ -957,7 +957,8 @@
             // The cat woke up on its own earlier and the window stayed collapsed.
             // Only the return ball going away (the user brought her back) reopens it.
             if (I.electronIdleDockParkedRestoreBounds && detail && !detail.visible &&
-                !shouldIgnoreElectronIdleDockTransientDragHide(detail)) {
+                !shouldIgnoreElectronIdleDockTransientDragHide(detail) &&
+                !shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
                 I.exitElectronIdleDock({});
             }
             return;

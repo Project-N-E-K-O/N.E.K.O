@@ -215,9 +215,12 @@ test('Electron: bringing her back after she woke up still reopens the chat where
   const h = await electronDockedAsleep();
   await h.petState({ tier: 'cat1', reason: 'cat-sleep-wake-demotion' });
 
-  // Drag frames hide the ball for a moment; that is not the return.
+  // Drag frames hide the ball for a moment, and the native drag window resizes
+  // the pet viewport; neither is the return.
   await h.petState({ visible: false, tier: 'none', screenRect: null, reason: 'return-ball-drag-start' });
+  await h.petState({ visible: false, tier: 'none', screenRect: null, reason: 'viewport-resize' });
   assert.deepEqual(h.expandCalls, []);
+  assert.ok(h.parts.electronIdleDockParkedRestoreBounds, 'the reopen is still owed');
 
   await h.petState({ visible: false, tier: 'none', screenRect: null, reason: 'return-ball-hide' });
   assert.deepEqual(h.expandCalls, [EXPANDED]);
