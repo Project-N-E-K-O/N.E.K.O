@@ -1472,7 +1472,7 @@
         "customModelProviderFollowCore": "跟随核心API",
         "customModelProviderFollowAssist": "跟随辅助API",
         "customModelProviderFollowConversation": "跟随文本对话模型",
-        "customModelProviderFollowSummary": "跟随摘要模型",
+        "customModelProviderFollowSummary": "跟随记忆整理模型",
         "customModelProviderFollowEmotion": "跟随识别模型",
         "customModelProviderFollowAgent": "跟随使魔模型",
         "customModelProviderCustom": "自定义 API",
@@ -1526,8 +1526,7 @@
         "baseUrlExamplePlaceholder": "如：https://api.openai.com/v1",
         "modelExamplePlaceholder": "如：gpt-3.5-turbo、qwen-turbo、glm-4-flash",
         "conversationApiKeyPlaceholder": "可选，本地服务商可留空",
-        "summaryApiKeyPlaceholder": "请输入摘要模型的API Key",
-        "correctionApiKeyPlaceholder": "请输入纠错模型的API Key",
+        "summaryApiKeyPlaceholder": "请输入记忆整理模型的API Key",
         "emotionApiKeyPlaceholder": "请输入情感模型的API Key",
         "visionModelExamplePlaceholder": "如：gpt-4-vision-preview、qwen-vl-plus",
         "visionApiKeyPlaceholder": "请输入视觉模型的API Key",
@@ -1556,11 +1555,10 @@
             "message": "当前使用了阿里的美国API，不支持TTS与实时语音，建议更换阿里的新加坡API"
         },
         "conversationModelConfig": "文本聊天模型",
-        "summaryModelConfig": "摘要模型",
+        "summaryModelConfig": "记忆整理（大模型）",
         "gameModelsConfig": "小游戏模型",
         "gameMainModelConfig": "小游戏主模型配置",
         "gameSummaryModelConfig": "小游戏摘要模型配置",
-        "correctionModelConfig": "纠错模型",
         "emotionModelConfig": "情感模型",
         "decisionModelConfig": "决策模型",
         "visionModelConfig": "视觉聊天模型",
@@ -1578,7 +1576,6 @@
         "summaryModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "gameMainModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "gameSummaryModelApiKeyPlaceholder": "可选，本地服务商可留空",
-        "correctionModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "emotionModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "decisionModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "visionModelApiKeyPlaceholder": "可选，本地服务商可留空",
@@ -4774,11 +4771,11 @@
             },
             "step8": {
                 "title": "✅ 启用自定义 API",
-                "desc": "勾选这个选项可以启用自定义 API 配置。启用后，您可以为不同的功能模块（摘要、纠错、情感分析等）配置独立的 API。"
+                "desc": "勾选这个选项可以启用自定义 API 配置。启用后，您可以为不同的功能模块（记忆整理、情感分析等）配置独立的 API。"
             },
             "step9": {
-                "title": "📝 摘要模型",
-                "desc": "摘要模型用于生成对话摘要和记忆管理。您可以配置独立的 API 服务来处理摘要生成任务。"
+                "title": "📝 记忆整理（大模型）",
+                "desc": "记忆整理模型负责整理她的记忆：压缩聊天记录、提取事实、反思，以及复核人设和记忆。您可以为它配置独立的 API 服务。"
             }
         },
         "voice_clone": {

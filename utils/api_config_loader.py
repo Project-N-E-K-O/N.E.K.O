@@ -142,7 +142,6 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'token_plan_openrouter_urls': 'MIMO_TOKEN_PLAN_OPENROUTER_URLS',
         'conversation_model': 'CONVERSATION_MODEL',
         'summary_model': 'SUMMARY_MODEL',
-        'correction_model': 'CORRECTION_MODEL',
         'emotion_model': 'EMOTION_MODEL',
         'decision_model': 'DECISION_MODEL',
         'decision_protocol': 'DECISION_PROTOCOL',

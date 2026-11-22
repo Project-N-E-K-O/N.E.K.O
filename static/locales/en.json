@@ -1472,7 +1472,7 @@
         "customModelProviderFollowCore": "Follow Core API",
         "customModelProviderFollowAssist": "Follow Assist API",
         "customModelProviderFollowConversation": "Follow Text Dialogue Model",
-        "customModelProviderFollowSummary": "Follow Summary Model",
+        "customModelProviderFollowSummary": "Follow Memory Upkeep Model",
         "customModelProviderFollowEmotion": "Follow recognition model",
         "customModelProviderFollowAgent": "Follow familiar model",
         "customModelProviderCustom": "Custom API",
@@ -1526,8 +1526,7 @@
         "baseUrlExamplePlaceholder": "e.g., https://api.openai.com/v1",
         "modelExamplePlaceholder": "e.g., gpt-3.5-turbo, qwen-turbo, glm-4-flash",
         "conversationApiKeyPlaceholder": "Optional, can be empty for local providers",
-        "summaryApiKeyPlaceholder": "Enter Summary API Key",
-        "correctionApiKeyPlaceholder": "Enter Correction API Key",
+        "summaryApiKeyPlaceholder": "Enter Memory Upkeep API Key",
         "emotionApiKeyPlaceholder": "Enter Emotion API Key",
         "visionModelExamplePlaceholder": "e.g., gpt-4-vision-preview, qwen-vl-plus",
         "visionApiKeyPlaceholder": "Enter Vision API Key",
@@ -1556,11 +1555,10 @@
             "message": "You are currently using Alibaba's US API, which does not support TTS or realtime voice. We recommend switching to Alibaba's Singapore API."
         },
         "conversationModelConfig": "Text Chat Model",
-        "summaryModelConfig": "Summary Model",
+        "summaryModelConfig": "Memory Upkeep (Large Model)",
         "gameModelsConfig": "Mini-game Model",
         "gameMainModelConfig": "Mini-game Main Model Configuration",
         "gameSummaryModelConfig": "Mini-game Summary Model Configuration",
-        "correctionModelConfig": "Correction Model",
         "emotionModelConfig": "Emotion Model",
         "decisionModelConfig": "Decision Model",
         "visionModelConfig": "Vision Chat Model",
@@ -1578,7 +1576,6 @@
         "summaryModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "gameMainModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "gameSummaryModelApiKeyPlaceholder": "Optional, can be empty for local providers",
-        "correctionModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "emotionModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "decisionModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "visionModelApiKeyPlaceholder": "Optional, can be empty for local providers",
@@ -4774,11 +4771,11 @@
             },
             "step8": {
                 "title": "✅ Enable Custom API",
-                "desc": "Check to enable custom API configuration. Then configure independent APIs for different modules like summarization, correction, emotion analysis, etc."
+                "desc": "Check to enable custom API configuration. Then configure independent APIs for different modules like memory upkeep, emotion analysis, etc."
             },
             "step9": {
-                "title": "📝 Summary Model",
-                "desc": "Summary model generates conversation summaries and manages memory. Configure independent API service for summary tasks."
+                "title": "📝 Memory Upkeep (Large Model)",
+                "desc": "The memory upkeep model looks after her memory: compressing chat history, extracting facts, reflecting, and reviewing persona and memories. You can configure a separate API service for it."
             }
         },
         "voice_clone": {

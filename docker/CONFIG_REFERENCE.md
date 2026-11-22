@@ -108,7 +108,7 @@
 
 ### 4. 模型配置
 
-各用途用哪个模型，由当前选中提供商的 profile 决定：`coreApi` 决定实时语音模型（`get_core_config()` 快照里的 `CORE_MODEL`），`assistApi` 决定对话、摘要、纠错、情感、视觉和 Agent 模型（`CONVERSATION_MODEL`、`SUMMARY_MODEL`、`CORRECTION_MODEL`、`EMOTION_MODEL`、`VISION_MODEL`、`AGENT_MODEL`）。各提供商的 profile 来自 `config/api_providers.json`，来源和回退规则见第 5 节。
+各用途用哪个模型，由当前选中提供商的 profile 决定：`coreApi` 决定实时语音模型（`get_core_config()` 快照里的 `CORE_MODEL`），`assistApi` 决定对话、记忆整理、情感、视觉和 Agent 模型（`CONVERSATION_MODEL`、`SUMMARY_MODEL`、`EMOTION_MODEL`、`VISION_MODEL`、`AGENT_MODEL`）。各提供商的 profile 来自 `config/api_providers.json`，来源和回退规则见第 5 节。
 
 - `config/model_defaults.py` 的 `DEFAULT_*` 常量是快照的初始值，会被选中提供商 profile 里的同名项覆盖；内置 profile 都带有上面这些模型项。`assistApi` 填了未知值时会先回退到 `qwen` 再覆盖，`coreApi` 没有这层回退：它不是 `core_api_providers` 的键时（例如拼错），`CORE_URL` / `CORE_MODEL` 会停在默认值（`wss://dashscope.aliyuncs.com/api-ws/v1/realtime`、`qwen3-omni-flash-realtime`）。
 - 没有能单独指定某个模型的环境变量。要给某个用途换模型或提供商，用第 7 节的自定义模型配置。
@@ -116,7 +116,7 @@
 > 历史上的 `ROUTER_MODEL` / `SEMANTIC_MODEL` / `RERANKER_MODEL` /
 > `SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 全部退环境
 > （见 `config/model_defaults.py` 中「模型配置常量」处的注释）。memory 子系统的 LLM 调用按 tier
-> （`summary` / `correction` / `emotion`）走 `config_manager.get_model_api_config(<tier>)`，
+> （`summary` / `emotion`）走 `config_manager.get_model_api_config(<tier>)`，
 > 嵌入服务走本地 ONNX（`memory/embeddings.py` 的 `EmbeddingService`）。
 
 ### 5. API 提供商详细配置
@@ -144,10 +144,9 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 `assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter、requesty、opper、atlascloud。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
 
-每个提供商有一个接口地址 `OPENROUTER_URL` 和 6 个模型槽位：
+每个提供商有一个接口地址 `OPENROUTER_URL` 和 5 个模型槽位：
 - `CONVERSATION_MODEL` - 文本对话模型
-- `SUMMARY_MODEL` - 摘要模型
-- `CORRECTION_MODEL` - 纠错模型
+- `SUMMARY_MODEL` - 记忆整理模型（原来的摘要、纠错两档 2026-11 合并成这一档；老配置里的纠错字段在下次保存时丢弃）
 - `EMOTION_MODEL` - 情感模型
 - `VISION_MODEL` - 视觉模型
 - `AGENT_MODEL` - Agent 模型（键鼠控制、浏览器控制等，见第 6 节）
@@ -255,10 +254,9 @@ Agent API Key 的取法：
 | 用途 | 字段前缀 | 快照键（另有对应的 `_URL` / `_API_KEY`） | `get_model_api_config()` 的 `model_type` | 自定义未生效时回退到 |
 |------|---------|---------|---------|---------|
 | 对话 | `conversation` | `CONVERSATION_MODEL` | `conversation` | 辅助 API |
-| 摘要 | `summary` | `SUMMARY_MODEL` | `summary` | 辅助 API |
+| 记忆整理 | `summary` | `SUMMARY_MODEL` | `summary` | 辅助 API |
 | 游戏主模型 | `gameMain` | `GAME_MAIN_MODEL` | `game_main` | 对话槽 |
 | 游戏摘要 | `gameSummary` | `GAME_SUMMARY_MODEL` | `game_summary` | 摘要槽 |
-| 纠错 | `correction` | `CORRECTION_MODEL` | `correction` | 辅助 API |
 | 情感 | `emotion` | `EMOTION_MODEL` | `emotion` | 辅助 API |
 | 视觉 | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
 | Agent | `agent` | `AGENT_MODEL` | `agent` | 辅助 API |

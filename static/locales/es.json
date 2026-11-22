@@ -1472,7 +1472,7 @@
         "customModelProviderFollowCore": "Siga la API principal",
         "customModelProviderFollowAssist": "Seguir API de asistencia",
         "customModelProviderFollowConversation": "Seguir modelo de diálogo de texto",
-        "customModelProviderFollowSummary": "Seguir modelo de resumen",
+        "customModelProviderFollowSummary": "Seguir modelo de organización de memoria",
         "customModelProviderFollowEmotion": "Seguir el modelo de reconocimiento",
         "customModelProviderFollowAgent": "Seguir el modelo de familiar",
         "customModelProviderCustom": "API personalizada",
@@ -1526,8 +1526,7 @@
         "baseUrlExamplePlaceholder": "por ejemplo, https://api.openai.com/v1",
         "modelExamplePlaceholder": "por ejemplo, gpt-3.5-turbo, qwen-turbo, glm-4-flash",
         "conversationApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
-        "summaryApiKeyPlaceholder": "Ingrese la clave API de resumen",
-        "correctionApiKeyPlaceholder": "Ingrese la clave API de corrección",
+        "summaryApiKeyPlaceholder": "Ingrese la clave API de organización de memoria",
         "emotionApiKeyPlaceholder": "Ingrese la clave API de Emotion",
         "visionModelExamplePlaceholder": "por ejemplo, gpt-4-vision-preview, qwen-vl-plus",
         "visionApiKeyPlaceholder": "Ingrese la clave API de Vision",
@@ -1556,11 +1555,10 @@
             "message": "Actualmente está usando la API de Alibaba en EE. UU., que no admite TTS ni voz en tiempo real. Se recomienda cambiar a la API de Alibaba en Singapur."
         },
         "conversationModelConfig": "Modelo de chat de texto",
-        "summaryModelConfig": "Modelo de resumen",
+        "summaryModelConfig": "Organización de memoria (modelo grande)",
         "gameModelsConfig": "Modelo de minijuego",
         "gameMainModelConfig": "Configuración del modelo principal del minijuego",
         "gameSummaryModelConfig": "Configuración del modelo de resumen del minijuego",
-        "correctionModelConfig": "Modelo de corrección",
         "emotionModelConfig": "Modelo de emociones",
         "decisionModelConfig": "Modelo de decisión",
         "visionModelConfig": "Modelo de chat visual",
@@ -1578,7 +1576,6 @@
         "summaryModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "gameMainModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "gameSummaryModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
-        "correctionModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "emotionModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "decisionModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "visionModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
@@ -4774,11 +4771,11 @@
             },
             "step8": {
                 "title": "✅ Habilitar API personalizada",
-                "desc": "Marque para habilitar la configuración de API personalizada. Luego configure API independientes para diferentes módulos como resumen, corrección, análisis de emociones, etc."
+                "desc": "Marque para habilitar la configuración de API personalizada. Luego configure API independientes para diferentes módulos como organización de memoria, análisis de emociones, etc."
             },
             "step9": {
-                "title": "📝 Modelo de resumen",
-                "desc": "El modelo de resumen genera resúmenes de conversaciones y gestiona la memoria. Configure el servicio API independiente para tareas de resumen."
+                "title": "📝 Organización de memoria (modelo grande)",
+                "desc": "El modelo de organización de memoria cuida su memoria: comprime el historial de chat, extrae hechos, reflexiona y revisa la personalidad y los recuerdos. Puede configurar un servicio API independiente para él."
             }
         },
         "voice_clone": {

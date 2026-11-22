@@ -296,7 +296,7 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
     summary_count = mock_page.evaluate("""() => {
         return document.querySelectorAll('.connectivity-summary-light').length;
     }""")
-    assert summary_count == 12, "Summary lights should cover all custom model slots"
+    assert summary_count == 11, "Summary lights should cover all custom model slots"
 
     tooltip_state = mock_page.evaluate("""() => {
         const summaryLight = document.querySelector('.connectivity-summary-light[data-model-type="conversation"]');
@@ -352,7 +352,6 @@ def test_custom_api_summary_lights_navigate_to_model_config(mock_page: Page, run
         "summary": "summary-model-content",
         "gameMain": "game-main-model-content",
         "gameSummary": "game-summary-model-content",
-        "correction": "correction-model-content",
         "emotion": "emotion-model-content",
         "decision": "decision-model-content",
         "vision": "vision-model-content",

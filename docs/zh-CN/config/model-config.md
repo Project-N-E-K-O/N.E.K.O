@@ -6,8 +6,7 @@ N.E.K.O. 按**角色**解析模型，而不是只读一个全局模型名。选�
 | --- | --- |
 | Core | `CORE_MODEL` |
 | 会话 | `CONVERSATION_MODEL` |
-| 摘要 | `SUMMARY_MODEL` |
-| 纠错 | `CORRECTION_MODEL` |
+| 记忆整理（原摘要、纠错） | `SUMMARY_MODEL` |
 | 情感 | `EMOTION_MODEL` |
 | 视觉 | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |

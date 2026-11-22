@@ -47,6 +47,7 @@ from contextlib import suppress
 
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import (
+    _is_within,
     _resolve_workshop_search_dirs,
     find_model_directory,
     find_models,
@@ -375,28 +376,47 @@ def _upsert_model(
     })
 
 
+def _is_inside_model_dir(model_dir_real: str, path: str) -> bool:
+    """
+    Whether the real path of *path* (links resolved) stays inside *model_dir_real*,
+    the real path of the model folder, checked with ``utils.frontend_utils._is_within``
+    (the same boundary rule as ``find_workshop_item_model_file``): links
+    pointing inside the folder keep working, entries whose real path leaves it are
+    skipped. Skipped entries are logged so a missing motion or expression can be traced.
+    """
+    try:
+        inside = _is_within(model_dir_real, os.path.realpath(path))
+    except (OSError, ValueError):
+        inside = False
+    if not inside:
+        logger.info("跳过真实路径不在模型目录内的条目: %s (模型目录: %s)", path, model_dir_real)
+    return inside
+
+
 def _locate_model_config(model_dir: str):
     """
     Probe *model_dir* (root) and its single-level subdirectories for a
-    ``.model3.json`` file.
+    ``.model3.json`` file. Entries whose real path leaves *model_dir*
+    (file or directory links pointing elsewhere) are skipped.
 
     Returns ``(actual_model_dir, model_config_file, subdir_name)`` on
     success, or ``(None, None, None)`` when nothing is found.
     """
     if not os.path.isdir(model_dir):
         return None, None, None
+    model_dir_real = os.path.realpath(model_dir)
 
     for file in os.listdir(model_dir):
-        if file.endswith('.model3.json'):
+        if file.endswith('.model3.json') and _is_inside_model_dir(model_dir_real, os.path.join(model_dir, file)):
             return model_dir, file, None
 
     try:
         for subdir in os.listdir(model_dir):
             subdir_path = os.path.join(model_dir, subdir)
-            if not os.path.isdir(subdir_path):
+            if not os.path.isdir(subdir_path) or not _is_inside_model_dir(model_dir_real, subdir_path):
                 continue
             for file in os.listdir(subdir_path):
-                if file.endswith('.model3.json'):
+                if file.endswith('.model3.json') and _is_inside_model_dir(model_dir_real, os.path.join(subdir_path, file)):
                     return subdir_path, file, subdir
     except Exception as e:
         logger.warning(f"检查子目录时出错: {e}")
@@ -777,12 +797,14 @@ def get_model_files(model_name: str):
             )
             return {"success": False, "error": "模型配置文件(.model3.json)不存在"}
 
+        # Listings stay inside the model folder: entries whose real path leaves it are skipped.
+        model_root_real = os.path.realpath(model_dir)
         model_dir = actual_model_dir
         motion_files = []
         expression_files = []
 
         # Recursively search all subfolders.
-        def search_files_recursive(directory, target_ext, result_list):
+        def search_files_recursive(directory, target_ext, result_list, ancestors=()):
             """
             Recursively search for files with the given extension.
             args:
@@ -791,8 +813,14 @@ def get_model_files(model_name: str):
             - result_list: list to store results
             """
             try:
+                # Real paths of the directories on the current recursion chain. A link back
+                # to one of them (e.g. ``loop -> .``) is not entered; links to other inside
+                # directories are still listed, so alias folders keep showing up twice.
+                chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
                 for item in os.listdir(directory):
                     item_path = os.path.join(directory, item)
+                    if not _is_inside_model_dir(model_root_real, item_path):
+                        continue
                     if os.path.isfile(item_path):
                         if item.endswith(target_ext):
                             # Calculate path relative to model root.
@@ -801,8 +829,10 @@ def get_model_files(model_name: str):
                             relative_path = relative_path.replace('\\', '/')
                             result_list.append(relative_path)
                     elif os.path.isdir(item_path):
+                        if os.path.normcase(os.path.realpath(item_path)) in chain:
+                            continue
                         # Search subdirectories recursively.
-                        search_files_recursive(item_path, target_ext, result_list)
+                        search_files_recursive(item_path, target_ext, result_list, chain)
             except Exception as e:
                 logger.warning(f"搜索目录 {directory} 时出错: {e}")
         
@@ -1117,11 +1147,13 @@ def get_model_files_by_id(model_id: str):
             logger.warning(f"未找到模型 {model_id} 的 .model3.json 文件: {model_dir}")
             return {"success": False, "error": "未找到模型配置文件(.model3.json)"}
         
+        # Listings stay inside the model folder: entries whose real path leaves it are skipped.
+        model_root_real = os.path.realpath(model_dir)
         motion_files = []
         expression_files = []
         
         # Recursively search all subfolders.
-        def search_files_recursive(directory, target_ext, result_list):
+        def search_files_recursive(directory, target_ext, result_list, ancestors=()):
             """
             Recursively search for files with the given extension.
             args:
@@ -1130,8 +1162,14 @@ def get_model_files_by_id(model_id: str):
             - result_list: list to store the found file paths
             """
             try:
+                # Real paths of the directories on the current recursion chain. A link back
+                # to one of them (e.g. ``loop -> .``) is not entered; links to other inside
+                # directories are still listed, so alias folders keep showing up twice.
+                chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
                 for item in os.listdir(directory):
                     item_path = os.path.join(directory, item)
+                    if not _is_inside_model_dir(model_root_real, item_path):
+                        continue
                     if os.path.isfile(item_path):
                         if item.endswith(target_ext):
                             # Calculate path relative to model root.
@@ -1140,8 +1178,10 @@ def get_model_files_by_id(model_id: str):
                             relative_path = relative_path.replace('\\', '/')
                             result_list.append(relative_path)
                     elif os.path.isdir(item_path):
+                        if os.path.normcase(os.path.realpath(item_path)) in chain:
+                            continue
                         # Search subdirectories recursively.
-                        search_files_recursive(item_path, target_ext, result_list)
+                        search_files_recursive(item_path, target_ext, result_list, chain)
             except Exception as e:
                 logger.warning(f"搜索目录 {directory} 时出错: {e}")
         
