@@ -1513,6 +1513,12 @@ class CoreConfigMixin:
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
+                if prefix == 'agentSmall' and provider in ('', 'follow_emotion', 'follow_agent'):
+                    # Followed at runtime: get_model_api_config delegates to the followed tier.
+                    # Fields saved before switching must not linger in the snapshot; an old
+                    # free-route URL here would wake the region probe for nothing.
+                    config[model_key] = config[url_key] = config[apikey_key] = ''
+                    continue
                 if prefix == 'agentSmall':
                     # Blank or partial small-familiar fields complete from the small
                     # (emotion) model resolved above, never from a hardcoded seed.

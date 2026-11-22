@@ -1526,8 +1526,10 @@ function setModelIdFieldHidden(modelType, hidden) {
 
 function applyFixedModelProviderUi(modelType, providerMode) {
     const providerKey = getProviderModeSourceKey(modelType, providerMode);
+    // 跟随另一格时按被跟随那一格的档位取固定模型（使魔模型·小跟随使魔模型时取 agent_model）
+    const tierType = followedModelType(providerMode) || modelType;
     const fixedModel = isFixedModelProvider(providerKey)
-        ? getProviderDefaultModelId(providerKey, modelType)
+        ? getProviderDefaultModelId(providerKey, tierType)
         : '';
     const input = document.getElementById(`${modelType}ModelId`);
     if (fixedModel && input) {
@@ -1543,8 +1545,9 @@ function applyFixedModelProviderUi(modelType, providerMode) {
 function getResolvedCustomModelId(modelType, providerMode) {
     if (!modelType) return '';
     const providerKey = getProviderModeSourceKey(modelType, providerMode);
+    const tierType = followedModelType(providerMode) || modelType;
     const fixedModel = isFixedModelProvider(providerKey)
-        ? getProviderDefaultModelId(providerKey, modelType)
+        ? getProviderDefaultModelId(providerKey, tierType)
         : '';
     if (fixedModel) return fixedModel;
     const input = document.getElementById(`${modelType}ModelId`);

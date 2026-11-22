@@ -53,6 +53,13 @@ const ASSIST_PROVIDERS = {
         emotion_model: 'kimi-k2.6',
         agent_model: '',
     },
+    fixedduo: {
+        fixed_model: true,
+        openrouter_url: 'https://fixedduo.test/v1',
+        conversation_model: 'duo-chat',
+        emotion_model: 'duo-small',
+        agent_model: 'duo-agent',
+    },
     kimi_code: {
         fixed_model: true,
         conversation_model: 'kimi-for-coding',
@@ -204,11 +211,14 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     const exported = [
         'translateModelPickerText', 'getAssistTierModelId', 'resolveSlotModelState', 'applyModelIdPlaceholder',
         'refreshModelIdHints', 'resolveSlotModelPickerRequest', 'resolveImageModelPickerRequest',
-        'fetchModelList', 'getModelPickerErrorMessage', 'initModelIdPickers',
+        'fetchModelList', 'getModelPickerErrorMessage', 'initModelIdPickers', 'getResolvedCustomModelId',
+        'applyFixedModelProviderUi',
     ];
     vm.runInContext([
         sourceBetween('const FOLLOW_SOURCE_BY_PROVIDER', 'const MODEL_CONFIG_EXPANSION_PATHS'),
         sourceBetween('function getProviderDefaultModelId(', 'function setModelIdFieldHidden('),
+        'function setModelIdFieldHidden() {}',
+        sourceBetween('function applyFixedModelProviderUi(', 'function populateModelProviderDropdowns('),
         sourceBetween('// ==================== 模型 ID 选择器 ====================', '// ==================== 加载API服务商选项 ===================='),
         ...exported.map(name => `globalThis.${name} = ${name};`),
         'globalThis.invalidateModelLists = invalidateModelLists;',
@@ -370,6 +380,20 @@ test('the small familiar slot mirrors the recognition slot by default, the famil
     assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
         defaultModelId: 'my-small-model', acceptsTypedModelId: true, fixedModelProvider: '',
     });
+});
+
+test('following the familiar slot on a fixed-model provider resolves the familiar tier model', () => {
+    const { context, el, setSlot } = createPickerContext();
+    setSlot('agent', 'fixedduo');
+    setSlot('agentSmall', 'follow_agent');
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'follow_agent'), 'duo-agent');
+    setSlot('emotion', 'fixedduo');
+    setSlot('agentSmall', 'follow_emotion');
+    assert.equal(context.getResolvedCustomModelId('agentSmall', 'follow_emotion'), 'duo-small');
+
+    setSlot('agentSmall', 'follow_agent', 'typed');
+    assert.equal(context.applyFixedModelProviderUi('agentSmall', 'follow_agent'), true);
+    assert.equal(el('agentSmallModelId').value, 'duo-agent');
 });
 
 test('game slots keep the fixed-model marker of the text slot they mirror', () => {

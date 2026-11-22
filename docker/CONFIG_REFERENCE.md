@@ -151,7 +151,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 - `EMOTION_MODEL` - 情感模型
 - `VISION_MODEL` - 视觉模型
 - `AGENT_MODEL` - Agent 模型（键鼠控制、浏览器控制等，见第 6 节）
-- `AGENT_SMALL_MODEL` - 使魔模型·小（`get_model_api_config("agent_small")`）：默认就是识别模型（`emotion`）；开启自定义 API 后，`agentSmallModelProvider` 可选 `follow_emotion`（默认）、`follow_agent`（改用 Agent 模型）、`follow_core` / `follow_assist`（取该提供商的识别模型）、具体提供商或 `custom`。自己填的值缺哪项，就从识别模型补哪项
+- `AGENT_SMALL_MODEL` - 使魔模型·小（`get_model_api_config("agent_small")`）：默认就是识别模型（`emotion`）；开启自定义 API 后，`agentSmallModelProvider` 可选 `follow_emotion`（默认）、`follow_agent`（改用 Agent 模型）、`follow_core` / `follow_assist`（取该提供商的识别模型）、具体提供商或 `custom`。自己填的值缺哪项，就从识别模型补哪项；例外是 Key：自己填的地址和识别模型的地址不同时，不继承识别模型的 Key，需要 Key 就自己填（或选 `follow_assist` / 具体提供商，从 Key 管理簿取）
 
 补充说明：
 - `claude`、`kimi_code` 带 `provider_type: "anthropic"`，按 Anthropic Messages 协议调用。

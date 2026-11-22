@@ -262,3 +262,24 @@ def test_custom_small_familiar_with_its_own_endpoint_speaks_openai(config_manage
         **SMALL_CUSTOM,
     })
     assert config_manager.get_model_api_config('agent_small')['provider_type'] == 'openai_compatible'
+
+
+@pytest.mark.parametrize('provider', ['follow_emotion', 'follow_agent', None])
+def test_stale_fields_under_a_follow_choice_never_reach_the_region_scan(config_manager, provider):
+    # A free-route URL left in the small-familiar fields from before switching to a follow
+    # choice must not make a paid configuration probe the user's IP (invariant #2).
+    from utils.config_manager import ConfigManager
+
+    data = {
+        'coreApiKey': 'sk-core', 'coreApi': 'openai', 'assistApi': 'openai', 'assistApiKeyOpenai': 'sk-openai-test',
+        'enableCustomApi': True,
+        'agentSmallModelUrl': 'https://www.lanlan.tech/text/v1', 'agentSmallModelId': 'stale-model',
+        'agentSmallModelApiKey': 'sk-stale',
+    }
+    if provider:
+        data['agentSmallModelProvider'] = provider
+    _write_core_config(config_manager, data)
+    cfg = config_manager.get_core_config()
+    assert cfg['AGENT_SMALL_MODEL_URL'] == ''
+    assert cfg['AGENT_SMALL_MODEL_API_KEY'] == ''
+    assert ConfigManager._config_needs_region(cfg) is False
