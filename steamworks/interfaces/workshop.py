@@ -445,13 +445,14 @@ class SteamWorkshop(object):
         self.steam.Workshop_SendQueryUGCRequest(handle)
 
 
-    def GetQueryUGCResult(self, handle: int, index: int) -> SteamUGCDetails_t:
-        """Create UGC item details query request
+    def GetQueryUGCResult(self, handle: int, index: int) -> SteamUGCDetails_t | dict:
+        """Get UGC item details for a query result
 
         :param handle: query handle
         :param index: int
-        :return: SteamUGCDetails_t
+        :return: SteamUGCDetails_t | dict
         """
         details = SteamUGCDetails_t()
-        self.steam.Workshop_GetQueryUGCResult(handle, index, byref(details))
+        if not self.steam.Workshop_GetQueryUGCResult(handle, index, byref(details)):
+            return {}
         return details
