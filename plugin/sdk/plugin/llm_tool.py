@@ -91,6 +91,11 @@ class LlmToolMeta:
     timeout_seconds: float = 30.0
     role: str | None = None
     reply_tail: bool = False
+    # Set by register_llm_tool_async for each registration and sent to
+    # main_server, so that unregister (and the cleanup after a failed
+    # register) can remove exactly this registration and never a newer one
+    # of the same name. ``None`` on the decorator / sync paths.
+    registration_id: str | None = None
 
     def to_ipc_payload(self, *, plugin_id: str) -> dict[str, Any]:
         """Build the LLM_TOOL_REGISTER IPC message payload.
@@ -107,6 +112,7 @@ class LlmToolMeta:
             "timeout_seconds": float(self.timeout_seconds),
             "role": self.role,
             **({"reply_tail": True} if self.reply_tail else {}),
+            **({"registration_id": self.registration_id} if self.registration_id else {}),
         }
 
 
@@ -324,13 +330,20 @@ class LlmToolRoleFailure(TypedDict, total=False):
 class LlmToolRoleRefusal(TypedDict, total=False):
     role: str
     owned_by: str
+    # "different registration": same owner, but not the registration this
+    # unregister targeted (e.g. a newer one); left untouched.
+    reason: str
 
 
 class LlmToolUnregisterResult(TypedDict):
     """``ok`` is True when no role still holds this plugin's tool.
     ``removed`` says whether main_server actually removed anything;
     ``refused_roles`` lists roles where the name belongs to another
-    source (left untouched, and not ours to remove)."""
+    source (left untouched, and not ours to remove), or, with
+    ``reason="different registration"``, to another registration of this
+    plugin than the one targeted (the cleanup after a failed register
+    leaves those alone; ``unregister_llm_tool_async`` then removes the name
+    without the registration filter)."""
 
     ok: bool
     removed: bool

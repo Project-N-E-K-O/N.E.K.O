@@ -188,6 +188,15 @@ carries the details.
 { "name": "get_weather", "role": null }
 ```
 
+Optional fields: `expected_source` (remove only a tool owned by that
+source; other owners are reported in `refused_roles`) and
+`expected_registration_id` (remove only the registration whose
+`registration_id` `/register` returned; a different registration of the
+name is reported in `refused_roles` with `"reason": "different
+registration"`). `/register` accepts an optional `registration_id` and
+always returns the one it stored. Without these fields the behaviour is
+unchanged.
+
 ### `POST /api/tools/clear`
 
 ```json
@@ -503,7 +512,7 @@ returns what `main_server` answered:
 | `removed` | — | `main_server` actually removed something. |
 | `affected_roles` | Roles that now have the tool. | Roles it was removed from. |
 | `failed_roles` | `[{"role", "error"}]` roles that did not accept it (also on partial success). | `[{"role", "error"}]` roles where removal failed. |
-| `refused_roles` | — | `[{"role", "owned_by"}]` roles where the name belongs to another source; left untouched. |
+| `refused_roles` | — | `[{"role", "owned_by"}]` roles where the name belongs to another source, or (with `"reason": "different registration"`) to another registration of this plugin; left untouched. |
 | `error` | `None` or a code (below). | `None` or a code (below). |
 | `message` | Human-readable detail, or `None`. | Human-readable detail, or `None`. |
 | `cleanup` | `None`, or the unregister result of the cleanup after a failed register (below). | — |
@@ -540,10 +549,19 @@ Local state follows `ok`, so the plugin and the host agree:
   still be processing the register and store the tool after the cleanup
   ran, so `removed=False` does not prove nothing is left; call
   `unregister_llm_tool_async(name)` again a little later when that
-  matters. Likewise, if the cleanup itself timed out it may still be
-  running on `main_server`, and a register of the same name sent right
-  after could be removed by it: wait a little before retrying. A
-  cancelled register rolls back locally but sends no cleanup.
+  matters. A cancelled register rolls back locally but sends no cleanup.
+- Each `register_llm_tool_async` call carries its own registration id,
+  and its cleanup and a later `unregister_llm_tool_async` remove only
+  that registration. So a cleanup or unregister that timed out but is
+  still running on `main_server` cannot remove a newer registration of
+  the same name; that role is reported in `refused_roles` with
+  `"reason": "different registration"`. The cleanup leaves such a
+  registration alone; `unregister_llm_tool_async` instead removes it too
+  (sending again without the id), since the plugin asked for the name to
+  be gone. Tools registered through the
+  sync call or `@llm_tool`, and names the plugin no longer holds, are
+  unregistered without an id (any registration of this plugin), as
+  before.
 - `unregister_llm_tool_async` removes the handler only when `ok` is
   true. Otherwise the tool stays registered in the plugin, as it does on
   the host, so the roles that still have it keep working and calling it

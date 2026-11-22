@@ -229,6 +229,17 @@ def _valid_tool_name(name: object) -> bool:
     return True
 
 
+_REGISTRATION_ID_MAX_LENGTH = 64
+
+
+def _registration_id(value: object) -> Optional[str]:
+    """A caller-supplied registration id, or ``None`` when absent/unusable
+    (main_server then generates one / applies no registration filter)."""
+    if isinstance(value, str) and 0 < len(value) <= _REGISTRATION_ID_MAX_LENGTH:
+        return value
+    return None
+
+
 def parse_register_request(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalise an ``LLM_TOOL_REGISTER`` payload into ``register_remote_tool``
     keyword arguments (minus ``plugin_id``). Returns ``None`` when the tool
@@ -252,20 +263,34 @@ def parse_register_request(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "timeout_seconds": float(timeout_seconds),
         "role": role,
         **({"reply_tail": True} if msg.get("reply_tail") is True else {}),
+        **({"registration_id": rid} if (rid := _registration_id(msg.get("registration_id"))) else {}),
     }
 
 
 def parse_unregister_request(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Normalise an ``LLM_TOOL_UNREGISTER`` payload into
     ``unregister_remote_tool`` keyword arguments (minus ``plugin_id``).
-    Returns ``None`` when the tool name is missing or invalid."""
+    Returns ``None`` when the tool name or a given
+    ``expected_registration_id`` is missing or invalid."""
     name = msg.get("name")
     if not _valid_tool_name(name):
+        return None
+    raw_expected = msg.get("expected_registration_id")
+    if raw_expected is not None and _registration_id(raw_expected) is None:
+        # Refuse rather than drop it: without the filter the unregister
+        # would remove any registration of the plugin (fail-open).
         return None
     role = msg.get("role")
     if role is not None and not isinstance(role, str):
         role = None
-    return {"name": name, "role": role}
+    return {
+        "name": name,
+        "role": role,
+        **(
+            {"expected_registration_id": rid}
+            if (rid := _registration_id(msg.get("expected_registration_id"))) else {}
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +307,7 @@ async def register_remote_tool(
     timeout_seconds: float,
     role: Optional[str] = None,
     reply_tail: bool = False,
+    registration_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Register a plugin-owned LLM tool with ``main_server``.
 
@@ -307,6 +333,7 @@ async def register_remote_tool(
         "source": _source_tag(plugin_id),
         "timeout_seconds": float(timeout_seconds),
         **({"reply_tail": True} if reply_tail else {}),
+        **({"registration_id": registration_id} if registration_id else {}),
     }
 
     client = _get_http_client()
@@ -374,7 +401,12 @@ async def register_remote_tool(
             body=body,
         )
     async with _lock:
-        _plugin_tools[plugin_id][name] = {"timeout_seconds": float(timeout_seconds)}
+        _plugin_tools[plugin_id][name] = {
+            "timeout_seconds": float(timeout_seconds),
+            # Which registration we track; an unregister aimed at an older
+            # one must not drop it (see unregister_remote_tool).
+            "registration_id": body.get("registration_id") or registration_id,
+        }
     logger.info(
         "Registered LLM tool '{}' for plugin '{}' (callback={})",
         name, plugin_id, callback_url,
@@ -387,6 +419,7 @@ async def unregister_remote_tool(
     plugin_id: str,
     name: str,
     role: Optional[str] = None,
+    expected_registration_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Unregister a single LLM tool from ``main_server``.
 
@@ -404,6 +437,9 @@ async def unregister_remote_tool(
     another plugin's tool by name collision.
     """
     payload = {"name": name, "role": role, "expected_source": _source_tag(plugin_id)}
+    if expected_registration_id is not None:
+        # Remove only that registration; a newer one of the same name stays.
+        payload["expected_registration_id"] = expected_registration_id
     host_id = tool_host_instance_id()
     if host_id is not None:
         payload["expected_host_instance_id"] = host_id
@@ -468,7 +504,11 @@ async def unregister_remote_tool(
         )
     async with _lock:
         owned = _plugin_tools.get(plugin_id)
-        if owned is not None:
+        tracked = owned.get(name) if owned is not None else None
+        if tracked is not None and (
+            expected_registration_id is None
+            or tracked.get("registration_id") in (None, expected_registration_id)
+        ):
             owned.pop(name, None)
             if not owned:
                 _plugin_tools.pop(plugin_id, None)

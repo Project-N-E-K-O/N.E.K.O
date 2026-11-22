@@ -162,6 +162,11 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 { "name": "get_weather", "role": null }
 ```
 
+可选字段：`expected_source`（只删这个 source 的工具，其他归属的放进 `refused_roles`）和
+`expected_registration_id`（只删 `/register` 返回的那个 `registration_id` 对应的那次注册；同名的其他注册放进
+`refused_roles`，带 `"reason": "different registration"`）。`/register` 接受可选的 `registration_id`，并总是返回
+实际存下的那个。不带这些字段时行为不变。
+
 ### `POST /api/tools/clear`
 
 ```json
@@ -436,7 +441,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 | `removed` | — | `main_server` 确实删掉了东西 |
 | `affected_roles` | 现在有这个工具的 role | 从中删掉了的 role |
 | `failed_roles` | `[{"role", "error"}]` 没接受的 role（部分成功时也会有） | `[{"role", "error"}]` 删除失败的 role |
-| `refused_roles` | — | `[{"role", "owned_by"}]` 同名工具属于其他 source 的 role，不会动它 |
+| `refused_roles` | — | `[{"role", "owned_by"}]` 同名工具属于其他 source 的 role，或（带 `"reason": "different registration"`）属于本插件另一次注册的 role，不会动它 |
 | `error` | `None` 或下面的错误码 | `None` 或下面的错误码 |
 | `message` | 可读的说明，或 `None` | 可读的说明，或 `None` |
 | `cleanup` | `None`，或注册失败后清理用的那次注销的结果（见下） | — |
@@ -457,9 +462,12 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
   结果放在 `cleanup` 里（最多让这次调用多花 15 秒）。其他错误说明什么都没存下，`cleanup` 为 `None`。
   `cleanup["ok"]` 为假时，之后再调 `unregister_llm_tool_async(name)`。`timeout` 之后的清理只能尽力：
   `main_server` 可能还在处理那次注册、在清理之后才存下工具，所以 `removed=False` 不能证明什么都没留下；
-  在意的话过一会儿再调一次 `unregister_llm_tool_async(name)`。同样，如果补发的注销本身超时，
-  它可能还在 `main_server` 上执行，紧接着发出的同名注册可能被它删掉：重试前稍等一会儿。
-  被取消的注册只回滚本地，不补发注销。
+  在意的话过一会儿再调一次 `unregister_llm_tool_async(name)`。被取消的注册只回滚本地，不补发注销。
+- 每次 `register_llm_tool_async` 都带一个自己的注册 ID，它的补发清理和之后的 `unregister_llm_tool_async`
+  只删这一次注册。所以超时了、但还在 `main_server` 上执行的清理或注销，删不掉同名的新注册；那个 role 会出现在
+  `refused_roles` 里，带 `"reason": "different registration"`。补发清理不会动这样的注册；而
+  `unregister_llm_tool_async` 会把它也删掉（不带 ID 再发一次），因为插件要的就是这个名字不再存在。通过同步接口或 `@llm_tool` 注册的工具，以及本地已经
+  没有的名字，注销时不带 ID（删本插件的任何一次注册），和以前一样。
 - `unregister_llm_tool_async` 只在 `ok` 为真时删掉 handler；否则工具在插件里照旧登记，
   和 host 一致，还挂着它的 role 照常能用，再调一次就是重试。
 - host 注销时总带上 `expected_source=plugin:{plugin_id}`（plugin_id 取自插件连接本身），

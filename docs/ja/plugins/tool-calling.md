@@ -181,6 +181,11 @@ main_server からの dispatch も同じ IPC trigger 配管（`@plugin_entry`
 { "name": "get_weather", "role": null }
 ```
 
+任意フィールド：`expected_source`（その source のツールだけを削除し、他の所有者のものは `refused_roles` に入れる）と
+`expected_registration_id`（`/register` が返した `registration_id` の登録だけを削除し、同じ名前の別の登録は
+`"reason": "different registration"` 付きで `refused_roles` に入れる）。`/register` は任意の `registration_id` を
+受け付け、実際に保存した ID を常に返します。これらのフィールドがなければ動作は変わりません。
+
 ### `POST /api/tools/clear`
 
 ```json
@@ -480,7 +485,7 @@ result = await self.unregister_llm_tool_async("custom_tool")
 | `removed` | — | `main_server` が実際に何かを削除した |
 | `affected_roles` | 現在ツールを持つ role | 削除された role |
 | `failed_roles` | `[{"role", "error"}]` 受け付けなかった role（部分成功時も含む） | `[{"role", "error"}]` 削除に失敗した role |
-| `refused_roles` | — | `[{"role", "owned_by"}]` 同名ツールが別 source のもので、触れなかった role |
+| `refused_roles` | — | `[{"role", "owned_by"}]` 同名ツールが別 source のもの、または（`"reason": "different registration"` 付きで）このプラグインの別の登録のもので、触れなかった role |
 | `error` | `None` または下記のコード | `None` または下記のコード |
 | `message` | 人が読める説明、または `None` | 人が読める説明、または `None` |
 | `cleanup` | `None`、または登録失敗後の後片付けとして送った解除の結果（下記） | — |
@@ -506,9 +511,13 @@ result = await self.unregister_llm_tool_async("custom_tool")
   `cleanup["ok"]` が偽なら、後で `unregister_llm_tool_async(name)` を呼んでください。`timeout` 後の解除は
   ベストエフォートです。`main_server` がまだ登録を処理中で、解除の後にツールを保存することがあるため、
   `removed=False` は何も残っていないことの証明になりません。重要なら少し後でもう一度
-  `unregister_llm_tool_async(name)` を呼んでください。同様に、後片付けの解除自体がタイムアウトした場合は
-  まだ `main_server` 上で実行中のことがあり、直後に送った同じ名前の登録が消されることがあります。再試行の前に
-  少し待ってください。キャンセルされた登録はローカルを取り消すだけで、解除は送りません。
+  `unregister_llm_tool_async(name)` を呼んでください。キャンセルされた登録はローカルを取り消すだけで、解除は送りません。
+- `register_llm_tool_async` の呼び出しごとに専用の登録 ID が付き、その後片付けと後の
+  `unregister_llm_tool_async` はその登録だけを削除します。そのため、タイムアウトしたがまだ `main_server` 上で
+  実行中の後片付けや解除が、同じ名前の新しい登録を消すことはありません。その role は
+  `"reason": "different registration"` 付きで `refused_roles` に入ります。後片付けはそうした登録に触れませんが、
+  `unregister_llm_tool_async` はプラグインがその名前の削除を求めているため、ID なしでもう一度送ってそれも削除します。同期版や `@llm_tool` で登録したツール、
+  ローカルにもう無い名前は、従来どおり ID なし（このプラグインのどの登録でも）で解除されます。
 - `unregister_llm_tool_async` は `ok` が真のときだけハンドラを外します。それ以外ではホスト側と同様に
   プラグイン側でも登録が残り、まだツールを持つ role は動き続け、再度呼べばリトライになります。
 - ホストは解除時に常に `expected_source=plugin:{plugin_id}`（plugin_id はプラグインの接続から取得）

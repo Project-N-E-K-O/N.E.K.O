@@ -371,3 +371,94 @@ async def test_same_source_register_and_unregister_still_go_through(mgr):
     assert removed["removed"] is True
     assert removed["refused_roles"] == []
     assert mgr.tool_registry.get("x") is None
+
+
+# ---------------------------------------------------------------------------
+# registration_id: unregister can target one registration (PR #3975)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_register_returns_and_stores_a_registration_id(mgr):
+    mgr.release.set()
+    given = await tr.register_tool(tr.ToolRegisterRequest(
+        name="x", description="", callback_url="http://127.0.0.1:9001/cb", source="plugin:a",
+        registration_id="reg-1",
+    ))
+    assert given["registration_id"] == "reg-1"
+    assert mgr.tool_registry.get("x").metadata["registration_id"] == "reg-1"
+    assert tr._remote_tool_ledger[(None, "x")].tool.metadata["registration_id"] == "reg-1"
+
+    generated = await tr.register_tool(tr.ToolRegisterRequest(
+        name="y", description="", callback_url="http://127.0.0.1:9001/cb", source="plugin:a",
+    ))
+    assert isinstance(generated["registration_id"], str) and generated["registration_id"]
+    assert mgr.tool_registry.get("y").metadata["registration_id"] == generated["registration_id"]
+
+
+@pytest.mark.asyncio
+async def test_unregister_with_registration_id_removes_that_registration(mgr):
+    mgr.release.set()
+    await tr.register_tool(tr.ToolRegisterRequest(
+        name="x", description="", callback_url="http://127.0.0.1:9001/cb", source="plugin:a",
+        registration_id="reg-1",
+    ))
+    removed = await tr.unregister_tool(tr.ToolUnregisterRequest(
+        name="x", expected_source="plugin:a", expected_registration_id="reg-1",
+    ))
+    assert removed["removed"] is True and removed["refused_roles"] == []
+    assert mgr.tool_registry.get("x") is None
+    assert (None, "x") not in tr._remote_tool_ledger
+
+
+@pytest.mark.asyncio
+async def test_late_unregister_of_an_old_registration_keeps_the_newer_one(mgr):
+    """A cleanup for registration 1 is still running when the plugin
+    registers the same name again (registration 2). When the cleanup
+    reaches the registry it must refuse, not delete registration 2."""
+    mgr.release.set()
+    await tr.register_tool(tr.ToolRegisterRequest(
+        name="x", description="", callback_url="http://127.0.0.1:9001/cb", source="plugin:a",
+        registration_id="reg-1",
+    ))
+    mgr.release.clear()
+    pending = asyncio.create_task(tr.unregister_tool(tr.ToolUnregisterRequest(
+        name="x", expected_source="plugin:a", expected_registration_id="reg-1",
+    )))
+    await mgr.paused.wait()
+    # The newer registration of the same source lands meanwhile.
+    newer = _tool("x", "plugin:a", registration_id="reg-2")
+    mgr.tool_registry.register(newer)
+    tr._ledger_record(newer, None)
+    mgr.release.set()
+    result = await pending
+
+    assert mgr.tool_registry.get("x") is newer
+    assert result["removed"] is False
+    assert result["refused_roles"] == [
+        {"role": "Alpha", "owned_by": "plugin:a", "reason": "different registration"},
+    ]
+    assert tr._remote_tool_ledger[(None, "x")].tool is newer
+
+
+@pytest.mark.asyncio
+async def test_unregister_without_registration_id_removes_any_registration_of_the_source(mgr):
+    """Unchanged behaviour when the new field is not sent."""
+    mgr.release.set()
+    await tr.register_tool(tr.ToolRegisterRequest(
+        name="x", description="", callback_url="http://127.0.0.1:9001/cb", source="plugin:a",
+        registration_id="reg-2",
+    ))
+    removed = await tr.unregister_tool(tr.ToolUnregisterRequest(name="x", expected_source="plugin:a"))
+    assert removed["removed"] is True and removed["refused_roles"] == []
+    assert mgr.tool_registry.get("x") is None
+
+
+@pytest.mark.asyncio
+async def test_registration_id_mismatch_on_another_source_keeps_the_old_refusal_shape(mgr):
+    mgr.tool_registry.register(_tool("x", "plugin:b", registration_id="theirs"))
+    mgr.release.set()
+    result = await tr.unregister_tool(tr.ToolUnregisterRequest(
+        name="x", expected_source="plugin:a", expected_registration_id="mine",
+    ))
+    assert result["refused_roles"] == [{"role": "Alpha", "owned_by": "plugin:b"}]

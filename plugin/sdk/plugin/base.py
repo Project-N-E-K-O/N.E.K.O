@@ -8,6 +8,7 @@ import contextlib
 import math
 import threading
 import time
+import uuid
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -1019,12 +1020,14 @@ class NekoPluginBase(_SharedNekoPluginBase):
         register and store it after the cleanup ran, so ``removed=False``
         does not prove nothing is left; call
         :meth:`unregister_llm_tool_async` again a little later when that
-        matters. Likewise, if the cleanup itself timed out it may still be
-        running on main_server, and a register of the same name sent right
-        after could be removed by it: wait a little before retrying.
-        Stopping the plugin also tries to clear the plugin's tools, but
-        only best effort. A cancelled call rolls back locally but sends no
-        cleanup.
+        matters. Each async registration carries its own registration id,
+        and the cleanup and :meth:`unregister_llm_tool_async` remove only
+        that registration: a cleanup that is still running on main_server
+        after it timed out cannot remove a newer registration of the name
+        (that role is reported in ``refused_roles`` with
+        ``reason="different registration"``). Stopping the plugin also
+        tries to clear the plugin's tools, but only best effort. A
+        cancelled call rolls back locally but sends no cleanup.
 
         Async calls for the same name run one at a time, in call order
         (each waits for the previous one's answer, also across event
@@ -1053,6 +1056,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
             name=name, description=description, parameters=parameters,
             timeout=timeout, role=role, reply_tail=reply_tail,
         )
+        # Known before sending, so the cleanup below can target exactly this
+        # registration even when the register's answer never arrived.
+        meta.registration_id = uuid.uuid4().hex
         try:
             async with self._llm_tool_name_lock(meta.name, request_timeout) as remaining:
                 self._claim_llm_tool_locally(meta, handler)
@@ -1091,7 +1097,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """
         return await self._request_llm_tool_change(
             request_type="LLM_TOOL_UNREGISTER_REQUEST",
-            payload={"plugin_id": self.plugin_id, "name": meta.name, "role": meta.role},
+            payload={
+                "plugin_id": self.plugin_id, "name": meta.name, "role": meta.role,
+                # Only this registration: if main_server finishes this cleanup
+                # late, a newer registration of the name is refused, not removed.
+                "expected_registration_id": meta.registration_id,
+            },
             request_timeout=_LLM_TOOL_CLEANUP_TIMEOUT,
             build_result=build_unregister_result,
         )
@@ -1135,11 +1146,34 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 result = await self._request_llm_tool_change(
                     request_type="LLM_TOOL_UNREGISTER_REQUEST",
                     # Without a local record the role is unknown: all roles.
-                    payload={"plugin_id": self.plugin_id, "name": name, "role": meta.role if meta else None},
+                    payload={
+                        "plugin_id": self.plugin_id, "name": name, "role": meta.role if meta else None,
+                        # Registered through the async call: only that registration.
+                        # Sync / decorator tools and names not held locally: any
+                        # registration of this plugin (as before).
+                        **(
+                            {"expected_registration_id": meta.registration_id}
+                            if meta is not None and meta.registration_id else {}
+                        ),
+                    },
                     request_timeout=remaining,
                     build_result=build_unregister_result,
                 )
                 if meta is not None:
+                    if result["ok"] and meta.registration_id and any(
+                        r.get("reason") == "different registration" for r in result["refused_roles"]
+                    ):
+                        # Another registration of this plugin holds the name
+                        # (e.g. a timed-out register that landed late, after
+                        # the one we hold). The caller wants the name gone and
+                        # no newer async call can run meanwhile (we hold the
+                        # name lock), so remove whichever registration it is.
+                        result = await self._request_llm_tool_change(
+                            request_type="LLM_TOOL_UNREGISTER_REQUEST",
+                            payload={"plugin_id": self.plugin_id, "name": name, "role": meta.role},
+                            request_timeout=_LLM_TOOL_CLEANUP_TIMEOUT,
+                            build_result=build_unregister_result,
+                        )
                     if result["ok"]:
                         self._release_llm_tool_locally(meta)
                     return result
