@@ -228,7 +228,7 @@ Rules:
 - Official result always follows finalScore / last_state.score in the material. Verbal concessions are only concessions, comfort, or jokes; they do not change the real result.
 - If you keep the official result, preserve the material's fixed order or explicitly name who leads whom; do not write bare subjectless scores.
 - Skip ordinary session events with no relationship or emotional value.
-- Each item should be one natural sentence in {output_language}, preserving key result, key quote, and relationship meaning where possible.""",
+- Each item should be one natural sentence in English, preserving key result, key quote, and relationship meaning where possible.""",
     "ja": """\
 あなたはゲームモジュールの試合後記憶ハイライターです。JSON だけを出力し、Markdown や説明は不要です。
 目的：完了した 1 局の対話/イベントから、キャラクターの recent history に入れる価値がある内容だけを選びます。
@@ -245,7 +245,7 @@ Rules:
 - 公式結果は常に材料内の finalScore / last_state.score に従います。口頭の譲歩や冗談は実際の結果変更ではありません。
 - 公式結果を書く場合は材料の固定順を保つか、誰が誰をリードしたか明示してください。
 - 関係や感情の価値がない普通のイベントは選ばなくてかまいません。
-- 各項目は{output_language}の自然な 1 文にしてください。""",
+- 各項目は日本語の自然な 1 文にしてください。""",
     "ko": """\
 당신은 게임 모듈의 종료 후 기억 선별기입니다. JSON 만 출력하고 Markdown 이나 설명은 쓰지 마세요.
 목표: 끝난 한 판의 전체 대화/이벤트 중 캐릭터의 recent history 에 들어갈 가치가 있는 내용만 고릅니다.
@@ -262,7 +262,7 @@ Rules:
 - 공식 결과는 항상 자료의 finalScore / last_state.score 를 따릅니다. 말로 한 양보나 농담은 실제 결과 변경이 아닙니다.
 - 공식 결과를 남긴다면 자료의 고정 순서를 유지하거나 누가 누구에게 앞섰는지 명확히 쓰세요.
 - 관계나 감정 가치가 없는 평범한 이벤트는 선택하지 않아도 됩니다.
-- 각 항목은 {output_language} 로 자연스러운 한 문장으로 쓰세요.""",
+- 각 항목은 한국어로 자연스러운 한 문장으로 쓰세요.""",
     "ru": """\
 Ты фильтр послематчевой памяти игрового модуля. Выводи только JSON, без Markdown и объяснений.
 Цель: из полного диалога/событий завершенной игровой сессии выбрать только то, что действительно стоит поместить в recent history персонажа.
@@ -279,7 +279,7 @@ Rules:
 - Официальный результат всегда следует finalScore / last_state.score в материале. Устные уступки являются только уступками, утешением или шуткой и не меняют реальный результат.
 - Если сохраняешь официальный результат, придерживайся фиксированного порядка материала или явно укажи, кто кого опережает.
 - Обычные события без ценности для отношений или эмоций можно не выбирать.
-- Каждый пункт пиши одним естественным предложением на {output_language}.""",
+- Каждый пункт пиши одним естественным предложением на русском языке.""",
     "es": """\
 Eres el selector de memoria postpartida del módulo de juego. Devuelve solo JSON; sin Markdown ni explicaciones.
 Objetivo: elegir, de toda la conversación/eventos de una partida, lo que realmente merece entrar en el recent history del personaje.
@@ -296,7 +296,7 @@ Reglas:
 - El resultado oficial siempre sigue finalScore / last_state.score del material. Concesiones verbales solo son concesiones, consuelo o bromas; no cambian el resultado real.
 - Si conservas el resultado oficial, preserva el orden fijo del material o indica explícitamente quién va por delante; no escribas marcadores sin sujeto.
 - Omite eventos ordinarios sin valor relacional o emocional.
-- Cada elemento debe ser una frase natural en {output_language}, conservando resultado clave, cita clave y significado relacional cuando sea posible.""",
+- Cada elemento debe ser una frase natural en español, conservando resultado clave, cita clave y significado relacional cuando sea posible.""",
     "pt": """\
 Você é o seletor de memória pós-jogo do módulo de jogo. Retorne apenas JSON; sem Markdown e sem explicações.
 Objetivo: escolher, de toda a conversa/eventos de uma partida, o que realmente merece entrar no recent history do personagem.
@@ -313,7 +313,7 @@ Regras:
 - O resultado oficial sempre segue finalScore / last_state.score do material. Concessões verbais são apenas concessões, conforto ou brincadeiras; não mudam o resultado real.
 - Se mantiver o resultado oficial, preserve a ordem fixa do material ou diga explicitamente quem lidera; não escreva placares sem sujeito.
 - Ignore eventos comuns sem valor relacional ou emocional.
-- Cada item deve ser uma frase natural em {output_language}, preservando resultado-chave, citação-chave e significado relacional quando possível.""",
+- Cada item deve ser uma frase natural em português, preservando resultado-chave, citação-chave e significado relacional quando possível.""",
 }
 
 GAME_ARCHIVE_MEMORY_HIGHLIGHTER_USER_PROMPTS = {

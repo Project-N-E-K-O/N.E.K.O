@@ -42,7 +42,7 @@ def _target(request: dict[str, Any]) -> MemoryTarget:
         # Match the native route's own name rules before URL routing: encoded
         # slashes otherwise turn an invalid name into a misleading 404.
         from utils.character_name import validate_character_name
-        if validate_character_name(target.character, allow_dots=True, max_length=50).code is not None:
+        if validate_character_name(target.character, allow_dots=True, max_length=50).code not in {None, "reserved_route_name"}:
             raise ValueError("Invalid character name")
         return target
     except (ValueError, TypeError, KeyError) as exc:

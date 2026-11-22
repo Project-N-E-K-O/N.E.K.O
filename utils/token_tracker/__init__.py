@@ -115,6 +115,7 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
         # Unpersisted incremental data (cleared after a successful save)
         self._delta_daily: dict = {}
         self._delta_records: deque = deque(maxlen=200)
+        self._pending_records: deque = deque()
 
         # Persistence controls
         self._save_interval = 60  # Seconds
