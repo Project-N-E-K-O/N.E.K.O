@@ -1754,9 +1754,17 @@ async def handle_proactive_chat(
                     )
                 )
 
-            vision_config = await _config_manager.aget_model_api_config(
-                "vision", core_config=_fresh_core_config
+            from utils.legacy_vision import choose_image_model, note_legacy_vision_use
+            image_choice = choose_image_model(
+                conversation_config,
+                await _config_manager.aget_model_api_config(
+                    "vision", core_config=_fresh_core_config
+                ),
             )
+            # Screenshots go to the chat model; a retired vision config only
+            # takes over after the chat model has rejected an image.
+            vision_config = image_choice.config
+            note_legacy_vision_use(image_choice, "proactive screenshot")
             model_config = ProactiveModelConfig(
                 conversation_model=conversation_model,
                 conversation_base_url=conversation_config.get("base_url"),
@@ -1767,9 +1775,8 @@ async def handle_proactive_chat(
                 vision_api_key=vision_config.get("api_key", ""),
                 vision_provider_type=vision_config.get("provider_type"),
                 vision_is_custom=bool(vision_config.get("is_custom")),
+                image_choice=image_choice,
             )
-            if not model_config.has_vision_model:
-                logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
             return await _end_proactive(

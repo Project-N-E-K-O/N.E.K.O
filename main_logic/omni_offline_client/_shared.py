@@ -309,3 +309,31 @@ def _same_route(
         (api_key_a or None) == (api_key_b or None)
         and (provider_type_a or None) == (provider_type_b or None)
     )
+
+
+def _legacy_vision_preferred(client) -> bool:
+    """Whether images should go to the separate vision config right away.
+
+    Images go to the chat model. The retired vision config is used up front
+    only once the chat model has rejected an image (this session, or anywhere
+    for the same chat model). A client built without an ``image_choice`` keeps
+    the old rule: a configured vision model takes every image.
+    """
+    if not (getattr(client, "vision_model", "") or ""):
+        return False
+    choice = getattr(client, "_image_choice", None)
+    if choice is None:
+        return True
+    return bool(getattr(client, "_legacy_vision_switched", False)) or bool(choice.using_legacy)
+
+
+def _on_vision_route(client) -> bool:
+    """Whether the client already talks to its vision config."""
+    return (getattr(client, "vision_model", "") or "") == getattr(client, "model", None) and _same_route(
+        getattr(client, "vision_base_url", None),
+        getattr(client, "vision_api_key", None),
+        getattr(client, "vision_provider_type", None),
+        getattr(client, "base_url", None),
+        getattr(client, "api_key", None),
+        getattr(client, "provider_type", None),
+    )

@@ -19,7 +19,7 @@ async def test_custom_vision_endpoint_allows_an_empty_api_key(
 ) -> None:
     class _ConfigManager:
         async def aget_model_api_config(self, model_type: str) -> dict[str, object]:
-            assert model_type == "vision"
+            assert model_type in ("conversation", "vision")
             return {
                 "model": "local-vision",
                 "api_key": "",
@@ -63,7 +63,7 @@ async def test_builtin_vision_endpoint_still_requires_an_api_key(
 ) -> None:
     class _ConfigManager:
         async def aget_model_api_config(self, model_type: str) -> dict[str, object]:
-            assert model_type == "vision"
+            assert model_type in ("conversation", "vision")
             return {
                 "model": "hosted-vision",
                 "api_key": "",

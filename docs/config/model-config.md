@@ -9,7 +9,7 @@ N.E.K.O. resolves models by **role**, not through one global model string. The s
 | Summary | `SUMMARY_MODEL` |
 | Correction | `CORRECTION_MODEL` |
 | Emotion | `EMOTION_MODEL` |
-| Vision | `VISION_MODEL` |
+| Vision (deprecated: images go to the chat model; a separately configured vision model is used only after the chat model rejects an image, with a deprecation warning) | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |
 | Realtime | `REALTIME_MODEL` |
 | TTS | `TTS_MODEL` |

@@ -48,7 +48,7 @@
 
 ## 图片
 
-Qwen、GLM、GPT、Gemini 和兼容的免费 Gemini 路由可以接收原生视觉帧。其他 realtime 模型会使用独立配置的视觉模型，把当前轮第一个相关帧转换成文本上下文。
+Qwen、GLM、GPT、Gemini 和兼容的免费 Gemini 路由可以接收原生视觉帧。其他 realtime 模型会用聊天模型（聊天模型拒收图片时回退到已弃用的单独看图配置），把当前轮第一个相关帧转换成文本上下文。
 
 原生帧受 `NATIVE_IMAGE_MIN_INTERVAL`（1.5 秒）限制；空闲采集会再乘以 `IMAGE_IDLE_RATE_MULTIPLIER`（5）。`bypass_rate_limit=True` 仅用于主动截图等刻意的一次性提示帧。
 

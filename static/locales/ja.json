@@ -623,6 +623,8 @@
         "SERVER_BUSY_THROTTLE": "⚠️ サーバーが混雑しています。送信レートを自動調整中...",
         "ASR_INGRESS_BACKPRESSURE": "音声処理が混雑しています。もう一度話してください。",
         "ASR_MULTIMODAL_TURN_FAILED": "⚠️ この音声を画像と一緒に送信できませんでした。もう一度話してください。",
+        "LEGACY_VISION_FALLBACK": "⚠️ チャットモデル {{chat_model}} は画像を読めないため、以前個別に設定した画像認識モデル {{vision_model}} を代わりに使いました。個別の画像認識モデルはサポートを終了し、正式版で削除されます。API 設定でチャットモデルを画像に対応したものに変更してください。",
+        "CHAT_MODEL_IMAGE_UNSUPPORTED": "⚠️ 現在のチャットモデルは画像を読めないため、このメッセージは送信できませんでした。API 設定でチャットモデルを画像に対応したものに変更してください。",
         "RESPONSE_TIMEOUT": "💥 接続タイムアウト (Response timeout)、音声会話が中断されました。",
         "CONNECTION_TIMEOUT": "💥 接続タイムアウト。ネットワーク接続を確認してください。",
         "RESPONSE_TOO_LONG": "回答が長すぎるため、出力を破棄しました（設定で TEXT_GUARD_MAX_LENGTH を増やすことができます）",

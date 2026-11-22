@@ -106,8 +106,11 @@ def validate_vision_attachments(attachments: object) -> list[dict]:
 
 
 async def _invoke(*, text, attachments, system_prompt, max_completion_tokens, timeout, is_current):
-    config = await get_config_manager().aget_model_api_config("vision")
-    if not config or not str(config.get("model") or "").strip():
+    from utils.legacy_vision import aresolve_image_model, run_with_image_fallback
+
+    # Frames go to the chat model; a retired vision config is only a fallback.
+    choice = await aresolve_image_model(get_config_manager())
+    if not choice.conversation or not str(choice.conversation.get("model") or "").strip():
         raise ValueError("vision_unavailable")
     if not is_current():
         raise ValueError("route_inactive")
@@ -116,18 +119,22 @@ async def _invoke(*, text, attachments, system_prompt, max_completion_tokens, ti
         if item["label"]:
             content.append({"type": "text", "text": f"Image {index}: {item['label']}"})
         content.append({"type": "image_url", "image_url": {"url": item["image_data_url"]}})
-    set_call_type("minigame_vision")
-    llm = await create_chat_llm_async(
-        model=config["model"], base_url=config.get("base_url") or None,
-        api_key=config.get("api_key") or None, provider_type=config.get("provider_type") or None,
-        max_retries=0, max_completion_tokens=max_completion_tokens, timeout=timeout,
-    )
-    async with llm:
-        if not is_current():
-            raise ValueError("route_inactive")
-        # LLM_INPUT_BUDGET: <=4 sanitized 1280x1280 images, text<=16384,
-        # trusted system<=32768 chars, labels<=128 each. No retries or history.
-        result = await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=content)])  # noqa: LLM_INPUT_BUDGET # hard text/system/label/image caps above; no history
+
+    async def _call(config):
+        set_call_type("minigame_vision")
+        llm = await create_chat_llm_async(
+            model=config["model"], base_url=config.get("base_url") or None,
+            api_key=config.get("api_key") or None, provider_type=config.get("provider_type") or None,
+            max_retries=0, max_completion_tokens=max_completion_tokens, timeout=timeout,
+        )
+        async with llm:
+            if not is_current():
+                raise ValueError("route_inactive")
+            # LLM_INPUT_BUDGET: <=4 sanitized 1280x1280 images, text<=16384,
+            # trusted system<=32768 chars, labels<=128 each. No retries or history.
+            return await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=content)])  # noqa: LLM_INPUT_BUDGET # hard text/system/label/image caps above; no history
+
+    result = await run_with_image_fallback(choice, _call, where="mini-game vision")
     content = getattr(result, "content", None)
     if not isinstance(content, str) or not content.strip() or len(content) > 8192:
         raise ValueError("invalid_model_response")

@@ -30,7 +30,7 @@ The main lifecycle methods are:
 
 The normal path uses the project's chat-LLM adapter for configured OpenAI- and Anthropic-compatible providers. Eligible native Gemini configurations use the Google GenAI SDK path instead. Provider compatibility depends on the adapter and configured endpoint; it is not guaranteed for every arbitrary OpenAI-shaped server.
 
-The client is not text-only. `stream_image()` queues base64 images, and the next `stream_text()` builds a multimodal user message. A separately configured vision model and endpoint can be selected when images are present. Old image payloads are evicted from retained history to limit growth.
+The client is not text-only. `stream_image()` queues base64 images, and the next `stream_text()` builds a multimodal user message. Images go to the chat model. A vision model configured before the vision slot was retired is only a fallback: when the chat model rejects an image, the session switches to it for the rest of the session, resends the turn, and the frontend is told once that the separate vision model is deprecated (`utils/legacy_vision.py`). Old image payloads are evicted from retained history to limit growth.
 
 External speech synthesis is owned by `LLMSessionManager` and the [TTS client](/modules/tts-client), not by `OmniOfflineClient`.
 

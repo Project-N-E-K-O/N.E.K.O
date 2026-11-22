@@ -324,7 +324,7 @@ async def analyze_image_with_vision_model(
     window_title: str = '',
 ) -> Optional[str]:
     """
-    Analyze an image with the vision model
+    Describe an image with the chat model (legacy vision model as fallback)
 
     Args:
         image_b64: base64 of the image (without the data: prefix)
@@ -339,26 +339,18 @@ async def analyze_image_with_vision_model(
         max_completion_tokens = VISION_ANALYSIS_MAX_TOKENS
     try:
         from utils.config_manager import get_config_manager
-        
-        config_manager = get_config_manager()
-        api_config = await config_manager.aget_model_api_config('vision')
-        
-        vision_model = api_config['model']
-        vision_api_key = api_config['api_key']
-        vision_base_url = api_config['base_url']
-        
-        if not vision_model:
-            logger.warning("VISION_MODEL not configured, skipping image analysis")
+        from utils.legacy_vision import aresolve_image_model, run_with_image_fallback
+
+        # Images go to the chat model; a separately configured (retired)
+        # vision model is only retried when the chat model rejects the image.
+        choice = await aresolve_image_model(get_config_manager())
+        chat_config = choice.conversation
+        if not str(chat_config.get('model') or '').strip():
+            logger.warning("Chat model not configured, skipping image analysis")
             return None
-        
-        if not vision_api_key and not api_config.get('is_custom'):
-            logger.warning("Vision API key not configured, skipping image analysis")
+        if not chat_config.get('api_key') and not chat_config.get('is_custom'):
+            logger.warning("Chat model API key not configured, skipping image analysis")
             return None
-        
-        if api_config['is_custom']:
-            logger.info(f"🖼️ Using custom VISION_MODEL ({vision_model}) to analyze image")
-        else:
-            logger.info(f"🖼️ Using VISION_MODEL ({vision_model}) to analyze image")
 
         from config.prompts.prompts_sys import (
             _loc, VISION_WATERMARK,
@@ -381,16 +373,6 @@ async def analyze_image_with_vision_model(
             system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_NO_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_NO_TITLE, lang)
 
-        set_call_type("vision")
-        llm = await create_chat_llm_async(
-            model=vision_model,
-            base_url=vision_base_url or None,
-            api_key=vision_api_key,
-            max_retries=0,
-            max_completion_tokens=max_completion_tokens,
-            timeout=30,  # hang-guard for vision/screenshot analysis
-            provider_type=api_config.get('provider_type'),
-        )
         messages = [
             {
                 "role": "system",
@@ -412,8 +394,23 @@ async def analyze_image_with_vision_model(
                 ]
             }
         ]
-        async with llm:
-            result = await llm.ainvoke(messages)
+
+        async def _describe(api_config: dict):
+            logger.info(f"🖼️ Using model {api_config.get('model')} to analyze image")
+            set_call_type("vision")
+            llm = await create_chat_llm_async(
+                model=api_config['model'],
+                base_url=api_config.get('base_url') or None,
+                api_key=api_config.get('api_key'),
+                max_retries=0,
+                max_completion_tokens=max_completion_tokens,
+                timeout=30,  # hang-guard for vision/screenshot analysis
+                provider_type=api_config.get('provider_type'),
+            )
+            async with llm:
+                return await llm.ainvoke(messages)
+
+        result = await run_with_image_fallback(choice, _describe, where="screenshot description")
 
         if result and result.content and result.content.strip():
             logger.info("✅ Image analysis complete")

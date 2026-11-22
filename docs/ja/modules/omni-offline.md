@@ -30,7 +30,7 @@
 
 通常経路はプロジェクトの chat-LLM adapter を使って、設定済みの OpenAI/Anthropic 互換 provider に接続します。条件を満たすネイティブ Gemini 設定は Google GenAI SDK 経路を使います。互換性は adapter と endpoint に依存し、任意の OpenAI 風サーバーを保証するものではありません。
 
-このクライアントはテキスト専用ではありません。`stream_image()` は base64 画像を queue に入れ、次の `stream_text()` がマルチモーダルなユーザーメッセージを構築します。画像がある場合は、別途設定された vision model と endpoint へ切り替えられます。履歴肥大化を抑えるため、古い画像 payload は保持履歴から削除されます。
+このクライアントはテキスト専用ではありません。`stream_image()` は base64 画像を queue に入れ、次の `stream_text()` がマルチモーダルなユーザーメッセージを構築します。画像はチャットモデルに送られます。vision 枠の廃止前に個別設定された vision model はフォールバックのみで、チャットモデルが画像を拒否したときにセッションをそちらへ切り替えてターンを再送し、フロントエンドに非推奨を一度通知します（`utils/legacy_vision.py`）。履歴肥大化を抑えるため、古い画像 payload は保持履歴から削除されます。
 
 外部音声合成は `LLMSessionManager` と [TTS Client](/ja/modules/tts-client) の責務であり、`OmniOfflineClient` には属しません。
 

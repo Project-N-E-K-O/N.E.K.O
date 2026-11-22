@@ -419,12 +419,26 @@ def endpoint_host(base_url):
     return f"{host}:{port}" if port else host
 
 
-async def vision_model_config(cm):
-    cfg = await asyncio.to_thread(cm.get_model_api_config, "vision")
+async def vision_model_choice(cm):
+    """Chat model for the frames, with the retired vision config as fallback."""
+    from utils.legacy_vision import resolve_image_model
+    choice = await asyncio.to_thread(resolve_image_model, cm)
+    cfg = choice.conversation
     if (not isinstance(cfg.get('model'), str) or not cfg['model'].strip()
             or (not cfg.get("api_key") and not cfg.get('is_custom'))):
-        raise RuntimeError("请先配置猫娘的视觉模型 API")
-    return cfg
+        raise RuntimeError("请先配置猫娘的聊天模型 API")
+    return choice
+
+
+async def image_json_completion(choice, system_prompt, content, job, validate, *, stage, label,
+                                where, **kwargs):
+    """``structured_json_completion`` on the chat model, retrying on a retired vision config."""
+    from utils.legacy_vision import run_with_image_fallback
+
+    async def call(cfg):
+        return await structured_json_completion(
+            cfg, system_prompt, content, job, validate, stage=stage, label=label, **kwargs)
+    return await run_with_image_fallback(choice, call, where=where)
 
 
 async def structured_json_completion(cfg, system_prompt, content, job, validate, *, stage, label,
@@ -520,15 +534,22 @@ class Engine:
             self._cm = get_config_manager()
         return self._cm
 
-    async def vision_config(self):
-        cfg = await vision_model_config(self.cm)
+    async def vision_choice(self):
+        choice = await vision_model_choice(self.cm)
+        cfg = choice.config
         self.vision_endpoint = {"host": endpoint_host(cfg.get("base_url")), "model": cfg.get("model")}
-        api_key = cfg.get("api_key")
-        self.diagnostic_secrets = (api_key,) if isinstance(api_key, str) and api_key else ()
-        return cfg
+        secrets = tuple(
+            key for key in (choice.conversation.get("api_key"), (choice.legacy or {}).get("api_key"))
+            if isinstance(key, str) and key
+        )
+        self.diagnostic_secrets = secrets
+        return choice
+
+    async def vision_config(self):
+        return (await self.vision_choice()).config
 
     async def llm(self, content, job):
-        cfg = await self.vision_config()
+        choice = await self.vision_choice()
         def validate(value):
             if isinstance(value, list) and all(isinstance(event, dict) for event in value):
                 value = {'events': value}
@@ -539,9 +560,10 @@ class Engine:
                 and not any(isinstance(event, dict) and 'events' in event for event in value['events'])
             )
             return value, [] if valid else [{"field":"events", "reason":"expected_array"}]
-        return await structured_json_completion(
-            cfg, self.director_prompt, content, job, validate,
-            stage=job.get("stage", "Visual analysis"), label="timeline")
+        return await image_json_completion(
+            choice, self.director_prompt, content, job, validate,
+            stage=job.get("stage", "Visual analysis"), label="timeline",
+            where="watch-together analysis")
 
     async def prepare(self, job, url, voice_name, *, automatic=False, confirmed_duration=None, confirm_download=None, deadline=None):
         # Fail before downloading or paying for analysis when prerequisites are absent.

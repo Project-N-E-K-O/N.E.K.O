@@ -1479,7 +1479,7 @@ class LifecycleMixin:
             'vision', core_config=core_config_snapshot
         )).get('model', '')
         self._check_start_operation()
-        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
+        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_conversation_model}, legacy_vision_model={_vision_model}, voice_id={self.voice_id}")
         logger.info(f"[语音会话诊断] 配置加载完成 (耗时: {time.time() - diag_start:.2f}秒)")
         return realtime_config, core_config_snapshot
 
@@ -1664,17 +1664,26 @@ class LifecycleMixin:
         max_response_length: int,
         external_tts_enabled: bool,
     ) -> OmniOfflineClient:
-        """Build the shared Offline/VLM client used by starts and promotions."""
+        """Build the shared Offline/VLM client used by starts and promotions.
 
+        Images go to the chat model. ``vision_config`` reaches the client only
+        when it is a separate route (a retired vision slot the user filled in),
+        and then only as the fallback for a chat model that rejects images.
+        """
+        from utils.legacy_vision import choose_image_model
+
+        image_choice = choose_image_model(conversation_config, vision_config)
+        legacy_vision = image_choice.legacy or {}
         session = OmniOfflineClient(
             base_url=conversation_config['base_url'],
             api_key=conversation_config['api_key'],
             model=conversation_config['model'],
-            vision_model=vision_config['model'],
-            vision_base_url=vision_config['base_url'],
-            vision_api_key=vision_config['api_key'],
+            vision_model=legacy_vision.get('model', ''),
+            vision_base_url=legacy_vision.get('base_url', ''),
+            vision_api_key=legacy_vision.get('api_key', ''),
             provider_type=conversation_config.get('provider_type'),
-            vision_provider_type=vision_config.get('provider_type'),
+            vision_provider_type=legacy_vision.get('provider_type'),
+            image_choice=image_choice,
             on_text_delta=self.handle_text_data,
             on_input_transcript=self.handle_text_input_transcript,
             on_output_transcript=self.handle_output_transcript,

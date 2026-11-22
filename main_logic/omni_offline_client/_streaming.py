@@ -29,6 +29,8 @@ from ._turn_context import _mark as _mark_turn_context
 from ._shared import (
     _cancelled_turn_end,
     _find_by_identity,
+    _legacy_vision_preferred,
+    _on_vision_route,
     _same_route,
     AIMessage,
     Any,
@@ -328,6 +330,35 @@ class _StreamingMixin:
             if old_genai is not None:
                 closers.insert(0, lambda: _close_genai_client(old_genai))
             await _retire_replaced_clients(self, closers)
+        return True
+
+    async def _fall_back_to_legacy_vision(self, exc: BaseException) -> bool:
+        """Move this session to the retired vision config after an image refusal.
+
+        Returns True when the session now talks to the vision config and the
+        failed request is worth sending again; False when ``exc`` is not an
+        image refusal, there is no separate vision config, or the session is
+        already on it.
+        """
+        choice = getattr(self, "_image_choice", None)
+        vision_model = getattr(self, "vision_model", "") or ""
+        if choice is None or not vision_model or getattr(self, "_legacy_vision_switched", False):
+            return False
+        from utils.legacy_vision import engage_legacy_vision, is_image_unsupported_error
+        if not is_image_unsupported_error(exc) or _on_vision_route(self):
+            return False
+        engage_legacy_vision(choice, "offline chat")
+        try:
+            await self.switch_model(vision_model, use_vision_config=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as switch_exc:
+            logger.warning(
+                "Legacy vision fallback: switching to %s failed: %s: %s",
+                vision_model, type(switch_exc).__name__, switch_exc,
+            )
+            return False
+        self._legacy_vision_switched = True
         return True
 
     def _commit_cancelled_reply(
@@ -939,7 +970,7 @@ class _StreamingMixin:
             # Do not require vision_model != model: the same id on a different
             # vision URL/key must still switch; switch_model itself is a no-op
             # when both the id and the endpoint already match.
-            if self.vision_model:
+            if _legacy_vision_preferred(self):
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 try:
                     await self.switch_model(self.vision_model, use_vision_config=True)
@@ -2479,6 +2510,23 @@ class _StreamingMixin:
                             status_reported = True
                         break
                 except Exception as e:
+                    if attempt < max_retries - 1 and await self._fall_back_to_legacy_vision(e):
+                        # The chat model rejected an image; the session now
+                        # talks to the retired vision config. Send the turn again.
+                        _hold_in_flight_for_resend()
+                        cut_keeps_shown = False
+                        if assistant_message_total and discard_callback:
+                            await self._notify_response_discarded(
+                                f"image_refused:{type(e).__name__}",
+                                attempt + 1,
+                                max_retries,
+                                will_retry=True,
+                                message=None,
+                                callback=discard_callback,
+                            )
+                        assistant_message = ""
+                        assistant_message_total = ""
+                        continue
                     # This path always ends the turn (break below).
                     _release_in_flight()
                     if not observation_committed:
@@ -2503,10 +2551,17 @@ class _StreamingMixin:
                     except Exception:
                         # Best-effort telemetry never masks/interrupts original LLM error handling.
                         pass
+                    from utils.legacy_vision import is_image_unsupported_error
                     if is_api_key_rejected:
                         status_error_payload = {"code": "API_KEY_REJECTED"}
                         discard_error_payload = status_error_payload
                         error_msg = f"💥 文本生成异常: 检测到 API Key 被拒绝: {type(e).__name__}: {e}"
+                    elif is_image_unsupported_error(e):
+                        # The chat model cannot read images and there is no
+                        # separate vision config to fall back to.
+                        status_error_payload = {"code": "CHAT_MODEL_IMAGE_UNSUPPORTED"}
+                        discard_error_payload = status_error_payload
+                        error_msg = f"💥 文本生成异常: 聊天模型不支持图片: {type(e).__name__}: {e}"
                     else:
                         status_error_payload = {
                             "code": "TEXT_GEN_ERROR",

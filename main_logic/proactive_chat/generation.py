@@ -313,7 +313,12 @@ def _score_regenerated_draft(
 
 @dataclass(frozen=True, slots=True)
 class ProactiveModelConfig:
-    """Resolved conversation and optional vision model settings for one turn."""
+    """Resolved model settings for one turn.
+
+    The ``vision_*`` fields name the model that reads the screenshot: the chat
+    model, or the retired vision config once the chat model has rejected an
+    image (``image_choice`` records which, so a refusal can engage it).
+    """
 
     conversation_model: str
     conversation_base_url: str | None
@@ -324,6 +329,7 @@ class ProactiveModelConfig:
     vision_api_key: str = ""
     vision_provider_type: str | None = None
     vision_is_custom: bool = False
+    image_choice: Any = None
 
     @property
     def has_vision_model(self) -> bool:
@@ -332,6 +338,18 @@ class ProactiveModelConfig:
         return bool(
             self.vision_model and (self.vision_api_key or self.vision_is_custom)
         )
+
+
+def _image_refusal_hook(model_config: ProactiveModelConfig) -> Callable[[], None] | None:
+    """Engage the retired vision config after the chat model refused a screenshot."""
+    choice = model_config.image_choice
+    if choice is None or choice.using_legacy or choice.legacy is None:
+        return None
+
+    def engage() -> None:
+        from utils.legacy_vision import engage_legacy_vision
+        engage_legacy_vision(choice, "proactive screenshot")
+    return engage
 
 
 @dataclass(frozen=True, slots=True)
@@ -875,6 +893,7 @@ async def _run_phase2_generation(
         screenshot_b64=screenshot_b64,
         log=active_logger,
         on_model_reply=on_model_reply,
+        on_image_refused=_image_refusal_hook(model_config),
     )
     if generated.result is not None:
         return Phase2GuardedOutput(result=generated.result)
@@ -994,6 +1013,7 @@ async def _generate_phase2_stream(
     screenshot_b64: str | None,
     log: logging.Logger | None = None,
     on_model_reply: Callable[[], None] | None = None,
+    on_image_refused: Callable[[], None] | None = None,
 ) -> Phase2Generation:
     """Run the guarded Phase 2 stream and preserve its legacy abort semantics.
 
@@ -1159,6 +1179,15 @@ async def _generate_phase2_stream(
             type(exc).__name__,
             exc,
         )
+        if phase2_use_vision and on_image_refused is not None:
+            from utils.legacy_vision import is_image_unsupported_error
+            if is_image_unsupported_error(exc):
+                # Phase 2 never retries; the next round reads the screen with
+                # the retired vision config, if the user still has one.
+                try:
+                    on_image_refused()
+                except Exception as refusal_exc:  # pragma: no cover - defensive
+                    active_logger.debug("image refusal hook failed: %s", refusal_exc)
         _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
 
     if pass_probe and not aborted:

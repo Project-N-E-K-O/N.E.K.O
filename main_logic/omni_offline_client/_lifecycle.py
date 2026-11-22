@@ -40,6 +40,7 @@ from utils.slop_filter import resolve_dialog_slop_lang
 
 from ._media import _FRAME_SOURCE_PROACTIVE
 from ._shared import (
+    _legacy_vision_preferred,
     AIMessage,
     Any,
     Awaitable,
@@ -733,7 +734,7 @@ class _LifecycleMixin:
             # later text-only turns, and Focus no longer disables thinking for vision.
             # Do not require vision_model != model: identical IDs with different vision URL/key still switch;
             # identical IDs/endpoints make switch_model return directly itself.
-            if self.vision_model:
+            if _legacy_vision_preferred(self):
                 # The preload above can have let a reply begin: check again
                 # with no await before the switch. The switch also drops
                 # itself if one begins while it builds the new client, so a
@@ -1181,6 +1182,11 @@ class _LifecycleMixin:
                     break
         except Exception as e:
             observation_failed = True
+            # Proactive turns never resend; after an image refusal the next
+            # one goes to the retired vision config, if the user has one.
+            _fall_back = getattr(self, "_fall_back_to_legacy_vision", None)
+            if _fall_back is not None:
+                await _fall_back(e)
             if _is_api_key_rejected_error(e):
                 logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
                 if self.on_status_message:

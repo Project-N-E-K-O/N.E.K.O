@@ -149,7 +149,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 - `SUMMARY_MODEL` - 摘要模型
 - `CORRECTION_MODEL` - 纠错模型
 - `EMOTION_MODEL` - 情感模型
-- `VISION_MODEL` - 视觉模型
+- `VISION_MODEL` - 视觉模型（已弃用：图片交给聊天模型，单独配置的看图模型只在聊天模型拒收图片时回退）
 - `AGENT_MODEL` - Agent 模型（键鼠控制、浏览器控制等，见第 6 节）
 
 补充说明：
@@ -258,7 +258,7 @@ Agent API Key 的取法：
 | 游戏摘要 | `gameSummary` | `GAME_SUMMARY_MODEL` | `game_summary` | 摘要槽 |
 | 纠错 | `correction` | `CORRECTION_MODEL` | `correction` | 辅助 API |
 | 情感 | `emotion` | `EMOTION_MODEL` | `emotion` | 辅助 API |
-| 视觉 | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
+| 视觉（已弃用，仅作回退） | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
 | Agent | `agent` | `AGENT_MODEL` | `agent` | 辅助 API |
 | 实时语音 | `omni` | `REALTIME_MODEL` | `realtime` | 核心 API |
 | TTS | `tts` | `TTS_MODEL` | `tts_default` / `tts_custom` | 核心 API / 辅助 API |

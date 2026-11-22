@@ -187,7 +187,7 @@ def is_available(manager) -> bool:
         media.check_available()
         if manager is None:
             return False
-        vision = manager._config_manager.get_model_api_config('vision')
+        vision = manager._config_manager.get_model_api_config('conversation')
         if (not isinstance(vision.get('model'), str) or not vision['model'].strip()
                 or (not vision.get('api_key') and not vision.get('is_custom'))):
             return False
