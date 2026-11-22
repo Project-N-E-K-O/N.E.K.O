@@ -226,7 +226,7 @@ class ProactiveMixin:
             # Malformed flags payload — keep the current flags.
             pass
         # The two task tools follow the switches: they are offered to the
-        # model only while NekoClaw is on, so a session without it does not
+        # model only while NekoPower is on, so a session without it does not
         # pay for their definitions. Only an actual change touches the live
         # session's tool list.
         try:

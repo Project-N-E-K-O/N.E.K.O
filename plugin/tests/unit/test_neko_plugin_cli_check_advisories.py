@@ -172,7 +172,7 @@ def test_internal_import_reports_each_module(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "root",
     ["app", "config", "knowledge", "launcher_core", "main_logic", "main_routers", "memory",
-     "nekoclaw", "services", "steamworks", "utils"],
+     "nekopower", "services", "steamworks", "utils"],
 )
 def test_every_host_root_package_is_internal(tmp_path: Path, root: str) -> None:
     assert _advisories(tmp_path, f"from {root}.x import y\n") == [

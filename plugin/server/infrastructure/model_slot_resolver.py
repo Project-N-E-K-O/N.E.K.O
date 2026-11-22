@@ -1,6 +1,6 @@
 """In-process lookup of model slots for callers outside the plugin server.
 
-The agent process (the NekoClaw host) runs task agents on slots of the model
+The agent process (the NekoPower host) runs task agents on slots of the model
 panel. It reads the same ``plugin_models.json`` and resolves host-follow slots
 with the same code as the plugin gateway, so it works whether or not the
 plugin server is running. Nothing here writes: seeding, bindings and edits

@@ -2195,7 +2195,7 @@ window.AgentHUD._setupDragging = function (hud) {
 // ===== i18n 就绪 / 语言切换后重译任务 HUD 外壳 =====
 // HUD 外壳文案（标题 / 统计 / 折叠·终止按钮 title / 空态文本）由 createAgentTaskHUD
 // 用 window.t 直接写入且没有 data-i18n 属性，因此 i18n 的 updatePageTexts() 不会重译它们。
-// 当 HUD 在 i18n 初始化完成前就抢先构建时（典型场景：启动时后端恢复了上次 NekoClaw 会话的
+// 当 HUD 在 i18n 初始化完成前就抢先构建时（典型场景：启动时后端恢复了上次 NekoPower 会话的
 // 任务，agenthud 页面拉到 active_tasks 后立即渲染 HUD），这些外壳文案会停留在初始兜底态，
 // 表现为「i18n 文字加载异常」。这里监听 localechange（i18n 初始化完成及语言切换时派发），
 // 补一次外壳重译，并用缓存快照刷新任务卡片状态/类型文案。
