@@ -111,6 +111,7 @@ def build_console_router(
     *,
     open_directory: Callable[[Path], None] | None = None,
     pick_directory: Callable[[str], str | None] | None = None,
+    character: Callable[[], Awaitable[str | None]] | None = None,
     switches: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     read_browser: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     write_browser: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
@@ -121,7 +122,9 @@ def build_console_router(
     shows a directory in the system's file manager (``utils.native_directory``
     by default); ``pick_directory`` shows the system's dialog for choosing
     a folder, starting at the directory it is given, and returns what was
-    chosen or None when the user closed it. ``switches`` returns where the switches of the agent
+    chosen or None when the user closed it. ``character`` returns the name
+    of the character the user is with now, whose task agent a new one is
+    when the page does not say. ``switches`` returns where the switches of the agent
     process stand; ``read_browser`` and ``write_browser`` are its routes for
     the browser settings. Without them those routes answer 404: a host on
     its own has no switches.
@@ -579,6 +582,140 @@ def build_console_router(
         if not await space_call(host.space.delete_review(commission_id)):
             raise _refuse(404, "no_review")
         return {"success": True}
+
+    # -- the task agents at a glance, and making one -----------------------
+
+    @router.get("/board")
+    async def get_board(project: str | None = None, known_revision: str | None = None) -> dict[str, Any]:
+        """Return the task agents by project, one card each; ``unchanged`` when nothing moved since ``known_revision``."""
+        host = await get_host()
+        project, _ = scope(project)
+        return {"success": True, **(await host.board(project, None, known_revision or None))}
+
+    @router.get("/templates")
+    async def get_templates(project: str | None = None) -> dict[str, Any]:
+        """Return what kinds of task agent there are to choose from."""
+        host = await get_host()
+        project, _ = scope(project)
+        return {"success": True, "templates": await host.templates(project)}
+
+    @router.post("/familiars/draft")
+    async def draft_familiar(payload: dict[str, Any]) -> dict[str, Any]:
+        """Fill in the form of a new task agent from a sentence about it. One call of the summary model; nothing is made."""
+        payload = payload or {}
+        text = text_of(payload, "text", required=True)
+        workdir = payload.get("workdir")
+        if workdir is not None and not isinstance(workdir, str):
+            raise _refuse(400, "bad_text", field="workdir")
+        host = await get_host()
+        try:
+            draft = await host.draft_session(text, workdir or None)
+        except RuntimeError as exc:
+            if type(exc).__name__ != "DraftError":
+                raise
+            reason = str(getattr(exc, "reason", "failed"))
+            raise _refuse(400 if reason == "empty" else 502, "draft_failed", reason=reason) from None
+        return {"success": True, "draft": draft}
+
+    @router.post("/familiars")
+    async def make_familiar(payload: dict[str, Any]) -> dict[str, Any]:
+        """Make a task agent for something lasting: a new project and its own session. Nothing is started."""
+        payload = payload or {}
+        fields = {
+            name: text_of(payload, name) or ""
+            for name in ("name", "preset", "title", "duty", "description", "rules")
+        }
+        workdir = payload.get("workdir")
+        if workdir is not None and not isinstance(workdir, str):
+            raise _refuse(400, "bad_text", field="workdir")
+        lanlan_name = payload.get("lanlan_name")
+        if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+            lanlan_name = await character() if character is not None else None
+        host = await get_host()
+        try:
+            made = await host.open_session(
+                lanlan_name or "", fields["name"], preset=fields["preset"] or "boss", title=fields["title"],
+                duty=fields["duty"], description=fields["description"], workdir=workdir or None, rules=fields["rules"],
+            )
+        except ValueError as exc:
+            code = str(exc)
+            known = ("no_character", "bad_name", "name_taken", "bad_preset", "not_absolute", "not_a_directory", "host_directory")
+            raise _refuse(400, code if code in known else "bad_name") from None
+        return {"success": True, **made}
+
+    @router.patch("/familiars/{session_id}/card")
+    async def write_card(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Write the title, the duty or the summary of a task agent's card, as the user's own words.
+
+        What the user wrote is not written over by a review or by the task
+        agent itself; an empty line empties it and keeps it the user's.
+        """
+        payload = payload or {}
+        lines = {name: text_of(payload, name) for name in ("title", "duty", "summary")}
+        lines = {name: value for name, value in lines.items() if value is not None}
+        if not lines:
+            raise _refuse(400, "nothing_to_change")
+        host = await get_host()
+        session, written = await host.ledger.write_card(session_id, by="user", **lines)
+        if session is None:
+            raise _refuse(404, "no_familiar")
+        return {"success": True, "written": list(written)}
+
+    @router.post("/space/projects/description")
+    async def describe_project(payload: dict[str, Any]) -> dict[str, Any]:
+        """Write what a project is for, as the user's own words."""
+        payload = payload or {}
+        project, _ = scope(payload.get("project"))
+        description = text_of(payload, "description", required=True)
+        if project is None or not description.strip():
+            raise _refuse(400, "bad_text", field="description")
+        host = await get_host()
+        changed = await space_call(host.space.describe_project(project, description, by="user"))
+        if changed is None:
+            raise _refuse(404, "no_project")
+        return {"success": True, "project": changed.to_json()}
+
+    # -- talking to a task agent ------------------------------------------
+    #
+    # By the commission it has in hand (``commission.id`` on its card).
+
+    @router.post("/commissions/{commission_id}/tell")
+    async def tell_commission(commission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Pass a sentence of the user's on to a task agent that is at work."""
+        text = text_of(payload or {}, "text", required=True)
+        if not text.strip():
+            raise _refuse(400, "bad_text", field="text")
+        host = await get_host()
+        if not await host.tell(commission_id, text):
+            # It is over, or not one a task agent works on: nothing took the sentence.
+            raise _refuse(409, "not_taken")
+        return {"success": True}
+
+    @router.post("/commissions/{commission_id}/answer")
+    async def answer_commission(commission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Give the user's answer to a task agent that waits for one: ``choice`` for a question with options, else ``text``."""
+        payload = payload or {}
+        text = text_of(payload, "text") or ""
+        choice, question_id = payload.get("choice"), payload.get("question_id")
+        for value in (choice, question_id):
+            if value is not None and not isinstance(value, str):
+                raise _refuse(400, "bad_text", field="choice")
+        if not text.strip() and not choice:
+            raise _refuse(400, "bad_text", field="text")
+        host = await get_host()
+        if not await host.answer(commission_id, text, choice=choice, question_id=question_id):
+            # It asked nothing, or what it asked was answered or withdrawn meanwhile.
+            raise _refuse(409, "not_taken")
+        return {"success": True}
+
+    @router.post("/commissions/{commission_id}/stop")
+    async def stop_commission(commission_id: str) -> dict[str, Any]:
+        """Stop what a task agent is doing, as the user asks."""
+        host = await get_host()
+        stopped = await host.abort(commission_id, reason="stopped")
+        if stopped is None:
+            raise _refuse(404, "no_commission")
+        return {"success": True, "status": stopped.status}
 
     # -- how she likes tasks done -----------------------------------------
 

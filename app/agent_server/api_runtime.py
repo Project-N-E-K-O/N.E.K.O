@@ -1051,6 +1051,16 @@ async def _console_switches() -> Dict[str, Any]:
     }
 
 
+async def _console_character() -> Optional[str]:
+    """The character the user is with now: whose task agent one made from the console is."""
+    try:
+        _, her_name, *_rest = await get_config_manager().aget_character_data()
+    except Exception as exc:  # noqa: BLE001 - told as "no character", not as a failure of the page
+        logger.warning("[Agent] reading the current character for the console failed (exc_type=%s)", type(exc).__name__)
+        return None
+    return her_name if isinstance(her_name, str) and her_name else None
+
+
 async def _console_read_browser() -> Dict[str, Any]:
     return await get_browser_settings()
 
@@ -1275,6 +1285,6 @@ def hud_status(status: str) -> str:
 
 
 app.include_router(build_console_router(
-    ready_host, _console_token,
+    ready_host, _console_token, character=_console_character,
     switches=_console_switches, read_browser=_console_read_browser, write_browser=_console_write_browser,
 ))

@@ -683,6 +683,88 @@ class NekoClawHost:
                 return "at_work"
         return None
 
+    async def _working_directory(self, workdir: Any) -> Path:
+        """Return a directory the user named for task agents to work in; ``ValueError`` with a code for one that will not do.
+
+        ``not_absolute`` for what is not a whole path, ``not_a_directory``
+        for one that is not there, ``host_directory`` for where the host
+        keeps its own things (the ledger, the permissions, the task agent
+        space), anything inside that, and anything that holds it.
+        """
+        from nekoclaw.runtime.permissions import is_inside
+
+        if not isinstance(workdir, str) or not workdir.strip() or not os.path.isabs(workdir):
+            raise ValueError("not_absolute")
+        wanted = Path(workdir)
+
+        def looked_at() -> tuple[bool, Path, Path]:
+            return wanted.is_dir(), Path(os.path.realpath(wanted)), Path(os.path.realpath(self.paths.root()))
+
+        is_directory, actual, own = await asyncio.to_thread(looked_at)
+        if not is_directory:
+            raise ValueError("not_a_directory")
+        if is_inside(actual, own) or is_inside(own, actual):
+            raise ValueError("host_directory")
+        return wanted
+
+    async def open_session(
+        self,
+        lanlan_name: str,
+        name: str,
+        *,
+        preset: str = "boss",
+        title: str = "",
+        duty: str = "",
+        description: str = "",
+        workdir: str | None = None,
+        rules: str = "",
+    ) -> dict[str, Any]:
+        """Make a task agent for something lasting, as the user asks: a new project and its own session.
+
+        ``name`` is the project's and the session's; ``preset`` what kind
+        of task agent it is (one of ``templates()`` that is valid);
+        ``title`` and ``duty`` go on its card and ``description`` on the
+        project, all as the user's own words, which nothing writes over;
+        ``workdir`` is where it works (as for ``set_project_workdir``),
+        the directory the host gives it when none is named; ``rules`` are
+        written as the project's rules when there are some. Nothing is
+        started: it has no commission until one is filed under the project.
+
+        Returns ``{"project": ..., "session_id": ...}``. Raises
+        ``ValueError`` with a code: ``no_character``, ``bad_name`` (no name
+        of a directory, or the name commissions without a project are filed
+        under), ``name_taken`` (a project of the name is there, archived
+        ones included), ``bad_preset``, or one of the directory's.
+        """
+        from nekoclaw.host.paths import DEFAULT_PROJECT, safe_segment
+
+        if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+            raise ValueError("no_character")
+        if not isinstance(name, str) or not name.strip() or name.strip() == DEFAULT_PROJECT:
+            raise ValueError("bad_name")
+        name = name.strip()
+        try:
+            safe_segment(name, "project")
+        except ValueError:
+            raise ValueError("bad_name") from None
+        if not any(item["valid"] and item["name"] == preset for item in await self.templates(None)):
+            raise ValueError("bad_preset")
+        wanted = await self._working_directory(workdir) if workdir else None
+        # Among the archived ones as well: commissions are filed by the name, and two of a name would be one.
+        if any(project.name.casefold() == name.casefold() for project in await self.space.list_projects()):
+            raise ValueError("name_taken")
+        project = await self.space.touch_project(name, workdir=str(wanted) if wanted else None, count=False)
+        if description.strip():
+            project = await self.space.describe_project(name, description, by="user") or project
+        if rules.strip():
+            await self.space.write_rules(rules, name)
+        session, _made = await self.ledger.project_session(
+            lanlan_name.strip(), name,
+            workdir=str(wanted) if wanted else None, preset=preset,
+            title=title, title_by="user", duty=duty, duty_by="user",
+        )
+        return {"project": project.to_json(), "session_id": session.id}
+
     async def set_project_workdir(self, project: str, workdir: str, *, lanlan_name: str | None = None) -> dict[str, Any]:
         """Change where the task agents of a project work, as the user asks; returns the project as a page shows it.
 
@@ -699,21 +781,7 @@ class NekoClawHost:
         do (``not_absolute``, ``not_a_directory``, ``host_directory``), and
         ``ProjectBusy`` while something is at work in the project.
         """
-        from nekoclaw.runtime.permissions import is_inside
-
-        if not isinstance(workdir, str) or not workdir.strip() or not os.path.isabs(workdir):
-            raise ValueError("not_absolute")
-        wanted = Path(workdir)
-
-        def looked_at() -> tuple[bool, Path, Path]:
-            return wanted.is_dir(), Path(os.path.realpath(wanted)), Path(os.path.realpath(self.paths.root()))
-
-        is_directory, actual, own = await asyncio.to_thread(looked_at)
-        if not is_directory:
-            raise ValueError("not_a_directory")
-        if is_inside(actual, own) or is_inside(own, actual):
-            # The ledger, the permissions, the task agent space: not a place to work in, nor one that holds them.
-            raise ValueError("host_directory")
+        wanted = await self._working_directory(workdir)
         if await self.space.get_project(project) is None:
             raise LookupError(project)
         busy = await self._project_busy(project, lanlan_name)

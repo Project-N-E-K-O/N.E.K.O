@@ -678,3 +678,216 @@ async def test_the_dialog_for_choosing_a_folder_gives_what_was_chosen_and_change
         assert failed.status_code == 500 and failed.json()["detail"] == {"code": "picker_unavailable"}
     assert (await host.space.get_project("Ledger tool")).workdir == str(tmp_path)
     await host.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# The task agents at a glance, making one, talking to one
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def familiars(tmp_path: Path) -> Any:
+    """``(client, host)`` over a host whose summary model fills in forms, with a character the user is with."""
+    from tests.unit.nekoclaw.host_fakes import fake_model
+    from tests.unit.nekoclaw.test_host_board import DraftLLM
+
+    host = make_host(tmp_path, None, dsh=Installation(), task_agent_model=fake_model, decision_llm=DraftLLM())
+
+    async def get_host() -> Any:
+        return host
+
+    async def character() -> str | None:
+        return "Lan"
+
+    app = FastAPI()
+    app.include_router(build_console_router(get_host, lambda: TOKEN, character=character))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://agent.test") as client:
+        yield client, host
+    await host.shutdown()
+
+
+async def test_a_task_agent_is_made_with_what_the_user_filled_in_and_shows_on_the_board(familiars, tmp_path):
+    client, host = familiars
+    assert (await client.get("/console/board")).status_code == 403
+    empty = (await client.get("/console/board", headers=HEADERS)).json()
+    assert empty["success"] is True and empty["projects"] == [] and empty["loose"] == []
+    names = [item["name"] for item in (await client.get("/console/templates", headers=HEADERS)).json()["templates"]]
+    assert "boss" in names and "scout" in names
+
+    code = tmp_path.parent / f"{tmp_path.name}-ledger"
+    code.mkdir()
+    made = await client.post("/console/familiars", headers=HEADERS, json={
+        "name": "Ledger tool", "preset": "boss", "title": "Keeper of the books",
+        "duty": "Keeps the ledger tool working", "description": "A small bookkeeping program",
+        "workdir": str(code), "rules": "- Use Decimal for money.\n",
+    })
+    assert made.status_code == 200, made.text
+    body = made.json()
+    assert body["project"]["name"] == "Ledger tool" and body["project"]["workdir"] == str(code)
+
+    project = await host.space.get_project("Ledger tool")
+    assert (project.description, project.description_by, project.commissions) == ("A small bookkeeping program", "user", 0)
+    assert await host.space.read_rules("Ledger tool") == "- Use Decimal for money.\n"
+    session = await host.ledger.get_session(body["session_id"])
+    assert (session.kind, session.lanlan_name, session.project, session.workdir) == ("project", "Lan", "Ledger tool", str(code))
+    assert (session.preset, session.title, session.title_by, session.duty, session.duty_by) == (
+        "boss", "Keeper of the books", "user", "Keeps the ledger tool working", "user",
+    )
+
+    board = (await client.get("/console/board", headers=HEADERS)).json()
+    (shown,) = board["projects"]
+    (card,) = shown["members"]
+    assert (shown["name"], card["id"], card["leader"], card["title"], card["state"]) == (
+        "Ledger tool", body["session_id"], True, "Keeper of the books", "asleep",
+    )
+    # Nothing was started for it.
+    assert card["commission"] is None
+    unchanged = (await client.get("/console/board", headers=HEADERS, params={"known_revision": board["revision"]})).json()
+    assert unchanged == {"success": True, "revision": board["revision"], "unchanged": True}
+    of_one = (await client.get("/console/board", headers=HEADERS, params={"project": "Ledger tool"})).json()
+    assert [item["name"] for item in of_one["projects"]] == ["Ledger tool"]
+
+
+async def test_a_task_agent_is_not_made_of_what_will_not_do_and_nothing_is_left_behind(familiars, tmp_path):
+    client, host = familiars
+    await host.space.touch_project("Taken")
+    for payload, code in (
+        ({"name": "taken"}, "name_taken"),
+        ({"name": "Taken"}, "name_taken"),
+        ({"name": ""}, "bad_name"),
+        ({"name": "../outside"}, "bad_name"),
+        ({"name": "_daily"}, "bad_name"),
+        ({"name": "New one", "preset": "wizard"}, "bad_preset"),
+        ({"name": "New one", "workdir": "relative"}, "not_absolute"),
+        ({"name": "New one", "workdir": str(tmp_path / "missing")}, "not_a_directory"),
+        ({"name": "New one", "workdir": str(host.paths.root().parent)}, "host_directory"),
+        ({"name": "New one", "workdir": 3}, "bad_text"),
+        ({"name": "New one", "duty": 3}, "bad_text"),
+    ):
+        refused = await client.post("/console/familiars", headers=HEADERS, json=payload)
+        assert (refused.status_code, refused.json()["detail"]["code"]) == (400, code), payload
+    assert [project.name for project in await host.space.list_projects()] == ["Taken"]
+    assert await host.ledger.find_sessions() == []
+
+
+async def test_without_a_character_to_make_it_for_no_task_agent_is_made(tmp_path):
+    host = make_host(tmp_path, None, dsh=Installation())
+
+    async def get_host() -> Any:
+        return host
+
+    app = FastAPI()
+    app.include_router(build_console_router(get_host, lambda: TOKEN))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://agent.test") as client:
+        refused = await client.post("/console/familiars", headers=HEADERS, json={"name": "New one"})
+        assert refused.status_code == 400 and refused.json()["detail"]["code"] == "no_character"
+        # Named by the page, it is made for that character.
+        made = await client.post("/console/familiars", headers=HEADERS, json={"name": "New one", "lanlan_name": "Mei"})
+        assert made.status_code == 200
+        assert (await host.ledger.get_session(made.json()["session_id"])).lanlan_name == "Mei"
+    await host.shutdown()
+
+
+async def test_the_form_of_a_new_task_agent_is_filled_in_and_a_failure_says_which(familiars):
+    from tests.unit.nekoclaw.test_host_board import FORM
+
+    client, host = familiars
+    host._decision_llm.answer = dict(FORM)
+    filled = await client.post("/console/familiars/draft", headers=HEADERS, json={"text": "a task agent for the monthly reports"})
+    assert filled.status_code == 200 and filled.json()["draft"] == {**FORM, "preset": "boss"}
+    assert len(host._decision_llm.calls) == 1
+    # Nothing was made by filling it in.
+    assert await host.space.list_projects() == [] and await host.ledger.find_sessions() == []
+
+    empty = await client.post("/console/familiars/draft", headers=HEADERS, json={"text": "   "})
+    assert empty.status_code == 400 and empty.json()["detail"] == {"code": "draft_failed", "reason": "empty"}
+    assert len(host._decision_llm.calls) == 1
+    host._decision_llm.answer = RuntimeError("the model is away")
+    failed = await client.post("/console/familiars/draft", headers=HEADERS, json={"text": "a task agent for the reports"})
+    assert failed.status_code == 502 and failed.json()["detail"]["code"] == "draft_failed"
+    assert failed.json()["detail"]["reason"] in ("failed", "timeout", "unreadable", "incomplete", "no_model")
+    for payload in ({}, {"text": 3}, {"text": "x", "workdir": 3}):
+        bad = await client.post("/console/familiars/draft", headers=HEADERS, json=payload)
+        assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_text"
+
+
+async def test_the_user_writes_a_card_and_a_project_description_which_stay_the_users(familiars):
+    client, host = familiars
+    made = (await client.post("/console/familiars", headers=HEADERS, json={"name": "Ledger tool"})).json()
+    session_id = made["session_id"]
+
+    written = await client.patch(
+        f"/console/familiars/{session_id}/card", headers=HEADERS, json={"title": "Bookkeeper", "summary": "Set up, nothing done yet."},
+    )
+    assert written.status_code == 200 and sorted(written.json()["written"]) == ["summary", "title"]
+    session = await host.ledger.get_session(session_id)
+    assert (session.title, session.title_by, session.summary, session.summary_by) == (
+        "Bookkeeper", "user", "Set up, nothing done yet.", "user",
+    )
+    # A review does not write over what the user wrote.
+    _same, by_review = await host.ledger.write_card(session_id, by="review", title="Something else")
+    assert by_review == () and (await host.ledger.get_session(session_id)).title == "Bookkeeper"
+
+    assert (await client.patch(f"/console/familiars/{session_id}/card", headers=HEADERS, json={})).json()["detail"]["code"] == "nothing_to_change"
+    missing = await client.patch("/console/familiars/no-such-session/card", headers=HEADERS, json={"title": "x"})
+    assert missing.status_code == 404 and missing.json()["detail"]["code"] == "no_familiar"
+
+    described = await client.post(
+        "/console/space/projects/description", headers=HEADERS, json={"project": "Ledger tool", "description": "Keeps the books"},
+    )
+    assert described.json()["project"]["description"] == "Keeps the books"
+    assert (await host.space.get_project("Ledger tool")).description_by == "user"
+    for payload, status, code in (
+        ({"project": "Ledger tool", "description": "  "}, 400, "bad_text"),
+        ({"description": "x"}, 400, "bad_text"),
+        ({"project": "No such project", "description": "x"}, 404, "no_project"),
+    ):
+        refused = await client.post("/console/space/projects/description", headers=HEADERS, json=payload)
+        assert (refused.status_code, refused.json()["detail"]["code"]) == (status, code), payload
+
+
+async def test_the_user_talks_to_a_task_agent_at_work_and_stops_it(tmp_path):
+    from tests.unit.nekoclaw.fakes import ScriptedLLM
+    from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, fake_model, scripted_runtime, wait_status
+    from tests.unit.nekoclaw.test_host_session_features import _gate, _report
+
+    release, wait = _gate()
+    model = ScriptedLLM([[wait, *_report("ready", "sorted")], _report("ready", "sorted again")])
+    host = make_host(
+        tmp_path, None, dsh=Installation(), task_agent_model=fake_model, decision_llm=FakeDecisionLLM(),
+        runtime_factory=scripted_runtime(lambda spec: model),
+    )
+
+    async def get_host() -> Any:
+        return host
+
+    app = FastAPI()
+    app.include_router(build_console_router(get_host, lambda: TOKEN))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://agent.test") as client:
+        receipt = await host.dispatch("sort the photos by year", lanlan_name="Lan", lang="en")
+        commission = receipt.commissions[0]
+        await wait_status(host, commission.id, "working")
+
+        assert (await client.post(f"/console/commissions/{commission.id}/tell", headers={}, json={"text": "x"})).status_code == 403
+        told = await client.post(f"/console/commissions/{commission.id}/tell", headers=HEADERS, json={"text": "by month, please"})
+        assert told.json() == {"success": True}
+        for payload in ({}, {"text": "  "}, {"text": 3}):
+            bad = await client.post(f"/console/commissions/{commission.id}/tell", headers=HEADERS, json=payload)
+            assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_text"
+        # It asked nothing: an answer is not taken, and one that says nothing is not sent on.
+        unasked = await client.post(f"/console/commissions/{commission.id}/answer", headers=HEADERS, json={"text": "yes"})
+        assert unasked.status_code == 409 and unasked.json()["detail"]["code"] == "not_taken"
+        for payload in ({}, {"text": " "}, {"choice": 3}):
+            bad = await client.post(f"/console/commissions/{commission.id}/answer", headers=HEADERS, json=payload)
+            assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_text"
+
+        stopped = await client.post(f"/console/commissions/{commission.id}/stop", headers=HEADERS)
+        assert stopped.status_code == 200 and stopped.json()["status"] == "cancelled"
+        release.set()
+        assert (await host.ledger.get(commission.id)).status == "cancelled"
+        # Over: nothing takes a sentence any more; and one that never was is said to be missing.
+        late = await client.post(f"/console/commissions/{commission.id}/tell", headers=HEADERS, json={"text": "still there?"})
+        assert late.status_code == 409 and late.json()["detail"]["code"] == "not_taken"
+        missing = await client.post("/console/commissions/no-such-commission/stop", headers=HEADERS)
+        assert missing.status_code == 404 and missing.json()["detail"]["code"] == "no_commission"
+    await host.shutdown()
