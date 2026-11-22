@@ -395,6 +395,7 @@ async def test_the_rules_are_read_and_written_for_the_space_and_for_a_project_ap
     assert (await client.get("/console/space/rules", headers=HEADERS)).json() == {"success": True, "text": ""}
     written = await client.put("/console/space/rules", headers=HEADERS, json={"text": "- answer in Chinese\n"})
     assert written.json()["text"] == "- answer in Chinese\n"
+    await host.space.touch_project("ledger-tool")
     await client.put("/console/space/rules", headers=HEADERS, json={"text": "- use Decimal\n", "project": "ledger-tool"})
 
     assert await host.space.read_rules() == "- answer in Chinese\n"
@@ -757,6 +758,12 @@ async def test_a_task_agent_is_not_made_of_what_will_not_do_and_nothing_is_left_
         ({"name": ""}, "bad_name"),
         ({"name": "../outside"}, "bad_name"),
         ({"name": "_daily"}, "bad_name"),
+        # The host's own names begin so, in whatever case the file system takes them for.
+        ({"name": "_Daily"}, "bad_name"),
+        ({"name": "_anything"}, "bad_name"),
+        # Compared as commissions are filed: white space and case tell no two projects apart.
+        ({"name": "Ta ken"}, "name_taken"),
+        ({"name": "T A K E N"}, "name_taken"),
         ({"name": "New one", "preset": "wizard"}, "bad_preset"),
         ({"name": "New one", "workdir": "relative"}, "not_absolute"),
         ({"name": "New one", "workdir": str(tmp_path / "missing")}, "not_a_directory"),
@@ -895,13 +902,25 @@ async def test_the_user_talks_to_a_task_agent_at_work_and_stops_it(tmp_path):
 
 async def test_settings_read_for_one_model_are_not_written_to_another(console):
     client, _, _ = console
-    same = await client.post("/console/window", headers=HEADERS, json={"model": "agent-model", "compact_at": 80_000})
+    shown = (await client.get("/console/window", headers=HEADERS)).json()["window"]
+    assert shown["id"] and "models.test" not in shown["id"]
+    same = await client.post("/console/window", headers=HEADERS, json={"model_id": shown["id"], "compact_at": 80_000})
     assert same.status_code == 200 and same.json()["window"]["compact_at_set"] == 80_000
 
     # The page was opened while another model was configured: what it shows is not this model's.
+    # A model of the same name at another address is another model as well.
+    async def elsewhere() -> dict[str, Any]:
+        return {"model": "agent-model", "base_url": "http://other.test/v1", "api_key": "k"}
+
+    host = (console)[1]
+    host._task_agent_model = elsewhere
+    moved = await client.post("/console/window", headers=HEADERS, json={"model_id": shown["id"], "compact_at": 60_000})
+    assert moved.status_code == 409 and moved.json()["detail"]["code"] == "stale"
+    assert (await client.get("/console/window", headers=HEADERS)).json()["window"]["compact_at_set"] is None
+    host._task_agent_model = a_model
     other = await client.post(
         "/console/window", headers=HEADERS,
-        json={"model": "another-model", "compact_at": 70_000, "idle_compact_on": False},
+        json={"model_id": "0123456789abcdef", "compact_at": 70_000, "idle_compact_on": False},
     )
     assert other.status_code == 409
     assert other.json()["detail"]["code"] == "stale" and other.json()["detail"]["model"] == "agent-model"
@@ -909,7 +928,7 @@ async def test_settings_read_for_one_model_are_not_written_to_another(console):
     assert window["compact_at_set"] == 80_000 and window["idle_compact_on"] is True
 
     for model in (3, ""):
-        bad = await client.post("/console/window", headers=HEADERS, json={"model": model, "compact_at": 60_000})
+        bad = await client.post("/console/window", headers=HEADERS, json={"model_id": model, "compact_at": 60_000})
         assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_name"
     assert (await client.get("/console/window", headers=HEADERS)).json()["window"]["compact_at_set"] == 80_000
 
@@ -952,3 +971,67 @@ async def test_of_two_task_agents_asked_for_at_once_under_one_name_one_is_made(f
     # What the one that was refused sent is nowhere.
     assert await host.space.read_rules("Ledger tool") == ("- of the first\n" if made is first else "- of the second\n")
     assert len([project for project in await host.space.list_projects() if project.name == "Ledger tool"]) == 1
+
+
+async def test_nothing_is_written_for_a_project_that_is_not_there(console):
+    client, host, _ = console
+    for name in ("never-begun", "ledger-tool"):
+        if name == "ledger-tool":
+            # Archived: it is not there to be written for, and writing must not begin another of its name.
+            await host.space.touch_project(name)
+            assert await host.space.archive_project(name, summary="done") is not None
+        rules = await client.put("/console/space/rules", headers=HEADERS, json={"text": "- x\n", "project": name})
+        entry = await client.post(
+            "/console/space/entries", headers=HEADERS, json={"title": "A note", "content": "Kept.", "project": name},
+        )
+        for refused in (rules, entry):
+            assert refused.status_code == 404 and refused.json()["detail"]["code"] == "no_project", name
+    assert [project.name for project in await host.space.list_projects(include_archived=False)] == []
+    assert not host.paths.space().project_dir("never-begun").exists()
+
+
+@pytest.mark.parametrize("name", ["context_window", "compact_at", "idle_compact_after"])
+async def test_a_number_beyond_any_setting_is_out_of_range_and_no_error_of_the_server(console, name):
+    client, _, _ = console
+    refused = await client.post(
+        "/console/window", headers={**HEADERS, "Content-Type": "application/json"}, content=json.dumps({name: 10**400}),
+    )
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "out_of_range"
+    window = (await client.get("/console/window", headers=HEADERS)).json()["window"]
+    assert window["set"] is None and window["compact_at_set"] is None and window["idle_compact_after_set"] is None
+
+
+async def test_a_refused_change_leaves_what_the_user_was_told_about_the_model_as_it_was(console):
+    client, host, _ = console
+    store = host.model_capabilities
+    assert await store.note_context_window("http://models.test/v1", "agent-model", 131_072) is True
+    assert await store.claim_window_reminder("http://models.test/v1", "agent-model") == 131_072
+    await store.confirm_window_reminder("http://models.test/v1", "agent-model", 131_072)
+    assert (await client.get("/console/window", headers=HEADERS)).json()["window"]["reminded"] == 131_072
+
+    refused = await client.post("/console/window", headers=HEADERS, json={"context_window": 200_000, "compact_at": 5})
+    assert refused.status_code == 400
+    window = (await client.get("/console/window", headers=HEADERS)).json()["window"]
+    # Neither was set, and the note that the model takes less than was assumed is still there.
+    assert window["set"] is None and window["compact_at_set"] is None and window["reminded"] == 131_072
+
+
+async def test_a_draft_looks_only_into_a_directory_a_task_agent_could_be_given(familiars, tmp_path):
+    client, host = familiars
+    for workdir, code in (
+        ("relative", "not_absolute"),
+        (str(tmp_path / "a") + "\x00b", "not_absolute"),
+        (str(tmp_path / "missing"), "not_a_directory"),
+        (str(host.paths.root().parent), "host_directory"),
+    ):
+        refused = await client.post("/console/familiars/draft", headers=HEADERS, json={"text": "a helper", "workdir": workdir})
+        assert (refused.status_code, refused.json()["detail"]["code"]) == (400, code), workdir
+
+
+@pytest.mark.parametrize("identifier", ["99999999999999999999", "0", "-3"])
+async def test_a_preference_numbered_beyond_any_row_is_none(console, identifier):
+    client, _, _ = console
+    changed = await client.patch(f"/console/preferences/{identifier}", headers=HEADERS, json={"text": "x"})
+    removed = await client.delete(f"/console/preferences/{identifier}", headers=HEADERS)
+    for refused in (changed, removed):
+        assert refused.status_code == 404 and refused.json()["detail"]["code"] == "no_preference"

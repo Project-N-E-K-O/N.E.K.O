@@ -252,6 +252,20 @@ describe('a familiar up close', () => {
     expect(api.writeCard).toHaveBeenCalledTimes(1)
   })
 
+  it('sends only the lines the user changed, though the card changed under the open editor', async () => {
+    await show([card({ summary: '' })])
+    api.writeCard.mockResolvedValue({ written: ['title'] })
+    await click(byTest('card-edit'))
+    await type('card-title', 'Bookkeeper')
+    // A review wrote the summary and the duty while the editor was open, and the board was read anew.
+    api.getProjectBoard.mockResolvedValue(boardOf([card({ summary: 'Set up the export.', duty: 'Keeps the books' })], 'r2'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(api.getProjectBoard).toHaveBeenLastCalledWith('Ledger tool', 'r1')
+    await click(byTest('card-save'))
+    expect(api.writeCard).toHaveBeenCalledWith('s1', { title: 'Bookkeeper' })
+  })
+
   it('shows those that belong to no project when no project is named, and reads anew for another', async () => {
     api.getProjectBoard.mockResolvedValue({ revision: 'r1', projects: [], loose: [card({ id: 's9', name: 'Screenshot to table', kind: 'single', preset: 'general', leader: false })] })
     const { container, state } = await mount(FamiliarsPane, { project: null, selectedId: 's9', onSelect: selected })

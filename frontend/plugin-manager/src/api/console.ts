@@ -58,6 +58,8 @@ export interface PermissionsView {
 
 export interface ModelWindow {
   model: string
+  /** What the model is told by when its settings are saved: its name alone may be another service's. */
+  id: string
   window: number
   default: number
   set: number | null
@@ -75,8 +77,8 @@ export interface ModelWindow {
 }
 
 export interface WindowChanges {
-  /** The model the settings were read for; another one being configured now is answered with `stale`. */
-  model?: string
+  /** The `id` of the window the settings were read from; another model being configured now is answered with `stale`. */
+  model_id?: string
   context_window?: number | null
   compact_at?: number | null
   idle_compact_after?: number | null
@@ -159,8 +161,12 @@ function scopeParams(scope: SpaceScope = {}): Record<string, string> {
 
 const get = <T>(url: string, params?: Record<string, string | number>) =>
   request.get<T, T>(url, { ...quiet, params }) as Promise<T>
-const send = <T>(method: 'post' | 'put' | 'patch' | 'delete', url: string, data?: unknown, params?: Record<string, string>) =>
-  request.request<T, T>({ ...quiet, method, url, data, params }) as Promise<T>
+// The folder dialog stays open for two minutes, a draft is given 45 seconds: longer than a request usually waits.
+const PICK_TIMEOUT_MS = 140_000
+const DRAFT_TIMEOUT_MS = 65_000
+const send = <T>(
+  method: 'post' | 'put' | 'patch' | 'delete', url: string, data?: unknown, params?: Record<string, string>, timeout?: number,
+) => request.request<T, T>({ ...quiet, method, url, data, params, ...(timeout ? { timeout } : {}) }) as Promise<T>
 
 /** Return the code of a refusal of a console route, or null for another failure. */
 export function consoleErrorCode(error: unknown): string | null {
@@ -309,7 +315,7 @@ export const getProjectBoard = (project: string | null, knownRevision?: string) 
 }
 export const getTemplates = () => get<{ templates: FamiliarTemplate[] }>('/console/templates')
 export const draftFamiliar = (text: string, workdir?: string) =>
-  send<{ draft: FamiliarForm }>('post', '/console/familiars/draft', { text, workdir: workdir || undefined })
+  send<{ draft: FamiliarForm }>('post', '/console/familiars/draft', { text, workdir: workdir || undefined }, undefined, DRAFT_TIMEOUT_MS)
 export const makeFamiliar = (form: FamiliarForm & { workdir?: string }) =>
   send<{ project: SpaceProject; session_id: string }>('post', '/console/familiars', { ...form, workdir: form.workdir || undefined })
 export const writeCard = (sessionId: string, lines: { title?: string; duty?: string; summary?: string }) =>
@@ -354,7 +360,7 @@ export const setProjectWorkdir = (project: string, workdir: string) =>
   send<{ project: SpaceProject }>('post', '/console/space/projects/workdir', { project, workdir })
 /** Show the system's dialog for choosing a folder; `path` is absent when the user closed it. */
 export const pickDirectory = (start?: string | null) =>
-  send<{ path?: string; cancelled?: boolean }>('post', '/console/space/pick-directory', { start: start || undefined })
+  send<{ path?: string; cancelled?: boolean }>('post', '/console/space/pick-directory', { start: start || undefined }, undefined, PICK_TIMEOUT_MS)
 export const readRules = (scope?: SpaceScope) => get<{ text: string }>('/console/space/rules', scopeParams(scope))
 export const writeRules = (text: string, scope: SpaceScope = {}) =>
   send<{ text: string }>('put', '/console/space/rules', { text, project: scope.project || undefined })

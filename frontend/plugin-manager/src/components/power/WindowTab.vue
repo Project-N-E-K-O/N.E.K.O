@@ -123,7 +123,7 @@ async function save() {
   const now = window.value
   if (!now) return
   // Only what changed is sent: the rest stays as it is on the other side.
-  const changes: WindowChanges = { model: now.model }
+  const changes: WindowChanges = { model_id: now.id }
   if (form.context !== now.set) changes.context_window = form.context
   if (form.compactAt !== now.compact_at_set) changes.compact_at = form.compactAt
   if (idleSeconds.value !== now.idle_compact_after_set) changes.idle_compact_after = idleSeconds.value

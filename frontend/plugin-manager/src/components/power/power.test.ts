@@ -40,7 +40,7 @@ function permissions(version = 3, mode: PermissionsView['categories'][number]['m
   }
 }
 const modelWindow = {
-  model: 'agent-model', window: 200000, default: 200000, set: null, compact_at: 170000, compact_at_set: null,
+  model: 'agent-model', id: 'a1b2c3d4e5f60718', window: 200000, default: 200000, set: null, compact_at: 170000, compact_at_set: null,
   idle_compact_after: 1440, idle_compact_after_set: null, idle_compact_on: true,
 }
 
@@ -201,7 +201,7 @@ describe('the context tab', () => {
     await type('window-compact-at', '90000')
     await click(byTest('window-save'))
     // With the model the settings were read for: they are not to be written to another.
-    expect(api.setWindow).toHaveBeenCalledWith({ model: 'agent-model', compact_at: 90000 })
+    expect(api.setWindow).toHaveBeenCalledWith({ model_id: 'a1b2c3d4e5f60718', compact_at: 90000 })
     expect((byTest('window-save') as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -212,7 +212,7 @@ describe('the context tab', () => {
     await click(byTest('window-idle-on')?.querySelector('input'))
     expect((document.querySelector('[data-testid="window-idle"] input') as HTMLInputElement).disabled).toBe(true)
     await click(byTest('window-save'))
-    expect(api.setWindow).toHaveBeenCalledWith({ model: 'agent-model', idle_compact_on: false })
+    expect(api.setWindow).toHaveBeenCalledWith({ model_id: 'a1b2c3d4e5f60718', idle_compact_on: false })
     expect((byTest('window-idle-on')?.querySelector('input') as HTMLInputElement).checked).toBe(false)
     expect((byTest('window-save') as HTMLButtonElement).disabled).toBe(true)
   })

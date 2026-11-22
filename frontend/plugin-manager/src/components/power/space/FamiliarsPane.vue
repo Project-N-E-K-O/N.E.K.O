@@ -130,6 +130,8 @@ const reply = ref('')
 const editing = ref(false)
 const stopping = ref(false)
 const draft = reactive({ title: '', duty: '', summary: '' })
+// The card as it was when the editor was opened, and whose it is.
+const opened = reactive({ id: '', title: '', duty: '', summary: '' })
 // Asked for as often as the home panel asks: it answers "unchanged" quickly.
 const POLL_MS = 2000
 const POLL_FAILED_MS = 15000
@@ -246,19 +248,21 @@ async function stop() {
 function edit() {
   const card = selected.value
   if (!card) return
-  Object.assign(draft, { title: card.title, duty: card.duty, summary: card.summary ?? '' })
+  Object.assign(opened, { id: card.id, title: card.title, duty: card.duty, summary: card.summary ?? '' })
+  Object.assign(draft, { title: opened.title, duty: opened.duty, summary: opened.summary })
   editing.value = true
 }
 
 async function saveCard() {
-  const card = selected.value
-  if (!card) return
-  // Only the lines that were changed: the rest keep whoever wrote them.
+  if (!opened.id) return
+  // Only the lines the user changed, told by what the editor was opened with: the board is read
+  // anew every two seconds, and a line a review wrote meanwhile is not the user's to overwrite.
   const lines: { title?: string; duty?: string; summary?: string } = {}
-  if (draft.title !== card.title) lines.title = draft.title
-  if (draft.duty !== card.duty) lines.duty = draft.duty
-  if (draft.summary !== (card.summary ?? '')) lines.summary = draft.summary
-  if (Object.keys(lines).length) await act('card', () => writeCard(card.id, lines))
+  if (draft.title !== opened.title) lines.title = draft.title
+  if (draft.duty !== opened.duty) lines.duty = draft.duty
+  if (draft.summary !== opened.summary) lines.summary = draft.summary
+  const id = opened.id
+  if (Object.keys(lines).length) await act('card', () => writeCard(id, lines))
   editing.value = false
 }
 

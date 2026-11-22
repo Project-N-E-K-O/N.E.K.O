@@ -155,6 +155,37 @@ describe('the notes', () => {
     expect(api.listEntries).toHaveBeenCalledTimes(2)
   })
 
+  it('one that was asked for in a scope the user has left is not opened in the next', async () => {
+    api.listEntries.mockResolvedValue({ entries: [entry()] })
+    let answer!: (value: unknown) => void
+    api.readEntry.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    const { container, state } = await mount(NotesPane, { scope: { project: 'A' } })
+    await click(buttonSaying(container.querySelector('[data-entry="python-path"]')!, words.space.notes.open))
+    state.props = { scope: { project: 'B' } }
+    await flush()
+    answer({ entry: entry({ content: 'What A wrote down.' }) })
+    await flush()
+    // An entry of A is not put into an editor that would save it into B.
+    expect(document.body.textContent).not.toContain('What A wrote down.')
+    expect(byTest('note-save')).toBeNull()
+  })
+
+  it('one that was opened in a scope is never saved into the next', async () => {
+    api.listEntries.mockResolvedValue({ entries: [entry()] })
+    api.readEntry.mockResolvedValue({ entry: entry({ content: 'What A wrote down.' }) })
+    api.editEntry.mockResolvedValue({ entry: entry() })
+    const { container, state } = await mount(NotesPane, { scope: { project: 'A' } })
+    await click(buttonSaying(container.querySelector('[data-entry="python-path"]')!, words.space.notes.open))
+    expect(byTest('note-save')).toBeTruthy()
+    state.props = { scope: { project: 'B' } }
+    await flush()
+    // The editor is on its way out; a press that still reaches it saves where it was opened.
+    const save = byTest('note-save')
+    if (save) await click(save)
+    expect(api.editEntry.mock.calls.every(call => call[2]?.project === 'A')).toBe(true)
+    expect(api.fileEntry).not.toHaveBeenCalled()
+  })
+
   it('a new one needs a title and text before anything is sent', async () => {
     api.listEntries.mockResolvedValue({ entries: [] })
     api.fileEntry.mockResolvedValue({ entry: entry() })

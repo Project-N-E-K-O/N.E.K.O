@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import secrets
 import time
@@ -57,6 +58,9 @@ _SHOWN_CATEGORIES: tuple[str, ...] = (
     "keyboard_mouse", "browser", "plugin_entry", "managed_delivery", "other",
 )
 _UNSET = object()
+# No setting of a page is a number beyond this; the largest number a row of the ledger is counted by.
+_NUMBER_MAX = 10**15
+_ROW_MAX = 2**63 - 1
 # The longest text a page may send for one field (rules, an entry): what
 # is kept is a file a person wrote, not a store of documents.
 _TEXT_LIMIT = 200_000
@@ -303,9 +307,10 @@ def build_console_router(
         Each of ``context_window``, ``compact_at`` (tokens) and
         ``idle_compact_after`` (seconds) that is given is set; ``null`` goes
         back to the setting. ``idle_compact_on`` (true or false) switches
-        summing up idle sessions on or off. ``model`` is the model the
-        page shows the settings of; when the model configured now is
-        another, nothing is changed and the answer is 409 ``stale``.
+        summing up idle sessions on or off. ``model_id`` is the ``id``
+        of the window the page shows; when the model configured now is
+        another (or the same name at another address), nothing is
+        changed and the answer is 409 ``stale``.
         """
         payload = payload or {}
         changes: dict[str, Any] = {}
@@ -319,14 +324,19 @@ def build_console_router(
                 continue
             if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
                 raise _refuse(400, "bad_number", field=name)
+            # Told here: further in, a number too long to be a float is an error of another kind.
+            if value is not None and not (isinstance(value, int) or math.isfinite(value)) or (
+                value is not None and abs(value) > _NUMBER_MAX
+            ):
+                raise _refuse(400, "out_of_range", field=name)
             changes[name] = value
         if not changes:
             raise _refuse(400, "nothing_to_change")
         # The model the page read the settings of: they are not written to another one.
-        expected = payload.get("model")
+        expected = payload.get("model_id")
         if expected is not None:
             if not isinstance(expected, str) or not expected:
-                raise _refuse(400, "bad_name", field="model")
+                raise _refuse(400, "bad_name", field="model_id")
             changes["expected_model"] = expected
         host = await get_host()
         try:
@@ -387,6 +397,15 @@ def build_console_router(
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise _refuse(400, "bad_name")
         return project, archive_year
+
+    async def there(host: Any, project: str | None) -> None:
+        """Refuse to write for a project that is not there (or is archived).
+
+        Writing would make its directory: a project nobody began, which
+        then stands in the way of the archived one of its name.
+        """
+        if project is not None and await space_call(host.space.get_project(project)) is None:
+            raise _refuse(404, "no_project")
 
     async def space_call(work: Awaitable[Any]) -> Any:
         """Await a call into the space; what it refuses is told with a code."""
@@ -482,6 +501,7 @@ def build_console_router(
         project, _ = scope(payload.get("project"))
         text = text_of(payload, "text", required=True)
         host = await get_host()
+        await there(host, project)
         await space_call(host.space.write_rules(text, project))
         return {"success": True, "text": await space_call(host.space.read_rules(project))}
 
@@ -515,6 +535,7 @@ def build_console_router(
         if not title.strip():
             raise _refuse(400, "bad_text", field="title")
         host = await get_host()
+        await there(host, project)
         entry, _new = await space_call(host.space.file_entry(
             project, title=title, content=content, kind=kind, description=text_of(payload, "description") or "",
         ))
@@ -620,6 +641,15 @@ def build_console_router(
         if workdir is not None and not isinstance(workdir, str):
             raise _refuse(400, "bad_text", field="workdir")
         host = await get_host()
+        if workdir:
+            # The names of what is in it go to a model: only a directory a task agent could be given.
+            try:
+                await host.working_directory(workdir)
+            except ValueError as exc:
+                code = str(exc)
+                raise _refuse(
+                    400, code if code in ("not_absolute", "not_a_directory", "host_directory") else "bad_name"
+                ) from None
         try:
             draft = await host.draft_session(text, workdir or None)
         except RuntimeError as exc:
@@ -756,6 +786,8 @@ def build_console_router(
             raise _refuse(400, "nothing_to_change")
         if text is not None and not text.strip():
             raise _refuse(400, "bad_text", field="text")
+        if not 0 < preference_id <= _ROW_MAX:
+            raise _refuse(404, "no_preference")
         host = await get_host()
         preference = await host.preferences.get(preference_id)
         if preference is None:
@@ -771,6 +803,8 @@ def build_console_router(
     @router.delete("/preferences/{preference_id}")
     async def remove_preference(preference_id: int) -> dict[str, Any]:
         """Forget a preference."""
+        if not 0 < preference_id <= _ROW_MAX:
+            raise _refuse(404, "no_preference")
         host = await get_host()
         if not await host.preferences.remove(preference_id):
             raise _refuse(404, "no_preference")

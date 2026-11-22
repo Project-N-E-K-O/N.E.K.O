@@ -108,6 +108,11 @@ const formError = ref('')
 const target = ref<SpaceEntry | null>(null)
 const form = reactive({ id: '', title: '', description: '', kind: 'lesson', content: '', evidence: [] as string[] })
 let turn = 0
+// Counts the scopes the user has been to: what was asked for in one is not shown in the next.
+let scopeTurn = 0
+// Where the editor, and the entry to remove, were opened.
+let formScope: SpaceScope = {}
+let targetScope: SpaceScope = {}
 
 /** The words for a value of the server, or the value itself when the pages have none for it. */
 function label(group: 'statuses' | 'confidences' | 'kinds', value: string): string {
@@ -133,14 +138,20 @@ async function load(keep = false) {
 }
 
 function create() {
+  formScope = { ...props.scope }
   Object.assign(form, { id: '', title: '', description: '', kind: 'lesson', content: '', evidence: [] })
   formError.value = ''
   editing.value = true
 }
 
 async function open(entry: SpaceEntry) {
+  const mine = scopeTurn
+  const scope = { ...props.scope }
   try {
-    const whole = (await readEntry(entry.id, props.scope)).entry
+    const whole = (await readEntry(entry.id, scope)).entry
+    // The user went to another scope meanwhile: this entry is not one of what is shown now.
+    if (mine !== scopeTurn) return
+    formScope = scope
     Object.assign(form, {
       id: whole.id, title: whole.title, description: whole.description, kind: whole.type,
       content: whole.content, evidence: [...whole.evidence, ...whole.evidence_outside],
@@ -149,6 +160,7 @@ async function open(entry: SpaceEntry) {
     error.value = ''
     editing.value = true
   } catch (failure) {
+    if (mine !== scopeTurn) return
     error.value = describeConsoleError(failure, t, te)
     void load(true)
   }
@@ -162,8 +174,9 @@ async function save() {
   saving.value = true
   try {
     const fields = { title: form.title, description: form.description, kind: form.kind, content: form.content }
-    if (form.id) await editEntry(form.id, fields, props.scope)
-    else await fileEntry(fields, props.scope)
+    // Where the editor was opened: an entry of one scope is not saved into another.
+    if (form.id) await editEntry(form.id, fields, formScope)
+    else await fileEntry(fields, formScope)
     editing.value = false
     await load()
   } catch (failure) {
@@ -174,6 +187,7 @@ async function save() {
 }
 
 function askRemove(entry: SpaceEntry) {
+  targetScope = { ...props.scope }
   target.value = entry
   removing.value = true
 }
@@ -183,7 +197,7 @@ async function remove() {
   saving.value = true
   let failed = false
   try {
-    await deleteEntry(target.value.id, props.scope)
+    await deleteEntry(target.value.id, targetScope)
     error.value = ''
   } catch (failure) {
     failed = true
@@ -219,7 +233,14 @@ async function showRemoved() {
   }
 }
 
-watch(() => [props.scope.project, props.scope.archive_year], () => void load(), { immediate: true })
+watch(() => [props.scope.project, props.scope.archive_year], () => {
+  scopeTurn++
+  // What was open belongs to the scope the user left.
+  editing.value = false
+  removing.value = false
+  target.value = null
+  void load()
+}, { immediate: true })
 </script>
 
 <style scoped>

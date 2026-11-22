@@ -181,6 +181,8 @@ async def test_a_switch_goes_to_the_main_server_as_the_command_it_is(app, agent,
         {"key": "browser_use_enabled", "value": 1},
         {"command": "refresh_state"},
         {"command": "set_agent_enabled", "profile": {"x": 1}},
+        {"key": [], "value": True},
+        {"key": {"a": 1}, "value": True},
         [],
     ],
 )
@@ -214,6 +216,49 @@ async def test_a_switch_that_was_not_taken_is_told_as_such(app, agent, answer, c
     async with _client(app, _page_changes()) as client:
         seen = await client.post("/console/switch", json={"enabled": True})
     assert seen.status_code == 502 and seen.json()["detail"] == {"code": code}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/console/..%2Fagent%2Fcommand",
+        "/console/..%2Fnekoclaw%2Fdispatch",
+        "/console/space/..%2F..%2Fagent%2Fflags",
+        "/console/space/%2E%2E/%2E%2E/agent/flags",
+        "/console/.%2Fruntime",
+        "/console/space%5C..%5C..%5Cagent%5Cflags",
+        "/console/runtime%2F",
+        "/console/space/%0Aentries",
+    ],
+)
+@pytest.mark.parametrize("method", ["GET", "POST"])
+async def test_a_path_that_climbs_out_of_the_console_routes_reaches_nothing(app, agent, method, path):
+    headers = _page_reads() if method == "GET" else _page_changes()
+    async with _client(app, headers) as client:
+        answer = await client.request(method, path, json=None if method == "GET" else {"command": "set_agent_enabled"})
+    assert answer.status_code == 404
+    assert agent.requests == []
+
+
+async def test_a_name_in_the_path_is_sent_on_as_one_segment(app, agent):
+    async with _client(app, _page_reads()) as client:
+        answer = await client.get("/console/space/entries/a%20b%3Fc%23d", params={"project": "ledger tool"})
+    assert answer.status_code == 200
+    (request,) = agent.requests
+    assert request.url.raw_path.split(b"?")[0] == b"/console/space/entries/a%20b%3Fc%23d"
+    assert dict(request.url.params) == {"project": "ledger tool"}
+
+
+async def test_the_routes_that_wait_for_the_user_or_a_model_are_given_the_time(app, agent):
+    async with _client(app, _page_changes()) as client:
+        await client.post("/console/space/pick-directory", json={})
+        await client.post("/console/familiars/draft", json={"text": "x"})
+        await client.post("/console/permissions", json={})
+    picked, drafted, other = agent.requests
+    # The dialog stays open for two minutes, a draft is given 45 seconds.
+    assert picked.extensions["timeout"]["read"] > 120
+    assert drafted.extensions["timeout"]["read"] > 45
+    assert other.extensions["timeout"]["read"] < 45
 
 
 def test_the_router_is_part_of_the_plugin_server():

@@ -107,6 +107,15 @@ class ProjectBusy(RuntimeError):
     """Something is at work in a project, so where it works cannot be changed now. Its text is why (a code)."""
 
 
+def _model_identity(base_url: Any, model: Any) -> str:
+    """Return what a page tells a model by: its settings are kept by address and name, the page is given neither."""
+    import hashlib
+
+    from nekoclaw.host.model_capabilities import model_key
+
+    return hashlib.sha256(model_key(base_url, model).encode("utf-8")).hexdigest()[:16]
+
+
 class ModelChanged(RuntimeError):
     """The task agent model is another than the one the settings were read for. Its text is the model now."""
 
@@ -628,7 +637,11 @@ class NekoClawHost:
         if not config or not config.get("model"):
             return None
         described = await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
-        return {"model": str(config.get("model")), **described}
+        return {
+            "model": str(config.get("model")),
+            "id": _model_identity(config.get("base_url"), config.get("model")),
+            **described,
+        }
 
     async def set_model_window(self, **changes: Any) -> dict[str, Any]:
         """Change what sessions of the task agent model are managed for; returns ``model_window``.
@@ -639,9 +652,10 @@ class NekoClawHost:
         switches summing up idle sessions on or off. Raises ``LookupError``
         while no model is configured, ``ValueError`` for a value the store
         refuses (nothing is changed then) and ``TypeError`` for a name that
-        is none of the four. With ``expected_model`` (the name of the
-        model the page read the settings of), raises ``ModelChanged``
-        when the model configured now is another: nothing is written.
+        is none of the four. With ``expected_model`` (the ``id`` of the
+        model the page read the settings of, from ``model_window``),
+        raises ``ModelChanged`` when the model configured now is another,
+        or one of the same name at another address: nothing is written.
         """
         expected_model = changes.pop("expected_model", None)
         unknown = sorted(set(changes) - {"context_window", "compact_at", "idle_compact_after", "idle_compact_on"})
@@ -651,16 +665,20 @@ class NekoClawHost:
         if not config or not config.get("model"):
             raise LookupError("no task agent model is configured")
         base_url, model = config.get("base_url"), config.get("model")
-        if expected_model is not None and str(model) != expected_model:
-            # The page shows the settings of one model; they are not written to another.
+        if expected_model is not None and _model_identity(base_url, model) != expected_model:
+            # The page shows the settings of one model; they are not written to another,
+            # nor to one of the same name at another address.
             raise ModelChanged(str(model))
         store = self.model_capabilities
         before = await store.describe_window(base_url, model)
+        # The window last: setting it forgets what the user was told about the model, which
+        # going back cannot bring back. By then the others were taken, and a window that
+        # will not do is refused before anything of it is written.
         setters = (
-            ("context_window", store.set_context_window, "set"),
             ("compact_at", store.set_compact_at, "compact_at_set"),
             ("idle_compact_after", store.set_idle_compact_after, "idle_compact_after_set"),
             ("idle_compact_on", store.set_idle_compact_on, "idle_compact_on"),
+            ("context_window", store.set_context_window, "set"),
         )
         done: list[tuple[Any, Any]] = []
         try:
@@ -687,13 +705,20 @@ class NekoClawHost:
         to be in the middle of something (a session writing in a copy of
         the directory, a copy not brought back yet) adds it here.
         """
-        rows = await self.ledger.find_sessions(lanlan_name=lanlan_name, project=project, limit=500)
+        # More of each session's commissions than a page shows: one that waits may be older than the last few.
+        rows = await self.ledger.find_sessions(
+            lanlan_name=lanlan_name, project=project, limit=500, commissions_each=50
+        )
         for row in rows:
             if row.session.status in ("running", "waiting", "compacting"):
                 return "at_work"
             if any(commission.status in ("queued", "working", "waiting_user") for commission in row.commissions):
                 return "at_work"
         return None
+
+    async def working_directory(self, workdir: Any) -> Path:
+        """Return a directory task agents may be given to work in; see ``_working_directory``."""
+        return await self._working_directory(workdir)
 
     async def _working_directory(self, workdir: Any) -> Path:
         """Return a directory the user named for task agents to work in; ``ValueError`` with a code for one that will not do.
@@ -705,14 +730,18 @@ class NekoClawHost:
         """
         from nekoclaw.runtime.permissions import is_inside
 
-        if not isinstance(workdir, str) or not workdir.strip() or not os.path.isabs(workdir):
+        if not isinstance(workdir, str) or not workdir.strip() or "\0" in workdir or not os.path.isabs(workdir):
             raise ValueError("not_absolute")
         wanted = Path(workdir)
 
         def looked_at() -> tuple[bool, Path, Path]:
             return wanted.is_dir(), Path(os.path.realpath(wanted)), Path(os.path.realpath(self.paths.root()))
 
-        is_directory, actual, own = await asyncio.to_thread(looked_at)
+        try:
+            is_directory, actual, own = await asyncio.to_thread(looked_at)
+        except (OSError, ValueError):
+            # A name the system will not look at is no directory.
+            raise ValueError("not_a_directory") from None
         if not is_directory:
             raise ValueError("not_a_directory")
         if is_inside(actual, own) or is_inside(own, actual):
@@ -748,11 +777,13 @@ class NekoClawHost:
         under), ``name_taken`` (a project of the name is there, archived
         ones included), ``bad_preset``, or one of the directory's.
         """
-        from nekoclaw.host.paths import DEFAULT_PROJECT, safe_segment
+        from nekoclaw.host.paths import safe_segment
+        from nekoclaw.host.space import normalize_name
 
         if not isinstance(lanlan_name, str) or not lanlan_name.strip():
             raise ValueError("no_character")
-        if not isinstance(name, str) or not name.strip() or name.strip() == DEFAULT_PROJECT:
+        # A name that begins with ``_`` is the host's own (``DEFAULT_PROJECT`` is one).
+        if not isinstance(name, str) or not name.strip() or name.strip().startswith("_"):
             raise ValueError("bad_name")
         name = name.strip()
         try:
@@ -765,7 +796,8 @@ class NekoClawHost:
         # One at a time: of two asked for at once under one name, the second finds the name taken.
         async with self._open_session_lock:
             # Among the archived ones as well: commissions are filed by the name, and two of a name would be one.
-            if any(project.name.casefold() == name.casefold() for project in await self.space.list_projects()):
+            # Compared as the space compares names when it files a commission (``normalize_name``).
+            if any(normalize_name(project.name) == normalize_name(name) for project in await self.space.list_projects()):
                 raise ValueError("name_taken")
             project = await self.space.touch_project(name, workdir=str(wanted) if wanted else None, count=False)
             if description.strip():

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -69,15 +70,48 @@ def _remote() -> bool:
     return is_remote_backend_deployment()
 
 
+# Routes that wait for the user or for a model: the folder dialog is open
+# for up to two minutes (``utils.native_directory``), a draft is given 45
+# seconds (``nekoclaw.host.drafts``).
+_SLOW = {
+    "space/pick-directory": httpx.Timeout(135.0, connect=3.0),
+    "familiars/draft": httpx.Timeout(60.0, connect=3.0),
+}
+
+
+def _console_url(path: str) -> str:
+    """Return the agent process's address of a console route; 404 for a path that is none.
+
+    ``path`` arrives decoded, so ``..%2F`` is ``../`` by now, and what is
+    sent on is folded by the client: a segment that climbs out would
+    reach any other route of the agent process with this server's token.
+    Each segment is sent on encoded, and none of them is empty, ``.`` or
+    ``..`` or holds a backslash or a control character.
+    """
+    segments = path.split("/")
+    if any(
+        segment in ("", ".", "..") or "\\" in segment or any(ord(char) < 0x20 for char in segment)
+        for segment in segments
+    ):
+        raise HTTPException(404, {"code": "not_found"})
+    url = httpx.URL(f"{_agent_base()}/console/" + "/".join(quote(segment, safe="") for segment in segments))
+    if not url.path.startswith("/console/"):
+        raise HTTPException(404, {"code": "not_found"})
+    return str(url)
+
+
 async def _forward(request: Request, path: str) -> JSONResponse:
+    url = _console_url(path)
     options: dict[str, Any] = {"params": list(request.query_params.multi_items()), "headers": {TOKEN_HEADER: csrf_token()}}
+    if path in _SLOW:
+        options["timeout"] = _SLOW[path]
     if request.method != "GET":
         body = await request.body()
         if body:
             options["content"] = body
             options["headers"]["Content-Type"] = "application/json"
     try:
-        answer = await _http().request(request.method, f"{_agent_base()}/console/{path}", **options)
+        answer = await _http().request(request.method, url, **options)
     except httpx.HTTPError as exc:
         logger.warning("the agent process did not answer a console request (exc_type=%s)", type(exc).__name__)
         raise HTTPException(502, {"code": "agent_unreachable"}) from None
@@ -119,7 +153,12 @@ async def set_switch(request: Request) -> JSONResponse:
     # One or the other, and nothing beside it: what is sent on is built here.
     if set(payload) == {"enabled"} and isinstance(payload["enabled"], bool):
         command: dict[str, Any] = {"command": "set_agent_enabled", "enabled": payload["enabled"]}
-    elif set(payload) == {"key", "value"} and payload["key"] in _SWITCH_KEYS and isinstance(payload["value"], bool):
+    elif (
+        set(payload) == {"key", "value"}
+        and isinstance(payload["key"], str)
+        and payload["key"] in _SWITCH_KEYS
+        and isinstance(payload["value"], bool)
+    ):
         command = {"command": "set_flag", "key": payload["key"], "value": payload["value"]}
     else:
         raise HTTPException(400, {"code": "bad_switch"})
