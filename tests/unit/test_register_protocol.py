@@ -448,3 +448,53 @@ def test_linux_remove_refreshes_database_when_desktop_file_already_gone(
 
     assert register_protocol._remove_linux() is True
     assert calls == [["update-desktop-database", str(apps_dir)]]
+
+
+def test_linux_remove_keeps_surviving_handler_text(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_text(
+        "[Added Associations]\n"
+        "x-scheme-handler/neko=other.desktop; another.desktop;neko-protocol-handler.desktop;\n"
+        "[Default Applications]\n"
+        "x-scheme-handler/neko= neko-protocol-handler.desktop ;other.desktop\n",
+        encoding="utf-8",
+    )
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_text(encoding="utf-8") == (
+        "[Added Associations]\n"
+        "x-scheme-handler/neko=other.desktop; another.desktop;\n"
+        "[Default Applications]\n"
+        "x-scheme-handler/neko=other.desktop\n"
+    )
+
+
+def test_linux_remove_does_not_follow_planted_temp_symlink(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_dir = tmp_path / "xdg-config"
+    config_dir.mkdir()
+    config_list = config_dir / "mimeapps.list"
+    config_list.write_text(_MIMEAPPS_BEFORE, encoding="utf-8")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me", encoding="utf-8")
+    # The old fixed temporary name; a symlink there must not be written through.
+    planted = config_dir / "mimeapps.list.neko-tmp"
+    try:
+        planted.symlink_to(victim)
+    except OSError:
+        pytest.skip("symlinks are not available on this host")
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert victim.read_text(encoding="utf-8") == "keep me"
+    assert planted.is_symlink()
+    assert config_list.read_text(encoding="utf-8") == _MIMEAPPS_AFTER
+    assert sorted(p.name for p in config_dir.iterdir()) == [
+        "mimeapps.list",
+        "mimeapps.list.neko-tmp",
+    ]

@@ -31,6 +31,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # N.E.K.O project root.
@@ -377,26 +378,33 @@ def _drop_mimeapps_association(path: Path) -> None:
         ):
             body = value.rstrip("\r")
             ending = value[len(body):]
-            handlers = [h.strip() for h in body.split(";") if h.strip()]
-            remaining = [h for h in handlers if h != LINUX_DESKTOP_FILE_NAME]
-            if remaining != handlers:
+            # Drop only our entry; the surviving entries keep their exact text.
+            entries = body.split(";")
+            remaining = [e for e in entries if e.strip() != LINUX_DESKTOP_FILE_NAME]
+            if len(remaining) != len(entries):
                 changed = True
-                if not remaining:
+                if not any(e.strip() for e in remaining):
                     # The removed line's "\n" goes with it.
                     continue
-                trailer = ";" if body.rstrip().endswith(";") else ""
-                line = f"{key}={';'.join(remaining)}{trailer}{ending}"
+                line = f"{key}={';'.join(remaining)}{ending}"
         kept.append(line)
     if not changed:
         return
     # Write a sibling file and swap it in so a failure never truncates the
     # user's associations.
-    tmp = path.with_name(path.name + ".neko-tmp")
+    # mkstemp creates a new, uniquely named file exclusively, so it never
+    # follows a pre-existing symlink and concurrent runs do not share it.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".neko-tmp"
+    )
+    tmp = Path(tmp_name)
     try:
-        tmp.write_bytes("\n".join(kept).encode("utf-8"))
+        with os.fdopen(fd, "wb") as stream:
+            stream.write("\n".join(kept).encode("utf-8"))
         shutil.copymode(path, tmp)
         os.replace(tmp, path)
     finally:
+        # Only ever remove the file this call created.
         if tmp.exists():
             tmp.unlink()
 
