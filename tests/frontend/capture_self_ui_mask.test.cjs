@@ -792,8 +792,8 @@ test('browser: the pre-capture sample keeps the window position it was taken at'
     const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
     w.screenX = 500;
     const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
-    assert.deepEqual(fillsOf(out), [[92, 92, 116, 116], [592, 92, 116, 116]],
-        'old position (x=92) and new position (x=592) are both covered');
+    // Old position (x=92), new position (x=592) and everything in between.
+    assert.deepEqual(fillsOf(out), [[92, 92, 616, 116]]);
 });
 
 test('single-shot: a remembered window that changes while the frame is being masked is declined', async () => {
@@ -1083,7 +1083,11 @@ test('single-shot: backend desktop frames are re-encoded at their capture qualit
 
 // ---------------------------------------------------------------- review round 4
 
-test('browser: window moved AND regions changed mid-capture -> every position x region combination is covered', async () => {
+function coversRect(fills, [x, y, w, h]) {
+    return fills.some(([fx, fy, fw, fh]) => fx <= x && fy <= y && fx + fw >= x + w && fy + fh >= y + h);
+}
+
+test('browser: window moved AND regions changed mid-capture -> both samples are covered along the whole move', async () => {
     const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
     const { w } = makeWindow({
         elements: [history],
@@ -1094,10 +1098,28 @@ test('browser: window moved AND regions changed mid-capture -> every position x 
     w.screenX = 500;
     history.rect = { x: 300, y: 100, w: 100, h: 100 };
     const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
-    const xs = fillsOf(out).map((f) => f[0]).sort((a, b) => a - b);
-    // old regions @ old window (92), new regions @ old window (292),
-    // old regions @ new window (592), new regions @ new window (792)
-    assert.deepEqual(xs, [92, 292, 592, 792]);
+    const fills = fillsOf(out);
+    // Padded region (116 px) of each sample, with the window at x = 0, 250 (mid-drag) and 500.
+    for (const shift of [0, 250, 500]) {
+        assert.ok(coversRect(fills, [92 + shift, 92, 116, 116]), `pre-capture region, window at ${shift}`);
+        assert.ok(coversRect(fills, [292 + shift, 92, 116, 116]), `post-capture region, window at ${shift}`);
+    }
+    // Nothing beyond the sweep.
+    assert.deepEqual(fills.map((f) => [f[0], f[0] + f[2]]).sort((p, q) => p[0] - q[0]), [[92, 708], [292, 908]]);
+});
+
+test('browser: screen reference changed mid-capture (window not moved) -> regions are mapped with both references', async () => {
+    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
+    const { w } = makeWindow({ elements: [history], geom: { screenWidth: 2000, screenHeight: 1000 }, imageSizes: { [RAW_FRAME]: [2000, 1000] } });
+    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    w.screen.width = 1000; // e.g. display settings changed; the window itself did not move
+    history.rect = { x: 300, y: 100, w: 100, h: 100 }; // and the region changed too
+    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    const fills = fillsOf(out);
+    assert.ok(coversRect(fills, [92, 92, 116, 116]), 'old region, old reference');
+    assert.ok(coversRect(fills, [184, 92, 232, 116]), 'old region, new reference');
+    assert.ok(coversRect(fills, [292, 92, 116, 116]), 'new region, old reference');
+    assert.ok(coversRect(fills, [584, 92, 232, 116]), 'new region, new reference');
 });
 
 test('browser: window not moved -> no cross-mapped extra regions', async () => {
@@ -1181,4 +1203,29 @@ test('single-shot consumers use the pinned avatar position (text guard only, not
     assert.match(ws, /shot\.avatarPositionPinned === true/);
     assert.match(ws, /hasPinnedAvatarPos\s*\?\s*pinnedAvatarPos/);
     assert.match(proactiveSource, /screenshotResult\.avatarPositionPinned === true/);
+});
+
+// ---------------------------------------------------------------- review round 5
+
+test('mobile voice heartbeat: a backend desktop frame (labelled camera) is still masked; real camera frames are not', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    env.w.appUtils = { isMobile: () => true };
+    Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+    env.w.appScreen.acquireOrReuseCachedStream = async () => null;
+    env.w.appScreen.fetchBackendScreenshot = async () => ({ dataUrl: RAW_FRAME });
+    vm.runInContext(proactiveSource, env.w);
+    await env.w.appProactive.sendOneProactiveVisionFrame();
+    assert.equal(env.sent.length, 1);
+    assert.equal(env.sent[0].input_type, 'camera', 'label unchanged');
+    assert.deepEqual(fillsOf(env.sent[0].data), [[500, 400, 250, 200]]);
+    const cam = await env.w.appScreen.buildMaskedStreamDataMessage(RAW_FRAME, 'camera', null, null, { via: 'stream' });
+    assert.equal(cam.data, RAW_FRAME, 'camera stream frames pass through');
+});
+
+test('screenshot_response is only sent on the connection the request came in on (text guard only)', () => {
+    const ws = fs.readFileSync(path.join(repo, 'static/app/app-websocket.js'), 'utf8');
+    const handler = ws.split("response.type === 'request_screenshot'")[1].split('function replySuppressedScreenshot')[0];
+    assert.match(handler, /var requestSocket = S\.socket;/);
+    assert.match(handler, /S\.socket !== requestSocket/);
 });

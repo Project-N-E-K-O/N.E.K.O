@@ -5431,8 +5431,14 @@
                 // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
+                        // 应答属于收到请求的这条连接：截图和遮罩期间 S.socket 可能被换掉（例如切换角色），
+                        // 不能把旧会话的截图发到新连接上。
+                        var requestSocket = S.socket;
                         function sendScreenshotReply(reply) {
-                            if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                            if (!S.socket || S.socket !== requestSocket || S.socket.readyState !== WebSocket.OPEN) {
+                                if (S.socket !== requestSocket) console.log('[截图请求] 截图期间连接已更换，不发送应答');
+                                return;
+                            }
                             // Echo the ID for every reply, including privacy/tutorial
                             // declines and the legacy capture-function path.
                             if (typeof response.request_id === 'string' && response.request_id) {

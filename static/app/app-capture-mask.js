@@ -436,21 +436,58 @@
         var preGeom = session.geom || geom;
         var preLocal = mapLocalSample(session.local, ctx, preGeom);
         if (sameBrowserPlacement(preGeom, geom)) return unionGeometry(preLocal, postLocal);
-        // The browser window moved while the frame was being taken. The frame
-        // shows the window at one of the two positions and the regions as one
-        // of the two samples, and which one is unknown: map both samples with
-        // both positions so every combination is covered.
+        // The browser window moved (or the screen reference changed) while
+        // the frame was being taken. The frame may show the window anywhere
+        // along the way, and the regions as either sample: cover each region
+        // of both samples over the whole sweep from the old to the new
+        // position (best effort for a drag during capture: assumes the window
+        // went roughly straight between the two positions).
         return unionGeometry(
-            unionGeometry(preLocal, postLocal),
-            unionGeometry(mapLocalSample(session.local, ctx, geom), mapLocalSample(postSample, ctx, preGeom))
+            sweepSample(session.local, ctx, preGeom, geom),
+            sweepSample(postSample, ctx, preGeom, geom)
         );
+    }
+
+    // Each region of the sample, mapped with both geometries, covered by the
+    // bounding box of the two mappings.
+    function sweepSample(sample, ctx, geomA, geomB) {
+        var known = false;
+        var rects = [];
+        (sample.rects || []).forEach(function (r) {
+            var one = { rects: [r], hidden: sample.hidden };
+            var a = mapLocalSample(one, ctx, geomA);
+            var b = mapLocalSample(one, ctx, geomB);
+            var parts = [];
+            if (a.known) { known = true; parts = parts.concat(a.rects); }
+            if (b.known) { known = true; parts = parts.concat(b.rects); }
+            if (parts.length) rects.push(boundingRect(parts));
+        });
+        if (!sample.rects || sample.rects.length === 0) {
+            // Nothing to mask in this sample; keep its known / unknown status.
+            var empty = mapLocalSample(sample, ctx, geomB);
+            return { known: empty.known, rects: [] };
+        }
+        return { known: known, rects: rects };
+    }
+
+    function boundingRect(rects) {
+        var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        rects.forEach(function (r) {
+            left = Math.min(left, r.x);
+            top = Math.min(top, r.y);
+            right = Math.max(right, r.x + r.width);
+            bottom = Math.max(bottom, r.y + r.height);
+        });
+        return { x: left, y: top, width: right - left, height: bottom - top };
     }
 
     function sameBrowserPlacement(a, b) {
         if (!a || !b) return a === b;
         return a.screenX === b.screenX && a.screenY === b.screenY
             && a.outerWidth === b.outerWidth && a.outerHeight === b.outerHeight
-            && a.innerWidth === b.innerWidth && a.innerHeight === b.innerHeight;
+            && a.innerWidth === b.innerWidth && a.innerHeight === b.innerHeight
+            && a.screenWidth === b.screenWidth && a.screenHeight === b.screenHeight
+            && a.multiDisplay === b.multiDisplay;
     }
 
     function unionGeometry(pre, post) {

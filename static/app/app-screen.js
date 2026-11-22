@@ -1658,7 +1658,9 @@
      * @returns {Promise<object|null>} 要发送的消息；null 表示这一帧不发
      */
     async function buildMaskedStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType, maskOptions) {
-        if (input_type !== 'screen') {
+        // 后端整屏兜底图是桌面截图：移动端会把它标成 'camera'，但它照样拍得到聊天区，也要遮。
+        var opts0 = maskOptions || {};
+        if (input_type !== 'screen' && opts0.via !== 'backend') {
             return buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType);
         }
         var captureType = resolveStreamFrameCaptureType(sourceId, explicitCaptureType);
