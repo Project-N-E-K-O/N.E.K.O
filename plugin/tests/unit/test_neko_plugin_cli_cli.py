@@ -3588,3 +3588,61 @@ def test_link_scan_skips_a_link_that_is_itself_ignored(
 
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
     assert "symbolic links" not in capsys.readouterr().err
+
+
+def test_release_check_still_rejects_a_link_in_an_ignored_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The release build packages the working tree, ignored paths included,
+    # and would copy a link's target into the package: keep blocking it.
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    plugin_dir = _init_committed(tmp_path, "release_links")
+    with (plugin_dir / ".gitignore").open("a", encoding="utf-8") as gitignore:
+        gitignore.write("local_cache/\n")
+    _commit_all(plugin_dir)
+    secret = tmp_path / "outside.txt"
+    secret.write_text("outside the repository\n", encoding="utf-8")
+    (plugin_dir / "local_cache").mkdir()
+    try:
+        (plugin_dir / "local_cache" / "config.txt").symlink_to(secret)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+
+    target = tmp_path / "target"
+    assert _release_check(plugin_dir, target) == 1
+    err = capsys.readouterr().err
+    assert f"plugin source must not contain symbolic links: {Path('local_cache/config.txt')}" in err
+    assert not any(target.glob("*.neko-plugin"))
+
+    # Plain check, a preview of Market CI's fresh checkout, skips it.
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "symbolic links" not in capsys.readouterr().err
+
+
+def test_git_queries_ignore_an_inherited_repository_location(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.neko_plugin_cli.repo_state import ignored_untracked_paths
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    plugin_dir = tmp_path / "plugin"
+    (plugin_dir / "assets").mkdir(parents=True)
+    (plugin_dir / "assets" / "a.txt").write_text("", encoding="utf-8")
+    # Another repository whose work tree contains the plugin and ignores
+    # assets/, as when check runs from that repository's git hook. The plugin
+    # itself is in no repository, so git must find none.
+    outer = tmp_path / "outer"
+    subprocess.run(["git", "init", "-q", str(outer)], check=True)
+    (tmp_path / ".gitignore").write_text("assets/\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path))
+
+    assert ignored_untracked_paths(plugin_dir) is None
+    assert release_cmd._repository_root(plugin_dir, neko_plugin_cli.resolve_default_paths()) is None

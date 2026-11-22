@@ -80,6 +80,8 @@ def handle_check(args: argparse.Namespace) -> int:
                 plugin_dir,
                 defaults,
             ),
+            # Plain check only: the release build packages the working tree,
+            # ignored paths included, and copy2 follows a link into it.
             ignored_paths=_link_scan_ignored_paths(plugin_dir, defaults),
         )
         issues.extend(_diagnose_repository(plugin_dir, defaults=defaults))
@@ -123,7 +125,6 @@ def handle_release_check(args: argparse.Namespace) -> int:
                 plugin_dir,
                 defaults,
             ),
-            ignored_paths=_link_scan_ignored_paths(plugin_dir, defaults),
         )
         # Both Market workflows reject such an ID before anything else runs.
         issues.extend(_diagnose_market_plugin_id(source.plugin_id))
@@ -221,7 +222,7 @@ def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
 
 
 def _link_scan_ignored_paths(plugin_dir: Path, defaults: CliDefaults) -> list[str]:
-    """What git ignores in the plugin's own repository, for the link scan.
+    """What git ignores in the plugin's own repository, for plain check's link scan.
 
     Nothing without such a repository (including the built-in root, where
     Market CI mounts a fresh checkout) or when git fails: scan everything.

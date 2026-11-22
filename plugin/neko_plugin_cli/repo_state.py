@@ -8,6 +8,7 @@ the live remote with ``ls-remote``.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -49,6 +50,27 @@ class RepoState:
     tag_at_head: bool | None = None
 
 
+# Inherited from a git hook or wrapper, these point git at another
+# repository than the one around ``cwd``.
+_REPOSITORY_ENV_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_PREFIX",
+)
+
+
+def _git_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for name in _REPOSITORY_ENV_VARS:
+        env.pop(name, None)
+    return env
+
+
 def git_output(plugin_dir: Path, *args: str, strip: bool = True) -> str | None:
     """Run ``git`` in ``plugin_dir``; UTF-8 stdout, or None on any failure.
 
@@ -58,6 +80,7 @@ def git_output(plugin_dir: Path, *args: str, strip: bool = True) -> str | None:
         completed = subprocess.run(
             ["git", *args],
             cwd=plugin_dir,
+            env=_git_env(),
             capture_output=True,
             encoding="utf-8",
             errors="replace",
