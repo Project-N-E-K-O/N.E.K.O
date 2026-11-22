@@ -448,7 +448,11 @@
      * somewhere in between, so only what both samples agree on is certain:
      * mask the overlap of the two, nothing more (when unsure, mask less).
      * A region that moved, appeared or disappeared during capture is left
-     * unmasked in that frame. Either side unknown -> unknown. A missing side
+     * unmasked in that frame. Either side unknown -> unknown. Both sides
+     * known with no overlap -> known, nothing to mask: such a frame does not
+     * go through decideWhenGeometryUnavailable(), so a future "drop" policy
+     * would not drop it (the position of each sample is known; they just
+     * disagree). A missing side
      * (no pre-capture sample, or one taken for a different target) leaves the
      * other side as is.
      */

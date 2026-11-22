@@ -1131,7 +1131,7 @@ test('single-shot backend frame: regions are sampled for the backend surface bef
     env.w.appScreen.fetchBackendScreenshot = shell.fetchBackendScreenshot;
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(shot.via, 'backend');
-    assert.deepEqual(shell.order, ['source', 'backend', 'screenshot', 'backend']);
+    assert.deepEqual(shell.order, ['backend', 'screenshot', 'backend']);
     assert.deepEqual(fillsOf(shot.dataUrl), [[500, 400, 250, 200]], 'backend frames are masked');
 });
 
@@ -1144,7 +1144,7 @@ test('voice heartbeat backend frame: regions are sampled for the backend surface
     vm.runInContext(proactiveSource, env.w);
     await env.w.appProactive.sendOneProactiveVisionFrame();
     assert.equal(env.sent.length, 1);
-    assert.deepEqual(shell.order, ['source', 'backend', 'screenshot', 'backend']);
+    assert.deepEqual(shell.order, ['backend', 'screenshot', 'backend']);
     assert.deepEqual(fillsOf(env.sent[0].data), [[500, 400, 250, 200]]);
 });
 
@@ -1227,8 +1227,8 @@ test('voice heartbeat: the pre-capture sample follows the source the stream actu
     vm.runInContext(proactiveSource, env.w);
     await env.w.appProactive.sendOneProactiveVisionFrame();
     assert.equal(env.sent.length, 1);
-    // pre (null, opened first), pre (screen:1:0, after the rewrite), post (screen:1:0)
-    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, 'screen:1:0', 'screen:1:0']);
+    // pre (screen:1:0, after the rewrite, right before capture), post (screen:1:0)
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:1:0', 'screen:1:0']);
 });
 
 test('single-shot: the pre-capture sample follows the source the stream actually uses', async () => {
@@ -1241,7 +1241,7 @@ test('single-shot: the pre-capture sample follows the source the stream actually
     env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(shot.sourceId, 'screen:1:0');
-    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, 'screen:1:0', 'screen:1:0']);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:1:0', 'screen:1:0']);
     assert.deepEqual(fillsOf(shot.dataUrl), [[500, 400, 250, 200]]);
 });
 
@@ -1263,7 +1263,7 @@ test('browser: window restored from minimized (-32000,-32000) mid-capture -> not
     assert.deepEqual(fillsOf(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, next)), [[592, 92, 116, 116]]);
 });
 
-test('voice heartbeat: a source that goes back to the original one reuses the first pre-capture sample', async () => {
+test('voice heartbeat: every capture attempt samples right before it, for the source it captures', async () => {
     // acquireOrReuseCachedStream rewrites the source to screen:1:0, the stream frame
     // fails, and the native path then captures the original source again.
     const shell = shellStub(async () => ({ ok: true, rects: [] }));
@@ -1279,8 +1279,8 @@ test('voice heartbeat: a source that goes back to the original one reuses the fi
     vm.runInContext(proactiveSource, env.w);
     await env.w.appProactive.sendOneProactiveVisionFrame();
     assert.equal(env.sent.length, 1);
-    // pre (screen:0:0), pre (screen:1:0), post (screen:0:0): going back does not open a third pre-capture query.
-    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:0:0', 'screen:1:0', 'screen:0:0']);
+    // pre for the stream attempt (screen:1:0), pre for the native attempt (screen:0:0), post (screen:0:0).
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:1:0', 'screen:0:0', 'screen:0:0']);
 });
 
 test('browser: whole-screen share with an unknown display count (no Screen.isExtended) -> position unknown, sent unmasked', async () => {
@@ -1302,4 +1302,16 @@ test('browser: no Screen.isExtended but the desktop bridge knows there are sever
     });
     w.appScreen = { isKnownMultiDisplay: () => true };
     assert.equal(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
+});
+
+test('single-shot: the pre-capture sample is taken after the stream is ready, right before the frame', async () => {
+    // The chat moves while the stream is being acquired (before the frame); it does not move during capture.
+    const history = makeElement({ x: 10, y: 10, w: 50, h: 50 });
+    const env = bootProactive({ elements: [history] });
+    env.S.screenCaptureStream = null;
+    const track = { readyState: 'live', getCaptureHandle: () => ({ handle: env.w.appCaptureMask.OWN_CAPTURE_HANDLE }) };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    env.w.appScreen.acquireOrReuseCachedStream = async () => { history.rect = { x: 400, y: 400, w: 50, h: 50 }; return stream; };
+    const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.deepEqual(fillsOf(shot.dataUrl), [[392, 392, 66, 66]]);
 });
