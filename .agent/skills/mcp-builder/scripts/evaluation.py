@@ -5,6 +5,7 @@ This script evaluates MCP servers by running test questions against them using C
 
 import argparse
 import asyncio
+import inspect
 import json
 import re
 import sys
@@ -83,6 +84,21 @@ def extract_xml_content(text: str, tag: str) -> str | None:
     return matches[-1].strip() if matches else None
 
 
+def _serialize_tool_item(item: Any) -> Any:
+    """Dump Pydantic/MCP content models while remaining compatible with zero-arg stubs."""
+    model_dump = getattr(item, "model_dump", None)
+    if not callable(model_dump):
+        return item
+    params = inspect.signature(model_dump).parameters
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    kwargs: dict[str, Any] = {}
+    if "mode" in params or accepts_kwargs:
+        kwargs["mode"] = "json"
+    if "exclude_none" in params or accepts_kwargs:
+        kwargs["exclude_none"] = True
+    return model_dump(**kwargs)
+
+
 async def agent_loop(
     client: Anthropic,
     model: str,
@@ -122,22 +138,24 @@ async def agent_loop(
             tool_start_ts = time.time()
             try:
                 tool_result = await connection.call_tool(tool_name, tool_input)
-                if isinstance(tool_result, list):
-                    tool_result = [
-                        item.model_dump() if hasattr(item, "model_dump") else item
-                        for item in tool_result
-                    ]
-                elif hasattr(tool_result, "model_dump"):
-                    tool_result = tool_result.model_dump()
-                tool_response = (
-                    json.dumps(tool_result, default=str)
-                    if isinstance(tool_result, (dict, list))
-                    else str(tool_result)
-                )
             except Exception as e:
                 tool_is_error = True
                 tool_response = f"Error executing tool {tool_name}: {str(e)}\n"
                 tool_response += traceback.format_exc()
+            else:
+                try:
+                    serialized = (
+                        [_serialize_tool_item(item) for item in tool_result]
+                        if isinstance(tool_result, list)
+                        else _serialize_tool_item(tool_result)
+                    )
+                    tool_response = (
+                        json.dumps(serialized, ensure_ascii=False, default=str)
+                        if isinstance(serialized, (dict, list))
+                        else str(serialized)
+                    )
+                except Exception:
+                    tool_response = str(tool_result)
             tool_duration = time.time() - tool_start_ts
 
             if tool_name not in tool_metrics:
@@ -169,12 +187,12 @@ async def agent_loop(
         )
         messages.append({"role": "assistant", "content": response.content})
 
-    response_text = next(
-        (block.text for block in response.content if hasattr(block, "text")),
-        None,
-    )
-    if response_text is None:
-        response_text = "<response>NOT_FOUND</response>"
+    text_blocks = [
+        block.text
+        for block in response.content
+        if isinstance(getattr(block, "text", None), str)
+    ]
+    response_text = "\n".join(text_blocks) if text_blocks else "<response>NOT_FOUND</response>"
     return response_text, tool_metrics
 
 

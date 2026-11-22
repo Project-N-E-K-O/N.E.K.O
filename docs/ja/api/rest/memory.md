@@ -304,7 +304,7 @@ Memory Server 経由（130 秒転送タイムアウト）でキャラクター�
 | `files` | 配列 | いいえ | `{path/name, content}` オブジェクト配列。`archive_b64` と排他 |
 | `archive_b64` | 文字列 | いいえ | Base64 エンコードされた ZIP アーカイブ（`data:` プレフィックス可）。`files` と排他 |
 
-成功時は `success`、`character_name`、`source_format`、`files`、`counts`（`persona`、`facts`、`daily`）、`candidate_count`、`persona_fusion_calls`、`persona_candidate_tokens`、`daily_extraction_calls`、`daily_candidate_tokens`、`warning_count`、`warnings`（最大 20 件）、`candidates`（最大 100 件）、`truncated_preview` を返します。Molili アーカイブでは `character_card`、`master_profile`、`skipped`、`snapshot_time` も含まれます。リクエストボディが `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` を超える場合は、`InboundBodySizeLimitMiddleware` が事前に HTTP `413` と `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（`{success, error}` 形式ではない）で拒否します。検証・解析失敗は `400`、想定外エラーは `500` です。
+成功時は `success`、`character_name`、`source_format`、`files`、`counts`（`persona`、`facts`、`daily`）、`candidate_count`、`persona_fusion_calls`、`persona_candidate_tokens`、`daily_extraction_calls`、`daily_candidate_tokens`、`warning_count`、`warnings`（最大 20 件）、`candidates`（最大 100 件）、`truncated_preview` を返します。Molili アーカイブでは `character_card`、`master_profile`、`skipped`、`snapshot_time` も含まれます。リクエストボディが `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` を超える場合は、`InboundBodySizeLimitMiddleware` が事前に HTTP `413` と `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（`{success, error}` 形式ではない）で拒否します。インポート項目・ファイルの検証失敗や Markdown/ZIP の解析失敗は `400`、不正なリクエストボディ JSON のデコード失敗（`{` など）およびその他の想定外エラーは `500` を返します。
 
 ### `POST /api/memory/external_import/commit`
 
@@ -319,7 +319,7 @@ Memory Server 経由（130 秒転送タイムアウト）でキャラクター�
 | `acknowledge_warnings` | 真偽値 | 条件付き | 不審な命令パターンの警告がある場合は `true` が必須（未指定・`false` は `409`） |
 | `render_language` | 文字列 | いいえ | 描画時のみ使う検証済みロケールフォールバック。永続的な言語設定には保存されません |
 
-成功時は `success: true`、`need_refresh: true`、`memory_server_reloaded: true`、`status: "success"`、`character_name`、`source_format`、`imported_files`、`added_persona`、`added_facts`、`skipped_duplicates`、`warning_count` を返します。リクエストボディが `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` を超える場合は、`InboundBodySizeLimitMiddleware` が事前に HTTP `413` と `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（`{success, error}` 形式ではない）で拒否します。ルーター・Memory Server 側のエラーは `400`（不正入力）、`409`（警告未確認またはクラウドストレージメンテナンス中）、`413`（`error_code: "external_import_too_large"` と `partial_import`）、`500`（`error_code: "external_import_partial"` と `partial_import` または汎用エラー）、`504`（`error_code: "external_import_timeout"`、転送タイムアウト後も Memory Server は処理継続）です。
+成功時は `success: true`、`need_refresh: true`、`memory_server_reloaded: true`、`status: "success"`、`character_name`、`source_format`、`imported_files`、`added_persona`、`added_facts`、`skipped_duplicates`、`warning_count` を返します。リクエストボディが `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` を超える場合は、`InboundBodySizeLimitMiddleware` が事前に HTTP `413` と `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（`{success, error}` 形式ではない）で拒否します。ルーター・Memory Server 側のエラーは `400`（インポート入力・ファイルの検証または Markdown/ZIP 解析の失敗、または partial / too_large エラーコードを含まない上流拒否）、`409`（警告未確認またはクラウドストレージメンテナンス中）、`413`（`error_code: "external_import_too_large"` と `partial_import`）、`500`（`error_code: "external_import_partial"` と `partial_import`、不正なリクエストボディ JSON のデコード失敗 `{` など、またはその他の想定外エラー）、`504`（`error_code: "external_import_timeout"`、転送クライアント側のタイムアウト）です。`504` の場合、インポートは Memory Server 上で継続中（送信後の読み取りタイムアウト）である可能性も、そもそも開始されていない（接続タイムアウト・プールタイムアウト）可能性もあります。呼び出し元は `GET /api/memory/external_import/progress`（キャラクター単位で 1 件のみメモリ保持されるため、前回実行の状態が残っていたり、重複リクエストで上書きされたりする場合があります）を確認するか、インポートを再試行できます（完了済みのペルソナ融合バッチおよび処理済みの日次日記エントリーはフィンガープリント重複排除により再処理がスキップされますが、インポート全体や並行リクエストの厳密な冪等性は保証されません）。
 
 ### `GET /api/memory/external_import/progress`
 
@@ -331,7 +331,7 @@ Memory Server が保持する外部インポート進捗カウンターをポー
 |---|---|---:|---|
 | `character_name` | 文字列 | はい | 対象キャラクター名（ドット許可、最大 `50` 文字） |
 
-現在の Memory Server プロセスで当該キャラクターのインポートが未実行の場合は `{"success": true, "active": false}`、実行中は `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": ...}`、完了後は保持されたエントリーにより `{"success": true, "active": false, "finished": true, ...}` と最終ステージ・件数を返します。不正な名前は `400`、Memory Server が返す 200 以外のステータスコードはそのまま透過し、転送失敗は `502` です。
+現在の Memory Server プロセスで当該キャラクターの進捗エントリーが未登録の場合（インポート未実行、または登録前に検証で拒否された場合を含む）は `{"success": true, "active": false}`、実行中は `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": false, "started_at": ...}` を返します。成功・失敗・部分完了のいずれで終了した場合も `finished: true` として最終ステージと件数を保持したエントリーが残り、完了・終了後は `{"success": true, "active": false, "finished": true, ...}` を返します。進捗はキャラクターごとに 1 件のインメモリエントリーとして管理されるため、新しいインポートや重複するインポートを実行すると以前のエントリーは上書きされます。不正な名前は `400`、Memory Server が返す 200 以外のステータスコードはそのまま透過し、転送失敗は `502` です。
 
 ## お別れカードの概要
 

@@ -274,3 +274,105 @@ async def test_evaluate_single_task_handles_empty_tool_use_content_safely(
     assert result["score"] == 0
     assert result["summary"] is None
     assert result["feedback"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_preserves_utf8_and_drops_none_fields_on_pydantic_dump(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Pass `mode='json', exclude_none=True` when supported and serialize JSON with `ensure_ascii=False`."""
+    evaluation = _load_evaluation_module(monkeypatch)
+
+    responses = [
+        SimpleNamespace(
+            stop_reason="tool_use",
+            content=[_tool_use_block("toolu_utf8", "read_item", {"id": 2})],
+        ),
+        SimpleNamespace(
+            stop_reason="end_turn",
+            content=[
+                _text_block("<summary>ok</summary>"),
+                _text_block("<response>完成</response>"),
+            ],
+        ),
+    ]
+    captured_turns: list[list[dict]] = []
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            captured_turns.append(json.loads(json.dumps(kwargs["messages"], default=str)))
+            return responses.pop(0)
+
+    class _RichModel:
+        def model_dump(self, *, mode: str = "python", exclude_none: bool = False) -> dict:
+            data = {"type": "text", "text": "你好", "annotations": None, "mode": mode}
+            return {k: v for k, v in data.items() if not (exclude_none and v is None)}
+
+    class _RichConnection:
+        async def call_tool(self, _name: str, _tool_input: dict):
+            return [_RichModel()]
+
+    text, _metrics = await evaluation.agent_loop(
+        SimpleNamespace(messages=_FakeMessages()),
+        "claude-test",
+        "Check UTF-8 and multi-block response",
+        [],
+        _RichConnection(),
+    )
+
+    assert "<summary>ok</summary>" in text
+    assert evaluation.extract_xml_content(text, "response") == "完成"
+    entry = captured_turns[1][-1]["content"][0]
+    assert "is_error" not in entry
+    assert "你好" in entry["content"]
+    assert "\\u4f60\\u597d" not in entry["content"]
+    assert json.loads(entry["content"]) == [{"type": "text", "text": "你好", "mode": "json"}]
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_serialization_error_does_not_mark_tool_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Fall back to `str(tool_result)` without setting `is_error=True` if serialization raises."""
+    evaluation = _load_evaluation_module(monkeypatch)
+
+    responses = [
+        SimpleNamespace(
+            stop_reason="tool_use",
+            content=[_tool_use_block("toolu_bad_dump", "read_item", {"id": 3})],
+        ),
+        SimpleNamespace(
+            stop_reason="end_turn",
+            content=[_text_block("<response>ok</response>")],
+        ),
+    ]
+    captured_turns: list[list[dict]] = []
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            captured_turns.append(json.loads(json.dumps(kwargs["messages"], default=str)))
+            return responses.pop(0)
+
+    class _BrokenDump:
+        def model_dump(self) -> dict:
+            raise RuntimeError("dump failed")
+
+        def __str__(self) -> str:
+            return "fallback-string-result"
+
+    class _BrokenDumpConnection:
+        async def call_tool(self, _name: str, _tool_input: dict):
+            return _BrokenDump()
+
+    text, _metrics = await evaluation.agent_loop(
+        SimpleNamespace(messages=_FakeMessages()),
+        "claude-test",
+        "Check serialization fallback",
+        [],
+        _BrokenDumpConnection(),
+    )
+
+    assert text == "<response>ok</response>"
+    entry = captured_turns[1][-1]["content"][0]
+    assert "is_error" not in entry
+    assert entry["content"] == "fallback-string-result"
