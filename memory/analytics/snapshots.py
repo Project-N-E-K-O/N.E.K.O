@@ -712,8 +712,9 @@ _RESTORE_OUTCOME_RETRY_DELAY_SECONDS = 0.2
 def _record_restore_outcome(char_dir: Path, payload: dict, filename: str) -> bool:
     """Best-effort mark; a failed write is retried once after a short pause.
 
-    The pause gives a brief lock (an antivirus scan, a sync client) a chance
-    to clear. Returns whether the mark was written.
+    The pause, taken only for errors that may be a brief lock (an
+    antivirus scan, a sync client), gives it a chance to clear. Returns
+    whether the mark was written.
     """
     pre_id = payload.get("pre_restore_snapshot_id")
     if not isinstance(pre_id, str):
@@ -725,7 +726,8 @@ def _record_restore_outcome(char_dir: Path, payload: dict, filename: str) -> boo
         except Exception as exc:
             if attempt == 2:
                 logger.warning("[MemorySnapshots] could not record restore outcome %s: %s", filename, exc)
-            else:
+            elif isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in (5, 32):
+                # Possibly a brief lock (antivirus, sync client): give it a moment.
                 time.sleep(_RESTORE_OUTCOME_RETRY_DELAY_SECONDS)
     return False
 
@@ -785,6 +787,9 @@ def _void_restore_event(
     the caller reports.
     """
     try:
+        if not isinstance(payload.get("pre_restore_snapshot_id"), str):
+            # Failed before the payload was complete: no event was written.
+            return
         if _record_restore_outcome(char_dir, payload, _VOIDED_RESTORES_FILENAME):
             logger.info(
                 "[MemorySnapshots] %s: failed restore of %s cancelled; replay leaves it",
@@ -792,6 +797,14 @@ def _void_restore_event(
             )
             return
         tail = event_log.read_since(character_name, sentinel_before)
+        if not any(
+            rec.get("type") == EVT_MEMORY_SNAPSHOT_RESTORED
+            and (rec.get("payload") or {}).get("pre_restore_snapshot_id")
+            == payload.get("pre_restore_snapshot_id")
+            for rec in tail
+        ):
+            # The event never reached the journal; nothing is left to replay.
+            return
         # Only when this restore is the whole tail: moving the sentinel past
         # anything else would drop unapplied events in front of it for good.
         record = tail[0] if len(tail) == 1 else None

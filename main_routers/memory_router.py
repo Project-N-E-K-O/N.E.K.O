@@ -2881,12 +2881,17 @@ async def label_memory_star_map_clusters(catgirl_name: str, request: Request):
     if cooldown_err is not None:
         return cooldown_err
     from urllib.parse import quote
-    return await _proxy_memory_browser(
+    resp = await _proxy_memory_browser(
         "POST",
         f"/internal/memory/browser/star_map/label_clusters/{quote(catgirl_name, safe='')}",
         json_body={"language": payload.get("language") if isinstance(payload, dict) else None},
         timeout=60.0,
     )
+    if getattr(resp, "status_code", None) == 409:
+        # No summary model configured: nothing was sent, so the user may retry
+        # right after setting one up.
+        _manual_llm_last_trigger.pop(("star_map_labels", catgirl_name), None)
+    return resp
 
 
 @router.get('/lineage/{catgirl_name}')
