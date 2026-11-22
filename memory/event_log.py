@@ -1276,11 +1276,13 @@ class Reconciler:
         self._handlers[event_type] = handler
 
     def register_tail_cut(self, event_type: str, in_effect: Callable[[str, dict], bool]) -> None:
-        """Let a tail start at the newest ``event_type`` record once it is in effect.
+        """Let a tail start at the newest ``event_type`` record that is in effect.
 
         ``in_effect(name, payload)`` is synchronous and read-only; it runs on
-        a worker thread. While it says False the tail stays whole, so the
-        unapplied events in front of that record are still replayed.
+        a worker thread. A record it says False for is passed over and the
+        earlier ones are tried; the tail stays whole only when none of them
+        is in effect, so unapplied events in front of a record that never
+        took effect are still replayed.
         """
         self._tail_cuts[event_type] = in_effect
 
