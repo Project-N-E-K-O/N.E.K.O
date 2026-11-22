@@ -155,6 +155,13 @@
         const inspector = document.createElement('div');
         inspector.className = 'memory-dag-inspector';
 
+        function nodeDisplayLabel(n) {
+            if (!n) return '';
+            if (n.label) return n.label;
+            if (n.archived) return tr('memory.badgeArchived', '已归档');
+            return n.raw_id || n.id || '';
+        }
+
         function renderSvg() {
             scrollWrap.textContent = '';
             const svg = svgEl('svg', {
@@ -215,13 +222,14 @@
                 if (!pos) return;
                 const isSelected = selectedId === n.id;
                 const isDimmed = Boolean(activeSet && !activeSet.nodes.has(n.id));
+                const displayLabel = nodeDisplayLabel(n);
                 const g = svgEl('g', {
                     class: 'memory-dag-node'
                         + (isSelected ? ' is-selected' : '')
                         + (isDimmed ? ' is-dimmed' : ''),
                     tabindex: '0',
                     role: 'button',
-                    'aria-label': n.label || n.id,
+                    'aria-label': displayLabel || n.id,
                     'data-dag-node-id': n.id,
                 });
                 g.appendChild(svgEl('rect', {
@@ -244,7 +252,7 @@
                     x: pos.x + 12,
                     y: pos.y + 18,
                     class: 'memory-dag-node-text',
-                }, truncateLabel(n.label, 14)));
+                }, truncateLabel(displayLabel, 14)));
                 g.appendChild(svgEl('text', {
                     x: pos.x + 12,
                     y: pos.y + 34,
@@ -297,9 +305,10 @@
             const badge = document.createElement('span');
             badge.className = 'memory-mini-badge is-accent';
             badge.textContent = laneLabels[chosen.lane] || chosen.lane;
+            const chosenLabel = nodeDisplayLabel(chosen);
             const txt = document.createElement('span');
             txt.className = 'memory-dag-inspector-text';
-            txt.textContent = chosen.label || '';
+            txt.textContent = chosenLabel;
             info.appendChild(badge);
             info.appendChild(txt);
             inspector.appendChild(info);
@@ -313,7 +322,7 @@
                 btn.className = 'memory-pill-btn is-sm is-primary';
                 btn.textContent = tr('memory.actionWhyRemember', '为什么这么记？');
                 btn.addEventListener('click', function () {
-                    cb.onTrace({ kind: chosen.kind, id: chosen.raw_id, text: chosen.label });
+                    cb.onTrace({ kind: chosen.kind, id: chosen.raw_id, text: chosenLabel });
                 });
                 inspector.appendChild(btn);
             }

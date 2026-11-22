@@ -808,6 +808,7 @@
         body.appendChild(step2);
 
         // Step 3: Current Impression
+        const targetDisplayText = target.text || (target.archived ? tr('memory.badgeArchived', '已归档') : '');
         const step3 = el('section', { className: 'lineage-step-card' }, [
             el('div', { className: 'lineage-step-head' }, [
                 el('span', { className: 'lineage-step-num', textContent: tr('memory.lineageStep3Title', '③ 最终形成的印象') }),
@@ -817,12 +818,15 @@
                     el('span', { textContent: tr('memory.lineageCurrentImpression', '当前记忆') }),
                     el('span', { textContent: formatShortDate(target.created_at) }),
                 ]),
-                el('div', { textContent: target.text }),
+                el('div', { textContent: targetDisplayText }),
             ]),
         ]);
         reflections.forEach(function (r) {
             const displayText = r.text || (r.archived ? tr('memory.badgeArchived', '已归档') : '');
-            if (displayText && displayText !== target.text) {
+            const sameAsTarget = target.kind === 'reflection'
+                && String(r.id || '') !== ''
+                && String(r.id || '') === String(target.id || '');
+            if (displayText && !sameAsTarget && displayText !== targetDisplayText) {
                 step3.appendChild(el('div', { className: 'lineage-snippet' }, [
                     el('div', { className: 'lineage-snippet-meta' }, [
                         el('span', { textContent: tr('memory.lineageLinkedReflection', '中间总结') }),

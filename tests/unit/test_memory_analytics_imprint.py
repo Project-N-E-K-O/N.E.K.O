@@ -1628,11 +1628,23 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
         for r in fact_story["steps"]["reflections"]
     )
 
+    refl_story = build_memory_lineage_story(
+        char_name,
+        kind="reflection",
+        entry_id="r_archived_tea",
+        memory_dir=cm.memory_dir,
+    )
+    assert refl_story is not None
+    assert refl_story["target"]["archived"] is True
+    assert refl_story["target"]["text"] == ""
+    assert refl_story["steps"]["reflections"] == []
+    assert [f["id"] for f in refl_story["steps"]["facts"]] == ["f_old_tea"]
+
     dag = await abuild_full_lineage_graph(char_name, memory_dir=cm.memory_dir)
     dag_nodes = {n["id"]: n for n in dag["nodes"]}
     assert "reflection:r_archived_tea" in dag_nodes
     assert dag_nodes["reflection:r_archived_tea"]["archived"] is True
-    assert "冬天喜欢喝焙茶" not in dag_nodes["reflection:r_archived_tea"]["label"]
+    assert dag_nodes["reflection:r_archived_tea"]["label"] == ""
     assert any(
         e["source"] == "fact:f_old_tea" and e["target"] == "reflection:r_archived_tea"
         for e in dag["edges"]
