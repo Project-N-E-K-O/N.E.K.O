@@ -284,3 +284,197 @@ def test_write_private_json_is_atomic_and_sets_0600_permissions(
 
     assert json.loads(target.read_text(encoding="utf-8"))["refresh_token"] == "rt-1"
     assert not [p for p in tmp_path.iterdir() if p.name != "market_auth.json"]
+
+
+@pytest.mark.asyncio
+async def test_market_oauth_status_writes_token_off_event_loop_and_recovers_from_winerror5(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import threading
+    import time
+
+    from fastapi import FastAPI
+
+    import utils.file_utils as file_utils_mod
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    token_file = tmp_path / "market_auth.json"
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_TOKEN_FILE", token_file)
+    monkeypatch.setattr(
+        market_bridge_module, "_OAUTH_PENDING_FILE", tmp_path / "pending.json"
+    )
+    monkeypatch.setattr(
+        market_bridge_module, "_OAUTH_CALLBACK_FILE", tmp_path / "callback.json"
+    )
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    monkeypatch.setattr(
+        market_bridge_module, "MARKET_WEB_URL", "https://web.market.test"
+    )
+
+    initial_token = {
+        "access_token": "at-status-1",
+        "refresh_token": "rt-status-1",
+        "token_type": "bearer",
+        "scope": market_bridge_module._OAUTH_SCOPE,
+        "expires_at": time.time() + 3600,
+        "auth_url": "https://auth.test",
+        "issuer": "https://auth.test/",
+        "client_id": market_bridge_module._OAUTH_CLIENT_ID,
+        "subject": "sub-status-1",
+        "subject_pending": False,
+        "refresh_generation": 0,
+        "state_revision": 0,
+    }
+    market_bridge_module._write_private_json(token_file, initial_token)
+
+    async def _fake_probe_market_user(_access_token: Any) -> Any:
+        return market_bridge_module._MarketUserProbe(
+            state="ready", user={"username": "neko"}
+        )
+
+    monkeypatch.setattr(
+        market_bridge_module, "_probe_market_user", _fake_probe_market_user
+    )
+
+    loop_tid = threading.get_ident()
+    write_observations: list[tuple[bool, int]] = []
+    real_write_private = market_bridge_module._write_private_json
+
+    def _spy_write_private(path: Path, payload: dict[str, Any]) -> None:
+        write_observations.append(
+            (file_utils_mod.running_on_event_loop(), threading.get_ident())
+        )
+        real_write_private(path, payload)
+
+    monkeypatch.setattr(market_bridge_module, "_write_private_json", _spy_write_private)
+
+    real_replace = file_utils_mod.os.replace
+    replace_attempts = 0
+
+    def _transient_winerror5_replace(src: Any, dst: Any) -> None:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        if replace_attempts == 1:
+            exc = PermissionError("Access is denied")
+            exc.winerror = 5  # type: ignore[attr-defined]
+            raise exc
+        real_replace(src, dst)
+
+    monkeypatch.setattr(file_utils_mod.os, "replace", _transient_winerror5_replace)
+
+    app = FastAPI(title="oauth-status-off-loop")
+    app.include_router(market_bridge_module.router)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        response = await client.get(
+            "/market/oauth/status",
+            headers={"Authorization": f"Bearer {market_bridge_module._BRIDGE_TOKEN}"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["authenticated"] is True
+    assert body["market_state"] == "ready"
+    assert write_observations
+    assert all(on_loop is False and tid != loop_tid for on_loop, tid in write_observations)
+    assert replace_attempts >= 2
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["state_revision"] == 1
+    assert saved["market_state"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_ensure_valid_oauth_token_refreshes_off_event_loop_and_recovers_from_winerror5(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import threading
+    import time
+
+    import utils.file_utils as file_utils_mod
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    token_file = tmp_path / "market_auth.json"
+    monkeypatch.setattr(market_bridge_module, "_OAUTH_TOKEN_FILE", token_file)
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    monkeypatch.setattr(
+        market_bridge_module, "MARKET_WEB_URL", "https://web.market.test"
+    )
+
+    expiring_token = {
+        "access_token": "at-old",
+        "refresh_token": "rt-old",
+        "token_type": "bearer",
+        "scope": market_bridge_module._OAUTH_SCOPE,
+        "expires_at": time.time() - 30,
+        "auth_url": "https://auth.test",
+        "issuer": "https://auth.test/",
+        "client_id": market_bridge_module._OAUTH_CLIENT_ID,
+        "subject": "sub-refresh-1",
+        "subject_pending": False,
+        "refresh_generation": 0,
+        "state_revision": 0,
+    }
+    market_bridge_module._write_private_json(token_file, expiring_token)
+
+    async def _fake_refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
+        refreshed = dict(token_data)
+        refreshed.update(
+            {
+                "access_token": "at-new",
+                "refresh_token": "rt-new",
+                "expires_at": time.time() + 3600,
+                "refresh_generation": 1,
+                "updated_at": time.time(),
+            }
+        )
+        return refreshed
+
+    monkeypatch.setattr(
+        market_bridge_module, "_refresh_oauth_token", _fake_refresh_oauth_token
+    )
+
+    loop_tid = threading.get_ident()
+    write_observations: list[tuple[bool, int]] = []
+    real_write_private = market_bridge_module._write_private_json
+
+    def _spy_write_private(path: Path, payload: dict[str, Any]) -> None:
+        write_observations.append(
+            (file_utils_mod.running_on_event_loop(), threading.get_ident())
+        )
+        real_write_private(path, payload)
+
+    monkeypatch.setattr(market_bridge_module, "_write_private_json", _spy_write_private)
+
+    real_replace = file_utils_mod.os.replace
+    replace_attempts = 0
+
+    def _transient_winerror5_replace(src: Any, dst: Any) -> None:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        if replace_attempts == 1:
+            exc = PermissionError("Access is denied")
+            exc.winerror = 5  # type: ignore[attr-defined]
+            raise exc
+        real_replace(src, dst)
+
+    monkeypatch.setattr(file_utils_mod.os, "replace", _transient_winerror5_replace)
+
+    result = await market_bridge_module._ensure_valid_oauth_token()
+
+    assert result is not None
+    assert result["access_token"] == "at-new"
+    assert result["refresh_token"] == "rt-new"
+    assert write_observations
+    assert all(on_loop is False and tid != loop_tid for on_loop, tid in write_observations)
+    assert replace_attempts >= 2
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["refresh_token"] == "rt-new"
+    assert saved["state_revision"] == 1

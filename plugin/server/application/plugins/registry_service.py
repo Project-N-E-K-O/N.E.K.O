@@ -1123,7 +1123,7 @@ def _apply_discovery_record_sync(
                 item.project_id == project_id
                 for item in authoring_project_store.list_records()
             ):
-                prior_meta = existing_snapshot.get(resolved_id)
+                prior_meta = (existing_snapshot or {}).get(resolved_id)
                 if not (
                     isinstance(prior_meta, dict)
                     and prior_meta.get("source") != PROJECT_SOURCE

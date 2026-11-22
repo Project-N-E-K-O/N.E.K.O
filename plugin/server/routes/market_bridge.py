@@ -2606,7 +2606,9 @@ async def market_oauth_status(
             token_data["subject_pending"] = False
             token_data["auth_state"] = "ready"
             token_data["updated_at"] = time.time()
-            if not _write_oauth_token_if_matches(token_snapshot, token_data):
+            if not await asyncio.to_thread(
+                _write_oauth_token_if_matches, token_snapshot, token_data
+            ):
                 return _oauth_status_after_cas_conflict(token_snapshot)
             token_snapshot = dict(token_data)
         else:
@@ -2614,7 +2616,9 @@ async def market_oauth_status(
             token_data["subject_pending"] = True
             token_data["auth_state"] = "pending"
             token_data["updated_at"] = time.time()
-            if not _write_oauth_token_if_matches(token_snapshot, token_data):
+            if not await asyncio.to_thread(
+                _write_oauth_token_if_matches, token_snapshot, token_data
+            ):
                 return _oauth_status_after_cas_conflict(token_snapshot)
             return MarketOAuthStatusResponse(
                 authenticated=False,
@@ -2661,7 +2665,9 @@ async def market_oauth_status(
         token_data["market_user_verified_at"] = time.time()
     token_data["auth_state"] = "ready"
     token_data["updated_at"] = time.time()
-    if not _write_oauth_token_if_matches(token_snapshot, token_data):
+    if not await asyncio.to_thread(
+        _write_oauth_token_if_matches, token_snapshot, token_data
+    ):
         return _oauth_status_after_cas_conflict(token_snapshot)
 
     return MarketOAuthStatusResponse(
@@ -3373,7 +3379,9 @@ async def _ensure_valid_oauth_token(
                 return current
             return None
 
-        if not _write_oauth_token_if_matches(current, refreshed):
+        if not await asyncio.to_thread(
+            _write_oauth_token_if_matches, current, refreshed
+        ):
             latest = _current_oauth_token_for_same_session_snapshot(current)
             if latest is not None:
                 merged = dict(latest)
@@ -3393,7 +3401,9 @@ async def _ensure_valid_oauth_token(
                     if key in refreshed:
                         merged[key] = refreshed[key]
                 merged.pop("market_user_verified_at", None)
-                if _write_oauth_token_if_matches(latest, merged):
+                if await asyncio.to_thread(
+                    _write_oauth_token_if_matches, latest, merged
+                ):
                     return merged
             await _revoke_oauth_token_best_effort(refreshed)
             return None

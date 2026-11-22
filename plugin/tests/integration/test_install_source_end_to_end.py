@@ -649,3 +649,95 @@ def test_reconcile_after_runtime_missing_lock_heals_without_downgrading_provenan
     assert len(entries) == 1
     assert entries[0].channel == "market"
     assert isinstance(entries[0].source_detail, SourceDetailMarket)
+
+
+def test_reconcile_rolls_back_snapshot_on_save_failure_when_dir_transiently_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import plugin.server.application.install_source.manager as manager_mod
+
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    market_dir.mkdir(parents=True)
+    (market_dir / "plugin.toml").write_text(
+        '[plugin]\nid = "market_plug"\n', encoding="utf-8"
+    )
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+
+    lock_path.unlink()
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+
+    # Simulate a transient scan miss combined with a failing disk write.
+    monkeypatch.setattr(mgr.scanner, "scan", lambda: [])
+
+    def _fail_atomic_write(_path: Path, _data: bytes) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(manager_mod, "_atomic_write", _fail_atomic_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        mgr.reconcile()
+
+    # Both degrade state and in-memory snapshot must roll back cleanly (not removed=True).
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+    entries = mgr.list_entries(include_removed=True)
+    assert len(entries) == 1
+    assert entries[0].removed is False
+    assert entries[0].channel == "market"
+    assert isinstance(entries[0].source_detail, SourceDetailMarket)
+
+    # Once scanner and disk recover, reconcile() heals cleanly.
+    monkeypatch.undo()
+    mgr.reconcile()
+    assert mgr.is_degraded is False
+    assert lock_path.is_file()
+    healed = mgr.list_entries()
+    assert len(healed) == 1
+    assert healed[0].removed is False
+    assert healed[0].channel == "market"
+
+
+def test_non_missing_lock_degrade_not_cleared_by_reconcile_after_missing_lock(
+    tmp_path: Path,
+) -> None:
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    market_dir.mkdir(parents=True)
+    (market_dir / "plugin.toml").write_text(
+        '[plugin]\nid = "market_plug"\n', encoding="utf-8"
+    )
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+
+    lock_path.unlink()
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+
+    # Supersede missing-lock degrade with an unreadable lock path (directory).
+    lock_path.mkdir()
+    mgr.load()
+    assert mgr.is_degraded is True
+    assert "read_failed" in (mgr.degrade_reason or "")
+
+    # reconcile() must not clear the unrelated read_failed degrade.
+    mgr.reconcile()
+    assert mgr.is_degraded is True
+    assert "read_failed" in (mgr.degrade_reason or "")

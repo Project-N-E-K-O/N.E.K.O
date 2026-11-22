@@ -654,3 +654,28 @@ def test_refresh_sync_aborts_ghost_project_apply_and_purges_stale_project_metada
     assert err_info.value.code == "PLUGIN_CONFIG_NOT_FOUND"
     assert "raced_proj" not in state.plugins
     assert store.list_records() == []
+
+
+def test_apply_discovery_record_sync_with_default_none_snapshot_and_concurrent_remove(
+    isolated, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = scaffold(tmp_path / "projects", "ghost_none_snap")
+    record = store.add_record(project_dir)
+    snapshot = registry_service._discover_registry_snapshot_sync((isolated,))
+    disc = next(rec for rec in snapshot.records if rec.plugin_id == "ghost_none_snap")
+
+    real_register = registry_service.register_plugin
+
+    def _register_then_remove(*args, **kwargs):
+        resolved_id = real_register(*args, **kwargs)
+        store.remove_record(record.project_id)
+        return resolved_id
+
+    monkeypatch.setattr(registry_service, "register_plugin", _register_then_remove)
+
+    with pytest.raises(ServerDomainError) as err_info:
+        registry_service._apply_discovery_record_sync(disc)
+
+    assert err_info.value.code == "PLUGIN_CONFIG_NOT_FOUND"
+    assert "ghost_none_snap" not in state.plugins
+    assert store.list_records() == []

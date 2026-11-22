@@ -1132,11 +1132,14 @@ class InstallSourceManager:
             dt = dt.astimezone(UTC)
         return dt.strftime(_TS_FORMAT)
 
-    def _enter_read_only_degrade(self, *, reason: str) -> None:
+    def _enter_read_only_degrade(
+        self, *, reason: str, missing_lock: bool = False
+    ) -> None:
         """Mark the manager as degraded and log at ERROR level (Req 14.2)."""
 
         self._read_only = True
         self._degrade_reason = reason
+        self._missing_lock_degraded = missing_lock
         logger.error("InstallSourceManager degraded: %s", reason)
 
     def _clear_degrade(self) -> None:
@@ -1232,9 +1235,9 @@ class InstallSourceManager:
                         return
                 if legacy_path is None:
                     if self._current.entries:
-                        self._missing_lock_degraded = True
                         self._enter_read_only_degrade(
-                            reason=f"lock_file_missing: {self.lock_path}"
+                            reason=f"lock_file_missing: {self.lock_path}",
+                            missing_lock=True,
                         )
                         return
                     # First_Startup: empty snapshot with created_at stamped.
@@ -1463,10 +1466,11 @@ class InstallSourceManager:
             try:
                 self.save()
             except Exception:
+                self._current = old_lock
                 if was_missing_lock_degraded:
-                    self._missing_lock_degraded = True
                     self._enter_read_only_degrade(
-                        reason=f"lock_file_missing: {self.lock_path}"
+                        reason=f"lock_file_missing: {self.lock_path}",
+                        missing_lock=True,
                     )
                 raise
 
