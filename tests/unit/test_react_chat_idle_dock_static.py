@@ -177,7 +177,9 @@ def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
     assert "function getIdleReturnBallScreenRect(container)" in source
     assert "window.screenX" in source
     assert "window.appInterpage && window.appInterpage.nekoBroadcastChannel" in source
-    assert "detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'" in source
+    # Drag demotion and the cat waking up on her own are forwarded by name so the
+    # Electron chat can tell them apart from a user-caused tier change.
+    assert "detail.source === 'return-ball-drag-demotion' || detail.source === 'cat-sleep-wake-demotion'" in source
     assert "'return-ball-dragging'" in source
     assert "scheduleIdleReturnBallDesktopDragState" in source
     assert "clearIdleReturnBallDesktopDragStateFrame" in source
@@ -700,7 +702,9 @@ def test_idle_dock_exit_clears_cat2_to_cat1_drag_binding():
     assert "function exitIdleDock(options)" in source
     assert "function exitElectronIdleDock(options)" in source
     assert "preserveCurrentPosition" in source
-    assert "idleDockActive && detail.source === 'return-ball-drag-demotion'" in source
+    assert "detail.source === 'return-ball-drag-demotion' || catWokeUpAlone" in source
+    assert "parkRestoreForReturn: catWokeUpAlone" in source
+    assert "detail.reason === 'cat-sleep-wake-demotion'" in source
     assert "detail.reason === 'return-ball-drag-demotion'" in source
     assert "detail.reason === 'return-ball-drag-end'" in source
     assert "detail.reason === 'viewport-resize'" in source

@@ -328,6 +328,10 @@
 
         var now = Date.now();
         var collapsed = isElectronChatWindowCollapsed(bridge);
+        if (!collapsed) {
+            // The user opened the window themselves; nothing is owed on return.
+            I.electronIdleDockParkedRestoreBounds = null;
+        }
 
         // preload 已发布真实毛球矩形（GNOME Wayland 等平台）时，
         // getElectronChatMinimizedScreenRect 会直接用它、无视 getBounds 结果——
@@ -776,6 +780,9 @@
             alreadyCollapsed = false;
         }
         var shouldCollapseForIdleDock = !alreadyCollapsed;
+        // Still collapsed from an earlier idle-dock the cat woke out of on its
+        // own: this dock inherits the duty to reopen the window on return.
+        var parkedRestoreBounds = alreadyCollapsed ? I.electronIdleDockParkedRestoreBounds : null;
         if (alreadyCollapsed) {
             rememberElectronIdleDockBounds(entrySavedBounds);
         }
@@ -831,7 +838,11 @@
             I.electronIdleDockEntering = false;
             return;
         }
-        I.electronIdleDockTriggeredCollapse = shouldCollapseForIdleDock;
+        I.electronIdleDockTriggeredCollapse = shouldCollapseForIdleDock || !!parkedRestoreBounds;
+        if (parkedRestoreBounds) {
+            I.electronIdleDockSavedBounds = parkedRestoreBounds;
+        }
+        I.electronIdleDockParkedRestoreBounds = null;
         I.electronIdleDockActive = true;
         I.electronIdleDockEntering = false;
         clearElectronIdleDockRetry();
@@ -842,6 +853,8 @@
     I.exitElectronIdleDock = async function exitElectronIdleDock(options) {
         var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
         var preserveScreenRect = normalizeElectronRect(options && options.preserveScreenRect);
+        var parkRestoreForReturn = !!(options && options.parkRestoreForReturn);
+        var parkedRestoreBounds = I.electronIdleDockParkedRestoreBounds;
         var bridge = getElectronIdleDockBridge();
         var wasActive = I.electronIdleDockActive;
         var triggeredCollapse = I.electronIdleDockTriggeredCollapse;
@@ -862,8 +875,18 @@
         clearElectronIdleDockRetry();
         clearElectronIdleDockPositionFrame();
         I.electronIdleDockPositionSeq += 1;
+        I.electronIdleDockParkedRestoreBounds = null;
+        if (parkRestoreForReturn && wasActive && triggeredCollapse && savedBounds) {
+            I.electronIdleDockParkedRestoreBounds = savedBounds;
+        }
 
-        if (!bridge || !wasActive) return;
+        if (!bridge) return;
+        if (!wasActive) {
+            if (parkedRestoreBounds && !preserveCurrentPosition) {
+                await restoreElectronIdleDockSavedBounds(bridge, parkedRestoreBounds, true);
+            }
+            return;
+        }
 
         if (preserveCurrentPosition) {
             var preserveBounds = null;
@@ -905,6 +928,10 @@
 
         if (!savedBounds) return;
 
+        await restoreElectronIdleDockSavedBounds(bridge, savedBounds, triggeredCollapse);
+    }
+
+    async function restoreElectronIdleDockSavedBounds(bridge, savedBounds, triggeredCollapse) {
         if (triggeredCollapse && typeof bridge.idleDockExpand === 'function') {
             try {
                 await bridge.idleDockExpand(savedBounds);
@@ -926,26 +953,42 @@
             }
             return;
         }
-        if (I.hasElectronIdleDockPendingOrActive()) {
-            // Pet 在把 return-ball 交给原生拖动窗口时会暂时把 DOM 容器设为不可见；
-            // 这是拖动中的中间帧，不是 idle-dock 退出信号，不能在这里恢复旧 bounds。
-            if (shouldIgnoreElectronIdleDockTransientDragHide(detail)) {
-                return;
+        if (!I.hasElectronIdleDockPendingOrActive()) {
+            // The cat woke up on its own earlier and the window stayed collapsed.
+            // Only the return ball going away (the user brought her back) reopens it.
+            if (I.electronIdleDockParkedRestoreBounds && detail && !detail.visible &&
+                !shouldIgnoreElectronIdleDockTransientDragHide(detail)) {
+                I.exitElectronIdleDock({});
             }
-            if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
-                return;
-            }
-            // CAT2 拖动结束会先降级成 CAT1；此时 activeTier 已为 false。是否保留落点
-            // 必须由终止事件语义决定，不能再依赖降级后的最终 tier。
-            var shouldPreserveCurrentPosition = detail && !!detail.screenRect && (
-                detail.reason === 'return-ball-drag-demotion'
-                || detail.reason === 'return-ball-drag-end'
-            );
-            I.exitElectronIdleDock({
-                preserveCurrentPosition: shouldPreserveCurrentPosition,
-                preserveScreenRect: shouldPreserveCurrentPosition ? detail.screenRect : null,
-            });
+            return;
         }
+        if (detail && detail.reason === 'cat-sleep-wake-demotion') {
+            // Waking up is not the user coming back: leave the yarn ball collapsed
+            // where it is, and keep the reopen for the real return.
+            I.exitElectronIdleDock({
+                preserveCurrentPosition: true,
+                parkRestoreForReturn: true,
+            });
+            return;
+        }
+        // Pet 在把 return-ball 交给原生拖动窗口时会暂时把 DOM 容器设为不可见；
+        // 这是拖动中的中间帧，不是 idle-dock 退出信号，不能在这里恢复旧 bounds。
+        if (shouldIgnoreElectronIdleDockTransientDragHide(detail)) {
+            return;
+        }
+        if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
+            return;
+        }
+        // CAT2 拖动结束会先降级成 CAT1；此时 activeTier 已为 false。是否保留落点
+        // 必须由终止事件语义决定，不能再依赖降级后的最终 tier。
+        var shouldPreserveCurrentPosition = detail && !!detail.screenRect && (
+            detail.reason === 'return-ball-drag-demotion'
+            || detail.reason === 'return-ball-drag-end'
+        );
+        I.exitElectronIdleDock({
+            preserveCurrentPosition: shouldPreserveCurrentPosition,
+            preserveScreenRect: shouldPreserveCurrentPosition ? detail.screenRect : null,
+        });
     }
 
     // Enter idle-dock: minimize if needed, then position next to return-ball.
@@ -959,6 +1002,8 @@
         // 阻止不了 setChatSurfaceMode('minimized') 本身）。
         if (I.getCurrentChatSurfaceMode() === 'full' || isLegacyFullMinimizedBall()) return;
 
+        var parkedRestore = I.idleDockParkedRestore;
+        I.idleDockParkedRestore = null;
         if (I.minimized) {
             // Already minimized — save current position and dock immediately.
             var shell = I.getShell();
@@ -967,7 +1012,12 @@
                 I.idleDockSavedPosition = { left: rect.left, top: rect.top };
             }
             I.idleDockActive = true;
-            I.idleDockTriggeredMinimize = false;
+            // Still minimized from an earlier idle-dock the cat woke out of on its
+            // own: this dock inherits the duty to reopen the chat on return.
+            I.idleDockTriggeredMinimize = !!parkedRestore;
+            if (parkedRestore && parkedRestore.position) {
+                I.idleDockSavedPosition = parkedRestore.position;
+            }
             applyIdleDockPosition();
         } else {
             // Not minimized — trigger normal minimize, observe for completion.
@@ -991,6 +1041,8 @@
     // Exit idle-dock: restore position and un-minimize if idle-dock triggered it.
     I.exitIdleDock = function exitIdleDock(options) {
         var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
+        var parkRestoreForReturn = !!(options && options.parkRestoreForReturn);
+        var parkedRestore = I.idleDockParkedRestore;
         var wasActive = I.idleDockActive;
         var triggered = I.idleDockTriggeredMinimize;
         var wasTransitioning = I.isMinimizeTransitioning;
@@ -998,6 +1050,20 @@
         var shell = I.getShell();
 
         I.clearIdleDockState();
+        I.idleDockParkedRestore = null;
+
+        if (!wasActive && parkedRestore) {
+            // The cat already woke up and left the chat minimized; this is the
+            // return it was waiting for.
+            if (!preserveCurrentPosition && I.minimized) {
+                if (shell && parkedRestore.position) {
+                    shell.style.left = parkedRestore.position.left + 'px';
+                    shell.style.top = parkedRestore.position.top + 'px';
+                }
+                I.setChatSurfaceMode(I.coerceChatSurfaceModeForHost(I.lastRestorableChatSurfaceMode));
+            }
+            return;
+        }
 
         if (shell) {
             shell.classList.remove('is-idle-docked');
@@ -1032,6 +1098,9 @@
         }
 
         if (wasActive && triggered && I.minimized && preserveCurrentPosition) {
+            if (parkRestoreForReturn) {
+                I.idleDockParkedRestore = { position: saved || null };
+            }
             I.syncChatSurfaceModeUI();
             return;
         }
@@ -1370,6 +1439,10 @@
             return previousMode;
         }
         I.pendingChatSurfaceMode = null;
+        if (!nextMinimized) {
+            // The chat is open again; nothing is owed on return.
+            I.idleDockParkedRestore = null;
+        }
 
         // 任何真实的 surface mode 变更都取消挂起的「按下挤压→延时折叠」：否则 full→compact 之类
         // 快速跳变会让 280ms 内的陈旧折叠回调在 mode 又回到 compact 时误折叠刚恢复的表面（Codex P2，
@@ -2142,6 +2215,7 @@
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
         I.pendingChatSurfaceMode = null;
         I.clearIdleDockState();
+        I.idleDockParkedRestore = null;
         I.deactivateAvatarTool();
         I.hideIdleCat1CompactMirror('close-window');
 
