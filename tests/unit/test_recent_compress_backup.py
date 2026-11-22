@@ -423,6 +423,16 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
         ("/cancel_correction/{lanlan_name}", "POST"),
         # It establishes the fence itself and cannot be blocked by its own fence.
         ("/release_character/{lanlan_name}", "POST"),
+        # Memory Browser read-only analytics & diagnostic endpoints: never write character files.
+        ("/internal/memory/browser/overview/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/search/{lanlan_name}", "POST"),
+        ("/internal/memory/browser/star_map/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/lineage/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/related/{lanlan_name}", "POST"),
+        ("/internal/memory/browser/snapshots/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/export/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/lineage_graph/{lanlan_name}", "GET"),
+        ("/internal/memory/browser/deep_conflicts/{lanlan_name}", "POST"),
     }
     probe_name = "围栏探针角色"
     fenced: set[tuple[str, str]] = set()
@@ -445,6 +455,10 @@ def test_every_character_scoped_route_is_classified_for_the_fence():
     assert ("/prompt-locale/{lanlan_name}", "PUT") in fenced
     assert ("/internal/memory/{lanlan_name}/theater/forget", "POST") in fenced
     assert ("/internal/memory/{lanlan_name}/theater/retract", "POST") in fenced
+    assert ("/internal/memory/browser/imprint_note/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/star_map/label_clusters/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/snapshots/create/{lanlan_name}", "POST") in fenced
+    assert ("/internal/memory/browser/snapshots/restore/{lanlan_name}", "POST") in fenced
 
 
 @pytest.mark.unit
