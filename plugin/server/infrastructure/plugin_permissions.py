@@ -528,6 +528,80 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return copy.deepcopy(record)
 
+    def apply_legacy_decision(
+        self,
+        plugin_id: str,
+        decision: str | None,
+        capabilities: list[str] | tuple[str, ...] = (),
+        *,
+        source: PluginSource | None = None,
+    ) -> dict:
+        """Mirror a decision made through the existing consent flow.
+
+        Transitional: kept only while the consent dialog is still a writer;
+        remove together with that dialog.
+
+        ``decision`` is ``"approved"`` (``capabilities`` are the legacy names
+        approved in total), ``"denied"`` or ``None`` (revoked). Only entries
+        that came from the consent flow (``legacy_any``) and the
+        ``legacy_denied`` marker are touched; decisions made in the permission
+        flow itself are kept. Saving uses the same failure rules as any
+        write; the call is idempotent, so retrying converges.
+        """
+        if decision not in ("approved", "denied", None):
+            raise ValueError(f"Unsupported consent decision: {decision!r}")
+        approved: set[str] = set()
+        if decision == "approved":
+            for name in capabilities:
+                permission_id = LEGACY_PERMISSION_NAMES.get(name)
+                if permission_id is None:
+                    logger.warning(
+                        "legacy capability {!r} has no permission mapping; not mirrored",
+                        name,
+                    )
+                    continue
+                approved.add(permission_id)
+        with self._lock:
+            manager = self._load()
+            document = copy.deepcopy(self._document)
+            plugins = document["plugins"]
+            record = plugins.get(plugin_id)
+            if record is None:
+                if decision is None:
+                    return {}
+                record = plugins[plugin_id] = {
+                    "source": source.to_dict() if source is not None else None,
+                    "permissions": {},
+                }
+            else:
+                self._apply_source(record, source)
+            now = _now()
+            permissions = record.setdefault("permissions", {})
+            for permission_id in [
+                key for key, entry in permissions.items() if entry.get("legacy_any")
+            ]:
+                if permission_id not in approved:
+                    del permissions[permission_id]
+            for permission_id in sorted(approved):
+                if permission_id in permissions:
+                    continue  # already mirrored, or decided in the permission flow
+                permissions[permission_id] = {
+                    "state": STATE_GRANTED,
+                    "condition": CONDITION_ANYTIME,
+                    "legacy_any": True,
+                    "scope": SCOPE_ALL,
+                    "decided_at": now,
+                }
+            if decision == "denied":
+                record[LEGACY_DENIED] = True
+            else:
+                record.pop(LEGACY_DENIED, None)
+            if record == self._document["plugins"].get(plugin_id):
+                return copy.deepcopy(record)
+            record["updated_at"] = now
+            self._commit(manager, document)
+            return copy.deepcopy(record)
+
     def forget(self, plugin_id: str) -> dict | None:
         """Drop every grant of ``plugin_id``; returns the removed record."""
         with self._lock:

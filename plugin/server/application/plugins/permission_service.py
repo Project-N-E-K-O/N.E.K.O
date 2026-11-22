@@ -18,6 +18,7 @@ import copy
 from pathlib import Path
 
 from plugin.logging_config import get_logger
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_IN_USE,
     PluginPermissionStore,
@@ -116,6 +117,44 @@ def permission_record(plugin_id: str) -> dict:
     view.setdefault("source_mismatch", False)
     view["source_confirmed"] = source is not None
     return view
+
+
+def reconcile_permission_source(plugin_id: str) -> None:
+    """Persist the plugin's current source into its stored grants.
+
+    Called when a plugin starts, under the plugin operation lock. A changed
+    source discards the old grants on disk; a first known source is bound.
+    Never raises: no decision depends on the stored grants yet, so a store
+    problem must not stop the plugin from starting.
+    """
+    try:
+        permission_store.sync_source(plugin_id, current_source(plugin_id))
+    except ServerDomainError as exc:
+        logger.warning(
+            "plugin permission source not reconciled: plugin_id={}, code={}",
+            plugin_id,
+            exc.code,
+        )
+    except Exception as exc:
+        logger.warning(
+            "plugin permission source not reconciled: plugin_id={}, error={}",
+            plugin_id,
+            type(exc).__name__,
+        )
+
+
+def mirror_consent_decision(
+    plugin_id: str, decision: str | None, capabilities: list[str] | tuple[str, ...] = ()
+) -> None:
+    """Keep the permission store in step with the consent flow.
+
+    Transitional: remove together with the consent dialog. Called under the
+    plugin operation lock before the consent record is written, so a failure
+    leaves both stores unchanged and a retry applies both.
+    """
+    permission_store.apply_legacy_decision(
+        plugin_id, decision, capabilities, source=current_source(plugin_id)
+    )
 
 
 def decide_permission(

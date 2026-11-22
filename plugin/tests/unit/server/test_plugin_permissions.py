@@ -885,3 +885,231 @@ def test_view_reports_source_mismatch(install_sources, monkeypatch, manager):
     install_sources["manager"] = None
     assert permission_service.permission_record("demo")["source_mismatch"] is False
     assert permission_service.permission_record("nobody")["source_mismatch"] is False
+
+
+# ---------------------------------------------------------------------------
+# Start-time source reconciliation
+# ---------------------------------------------------------------------------
+
+
+def _with_service_store(monkeypatch, manager):
+    store = PluginPermissionStore(manager, source_resolver=permission_service.current_source)
+    monkeypatch.setattr(permission_service, "permission_store", store)
+    return store
+
+
+def test_reconcile_persists_a_source_change_and_never_revives_old_grants(
+    install_sources, monkeypatch, manager
+):
+    store = _with_service_store(monkeypatch, manager)
+    store.decide("demo", MEMORY_READ, "granted", source=MANUAL)
+    imported = _lock_entry(
+        channel="imported",
+        source_detail=SourceDetailImported(package_filename="p", package_sha256="ef" * 32),
+    )
+
+    install_sources["manager"] = FakeInstallSources([imported])  # A -> B
+    permission_service.reconcile_permission_source("demo")
+    on_disk = json.loads(_new_file(manager).read_text(encoding="utf-8"))["plugins"]["demo"]
+    assert on_disk["permissions"] == {}
+    assert on_disk["source"] == {"channel": "imported", "fingerprint": "ef" * 32}
+
+    install_sources["manager"] = FakeInstallSources([_lock_entry(channel="manual")])  # B -> A
+    permission_service.reconcile_permission_source("demo")
+    assert store.read("demo")["permissions"] == {}
+    assert permission_service.permission_record("demo")["permissions"] == {}
+
+
+def test_reconcile_persists_the_first_known_source(install_sources, monkeypatch, manager):
+    store = _with_service_store(monkeypatch, manager)
+    store.decide("demo", MEMORY_READ, "granted", source=None)
+
+    install_sources["manager"] = FakeInstallSources([_lock_entry(channel="manual")])
+    permission_service.reconcile_permission_source("demo")
+
+    on_disk = json.loads(_new_file(manager).read_text(encoding="utf-8"))["plugins"]["demo"]
+    assert on_disk["source"] == MANUAL.to_dict()
+    assert MEMORY_READ in on_disk["permissions"]
+
+
+def test_reconcile_with_unknown_source_keeps_grants(install_sources, monkeypatch, manager):
+    store = _with_service_store(monkeypatch, manager)
+    store.decide("demo", MEMORY_READ, "granted", source=MARKET)
+    saves = manager.saves
+
+    permission_service.reconcile_permission_source("demo")  # no install-source manager
+
+    assert manager.saves == saves
+    assert MEMORY_READ in store.read("demo")["permissions"]
+
+
+@pytest.mark.parametrize("broken", ["corrupt", "write"])
+def test_reconcile_never_raises(install_sources, monkeypatch, manager, broken):
+    store = _with_service_store(monkeypatch, manager)
+    if broken == "corrupt":
+        manager.root.mkdir(parents=True)
+        _new_file(manager).write_text("{broken", encoding="utf-8")
+    else:
+        store.decide("demo", MEMORY_READ, "granted", source=MARKET)
+        manager.fail = OSError("disk full")
+    install_sources["manager"] = FakeInstallSources([_lock_entry(channel="manual")])
+
+    permission_service.reconcile_permission_source("demo")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Consent flow mirror (transitional)
+# ---------------------------------------------------------------------------
+
+
+class SelectiveConfigManager(ConfigManager):
+    """Fails saves of one file only."""
+
+    def __init__(self, root):
+        super().__init__(root)
+        self.fail_name: str | None = None
+
+    def save_json_config(self, name, data):
+        if name == self.fail_name:
+            raise OSError("disk full")
+        super().save_json_config(name, data)
+
+
+@pytest.fixture
+def consent_flow(monkeypatch, tmp_path):
+    from plugin.server.application.plugins import consent_service
+    from plugin.server.infrastructure.plugin_consent import PluginConsentStore
+
+    shared = SelectiveConfigManager(tmp_path / "shared")
+    consents = PluginConsentStore(shared)
+    permissions = PluginPermissionStore(shared, source_resolver=lambda _pid: None)
+    report = {"status": "completed", "capabilities": [], "evidence": [], "warnings": []}
+    monkeypatch.setattr(consent_service, "consent_store", consents)
+    monkeypatch.setattr(consent_service, "plugin_source", lambda _pid: (tmp_path, "1"))
+    monkeypatch.setattr(consent_service, "read_report", lambda *_a, **_k: dict(report))
+    monkeypatch.setattr(permission_service, "permission_store", permissions)
+    monkeypatch.setattr(permission_service, "current_source", lambda _pid: None)
+
+    async def _not_running(self, plugin_id, **_kwargs):
+        raise ServerDomainError("PLUGIN_NOT_RUNNING", "not running", 409)
+
+    from plugin.server.application.plugins import lifecycle_service
+
+    monkeypatch.setattr(lifecycle_service.PluginLifecycleService, "stop_plugin", _not_running)
+    return {
+        "service": consent_service,
+        "consents": consents,
+        "permissions": permissions,
+        "report": report,
+        "manager": shared,
+    }
+
+
+@pytest.mark.asyncio
+async def test_revoke_after_import_is_mirrored(consent_flow):
+    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    assert consent_flow["permissions"].read("demo")["permissions"][MEMORY_READ]["state"] == "granted"
+
+    await consent_flow["service"].revoke_plugin("demo")
+
+    assert consent_flow["consents"].read("demo") == {}
+    record = consent_flow["permissions"].read("demo")
+    assert MEMORY_READ not in record["permissions"]
+    assert LEGACY_DENIED not in record
+
+
+@pytest.mark.asyncio
+async def test_approve_and_deny_are_mirrored_and_keep_permission_flow_decisions(consent_flow):
+    service, permissions = consent_flow["service"], consent_flow["permissions"]
+    permissions.read("demo")  # import happens before any consent decision
+    permissions.decide("demo", CONVERSATIONS_READ, "denied")
+    consent_flow["report"]["capabilities"] = ["memory.read", "conversations.read"]
+
+    await service.approve_plugin(
+        "demo",
+        version="1",
+        unconfirmed=["conversations.read", "memory.read"],
+        analysis_status="completed",
+    )
+    record = permissions.read("demo")
+    assert record["permissions"][MEMORY_READ]["legacy_any"] is True
+    assert record["permissions"][MEMORY_READ]["condition"] == "anytime"
+    # A decision made in the permission flow is not overwritten.
+    assert record["permissions"][CONVERSATIONS_READ]["state"] == "denied"
+    assert "legacy_any" not in record["permissions"][CONVERSATIONS_READ]
+
+    await service.deny_plugin("demo")
+    record = permissions.read("demo")
+    assert record[LEGACY_DENIED] is True
+    assert MEMORY_READ not in record["permissions"]
+    assert record["permissions"][CONVERSATIONS_READ]["state"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_mirror_write_failure_fails_the_operation_and_a_retry_converges(consent_flow):
+    service = consent_flow["service"]
+    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    consent_flow["permissions"].read("demo")  # imported
+    consent_flow["manager"].fail_name = "plugin_permissions.json"
+
+    with pytest.raises(ServerDomainError) as captured:
+        await service.revoke_plugin("demo")
+
+    assert captured.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+    # Neither store changed.
+    assert consent_flow["consents"].read("demo")["decision"] == "approved"
+    assert MEMORY_READ in consent_flow["permissions"].read("demo")["permissions"]
+
+    consent_flow["manager"].fail_name = None
+    await service.revoke_plugin("demo")
+    assert consent_flow["consents"].read("demo") == {}
+    assert MEMORY_READ not in consent_flow["permissions"].read("demo")["permissions"]
+
+
+def test_apply_legacy_decision_is_idempotent(manager):
+    store = PluginPermissionStore(manager)
+    store.apply_legacy_decision("x", "approved", ["memory.read"])
+    saves = manager.saves
+
+    store.apply_legacy_decision("x", "approved", ["memory.read"])
+    store.apply_legacy_decision("nobody", None)
+
+    assert manager.saves == saves
+
+
+@pytest.mark.asyncio
+async def test_mirror_first_loads_and_imports_inside_the_consent_operation(consent_flow):
+    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+
+    # The permission store has not been read yet: the revoke itself imports.
+    await consent_flow["service"].revoke_plugin("demo")
+
+    assert MEMORY_READ not in consent_flow["permissions"].read("demo")["permissions"]
+    assert consent_flow["permissions"].legacy_import()["plugins"] == 1
+
+
+@pytest.mark.asyncio
+async def test_deny_mirror_failure_leaves_both_stores_unchanged(consent_flow):
+    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    consent_flow["permissions"].read("demo")
+    consent_flow["manager"].fail_name = "plugin_permissions.json"
+
+    with pytest.raises(ServerDomainError):
+        await consent_flow["service"].deny_plugin("demo")
+
+    assert consent_flow["consents"].read("demo")["decision"] == "approved"
+    assert LEGACY_DENIED not in consent_flow["permissions"].read("demo")
+
+
+def test_mirror_applies_source_rules(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", CONVERSATIONS_READ, "granted", source=MARKET)
+
+    record = store.apply_legacy_decision("x", "approved", ["memory.read"], source=MANUAL)
+
+    assert set(record["permissions"]) == {MEMORY_READ}  # old source's grants dropped
+    assert record["source"] == MANUAL.to_dict()
+    assert record["source_changed_at"]
+    created = store.apply_legacy_decision("y", "denied", source=MARKET)
+    assert created["source"] == MARKET.to_dict()
+    assert created[LEGACY_DENIED] is True

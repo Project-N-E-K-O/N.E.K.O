@@ -12,6 +12,9 @@ from plugin.server.application.plugins.capability_analysis_service import (
     plugin_source,
     read_report,
 )
+from plugin.server.application.plugins.permission_service import (
+    mirror_consent_decision,
+)
 from plugin.server.application.plugins.operation_lock import (
     serialized_plugin_operation,
 )
@@ -116,6 +119,11 @@ async def approve_plugin(
         )
     capabilities = set(details["approved_capabilities"])
     capabilities.update(unconfirmed)
+    # Transitional: mirror into the permission store first (see
+    # mirror_consent_decision); remove with the consent dialog.
+    await asyncio.to_thread(
+        mirror_consent_decision, plugin_id, "approved", sorted(capabilities)
+    )
     await asyncio.to_thread(
         consent_store.decide,
         plugin_id,
@@ -133,6 +141,8 @@ async def deny_plugin(plugin_id: str) -> dict:
     )
 
     details = await asyncio.to_thread(consent_details, plugin_id)
+    # Transitional mirror, see approve_plugin.
+    await asyncio.to_thread(mirror_consent_decision, plugin_id, "denied")
     await asyncio.to_thread(
         consent_store.decide, plugin_id, "denied", [], details["version"]
     )
@@ -147,6 +157,8 @@ async def deny_plugin(plugin_id: str) -> dict:
 
 @serialized_plugin_operation
 async def revoke_plugin(plugin_id: str) -> dict:
+    # Transitional mirror, see approve_plugin.
+    await asyncio.to_thread(mirror_consent_decision, plugin_id, None)
     await asyncio.to_thread(consent_store.delete, plugin_id)
     return await asyncio.to_thread(consent_details, plugin_id)
 
