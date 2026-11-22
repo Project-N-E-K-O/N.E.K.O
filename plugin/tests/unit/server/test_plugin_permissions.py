@@ -1341,3 +1341,27 @@ def test_bind_unbound_source_binds_a_legacy_record_imported_without_a_source(man
     record = PluginPermissionStore(manager).read("x")
     assert record["source"] == {"channel": "builtin", "fingerprint": None}
     assert record["permissions"][MEMORY_READ]["legacy_any"] is True
+
+
+def test_bind_unbound_source_saves_a_pending_import_of_a_bound_record(manager):
+    """The first-use import bound the record but its save failed: binding
+    must not return as if the record were on disk."""
+    _write_legacy(
+        manager,
+        {
+            "schema_version": 2,
+            "plugins": {"x": {"decision": "approved", "approved_capabilities": ["memory.read"]}},
+        },
+    )
+    manager.fail = OSError("disk full")
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: PluginSource("builtin"))
+    assert store.read("x")["source"] == {"channel": "builtin", "fingerprint": None}
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        store.bind_unbound_source("x", PluginSource("builtin"))
+    assert exc_info.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+
+    manager.fail = None
+    assert store.bind_unbound_source("x", PluginSource("builtin")) is False
+    on_disk = json.loads((manager.root / "plugin_permissions.json").read_text(encoding="utf-8"))
+    assert on_disk["plugins"]["x"]["source"] == {"channel": "builtin", "fingerprint": None}
