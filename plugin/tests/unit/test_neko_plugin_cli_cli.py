@@ -3434,6 +3434,20 @@ def test_validate_plugin_dir_warns_plugin_store_backend_is_not_read(tmp_path: Pa
     assert all(line.strip().split(": ", 1)[1].startswith("[plugin.store].backend") for line in lines[1:])
 
 
+@pytest.fixture(autouse=True)
+def _isolate_git_from_the_calling_repository(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every git subprocess here on the repository around its cwd.
+
+    Like repo_state.git_output: inherited GIT_DIR / GIT_WORK_TREE (e.g. when
+    pytest runs from a git hook) would point them at another repository.
+    Tests that need these variables set them explicitly.
+    """
+    from plugin.neko_plugin_cli.repo_state import _REPOSITORY_ENV_VARS
+
+    for name in _REPOSITORY_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _plugin_with_ignored_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, junction: bool) -> Path:
     """An own-repository plugin with a link in a gitignored node_modules/ and one outside it.
 
@@ -3621,6 +3635,15 @@ def test_release_check_still_rejects_a_link_in_an_ignored_path(
     # Plain check, a preview of Market CI's fresh checkout, skips it.
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
     assert "symbolic links" not in capsys.readouterr().err
+
+    # A regular file there still builds normally (the build does not honour
+    # .gitignore), and nothing from outside the repository gets in.
+    (plugin_dir / "local_cache" / "config.txt").unlink()
+    (plugin_dir / "local_cache" / "config.txt").write_text("local content\n", encoding="utf-8")
+    assert _release_check(plugin_dir, target) == 0
+    with zipfile.ZipFile(target / "release_links.neko-plugin") as archive:
+        assert archive.read("payload/plugins/release_links/local_cache/config.txt") == b"local content\n"
+        assert not any(b"outside the repository" in archive.read(name) for name in archive.namelist())
 
 
 def test_git_queries_ignore_an_inherited_repository_location(
