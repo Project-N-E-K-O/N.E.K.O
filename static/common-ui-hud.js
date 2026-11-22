@@ -64,12 +64,15 @@ function setAgentTaskHudVisiblePreferenceEnabled(enabled) {
 
 // 悬浮窗显不显示由 agent 进程记着（喵能力界面「使魔运行时 → 内置能力」里改，app/agent_task_hud.py），
 // 跟着状态快照的 task_hud_visible 过来；本地存储只是它的镜像，让同步读偏好的老代码照旧工作。
-window.AgentHUD.saveTaskHudPreference = function (visible) {
+// options.ifUnset：后端还没存过值时才写（补交本页以前的设置用），不会盖掉用户在这期间做的选择。
+window.AgentHUD.saveTaskHudPreference = function (visible, options) {
     try {
+        const command = { command: 'set_task_hud_visible', value: !!visible };
+        if (options && options.ifUnset === true) command.if_unset = true;
         return fetch('/api/agent/command', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: 'set_task_hud_visible', value: !!visible })
+            body: JSON.stringify(command)
         }).then(function (r) { return !!(r && r.ok); }).catch(function () { return false; });
     } catch (_) {
         return Promise.resolve(false);
@@ -93,7 +96,7 @@ window.AgentHUD.syncTaskHudPreference = function (value) {
             && !isAgentTaskHudVisiblePreferenceEnabled()) {
             agentTaskHudPreferenceHandedIn = true;
             agentTaskHudPreferenceHandInTries += 1;
-            window.AgentHUD.saveTaskHudPreference(false).then(function (ok) {
+            window.AgentHUD.saveTaskHudPreference(false, { ifUnset: true }).then(function (ok) {
                 if (!ok) agentTaskHudPreferenceHandedIn = false;
             });
         }

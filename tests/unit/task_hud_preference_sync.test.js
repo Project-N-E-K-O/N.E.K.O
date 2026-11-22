@@ -87,7 +87,8 @@ test('never set there: a HUD switched off here before is handed in once', () => 
     assert.equal(window.AgentHUD.syncTaskHudPreference(null), false);
 
     assert.deepEqual(sent.map((item) => item.url), ['/api/agent/command']);
-    assert.deepEqual(sent[0].body, { command: 'set_task_hud_visible', value: false });
+    // Only kept while nothing is set there yet: never over a choice made in the meantime.
+    assert.deepEqual(sent[0].body, { command: 'set_task_hud_visible', value: false, if_unset: true });
     assert.equal(storage.get(KEY), 'false');
     assert.equal(toggled.length, 0);
 });

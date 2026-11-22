@@ -80,7 +80,7 @@ def get_visible() -> Optional[bool]:
         return _visible
 
 
-def set_visible(value: bool) -> bool:
+def set_visible(value: bool, *, only_if_unset: bool = False) -> bool:
     """Keep ``value``; return whether it changed. Writes go one after another.
 
     The file is written first and what is held only changes once it is: a
@@ -88,10 +88,18 @@ def set_visible(value: bool) -> bool:
     asked for again is tried again. While the file is being written,
     ``get_visible`` answers the setting as it was. Blocking: call it off the
     event loop.
+
+    ``only_if_unset`` is for a main page handing in what its own storage said
+    before the setting lived here: it is kept only while nothing has been set
+    here yet, checked under the write lock, so a choice the user made in the
+    meantime is never overwritten by it.
     """
     global _loaded, _visible
     with _write_lock:
-        if get_visible() is value:
+        current = get_visible()
+        if only_if_unset and current is not None:
+            return False
+        if current is value:
             return False
         from utils.config_manager import get_config_manager
 

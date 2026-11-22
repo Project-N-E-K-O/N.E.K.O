@@ -26,7 +26,7 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 |---|---|---|
 | `set_agent_enabled` | `enabled`、任意の `profile` | マスタースイッチを切り替え。オフにすると進行中のタスクをすべて中止 |
 | `set_flag` | `key`、`value` | `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled` のいずれかを切り替え |
-| `set_task_hud_visible` | `value`（真偽値） | メイン画面にタスクパネルを表示するか。Agent プロセスが保存し（`agent_task_hud.json`）、状態スナップショットの `task_hud_visible` で配る（未設定なら `null`） |
+| `set_task_hud_visible` | `value`（真偽値）、任意の `if_unset`（`true` のときは未設定の場合だけ保存。メイン画面が以前のローカル設定を引き渡すとき用） | メイン画面にタスクパネルを表示するか。Agent プロセスが保存し（`agent_task_hud.json`）、状態スナップショットの `task_hud_visible` で配る（未設定なら `null`） |
 | `refresh_state` | なし | 新しい状態を返し、ブロードキャスト |
 
 `request_id` と `lanlan_name` は任意です。不明なコマンド/flag key は Agent Server が拒否し、上流/プロキシ障害は `502` です。

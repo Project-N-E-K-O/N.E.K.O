@@ -185,7 +185,7 @@ async def test_a_setting_that_could_not_be_saved_is_told_as_not_taken(routes, mo
 
     srv, told, bumped = routes
 
-    def _fails(value):
+    def _fails(value, **kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(agent_task_hud, "set_visible", _fails)
@@ -206,9 +206,9 @@ async def test_the_file_is_written_off_the_event_loop(routes, store: Path, monke
     seen: list[int] = []
     real = agent_task_hud.set_visible
 
-    def _record(value):
+    def _record(value, **kwargs):
         seen.append(threading.get_ident())
-        return real(value)
+        return real(value, **kwargs)
 
     monkeypatch.setattr(agent_task_hud, "set_visible", _record)
     await srv.agent_command({"command": "set_task_hud_visible", "value": False})
@@ -225,3 +225,43 @@ def test_the_status_snapshot_carries_the_setting(store: Path, monkeypatch: pytes
     assert capabilities._collect_agent_status_snapshot()["task_hud_visible"] is None
     agent_task_hud.set_visible(False)
     assert capabilities._collect_agent_status_snapshot()["task_hud_visible"] is False
+
+
+def test_a_hand_in_is_kept_only_while_nothing_is_set(store: Path):
+    from app import agent_task_hud
+
+    assert agent_task_hud.set_visible(False, only_if_unset=True) is True
+    assert agent_task_hud.get_visible() is False
+
+    agent_task_hud.reset_cache_for_testing()
+    store.write_text(json.dumps({"visible": True}), encoding="utf-8")
+    # A choice is kept already: the page's old setting does not overwrite it.
+    assert agent_task_hud.set_visible(False, only_if_unset=True) is False
+    assert agent_task_hud.get_visible() is True
+    assert json.loads(store.read_text(encoding="utf-8")) == {"visible": True}
+
+
+@pytest.mark.asyncio
+async def test_a_late_hand_in_does_not_undo_a_choice_made_in_the_meantime(routes):
+    """The main page hands in its old "hidden"; the user turns it on first in NekoPower."""
+    from app import agent_task_hud
+
+    srv, told, _ = routes
+    await srv.agent_command({"command": "set_task_hud_visible", "value": True})
+    answer = await srv.agent_command({"command": "set_task_hud_visible", "value": False, "if_unset": True})
+
+    assert answer["success"] is True
+    assert answer["changed"] is False and answer["task_hud_visible"] is True
+    assert agent_task_hud.get_visible() is True
+    assert told == [None]  # only the user's choice was told
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ["true", 1, None])
+async def test_only_a_true_if_unset_holds_back(routes, flag):
+    from app import agent_task_hud
+
+    srv, _, _ = routes
+    await srv.agent_command({"command": "set_task_hud_visible", "value": True})
+    await srv.agent_command({"command": "set_task_hud_visible", "value": False, "if_unset": flag})
+    assert agent_task_hud.get_visible() is False

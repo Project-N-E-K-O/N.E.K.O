@@ -587,18 +587,24 @@ async def agent_command(payload: Dict[str, Any]):
         value = (payload or {}).get("value")
         if not isinstance(value, bool):
             raise HTTPException(400, "invalid task hud value")
+        # ``if_unset``: a main page handing in what its own storage said; kept only while nothing
+        # is set here yet, so it never overwrites a choice made in the meantime.
+        if_unset = (payload or {}).get("if_unset") is True
+        from app.agent_task_hud import get_visible as _task_hud_visible
         from app.agent_task_hud import set_visible as _set_task_hud_visible
 
         # The file is written off the event loop (it is shared with the main and memory servers).
         try:
-            changed = await asyncio.to_thread(_set_task_hud_visible, value)
+            changed = await asyncio.to_thread(_set_task_hud_visible, value, only_if_unset=if_unset)
         except Exception as exc:  # noqa: BLE001 - told as not taken; the setting is left as it was
             logger.warning("[Agent] saving the task HUD setting failed (exc_type=%s)", type(exc).__name__)
             raise HTTPException(500, "task hud setting not saved") from None
         if changed:
             _bump_state_revision()
             await _emit_agent_status_update()
-        return {"success": True, "request_id": request_id, "task_hud_visible": value}
+        # What is kept now (memory only: the call above has read it).
+        kept = await asyncio.to_thread(_task_hud_visible)
+        return {"success": True, "request_id": request_id, "changed": changed, "task_hud_visible": kept}
     if command == "refresh_state":
         snapshot = _collect_agent_status_snapshot()
         await _emit_agent_status_update(lanlan_name=lanlan_name)
