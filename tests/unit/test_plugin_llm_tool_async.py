@@ -117,6 +117,7 @@ async def test_register_async_success_keeps_local_and_reports_roles():
     plugin, ctx = _make_plugin()
     host = _FakeHost(reply={
         "ok": True, "affected_roles": ["Lanlan"], "failed_roles": [], "error": None, "message": None,
+        "cleanup": None,
     })
     _install_host(plugin, host)
 
@@ -124,6 +125,7 @@ async def test_register_async_success_keeps_local_and_reports_roles():
 
     assert result == {
         "ok": True, "affected_roles": ["Lanlan"], "failed_roles": [], "error": None, "message": None,
+        "cleanup": None,
     }
     assert [t["name"] for t in plugin.list_llm_tools()] == ["tool_a"]
     assert _entry_registered(plugin, "tool_a")
@@ -185,6 +187,200 @@ async def test_register_async_foreign_owner_rolls_back_and_allows_retry():
     retry = await plugin.register_llm_tool_async(**_register_kwargs())
     assert retry["ok"] is True
     assert [t["name"] for t in plugin.list_llm_tools()] == ["tool_a"]
+
+
+class _ScriptedHost:
+    """Answers each request with the next scripted reply (or raises it)."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls: list[dict] = []
+
+    async def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
+_ALL_SYNC_FAILED = {
+    "ok": False, "affected_roles": [],
+    "failed_roles": [{"role": "Lanlan", "error": "RuntimeError: session sync failed"}],
+    "error": "rejected", "message": "main_server rejected register",
+}
+_CLEANED = {"ok": True, "removed": True, "affected_roles": ["Lanlan"], "failed_roles": [], "refused_roles": []}
+
+
+@pytest.mark.asyncio
+async def test_failed_register_cleans_up_what_main_server_may_have_stored():
+    """Every role's session sync failed: main_server answers ok=false but
+    keeps the tool in its registry. The SDK must unregister it."""
+    plugin, _ = _make_plugin()
+    host = _ScriptedHost(_ALL_SYNC_FAILED, _CLEANED)
+    _install_host(plugin, host)
+
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+
+    assert result["ok"] is False and result["error"] == "rejected"
+    assert result["cleanup"] is not None
+    assert result["cleanup"]["ok"] is True and result["cleanup"]["removed"] is True
+    assert [c["request_type"] for c in host.calls] == ["LLM_TOOL_REGISTER_REQUEST", "LLM_TOOL_UNREGISTER_REQUEST"]
+    cleanup = host.calls[1]
+    assert cleanup["request_data"]["name"] == "tool_a"
+    assert cleanup["request_data"]["role"] == "Lanlan"
+    assert plugin.list_llm_tools() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", [
+    TimeoutError("late"),
+    {"ok": False, "error": "timeout", "message": "ReadTimeout: x"},
+    {"ok": False, "error": "host_unavailable"},
+    RuntimeError("Plugin context is closed"),
+])
+async def test_register_failures_that_may_have_stored_are_cleaned_up(first):
+    plugin, _ = _make_plugin()
+    host = _ScriptedHost(first, _CLEANED)
+    _install_host(plugin, host)
+
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+
+    assert result["ok"] is False
+    assert result["cleanup"]["ok"] is True
+    assert len(host.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_cleanup_is_reported_not_raised():
+    plugin, _ = _make_plugin()
+    host = _ScriptedHost(_ALL_SYNC_FAILED, TimeoutError("late"))
+    _install_host(plugin, host)
+
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+
+    assert result["ok"] is False and result["error"] == "rejected"
+    assert result["cleanup"]["ok"] is False and result["cleanup"]["error"] == "timeout"
+    assert host.calls[1]["timeout"] == 15.0
+    assert plugin.list_llm_tools() == []
+    # The documented way out: unregister later (name not held locally).
+    _install_host(plugin, _ScriptedHost(_CLEANED))
+    assert (await plugin.unregister_llm_tool_async("tool_a"))["removed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", ["invalid_request", "main_server_unavailable", "main_server_error"])
+async def test_register_failures_that_stored_nothing_send_no_cleanup(error):
+    """e.g. main_server 404 for an unknown role, before anything is stored:
+    a cleanup with the same role would only fail the same way."""
+    plugin, _ = _make_plugin()
+    host = _ScriptedHost({"ok": False, "error": error})
+    _install_host(plugin, host)
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+    assert result["ok"] is False
+    assert result["cleanup"] is None and len(host.calls) == 1
+    assert plugin.list_llm_tools() == []
+
+
+@pytest.mark.asyncio
+async def test_success_sends_no_cleanup():
+    plugin, _ = _make_plugin()
+
+    host = _ScriptedHost({"ok": True, "affected_roles": ["A"], "failed_roles": [{"role": "B", "error": "x"}]})
+    _install_host(plugin, host)
+    result = await plugin.register_llm_tool_async(**_register_kwargs())
+    assert result["ok"] is True and result["cleanup"] is None and len(host.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_register_sends_no_cleanup():
+    plugin, _ = _make_plugin()
+    host = _FakeHost(reply={"ok": True}, delay=10.0)
+    _install_host(plugin, host)
+
+    task = asyncio.create_task(plugin.register_llm_tool_async(**_register_kwargs()))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(host.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_waits_for_the_cleanup_of_a_failed_register():
+    """The cleanup runs under the name lock, so a retry queued behind the
+    failed register is sent only after the cleanup: the cleanup can never
+    remove the retry's tool."""
+    plugin, _ = _make_plugin()
+    host = _StatefulHost(delays=[0.05, 0.0])
+    first = {"pending": True}
+
+    async def host_call(**kwargs):
+        if first["pending"]:
+            first["pending"] = False
+            host.order.append(kwargs["request_type"])
+            host.remote.add(kwargs["request_data"]["name"])  # stored, then every sync failed
+            return dict(_ALL_SYNC_FAILED)
+        return await host(**kwargs)
+
+    _install_host(plugin, host_call)
+    failed, retried = await asyncio.gather(
+        plugin.register_llm_tool_async(**_register_kwargs()),
+        plugin.register_llm_tool_async(**_register_kwargs()),
+    )
+
+    assert failed["ok"] is False and failed["cleanup"]["removed"] is True
+    assert retried["ok"] is True
+    assert host.order == [
+        "LLM_TOOL_REGISTER_REQUEST", "LLM_TOOL_UNREGISTER_REQUEST", "LLM_TOOL_REGISTER_REQUEST",
+    ]
+    assert host.remote == {"tool_a"}
+    assert _local_names(plugin) == {"tool_a"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [60.5, 120])
+async def test_request_timeout_above_host_limit_is_refused(bad):
+    plugin, _ = _make_plugin()
+    host = _FakeHost(reply={"ok": True})
+    _install_host(plugin, host)
+
+    with pytest.raises(ValueError):
+        await plugin.register_llm_tool_async(**_register_kwargs(), request_timeout=bad)
+    with pytest.raises(ValueError):
+        await plugin.unregister_llm_tool_async("tool_a", request_timeout=bad)
+    assert host.calls == []
+    ok = await plugin.register_llm_tool_async(**_register_kwargs(), request_timeout=60)
+    assert ok["ok"] is True
+
+
+def test_request_timeout_limit_matches_host_dispatcher():
+    from plugin.core.rpc import MAX_HANDLER_TIMEOUT_SECONDS
+    from plugin.sdk.plugin import base
+
+    assert base._LLM_TOOL_MAX_REQUEST_TIMEOUT == MAX_HANDLER_TIMEOUT_SECONDS
+    assert base.DEFAULT_LLM_TOOL_REQUEST_TIMEOUT <= MAX_HANDLER_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [".", "..", "..."])
+async def test_async_calls_refuse_dot_only_names(name):
+    plugin, _ = _make_plugin()
+    host = _FakeHost(reply={"ok": True})
+    _install_host(plugin, host)
+
+    with pytest.raises(ValueError):
+        await plugin.register_llm_tool_async(**_register_kwargs(name))
+    with pytest.raises(ValueError):
+        await plugin.unregister_llm_tool_async(name)
+    assert host.calls == []
+
+
+def test_sync_register_keeps_accepting_dot_only_names():
+    """Unchanged existing behaviour of the sync API."""
+    plugin, _ = _make_plugin()
+    assert plugin.register_llm_tool(**_register_kwargs("..")) is True
 
 
 @pytest.mark.asyncio
@@ -858,6 +1054,7 @@ async def test_host_register_success_tracks_and_uses_connection_identity(monkeyp
 
     assert result == {
         "ok": True, "affected_roles": ["Lanlan"], "failed_roles": [], "error": None, "message": None,
+        "cleanup": None,
     }
     ((url, payload),) = server.posts
     assert url.endswith("/api/tools/register")
@@ -914,6 +1111,58 @@ async def test_host_register_main_server_unavailable(monkeypatch, registry):
     assert result["error"] == "main_server_unavailable"
     assert result["affected_roles"] == [] and result["failed_roles"] == []
     assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["register", "unregister"])
+@pytest.mark.parametrize("exc_name,error", [
+    ("ConnectError", "main_server_unavailable"),
+    ("ConnectTimeout", "main_server_unavailable"),
+    ("PoolTimeout", "main_server_unavailable"),
+    ("ProxyError", "main_server_unavailable"),
+    ("UnsupportedProtocol", "main_server_unavailable"),
+    ("ReadTimeout", "timeout"),
+    ("WriteTimeout", "timeout"),
+    ("ReadError", "timeout"),
+    ("WriteError", "timeout"),
+    ("RemoteProtocolError", "timeout"),
+])
+async def test_host_separates_unreachable_from_unknown_outcome(monkeypatch, registry, op, exc_name, error):
+    """Only failures where the request cannot have reached main_server are
+    'unavailable'; a read/write timeout may have been applied."""
+    import httpx
+
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
+
+    _use_main_server(monkeypatch, registry, _FakeMainServer(exc=getattr(httpx, exc_name)("x")))
+    handler = handle_llm_tool_register if op == "register" else handle_llm_tool_unregister
+    request = dict(_REGISTER_REQUEST if op == "register" else _UNREGISTER_REQUEST)
+
+    result = await handler(_rpc_ctx(), request)
+
+    assert result["ok"] is False
+    assert result["error"] == error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["register", "unregister"])
+async def test_host_request_path_refuses_dot_only_names(monkeypatch, registry, op):
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
+
+    server = _use_main_server(monkeypatch, registry, _FakeMainServer({"ok": True}))
+    handler = handle_llm_tool_register if op == "register" else handle_llm_tool_unregister
+    request = dict(_REGISTER_REQUEST if op == "register" else _UNREGISTER_REQUEST, name="..")
+
+    result = await handler(_rpc_ctx(), request)
+
+    assert result["error"] == "invalid_request"
+    assert server.posts == []
 
 
 @pytest.mark.asyncio
@@ -1171,12 +1420,26 @@ async def test_end_to_end_register_then_unregister(monkeypatch, registry):
 
 @pytest.mark.asyncio
 async def test_end_to_end_host_timeout_rolls_back_both_sides(monkeypatch, registry):
+    """main_server stores the tool, then hangs syncing it past the budget.
+    The SDK times out, rolls back, and its cleanup removes the stored copy."""
     plugin, ctx = _make_plugin()
     dispatcher = _wire_rpc(ctx)
-    # main_server hangs past the request budget.
-    _use_main_server(monkeypatch, registry, _FakeMainServer(
-        {"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}, delay=5.0,
-    ))
+    remote: set[str] = set()
+
+    class _StoresThenHangs(_FakeMainServer):
+        async def post(self, url, json=None, **_):
+            self.posts.append((url, json))
+            if url.endswith("/register"):
+                remote.add(json["name"])
+                await asyncio.sleep(5.0)
+                return _FakeResp({"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []})
+            assert json["expected_source"] == f"plugin:{PLUGIN_ID}"
+            removed = json["name"] in remote
+            remote.discard(json["name"])
+            return _FakeResp({"ok": True, "removed": removed, "affected_roles": ["Lanlan"] if removed else [],
+                              "failed_roles": [], "refused_roles": []})
+
+    _use_main_server(monkeypatch, registry, _StoresThenHangs())
     try:
         result = await asyncio.wait_for(
             plugin.register_llm_tool_async(**_register_kwargs(), request_timeout=0.2), timeout=3.0,
@@ -1184,6 +1447,9 @@ async def test_end_to_end_host_timeout_rolls_back_both_sides(monkeypatch, regist
         assert result["ok"] is False
         assert result["error"] == "timeout"
         assert plugin.list_llm_tools() == []
+        assert result["cleanup"] is not None
+        assert result["cleanup"]["ok"] is True and result["cleanup"]["removed"] is True
+        assert remote == set()
         # The host gave up too; it never recorded the tool.
         await asyncio.sleep(0.05)
         assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")

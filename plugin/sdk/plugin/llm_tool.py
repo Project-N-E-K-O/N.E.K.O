@@ -298,14 +298,16 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 # when ``ok`` is True.
 #
 # ``error`` codes:
-#   host side  -- "invalid_request", "main_server_unavailable" (no HTTP
-#                 answer), "main_server_error" (HTTP status >= 400 or
+#   host side  -- "invalid_request", "main_server_unavailable" (the
+#                 request could not reach main_server: connect failure or
+#                 no pooled connection), "main_server_error" (HTTP status >= 400 or
 #                 an answer that is not a JSON object),
 #                 "rejected" (register: no role accepted the tool),
 #                 "partial_failure" (unregister: some roles failed).
-#   SDK side   -- "timeout" (the host did not answer within
-#                 ``request_timeout``; the outcome on main_server is unknown),
-#                 "host_unavailable" (the request could not reach the host or
+#   both       -- "timeout" (no answer in time: from the host within
+#                 ``request_timeout``, or from main_server to the host after
+#                 the request was sent; the outcome on main_server is unknown).
+#   SDK side   -- "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "not_registered"
 #                 (unregister: nothing local and main_server removed
 #                 nothing of this plugin's under that name).
@@ -321,17 +323,6 @@ class LlmToolRoleRefusal(TypedDict, total=False):
     owned_by: str
 
 
-class LlmToolRegisterResult(TypedDict):
-    """``ok`` is True when at least one role accepted the tool;
-    ``failed_roles`` then lists the roles that did not."""
-
-    ok: bool
-    affected_roles: list[str]
-    failed_roles: list[LlmToolRoleFailure]
-    error: str | None
-    message: str | None
-
-
 class LlmToolUnregisterResult(TypedDict):
     """``ok`` is True when no role still holds this plugin's tool.
     ``removed`` says whether main_server actually removed anything;
@@ -345,6 +336,24 @@ class LlmToolUnregisterResult(TypedDict):
     refused_roles: list[LlmToolRoleRefusal]
     error: str | None
     message: str | None
+
+
+class LlmToolRegisterResult(TypedDict):
+    """``ok`` is True when at least one role accepted the tool;
+    ``failed_roles`` then lists the roles that did not.
+
+    ``cleanup`` is ``None`` unless the register failed after the request
+    was sent; it is then the result of the unregister the SDK issued so
+    that main_server does not keep a tool the plugin has no handler for
+    (main_server may have stored it before failing). If ``cleanup`` is
+    not ``ok``, call ``unregister_llm_tool_async(name)`` later to retry."""
+
+    ok: bool
+    affected_roles: list[str]
+    failed_roles: list[LlmToolRoleFailure]
+    error: str | None
+    message: str | None
+    cleanup: LlmToolUnregisterResult | None
 
 
 def _result_roles(value: object) -> list[str]:
@@ -377,6 +386,7 @@ def build_register_result(
         "failed_roles": _result_role_records(body.get("failed_roles")),  # type: ignore[typeddict-item]
         "error": _result_text(error),
         "message": _result_text(message),
+        "cleanup": None,
     }
 
 

@@ -122,10 +122,21 @@ class _LlmToolLockTimeout(Exception):
 
 # How long register_llm_tool_async / unregister_llm_tool_async wait for the
 # host by default. The host's main_server call can spend up to 10s waiting for
-# a pooled connection, 2s connecting and 10s reading (see
+# a pooled connection, 2s connecting, 10s writing and 10s reading (see
 # ``plugin/server/messaging/llm_tool_registry.py``); stay above that sum so a
 # slow but successful registration is not reported as a timeout.
-DEFAULT_LLM_TOOL_REQUEST_TIMEOUT = 30.0
+DEFAULT_LLM_TOOL_REQUEST_TIMEOUT = 40.0
+# The host's RPC dispatcher caps a request's deadline at 60s
+# (``MAX_HANDLER_TIMEOUT_SECONDS`` in ``plugin/core/rpc.py``); a longer
+# request_timeout would be cut silently, so it is refused.
+_LLM_TOOL_MAX_REQUEST_TIMEOUT = 60.0
+# Budget of the unregister a failed register sends to clean up after itself.
+_LLM_TOOL_CLEANUP_TIMEOUT = 15.0
+# Register errors after which main_server may hold the tool: every role's
+# sync failed after it was stored ("rejected"), or the outcome is unknown.
+# The other codes mean nothing was stored (bad request, unknown role,
+# main_server not reached), where a cleanup would only fail the same way.
+_LLM_TOOL_CLEANUP_ERRORS = frozenset({"rejected", "timeout", "host_unavailable"})
 # main_server's ToolRegisterRequest bound for a tool's own per-call timeout.
 _LLM_TOOL_MAX_TIMEOUT_SECONDS = 300.0
 # Host-reported RPC error codes that mean "no answer in time".
@@ -799,6 +810,15 @@ class NekoPluginBase(_SharedNekoPluginBase):
         )
 
     @staticmethod
+    def _validate_async_llm_tool_name(name: str) -> None:
+        validate_tool_name(name)
+        # "." / ".." pass the shared rule but are normalised away in the
+        # callback URL path, so such a tool could never be called. Only the
+        # async calls refuse them; the sync calls keep their behaviour.
+        if set(name) == {"."}:
+            raise ValueError(f"LLM tool name {name!r} must not consist only of dots")
+
+    @staticmethod
     def _validate_llm_tool_timeout(timeout: float) -> None:
         if (
             isinstance(timeout, bool)
@@ -815,9 +835,11 @@ class NekoPluginBase(_SharedNekoPluginBase):
         if (
             isinstance(request_timeout, bool)
             or not isinstance(request_timeout, (int, float))
-            or not (0 < float(request_timeout) < float("inf"))
+            or not (0 < float(request_timeout) <= _LLM_TOOL_MAX_REQUEST_TIMEOUT)
         ):
-            raise ValueError("request_timeout must be a positive finite number")
+            raise ValueError(
+                f"request_timeout must be a number in (0, {_LLM_TOOL_MAX_REQUEST_TIMEOUT:g}] seconds"
+            )
         return float(request_timeout)
 
     async def _request_llm_tool_change(
@@ -963,10 +985,19 @@ class NekoPluginBase(_SharedNekoPluginBase):
         model may call the tool as soon as main_server has it). When the
         result has ``ok=False`` the local registration is rolled back, so
         ``list_llm_tools()`` and the host stay in step and the same name
-        can be registered again. ``error="timeout"`` means the outcome on
-        main_server is unknown; registering the same name again converges
-        (same-source registration replaces), and stopping the plugin
-        clears it.
+        can be registered again. When main_server may have stored the tool
+        anyway (``rejected``: every role's sync failed after it was stored;
+        ``timeout`` / ``host_unavailable``: outcome unknown), the SDK then
+        unregisters it once, still in order with this name's other async
+        calls, and reports that in ``cleanup`` (up to 15s more than
+        ``request_timeout``). If ``cleanup`` is not ``ok``, call
+        :meth:`unregister_llm_tool_async` later. After a ``timeout`` the
+        cleanup is best effort: main_server may still be processing the
+        register and store it after the cleanup ran, so ``removed=False``
+        does not prove nothing is left; call
+        :meth:`unregister_llm_tool_async` again a little later when that
+        matters. Stopping the plugin clears everything anyway. A cancelled
+        call rolls back locally but sends no cleanup.
 
         Async calls for the same name run one at a time, in call order
         (each waits for the previous one's answer, also across event
@@ -977,7 +1008,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
         The sync calls do not take part in that ordering: use one style
         per tool name.
 
-        Raises ``ValueError`` for invalid names, ``request_timeout`` or a
+        Raises ``ValueError`` for invalid or dot-only names, a
+        ``request_timeout`` outside (0, 60] (the host's limit) or a
         ``timeout`` outside (0, 300] (main_server's bound),
         ``TypeError`` for a non-callable handler and
         ``EntryConflictError`` when the name is already registered
@@ -986,6 +1018,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
         self._validate_llm_tool_timeout(timeout)
+        self._validate_async_llm_tool_name(name)
         meta = self._build_llm_tool_meta(
             name=name, description=description, parameters=parameters,
             timeout=timeout, role=role, reply_tail=reply_tail,
@@ -1007,9 +1040,31 @@ class NekoPluginBase(_SharedNekoPluginBase):
                     raise
                 if not result["ok"]:
                     self._release_llm_tool_locally(meta)
+                    if result["error"] in _LLM_TOOL_CLEANUP_ERRORS:
+                        result["cleanup"] = await self._clean_up_failed_llm_tool_register(meta)
                 return result
         except _LlmToolLockTimeout:
             return self._llm_tool_lock_timeout_result(build_register_result, meta.name, request_timeout)
+
+    async def _clean_up_failed_llm_tool_register(self, meta: "LlmToolMeta") -> LlmToolUnregisterResult:
+        """Unregister a tool whose register reported failure, still under
+        the name lock.
+
+        A failed register is not always a no-op on main_server: it stores
+        the tool before syncing it to each role and keeps it when every
+        role's sync fails, and a timeout says nothing about what was
+        applied. The plugin has just dropped its handler, so a stored copy
+        would be a tool the model sees but cannot call. The unregister
+        carries ``expected_source=plugin:{id}`` on the host, so it never
+        touches another source's tool, and holding the lock means no later
+        same-name async call of this plugin can slip in between.
+        """
+        return await self._request_llm_tool_change(
+            request_type="LLM_TOOL_UNREGISTER_REQUEST",
+            payload={"plugin_id": self.plugin_id, "name": meta.name, "role": meta.role},
+            request_timeout=_LLM_TOOL_CLEANUP_TIMEOUT,
+            build_result=build_unregister_result,
+        )
 
     async def unregister_llm_tool_async(
         self,
@@ -1043,7 +1098,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Raises ``ValueError`` for an invalid name or ``request_timeout``.
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
-        validate_tool_name(name)
+        self._validate_async_llm_tool_name(name)
         try:
             async with self._llm_tool_name_lock(name, request_timeout) as remaining:
                 meta = self._llm_tools.get(name)

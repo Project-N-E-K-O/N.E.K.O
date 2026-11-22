@@ -464,7 +464,7 @@ result = await self.register_llm_tool_async(
     description="...",
     parameters={"type": "object", "properties": {...}},
     handler=my_async_callable,
-    request_timeout=30.0,  # ホストの応答を待つ秒数（既定 30）
+    request_timeout=40.0,  # 待つ秒数、最大 60（既定 40）
 )
 if not result["ok"]:
     self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
@@ -483,11 +483,12 @@ result = await self.unregister_llm_tool_async("custom_tool")
 | `refused_roles` | — | `[{"role", "owned_by"}]` 同名ツールが別 source のもので、触れなかった role |
 | `error` | `None` または下記のコード | `None` または下記のコード |
 | `message` | 人が読める説明、または `None` | 人が読める説明、または `None` |
+| `cleanup` | `None`、または登録失敗後の後片付けとして送った解除の結果（下記） | — |
 
 `error` コード：`rejected`（登録：どの role も受け付けなかった。例：名前が別 source に使われている）、
-`partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（HTTP 応答なし）、
-`main_server_error`（HTTP ステータス >= 400。例：存在しない role。または JSON オブジェクトでない応答）、`timeout`（`request_timeout`
-内にホストが応答しなかった）、`host_unavailable`（リクエストがホストに届かなかった）、
+`partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（リクエストが `main_server` に届かず、何も適用されていない）、
+`main_server_error`（HTTP ステータス >= 400。例：存在しない role。または JSON オブジェクトでない応答）、`timeout`（時間内に応答がなかった：`request_timeout` 内にホストが応答しなかった、
+またはリクエスト送信後に `main_server` が応答しなかった。結果は不明）、`host_unavailable`（リクエストがホストに届かなかった）、
 `not_registered`（解除：`main_server` 上でこのプラグインのその名前のツールが何も削除されなかった）、
 `invalid_request`。
 
@@ -496,13 +497,20 @@ result = await self.unregister_llm_tool_async("custom_tool")
 - `register_llm_tool_async` はホストに問い合わせる前にハンドラを設置し（`main_server` が登録した
   瞬間からモデルが呼べるため）、`ok` が偽のとき、または呼び出しがキャンセルされたときに取り消します。
   その後、同じ名前を再登録できます。
+- 登録の失敗は `main_server` 上で何も起きなかったことを意味するとは限りません。`main_server` はツールを
+  保存してから role ごとに同期し、全 role の同期が失敗してもツールは残ります。`timeout` も何が適用された
+  かは分かりません。そのため登録が `rejected`、`timeout`、`host_unavailable` で失敗すると、SDK はその名前の
+  解除を 1 回送り（同じ名前の他の async 呼び出しと順番に実行）、結果を `cleanup` に入れます（呼び出しが
+  最大 15 秒延びることがあります）。それ以外のエラーは何も保存されていないので `cleanup` は `None` です。
+  `cleanup["ok"]` が偽なら、後で `unregister_llm_tool_async(name)` を呼んでください。`timeout` 後の解除は
+  ベストエフォートです。`main_server` がまだ登録を処理中で、解除の後にツールを保存することがあるため、
+  `removed=False` は何も残っていないことの証明になりません。重要なら少し後でもう一度
+  `unregister_llm_tool_async(name)` を呼んでください。キャンセルされた登録はローカルを取り消すだけで、解除は送りません。
 - `unregister_llm_tool_async` は `ok` が真のときだけハンドラを外します。それ以外ではホスト側と同様に
   プラグイン側でも登録が残り、まだツールを持つ role は動き続け、再度呼べばリトライになります。
 - ホストは解除時に常に `expected_source=plugin:{plugin_id}`（plugin_id はプラグインの接続から取得）
   を付けるため、プラグインが別 source の同名ツールを消すことはできません。
-- `timeout` は `main_server` 側の結果が不明という意味です。登録のタイムアウト後は同じ名前を再登録
-  すれば収束します（同じ source の登録は上書き）。ツールが不要になった場合は
-  `unregister_llm_tool_async(name)` を呼びます。ローカルにない名前もホストへ送られ、全 role を対象に
+- `unregister_llm_tool_async(name)` はローカルにない名前にも使えます。ホストへ送られ、全 role を対象に
   解除されるため、`main_server` 上の残留は削除されます。プラグイン停止時にはいずれにせよ全て消去されます。
 - 同じ名前の async 呼び出しは呼び出し順に 1 つずつ実行され、それぞれ前の呼び出しの応答を待ちます。
   異なるイベントループ（例：エントリとインターバルタイマー）からの呼び出しも同様です。
@@ -512,10 +520,12 @@ result = await self.unregister_llm_tool_async("custom_tool")
   ホストには何も送られていません。
 
 引数エラーは同期版と同じく例外になります（`ValueError`、`TypeError`、`EntryConflictError`）。
-async 版はさらに、`request_timeout` が不正な場合と、登録時の `timeout` が (0, 300] の範囲外の場合
-（`main_server` の上限。同期版は従来どおりそのまま渡します）にも `ValueError` を投げます。ホストと
-`main_server` の失敗は例外になりません。同じツール名には一方の書き方だけを使ってください。同期版は
+async 版はさらに、`request_timeout` が (0, 60] の範囲外（ホストの上限）、名前が点だけ、登録時の `timeout`
+が (0, 300] の範囲外（`main_server` の上限）の場合にも `ValueError` を投げます。同期版は従来の動作のままです。
+ホストと `main_server` の失敗は例外になりません。同じツール名には一方の書き方だけを使ってください。同期版は
 名前ごとの順序付けに参加せず、別の IPC チャネルを通るため、混在させると順序は保証されません。
+`@llm_tool` で装飾したメソッドは起動時にこの通知チャネルで登録されます。起動直後に
+`unregister_llm_tool_async` で解除する可能性があるなら、デコレーターではなく `register_llm_tool_async` で登録してください。
 
 ### エラーの返し方
 

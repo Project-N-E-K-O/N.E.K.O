@@ -420,7 +420,7 @@ result = await self.register_llm_tool_async(
     description="...",
     parameters={"type": "object", "properties": {...}},
     handler=my_async_callable,
-    request_timeout=30.0,  # 等 host 回复的秒数（默认 30）
+    request_timeout=40.0,  # 最多等多少秒，不超过 60（默认 40）
 )
 if not result["ok"]:
     self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
@@ -439,32 +439,41 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 | `refused_roles` | — | `[{"role", "owned_by"}]` 同名工具属于其他 source 的 role，不会动它 |
 | `error` | `None` 或下面的错误码 | `None` 或下面的错误码 |
 | `message` | 可读的说明，或 `None` | 可读的说明，或 `None` |
+| `cleanup` | `None`，或注册失败后清理用的那次注销的结果（见下） | — |
 
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
-`partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（没拿到 HTTP 回复）、
-`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在；或回复不是 JSON 对象）、`timeout`（`request_timeout`
-内 host 没回复）、`host_unavailable`（请求没送到 host）、`not_registered`（注销：main_server 上没有
+`partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（请求没能送到 `main_server`，什么都没生效）、
+`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在；或回复不是 JSON 对象）、`timeout`（没按时拿到回复：`request_timeout` 内 host 没回复，或请求已发出后
+`main_server` 没回复；结果未知）、`host_unavailable`（请求没送到 host）、`not_registered`（注销：main_server 上没有
 删掉本插件这个名字的任何工具）、`invalid_request`。
 
 本地状态跟着 `ok` 走，插件和 host 两边一致：
 
 - `register_llm_tool_async` 先装好 handler 再问 host（`main_server` 一登记模型就可能调用），
   `ok` 为假或调用被取消时回滚，之后同名可以再注册。
+- 注册失败不一定代表 `main_server` 上什么都没发生：它先存下工具再逐个 role 同步，所有 role 同步都
+  失败时工具仍然留着；`timeout` 也说明不了到底生效没有。所以注册以 `rejected`、`timeout` 或
+  `host_unavailable` 失败后，SDK 会对这个名字补发一次注销，和这个名字的其他 async 调用按顺序排队，
+  结果放在 `cleanup` 里（最多让这次调用多花 15 秒）。其他错误说明什么都没存下，`cleanup` 为 `None`。
+  `cleanup["ok"]` 为假时，之后再调 `unregister_llm_tool_async(name)`。`timeout` 之后的清理只能尽力：
+  `main_server` 可能还在处理那次注册、在清理之后才存下工具，所以 `removed=False` 不能证明什么都没留下；
+  在意的话过一会儿再调一次 `unregister_llm_tool_async(name)`。被取消的注册只回滚本地，不补发注销。
 - `unregister_llm_tool_async` 只在 `ok` 为真时删掉 handler；否则工具在插件里照旧登记，
   和 host 一致，还挂着它的 role 照常能用，再调一次就是重试。
 - host 注销时总带上 `expected_source=plugin:{plugin_id}`（plugin_id 取自插件连接本身），
   插件不可能删掉其他 source 的同名工具。
-- `timeout` 表示 `main_server` 上的结果未知。注册超时后再注册同名即可收敛（同 source 注册
-  会覆盖旧的）；如果不想要这个工具了，直接调 `unregister_llm_tool_async(name)`：本地已经没有的
-  名字也会发给 host、按全部 role 注销，`main_server` 上的残留会被删掉。插件停止时无论如何都会全部清掉。
+- `unregister_llm_tool_async(name)` 对本地已经没有的名字也有效：照样发给 host、按全部 role 注销，
+  `main_server` 上的残留会被删掉。插件停止时无论如何都会全部清掉。
 - 同一个名字的 async 调用按调用顺序逐个执行，每个都等上一个的答复；来自不同事件循环（例如入口和定时器）的调用也一样。例如
   `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))` 结束后 `t` 在各处都不存在。
   不同名字之间互不等待。`request_timeout` 管整次调用，包括排在同名前面调用后面等待的时间；等待期间就用完时返回 `timeout`，这时什么都没发给 host。
 
 参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`）。async 版本
-另外在 `request_timeout` 不合法、或注册时 `timeout` 不在 (0, 300] 内（`main_server` 的上限；同步版本
-照旧原样传过去）时抛 `ValueError`。host 和 `main_server` 的失败不抛异常。同一个工具名只用一种写法：
-同步调用不参与按名字的排队，且走不同的 IPC 通道，混用没有顺序保证。
+另外在 `request_timeout` 不在 (0, 60] 内（host 的上限）、名字全是点、或注册时 `timeout` 不在 (0, 300]
+内（`main_server` 的上限）时抛 `ValueError`；同步版本保持原有行为。host 和 `main_server` 的失败不抛异常。
+同一个工具名只用一种写法：同步调用不参与按名字的排队，且走不同的 IPC 通道，混用没有顺序保证。
+`@llm_tool` 装饰的方法在启动时走的就是这条通知通道；如果插件可能在启动后马上用
+`unregister_llm_tool_async` 注销它，就改用 `register_llm_tool_async` 注册，不要用装饰器。
 
 ### 错误返回
 

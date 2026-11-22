@@ -34,9 +34,36 @@ from plugin.server.messaging.llm_tool_registry import (
 from plugin.utils.http_imports import ensure_httpx
 
 
+def _invalid_name(fields: dict[str, object] | None) -> bool:
+    # Dot-only names pass the shared name rule, but "." / ".." in the
+    # callback URL path is normalised to a parent path, so such a tool could
+    # never be called. Refused on this request-response path only; the
+    # notification path keeps its existing behaviour.
+    return fields is None or set(str(fields["name"])) == {"."}
+
+
+def _transport_failure(httpx, exc: Exception) -> tuple[str, str]:
+    """Map an httpx error from the main_server call to an ``error`` code.
+
+    Errors raised while the request was being sent or answered (read/write
+    timeout or failure, connection dropped mid-exchange) mean main_server
+    may have applied the change, so they are reported as ``timeout``: the
+    outcome is unknown, like an SDK timeout. Everything else (connect
+    failure, no pooled connection, proxy or protocol setup errors) happens
+    before the request is sent: ``main_server_unavailable``.
+    """
+    message = f"{type(exc).__name__}: {exc}"
+    in_flight = (
+        httpx.ReadTimeout, httpx.WriteTimeout, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError,
+    )
+    if isinstance(exc, in_flight):
+        return "timeout", message
+    return "main_server_unavailable", message
+
+
 async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) -> object:
     fields = parse_register_request(request)
-    if fields is None:
+    if _invalid_name(fields):
         return _register_result({}, ok=False, error="invalid_request", message="missing or invalid tool name")
     httpx = await ensure_httpx()
     try:
@@ -44,19 +71,14 @@ async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) 
     except RemoteToolError as exc:
         return _register_result(exc.body, ok=False, error=exc.code, message=str(exc))
     except httpx.HTTPError as exc:
-        return _register_result(
-            {}, ok=False, error="main_server_unavailable", message=f"{type(exc).__name__}: {exc}",
-        )
-    except ValueError as exc:  # main_server answered, but not with JSON
-        return _register_result(
-            {}, ok=False, error="main_server_error", message=f"{type(exc).__name__}: {exc}",
-        )
+        error, message = _transport_failure(httpx, exc)
+        return _register_result({}, ok=False, error=error, message=message)
     return _register_result(body if isinstance(body, dict) else {}, ok=True)
 
 
 async def handle_llm_tool_unregister(ctx: RpcContext, request: dict[str, object]) -> object:
     fields = parse_unregister_request(request)
-    if fields is None:
+    if _invalid_name(fields):
         return _unregister_result({}, ok=False, error="invalid_request", message="missing or invalid tool name")
     httpx = await ensure_httpx()
     try:
@@ -64,11 +86,6 @@ async def handle_llm_tool_unregister(ctx: RpcContext, request: dict[str, object]
     except RemoteToolError as exc:
         return _unregister_result(exc.body, ok=False, error=exc.code, message=str(exc))
     except httpx.HTTPError as exc:
-        return _unregister_result(
-            {}, ok=False, error="main_server_unavailable", message=f"{type(exc).__name__}: {exc}",
-        )
-    except ValueError as exc:  # main_server answered, but not with JSON
-        return _unregister_result(
-            {}, ok=False, error="main_server_error", message=f"{type(exc).__name__}: {exc}",
-        )
+        error, message = _transport_failure(httpx, exc)
+        return _unregister_result({}, ok=False, error=error, message=message)
     return _unregister_result(body if isinstance(body, dict) else {}, ok=True)
