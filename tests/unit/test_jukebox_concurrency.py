@@ -200,3 +200,157 @@ async def test_f0020_import_config_does_not_clobber_concurrent_delete(monkeypatc
     assert "drop_song" not in reloaded.data["songs"]
     assert reloaded.data["songs"]["keep_song"]["visible"] is False
     assert any(s.get("name") == "Imported" for s in reloaded.data["songs"].values())
+
+
+class _BlockingUploadStream(io.BytesIO):
+    def __init__(self, data: bytes, started: threading.Event, release: threading.Event):
+        super().__init__(data)
+        self.started = started
+        self.release = release
+        self.read_finished = threading.Event()
+        self.closed_before_read_finished = False
+        self._blocked_once = False
+
+    def read(self, size: int = -1):
+        if not self._blocked_once:
+            self._blocked_once = True
+            self.started.set()
+            assert self.release.wait(5)
+        chunk = super().read(size)
+        if not chunk:
+            self.read_finished.set()
+        return chunk
+
+    def close(self):
+        if not self.read_finished.is_set():
+            self.closed_before_read_finished = True
+        super().close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["songs", "actions"])
+async def test_f0020_cancelled_error_mid_calculate_md5_cleans_up_temp_files(monkeypatch, tmp_path, kind):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(jukebox_router, "extract_audio_metadata", lambda _p: {})
+
+    cfg = jukebox_router.JukeboxConfig(cm)
+    target_dir = cfg.songs_dir if kind == "songs" else cfg.actions_dir
+    ext = ".mp3" if kind == "songs" else ".vmd"
+
+    md5_calls = 0
+    second_md5_started = threading.Event()
+    second_md5_release = threading.Event()
+    orig_md5 = jukebox_router.calculate_md5
+
+    def _paused_on_second_md5(path):
+        nonlocal md5_calls
+        md5_calls += 1
+        if md5_calls == 2:
+            second_md5_started.set()
+            assert second_md5_release.wait(5)
+        return orig_md5(path)
+
+    monkeypatch.setattr(jukebox_router, "calculate_md5", _paused_on_second_md5)
+
+    files = [
+        _upload_file(f"first{ext}", b"first-bytes"),
+        _upload_file(f"second{ext}", b"second-bytes"),
+    ]
+    coro = (
+        jukebox_router.upload_songs(files=files, metadata="[]")
+        if kind == "songs"
+        else jukebox_router.upload_actions(files=files, metadata="[]")
+    )
+    upload_task = asyncio.create_task(coro)
+    await asyncio.to_thread(second_md5_started.wait, 5)
+    assert len(list(target_dir.glob(".tmp_upload_*"))) == 2
+
+    upload_task.cancel()
+    await asyncio.sleep(0)
+    second_md5_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await upload_task
+
+    assert list(target_dir.glob(".tmp_upload_*")) == []
+    assert all(f.file.closed for f in files)
+
+
+@pytest.mark.asyncio
+async def test_f0020_cancelled_error_mid_extract_audio_metadata_cleans_up_temp_files(monkeypatch, tmp_path):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    cfg = jukebox_router.JukeboxConfig(cm)
+
+    meta_started = threading.Event()
+    meta_release = threading.Event()
+
+    def _paused_extract(_path):
+        meta_started.set()
+        assert meta_release.wait(5)
+        return {"name": "Track"}
+
+    monkeypatch.setattr(jukebox_router, "extract_audio_metadata", _paused_extract)
+
+    upload_file = _upload_file("meta_cancel.mp3", b"audio-bytes")
+    upload_task = asyncio.create_task(
+        jukebox_router.upload_songs(files=[upload_file], metadata="[]")
+    )
+    await asyncio.to_thread(meta_started.wait, 5)
+    assert len(list(cfg.songs_dir.glob(".tmp_upload_*"))) == 1
+
+    upload_task.cancel()
+    await asyncio.sleep(0)
+    meta_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await upload_task
+
+    assert list(cfg.songs_dir.glob(".tmp_upload_*")) == []
+    assert upload_file.file.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["songs", "actions"])
+async def test_f0020_cancelled_error_mid_stage_upload_waits_for_retirement_and_cleans_up(
+    monkeypatch, tmp_path, kind
+):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(jukebox_router, "extract_audio_metadata", lambda _p: {})
+    cfg = jukebox_router.JukeboxConfig(cm)
+
+    target_dir = cfg.songs_dir if kind == "songs" else cfg.actions_dir
+    ext = ".mp3" if kind == "songs" else ".vmd"
+
+    stage_started = threading.Event()
+    stage_release = threading.Event()
+    stream = _BlockingUploadStream(b"staged-stream-content", stage_started, stage_release)
+    upload_file = UploadFile(filename=f"cancel_stage{ext}", file=stream)
+
+    coro = (
+        jukebox_router.upload_songs(files=[upload_file], metadata="[]")
+        if kind == "songs"
+        else jukebox_router.upload_actions(files=[upload_file], metadata="[]")
+    )
+    upload_task = asyncio.create_task(coro)
+    await asyncio.to_thread(stage_started.wait, 5)
+    assert len(list(target_dir.glob(".tmp_upload_*"))) == 1
+
+    upload_task.cancel()
+    await asyncio.sleep(0.02)
+
+    assert not upload_task.done()
+    assert not stream.closed
+    assert not stream.closed_before_read_finished
+
+    stage_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await upload_task
+
+    assert stream.read_finished.is_set()
+    assert stream.closed
+    assert not stream.closed_before_read_finished
+    assert list(target_dir.glob(".tmp_upload_*")) == []
+

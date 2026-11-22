@@ -70,7 +70,12 @@ def _get_jukebox_config_lock() -> asyncio.Lock:
     return lock
 
 
-def _stage_upload_to_temp(src_file, target_dir: Path, suffix: str) -> Path:
+def _stage_upload_to_temp(
+    src_file,
+    target_dir: Path,
+    suffix: str,
+    created_paths: Optional[List[Path]] = None,
+) -> Path:
     """Copy an uploaded stream into a temporary file inside target_dir off the event loop."""
     target_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -79,14 +84,28 @@ def _stage_upload_to_temp(src_file, target_dir: Path, suffix: str) -> Path:
         suffix=suffix,
         delete=False,
     ) as buffer:
+        temp_path = Path(buffer.name)
+        if created_paths is not None:
+            created_paths.append(temp_path)
         shutil.copyfileobj(src_file, buffer)
-        return Path(buffer.name)
+        return temp_path
 
 
 def _cleanup_temp_paths(paths: List[Path]) -> None:
     """Remove any unmoved temporary upload files."""
     for path in paths:
         path.unlink(missing_ok=True)
+
+
+def _collect_unmoved_temp_paths(created_paths: List[Path], staged_items: List[dict]) -> List[Path]:
+    """Collect all temporary upload paths that were never moved into final targets."""
+    moved_paths = {item["tmp_path"] for item in staged_items if item["moved"]}
+    return list(
+        dict.fromkeys(
+            [path for path in created_paths if path not in moved_paths]
+            + [item["tmp_path"] for item in staged_items if not item["moved"]]
+        )
+    )
 
 # Upload constants.
 MAX_FILE_SIZE = 1 * 1024 * 1024 * 1024  # 1 GB per song/animation file.
@@ -693,6 +712,7 @@ async def upload_songs(
     songs_dir = JukeboxConfig(config_mgr).songs_dir
     results: List[Optional[dict]] = [None] * len(files)
     staged_items: List[dict] = []
+    created_paths: List[Path] = []
 
     try:
         for i, (file, meta) in enumerate(zip(files, meta_list)):
@@ -712,11 +732,13 @@ async def upload_songs(
 
                 # Stage file copy, MD5 hashing, and audio metadata extraction outside the config lock.
                 original_filename = Path(file.filename).name
-                tmp_path = await asyncio.to_thread(_stage_upload_to_temp, file.file, songs_dir, file_ext)
-                file_md5 = await asyncio.to_thread(calculate_md5, tmp_path)
+                tmp_path = await await_retirement(
+                    asyncio.to_thread(_stage_upload_to_temp, file.file, songs_dir, file_ext, created_paths)
+                )
+                file_md5 = await await_retirement(asyncio.to_thread(calculate_md5, tmp_path))
 
                 try:
-                    audio_metadata = await asyncio.to_thread(extract_audio_metadata, tmp_path)
+                    audio_metadata = await await_retirement(asyncio.to_thread(extract_audio_metadata, tmp_path))
                 except Exception:
                     audio_metadata = {}
 
@@ -803,9 +825,9 @@ async def upload_songs(
             if any_added:
                 await await_retirement(jukebox_config.asave())
     finally:
-        unmoved = [item["tmp_path"] for item in staged_items if not item["moved"]]
+        unmoved = _collect_unmoved_temp_paths(created_paths, staged_items)
         if unmoved:
-            await asyncio.to_thread(_cleanup_temp_paths, unmoved)
+            await await_retirement(asyncio.to_thread(_cleanup_temp_paths, unmoved))
 
     final_results = [r for r in results if r is not None]
     # Return one result directly for single-song uploads, otherwise a list.
@@ -1059,6 +1081,7 @@ async def upload_actions(
     actions_dir = JukeboxConfig(config_mgr).actions_dir
     results: List[Optional[dict]] = [None] * len(files)
     staged_items: List[dict] = []
+    created_paths: List[Path] = []
 
     try:
         for i, (file, meta) in enumerate(zip(files, meta_list)):
@@ -1074,8 +1097,10 @@ async def upload_actions(
                     continue
 
                 original_filename = Path(file.filename).name
-                tmp_path = await asyncio.to_thread(_stage_upload_to_temp, file.file, actions_dir, file_ext)
-                file_md5 = await asyncio.to_thread(calculate_md5, tmp_path)
+                tmp_path = await await_retirement(
+                    asyncio.to_thread(_stage_upload_to_temp, file.file, actions_dir, file_ext, created_paths)
+                )
+                file_md5 = await await_retirement(asyncio.to_thread(calculate_md5, tmp_path))
 
                 staged_items.append({
                     "index": i,
@@ -1147,9 +1172,9 @@ async def upload_actions(
             if any_added:
                 await await_retirement(jukebox_config.asave())
     finally:
-        unmoved = [item["tmp_path"] for item in staged_items if not item["moved"]]
+        unmoved = _collect_unmoved_temp_paths(created_paths, staged_items)
         if unmoved:
-            await asyncio.to_thread(_cleanup_temp_paths, unmoved)
+            await await_retirement(asyncio.to_thread(_cleanup_temp_paths, unmoved))
 
     final_results = [r for r in results if r is not None]
     # Return single-animation upload results directly, otherwise a list.
