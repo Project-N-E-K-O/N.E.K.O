@@ -138,3 +138,37 @@ async def test_key_stops_matching_once_its_run_is_evicted(runs, monkeypatch):
     assert runs.calls == ["send", "send", "send"]
     # Evicted runs leave no index entries behind: only the newest run is held.
     assert store._by_idempotency == {("demo", "send", "call-1"): again.run_id}
+
+
+def test_store_lookup_and_insert_are_one_step_across_threads():
+    """Threads racing on one key: exactly one record is created."""
+    import threading
+    import time
+    import uuid
+
+    store = manager.InMemoryRunStore()
+    workers = 8
+    barrier = threading.Barrier(workers)
+    results: list[tuple[str, bool]] = []
+    results_lock = threading.Lock()
+
+    def worker():
+        now = time.time()
+        rec = manager.RunRecord(
+            run_id=str(uuid.uuid4()), plugin_id="demo", entry_id="send", status="queued",
+            created_at=now, updated_at=now, idempotency_key="call-1",
+        )
+        barrier.wait()
+        stored, created = store.create_or_get_idempotent(rec)
+        with results_lock:
+            results.append((stored.run_id, created))
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sum(created for _, created in results) == 1
+    assert len({run_id for run_id, _ in results}) == 1
+    assert len(store.list_runs()) == 1
