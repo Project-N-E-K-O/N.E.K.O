@@ -1128,6 +1128,24 @@
         return changedKeys;
     }
 
+    // Whether this window's value for `key` is a write the server confirmed
+    // at a revision older than a server snapshot that now holds a different
+    // value: the server changed the key after that write, so the snapshot's
+    // value is the newer one. Used by the 412 merge so a value received from
+    // another window does not overwrite a newer server value on retry. A
+    // write without a confirmed revision (unconfirmed, or this window's own
+    // edit) cannot be ordered against the server and is left to the caller.
+    function _confirmedValueSupersededOnServer(key, serverSettings, serverRevision) {
+        if (key === 'independentAsrEnabled') return false;
+        if (!serverSettings || typeof serverSettings !== 'object'
+            || !Number.isInteger(serverRevision)) return false;
+        if (!Object.prototype.hasOwnProperty.call(serverSettings, key)) return false;
+        const token = _knownSharedKeyWrites[key];
+        if (!token || !Number.isInteger(token.confirmedRevision)) return false;
+        return serverRevision > token.confirmedRevision
+            && serverSettings[key] !== getConversationSettings()[key];
+    }
+
     function _markEtagConfirmedSharedSettings(
         settingsAtSend,
         serverSettings,
@@ -1615,6 +1633,23 @@
                         _settingsChangedSince(settings, mutationVersionAtSend).forEach((key) => {
                             preservedKeys.add(key);
                         });
+                        // A value received from another window is kept over
+                        // the 412 snapshot only while it may be the newer
+                        // one. When its write was confirmed before a server
+                        // revision that holds a different value, the server
+                        // changed the key since: take the server's value.
+                        // Unsaved local edits stay preserved.
+                        const conflictServerSettings = _serverSettingsForMerge(data);
+                        for (const key of Array.from(preservedKeys)) {
+                            if (_pendingSettingsKeys.has(key)) continue;
+                            if (_confirmedValueSupersededOnServer(
+                                key,
+                                conflictServerSettings,
+                                data.revision
+                            )) {
+                                preservedKeys.delete(key);
+                            }
+                        }
                         _mergeConversationSettingsSnapshot(data, preservedKeys);
                         if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
                             continue;

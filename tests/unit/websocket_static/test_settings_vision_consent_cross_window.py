@@ -608,18 +608,24 @@ _HARNESS = textwrap.dedent(
     }
 
     // A value the server confirmed after another window's write must not be
-    // rolled back by a stale window's unrelated save. A's write reaches the
-    // server and D receives it with A's per-key token. Another device then
-    // changes the key on the server; E opens and merges it, and A adopts
-    // that server value. D has not received E's snapshot, saves something
-    // unrelated, and copies the old value back under the same token A holds.
-    async function staleCopyBelowServerFloor() {
-      const key = 'mergeMessagesEnabled';
+    // rolled back by a stale window. A's write reaches the server and D
+    // receives it with A's per-key token. Another device then turns the key
+    // off on the server; E opens and merges it, and A adopts that server
+    // value. D has not received E's snapshot and saves something unrelated:
+    // the snapshot copies the old "on" back under the same token A holds
+    // (storage listener), and D's POST, sent with a stale ETag, gets a 412
+    // whose server value is the newer "off" (412 merge).
+    async function staleCopyBelowServerFloor(key) {
       const a = makeWindow('A');
       const d = makeWindow('D');
       await settle();
       a.deliver();
       d.deliver();
+      if (a.S[key] === true) {
+        a.S[key] = false;
+        a.mod.saveSettings();
+        await settle();
+      }
       a.S[key] = true;
       a.mod.saveSettings();
       await settle();
@@ -640,6 +646,7 @@ _HARNESS = textwrap.dedent(
       // Another device turns it off on the server; E merges it at boot.
       serverSettings = Object.assign({}, serverSettings, { [key]: false });
       serverRevision += 1;
+      const offRevision = serverRevision;
       const e = makeWindow('E');
       await settle();
       const merged = JSON.parse(store.get('project_neko_settings'));
@@ -650,7 +657,7 @@ _HARNESS = textwrap.dedent(
       await settle();
       assert(a.S[key] === false, 'precondition: A adopts the server value');
       // D has not received E's snapshot. Its unrelated save copies the old
-      // value back under A's token.
+      // value back under A's token. Its POST is held so A sees the copy first.
       d.inbox.length = 0;
       d.holdPosts = true;
       d.S.focusModeEnabled = !d.S.focusModeEnabled;
@@ -669,12 +676,37 @@ _HARNESS = textwrap.dedent(
         'a stale copy confirmed before the server\\'s newer value must not roll A back');
       assert(a.S.focusModeEnabled === d.S.focusModeEnabled,
         'D\\'s own unrelated edit still syncs to A');
-      // Normal sync is unaffected: a genuine new edit in E reaches A and D.
-      // (D's held POST stays in flight: releasing it would hit the 412 merge
-      // path, which is not what this case covers.)
       e.deliver();
       await settle();
       assert(e.S[key] === false, 'E rejects the stale copy too');
+      // D's POST arrives with a stale ETag and gets a 412 whose server value
+      // is the newer "off". D must take it rather than write its old "on"
+      // back, while its own unrelated edit still lands.
+      const postsBefore = d.postBodies.length;
+      const focusWanted = d.S.focusModeEnabled;
+      d.releasePosts();
+      await settle();
+      assert(d.postBodies.length >= postsBefore + 1 && serverRevision > offRevision,
+        'precondition: D\\'s POST conflicted and was retried: '
+          + JSON.stringify(d.postBodies.slice(postsBefore)));
+      assert(serverSettings[key] === false,
+        'a 412 merge must not write the stale ' + key + ' back over the server: '
+          + JSON.stringify(d.postBodies.slice(postsBefore).map((b) => b[key])));
+      assert(d.S[key] === false, 'D takes the server value on 412');
+      if (key === 'proactiveVisionEnabled') {
+        assert(lastConsent(d) === false,
+          'D reports the revoked consent after the 412: ' + JSON.stringify(d.consent));
+      }
+      assert(serverSettings.focusModeEnabled === focusWanted,
+        'D\\'s own edit is still saved after the 412');
+      a.deliver();
+      e.deliver();
+      d.deliver();
+      await settle();
+      assert(a.S[key] === false && d.S[key] === false && e.S[key] === false,
+        'all windows stay on the server value');
+      // Normal sync is unaffected: a genuine new edit in E reaches A, D and
+      // the server.
       e.S[key] = true;
       e.mod.saveSettings();
       await settle();
@@ -710,8 +742,8 @@ _HARNESS = textwrap.dedent(
         process.exitCode = 0;
         return;
       }
-      if (__MODE__ === 'server-floor') {
-        await staleCopyBelowServerFloor();
+      if (typeof __MODE__ === 'string' && __MODE__.indexOf('server-floor:') === 0) {
+        await staleCopyBelowServerFloor(__MODE__.slice('server-floor:'.length));
         console.log('HARNESS_OK');
         process.exitCode = 0;
         return;
@@ -1080,10 +1112,11 @@ def test_server_switch_off_stops_proactive_triggers_harness(key):
     assert "HARNESS_OK" in result.stdout
 
 
-def test_stale_copy_below_server_floor_does_not_roll_back_harness():
-    result = _run("server-floor")
+@pytest.mark.parametrize("key", ["mergeMessagesEnabled", "proactiveVisionEnabled"])
+def test_stale_copy_below_server_floor_does_not_roll_back_harness(key):
+    result = _run("server-floor:" + key)
     assert result.returncode == 0, (
-        "stale copy below server floor harness failed\n"
+        f"stale {key} copy below server floor harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
