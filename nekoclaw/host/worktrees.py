@@ -552,7 +552,8 @@ class WorktreeManager:
             # overwritten, so nothing is checked out.
             listed_held = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", now.tree)
             held = {_decode(name) for name in listed_held.stdout.split(b"\0") if name}
-            written = sorted({_decode(name) for name in names} - held)
+            merged_names = {_decode(name) for name in names}
+            written = sorted(merged_names - held)
             nested = {name.rstrip("/") for name in now.skipped if name.endswith("/")}
             hit = await asyncio.to_thread(_in_the_way, worktree.path, written, held, nested)
             if hit:
@@ -582,6 +583,11 @@ class WorktreeManager:
                     half_done,
                     timeout=settings.WORKTREE_GIT_WORK_SECONDS,
                 )
+                # What the merge deletes, among what the snapshot held, goes
+                # too: a checkout leaves a file its index never had (one
+                # landed from here earlier). The result snapshot puts it back
+                # should preparing fail below.
+                await asyncio.to_thread(_remove_files, worktree.path, sorted(held - merged_names))
                 await self._git(worktree.repo_root, "update-ref", _start_ref(worktree.id), conflict.current)
             except BaseException as error:
                 # Its files as they were (the result snapshot holds them) and
@@ -698,14 +704,19 @@ class WorktreeManager:
         return DiskCheck(free, needed)
 
     async def git_version(self) -> tuple[int, int, int] | None:
-        """Return the version of git, or None when it cannot be run. Asked once."""
+        """Return the version of git, or None when it cannot be run.
+
+        An answer is remembered, and so is git not being there at all; a
+        failure that may pass (a timeout on a busy machine) is not.
+        """
         if self._version is False:
             try:
                 run = await self._run(None, ["--version"], timeout=settings.WORKTREE_GIT_QUERY_SECONDS)
-            except (OSError, GitError):
-                self._version = None
-            else:
-                self._version = parse_git_version(run.decode())
+            except GitError as error:
+                if isinstance(error.__cause__, FileNotFoundError):
+                    self._version = None
+                return None
+            self._version = parse_git_version(run.decode())
         return self._version
 
     # -- probing ---------------------------------------------------------------
@@ -1318,15 +1329,18 @@ class WorktreeManager:
         extra: dict[str, object] = (
             {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {"start_new_session": True}
         )
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=None if cwd is None else str(cwd),
-            stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=environment,
-            **extra,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=None if cwd is None else str(cwd),
+                stdin=asyncio.subprocess.PIPE if input is not None else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=environment,
+                **extra,
+            )
+        except OSError as error:  # no git, no such directory, no handles left...
+            raise GitError(args, -1, f"could not be started: {error}".encode()) from error
         try:
             # asyncio.timeout, not wait_for: in 3.11 wait_for can return the
             # finished command's result and drop a cancellation that came
@@ -1396,6 +1410,14 @@ def _in_the_way(root: Path, written: list[str], held: set[str], nested: set[str]
             elif up not in held and _is_file_or_link(_fs(root / up)):
                 hit.add(up)
     return sorted(hit)
+
+
+def _remove_files(root: Path, names: list[str]) -> None:
+    """Remove those of ``names`` under ``root`` that are files or links."""
+    for name in names:
+        target = _fs(root / name)
+        if _is_file_or_link(target):
+            os.remove(target)
 
 
 def _holds_unsaved(root: Path, directory: str, held: set[str]) -> bool:

@@ -2757,3 +2757,66 @@ async def test_a_failed_preparing_puts_the_worktrees_own_head_and_index_back(
 def test_output_lines_end_at_line_feeds_only() -> None:
     run = worktrees._Run(0, "C:/a\u2028b\nnext\r\n\n".encode(), b"")
     assert run.lines() == ["C:/a\u2028b", "next"]
+
+
+# -- review round 23 -------------------------------------------------------------
+
+
+async def test_preparing_removes_what_the_merge_deletes(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "note.txt", "landed from the worktree\n")
+    assert (await manager.merge_back(tree)).status == "landed"
+    os.remove(repo / "note.txt")  # the user deleted it since
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    prepared = await manager.prepare_conflicts(tree, conflict)
+    assert not exists(prepared.path / "note.txt")
+    write(prepared.path / "a.txt", "both\n")
+    landed = await manager.merge_back(prepared)
+    assert landed.status == "landed", landed.detail
+    assert not exists(repo / "note.txt") and read(repo / "a.txt") == b"both\n"
+
+
+async def test_a_passing_failure_to_ask_git_is_not_remembered(
+    repo: Path, manager: WorktreeManager, monkeypatch: Any
+) -> None:
+    original = manager._run
+    calls = []
+
+    async def busy_once(cwd: Any, args: list[str], **kwargs: Any) -> Any:
+        if args == ["--version"]:
+            calls.append(1)
+            if len(calls) == 1:
+                raise worktrees.GitError(args, None, b"no answer within 30 seconds")
+        return await original(cwd, args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run", busy_once)
+    assert (await manager.probe(repo)).reason == GIT_MISSING
+    assert (await manager.probe(repo)).usable
+    await manager.probe(repo)
+    assert len(calls) == 2
+
+
+async def test_git_not_there_is_remembered(repo: Path, tmp_path: Path, monkeypatch: Any) -> None:
+    manager = WorktreeManager(git=str(tmp_path / "no-such-git"))
+    spawn = asyncio.create_subprocess_exec
+    spawned = []
+
+    async def counting(*command: Any, **kwargs: Any) -> Any:
+        spawned.append(command)
+        return await spawn(*command, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", counting)
+    assert (await manager.probe(repo)).reason == GIT_MISSING
+    assert (await manager.probe(repo)).reason == GIT_MISSING
+    assert len(spawned) == 1
+
+
+async def test_a_worktree_directory_gone_gives_a_git_error(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    await asyncio.to_thread(shutil.rmtree, _fs(tree.path))
+    with pytest.raises(worktrees.GitError) as raised:
+        await manager.merge_back(tree)
+    assert "could not be started" in str(raised.value)
