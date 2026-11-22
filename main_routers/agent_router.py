@@ -28,7 +28,6 @@ See ``main_routers/characters_router.py`` docstring or
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
-import asyncio
 import os
 import time
 import uuid
@@ -281,10 +280,50 @@ async def get_computer_use_native_capture_available():
     return {"success": True, "available": native_wayland_capture_available()}
 
 
-# Held from where a command writes the session's switches to where it is
-# known whether the agent process took it: one that is not taken puts back
-# what it wrote, and no other command reads or writes in between.
-_command_lock: asyncio.Lock | None = None
+class _Unconfirmed:
+    """The switches of the sessions that commands wrote and the agent process has not answered for yet.
+
+    A command writes the session's copy of a switch before it is sent
+    on, and puts it back when it was not taken. Commands are not held
+    back for one another (one that takes seconds would make the next
+    time out in the page), so several may have written the same switch:
+    kept here, for each switch, are what it was before the first of
+    them (``base``) and what each of them wrote. One that was taken
+    makes its value the base. One that was not takes its own entry out,
+    and the switch goes back to the base once none is left: never to a
+    value another command only tried, and not over a value another
+    command wrote and was answered for (that value is the base by then).
+    """
+
+    def __init__(self) -> None:
+        # (id of the manager, switch) -> [base, {command: what it wrote}]
+        self._switches: dict[tuple[int, str], list] = {}
+
+    def write(self, mgr, command: object, flags: dict) -> None:
+        now = getattr(mgr, "agent_flags", {}) or {}
+        for key, value in flags.items():
+            entry = self._switches.setdefault((id(mgr), key), [bool(now.get(key, False)), {}])
+            entry[1][command] = value
+        mgr.update_agent_flags(flags)
+
+    def settle(self, mgr, command: object, *, taken: bool) -> None:
+        back: dict = {}
+        for (owner, key), entry in list(self._switches.items()):
+            if owner != id(mgr) or command not in entry[1]:
+                continue
+            wrote = entry[1].pop(command)
+            if taken:
+                entry[0] = wrote
+            elif not entry[1]:
+                # No other command is under way for it: back to what it was before them.
+                back[key] = entry[0]
+            if not entry[1]:
+                del self._switches[(owner, key)]
+        if back:
+            mgr.update_agent_flags(back)
+
+
+_unconfirmed = _Unconfirmed()
 
 
 @router.post('/command')
@@ -293,15 +332,6 @@ async def post_agent_command(request: Request):
     blocked = _remote_backend_block()
     if blocked is not None:
         return blocked
-    global _command_lock
-    if _command_lock is None:
-        _command_lock = asyncio.Lock()
-    async with _command_lock:
-        return await _forward_agent_command(request)
-
-
-async def _forward_agent_command(request: Request):
-    """Write the session's switches as a command says, send it on, and put them back when it was not taken."""
     t0 = time.perf_counter()
     try:
         data = await request.json()
@@ -318,23 +348,15 @@ async def _forward_agent_command(request: Request):
             except Exception:
                 lanlan = None
         mgr = session_manager.get(lanlan) if lanlan else None
-        old_flags = dict(getattr(mgr, "agent_flags", {}) or {}) if mgr else None
-        # What this request wrote of the session's switches, for taking it back.
-        written: dict = {}
+        # This command, for what it writes of the session's switches (``_Unconfirmed``).
+        mine = object()
 
         def write(flags: dict) -> None:
-            written.update(flags)
-            mgr.update_agent_flags(flags)
+            _unconfirmed.write(mgr, mine, flags)
 
         def take_back() -> None:
-            # Only what this request wrote, and only where it still says so: another request's
-            # switch, written and taken meanwhile, is not put back to what it was before.
-            if not mgr or old_flags is None:
-                return
-            now = getattr(mgr, "agent_flags", {}) or {}
-            back = {key: old_flags.get(key, False) for key, value in written.items() if now.get(key) == value}
-            if back:
-                mgr.update_agent_flags(back)
+            if mgr:
+                _unconfirmed.settle(mgr, mine, taken=False)
 
         # Keep main_server core flags in sync with command path.
         if mgr and command == "set_agent_enabled":
@@ -369,6 +391,8 @@ async def _forward_agent_command(request: Request):
             take_back()
             logger.warning("[MainAgentTiming] request_id=%s upstream_status=%s proxy_ms=%s", request_id, r.status_code, proxy_ms)
             return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        if mgr:
+            _unconfirmed.settle(mgr, mine, taken=True)
         payload = r.json()
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info("[MainAgentTiming] request_id=%s proxy_ms=%s total_ms=%s", request_id or payload.get("request_id"), proxy_ms, total_ms)

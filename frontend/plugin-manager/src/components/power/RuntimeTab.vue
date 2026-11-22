@@ -1,6 +1,6 @@
 <template>
   <div v-loading="loading && !view" class="runtime-tab">
-    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" />
+    <el-alert v-if="changeError || error" :title="changeError || error" type="error" :closable="false" show-icon class="block" />
 
     <template v-if="view">
       <section class="panel">
@@ -106,6 +106,8 @@ const view = ref<RuntimeView | null>(null)
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
+// Why a change was not taken: it stays until the next change, whatever is read meanwhile.
+const changeError = ref('')
 const uninstalling = ref(false)
 const purge = ref(false)
 // How often the page asks how far the download is, in milliseconds.
@@ -178,6 +180,7 @@ async function load(quiet = false) {
 
 async function act(work: () => Promise<RuntimeView>) {
   busy.value = true
+  changeError.value = ''
   // No asking meanwhile: what the change answers is where the service stands.
   if (timer) clearTimeout(timer)
   timer = null
@@ -189,7 +192,7 @@ async function act(work: () => Promise<RuntimeView>) {
     error.value = ''
     return true
   } catch (failure) {
-    error.value = describeConsoleError(failure, t, te)
+    changeError.value = describeConsoleError(failure, t, te)
     // The change was not taken, and nothing asks any more: a download that runs is asked about again.
     if (view.value?.dsh.downloading && alive && !timer) timer = setTimeout(() => void load(true), POLL_MS)
     return false

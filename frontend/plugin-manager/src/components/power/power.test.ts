@@ -159,6 +159,8 @@ describe('the runtime tab', () => {
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
     expect(byTest('dsh-progress')?.textContent).toContain('40.0 MB / 80.0 MB')
+    // Why it was not taken is still said after the download was asked about again.
+    expect(document.body.textContent).toContain(words.errors.agent_unreachable)
 
     // Taken: what it answers is shown, and what was asked for before it came back is not shown over it.
     let late!: (value: unknown) => void

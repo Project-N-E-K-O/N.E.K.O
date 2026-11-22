@@ -892,13 +892,21 @@ class NekoClawHost:
 
         Not when the record says ``wanted`` after all: a write that was
         given up or failed after the record was on disk did change it,
-        and the sessions are right as they are. A session in which
+        and the sessions are right as they are. Nor when the record
+        cannot be read to tell. A session in which
         something began meanwhile is left where it is (``Ledger.restore_project``).
         """
         try:
             kept = await self.space.get_project(project)
-        except Exception:  # noqa: BLE001 - the record cannot be read: taken as not written
-            kept = None
+        except Exception as exc:  # noqa: BLE001 - whatever keeps the record from being read
+            # Not known whether it was written: the sessions are left where they were put
+            # sooner than put back under a record that may say the new directory.
+            logger.warning(
+                "where a project works could not be recorded, and its record cannot be read to tell "
+                "whether it was: its sessions stay in the directory asked for (exc_type=%s)",
+                type(exc).__name__,
+            )
+            return
         if kept is not None and kept.workdir == wanted:
             return
         left = await self.ledger.restore_project(before, wanted)
