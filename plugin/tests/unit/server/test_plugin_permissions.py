@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES
 from plugin.server.application import install_source as install_source_module
 from plugin.server.application.install_source.models import (
     LockEntry,
@@ -14,7 +15,6 @@ from plugin.server.application.install_source.models import (
 )
 from plugin.server.application.plugins import permission_service
 from plugin.server.domain.errors import ServerDomainError
-from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES
 from plugin.server.infrastructure.plugin_permissions import (
     LEGACY_DENIED,
     PluginPermissionStore,
@@ -505,6 +505,35 @@ def test_decide_and_clear_reject_ids_outside_the_vocabulary(manager):
     # Ids from the vocabulary pass through unchanged.
     record = store.decide("x", "system.fs:read", "granted")
     assert list(record["permissions"]) == ["system.fs:read"]
+
+
+def test_legacy_names_resolve_to_permission_ids_in_decide_and_clear(manager):
+    store = PluginPermissionStore(manager)
+
+    record = store.decide("x", "memory.read", "granted")
+    assert list(record["permissions"]) == [MEMORY_READ]
+
+    assert store.clear("x", "memory.read")["permissions"] == {}
+
+
+def test_clear_removes_a_stored_id_the_vocabulary_no_longer_has(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted")
+    document = json.loads(_new_file(manager).read_text(encoding="utf-8"))
+    document["plugins"]["x"]["permissions"]["system.retired:read"] = {
+        "state": "granted",
+        "condition": "in_use",
+        "scope": "all",
+        "decided_at": "2026-01-01T00:00:00Z",
+    }
+    _new_file(manager).write_text(json.dumps(document), encoding="utf-8")
+    store = PluginPermissionStore(manager)
+
+    record = store.clear("x", "system.retired:read")
+
+    assert list(record["permissions"]) == [MEMORY_READ]
+    with pytest.raises(ValueError):
+        store.clear("y", "system.retired:read")
 
 
 # ---------------------------------------------------------------------------

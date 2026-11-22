@@ -457,7 +457,7 @@ class PluginPermissionStore:
     def decide(
         self,
         plugin_id: str,
-        permission_id: str,
+        permission_id: object,
         state: str,
         *,
         condition: str = CONDITION_IN_USE,
@@ -500,19 +500,25 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return copy.deepcopy(record)
 
-    def clear(self, plugin_id: str, permission_id: str) -> dict:
+    def clear(self, plugin_id: str, permission_id: object) -> dict:
         """Return one permission to undecided.
 
         On a ``legacy_denied`` record a missing entry still means denied, so
-        an explicit ``undecided`` entry is stored instead of deleting it.
+        an explicit ``undecided`` entry is stored instead of deleting it. An
+        id outside the vocabulary is accepted only when the record already
+        holds it (e.g. an id the vocabulary has since dropped).
         """
         known_id = normalize_permission(permission_id)
-        if known_id is None:
+        if known_id is None and not (isinstance(permission_id, str) and permission_id):
             raise ValueError(f"Unknown permission: {permission_id!r}")
-        permission_id = known_id
         with self._lock:
             manager = self._load_for_write()
             record = self._document["plugins"].get(plugin_id)
+            if known_id is None:
+                if record is None or permission_id not in record.get("permissions", {}):
+                    raise ValueError(f"Unknown permission: {permission_id!r}")
+                known_id = permission_id
+            permission_id = known_id
             if record is None:
                 return {}
             entry = record.get("permissions", {}).get(permission_id)
