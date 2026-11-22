@@ -208,7 +208,9 @@ class Worktree:
     it was made from; ``subpath`` where the project directory is inside it;
     ``start`` the commit the next landing merges from when the handle was
     made; landings move it on, and what they read is the ref it is kept in
-    (``REF_PREFIX``), so an older handle does no harm.
+    (``REF_PREFIX``), so an older handle does no harm there. ``token`` names
+    the worktree made then: a handle kept past its removal does not remove
+    another made since at the same path.
     """
 
     id: str
@@ -216,6 +218,7 @@ class Worktree:
     path: Path
     subpath: str
     start: str
+    token: str = ""
 
     @property
     def workdir(self) -> Path:
@@ -455,6 +458,7 @@ class WorktreeManager:
                 await _to_the_end(asyncio.to_thread(_unclaim_directory, target))
             raise asyncio.CancelledError
         existed = not claiming.result()
+        token = uuid.uuid4().hex
         try:
             await self._git(repo_root, "update-ref", ref, commit)
             await self._git(
@@ -472,7 +476,7 @@ class WorktreeManager:
             admin = Path((await self._git(target, "rev-parse", "--absolute-git-dir")).lines()[0])
             # Waited for to the end: a late write could land on the
             # registration of another made by the same name after cleanup.
-            await _to_the_end(asyncio.to_thread(_note_directory, admin, target))
+            await _to_the_end(asyncio.to_thread(_note_directory, admin, target, token))
         except BaseException as error:
             # Nothing left behind, done to the end even when cancelled again.
             async def clean() -> None:
@@ -489,7 +493,7 @@ class WorktreeManager:
             if cancelled and not isinstance(error, asyncio.CancelledError):
                 raise _cancelled_after(error) from error
             raise
-        return Worktree(worktree_id, repo_root, target, subpath, commit)
+        return Worktree(worktree_id, repo_root, target, subpath, commit, token)
 
     async def open(self, project_dir: Path | str, path: Path | str) -> Worktree:
         """Return the worktree at ``path`` made earlier for ``project_dir``, after a restart for instance.
@@ -518,7 +522,11 @@ class WorktreeManager:
             if not registered or not await asyncio.to_thread(target.is_dir):
                 raise WorktreeError(f"{target} is not a worktree of {found.repo_root}")
             start = await self._resolve_commit(found.repo_root, _start_ref(worktree_id))
-        return Worktree(worktree_id, found.repo_root, target, found.subpath, start)
+            common = Path(
+                (await self._git(found.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
+            )
+            token = await asyncio.to_thread(_noted_token, common, target) or ""
+        return Worktree(worktree_id, found.repo_root, target, found.subpath, start, token)
 
     async def merge_back(self, worktree: Worktree, landing: Landing | None = None) -> MergeResult:
         """Land what was done in ``worktree``; see ``MergeResult`` for the outcomes. Raises GitError when git fails."""
@@ -794,7 +802,9 @@ class WorktreeManager:
         with its registration and refs, and WorktreeError says so.
         """
         async with await self._lock(worktree.repo_root):
-            await self._forget(worktree.repo_root, worktree.path, worktree.id, remove_directory=False)
+            await self._forget(
+                worktree.repo_root, worktree.path, worktree.id, remove_directory=False, token=worktree.token
+            )
 
     async def reconcile(
         self, project_dir: Path | str, base_dir: Path | str, known: Iterable[str]
@@ -1435,13 +1445,21 @@ class WorktreeManager:
         ]
         return paths[1:]
 
-    async def _forget(self, repo_root: Path, path: Path, worktree_id: str, *, remove_directory: bool) -> None:
+    async def _forget(
+        self, repo_root: Path, path: Path, worktree_id: str, *, remove_directory: bool, token: str = ""
+    ) -> None:
         """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs."""
         listed = await self._registered(repo_root)
         registered = any(_same_path(known, path) for known in listed)
         # Another registered worktree of the same name owns the refs.
         theirs = any(known.name == worktree_id and not _same_path(known, path) for known in listed)
         common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
+        if token and registered:
+            noted = await asyncio.to_thread(_noted_token, common, path)
+            if noted and noted != token:
+                raise WorktreeError(
+                    f"{path} holds a worktree made after this handle's; it is left: open() it for a handle of its own"
+                )
         whose = await asyncio.to_thread(_whose, path, common) if registered and not remove_directory else "ours"
         if whose == "theirs":
             # Still listed, but what is there now is not that worktree (its
@@ -1999,10 +2017,23 @@ def _birth_of(found: os.stat_result, platform: str = sys.platform) -> int | None
     return int(seconds * 1_000_000_000) if seconds else None
 
 
-def _note_directory(admin: Path, path: Path) -> None:
-    identity = _directory_identity(path)
-    if identity is not None:
-        (admin / _DIRECTORY_NOTE).write_text(json.dumps(identity), encoding="utf-8")
+def _note_directory(admin: Path, path: Path, token: str) -> None:
+    note: dict[str, object] = {"token": token}
+    note.update(_directory_identity(path) or {})
+    (admin / _DIRECTORY_NOTE).write_text(json.dumps(note), encoding="utf-8")
+
+
+def _noted_token(common_dir: Path, path: Path) -> str | None:
+    """Return the token noted for the worktree registered at ``path``, or None."""
+    entry = _registration_of(common_dir, path)
+    if entry is None:
+        return None
+    try:
+        noted = json.loads((entry / _DIRECTORY_NOTE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    token = noted.get("token") if isinstance(noted, dict) else None
+    return token if isinstance(token, str) else None
 
 
 def _noted_directory(path: Path, common_dir: Path) -> Literal["ours", "theirs", "unknown"]:

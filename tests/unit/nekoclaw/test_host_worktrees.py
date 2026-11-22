@@ -3378,7 +3378,7 @@ async def test_open_waits_for_a_worktree_being_made(
 
     noting = threading.Event()
 
-    def fails_late(admin: Path, path: Path) -> None:
+    def fails_late(admin: Path, path: Path, token: str) -> None:
         noting.set()
         time.sleep(0.5)
         raise OSError("the disk went away")
@@ -3577,10 +3577,10 @@ async def test_a_make_cancelled_while_noting_its_directory_waits_for_the_note(
     noting = threading.Event()
     noted = []
 
-    def slow(admin: Path, path: Path) -> None:
+    def slow(admin: Path, path: Path, token: str) -> None:
         noting.set()
         time.sleep(0.5)
-        real(admin, path)
+        real(admin, path, token)
         noted.append(admin)
 
     monkeypatch.setattr(worktrees, "_note_directory", slow)
@@ -3821,3 +3821,20 @@ async def test_copies_marked_read_only_are_removed_after_landing(
             break
         await asyncio.sleep(0.05)
     assert not exists(where[0])
+
+
+async def test_a_handle_kept_past_its_removal_does_not_remove_one_made_since(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    old = await manager.create(repo, base / "w1")
+    await manager.remove(old)
+    new = await manager.create(repo, base / "w1")
+    write(new.path / "work.txt", "not landed\n")
+    assert new.token and new.token != old.token
+    with pytest.raises(WorktreeError, match="made after this handle"):
+        await manager.remove(old)
+    assert read(new.path / "work.txt") == b"not landed\n" and "w1" in registered(repo)
+    opened = await manager.open(repo, new.path)
+    assert opened.token == new.token  # found again after a restart, it is that one
+    await manager.remove(opened)
+    assert not exists(new.path) and "w1" not in registered(repo)
