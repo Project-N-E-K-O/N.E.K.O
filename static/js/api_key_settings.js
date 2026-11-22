@@ -108,6 +108,8 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
     gameSummary: 'summary_model',
     emotion: 'emotion_model',
     decision: 'decision_model',
+    // No vision card any more; kept for getAssistDefaultTierModelId(), whose
+    // agent default falls back to the provider's vision model (as the backend does).
     vision: 'vision_model',
     agent: 'agent_model',
     agentSmall: 'emotion_model',
@@ -3565,7 +3567,9 @@ function legacyVisionRoute(data) {
     const model = String(data.visionModelId || '').trim();
     const url = String(data.visionModelUrl || '').trim();
     if (!model && !url) return null;
-    return { model, url };
+    // A named provider with the model ID left empty uses that provider's
+    // default vision model: name the provider instead of showing "?".
+    return { model: model || provider, url };
 }
 
 function renderLegacyVisionNotice(data) {
@@ -4025,7 +4029,9 @@ async function save_button_down(e) {
     };
     if (_clearLegacyVisionOnSave) {
         Object.assign(payload, {
-            visionModelProvider: '', visionModelUrl: '', visionModelId: '', visionModelApiKey: '',
+            // Same as any other cleared slot: back to its default (follow the assist provider).
+            visionModelProvider: getDefaultProviderForModelType('vision'),
+            visionModelUrl: '', visionModelId: '', visionModelApiKey: '',
         });
     }
     if (gptsovitsEnabled) {

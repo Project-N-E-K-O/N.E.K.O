@@ -2321,7 +2321,7 @@ def test_hidden_vision_slot_is_kept_on_save_and_cleared_only_on_clear(mock_page:
     mock_page.evaluate("document.getElementById('apiKeyInput').value = 'test-key'")
     payload = mock_page.evaluate(capture)
     assert "__status" not in payload, payload
-    assert payload["visionModelProvider"] == ""
+    assert payload["visionModelProvider"] == "follow_assist"
     assert payload["visionModelUrl"] == ""
     assert payload["visionModelId"] == ""
     assert payload["visionModelApiKey"] == ""
