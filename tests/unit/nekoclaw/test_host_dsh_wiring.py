@@ -868,6 +868,38 @@ async def test_a_task_agent_started_by_another_runs_where_that_one_runs(
     assert (name, note) == (expected, None)
 
 
+async def test_a_task_agent_whose_preset_withholds_tools_runs_in_the_built_in_runtime_though_its_starter_is_in_dsh(
+    hosts, tmp_path
+):
+    # dsh has file and command tools of its own, which the host cannot keep from a session there.
+    def lead(preset: dict[str, Any]) -> ScriptedLLM:
+        return ScriptedLLM(
+            [
+                [call("subagent", {"description": "look", "prompt": "Look at the tests.", **preset}), finish("tool_calls")],
+                [call("wait_agent", {"timeout_ms": 600_000}, "c2"), finish("tool_calls")],
+                _report("ready", "looked at"),
+            ]
+        )
+
+    leads = [lead({"preset": "scout"}), lead({})]
+    child = ScriptedLLM()
+    host = _host(hosts, tmp_path, lambda spec: leads[0] if spec.top_level else child, Installation())
+
+    scouted = await wait_status(host, await _dispatch(host, "check the tests"), "done")
+    leads.pop(0)
+    worked = await wait_status(host, await _dispatch(host, "check the other tests"), "done")
+
+    (scout,) = await host.ledger.select(parent_id=scouted.id)
+    (worker,) = await host.ledger.select(parent_id=worked.id)
+    assert (scouted.runtime, worked.runtime) == (RUNTIME_DSH, RUNTIME_DSH)
+    # The scout where the host keeps the tools from it; a worker where its starter is, as before.
+    assert ((await host.ledger.get_session(scout.session_id)).preset, scout.runtime) == ("scout", RUNTIME_BUILTIN)
+    assert ((await host.ledger.get_session(worker.session_id)).preset, worker.runtime) == ("worker", RUNTIME_DSH)
+    # That is where it belongs: it is not on record as a commission dsh could not take.
+    assert await _fallbacks(host, scout.id) == []
+    assert len(host.fake.builtin.created) == 1
+
+
 @pytest.mark.parametrize(
     ("recorded", "files", "expected"),
     [

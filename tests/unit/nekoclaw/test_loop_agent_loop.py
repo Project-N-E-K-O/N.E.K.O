@@ -548,6 +548,25 @@ async def test_agent_loop_injects_steering_and_follow_up_messages() -> None:
     assert len(provider.calls) == 3
 
 
+async def test_agent_loop_counts_the_turns_taken_before_it_against_max_turns() -> None:
+    answer = AssistantMessage(content=[TextContent(text="done")], model="fake")
+    provider = FakeProvider([[assistant_start(), assistant_done(answer, "stop")]])
+    messages: list[AgentMessage] = [UserMessage(content="first")]
+
+    def loop(taken: int):  # noqa: ANN202
+        return run_agent_loop(
+            provider=provider, model="fake", system="You are Tau.", messages=messages, tools=[], max_turns=2, turns_taken=taken
+        )
+
+    await _collect(loop(1))
+    assert len(provider.calls) == 1 and messages[-1] is answer
+
+    await _collect(loop(2))
+    error = messages[-1]
+    assert isinstance(error, AssistantMessage) and error.error_message == "Agent stopped after max_turns=2"
+    assert len(provider.calls) == 1
+
+
 async def test_agent_loop_stops_with_assistant_error_after_max_turns() -> None:
     call = ToolCall(id="call-1", name="missing", arguments={})
     assistant = AssistantMessage(content=[call], model="fake")

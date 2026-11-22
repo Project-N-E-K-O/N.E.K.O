@@ -110,13 +110,27 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
                 "details": str(args["details"]) if args.get("details") else None,
                 "delivery": str(args["delivery"]) if args.get("delivery") else None,
             }
-            reply = await ask_host("report", payload, call)
+            told = dict(payload)
+            if args.get("duty"):
+                # What the session says it takes from now on: for the host,
+                # which keeps the session's card. No part of the report itself.
+                told["duty"] = str(args["duty"]).strip()
+            reply = await ask_host("report", told, call)
             ctx.emit_report(payload)
             terminal = status in TERMINAL_REPORT_STATUSES
             text = f"report delivered ({status}).{_host_note(reply)}"
             return text_result(text, terminate=True if terminal else None)
 
-        tools.append(define_tool(schemas["report"], report))
+        schema = schemas["report"]
+        if ctx.top_level:
+            # A session of its own has a card to say what it takes on; a
+            # task agent another one started has none of its own to write.
+            from config.prompts.prompts_nekoclaw_tools import REPORT_DUTY_PARAMETER
+
+            parameters = dict(schema["parameters"])
+            parameters["properties"] = {**parameters["properties"], "duty": REPORT_DUTY_PARAMETER}
+            schema = {**schema, "parameters": parameters}
+        tools.append(define_tool(schema, report))
 
     if "note_lesson" in capabilities:
 
@@ -156,16 +170,16 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             prompt = str(args["prompt"])
             if not prompt.strip():
                 raise ToolError("prompt must be a non-empty string")
-            reply = await ask_host(
-                "subagent_start",
-                {
-                    "description": str(args["description"]),
-                    "prompt": prompt,
-                    "name": name,
-                    "cwd": str(ctx.resolve(str(args["cwd"]))) if args.get("cwd") else None,
-                },
-                call,
-            )
+            payload = {
+                "description": str(args["description"]),
+                "prompt": prompt,
+                "name": name,
+                "cwd": str(ctx.resolve(str(args["cwd"]))) if args.get("cwd") else None,
+            }
+            if args.get("preset"):
+                # Which preset it is started with; the host knows which there are.
+                payload["preset"] = str(args["preset"]).strip()
+            reply = await ask_host("subagent_start", payload, call)
             started = reply.get("name")
             if not isinstance(started, str) or not started:
                 raise ToolError("the host did not return a name for the subagent")
