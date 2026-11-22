@@ -224,6 +224,34 @@ def test_operation_table_and_route_use_permission_ids():
         assert constant in PERMISSIONS
 
 
+def test_gate_constants_are_read_from_the_vocabulary():
+    """capability_gate spells no permission id itself: each one is looked up
+    in PERMISSIONS, so an id that leaves the vocabulary fails at import."""
+    path = REPO / "plugin/server/application/plugins/capability_gate.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    looked_up = {
+        id(node.slice)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "PERMISSIONS"
+    }
+    stray = [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and node.value in PERMISSIONS
+        and id(node) not in looked_up
+    ]
+    assert stray == []
+    assert {capability_gate.MEMORY_READ, capability_gate.CONVERSATIONS_READ,
+            capability_gate.MESSAGES_PUSH} == {
+        MEMORY,
+        "plugin_sdk.main_agent.conversations:read",
+        "plugin_sdk.main_agent.messages:push",
+    }
+
+
 def test_every_permission_handed_to_the_gate_is_an_id():
     """Literals and gate constants passed to the decision helpers must be vocabulary ids."""
     positions = {"check": 2, "capability_checked": 0, "decide": 0, "is_enforced": 0}

@@ -18,7 +18,6 @@ import { resolvePluginInstallErrorKey } from '@/utils/pluginInstallError'
 
 export type InstallPackagePathOptions = {
   pluginsRoot?: string
-  installSource?: 'imported'
   discardOnFailure?: boolean
 }
 
@@ -111,7 +110,10 @@ export function usePluginPackageInstaller() {
         package: packagePath,
         plugins_root: pluginsRoot,
         on_conflict: 'fail',
-        install_source: options.installSource,
+        // Every package installed from the plugin manager is a local import:
+        // its source is recorded as the package hash, so a replacement from
+        // here gets a new source and the previous package's grants lapse.
+        install_source: 'imported',
       }
       if (plan.action === 'upgrade' || plan.action === 'reinstall' || plan.action === 'downgrade') {
         const messagePrefix = plan.reason === 'manual_takeover'
