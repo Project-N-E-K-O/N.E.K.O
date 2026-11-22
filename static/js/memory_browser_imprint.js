@@ -620,7 +620,17 @@
             const data = await resp.json();
             if (targetChar !== activeCharacter) return;
             if (!resp.ok || !data.success) {
-                showToast(data.error || tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
+                // Backend error text (machine codes, English exception text) is
+                // for diagnosis; the user gets the translated hint.
+                if (data && data.error) console.warn('[MemoryBrowser] star map labeling failed:', data.error);
+                if (resp.status === 429) {
+                    // Manual cooldown: say how long to wait, not that the model is misconfigured.
+                    showToast(tr('memory.starMapLabelCooldown', '操作太频繁，请 {{seconds}} 秒后再刷新星云主题', {
+                        seconds: (data && data.retry_after) || 15,
+                    }), true);
+                } else {
+                    showToast(tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
+                }
             } else {
                 if (data.star_map) {
                     starMapData = Object.assign({ success: true }, data.star_map);
@@ -631,7 +641,8 @@
             }
         } catch (err) {
             if (targetChar !== activeCharacter) return;
-            showToast(err && err.message ? err.message : tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
+            console.warn('[MemoryBrowser] star map labeling failed:', err);
+            showToast(tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
         } finally {
             if (targetChar === activeCharacter) {
                 clusterLabeling = false;

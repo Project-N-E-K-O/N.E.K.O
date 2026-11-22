@@ -26,6 +26,7 @@
     ├─ task_agent_space/         what task agents keep for later commissions
     │                            (``SpacePaths``): plain text, written by
     │                            the host only
+    ├─ wt/<name>/                git worktrees side sessions work in
     └─ task_agents/projects/<project>/sessions/<commission id>/
         ├─ transcript.jsonl      written by the runtime
         ├─ outputs/              large tool output, written by the runtime
@@ -105,6 +106,21 @@ def _segment(value: str, what: str) -> str:
 def safe_segment(value: str, what: str = "name") -> str:
     """Return ``value`` if it is safe as one directory name, else raise ValueError."""
     return _segment(value, what)
+
+
+_WORKTREE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
+
+
+def worktree_name(value: str) -> str:
+    """Return ``value`` if a git worktree of the host can have it as its name, else raise ValueError.
+
+    The name is a directory's and a part of a ref name too: letters, digits,
+    ``-`` and ``_`` only, starting with a letter or digit, at most 64
+    characters, and not a name Windows reads as a device (``CON``, ``NUL``...).
+    """
+    if not isinstance(value, str) or not _WORKTREE_NAME.fullmatch(value) or _reserved(value):
+        raise ValueError(f"worktree name {value!r} must be letters, digits, '-' and '_' (at most 64)")
+    return value
 
 
 def data_root() -> Path:
@@ -235,6 +251,19 @@ class HostPaths:
         downloaded again, and what was said in dsh's sessions stays behind.
         """
         return self.root() / "dsh"
+
+    def worktrees_dir(self) -> Path:
+        """Return where the git worktrees side sessions work in are made (``nekoclaw.host.worktrees``).
+
+        Kept short, and each worktree should be named shortly, because a
+        worktree holds the whole repository below it and Windows tools that
+        do not handle paths past 260 characters may be run on it.
+        """
+        return self.root() / "wt"
+
+    def worktree_dir(self, name: str) -> Path:
+        """Return the directory of one worktree; raises ValueError for a name no worktree can have (``worktree_name``)."""
+        return self.worktrees_dir() / worktree_name(name)
 
     def space(self) -> SpacePaths:
         """Return the paths of the task agent space."""

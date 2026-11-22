@@ -72,6 +72,14 @@ class MetricsQueryService:
 
             total_cpu = sum(_to_float(metric.get("cpu_percent")) for metric in metrics)
             total_memory_mb = sum(_to_float(metric.get("memory_mb")) for metric in metrics)
+            # Only plugins that reported USS contribute; unknown values stay out of
+            # the sum instead of being coerced to 0, and an all-unknown round is None.
+            uss_samples = [
+                _to_float(metric.get("memory_uss_mb"))
+                for metric in metrics
+                if metric.get("memory_uss_mb") is not None
+            ]
+            total_memory_uss_mb = round(sum(uss_samples), 2) if uss_samples else None
             total_memory_percent = sum(_to_float(metric.get("memory_percent")) for metric in metrics)
             total_threads = sum(_to_int(metric.get("num_threads")) for metric in metrics)
             active_plugins = len([metric for metric in metrics if metric.get("pid") is not None])
@@ -82,6 +90,7 @@ class MetricsQueryService:
                 "global": {
                     "total_cpu_percent": round(total_cpu, 2),
                     "total_memory_mb": round(total_memory_mb, 2),
+                    "total_memory_uss_mb": total_memory_uss_mb,
                     "total_memory_percent": round(total_memory_percent, 2),
                     "total_threads": total_threads,
                     "active_plugins": active_plugins,

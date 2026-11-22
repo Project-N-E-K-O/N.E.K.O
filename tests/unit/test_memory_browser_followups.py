@@ -1202,3 +1202,71 @@ def test_merge_recovery_compares_a_synced_drop_row_after_normalizing(tmp_path):
     assert handler(NAME, payload) is True
     rows = _read_json(path)
     assert [r["id"] for r in rows] == ["r_keep"] and rows[0]["text"] == "merged"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,second", [(409, 409), (500, 429)])
+async def test_manual_star_map_cooldown_skips_a_request_refused_for_missing_model(monkeypatch, status, second):
+    from fastapi.responses import JSONResponse
+    from main_routers import memory_router
+
+    monkeypatch.setattr(memory_router, "_validate_browser_character_or_400", lambda _name: None)
+    monkeypatch.setattr(memory_router, "_parse_and_validate_browser_post", AsyncMock(return_value=({}, None)))
+    monkeypatch.setattr(
+        memory_router, "_proxy_memory_browser",
+        AsyncMock(return_value=JSONResponse({"success": False}, status_code=status)),
+    )
+    memory_router._manual_llm_last_trigger.pop(("star_map_labels", NAME), None)
+    try:
+        first = await memory_router.label_memory_star_map_clusters(NAME, MagicMock())
+        again = await memory_router.label_memory_star_map_clusters(NAME, MagicMock())
+    finally:
+        memory_router._manual_llm_last_trigger.pop(("star_map_labels", NAME), None)
+    # A refusal for a missing model sends nothing, so it starts no cooldown.
+    assert first.status_code == status and again.status_code == second
+
+
+@pytest.mark.asyncio
+async def test_restore_failing_before_its_event_logs_no_replay_warning(tmp_path):
+    from memory.analytics import snapshots
+
+    log = _event_log(tmp_path)
+    _seed_memory(tmp_path, "likes jazz", "drinks oolong")
+    meta = await _snapshot(tmp_path)
+
+    def _no_backup(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    fake_logger = MagicMock()
+    with (
+        patch.object(snapshots, "create_snapshot_sync", _no_backup),
+        patch.object(snapshots, "logger", fake_logger),
+        pytest.raises(OSError),
+    ):
+        await _restore(tmp_path, meta["snapshot_id"], event_log=log)
+    assert not (tmp_path / NAME / "events.ndjson").exists() or not _journal(tmp_path)
+    warnings = [str(call.args[0]) for call in fake_logger.warning.call_args_list]
+    assert not any("left for replay" in text for text in warnings), warnings
+
+
+@pytest.mark.asyncio
+async def test_refused_star_map_request_keeps_a_newer_requests_cooldown(monkeypatch):
+    from fastapi.responses import JSONResponse
+    from main_routers import memory_router
+
+    key = ("star_map_labels", NAME)
+
+    async def _slow_refusal(*_args, **_kwargs):
+        # Another request passed the cooldown while this one was in flight.
+        memory_router._manual_llm_last_trigger[key] = 123456.0
+        return JSONResponse({"success": False}, status_code=409)
+
+    monkeypatch.setattr(memory_router, "_validate_browser_character_or_400", lambda _name: None)
+    monkeypatch.setattr(memory_router, "_parse_and_validate_browser_post", AsyncMock(return_value=({}, None)))
+    monkeypatch.setattr(memory_router, "_proxy_memory_browser", _slow_refusal)
+    memory_router._manual_llm_last_trigger.pop(key, None)
+    try:
+        await memory_router.label_memory_star_map_clusters(NAME, MagicMock())
+        assert memory_router._manual_llm_last_trigger.get(key) == 123456.0
+    finally:
+        memory_router._manual_llm_last_trigger.pop(key, None)
