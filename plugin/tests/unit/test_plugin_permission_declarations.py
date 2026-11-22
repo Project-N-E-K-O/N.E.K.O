@@ -1394,11 +1394,16 @@ def test_cli_lists_shipped_test_files_but_not_excluded_ones(tmp_path):
         (plugin_dir / folder).mkdir()
         (plugin_dir / folder / "test_a.py").write_text("x = 1\n", encoding="utf-8")
         (plugin_dir / folder / "app.js").write_text("1\n", encoding="utf-8")
+        (plugin_dir / folder / "vendor").mkdir()
     info = _issues(plugin_dir, "info")
     blind = [message for message in info if "(not scanned" in message.splitlines()[0]]
     assert [message.split(":", 1)[0] for message in blind] == ["net_test.py"]
     assert "test_source" in blind[0].splitlines()[0]
     assert not [message for message in info if "build/" in message or "dist/" in message]
+    # A vendor/ directory that ships is still listed.
+    (plugin_dir / "vendor").mkdir()
+    blind = [message for message in _issues(plugin_dir, "info") if "(not scanned" in message.splitlines()[0]]
+    assert [message.split(": ", 1)[0] for message in blind] == ["net_test.py, vendor"]
     assert not any(message.startswith("the code scan found no use beyond") for message in info)
 
 

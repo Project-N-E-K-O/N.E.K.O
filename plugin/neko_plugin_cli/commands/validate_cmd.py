@@ -1302,7 +1302,7 @@ def _check_permission_usage(
     rules = _build_rules_or_defaults(pyproject)
     # Filter before reading so excluded files do not use up the scan budget.
     sources = read_capability_sources(
-        plugin_dir, include=lambda relative: not should_skip_path(relative, is_dir=False, rules=rules)
+        plugin_dir, include=lambda relative, is_dir: not should_skip_path(relative, is_dir=is_dir, rules=rules)
     )
     report = analyze_capabilities(plugin_dir, declarations=declarations, sources=sources)
     found = compare_declarations(report)

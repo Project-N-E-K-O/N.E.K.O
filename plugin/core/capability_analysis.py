@@ -1108,22 +1108,19 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
 
 
 def _skipped_parts(
-    root: Path, stop: Event | None, include: Callable[[Path], bool] | None = None
+    root: Path, stop: Event | None, include: Callable[[Path, bool], bool] | None = None
 ) -> list[dict]:
     """Blind-spot rows for vendor/, non-Python code and test-named files, bounded.
 
-    ``include`` drops files the caller does not compare (see
+    ``include`` drops paths the caller does not compare (see
     read_capability_sources).
     """
     inventory = skipped_inventory(root, stop)
     skipped: list[dict] = []
-    skipped.extend(
-        {"reason": "vendor", "file": relative} for relative in inventory["vendor"][:_MAX_NON_PYTHON_REPORTED]
-    )
-    for reason in ("non_python", "test_source"):
+    for reason, is_dir in (("vendor", True), ("non_python", False), ("test_source", False)):
         files = inventory[reason]
         if include is not None:
-            files = [relative for relative in files if include(Path(relative))]
+            files = [relative for relative in files if include(Path(relative), is_dir)]
         skipped.extend({"reason": reason, "file": relative} for relative in files[:_MAX_NON_PYTHON_REPORTED])
     if inventory["truncated"]:
         skipped.append({"reason": "budget_exceeded", "file": None})
@@ -1136,17 +1133,18 @@ def read_capability_sources(
     root: Path,
     *,
     stop: Event | None = None,
-    include: Callable[[Path], bool] | None = None,
+    include: Callable[[Path, bool], bool] | None = None,
 ) -> CapabilitySources:
     """Read a bounded snapshot and close source handles before parsing.
 
-    ``include`` (given a plugin-relative path) filters files before they
-    count toward the file and size budgets, and in the list of unscanned files.
+    ``include`` (given a plugin-relative path and whether it is a directory)
+    filters files before they count toward the file and size budgets, and
+    the list of unscanned parts.
     """
     sources = CapabilitySources()
     paths = iter_capability_sources(root)
     if include is not None:
-        paths = (path for path in paths if include(path.relative_to(root)))
+        paths = (path for path in paths if include(path.relative_to(root), False))
     try:
         for index, path in enumerate(paths):
             if stop is not None and stop.is_set():
