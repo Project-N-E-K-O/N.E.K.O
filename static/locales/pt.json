@@ -1346,10 +1346,10 @@
         "coreApiTitle": "O Provedor de modelo de voz é responsável pelo chat de voz:",
         "freeVersionCore": "Versão gratuita: gratuita, sem necessidade de chave de API, com limites de uso",
         "aliCore": "Alibaba: recursos abrangentes e rápido",
-        "glmCore": "GLM: Modelo foi temporariamente descontinuado, indisponível",
+        "glmCore": "GLM: cobrado por minuto; o áudio tem marca d'água por padrão (desative no console da Zhipu)",
         "stepCore": "StepFun: pagamento por uso, limites de taxa rígidos, não recomendado",
         "openaiCore": "OpenAI: o mais alto nível de inteligência, mas caro",
-        "geminiCore": "Gêmeos: Excelente inteligência e valor",
+        "geminiCore": "Gemini: Excelente inteligência e valor",
         "assistApiTitle": "O Provedor de modelo geral é responsável pelo chat, pela organização da memória e pelo familiar:",
         "freeVersionAssist": "Versão gratuita: gratuita, sem necessidade de chave de API; o familiar tem usos gratuitos diários",
         "aliAssist": "Alibaba: escolha recomendada, recursos mais abrangentes, suporta o familiar",
@@ -1357,7 +1357,7 @@
         "stepAssist": "StepFun: os limites de taxa dependem do valor recarregado e são muito rígidos nos níveis baixos; não recomendado",
         "siliconAssist": "SiliconFlow: bom custo-benefício, suporta o familiar",
         "openaiAssist": "OpenAI: forte na organização da memória, preço mais alto",
-        "geminiAssist": "Gêmeos: Excelente inteligência e valor",
+        "geminiAssist": "Gemini: Excelente inteligência e valor",
         "kimiAssist": "Kimi: Suporta contexto e visão longos",
         "kimiCodeAssist": "Kimi Code: compatível com Anthropic Messages, bom para código e textos longos",
         "assistApiNote": "Nota: GLM e StepFun não são recomendados.",
@@ -4756,7 +4756,7 @@
             },
             "step5": {
                 "title": "🔧 Provedor de modelo geral",
-                "desc": "O Provedor de modelo geral é responsável pelo chat, pela organização da memória e pelo familiar.\n\n• Versão gratuita: gratuita, sem necessidade de chave de API, com limites de uso\n• Alibaba: recomendado, recursos mais abrangentes\n• Zhipu: suporta o familiar\n• OpenAI: forte na organização da memória\n\nNota: para a voz personalizada (clonagem de voz), basta salvar a chave do provedor correspondente no Livro de chaves, sem precisar trocar o Provedor de modelo de voz ou o Provedor de modelo geral."
+                "desc": "O Provedor de modelo geral é responsável pelo chat, pela organização da memória e pelo familiar.\n\n• Versão gratuita: gratuita, sem necessidade de chave de API, com limites de uso\n• Alibaba: recomendado, recursos mais abrangentes\n• SiliconFlow: bom custo-benefício, suporta o familiar\n• OpenAI: forte na organização da memória\n\nNota: para a voz personalizada (clonagem de voz), basta salvar a chave do provedor correspondente no Livro de chaves, sem precisar trocar o Provedor de modelo de voz ou o Provedor de modelo geral."
             },
             "step6": {
                 "title": "🔑 chave de API do modelo geral",

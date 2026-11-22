@@ -1346,7 +1346,7 @@
         "coreApiTitle": "The Voice Model Provider handles voice chat:",
         "freeVersionCore": "Free version: free, no API Key needed, with usage limits",
         "aliCore": "Alibaba: full-featured and fast",
-        "glmCore": "GLM: Model has been temporarily discontinued, unavailable",
+        "glmCore": "GLM: billed per minute; audio is watermarked by default (turn it off in the Zhipu console)",
         "stepCore": "StepFun: pay-as-you-go with strict rate limits; not recommended",
         "openaiCore": "OpenAI: Highest intelligence level, but expensive",
         "geminiCore": "Gemini: Excellent intelligence and value",
@@ -4756,7 +4756,7 @@
             },
             "step5": {
                 "title": "🔧 General Model Provider",
-                "desc": "The General Model Provider handles chat, memory, and the Familiar.\n\n• Free: free, no API Key needed, with usage limits\n• Alibaba: recommended, most complete features\n• Zhipu: supports the Familiar\n• OpenAI: strong at organizing memory\n\nNote: custom voices (voice cloning) only need the matching provider's Key saved in the Key Book; you don't have to switch the Voice Model Provider or General Model Provider."
+                "desc": "The General Model Provider handles chat, memory, and the Familiar.\n\n• Free: free, no API Key needed, with usage limits\n• Alibaba: recommended, most complete features\n• SiliconFlow: good value, supports the Familiar\n• OpenAI: strong at organizing memory\n\nNote: custom voices (voice cloning) only need the matching provider's Key saved in the Key Book; you don't have to switch the Voice Model Provider or General Model Provider."
             },
             "step6": {
                 "title": "🔑 General Model API Key",

@@ -235,7 +235,7 @@ Agent API Key 的取法：
 
 > **注意**：
 > - `enableCustomApi` 是各模型槽位自定义字段的总开关（GPT-SoVITS 和豆包语音除外，见第 7 节），打开后其它槽位里已保存的自定义值也会一起生效。
-> - 手工打开 `enableCustomApi` 但不想改 Agent 时，请把 `agentModelProvider` 设为 `follow_assist`。不设置时，`agentModelApiKey`（默认是空串）会把默认的 Agent Key 覆盖掉，Agent 可用性检查会报「Agent API Key 未配置或不可用」。
+> - 手工打开 `enableCustomApi` 但不想改 Agent 时，请把 `agentModelProvider` 设为 `follow_assist`。不设置时，`agentModelApiKey`（默认是空串）会把默认的 Agent Key 覆盖掉，Agent 可用性检查会报「Agent API Key 未配置或不可用」（设置页显示为「使魔模型的 API Key 未配置或不可用」）。
 > - 选具体提供商时地址不会自动切换：`agentModelUrl` 留空时请求仍发往默认地址（`assistApi` 提供商的地址）。所选提供商与 `assistApi` 不同时，要把 `agentModelUrl` 填成所选提供商的地址，请求才会发往它，也才会取用它的 `assistApiKey*`。
 
 > **Docker 部署**：
