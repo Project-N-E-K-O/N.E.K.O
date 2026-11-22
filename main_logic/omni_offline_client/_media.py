@@ -718,16 +718,16 @@ class _MediaMixin:
         """
         self._strip_history_images(_is_auto_captured_history_image, only=message)
 
-    def _drop_history_image_pixels(self) -> int:
-        """Drop every history image's pixels in place, keeping text and receipts.
+    def _drop_history_image_pixels(self, only=None) -> int:
+        """Drop history images' pixels in place (all, or ``only`` that message), keeping text and receipts.
 
         Used after the chat model rejected an image: left in history, the
         picture would ride along with every later text-only request and be
         rejected again. Edited in place, like ``_strip_history_images``, so a
         write-back that finds a message by identity still finds it.
         """
-        stripped = self._strip_history_images(lambda _kind, _prefit: True)
-        for msg in getattr(self, "_conversation_history", None) or []:
+        stripped = self._strip_history_images(lambda _kind, _prefit: True, only=only)
+        for msg in (getattr(self, "_conversation_history", None) or []) if only is None else (only,):
             if isinstance(msg, HumanMessage):
                 count = image_count(msg.content)
                 if count:

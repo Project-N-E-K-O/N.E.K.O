@@ -1212,6 +1212,20 @@ class _StreamingMixin:
             # Consent was revoked while this turn was being assembled: its
             # proactive screenshot must not go out (no await since append).
             self._strip_auto_captures_missed_by_revocation(user_message)
+        if has_images and not (getattr(self, "vision_model", "") or ""):
+            _choice = getattr(self, "_image_choice", None)
+            if _choice is not None:
+                from utils.legacy_vision import chat_refuses_images
+                if chat_refuses_images(_choice.conversation):
+                    # The chat model already rejected images this run: send the
+                    # text (with image receipts) rather than another refused
+                    # request. No await since append.
+                    _dropped = self._drop_history_image_pixels(only=user_message)
+                    if _dropped:
+                        logger.info(
+                            "🖼️ Not sending %d image(s): the chat model cannot read images",
+                            _dropped,
+                        )
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history

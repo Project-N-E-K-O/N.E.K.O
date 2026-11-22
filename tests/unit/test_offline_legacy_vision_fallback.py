@@ -281,3 +281,32 @@ async def test_refusal_without_an_image_choice_marks_the_client_route():
 
     await client.stream_text("看看这个")
     assert lv.chat_refuses_images(CHAT)
+
+
+async def test_images_after_a_refusal_are_not_sent_again():
+    from utils.image_history import image_count
+
+    client = _session()
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [_refusal(), [_text("好的。"), _text("", "stop")]]
+    await client.stream_text("看看这个")
+
+    # A new picture on a later turn: the text goes out, the picture does not.
+    client._pending_images = [_png_b64(4, 4)]
+    await client.stream_text("那这张呢")
+
+    assert len(client.requests) == 2
+    assert all(image_count(getattr(m, "content", "")) == 0 for m in client.requests[1])
+    assert "那这张呢" in str(client.requests[1][-1].content)
+    assert _emitted(client) == ["好的。"]
+
+
+async def test_separate_vision_config_is_not_affected_by_a_chat_refusal():
+    from utils.image_history import image_count
+
+    lv.mark_chat_image_refused(CHAT, "t")
+    client = _session(vision=VISION)
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [[_text("看到了。"), _text("", "stop")]]
+    await client.stream_text("看看这个")
+    assert image_count(client.requests[0][-1].content) == 1
