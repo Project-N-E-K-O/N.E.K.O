@@ -1348,8 +1348,16 @@ class TtsRuntimeMixin:
             # for the cache lock. Follow only the unchanged turn's transferred
             # replay list; a replacement cache still belongs to its new owner.
             if (not (owns_queues or owns_transferred_replay)
-                    or not self._tts_output_is_current()
-                    or (still_owned is not None and not still_owned())):
+                    or not self._tts_output_is_current()):
+                return
+            if still_owned is not None and not still_owned():
+                # Successor speech already took over: prune only chunks belonging
+                # to the interrupted speech_id and preserve successor state.
+                if speech_id is not None:
+                    self.tts_pending_chunks[:] = [
+                        chunk for chunk in self.tts_pending_chunks
+                        if chunk[0] != speech_id
+                    ]
                 return
             self.tts_pending_chunks.clear()
             # Clear queued again: during the 20ms above, concurrent paths (finish_proactive_delivery,

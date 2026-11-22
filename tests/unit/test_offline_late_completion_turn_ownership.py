@@ -1172,7 +1172,7 @@ async def test_takeover_completion_rechecks_speech_id_before_clearing_cache_unde
 
     await asyncio.wait_for(completion, 5)
     if rotate:
-        assert ("speech-mirror", "mirror line") in mgr.tts_pending_chunks
+        assert mgr.tts_pending_chunks == [("speech-mirror", "mirror line")]
         assert mgr._tts_done_queued_for_turn is True
         assert mgr._tts_done_pending_until_ready is True
     else:
@@ -1224,7 +1224,7 @@ async def test_takeover_completion_rechecks_speech_id_after_interrupt_land_sleep
     await asyncio.wait_for(completion, 5)
     if rotate:
         assert ("speech-mirror", b"mirror-audio") in mgr.tts_response_queue.messages
-        assert ("speech-mirror", "mirror line") in mgr.tts_pending_chunks
+        assert mgr.tts_pending_chunks == [("speech-mirror", "mirror line")]
         assert mgr._tts_done_queued_for_turn is True
         assert mgr._tts_done_pending_until_ready is True
     else:
