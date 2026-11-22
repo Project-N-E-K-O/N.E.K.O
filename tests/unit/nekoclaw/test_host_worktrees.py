@@ -2820,3 +2820,33 @@ async def test_a_worktree_directory_gone_gives_a_git_error(repo: Path, manager: 
     with pytest.raises(worktrees.GitError) as raised:
         await manager.merge_back(tree)
     assert "could not be started" in str(raised.value)
+
+
+async def test_an_index_that_cannot_be_put_back_is_kept_and_said(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "staged\n")
+    git(tree.path, "add", "a.txt")
+    write(tree.path / "a.txt", "working\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    original = manager._git
+
+    async def ref_locked(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start"):
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        return await original(cwd, *args, **kwargs)
+
+    def held(copy: Path, index: Path) -> None:
+        raise PermissionError("the index is held")
+
+    monkeypatch.setattr(manager, "_git", ref_locked)
+    monkeypatch.setattr(worktrees, "_put_index_back", held)
+    with pytest.raises(worktrees.GitError) as raised:
+        await manager.prepare_conflicts(tree, conflict)
+    notes = " ".join(getattr(raised.value, "__notes__", []))
+    assert "index could not be put back" in notes
+    kept = Path(notes.split("what it was is kept in ")[1].split()[0])
+    assert kept.exists()
+    shutil.rmtree(kept.parent)

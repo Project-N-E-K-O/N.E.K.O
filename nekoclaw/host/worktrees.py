@@ -572,6 +572,7 @@ class WorktreeManager:
             )
             saved = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
             had_index = await asyncio.to_thread(_copy_index, index, saved / "index")
+            keep_saved = False
             try:
                 # The host's own worktree, not the user's checkout.
                 await self._git(
@@ -609,7 +610,15 @@ class WorktreeManager:
                     if own_head:
                         await self._git(worktree.path, "update-ref", "--no-deref", "HEAD", own_head)
                     if had_index:
-                        await asyncio.to_thread(shutil.copy2, saved / "index", index)
+                        try:
+                            await asyncio.to_thread(_put_index_back, saved / "index", index)
+                        except OSError as failed:
+                            nonlocal keep_saved
+                            keep_saved = True
+                            error.add_note(
+                                f"the worktree's index could not be put back ({failed}); "
+                                f"what it was is kept in {saved / 'index'}"
+                            )
                     await self._put_start_back(worktree, start, error)
 
                 putting = asyncio.ensure_future(put_back())
@@ -620,7 +629,10 @@ class WorktreeManager:
                     raise _cancelled_after(error) from error
                 raise
             finally:
-                await _to_the_end(asyncio.to_thread(shutil.rmtree, saved, True))
+                # Not waited for: once prepared, no cancellation can come in
+                # between that and the result.
+                if not keep_saved:
+                    asyncio.get_running_loop().run_in_executor(None, shutil.rmtree, saved, True)
         return replace(worktree, start=conflict.current)
 
     async def has_changes(self, worktree: Worktree) -> bool:
@@ -1410,6 +1422,11 @@ def _in_the_way(root: Path, written: list[str], held: set[str], nested: set[str]
             elif up not in held and _is_file_or_link(_fs(root / up)):
                 hit.add(up)
     return sorted(hit)
+
+
+def _put_index_back(copy: Path, index: Path) -> None:
+    """Put a worktree's index file back from its copy."""
+    shutil.copy2(copy, index)
 
 
 def _remove_files(root: Path, names: list[str]) -> None:
