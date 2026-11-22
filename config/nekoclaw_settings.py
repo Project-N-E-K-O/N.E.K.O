@@ -705,11 +705,11 @@ DEFERRED_COMMISSION_SECONDS = 3600.0
 
 # -- worktrees a side session works in (``nekoclaw/host/worktrees.py``) ---------
 
-WORKTREE_GIT_MIN_VERSION = (2, 44, 0)
+WORKTREE_GIT_MIN_VERSION = (2, 45, 0)
 """The oldest git a worktree is made with. Landing merges with
 ``git merge-tree --write-tree --merge-base`` (``--merge-base`` came with 2.40),
-and no git the host runs may fetch an object it lacks (GIT_NO_LAZY_FETCH, which
-2.44 brought, February 2024)."""
+and no git the host runs may fetch an object it lacks (GIT_NO_LAZY_FETCH, read
+from 2.45 on, April 2024)."""
 
 WORKTREE_UNTRACKED_MAX_BYTES = 20 * 1024 * 1024
 """A file not under version control and larger than this is left out of a

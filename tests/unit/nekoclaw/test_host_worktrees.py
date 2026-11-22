@@ -255,7 +255,7 @@ async def test_probe_git_missing(repo: Path, tmp_path: Path) -> None:
     assert found.reason == GIT_MISSING and not found.usable
 
 
-@pytest.mark.parametrize(("version", "usable"), [((2, 43, 9), False), ((2, 44, 0), True)])
+@pytest.mark.parametrize(("version", "usable"), [((2, 44, 9), False), ((2, 45, 0), True)])
 async def test_probe_git_version_floor(repo: Path, manager: WorktreeManager, monkeypatch: Any, version: Any, usable: bool) -> None:
     async def fixed() -> tuple[int, int, int]:
         return version
