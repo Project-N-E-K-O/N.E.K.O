@@ -8,7 +8,7 @@ seoSchemaType: WebPage
 
 N.E.K.O 目前不是开箱即用的完全离线产品。界面和默认记忆存储在本机，部分组件可以自托管；但常用的免费路径，以及许多模型、语音、可选的跨设备同步、Steam、Cloud、Workshop、在线内容、浏览器和 Agent 功能仍需要网络。
 
-事实最后核验于 **2026-07-23**。
+事实最后核验于 **2026-11-22**。
 
 ## 四个不能混为一谈的概念
 
@@ -33,7 +33,7 @@ N.E.K.O 目前不是开箱即用的完全离线产品。界面和默认记忆存
 | 随附的免费配置 | Project N.E.K.O 托管的远端服务 | 是 | 不需要用户 API Key，但不是离线服务 |
 | ASR、TTS 与声音注册 | 取决于 Provider | 经常需要 | 存在部分本地 TTS 或 vLLM-Omni 路径，要求各不相同 |
 | Steam、Workshop 与 Steam Cloud | Steam 服务 | 是 | 断网时不可用 |
-| 跨设备聊天与记忆同步 | N.E.K.O 同步服务（`sync.nekotech.cn`） | 开启后联网 | 默认关闭；需要社区 OAuth 登录（`community.project-neko.cn`）并按角色显式开启（`includeHistory` 需单独选择）；与 Steam Cloud 相互独立 |
+| 跨设备聊天与记忆同步 | N.E.K.O 同步服务（`sync.nekotech.cn`） | 开启后联网 | 默认关闭；需要社区 OAuth 登录（`community.project-neko.cn`）。在角色卡中开启同步并保存会发送 `includeHistory: true` 并一并包含已有近期对话历史（无单独 UI 历史开关；仅直接调用 REST 接口且省略该字段时默认 `false`）；与 Steam Cloud 相互独立 |
 | 浏览器、Feed、趋势与在线内容 | 外部来源 | 是 | 没有网络就无法获取当前外部内容 |
 | 远端 Agent 渠道 | 取决于渠道 | 经常需要 | 键鼠和浏览器操控在本机执行动作，但每一步由模型调用决定，模型仍可能在远端 |
 

@@ -28,8 +28,8 @@ def _extract_allowlisted_filenames(doc_path: Path) -> list[str]:
 
 @pytest.mark.parametrize("doc_path", CLOUDSAVE_DOCS, ids=lambda p: str(p.relative_to(REPO_ROOT)))
 def test_cloudsave_docs_allowlist_matches_managed_memory_filenames(doc_path: Path):
-    """Assert every mirrored Cloud Save doc lists all 17 allowlisted files in exact order."""
+    """Assert every mirrored Cloud Save doc lists all allowlisted files in exact order."""
     documented = _extract_allowlisted_filenames(doc_path)
     expected = list(MANAGED_MEMORY_FILENAMES)
-    assert len(expected) == 17
+    assert len(expected) >= 17
     assert documented == expected

@@ -8,7 +8,7 @@ seoSchemaType: WebPage
 
 N.E.K.O is not an out-of-the-box, fully offline product. Its interface and default memory storage are local, and selected components can be self-hosted, but the normal free path and many model, voice, optional cross-device sync, Steam, Cloud, Workshop, feed, browser, and Agent features require a network connection.
 
-Last fact review: **2026-07-23**.
+Last fact review: **2026-11-22**.
 
 ## Four terms that should not be mixed together
 
@@ -33,7 +33,7 @@ The internal name `OmniOfflineClient` refers to the **non-realtime text Chat Com
 | Shipped free profiles | Project-hosted remote service | Yes | No user API key, but not offline |
 | ASR, TTS, and voice registration | Depends on provider | Often | Selected local TTS or vLLM-Omni paths exist; requirements differ |
 | Steam, Workshop, and Steam Cloud | Steam services | Yes | Unavailable offline |
-| Cross-device chat and memory sync | N.E.K.O. sync service (`sync.nekotech.cn`) | When enabled | Disabled by default; requires Community OAuth login (`community.project-neko.cn`) and per-character opt-in (`includeHistory` requires explicit choice); separate from Steam Cloud |
+| Cross-device chat and memory sync | N.E.K.O. sync service (`sync.nekotech.cn`) | When enabled | Disabled by default; requires Community OAuth login (`community.project-neko.cn`). Saving sync enabled in the character card sends `includeHistory: true` and includes existing recent-memory history (no separate UI history toggle; `includeHistory` defaults to `false` only on direct REST calls omitting it); separate from Steam Cloud |
 | Browser, feeds, trends, and online content | External sources | Yes | The feature cannot fetch current external content without network access |
 | Remote Agent channels | Channel-specific services | Often | Keyboard-and-mouse and browser control act on the local machine, but every step is decided by a model call that can still be remote |
 

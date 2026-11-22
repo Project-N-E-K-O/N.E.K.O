@@ -328,7 +328,7 @@ Parses OpenClaw, Hermes, or Molili Markdown files or ZIP archives without writin
 | `files` | array | no | List of `{path/name, content}` objects; mutually exclusive with `archive_b64` |
 | `archive_b64` | string | no | Base64-encoded ZIP archive (optional `data:` prefix); mutually exclusive with `files` |
 
-Returns `success`, `character_name`, `source_format`, `files`, `counts` (`persona`, `facts`, `daily`), `candidate_count`, `persona_fusion_calls`, `persona_candidate_tokens`, `daily_extraction_calls`, `daily_candidate_tokens`, `warning_count`, `warnings` (at most 20), `candidates` (at most 100), and `truncated_preview`. Molili archives also include `character_card`, `master_profile`, `skipped`, and `snapshot_time`. Validation or parsing failures return `400`; unexpected errors return `500`.
+Returns `success`, `character_name`, `source_format`, `files`, `counts` (`persona`, `facts`, `daily`), `candidate_count`, `persona_fusion_calls`, `persona_candidate_tokens`, `daily_extraction_calls`, `daily_candidate_tokens`, `warning_count`, `warnings` (at most 20), `candidates` (at most 100), and `truncated_preview`. Molili archives also include `character_card`, `master_profile`, `skipped`, and `snapshot_time`. Requests exceeding `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` are rejected earlier by `InboundBodySizeLimitMiddleware` with HTTP `413` and `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}` (not `{success, error}`). Validation or parsing failures return `400`; unexpected errors return `500`.
 
 ### `POST /api/memory/external_import/commit`
 
@@ -343,7 +343,7 @@ Accepts the same `character_name`, `source_format`, and `files` / `archive_b64` 
 | `acknowledge_warnings` | boolean | conditional | Must be `true` when suspicious-instruction warnings are present; otherwise returns `409` |
 | `render_language` | string | no | Validated render-only locale fallback; never persists as a durable language preference |
 
-On success returns `success: true`, `need_refresh: true`, `memory_server_reloaded: true`, `status: "success"`, `character_name`, `source_format`, `imported_files`, `added_persona`, `added_facts`, `skipped_duplicates`, and `warning_count`. Errors: `400` (invalid input), `409` (unacknowledged warnings or cloud-storage maintenance), `413` (`error_code: "external_import_too_large"` with `partial_import`), `500` (`error_code: "external_import_partial"` with `partial_import`, or generic failure), and `504` (`error_code: "external_import_timeout"` when the forwarding window expires while the memory server continues running).
+On success returns `success: true`, `need_refresh: true`, `memory_server_reloaded: true`, `status: "success"`, `character_name`, `source_format`, `imported_files`, `added_persona`, `added_facts`, `skipped_duplicates`, and `warning_count`. Requests exceeding `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` are rejected earlier by `InboundBodySizeLimitMiddleware` with HTTP `413` and `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}` (not `{success, error}`). Router/memory-server errors: `400` (invalid input), `409` (unacknowledged warnings or cloud-storage maintenance), `413` (`error_code: "external_import_too_large"` with `partial_import`), `500` (`error_code: "external_import_partial"` with `partial_import`, or generic failure), and `504` (`error_code: "external_import_timeout"` when the forwarding window expires while the memory server continues running).
 
 ### `GET /api/memory/external_import/progress`
 
@@ -355,7 +355,7 @@ Polls the memory server's in-memory progress counters for an external import.
 |---|---|---:|---|
 | `character_name` | string | yes | Target character name (allows dots; max `50` chars) |
 
-Returns `{"success": true, "active": false}` when idle, or `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": ...}` while active. Invalid names return `400`; forwarding failures return `502`.
+Returns `{"success": true, "active": false}` before any import has run for that character in the current memory-server process, `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": ...}` while active, or `{"success": true, "active": false, "finished": true, ...}` with the retained final stage and counters after completion. Invalid names return `400`; non-200 HTTP status codes from the memory server are forwarded verbatim, and forwarding failures return `502`.
 
 ## Farewell summary
 

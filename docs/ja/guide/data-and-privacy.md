@@ -8,7 +8,7 @@ seoSchemaType: WebPage
 
 N.E.K.O. はキャラクターメモリを既定でローカルに保存します。ただし、モデル Provider、memory processing task、無料 API 経路、cloud speech、オプションのクロスデバイス会話・メモリ同期、Steam Cloud、Workshop、online feed、Browser 機能、remote Agent channel を使うと、関連する内容がデバイス外へ送られる場合があります。
 
-最終事実確認日：**2026-07-23**。
+最終事実確認日：**2026-11-22**。
 
 ::: warning 技術データフローに関する注意
 このページは、現在の実装と公式配布時の説明を技術的に整理したものです。特定地域向けの Privacy Policy、Provider agreement、法的レビューの代わりにはなりません。
@@ -40,7 +40,7 @@ N.E.K.O. はキャラクターメモリを既定でローカルに保存しま�
 | 同梱の無料 API 経路 | 無料 request に必要な入力 | N.E.K.O. の転送サービスとサービスパートナー | 現在の Steam EULA は自分の有料 API を使う経路と区別している |
 | Telemetry | 下記の利用・運用 metadata | N.E.K.O. telemetry service | 環境変数で無効化できる |
 | Proactive vision | 有効な機能に必要な screen stream / screenshot | ローカル pipeline と設定した vision / model 経路 | Privacy mode は proactive viewing を止める。手動 screenshot は別経路 |
-| クロスデバイス会話・メモリ同期 | キャラクターごとに有効化した会話原文、最近のメモリ、学習済みメモリスナップショット（`facts`、`persona`、`reflections`）、承認済みキャラクタープロフィールやモデル紐付け | N.E.K.O. 同期サービス（`sync.nekotech.cn`、`community.project-neko.cn` のコミュニティ OAuth ログインで認証） | 既定では無効。キャラクターごとの明示的な有効化が必要（`includeHistory` は個別選択が必要）で、Steam Cloud とは別経路 |
+| クロスデバイス会話・メモリ同期 | キャラクターごとに有効化した会話原文、最近のメモリ、学習済みメモリスナップショット（`facts`、`persona`、`reflections`）、承認済みキャラクタープロフィールやモデル紐付け | N.E.K.O. 同期サービス（`sync.nekotech.cn`、`community.project-neko.cn` のコミュニティ OAuth ログインで認証） | 既定では無効。キャラクターカードで同期を有効化して保存すると既存の最近のメモリ履歴も含まれます（デスクトップ UI は `includeHistory: true` を送信し、履歴用の別トグルはありません）。`includeHistory` が既定で `false` になるのはフィールドを省略した直接の REST 呼び出し時のみ。Steam Cloud とは別経路 |
 | Steam Cloud | Allowlist 内のキャラクター設定・memory file | Steam Auto Cloud | Snapshot は memory directory 全体の backup ではない |
 | Workshop 公開 | ユーザーが選択した card、対応 model file、preview、任意の reference voice | Steam Workshop | 公開判断と asset license はユーザーが管理する |
 | DEBUG 診断 | 一部 debug 経路の query / tool argument | ユーザーが共有しない限りローカル log | すべての log が content-free とは限らない |
@@ -103,7 +103,7 @@ Download はローカルの同名キャラクターデータを置き換える�
 
 ## クロスデバイス会話・メモリ同期はキャラクターごとのオプトイン
 
-Steam Auto Cloud とは別に、N.E.K.O. にはオプションのクロスデバイス会話・メモリ同期経路（`services/chat_sync/`、ローカル API プレフィックス `/api/chat-sync`）があります。既定では無効であり、選択が保存されていないキャラクターはオフのままです。利用にはコミュニティ OAuth ログイン（`community.project-neko.cn`）が必要で、キャラクターごとに明示的に有効化した場合にのみ N.E.K.O. 同期サービス（`sync.nekotech.cn`）へ送信されます（過去履歴を含む `includeHistory` も既定は `false` で、明示的な選択が必要です）。有効化したキャラクターでは、会話原文、最近のメモリ、学習済みメモリスナップショット（`facts`、`persona`、`reflections`）、承認済みキャラクタープロフィールやモデル紐付けが転送されます。
+Steam Auto Cloud とは別に、N.E.K.O. にはオプションのクロスデバイス会話・メモリ同期経路（`services/chat_sync/`、ローカル API プレフィックス `/api/chat-sync`）があります。既定では無効であり、選択が保存されていないキャラクターはオフのままで、利用にはコミュニティ OAuth ログイン（`community.project-neko.cn`）が必要です。キャラクターカードで同期スイッチをオンにして保存すると、デスクトップ UI は無条件で `includeHistory: true` を送信し、履歴用の別トグルは存在しないため、そのキャラクターの既存の最近のメモリ履歴も含めて同期対象になります（`includeHistory` の既定値 `false` は、このフィールドを省略して REST API を直接呼び出した場合にのみ適用されます）。有効化したキャラクターでは、会話原文、最近のメモリ、学習済みメモリスナップショット（`facts`、`persona`、`reflections`）、承認済みキャラクタープロフィールやモデル紐付けが N.E.K.O. 同期サービス（`sync.nekotech.cn`）へ転送されます。
 
 ## 現在利用できる制御
 

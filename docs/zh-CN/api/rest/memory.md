@@ -304,7 +304,7 @@
 | `files` | 数组 | 否 | `{path/name, content}` 对象数组；与 `archive_b64` 互斥 |
 | `archive_b64` | 字符串 | 否 | Base64 编码的 ZIP 压缩包（可带 `data:` 前缀）；与 `files` 互斥 |
 
-成功返回 `success`、`character_name`、`source_format`、`files`、`counts`（`persona`、`facts`、`daily`）、`candidate_count`、`persona_fusion_calls`、`persona_candidate_tokens`、`daily_extraction_calls`、`daily_candidate_tokens`、`warning_count`、`warnings`（最多 20 条）、`candidates`（最多 100 条）和 `truncated_preview`；Molili 压缩包还会返回 `character_card`、`master_profile`、`skipped` 和 `snapshot_time`。校验或解析失败返回 `400`；未预期异常返回 `500`。
+成功返回 `success`、`character_name`、`source_format`、`files`、`counts`（`persona`、`facts`、`daily`）、`candidate_count`、`persona_fusion_calls`、`persona_candidate_tokens`、`daily_extraction_calls`、`daily_candidate_tokens`、`warning_count`、`warnings`（最多 20 条）、`candidates`（最多 100 条）和 `truncated_preview`；Molili 压缩包还会返回 `character_card`、`master_profile`、`skipped` 和 `snapshot_time`。请求体超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 时会先被 `InboundBodySizeLimitMiddleware` 直接以 HTTP `413` 拒绝并返回 `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（非 `{success, error}` 格式）。校验或解析失败返回 `400`；未预期异常返回 `500`。
 
 ### `POST /api/memory/external_import/commit`
 
@@ -319,7 +319,7 @@
 | `acknowledge_warnings` | 布尔 | 条件必填 | 检测到可疑指令警告时必须为 `true`，否则返回 `409` |
 | `render_language` | 字符串 | 否 | 仅用于本次渲染的语言兜底，不会持久化为角色语言偏好 |
 
-成功返回 `success: true`、`need_refresh: true`、`memory_server_reloaded: true`、`status: "success"`、`character_name`、`source_format`、`imported_files`、`added_persona`、`added_facts`、`skipped_duplicates` 和 `warning_count`。错误码包括：`400`（请求非法）、`409`（未确认警告或云存储处于维护态）、`413`（`error_code: "external_import_too_large"` 并附带 `partial_import`）、`500`（`error_code: "external_import_partial"` 并附带 `partial_import` 或通用失败）以及 `504`（`error_code: "external_import_timeout"`，表示主服务转发超时但记忆服务器仍在后台执行）。
+成功返回 `success: true`、`need_refresh: true`、`memory_server_reloaded: true`、`status: "success"`、`character_name`、`source_format`、`imported_files`、`added_persona`、`added_facts`、`skipped_duplicates` 和 `warning_count`。请求体超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 时会先被 `InboundBodySizeLimitMiddleware` 直接以 HTTP `413` 拒绝并返回 `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（非 `{success, error}` 格式）。路由与记忆服务器错误码包括：`400`（请求非法）、`409`（未确认警告或云存储处于维护态）、`413`（`error_code: "external_import_too_large"` 并附带 `partial_import`）、`500`（`error_code: "external_import_partial"` 并附带 `partial_import` 或通用失败）以及 `504`（`error_code: "external_import_timeout"`，表示主服务转发超时但记忆服务器仍在后台执行）。
 
 ### `GET /api/memory/external_import/progress`
 
@@ -331,7 +331,7 @@
 |---|---|---:|---|
 | `character_name` | 字符串 | 是 | 目标角色名称（允许点号，最长 `50` 字符） |
 
-空闲时返回 `{"success": true, "active": false}`；导入进行中返回 `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": ...}`。名称非法返回 `400`，转发失败返回 `502`。
+当前记忆服务器进程内尚未为该角色执行过导入时返回 `{"success": true, "active": false}`；导入进行中返回 `{"success": true, "active": true, "stage": "persona"|"daily", "persona_total": ..., "persona_done": ..., "daily_total": ..., "daily_done": ..., "finished": ...}`；导入结束后内存保留该条目，返回 `{"success": true, "active": false, "finished": true, ...}` 及最终阶段与计数。名称非法返回 `400`；记忆服务器返回的非 200 状态码会原样透传，转发异常返回 `502`。
 
 ## 告别摘要
 

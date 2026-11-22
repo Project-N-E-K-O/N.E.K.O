@@ -8,7 +8,7 @@ seoSchemaType: WebPage
 
 N.E.K.O 默认把角色记忆存储在本机；但当你使用模型 Provider、记忆处理任务、免费 API 路径、云语音、可选的跨设备聊天与记忆同步、Steam Cloud、Workshop、在线 Feed、浏览器功能或远端 Agent 渠道时，相关内容可能离开设备。
 
-事实最后核验于 **2026-07-23**。
+事实最后核验于 **2026-11-22**。
 
 ::: warning 技术数据流说明
 本页解释当前实现和官方发行声明，不替代针对具体司法辖区的隐私政策、Provider 协议或法律审查。
@@ -40,7 +40,7 @@ N.E.K.O 默认把角色记忆存储在本机；但当你使用模型 Provider、
 | 随附免费 API 路径 | 完成免费请求所需的输入 | N.E.K.O 转发服务及服务合作方 | 当前 Steam EULA 将它与自带付费 API Key 的路径分开说明 |
 | 遥测 | 下文所列的使用与运行元数据 | N.E.K.O 遥测服务 | 可以通过环境变量关闭 |
 | 主动视觉 | 已启用功能所需的屏幕流或截图 | 本地流水线及配置的视觉/模型路径 | 隐私模式停止主动查看；手动截图是另一条路径 |
-| 跨设备聊天与记忆同步 | 按角色开启后的聊天原文、近期记忆、已学习记忆快照（`facts`、`persona`、`reflections`），以及已批准的角色档案或模型绑定 | N.E.K.O 同步服务（`sync.nekotech.cn`，通过 `community.project-neko.cn` 社区 OAuth 登录鉴权） | 默认关闭；按角色显式开启（`includeHistory` 历史同步需单独选择），且与 Steam Cloud 相互独立 |
+| 跨设备聊天与记忆同步 | 按角色开启后的聊天原文、近期记忆、已学习记忆快照（`facts`、`persona`、`reflections`），以及已批准的角色档案或模型绑定 | N.E.K.O 同步服务（`sync.nekotech.cn`，通过 `community.project-neko.cn` 社区 OAuth 登录鉴权） | 默认关闭；在角色卡中开启同步并保存会一并包含已有近期对话历史（前端固定发送 `includeHistory: true`，无单独历史开关）；仅直接调用 REST 接口且不传 `includeHistory` 时默认 `false`；与 Steam Cloud 相互独立 |
 | Steam Cloud | 白名单内的角色设置和记忆文件 | Steam Auto Cloud | 快照不是完整记忆目录备份 |
 | Workshop 发布 | 用户选择的角色卡、受支持模型文件、预览图和可选参考语音 | Steam Workshop | 是否发布以及素材授权由用户决定 |
 | DEBUG 诊断 | 部分调试路径中的查询或工具参数 | 默认在本地日志中，除非用户主动分享 | 不能假设所有日志都不含内容 |
@@ -103,7 +103,7 @@ Cloud Save 通过 Steam Auto Cloud 上传或下载一个角色单元。白名单
 
 ## 跨设备聊天与记忆同步按角色显式开启
 
-独立于 Steam Auto Cloud，N.E.K.O 还包含一条可选的跨设备聊天与记忆同步路径（`services/chat_sync/`，本地路由前缀 `/api/chat-sync`）。该路径默认关闭：未保存选择的角色保持关闭状态，需要通过社区 OAuth 登录（`community.project-neko.cn`），且只有在按角色显式开启后才会向 N.E.K.O 同步服务（`sync.nekotech.cn`）发送数据（其中 `includeHistory` 历史消息同步默认 `false`，需要单独显式确认）。为某个角色开启后，会传输聊天原文、近期记忆、已学习记忆快照（`facts`、`persona`、`reflections`）以及已批准的角色档案或模型绑定。
+独立于 Steam Auto Cloud，N.E.K.O 还包含一条可选的跨设备聊天与记忆同步路径（`services/chat_sync/`，本地路由前缀 `/api/chat-sync`）。该路径默认关闭：未保存选择的角色保持关闭状态，且需要通过社区 OAuth 登录（`community.project-neko.cn`）。在角色卡中打开同步开关并保存时，桌面前端会无条件发送 `includeHistory: true`（界面上没有单独的“是否同步历史”开关），因此保存即一并包含该角色已有的近期对话历史；只有直接调用 REST 接口且省略 `includeHistory` 字段时才默认 `false`（不含历史）。开启后会向 N.E.K.O 同步服务（`sync.nekotech.cn`）传输聊天原文、近期记忆、已学习记忆快照（`facts`、`persona`、`reflections`）以及已批准的角色档案或模型绑定。
 
 ## 当前可用的控制
 

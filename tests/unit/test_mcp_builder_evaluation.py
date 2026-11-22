@@ -142,8 +142,70 @@ async def test_agent_loop_collects_mixed_success_and_error_in_parallel_turn(monk
 
     tool_results = captured_turns[1][-1]["content"]
     assert [entry["tool_use_id"] for entry in tool_results] == ["toolu_ok", "toolu_err"]
+    assert "is_error" not in tool_results[0]
     assert json.loads(tool_results[0]["content"]) == {"status": "ok"}
+    assert tool_results[1].get("is_error") is True
     assert "Error executing tool bad_tool: boom" in tool_results[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_serializes_pydantic_style_tool_result_objects(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Serialize MCP content models via `model_dump()` and `default=str` without false tool errors."""
+    evaluation = _load_evaluation_module(monkeypatch)
+
+    responses = [
+        SimpleNamespace(
+            stop_reason="tool_use",
+            content=[
+                _tool_use_block("toolu_mcp", "read_item", {"id": 1}),
+            ],
+        ),
+        SimpleNamespace(
+            stop_reason="end_turn",
+            content=[_text_block("<response>42</response>")],
+        ),
+    ]
+    captured_turns: list[list[dict]] = []
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            captured_turns.append(json.loads(json.dumps(kwargs["messages"], default=str)))
+            return responses.pop(0)
+
+    class _FakeContentModel:
+        def __init__(self, payload: dict):
+            self._payload = payload
+
+        def model_dump(self) -> dict:
+            return self._payload
+
+    class _PydanticConnection:
+        async def call_tool(self, _name: str, _tool_input: dict):
+            return [
+                _FakeContentModel({"type": "text", "text": "42"}),
+                _FakeContentModel({"type": "resource", "path": Path("/tmp/sample.txt")}),
+            ]
+
+    text, _metrics = await evaluation.agent_loop(
+        SimpleNamespace(messages=_FakeMessages()),
+        "claude-test",
+        "Read MCP item",
+        [],
+        _PydanticConnection(),
+    )
+
+    assert text == "<response>42</response>"
+    tool_results = captured_turns[1][-1]["content"]
+    assert len(tool_results) == 1
+    entry = tool_results[0]
+    assert "is_error" not in entry
+    assert "Error executing tool" not in entry["content"]
+    assert json.loads(entry["content"]) == [
+        {"type": "text", "text": "42"},
+        {"type": "resource", "path": "/tmp/sample.txt"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -179,3 +241,36 @@ async def test_agent_loop_breaks_cleanly_when_tool_use_stop_reason_has_no_blocks
     assert api_calls == 1
     assert text == "No tool call emitted"
     assert metrics == {}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_task_handles_empty_tool_use_content_safely(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Return a valid `<response>NOT_FOUND</response>` when `tool_use` returns empty `content`."""
+    evaluation = _load_evaluation_module(monkeypatch)
+
+    class _FakeMessages:
+        def create(self, **_kwargs):
+            return SimpleNamespace(
+                stop_reason="tool_use",
+                content=[],
+            )
+
+    class _UnusedConnection:
+        async def call_tool(self, _name: str, _tool_input: dict):
+            raise AssertionError("call_tool must not be invoked when content is empty")
+
+    result = await evaluation.evaluate_single_task(
+        SimpleNamespace(messages=_FakeMessages()),
+        "claude-test",
+        {"question": "What is the answer?", "answer": "42"},
+        [],
+        _UnusedConnection(),
+        0,
+    )
+
+    assert result["actual"] == "NOT_FOUND"
+    assert result["score"] == 0
+    assert result["summary"] is None
+    assert result["feedback"] is None

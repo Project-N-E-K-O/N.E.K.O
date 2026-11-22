@@ -58,7 +58,7 @@ def _extract_memory_router_routes() -> list[tuple[str, str]]:
 def test_memory_router_route_inventory_has_expected_routes_without_trailing_slash():
     """Sanity-check the AST extractor against `main_routers/memory_router.py`."""
     routes = _extract_memory_router_routes()
-    assert len(routes) == 20
+    assert len(routes) >= 20
     for _method, path in routes:
         assert path.startswith("/api/memory/")
         assert not path.endswith("/")

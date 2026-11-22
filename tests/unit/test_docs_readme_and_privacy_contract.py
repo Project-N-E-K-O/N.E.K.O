@@ -54,7 +54,7 @@ def test_readme_mirrors_do_not_claim_wechat_builtin_plugin(readme_path: Path):
 
 @pytest.mark.parametrize("guide_path", PRIVACY_GUIDES + OFFLINE_GUIDES, ids=lambda p: str(p.relative_to(REPO_ROOT)))
 def test_privacy_and_offline_guides_document_opt_in_chat_sync(guide_path: Path):
-    """Assert all 6 privacy/offline guide mirrors disclose the opt-in cross-device sync path."""
+    """Assert all 6 privacy/offline guide mirrors disclose combined card-save sync consent and REST default."""
     constants = _extract_chat_sync_constants()
     sync_host = constants["_BUILTIN_SERVICE_URL"].removeprefix("https://")
     community_host = constants["_COMMUNITY_ORIGIN"].removeprefix("https://")
@@ -62,7 +62,17 @@ def test_privacy_and_offline_guides_document_opt_in_chat_sync(guide_path: Path):
     text = guide_path.read_text(encoding="utf-8")
     assert sync_host in text, f"Missing sync service host {sync_host} in {guide_path}"
     assert community_host in text, f"Missing community OAuth host {community_host} in {guide_path}"
-    assert "includeHistory" in text, f"Missing explicit includeHistory opt-in detail in {guide_path}"
+    assert "includeHistory" in text, f"Missing includeHistory card-save vs REST-default detail in {guide_path}"
+    assert "includeHistory: true" in text, f"Missing UI includeHistory: true disclosure in {guide_path}"
+    for stale_claim in (
+        "requires explicit choice",
+        "separate explicit",
+        "需单独选择",
+        "需要单独显式确认",
+        "個別選択が必要",
+        "明示的な選択が必要",
+    ):
+        assert stale_claim not in text, f"Stale separate-history-consent claim {stale_claim!r} in {guide_path}"
     assert "Steam Cloud" in text, f"Missing Steam Cloud separation context in {guide_path}"
     for artifact in ("facts", "persona", "reflections"):
         assert artifact in text, f"Missing synced artifact `{artifact}` in {guide_path}"

@@ -118,11 +118,24 @@ async def agent_loop(
             tool_name = tool_use.name
             tool_input = tool_use.input
 
+            tool_is_error = False
             tool_start_ts = time.time()
             try:
                 tool_result = await connection.call_tool(tool_name, tool_input)
-                tool_response = json.dumps(tool_result) if isinstance(tool_result, (dict, list)) else str(tool_result)
+                if isinstance(tool_result, list):
+                    tool_result = [
+                        item.model_dump() if hasattr(item, "model_dump") else item
+                        for item in tool_result
+                    ]
+                elif hasattr(tool_result, "model_dump"):
+                    tool_result = tool_result.model_dump()
+                tool_response = (
+                    json.dumps(tool_result, default=str)
+                    if isinstance(tool_result, (dict, list))
+                    else str(tool_result)
+                )
             except Exception as e:
+                tool_is_error = True
                 tool_response = f"Error executing tool {tool_name}: {str(e)}\n"
                 tool_response += traceback.format_exc()
             tool_duration = time.time() - tool_start_ts
@@ -132,11 +145,14 @@ async def agent_loop(
             tool_metrics[tool_name]["count"] += 1
             tool_metrics[tool_name]["durations"].append(tool_duration)
 
-            tool_results.append({
+            entry = {
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
                 "content": tool_response,
-            })
+            }
+            if tool_is_error:
+                entry["is_error"] = True
+            tool_results.append(entry)
 
         messages.append({
             "role": "user",
@@ -157,6 +173,8 @@ async def agent_loop(
         (block.text for block in response.content if hasattr(block, "text")),
         None,
     )
+    if response_text is None:
+        response_text = "<response>NOT_FOUND</response>"
     return response_text, tool_metrics
 
 

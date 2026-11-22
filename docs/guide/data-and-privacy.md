@@ -8,7 +8,7 @@ seoSchemaType: WebPage
 
 N.E.K.O stores character memory locally by default, but relevant content can leave the device when you use a model provider, memory-processing task, free API route, cloud speech service, optional cross-device chat and memory sync, Steam Cloud, Workshop, online feed, browser feature, or remote Agent channel.
 
-Last fact review: **2026-07-23**.
+Last fact review: **2026-11-22**.
 
 ::: warning Technical data-flow notice
 This page explains the current implementation and official distribution statements. It is not a substitute for a jurisdiction-specific privacy policy, provider agreement, or legal review.
@@ -40,7 +40,7 @@ User input
 | Shipped free API path | Input needed for the free request | N.E.K.O forwarding service and service partner | Current Steam EULA distinguishes this from bring-your-own paid API use |
 | Telemetry | Usage and operational metadata described below | N.E.K.O telemetry service | Can be disabled with environment variables |
 | Proactive vision | Screen stream or screenshots needed by the enabled feature | Local pipeline and configured vision/model path | Privacy mode stops proactive viewing; manual screenshots are separate |
-| Cross-device chat and memory sync | Opt-in chat originals, recent memory, learned-memory snapshots (`facts`, `persona`, `reflections`), and approved character profiles or model bindings | N.E.K.O. sync service (`sync.nekotech.cn`, authenticated via Community login at `community.project-neko.cn`) | Disabled by default; opt-in per character (`includeHistory` requires explicit choice) and separate from Steam Cloud |
+| Cross-device chat and memory sync | Opt-in chat originals, recent memory, learned-memory snapshots (`facts`, `persona`, `reflections`), and approved character profiles or model bindings | N.E.K.O. sync service (`sync.nekotech.cn`, authenticated via Community login at `community.project-neko.cn`) | Disabled by default; enabling sync on a character card and saving includes existing recent-memory history (`includeHistory: true` from the UI, with no separate history toggle), while `includeHistory` defaults to `false` only on direct REST calls that omit the field; separate from Steam Cloud |
 | Steam Cloud | Allowlisted character settings and memory files | Steam Auto Cloud | Snapshot is not a full memory-directory backup |
 | Workshop publish | User-selected card, supported model files, preview, optional reference voice | Steam Workshop | Publication and asset licensing are user decisions |
 | DEBUG diagnostics | Query or tool arguments in some debug paths | Local logs unless the user shares them | Do not assume every log is content-free |
@@ -103,7 +103,7 @@ A download can replace local same-name character data and therefore uses confirm
 
 ## Cross-device chat and memory sync is opt-in per character
 
-Separate from Steam Auto Cloud, N.E.K.O. includes an optional cross-device chat and memory sync path (`services/chat_sync/`, exposed locally via `/api/chat-sync`). It is disabled by default: a character with no saved choice stays off, requires Community OAuth login (`community.project-neko.cn`), and only sends data to the N.E.K.O. sync service (`sync.nekotech.cn`) after an explicit per-character opt-in (including a separate explicit `includeHistory` choice for historical turns). When enabled for a character, it transfers chat originals, recent memory, learned-memory snapshots (`facts`, `persona`, and `reflections`), and approved character profiles or model bindings.
+Separate from Steam Auto Cloud, N.E.K.O. includes an optional cross-device chat and memory sync path (`services/chat_sync/`, exposed locally via `/api/chat-sync`). It is disabled by default: a character with no saved choice stays off and requires Community OAuth login (`community.project-neko.cn`). When you turn sync on in the character editor and save, the desktop UI unconditionally sends `includeHistory: true`—there is no separate UI toggle for historical turns, so saving enables sync for both future messages and that character's existing recent-memory history (`includeHistory` defaults to `false` only for direct REST API requests that omit the field). Once enabled, it transfers chat originals, recent memory, learned-memory snapshots (`facts`, `persona`, and `reflections`), and approved character profiles or model bindings to the N.E.K.O. sync service (`sync.nekotech.cn`).
 
 ## Controls available today
 
