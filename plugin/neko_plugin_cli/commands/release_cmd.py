@@ -732,7 +732,13 @@ def _shell_argument(value: str, placeholder: str) -> str:
     """
     if _SHELL_PLAIN.fullmatch(value):
         return value
-    quoted = None if _WINDOWS_SHELL and '"' in value else _shell_quote(value)
+    if _WINDOWS_SHELL and '"' in value:
+        return placeholder
+    quoted = _shell_quote(value)
+    if quoted == value:
+        # shlex leaves a leading = bare, which zsh expands to a command path;
+        # the value holds only shlex-safe characters, so no ' to escape.
+        quoted = f"'{value}'"
     return placeholder if quoted is None else quoted
 
 

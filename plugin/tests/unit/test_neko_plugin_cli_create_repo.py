@@ -52,6 +52,10 @@ def test_printed_branch_and_remote_stay_one_literal_argument_in_a_posix_shell(tm
     assert echoed.stdout == branch
     assert not (tmp_path / "pwned").exists()
 
+    # shlex.quote leaves "=git" bare, and zsh expands a leading = to a path.
+    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "=git")
+    assert init_cmd._branch_argument(tmp_path) == "'=git'"
+
     remote = "https://user:t$ken@github.com/octocat/demo.git"
     message = init_cmd._existing_repository_remote_message(Path("/work/demo"), remote)
     assert message.endswith("git -C /work/demo remote add origin 'https://user:t$ken@github.com/octocat/demo.git'")
@@ -172,6 +176,25 @@ def test_manual_steps_name_the_directory_behind_a_placeholder(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert 'git -C "<plugin directory>" remote add origin <repository-url>' in out
     assert out.count(f"(plugin directory: {plugin_dir})") == 1
+
+
+def test_push_steps_name_the_branch_behind_a_placeholder(tmp_path, monkeypatch, capsys):
+    # No Windows quoting keeps $ literal in PowerShell, so the commands show a placeholder.
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir = _make_plugin_dir(tmp_path / "plugins")
+    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "feature/$name")
+
+    init_cmd._print_manual_repo_steps(plugin_dir, repo_name="demo")
+    init_cmd._print_push_next_step(plugin_dir)
+    out = capsys.readouterr().out
+    assert out.count('push -u origin "<branch>"') == 2
+    assert out.count("(branch: feature/$name)") == 2
+
+    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "main")
+    init_cmd._print_manual_repo_steps(plugin_dir, repo_name="demo")
+    out = capsys.readouterr().out
+    assert "push -u origin main" in out
+    assert "branch:" not in out
 
 
 def test_manual_steps_do_not_add_a_directory_note_to_quoted_commands(tmp_path, monkeypatch, capsys):

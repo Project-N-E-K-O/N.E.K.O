@@ -599,6 +599,17 @@ def _print_git_commands(plugin_dir: Path, commands: list[str]) -> None:
                 f"（プラグインディレクトリ：{fill_in}）",
             )
         )
+    if any(_BRANCH_PLACEHOLDER in command for command in commands):
+        # Likewise for a branch name no Windows quoting keeps literal.
+        branch = _current_branch(plugin_dir)
+        print(
+            "       "
+            + _tri(
+                f"(branch: {branch})",
+                f"（分支：{branch}）",
+                f"（ブランチ：{branch}）",
+            )
+        )
 
 
 def _gh_available() -> bool:
