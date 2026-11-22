@@ -472,7 +472,15 @@ class CharactersMixin:
         )
         master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
 
-        raw_character_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
+        raw_catgirls = character_data.get('猫娘')
+        catgirls_is_valid_dict = isinstance(raw_catgirls, dict)
+        if not catgirls_is_valid_dict:
+            logger.warning("角色配置 '猫娘' 字段非 dict，将回退到默认角色列表。")
+            raw_character_data = deepcopy(defaults['猫娘'])
+        elif not raw_catgirls:
+            raw_character_data = deepcopy(defaults['猫娘'])
+        else:
+            raw_character_data = raw_catgirls
         catgirl_names = list(raw_character_data.keys())
 
         current_catgirl = character_data.get('当前猫娘', '')
@@ -489,15 +497,16 @@ class CharactersMixin:
                 character_data['当前猫娘'] = her_name
                 # Rare path (corrupt configuration / deleted neko only): persist synchronously so the fix survives restart.
                 # save_characters refreshes the cache internally; no manual synchronization is needed here.
-                try:
-                    self.save_characters(character_data)
-                except Exception as persist_err:
-                    logger.warning("自动纠正当前猫娘后写回失败，将仅保留内存修正: %s", persist_err)
-                    with self._characters_cache_lock:
-                        if self._characters_cache is not None:
-                            self._characters_cache['当前猫娘'] = her_name
-                        self._characters_dirty = True
-                        self._note_characters_persist_failure_locked()
+                if catgirls_is_valid_dict:
+                    try:
+                        self.save_characters(character_data)
+                    except Exception as persist_err:
+                        logger.warning("自动纠正当前猫娘后写回失败，将仅保留内存修正: %s", persist_err)
+                        with self._characters_cache_lock:
+                            if self._characters_cache is not None:
+                                self._characters_cache['当前猫娘'] = her_name
+                            self._characters_dirty = True
+                            self._note_characters_persist_failure_locked()
 
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         effective_character_data = {

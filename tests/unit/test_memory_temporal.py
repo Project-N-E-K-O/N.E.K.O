@@ -478,19 +478,24 @@ def test_render_outdated_block_uses_six_equals(tmp_path):
 def test_render_omits_past_block_when_all_active(tmp_path):
     """No outdated-block delimiters should appear without outdated entries."""
     pm, _ = _persona_manager(str(tmp_path))
-    md = pm._compose_markdown_from_trimmed(
-        name='小天',
-        persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
-        name_mapping={'human': '主人'},
-        protected_entries=[],
-        trimmed_non_protected=[],
-        non_protected_entity_index={},
-        trimmed_pending_reflections=[],
-        trimmed_confirmed_reflections=[
-            _refl('当下持续模式 A', 'pattern'),
-            _refl('当下持续模式 B', 'pattern'),
-        ],
-    )
+    with patch(
+        'utils.language_utils.get_global_language', return_value='zh',
+    ), patch(
+        'utils.language_utils.get_global_language_full', return_value='zh-CN',
+    ):
+        md = pm._compose_markdown_from_trimmed(
+            name='小天',
+            persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+            name_mapping={'human': '主人'},
+            protected_entries=[],
+            trimmed_non_protected=[],
+            non_protected_entity_index={},
+            trimmed_pending_reflections=[],
+            trimmed_confirmed_reflections=[
+                _refl('当下持续模式 A', 'pattern'),
+                _refl('当下持续模式 B', 'pattern'),
+            ],
+        )
     assert '比较确定的印象' in md
     assert '以下为较久前的记忆' not in md
     assert '以上为较久前的记忆' not in md
@@ -501,20 +506,25 @@ def test_render_legacy_temporal_scope_not_past(tmp_path):
     not the past block (conservatively avoid fading until slow reclassification corrects them)."""
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=60)).isoformat()  # 60 days old
-    md = pm._compose_markdown_from_trimmed(
-        name='小天',
-        persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
-        name_mapping={'human': '主人'},
-        protected_entries=[],
-        trimmed_non_protected=[],
-        non_protected_entity_index={},
-        trimmed_pending_reflections=[],
-        trimmed_confirmed_reflections=[
-            _refl('legacy current 条目', 'current', event_end_at=old_iso),
-            _refl('legacy ongoing 条目', 'ongoing', event_end_at=old_iso),
-            _refl('legacy None 条目', None, event_end_at=old_iso),
-        ],
-    )
+    with patch(
+        'utils.language_utils.get_global_language', return_value='zh',
+    ), patch(
+        'utils.language_utils.get_global_language_full', return_value='zh-CN',
+    ):
+        md = pm._compose_markdown_from_trimmed(
+            name='小天',
+            persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
+            name_mapping={'human': '主人'},
+            protected_entries=[],
+            trimmed_non_protected=[],
+            non_protected_entity_index={},
+            trimmed_pending_reflections=[],
+            trimmed_confirmed_reflections=[
+                _refl('legacy current 条目', 'current', event_end_at=old_iso),
+                _refl('legacy ongoing 条目', 'ongoing', event_end_at=old_iso),
+                _refl('legacy None 条目', None, event_end_at=old_iso),
+            ],
+        )
     assert '比较确定的印象' in md
     assert '以下为较久前的记忆' not in md  # Legacy does not count as past.
     assert 'legacy current 条目' in md

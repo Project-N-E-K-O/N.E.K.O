@@ -1169,3 +1169,23 @@ async def test_icebreaker_route_end_rejects_stale_session(monkeypatch):
     assert result["reason"] == "session_id_mismatch"
     assert result["method"] == "route_end"
     assert icebreaker_route_state._get_active_icebreaker_route_state("Lan") is not None
+
+
+@pytest.mark.parametrize("locale", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_icebreaker_free_text_system_prompts_enforce_50_char_cap_and_watermark(locale):
+    from config.prompts.prompts_icebreaker import (
+        ICEBREAKER_FREE_TEXT_WATERMARK,
+        _SYSTEM_PROMPTS,
+        build_icebreaker_free_text_prompts,
+    )
+
+    prompt = _SYSTEM_PROMPTS[locale]
+    assert "50" in prompt
+    sys_prompt, _ = build_icebreaker_free_text_prompts(
+        {"i18n_language": locale, "assistant_line": "hi", "user_text": "hello", "day": 1, "node_id": "n1"},
+        [{"choice": "A", "label": "Opt A"}, {"choice": "B", "label": "Opt B"}],
+        recent_turns=[],
+        derail_streak=0,
+    )
+    assert "50" in sys_prompt
+    assert ICEBREAKER_FREE_TEXT_WATERMARK in sys_prompt

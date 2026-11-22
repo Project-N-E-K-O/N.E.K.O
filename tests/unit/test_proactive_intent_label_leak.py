@@ -195,3 +195,48 @@ def test_no_strip_localized_common_label_openers() -> None:
 def test_empty_input_safe() -> None:
     assert _strip_proactive_intent_label_leak("") == ""
     assert _strip_proactive_intent_label_leak("   ") == "   "
+
+
+def test_registry_covers_commitment_cue_intros_and_patterns() -> None:
+    from config.prompts.prompts_activity import (
+        TOPIC_COMMITMENT_CUE_INTROS,
+        TOPIC_COMMITMENT_CUE_LABELS,
+        get_proactive_intent_leak_label_patterns,
+    )
+
+    labels = get_proactive_intent_leak_labels()
+    for lang, intro in TOPIC_COMMITMENT_CUE_INTROS.items():
+        head = intro.split("：", 1)[0].split(":", 1)[0].strip()
+        assert head.casefold() in labels, f"commitment intro label missing for {lang}: {head!r}"
+
+    patterns = get_proactive_intent_leak_label_patterns()
+    assert len(patterns) >= 7
+    for lang, tmpl in TOPIC_COMMITMENT_CUE_LABELS.items():
+        rendered = tmpl.format(due="2026-11-03")
+        assert any(p.match(rendered) for p in patterns), f"commitment pattern missing for {lang}: {rendered!r}"
+
+
+def test_strip_commitment_cue_intros_and_templated_labels_all_locales() -> None:
+    from config.prompts.prompts_activity import TOPIC_COMMITMENT_CUE_LABELS
+
+    for lang, tmpl in TOPIC_COMMITMENT_CUE_LABELS.items():
+        rendered = tmpl.format(due="2026-11-03")
+        assert _strip_proactive_intent_label_leak(f"- {rendered}: 我没忘") == "我没忘", lang
+        assert _strip_proactive_intent_label_leak(f"{rendered}\nHello there") == "Hello there", lang
+        assert _strip_proactive_intent_label_leak(f"【{rendered}】\nHello there") == "Hello there", lang
+        assert _strip_proactive_intent_label_leak(f"({rendered})\nHello there") == "Hello there", lang
+
+    # Also handle {due} containing a colon (e.g. time of day).
+    assert _strip_proactive_intent_label_leak(
+        "Promise (due 2026-11-03 18:00): I bought the cake"
+    ) == "I bought the cake"
+    assert _strip_proactive_intent_label_leak("答应过的事：上次说的蛋糕买好了") == "上次说的蛋糕买好了"
+
+
+def test_no_strip_commitment_phrases_in_natural_speech() -> None:
+    for txt in (
+        "答应过的事我可没忘，蛋糕买好了",
+        "Promise I kept: I bought the cake",
+        "約束はちゃんと覚えてるよ",
+    ):
+        assert _strip_proactive_intent_label_leak(txt) == txt

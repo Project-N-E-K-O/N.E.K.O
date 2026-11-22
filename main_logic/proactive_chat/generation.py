@@ -2355,6 +2355,12 @@ def _get_proactive_context_leak_labels() -> frozenset[str]:
     )
 
 
+def _get_proactive_context_leak_label_patterns() -> tuple[re.Pattern[str], ...]:
+    from config.prompts.prompts_activity import get_proactive_intent_leak_label_patterns
+
+    return get_proactive_intent_leak_label_patterns()
+
+
 def _get_proactive_context_slash_leak_labels() -> frozenset[str]:
     return _get_proactive_context_leak_labels() | frozenset(
         label.casefold() for label in _PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS
@@ -2591,6 +2597,7 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
     body = _PROACTIVE_LEADING_IGNORABLE_RE.sub("", text, count=1)
     recovered_tag = ""
     context_labels = _get_proactive_context_leak_labels()
+    label_patterns = _get_proactive_context_leak_label_patterns()
 
     # Bounded peeling handles stacked new-line prefixes without allowing a
     # malformed response to turn this guard into an unbounded rewrite loop.
@@ -2604,9 +2611,13 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
             # A whole context-label line is framing, independently of whether
             # the next line starts with prose, a route or another source tag.
             first, newline, rest = body.partition("\n")
-            if newline and first.strip(
+            stripped_first = first.strip(
                 _PROACTIVE_HORIZONTAL_SPACES + "\r" + _PROACTIVE_LEADING_INVISIBLES
-            ).casefold() in context_labels:
+            )
+            if newline and (
+                stripped_first.casefold() in context_labels
+                or any(p.match(stripped_first) for p in label_patterns)
+            ):
                 cleaned = rest
         if cleaned is None:
             source_prefix = _strip_proactive_source_prefix(body)
@@ -2696,6 +2707,59 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
 # CJK + ASCII brackets). Stripped from both ends before matching so e.g.
 # "**屏幕细节轻问**" / "【回忆线索】" still resolve to the bare label.
 _INTENT_LABEL_DECOR = "*-•◦·#`_~【】「」[]《》（）() \t"
+_INTENT_LABEL_DECOR_NO_PARENS = "*-•◦·#`_~【】「」[]《》 \t"
+
+
+def _strip_balanced_outer_parens(text: str) -> str:
+    """Strip outer parentheses only when a single pair wraps the entire text."""
+    out = text.strip()
+    pairs = (("(", ")"), ("（", "）"))
+    changed = True
+    while changed and len(out) >= 2:
+        changed = False
+        for open_ch, close_ch in pairs:
+            if out.startswith(open_ch) and out.endswith(close_ch):
+                depth = 0
+                wraps_all = True
+                for idx, ch in enumerate(out):
+                    if ch == open_ch:
+                        depth += 1
+                    elif ch == close_ch:
+                        depth -= 1
+                        if depth == 0 and idx < len(out) - 1:
+                            wraps_all = False
+                            break
+                if wraps_all and depth == 0:
+                    out = out[1:-1].strip()
+                    changed = True
+                    break
+    return out
+
+
+def _strip_outer_intent_decor(segment: str) -> str:
+    """Strip outer decor while keeping balanced inner parens such as '(due ...)'."""
+    out = segment.strip().strip(_INTENT_LABEL_DECOR_NO_PARENS)
+    out = out.rstrip("：:").strip(_INTENT_LABEL_DECOR_NO_PARENS)
+    out = _strip_balanced_outer_parens(out)
+    out = out.strip().strip(_INTENT_LABEL_DECOR_NO_PARENS)
+    out = out.rstrip("：:").strip(_INTENT_LABEL_DECOR_NO_PARENS)
+    return out.strip()
+
+
+def _matches_intent_leak_label(
+    segment: str,
+    labels: frozenset[str],
+    label_patterns: tuple[re.Pattern[str], ...],
+) -> bool:
+    norm_exact = segment.strip().strip(_INTENT_LABEL_DECOR)
+    norm_exact = norm_exact.rstrip("：:").strip(_INTENT_LABEL_DECOR).strip()
+    if norm_exact.casefold() in labels:
+        return True
+    if label_patterns:
+        norm_patterned = _strip_outer_intent_decor(segment)
+        if norm_patterned and any(p.match(norm_patterned) for p in label_patterns):
+            return True
+    return False
 
 
 def _strip_proactive_intent_label_leak(text: str) -> str:
@@ -2722,14 +2786,10 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
     if not text:
         return text
     labels = _get_proactive_context_leak_labels()
-    if not labels:
+    label_patterns = _get_proactive_context_leak_label_patterns()
+    if not labels and not label_patterns:
         return text
     slash_labels = _get_proactive_context_slash_leak_labels()
-
-    def _norm(segment: str) -> str:
-        out = segment.strip().strip(_INTENT_LABEL_DECOR)
-        out = out.rstrip("：:").strip(_INTENT_LABEL_DECOR)
-        return out.strip()
 
     # Bounded peel — a handful of stacked labels at most; never loop the body.
     for _ in range(4):
@@ -2745,29 +2805,29 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
         rest = "" if nl == -1 else body[nl + 1 :]
 
         # Case 1: the whole first line is a label, with real content after it.
-        if rest.strip() and _norm(first).casefold() in labels:
+        if rest.strip() and _matches_intent_leak_label(first, labels, label_patterns):
             text = rest
             continue
 
-        # Case 2: "<label>：<content>" sharing one line. Take the EARLIEST
-        # colon (full- or half-width), not full-width-first — otherwise a
-        # half-width separator followed by a full-width colon in the body
-        # (e.g. "Memory cues: ...：...") would split on the wrong colon and
-        # leave the leading label unstripped.
-        sep_idx = -1
-        for sep in ("：", ":"):
-            idx = first.find(sep)
-            if idx > 0 and (sep_idx == -1 or idx < sep_idx):
-                sep_idx = idx
-        if sep_idx > 0:
-            cand = _norm(first[:sep_idx]).casefold()
-            after = first[sep_idx + 1 :].strip()
-            if cand in labels and (after or rest.strip()):
-                if after:
-                    text = after + ("\n" + rest if rest else "")
-                else:
-                    text = rest
+        # Case 2: "<label>：<content>" sharing one line. Check colons from
+        # earliest to latest so mixed colons split on the earliest matching
+        # label, while colons inside a templated label (e.g. time in {due})
+        # still allow the terminating colon to match.
+        matched_after = None
+        for idx, ch in enumerate(first):
+            if idx <= 0 or ch not in ("：", ":"):
                 continue
+            if _matches_intent_leak_label(first[:idx], labels, label_patterns):
+                after = first[idx + 1 :].strip()
+                if after or rest.strip():
+                    matched_after = after
+                break
+        if matched_after is not None:
+            if matched_after:
+                text = matched_after + ("\n" + rest if rest else "")
+            else:
+                text = rest
+            continue
         break
     return text
 

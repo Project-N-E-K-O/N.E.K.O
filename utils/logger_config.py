@@ -238,6 +238,21 @@ class RobustLoggerConfig:
     def _get_documents_directory(self):
         return documents_directory()
 
+    @staticmethod
+    def _create_directory_incrementally(directory: Path) -> None:
+        """Create missing ancestor directories incrementally, stopping at self-parent roots."""
+        dirs_to_create = []
+        current = directory
+        while current and not current.exists():
+            dirs_to_create.append(current)
+            parent = current.parent
+            if parent == current:
+                raise FileNotFoundError(f"Root directory does not exist: {current}")
+            current = parent
+        for dir_path in reversed(dirs_to_create):
+            if not dir_path.exists():
+                dir_path.mkdir(exist_ok=True)
+
     def _test_directory_writable(self, directory):
         """
         Test whether a directory is writable
@@ -249,18 +264,7 @@ class RobustLoggerConfig:
             bool: whether it is writable
         """
         try:
-            # Create directories incrementally to avoid possible packaged-app problems with parents=True.
-            # Collect all parent directories needing creation.
-            dirs_to_create = []
-            current = directory
-            while current and not current.exists():
-                dirs_to_create.append(current)
-                current = current.parent
-            
-            # Create directories from the top down.
-            for dir_path in reversed(dirs_to_create):
-                if not dir_path.exists():
-                    dir_path.mkdir(exist_ok=True)
+            RobustLoggerConfig._create_directory_incrementally(directory)
             
             # Try creating a test file. The name is per process and thread: plugin
             # processes start concurrently against one log directory, and with a
@@ -277,17 +281,7 @@ class RobustLoggerConfig:
     def _ensure_log_directory(self):
         """Ensure the log directory exists"""
         try:
-            # Create directories incrementally to avoid possible packaged-app problems with parents=True.
-            dirs_to_create = []
-            current = self.log_dir
-            while current and not current.exists():
-                dirs_to_create.append(current)
-                current = current.parent
-            
-            # Create directories from the top down.
-            for dir_path in reversed(dirs_to_create):
-                if not dir_path.exists():
-                    dir_path.mkdir(exist_ok=True)
+            RobustLoggerConfig._create_directory_incrementally(self.log_dir)
         except Exception as e:
             print(f"Error: Failed to create log directory: {e}", file=sys.stderr)
             raise

@@ -1296,7 +1296,7 @@ class CoreConfigMixin:
             config['AGENT_MODEL_API_KEY'] = config.get('OPENROUTER_API_KEY', '')
 
         # Map custom API configuration using uppercase underscore internal keys, retaining existing defaults for omitted fields.
-        enable_custom_api = core_cfg.get('enableCustomApi', False)
+        enable_custom_api = _as_bool(core_cfg.get('enableCustomApi', False))
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
         # GPT-SoVITS enablement uses ttsModelProvider as the single source of truth (see
@@ -1779,7 +1779,7 @@ class CoreConfigMixin:
         from utils.config_manager import get_assist_api_profiles, get_core_api_profiles
 
         core_config = self.get_core_config() if _core_config is None else _core_config
-        enable_custom_api = core_config.get('ENABLE_CUSTOM_API', False)
+        enable_custom_api = _as_bool(core_config.get('ENABLE_CUSTOM_API', False))
         if model_type == "image":
             from utils.image_generation.config import resolve_image_config
             image = resolve_image_config(

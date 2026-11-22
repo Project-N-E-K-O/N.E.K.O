@@ -439,6 +439,14 @@ def test_topic_switch_anchored_at_start():
     assert detect_topic_switch("我觉得对了这个想法不错") is False
 
 
+def test_korean_topic_switch_ignores_adverb_and_prefixes():
+    # "참" is a common Korean degree adverb / word prefix, not a topic-switch marker.
+    for non_pivot in ("참 힘들어", "참을 수가 없어", "참 슬프다", "참치 먹고 싶다"):
+        assert detect_topic_switch(non_pivot) is False, non_pivot
+    for real_pivot in ("그건 그렇고 오늘 뭐 했어?", "아 맞다, 이거 깜빡했네", "그나저나 밥 먹었어?"):
+        assert detect_topic_switch(real_pivot) is True, real_pivot
+
+
 # ── 5. stream_text thinking-on threading (Path A wiring) ────────────
 async def _drain(agen):
     return [c async for c in agen]

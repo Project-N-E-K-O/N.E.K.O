@@ -70,6 +70,7 @@ Nested ``{lang_code: {key: str}}`` tables (resolved via
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 
 
@@ -1470,6 +1471,10 @@ def get_proactive_intent_leak_labels() -> frozenset[str]:
     for intro in TOPIC_MEMORY_CUE_INTROS.values():
         _add_before_colon(intro)
 
+    # Commitment-cue intro: opens with "<label>：…".
+    for intro in TOPIC_COMMITMENT_CUE_INTROS.values():
+        _add_before_colon(intro)
+
     # Memory-cue per-item labels: bare labels, no colon.
     for label in TOPIC_MEMORY_CUE_LABELS.values():
         label = (label or '').strip()
@@ -1522,6 +1527,23 @@ def get_proactive_intent_leak_labels() -> frozenset[str]:
                 labels.add(label)
 
     return frozenset(label.casefold() for label in labels if label)
+
+
+@lru_cache(maxsize=1)
+def get_proactive_intent_leak_label_patterns() -> tuple[re.Pattern[str], ...]:
+    """Compiled patterns for templated internal cue labels such as ``TOPIC_COMMITMENT_CUE_LABELS``."""
+    patterns: list[re.Pattern[str]] = []
+    seen: set[str] = set()
+    for template in TOPIC_COMMITMENT_CUE_LABELS.values():
+        template = (template or '').strip()
+        if not template or '{due}' not in template:
+            continue
+        before, after = template.split('{due}', 1)
+        regex = f"^{re.escape(before)}[^\n]*?{re.escape(after)}$"
+        if regex not in seen:
+            seen.add(regex)
+            patterns.append(re.compile(regex, re.IGNORECASE))
+    return tuple(patterns)
 
 
 # ── Propensity directives (positive instructions, not prohibitions) ─

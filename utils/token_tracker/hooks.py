@@ -15,6 +15,7 @@
 """OpenAI SDK hook installation and stream usage interception."""
 
 import functools
+import inspect
 import logging
 import threading
 from urllib.parse import urlsplit
@@ -171,7 +172,7 @@ def calculate_cache_hit_rate(prompt_tokens: int, cached_tokens: int) -> float:
     cached_tokens = max(0, min(cached_tokens, prompt_tokens))
     return cached_tokens / prompt_tokens
 
-def _record_usage_from_response(response, call_type: str):
+def _record_usage_from_response(response, call_type: str, *, success: bool = True):
     """Extract usage from an OpenAI SDK response and record it.
 
     Extracted fields:
@@ -202,6 +203,7 @@ def _record_usage_from_response(response, call_type: str):
             total_tokens=usage_dict.get('total_tokens', 0) or 0,
             cached_tokens=cached_tokens,
             call_type=call_type,
+            success=success,
         )
     except Exception:
         # Token accounting is best-effort and must not affect SDK responses.
@@ -411,7 +413,7 @@ def _handle_sync_stream(self_obj, original_fn, args, kwargs, call_type):
 
     try:
         result = original_fn(self_obj, *args, **kwargs)
-        return _SyncStreamWrapper(result, call_type)
+        return _SyncStreamWrapper(result, call_type, model=kwargs.get('model', 'unknown'))
     except Exception as e:
         if injected:
             # If stream_options causes an error, remove it and retry.
@@ -419,7 +421,7 @@ def _handle_sync_stream(self_obj, original_fn, args, kwargs, call_type):
             kwargs.pop('stream_options', None)
             try:
                 result = original_fn(self_obj, *args, **kwargs)
-                return _SyncStreamWrapper(result, call_type)
+                return _SyncStreamWrapper(result, call_type, model=kwargs.get('model', 'unknown'))
             except Exception:
                 TokenTracker.get_instance().record(
                     model=kwargs.get('model', 'unknown'),
@@ -445,14 +447,14 @@ async def _handle_async_stream(self_obj, original_fn, args, kwargs, call_type):
 
     try:
         result = await original_fn(self_obj, *args, **kwargs)
-        return _AsyncStreamWrapper(result, call_type)
+        return _AsyncStreamWrapper(result, call_type, model=kwargs.get('model', 'unknown'))
     except Exception as e:
         if injected:
             _add_to_blocklist(base_url)
             kwargs.pop('stream_options', None)
             try:
                 result = await original_fn(self_obj, *args, **kwargs)
-                return _AsyncStreamWrapper(result, call_type)
+                return _AsyncStreamWrapper(result, call_type, model=kwargs.get('model', 'unknown'))
             except Exception:
                 TokenTracker.get_instance().record(
                     model=kwargs.get('model', 'unknown'),
@@ -467,30 +469,87 @@ async def _handle_async_stream(self_obj, original_fn, args, kwargs, call_type):
         )
         raise
 
-class _SyncStreamWrapper:
-    """Wrap a sync Stream, extracting usage after iteration completes.
 
-    Key point: record only once after the stream ends (taking the last chunk carrying
-    usage). Some OpenAI-compatible APIs (StepFun, Qwen, etc.) return cumulative usage
-    in every chunk; recording every chunk would cause severe double counting.
-    """
+class _BaseStreamWrapper:
+    """Shared usage tracking and once-only finalization for sync and async stream wrappers."""
 
-    def __init__(self, stream, call_type: str):
+    def __init__(self, stream, call_type: str, model: str = "unknown"):
         self._stream = stream
         self._call_type = call_type
+        self._model = model or "unknown"
+        self._last_usage_chunk = None
+        self._completed = False
+        self._failed = False
+        self._recorded = False
+        self._finalize_lock = threading.Lock()
 
-    def __iter__(self):
-        last_usage_chunk = None
-        for chunk in self._stream:
-            if hasattr(chunk, 'usage') and chunk.usage is not None:
-                last_usage_chunk = chunk
-            yield chunk
-        # After the stream ends, record only the final chunk containing usage.
-        if last_usage_chunk is not None:
-            _record_usage_from_response(last_usage_chunk, self._call_type)
+    def _observe_chunk(self, chunk) -> None:
+        if hasattr(chunk, 'usage') and chunk.usage is not None:
+            self._last_usage_chunk = chunk
+
+    def _finalize_tracking(self) -> None:
+        lock = getattr(self, '_finalize_lock', None)
+        if lock is None:
+            return
+        with lock:
+            if self._recorded:
+                return
+            self._recorded = True
+        try:
+            if self._last_usage_chunk is not None:
+                _record_usage_from_response(
+                    self._last_usage_chunk,
+                    self._call_type,
+                    success=not self._failed,
+                )
+            elif not self._completed:
+                TokenTracker.get_instance().record(
+                    model=self._model,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    total_tokens=0,
+                    call_type=self._call_type,
+                    success=False,
+                )
+        except Exception:
+            pass
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
+
+    def __del__(self):
+        self._finalize_tracking()
+
+
+class _SyncStreamWrapper(_BaseStreamWrapper):
+    """Wrap a sync Stream, extracting usage after iteration completes or exits early.
+
+    Key point: record at most once when the stream finishes or aborts (taking the
+    last chunk carrying usage when available, or recording a failed call when
+    aborted before any usage chunk is seen).
+    """
+
+    def __iter__(self):
+        try:
+            for chunk in self._stream:
+                self._observe_chunk(chunk)
+                yield chunk
+            self._completed = True
+        except BaseException as exc:
+            if not isinstance(exc, GeneratorExit):
+                self._failed = True
+            raise
+        finally:
+            self._finalize_tracking()
+
+    def close(self):
+        try:
+            close_fn = getattr(self._stream, 'close', None)
+            if callable(close_fn):
+                return close_fn()
+            return None
+        finally:
+            self._finalize_tracking()
 
     def __enter__(self):
         if hasattr(self._stream, '__enter__'):
@@ -498,35 +557,65 @@ class _SyncStreamWrapper:
         return self
 
     def __exit__(self, *args):
-        if hasattr(self._stream, '__exit__'):
-            return self._stream.__exit__(*args)
-        return None
+        try:
+            if hasattr(self._stream, '__exit__'):
+                return self._stream.__exit__(*args)
+            return None
+        finally:
+            self._finalize_tracking()
 
-class _AsyncStreamWrapper:
-    """Wrap an async AsyncStream, extracting usage after iteration completes.
 
-    Same as _SyncStreamWrapper: record only once after the stream ends.
+class _AsyncStreamWrapper(_BaseStreamWrapper):
+    """Wrap an async AsyncStream, extracting usage after iteration completes or exits early.
+
+    Same as _SyncStreamWrapper: record at most once when the stream ends or aborts.
     """
 
-    def __init__(self, stream, call_type: str):
-        self._stream = stream
-        self._call_type = call_type
+    def __init__(self, stream, call_type: str, model: str = "unknown"):
+        super().__init__(stream, call_type, model=model)
+        self._aiter_gen = None
 
     def __aiter__(self):
-        return self._aiter_and_track()
+        self._aiter_gen = self._aiter_and_track()
+        return self._aiter_gen
 
     async def _aiter_and_track(self):
-        last_usage_chunk = None
-        async for chunk in self._stream:
-            if hasattr(chunk, 'usage') and chunk.usage is not None:
-                last_usage_chunk = chunk
-            yield chunk
-        # After the stream ends, record only the final chunk containing usage.
-        if last_usage_chunk is not None:
-            _record_usage_from_response(last_usage_chunk, self._call_type)
+        try:
+            async for chunk in self._stream:
+                self._observe_chunk(chunk)
+                yield chunk
+            self._completed = True
+        except BaseException as exc:
+            if not isinstance(exc, GeneratorExit):
+                self._failed = True
+            raise
+        finally:
+            self._finalize_tracking()
 
-    def __getattr__(self, name):
-        return getattr(self._stream, name)
+    async def _close_underlying(self):
+        close_fn = getattr(self._stream, 'aclose', None)
+        if not callable(close_fn):
+            close_fn = getattr(self._stream, 'close', None)
+        if callable(close_fn):
+            res = close_fn()
+            if inspect.isawaitable(res):
+                await res
+
+    async def aclose(self):
+        try:
+            if self._aiter_gen is not None:
+                gen = self._aiter_gen
+                self._aiter_gen = None
+                try:
+                    await gen.aclose()
+                except RuntimeError:
+                    pass
+            await self._close_underlying()
+        finally:
+            self._finalize_tracking()
+
+    async def close(self):
+        await self.aclose()
 
     async def __aenter__(self):
         if hasattr(self._stream, '__aenter__'):
@@ -534,6 +623,9 @@ class _AsyncStreamWrapper:
         return self
 
     async def __aexit__(self, *args):
-        if hasattr(self._stream, '__aexit__'):
-            return await self._stream.__aexit__(*args)
-        return None
+        try:
+            if hasattr(self._stream, '__aexit__'):
+                return await self._stream.__aexit__(*args)
+            return None
+        finally:
+            self._finalize_tracking()

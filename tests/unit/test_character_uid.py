@@ -492,3 +492,26 @@ def test_backfill_writes_back_what_it_parsed_not_a_second_read(tmp_path, monkeyp
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert set(on_disk["猫娘"]) == {"Mine"}
     assert is_valid_character_uid(get_character_uid(on_disk["猫娘"]["Mine"]))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_catgirls", ["corrupt", ["list"], 123, True])
+async def test_get_character_data_falls_back_on_non_dict_catgirls_without_overwriting_disk(
+    tmp_path, bad_catgirls
+):
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    path = Path(cm.get_runtime_config_path("characters.json"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = json.dumps({"当前猫娘": "Other", "猫娘": bad_catgirls}, ensure_ascii=False)
+    path.write_text(raw, encoding="utf-8")
+
+    master_name, her_name, _, catgirls, _, _, _, _, _ = cm.get_character_data()
+    assert master_name
+    assert her_name
+    assert isinstance(catgirls, dict) and catgirls
+    assert path.read_text(encoding="utf-8") == raw
+
+    async_res = await cm.aget_character_data()
+    assert async_res[1] == her_name
+    assert path.read_text(encoding="utf-8") == raw

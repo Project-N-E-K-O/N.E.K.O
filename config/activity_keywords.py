@@ -2795,9 +2795,11 @@ COMMUNICATION_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
 #
 # Needle form depends on alias content:
 #   - Aliases that contain any ASCII letter/digit get compiled into a
-#     regex with ``\b`` boundaries on whichever edges are alphanumeric.
-#     This stops short tokens like ``COD``, ``LoL``, ``CS2``, ``BF`` from
-#     matching inside unrelated words (``Code``, ``Lol``, ``acsc2-test``).
+#     regex with ASCII-only boundaries (``(?<![a-z0-9])`` / ``(?![a-z0-9])``)
+#     on whichever outer edges are ASCII alphanumeric. This stops short
+#     tokens like ``COD``, ``LoL``, ``CS2``, ``BF`` from matching inside
+#     unrelated ASCII words (``Code``, ``Lol``, ``acsc2-test``) while
+#     matching mixed ASCII+CJK titles like ``B站视频`` or ``看B站``.
 #   - Pure CJK / symbol aliases stay as lowercased strings and are
 #     matched by plain substring — Unicode word-boundary semantics don't
 #     apply naturally to CJK, and false positives there are negligible
@@ -2871,8 +2873,8 @@ def _make_needle(alias: str) -> Needle:
     has_ascii_alnum = any(c.isascii() and c.isalnum() for c in low)
     if not has_ascii_alnum:
         return low  # pure CJK / symbols — substring match is correct
-    left = r'\b' if low[0].isalnum() else ''
-    right = r'\b' if low[-1].isalnum() else ''
+    left = r'(?<![a-z0-9])' if (low[0].isascii() and low[0].isalnum()) else ''
+    right = r'(?![a-z0-9])' if (low[-1].isascii() and low[-1].isalnum()) else ''
     return re.compile(left + re.escape(low) + right)
 
 
