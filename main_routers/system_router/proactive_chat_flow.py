@@ -205,7 +205,13 @@ async def proactive_chat(request: Request):
         lanlan_name = command.lanlan_name or her_name_current
         inactive_reason = _local_system_inactive_reason(
             request,
-            voice_session_active=isinstance(payload, dict) and payload.get("voice_session_active") is True,
+            # Only a voice-mode request can claim a running voice call; a text
+            # request carrying the field by mistake stays display-off gated.
+            voice_session_active=(
+                command.voice_mode
+                and isinstance(payload, dict)
+                and payload.get("voice_session_active") is True
+            ),
         )
         if inactive_reason is not None:
             # Display off, session locked, asleep, or just back from one of

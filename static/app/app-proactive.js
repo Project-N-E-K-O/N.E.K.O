@@ -597,7 +597,7 @@
         if (lateBy <= Math.max(baseMs, SYSTEM_SLEEP_LATE_FLOOR_MS)) return false;
         var wakeQuietUntil = Date.now() + SYSTEM_RETURN_QUIET_MS;
         if (!(_systemQuietUntil >= wakeQuietUntil)) _systemQuietUntil = wakeQuietUntil;
-        console.log('[ProactiveChat] Timer fired ' + Math.round(lateBy / 1000) + 's late (system sleep); dropping this tick and staying quiet for ' + (SYSTEM_RETURN_QUIET_MS / 1000) + 's');
+        console.log('[ProactiveChat] Timer fired ' + Math.round(lateBy / 1000) + 's late (system sleep); dropping this tick and staying quiet for ' + Math.round(_getSystemQuietDelay() / 1000) + 's');
         return true;
     }
     mod._proactiveTickMissedBySleep = _proactiveTickMissedBySleep;
@@ -626,7 +626,7 @@
         if (!last || now - last <= SYSTEM_SLEEP_LATE_FLOOR_MS) return;
         var quietUntil = now + SYSTEM_RETURN_QUIET_MS;
         if (!(_systemQuietUntil >= quietUntil)) _systemQuietUntil = quietUntil;
-        console.log('[ProactiveChat] Wall clock jumped ' + Math.round((now - last) / 1000) + 's (system sleep); staying quiet for ' + (SYSTEM_RETURN_QUIET_MS / 1000) + 's');
+        console.log('[ProactiveChat] Wall clock jumped ' + Math.round((now - last) / 1000) + 's (system sleep); staying quiet for ' + Math.round(_getSystemQuietDelay() / 1000) + 's');
     }
 
     function _isSystemInactivePass(result) {

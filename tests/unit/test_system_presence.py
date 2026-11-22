@@ -397,3 +397,26 @@ async def test_route_voice_session_flag(monkeypatch, payload_flag, display_off, 
     response = await flow.proactive_chat(_request("127.0.0.1", body))
     reason = json.loads(response.body)["reason_code"]
     assert (reason == PROACTIVE_REASON_PASS_SYSTEM_INACTIVE) is expect_pass
+
+
+def test_locked_takes_precedence_over_display_off():
+    state = _armed_state()
+    state.on_display_state(False)
+    state.on_session_lock_state(True)
+    assert state.inactive_reason() == sp.REASON_SESSION_LOCKED
+    state.on_suspend()
+    assert state.inactive_reason() == sp.REASON_SUSPENDED
+
+
+@pytest.mark.asyncio
+async def test_text_request_with_voice_flag_is_still_display_off_gated(monkeypatch):
+    state = _armed_state()
+    state.on_display_state(False)
+    _wire_route(monkeypatch, None)
+    monkeypatch.setattr(
+        flow, "get_system_inactive_reason",
+        lambda *, voice_session_active=False: state.inactive_reason(voice_session_active=voice_session_active),
+    )
+    # No voice_mode: the field alone must not bypass the display-off gate.
+    response = await flow.proactive_chat(_request("127.0.0.1", {"lanlan_name": "Neko", "voice_session_active": True}))
+    assert json.loads(response.body)["reason_code"] == PROACTIVE_REASON_PASS_SYSTEM_INACTIVE
