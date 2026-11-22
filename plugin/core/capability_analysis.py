@@ -252,6 +252,8 @@ class _Reference:
     raw_root: str = ""
     # Only stored into or deleted from (x[k] = v, del x[k]), never read.
     written: bool = False
+    # Read with a subscript (x[k]).
+    subscripted: bool = False
     # The root name holds a value read from the environment earlier
     # (tok = os.environ.get()), whose own line is already the evidence. Other
     # stored call results (p = Path(); p.write_text()) still count.
@@ -278,6 +280,9 @@ def _references(tree, walker: _AnalysisWalker):
         )
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
+        subscripted = {
+            id(node.value) for node in nodes if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load)
+        }
         comprehension_locals = _comprehension_locals(nodes, walker)
 
         def nested(body, inherited, parameters=(), function="", owner=None):
@@ -297,6 +302,8 @@ def _references(tree, walker: _AnalysisWalker):
                     changes["rebound"] = True
                 if id(reference.node) in written:
                     changes["written"] = True
+                if id(reference.node) in subscripted:
+                    changes["subscripted"] = True
                 if changes:
                     reference = replace(reference, **changes)
             yield reference
@@ -954,7 +961,11 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
         # spot either way; so is reaching modules through sys.modules.
         if reference.is_call and name in _DYNAMIC_IMPORT_CALLS:
             return "dynamic_import"
-        if _matches(name, ("sys.modules",)):
+        # Looking a module up (sys.modules[name], .get, .pop) is dynamic;
+        # a membership test ("x" in sys.modules) is not.
+        if name == "sys.modules" and reference.subscripted:
+            return "dynamic_import"
+        if reference.is_call and name in ("sys.modules.get", "sys.modules.pop", "sys.modules.setdefault"):
             return "dynamic_import"
         if reference.is_call and name == "builtins.getattr":
             # A constant name reads like attribute access; see _getattr_reference.
@@ -970,7 +981,7 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
         if _matches(name, _CONTEXT_LOSS):
             return "context_loss"
     if method.endswith(".__dict__") and (
-        (reference.bound is True and _sdk_module(method)) or ("." + method).endswith(".ctx.__dict__")
+        (reference.bound is True and _sdk_origin(method)) or ("." + method).endswith(".ctx.__dict__")
     ):
         return "reflective_access"
     if reference.is_call and method.endswith(".run_in_executor"):
@@ -1009,12 +1020,12 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
     Also part of the cached report's source revision, so adding or removing
     such files refreshes the report.
     """
-    inventory: dict = {"vendor": False, "non_python": [], "truncated": False}
+    inventory: dict = {"vendor": False, "non_python": [], "truncated": False, "unreadable": False}
     try:
         inventory["vendor"] = (root / "vendor").is_dir()
         visited = 0
         def unreadable(_error: OSError) -> None:
-            inventory["truncated"] = True
+            inventory["unreadable"] = True
 
         for current, directories, files in os.walk(root, onerror=unreadable, followlinks=False):
             if stop is not None and stop.is_set():
@@ -1039,7 +1050,7 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
                 if Path(name).suffix.lower() in _NON_PYTHON_CODE_SUFFIXES:
                     inventory["non_python"].append((Path(current) / name).relative_to(root).as_posix())
     except OSError:
-        inventory["truncated"] = True
+        inventory["unreadable"] = True
     return inventory
 
 
@@ -1055,6 +1066,8 @@ def _skipped_parts(root: Path, stop: Event | None) -> list[dict]:
     )
     if inventory["truncated"]:
         skipped.append({"reason": "budget_exceeded", "file": None})
+    if inventory["unreadable"]:
+        skipped.append({"reason": "unreadable", "file": None})
     return skipped
 
 

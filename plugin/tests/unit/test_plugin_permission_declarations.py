@@ -1084,7 +1084,8 @@ def test_unreadable_directories_mark_the_inventory_incomplete(tmp_path, monkeypa
         yield from real_walk(top, followlinks=followlinks)
 
     monkeypatch.setattr(capability_analysis.os, "walk", walk)
-    assert capability_analysis.skipped_inventory(tmp_path)["truncated"] is True
+    inventory = capability_analysis.skipped_inventory(tmp_path)
+    assert (inventory["unreadable"], inventory["truncated"]) == (True, False)
 
 
 def test_not_analyzed_survives_the_blind_spot_cap(tmp_path, monkeypatch):
@@ -1144,3 +1145,47 @@ def test_cli_class_body_imports_are_not_visible_in_methods(tmp_path):
         "[permissions]\n",
     )
     assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
+
+
+# --- review round 7 ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source,reported",
+    [
+        # Later SDK import wins over an earlier local definition.
+        ("def hook(**k):\n    return lambda f: f\nfrom plugin.sdk.plugin import hook\n"
+         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", True),
+        # Later local definition wins over an earlier SDK import.
+        ("from plugin.sdk.plugin import hook\ndef hook(**k):\n    return lambda f: f\n"
+         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", False),
+        # A parameter shadows an enclosing SDK import.
+        ("def register():\n    from plugin.sdk.plugin import hook\n"
+         "    def build(hook):\n        @hook(permissions=['x'])\n        def a(): ...\n        return a\n    return build\n", False),
+        # Loop and with targets shadow too.
+        ("from plugin.sdk.plugin import hook\nfor hook in makers:\n"
+         "    @hook(permissions=['x'])\n    def a(): ...\n", False),
+    ],
+)
+def test_cli_decorator_binding_order_and_shadowing(tmp_path, source, reported):
+    plugin_dir = _plugin(tmp_path, source, "[permissions]\n")
+    messages = [message for message in _issues(plugin_dir) if "permissions=" in message]
+    assert bool(messages) is reported
+
+
+@pytest.mark.parametrize(
+    "source,blind",
+    [
+        ("import sys\nloaded = 'torch' in sys.modules\n", False),
+        ("import sys\nmod = sys.modules['os']\n", True),
+        ("import sys\nmod = sys.modules.get('os')\n", True),
+    ],
+)
+def test_sys_modules_lookups_are_blind_spots_membership_tests_are_not(tmp_path, source, blind):
+    spots = _scan(tmp_path, source)["blind_spots"]
+    assert any(spot["type"] == "dynamic_import" for spot in spots) is blind
+
+
+def test_dict_reflection_only_counts_sdk_origins(tmp_path):
+    source = "from plugin.plugins.demo.helpers import state\nx = state.__dict__\n"
+    assert _scan(tmp_path, source)["blind_spots"] == []

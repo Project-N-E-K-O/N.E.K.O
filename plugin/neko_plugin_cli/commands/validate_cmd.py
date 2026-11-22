@@ -1358,56 +1358,87 @@ def _scope_nodes(body):
             stack.extend(ast.iter_child_nodes(node))
 
 
-def _scope_bindings(body) -> dict[str, str | None]:
-    """Names bound in one scope: SDK imports -> qualified symbol, others -> None."""
-    names: dict[str, str | None] = {}
+def _scope_bindings(body, parameters=()) -> list[tuple[tuple[int, int], str, str | None]]:
+    """Bindings in one scope in source order: (position, name, SDK symbol or None).
+
+    Parameters come first; imports from the SDK map to their qualified symbol,
+    every other binding (definitions, assignments, loop / with / except
+    targets, other imports) maps to None.
+    """
+    bindings: list[tuple[tuple[int, int], str, str | None]] = [((0, -1), name, None) for name in parameters]
+
+    def bind(node, name, value=None):
+        bindings.append(((node.lineno, node.col_offset), name, value))
+
+    def bind_targets(node, target):
+        for item in ast.walk(target):
+            if isinstance(item, ast.Name):
+                bind(node, item.id)
+
     for node in _scope_nodes(body):
         if isinstance(node, ast.ImportFrom):
             for item in node.names:
                 qualified = f"{node.module}.{item.name}" if node.module and not node.level else ""
-                names[item.asname or item.name] = qualified if _is_sdk_module(qualified) else None
+                bind(node, item.asname or item.name, qualified if _is_sdk_module(qualified) else None)
         elif isinstance(node, ast.Import):
             for item in node.names:
                 if item.asname:
-                    names[item.asname] = item.name if _is_sdk_module(item.name) else None
+                    bind(node, item.asname, item.name if _is_sdk_module(item.name) else None)
                 else:
                     root = item.name.split(".")[0]
-                    names[root] = "plugin" if root == "plugin" and _is_sdk_module(item.name) else names.get(root)
+                    bind(node, root, "plugin" if root == "plugin" and _is_sdk_module(item.name) else None)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names[node.name] = None
+            bind(node, node.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                for item in ast.walk(target):
-                    if isinstance(item, ast.Name):
-                        names[item.id] = None
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                bind_targets(node, target)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            bind_targets(node, node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bind_targets(node, item.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bind(node, node.name)
+    bindings.sort(key=lambda item: item[0])
+    return bindings
+
+
+def _parameter_names(node) -> list[str]:
+    if isinstance(node, ast.ClassDef):
+        return []
+    args = node.args
+    names = [arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    names += [arg.arg for arg in (args.vararg, args.kwarg) if arg is not None]
     return names
 
 
 def _sdk_decorators(tree: ast.Module) -> dict[int, str]:
-    """id(decorator) -> SDK symbol name, resolving each name in the scope the
-    decorator is evaluated in (local, then enclosing functions, then module;
-    class bodies are not visible to nested functions)."""
+    """id(decorator) -> SDK symbol name, resolving each name where the decorator
+    is evaluated: bindings earlier in the same scope, then enclosing function
+    scopes and the module (their final bindings); class bodies are not visible
+    to nested functions."""
     found: dict[int, str] = {}
 
-    def visit(body, chain, is_class):
-        local = _scope_bindings(body)
-        visible = [local, *chain]
+    def final(bindings) -> dict[str, str | None]:
+        return {name: value for _position, name, value in bindings}
+
+    def visit(body, chain, is_class, parameters=()):
+        local = _scope_bindings(body, parameters)
         for node in _scope_nodes(body):
             if not isinstance(node, _SCOPE_NODES) or isinstance(node, ast.Lambda):
                 continue
             for decorator in node.decorator_list:
-                name = _sdk_decorator_name(decorator, _lookup(visible))
+                position = (decorator.lineno, decorator.col_offset)
+                names: dict[str, str | None] = {}
+                for scope in reversed(chain):
+                    names.update(scope)
+                names.update({name: value for at, name, value in local if at < position})
+                name = _sdk_decorator_name(decorator, {key: value for key, value in names.items() if value})
                 if name:
                     found[id(decorator)] = name
-            inner_chain = chain if is_class else visible
-            visit(node.body, inner_chain, isinstance(node, ast.ClassDef))
-
-    def _lookup(scopes):
-        merged: dict[str, str | None] = {}
-        for scope in reversed(scopes):
-            merged.update(scope)
-        return {key: value for key, value in merged.items() if value}
+            inner_chain = chain if is_class else [final(local), *chain]
+            visit(node.body, inner_chain, isinstance(node, ast.ClassDef), _parameter_names(node))
 
     visit(tree.body, [], False)
     return found
