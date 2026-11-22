@@ -1441,6 +1441,7 @@
             const explicitStoredExpressions = rawEmotionMapping && rawEmotionMapping.expressions && typeof rawEmotionMapping.expressions === 'object'
                 ? rawEmotionMapping.expressions
                 : null;
+            const lossyExpressionGroups = [];
             if (explicitStoredExpressions) {
                 Object.entries(explicitStoredExpressions).forEach(([groupName, rawGroupFiles]) => {
                     if (emotions.includes(groupName)) {
@@ -1453,17 +1454,113 @@
                     if (sanitizedFromMapping.length === 0) {
                         return;
                     }
-                    if (hasLossyExpressionRebuild(rawExpressions, groupName, sanitizedFromMapping)) {
-                        return;
-                    }
                     preservedExpressions[groupName] = sanitizedFromMapping;
+                    if (hasLossyExpressionRebuild(rawExpressions, groupName, sanitizedFromMapping)) {
+                        lossyExpressionGroups.push(groupName);
+                    }
                 });
             }
 
             return {
                 motions: preservedMotions,
-                expressions: preservedExpressions
+                expressions: preservedExpressions,
+                modelConfigUrl,
+                rawExpressions,
+                lossyExpressionGroups
             };
+        }
+
+        function mergeRestoredLossyExpressions(postSaveExpressions, originalRawExpressions, lossyGroupNames) {
+            const lossySet = new Set(Array.isArray(lossyGroupNames) ? lossyGroupNames : []);
+            const merged = [];
+
+            (Array.isArray(postSaveExpressions) ? postSaveExpressions : []).forEach(item => {
+                if (!item || typeof item !== 'object') {
+                    return;
+                }
+                const itemName = typeof item.Name === 'string' ? item.Name : '';
+                const underscoreIdx = itemName.indexOf('_');
+                const prefix = underscoreIdx >= 0 ? itemName.slice(0, underscoreIdx) : '';
+                if (!prefix || !lossySet.has(prefix)) {
+                    merged.push(Object.assign({}, item));
+                }
+            });
+
+            lossySet.forEach(groupName => {
+                const prefix = `${groupName}_`;
+                const coveredFiles = new Set();
+
+                (Array.isArray(originalRawExpressions) ? originalRawExpressions : []).forEach(item => {
+                    if (!item || typeof item !== 'object') {
+                        return;
+                    }
+                    const itemName = typeof item.Name === 'string' ? item.Name : '';
+                    if (!itemName.startsWith(prefix)) {
+                        return;
+                    }
+                    const rawFile = typeof item.File === 'string' ? item.File.replace(/\\/g, '/').trim() : '';
+                    if (!rawFile || !isSafeRelativeModelRef(rawFile)) {
+                        return;
+                    }
+                    merged.push(Object.assign({}, item));
+                    coveredFiles.add(rawFile);
+                });
+
+                (Array.isArray(postSaveExpressions) ? postSaveExpressions : []).forEach(item => {
+                    if (!item || typeof item !== 'object') {
+                        return;
+                    }
+                    const itemName = typeof item.Name === 'string' ? item.Name : '';
+                    if (!itemName.startsWith(prefix)) {
+                        return;
+                    }
+                    const normFile = typeof item.File === 'string' ? item.File.replace(/\\/g, '/').trim() : '';
+                    if (normFile && !coveredFiles.has(normFile)) {
+                        merged.push(Object.assign({}, item));
+                        coveredFiles.add(normFile);
+                    }
+                });
+            });
+
+            return merged;
+        }
+
+        async function restoreLossyExpressionMetadata(preservedConfig) {
+            const cfgResp = await fetch(preservedConfig.modelConfigUrl);
+            if (!cfgResp.ok) {
+                throw new Error(`HTTP ${cfgResp.status}: ${cfgResp.statusText}`);
+            }
+            const cfgData = await cfgResp.json();
+            if (!cfgData || !cfgData.success || !cfgData.config || typeof cfgData.config !== 'object') {
+                throw new Error((cfgData && cfgData.error) || t('common.unknownError'));
+            }
+            const postSaveExpressions = Array.isArray(cfgData.config?.FileReferences?.Expressions)
+                ? cfgData.config.FileReferences.Expressions
+                : [];
+            const mergedExpressions = mergeRestoredLossyExpressions(
+                postSaveExpressions,
+                preservedConfig.rawExpressions,
+                preservedConfig.lossyExpressionGroups
+            );
+
+            const restoreResp = await fetch(preservedConfig.modelConfigUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    FileReferences: {
+                        Expressions: mergedExpressions
+                    }
+                })
+            });
+            if (!restoreResp.ok) {
+                throw new Error(`HTTP ${restoreResp.status}: ${restoreResp.statusText}`);
+            }
+            const restoreData = await restoreResp.json();
+            if (!restoreData || !restoreData.success) {
+                throw new Error((restoreData && restoreData.error) || t('common.unknownError'));
+            }
         }
 
         // 加载情感映射配置
@@ -1629,6 +1726,12 @@
                 }
 
                 if (data.success) {
+                    if (Array.isArray(preservedConfig.lossyExpressionGroups) && preservedConfig.lossyExpressionGroups.length > 0) {
+                        await restoreLossyExpressionMetadata(preservedConfig);
+                    }
+                    if (savingSelectionId !== currentSelectionId) {
+                        return;
+                    }
                     showStatus(t('emotionManager.configSaveSuccess'), 'success');
                 } else {
                     showStatus(t('emotionManager.saveFailed') + ': ' + (data.error || t('common.unknownError')), 'error');
