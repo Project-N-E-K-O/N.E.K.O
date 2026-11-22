@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import tarfile
+from urllib.parse import urlsplit
 
 
 OFFICIAL_URL = "https://github.com/Project-N-E-K-O/N.E.K.O.git"
@@ -61,12 +62,84 @@ def clean_required(repo):
 def official_required(repo):
     # Validate the configured identity before Git applies transport rewrites.
     # fetch uses the first configured URL; refuse ambiguity instead of guessing.
-    urls = git(repo, "config", "--get-all", "remote.origin.url").splitlines()
+    # --null keeps each value intact, so a value ending in a newline is not
+    # confused with Git's line separator.
+    raw = subprocess.check_output(
+        ["git", "config", "--null", "--get-all", "remote.origin.url"], cwd=repo
+    )
+    urls = [os.fsdecode(value) for value in raw.split(b"\0")[:-1]]
     if len(urls) != 1:
         raise ValueError("origin must have exactly one configured URL.")
     url = urls[0]
-    if url.rstrip("/").removesuffix(".git") != OFFICIAL_URL.removesuffix(".git"):
-        raise ValueError(f"origin is not the configured official repository: {url}")
+    if repo_identity(url) != repo_identity(OFFICIAL_URL):
+        raise ValueError(
+            f"origin is not the configured official repository: {url}\n"
+            "Accepted forms (with or without .git): "
+            "https://github.com[:443]/Project-N-E-K-O/N.E.K.O, "
+            "ssh://[user@]github.com[:22]/Project-N-E-K-O/N.E.K.O "
+            "(also git+ssh:// and ssh+git://), "
+            "[user@]github.com:Project-N-E-K-O/N.E.K.O.\n"
+            "If this checkout should follow the official repository, run:\n"
+            f"  git remote set-url origin {OFFICIAL_URL}\n"
+            "Transport rewrites such as url.<base>.insteadOf keep working."
+        )
+
+
+# Schemes that address a GitHub repository over an authenticated or encrypted
+# transport, mapped to their default port. Plain http:// and git:// are left
+# out on purpose: this identity gates code that is fetched and merged locally.
+_URL_SCHEME_PORTS = {"https": 443, "ssh": 22, "git+ssh": 22, "ssh+git": 22}
+# scp-like syntax: [user@]host:path, where the first colon precedes any slash.
+# Percent escapes are refused too: Git URL-decodes ssh:// URLs before it
+# splits user, host and path, so an escaped "@" or "/" can change the target.
+_AMBIGUOUS_URL_CHARS = re.compile(r"[\\%\s\x00-\x1f\x7f]")
+_SCP_LIKE = re.compile(r"^(?:[^@/:]+@)?(?P<host>[^@/:]+):(?P<path>[^/].*)$")
+
+
+def repo_identity(url):
+    """Normalize a remote URL to ``(host, owner/repo)`` or ``None``.
+
+    Equivalent HTTPS, ``ssh://`` and scp-like ``git@host:owner/repo`` forms map
+    to the same identity; case, a trailing slash and ``.git`` are ignored.
+    """
+    # Parsers disagree on backslashes, whitespace (including leading or
+    # trailing), percent escapes and stray "@" in the authority; refuse such
+    # URLs instead of guessing which host Git contacts. Non-ASCII text is
+    # refused so case folding cannot map look-alikes (e.g. U+212A) to ASCII.
+    if not url.isascii() or _AMBIGUOUS_URL_CHARS.search(url):
+        return None
+    # Git keeps even an empty "?" or "#" in the requested path, so the
+    # parsed identity would not be what Git asks the server for.
+    if "?" in url or "#" in url:
+        return None
+    if "://" in url:
+        try:
+            parts = urlsplit(url)
+            port = parts.port
+        except ValueError:
+            return None
+        default_port = _URL_SCHEME_PORTS.get(parts.scheme)
+        if default_port is None or port not in (None, default_port):
+            return None
+        if parts.netloc.count("@") > 1:
+            return None
+        host, path = parts.hostname, parts.path
+    else:
+        match = _SCP_LIKE.match(url)
+        if match is None:
+            return None
+        host, path = match["host"], match["path"]
+    if not host:
+        return None
+    if "//" in path:
+        return None
+    path = path.strip("/")
+    if path.lower().endswith(".git"):
+        path = path[: -len(".git")]
+    segments = path.split("/")
+    if len(segments) != 2 or not all(segments):
+        return None
+    return host.lower(), path.lower()
 
 
 def index_flags_required(repo):
