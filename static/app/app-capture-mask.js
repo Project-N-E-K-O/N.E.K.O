@@ -150,7 +150,7 @@
      *
      * @returns {{known: boolean, rects: Array}} rects in 0..1 when known
      */
-    function mapViewportRectsToCapture(rects, captureType, geom, opts) {
+    function mapViewportRectsToCapture(rects, captureType, geom) {
         if (!rects || rects.length === 0) return { known: true, rects: [] };
         if (!geom) return { known: false, rects: [] };
         var originX = 0, originY = 0, refW, refH;
@@ -158,8 +158,9 @@
             refW = Number(geom.innerWidth);
             refH = Number(geom.innerHeight);
         } else if (captureType === 'screen') {
-            // The page cannot tell which display of several was captured.
-            if (geom.multiDisplay) return { known: false, rects: [] };
+            // The page cannot tell which display of several was captured, and
+            // without a display count it cannot tell whether there are several.
+            if (geom.multiDisplay !== false) return { known: false, rects: [] };
             var outerW = Number(geom.outerWidth) || 0;
             var outerH = Number(geom.outerHeight) || 0;
             var innerW = Number(geom.innerWidth) || 0;
@@ -182,9 +183,7 @@
                 height: r.height / refH
             };
         });
-        // opts.unclipped: keep off-image parts (the drag sweep clips after
-        // taking the bounding box, so an off-screen endpoint still counts).
-        return { known: true, rects: opts && opts.unclipped ? mapped : clipNormalizedRects(mapped) };
+        return { known: true, rects: clipNormalizedRects(mapped) };
     }
 
     function clipNormalizedRects(rects) {
@@ -206,11 +205,14 @@
 
     function readBrowserGeometry(win) {
         var scr = win.screen || {};
-        var multiDisplay = false;
-        if (win.appScreen && typeof win.appScreen.isKnownMultiDisplay === 'function') {
-            try { multiDisplay = !!win.appScreen.isKnownMultiDisplay(); } catch (e) { multiDisplay = false; }
-        } else if (typeof scr.isExtended === 'boolean') {
+        // true: several displays; false: known single display; null: unknown
+        // (no Screen.isExtended, e.g. Firefox / Safari). Unknown counts as
+        // "position unknown" for whole-screen captures: when unsure, mask less.
+        var multiDisplay = null;
+        if (typeof scr.isExtended === 'boolean') {
             multiDisplay = scr.isExtended;
+        } else if (win.appScreen && typeof win.appScreen.isKnownMultiDisplay === 'function') {
+            try { if (win.appScreen.isKnownMultiDisplay()) multiDisplay = true; } catch (e) { multiDisplay = null; }
         }
         return {
             innerWidth: win.innerWidth,
@@ -293,9 +295,9 @@
     }
 
     /**
-     * Snapshot the regions before a frame is captured. The result is unioned
-     * with a second snapshot taken after capture, so a chat window that moves
-     * while the frame is being taken is still covered.
+     * Snapshot the regions before a frame is captured. It is combined with a
+     * second snapshot taken after capture (see intersectGeometry): only what
+     * both agree on is masked.
      *
      * @param {{sourceId?: string|null, via?: string, captureType?: string|null}} [ctxHint]
      *        best guess of what is about to be captured
@@ -323,7 +325,7 @@
         };
     }
 
-    function mapLocalSample(sample, ctx, geom, opts) {
+    function mapLocalSample(sample, ctx, geom) {
         var captureType = ctx && ctx.captureType;
         if (captureType === 'viewport') {
             var tabKind = classifyTabCapture(ctx && ctx.stream);
@@ -334,12 +336,16 @@
             if (tabKind === 'other') return { known: true, rects: [] };
             // This tab is being shared: it keeps producing frames in the
             // background, so its regions are masked even while hidden.
-            if (tabKind === 'own') return mapViewportRectsToCapture(sample.rects, captureType, geom, opts);
-            // Unknown (no Capture Handle): treat a hidden page as not shown.
+            if (tabKind === 'own') return mapViewportRectsToCapture(sample.rects, captureType, geom);
+            // Unknown (no Capture Handle, e.g. Firefox / Safari / insecure
+            // origin): the shared tab may not be this page, so the position
+            // of anything to mask is unknown. When unsure, mask less.
+            if (!sample.rects || sample.rects.length === 0) return { known: true, rects: [] };
+            return { known: false, rects: [] };
         }
         // A background tab is not on any screen or window capture.
         if (sample.hidden) return { known: true, rects: [] };
-        return mapViewportRectsToCapture(sample.rects, captureType, geom, opts);
+        return mapViewportRectsToCapture(sample.rects, captureType, geom);
     }
 
     // ======================== Own-tab detection (Capture Handle) ========================
@@ -427,118 +433,58 @@
             if (session && session.pending && sameMaskTarget(session.hint, ctx)) {
                 pre = await session.pending;
             }
-            return unionGeometry(pre, post);
+            return intersectGeometry(pre, post);
         }
         var geom = readBrowserGeometry(win);
-        var postSample = sampleLocal(win);
-        var postLocal = mapLocalSample(postSample, ctx, geom);
+        var postLocal = mapLocalSample(sampleLocal(win), ctx, geom);
         if (!(session && session.local)) return postLocal;
-        var preGeom = session.geom || geom;
-        var preLocal = mapLocalSample(session.local, ctx, preGeom);
-        if (sameBrowserPlacement(preGeom, geom)) return unionGeometry(preLocal, postLocal);
-        // One end with the whole window off the screen (e.g. a minimized
-        // window on Windows sits at -32000,-32000) is not a drag: the window
-        // was not on the screen there, so only the other end is used.
-        // Otherwise the sweep would stretch to the edge of the image.
-        var preOff = windowOffScreen(preGeom);
-        var postOff = windowOffScreen(geom);
-        if (preOff !== postOff) {
-            var onGeom = preOff ? geom : preGeom;
-            return unionGeometry(
-                mapLocalSample(session.local, ctx, onGeom),
-                mapLocalSample(postSample, ctx, onGeom)
-            );
-        }
-        // The browser window moved (or the screen reference changed) while
-        // the frame was being taken. The frame may show the window anywhere
-        // along the way, and the regions as either sample: cover each region
-        // of both samples over the whole sweep from the old to the new
-        // position (best effort for a drag during capture: assumes the window
-        // went roughly straight between the two positions).
-        return unionGeometry(
-            sweepSample(session.local, ctx, preGeom, geom),
-            sweepSample(postSample, ctx, preGeom, geom)
-        );
+        // Each sample is mapped with the window position it was taken at.
+        var preLocal = mapLocalSample(session.local, ctx, session.geom || geom);
+        return intersectGeometry(preLocal, postLocal);
     }
 
-    // Each region of the sample, mapped with both geometries, covered by the
-    // bounding box of the two mappings.
-    function sweepSample(sample, ctx, geomA, geomB) {
-        var known = false;
-        var rects = [];
-        (sample.rects || []).forEach(function (r) {
-            var one = { rects: [r], hidden: sample.hidden };
-            var a = mapLocalSample(one, ctx, geomA, { unclipped: true });
-            var b = mapLocalSample(one, ctx, geomB, { unclipped: true });
-            var parts = [];
-            if (a.known) { known = true; parts = parts.concat(a.rects); }
-            if (b.known) { known = true; parts = parts.concat(b.rects); }
-            // Bounding box first, then clip: an endpoint off the image still
-            // stretches the sweep over the part of the path that is on it.
-            if (parts.length) rects = rects.concat(clipNormalizedRects([boundingRect(parts)]));
-        });
-        if (!sample.rects || sample.rects.length === 0) {
-            // Nothing to mask in this sample; keep its known / unknown status.
-            var empty = mapLocalSample(sample, ctx, geomB);
-            return { known: empty.known, rects: [] };
-        }
-        return { known: known, rects: rects };
-    }
-
-    function boundingRect(rects) {
-        var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-        rects.forEach(function (r) {
-            left = Math.min(left, r.x);
-            top = Math.min(top, r.y);
-            right = Math.max(right, r.x + r.width);
-            bottom = Math.max(bottom, r.y + r.height);
-        });
-        return { x: left, y: top, width: right - left, height: bottom - top };
-    }
-
-    function windowOffScreen(g) {
-        if (!g) return false;
-        var x = Number(g.screenX), y = Number(g.screenY);
-        var w = Number(g.outerWidth), h = Number(g.outerHeight);
-        var sw = Number(g.screenWidth), sh = Number(g.screenHeight);
-        if (![x, y, w, h, sw, sh].every(isFiniteNumber)) return false;
-        return x + w <= 0 || y + h <= 0 || x >= sw || y >= sh;
-    }
-
-    function sameBrowserPlacement(a, b) {
-        if (!a || !b) return a === b;
-        return a.screenX === b.screenX && a.screenY === b.screenY
-            && a.outerWidth === b.outerWidth && a.outerHeight === b.outerHeight
-            && a.innerWidth === b.innerWidth && a.innerHeight === b.innerHeight
-            && a.screenWidth === b.screenWidth && a.screenHeight === b.screenHeight
-            && a.multiDisplay === b.multiDisplay;
-    }
-
-    function unionGeometry(pre, post) {
-        var known = false;
+    /**
+     * Combine the samples taken before and after capture. The frame was taken
+     * somewhere in between, so only what both samples agree on is certain:
+     * mask the overlap of the two, nothing more (when unsure, mask less).
+     * A region that moved, appeared or disappeared during capture is left
+     * unmasked in that frame. Either side unknown -> unknown. A missing side
+     * (no pre-capture sample, or one taken for a different target) leaves the
+     * other side as is.
+     */
+    function intersectGeometry(pre, post) {
+        if (!pre) return post || { known: false, rects: [] };
+        if (!post) return pre;
+        if (!pre.known || !post.known) return { known: false, rects: [] };
         var rects = [];
         var seen = {};
-        [pre, post].forEach(function (g) {
-            if (!g || !g.known) return;
-            known = true;
-            (g.rects || []).forEach(function (r) {
+        (pre.rects || []).forEach(function (a) {
+            (post.rects || []).forEach(function (b) {
+                var left = Math.max(a.x, b.x);
+                var top = Math.max(a.y, b.y);
+                var right = Math.min(a.x + a.width, b.x + b.width);
+                var bottom = Math.min(a.y + a.height, b.y + b.height);
+                if (!(right > left) || !(bottom > top)) return;
+                var r = { x: left, y: top, width: right - left, height: bottom - top };
                 var key = [r.x, r.y, r.width, r.height].join(',');
                 if (seen[key]) return;
                 seen[key] = true;
                 rects.push(r);
             });
         });
-        return { known: known, rects: rects };
+        return { known: true, rects: rects };
     }
 
     // ======================== Fallback policy (single place) ========================
 
     /**
      * The chat history / option regions may be in the frame, but where they
-     * are is unknown (several displays in the browser, a shared window that
-     * may or may not be this browser, a shared browser tab showing another
-     * N.E.K.O page of the same origin, a desktop shell without
-     * getSelfUiCaptureMask, or a failed query).
+     * are is unknown: several displays in the browser, or a display count the
+     * browser does not report (no Screen.isExtended); a shared window that may
+     * or may not be this browser; a shared browser tab that cannot be tied to
+     * this page (no Capture Handle) or shows another N.E.K.O page of the same
+     * origin; the samples before and after capture where either side is
+     * unknown; a desktop shell without getSelfUiCaptureMask, or a failed query.
      *
      * Also reached when the position is known but painting failed
      * (reason 'paint_failed': decode / 2d context / encode error).
@@ -615,8 +561,8 @@
      *        jpegQuality: re-encode quality for JPEG frames (match the capture
      *        quality). stream: the stream the frame came from. Callers must pass
      *        it for browser-tab frames: it is the only way to tell this tab from
-     *        another one. Without it the tab is "unknown" (old rule: masked only
-     *        while this page is in the foreground); the cached stream is never
+     *        another one. Without it the tab is "unknown" (position unknown, so
+     *        the fallback policy decides: sent unmasked); the cached stream is never
      *        consulted, since it may have been swapped during capture.
      * @param {object} [session] from beginMaskSession(), taken before capture
      * @returns {Promise<string|null>} the frame to send, or null to send nothing
@@ -664,7 +610,10 @@
     /**
      * Merge rects until at most `max` remain, always merging the pair whose
      * bounding box adds the least area. Merging only grows coverage, so no
-     * region that was marked becomes unmasked.
+     * region that was marked becomes unmasked. This is the one place that
+     * masks more than the marked regions while the position is known: the
+     * shell rejects more than REPORT_MAX_RECTS rects (and would then send
+     * the frame unmasked), and it only kicks in past that count.
      */
     function limitRectCount(rects, max) {
         var list = (rects || []).slice();

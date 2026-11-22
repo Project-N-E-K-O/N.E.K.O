@@ -127,7 +127,8 @@ function makeWindow(opts) {
         Promise,
     };
     if (opts.multiWindow) w.__NEKO_MULTI_WINDOW__ = true;
-    if (opts.captureHandle) {
+    // Capture Handle is on by default (Chromium); captureHandle: false = no API.
+    if (opts.captureHandle !== false) {
         w.location = { origin: 'http://127.0.0.1:48911' };
         w.navigator = { mediaDevices: { setCaptureHandleConfig: (cfg) => { w.__captureHandleConfig = cfg; } } };
     }
@@ -303,11 +304,11 @@ test('paint: the image keeps its size and encoding', async () => {
         geom: { innerWidth: 1000, innerHeight: 800 },
         imageSizes: { [RAW_FRAME]: [1280, 720], 'data:image/png;base64,UE5H': [640, 360] },
     });
-    const jpeg = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport' });
+    const jpeg = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', stream: ownTab(w) });
     assert.match(jpeg, /^data:image\/jpeg;/);
     assert.equal(decodeFrame(jpeg).w, 1280);
     assert.equal(decodeFrame(jpeg).h, 720);
-    const png = await w.appCaptureMask.maskFrameForModel('data:image/png;base64,UE5H', { captureType: 'viewport' });
+    const png = await w.appCaptureMask.maskFrameForModel('data:image/png;base64,UE5H', { captureType: 'viewport', stream: ownTab(w) });
     assert.match(png, /^data:image\/png;/);
     assert.equal(decodeFrame(png).w, 640);
 });
@@ -348,20 +349,33 @@ test('browser: the fallback decision is the single switch (drop -> null)', async
 
 test('browser: a decode failure with known regions falls back through the same policy', async () => {
     const { w } = makeWindow({ elements: chatElements({ galOpen: true }) });
-    assert.equal(await w.appCaptureMask.maskFrameForModel('data:bad,xx', { captureType: 'viewport' }), 'data:bad,xx');
+    assert.equal(await w.appCaptureMask.maskFrameForModel('data:bad,xx', { captureType: 'viewport', stream: ownTab(w) }), 'data:bad,xx');
 });
 
-test('browser: regions before and after capture are unioned (chat moved mid-capture)', async () => {
+test('browser: only what the samples before and after capture agree on is masked (when unsure, mask less)', async () => {
     const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
     const { w } = makeWindow({ elements: [history], geom: { innerWidth: 1000, innerHeight: 1000 }, imageSizes: { [RAW_FRAME]: [1000, 1000] } });
-    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
-    history.rect = { x: 500, y: 500, w: 100, h: 100 }; // moved while the frame was being taken
-    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream' }, session);
-    assert.deepEqual(fillsOf(out), [[92, 92, 116, 116], [492, 492, 116, 116]]);
-
-    // Without the pre-capture snapshot only the final position would be covered.
-    const noSession = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream' });
-    assert.deepEqual(fillsOf(noSession), [[492, 492, 116, 116]]);
+    const stream = ownTab(w);
+    // Unchanged during capture: masked as usual.
+    let session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    let out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream }, session);
+    assert.deepEqual(fillsOf(out), [[92, 92, 116, 116]]);
+    // Moved during capture: the frame may show either position, neither is certain -> nothing painted.
+    session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    history.rect = { x: 500, y: 500, w: 100, h: 100 };
+    out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream }, session);
+    assert.equal(out, RAW_FRAME);
+    // Moved a little: only the overlap of the two positions is painted.
+    session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    history.rect = { x: 520, y: 500, w: 100, h: 100 };
+    out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream }, session);
+    assert.deepEqual(fillsOf(out), [[512, 492, 96, 116]]);
+    // A region that appeared during capture is not masked; the one present throughout is.
+    const option = makeElement({ x: 300, y: 300, w: 50, h: 50 });
+    session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    w.document.querySelectorAll = () => [history, option];
+    out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream }, session);
+    assert.deepEqual(fillsOf(out), [[512, 492, 116, 116]]);
 });
 
 // ---------------------------------------------------------------- desktop shell (C2 stub)
@@ -417,22 +431,22 @@ test('shell: ok:true with no rects -> untouched; ok:false / missing API / timeou
     assert.ok(Date.now() - started < 3000, 'a hung shell query does not hold the frame forever');
 });
 
-test('shell: pre- and post-capture answers for the same target are unioned; a different target uses post only', async () => {
-    const answers = [
-        { ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] },
-        { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.1, height: 0.1 }] },
-    ];
-    const shell = shellStub(async (_req, n) => answers[n - 1] || answers[1]);
-    const { w } = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1000, 1000] } });
-    const session = w.appCaptureMask.beginMaskSession({ sourceId: 'screen:1:0', via: 'native', captureType: 'screen' });
-    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { sourceId: 'screen:1:0', via: 'native', captureType: 'screen' }, session);
-    assert.deepEqual(fillsOf(out), [[0, 0, 100, 100], [500, 500, 100, 100]]);
-
-    const shell2 = shellStub(async (_req, n) => answers[n - 1] || answers[1]);
-    const other = makeWindow({ multiWindow: true, shell: shell2, imageSizes: { [RAW_FRAME]: [1000, 1000] } });
-    const session2 = other.w.appCaptureMask.beginMaskSession({ sourceId: 'screen:1:0', via: 'stream', captureType: 'screen' });
-    const out2 = await other.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { sourceId: null, via: 'backend', captureType: 'screen' }, session2);
-    assert.deepEqual(fillsOf(out2), [[500, 500, 100, 100]]);
+test('shell: pre- and post-capture answers for the same target are intersected; a different target uses post only', async () => {
+    const A = { ok: true, rects: [{ x: 0, y: 0, width: 0.2, height: 0.2 }] };
+    const B = { ok: true, rects: [{ x: 0.1, y: 0.1, width: 0.2, height: 0.2 }] };
+    const run = async (answers, hint, ctx) => {
+        const shell = shellStub(async (_req, n) => answers[Math.min(n, answers.length) - 1]);
+        const { w } = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1000, 1000] } });
+        const session = w.appCaptureMask.beginMaskSession(hint);
+        return fillsOf(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx, session));
+    };
+    const same = { sourceId: 'screen:1:0', via: 'native', captureType: 'screen' };
+    assert.deepEqual(await run([A, A], same, same), [[0, 0, 200, 200]], 'unchanged -> masked');
+    assert.deepEqual(await run([A, B], same, same), [[100, 100, 100, 100]], 'moved -> only the overlap');
+    assert.equal(await run([A, { ok: false }], same, same), null, 'one side unknown -> unknown (sent unmasked)');
+    assert.equal(await run([{ ok: false }, A], same, same), null, 'one side unknown -> unknown (sent unmasked)');
+    // A pre-capture answer for another target is not comparable: post only.
+    assert.deepEqual(await run([A, B], { sourceId: 'screen:1:0', via: 'stream' }, { sourceId: null, via: 'backend', captureType: 'screen' }), [[100, 100, 200, 200]]);
 });
 
 // ---------------------------------------------------------------- C1 reporter
@@ -460,7 +474,8 @@ test('reporter: chat windows report viewport-relative regions, only when they ch
 
 function bootProactive(opts) {
     const { w, state } = makeWindow(Object.assign({ imageSizes: { [RAW_FRAME]: [1000, 800] } }, opts));
-    const track = { readyState: 'live' };
+    // The cached stream is a share of this tab.
+    const track = { readyState: 'live', getCaptureHandle: () => ({ handle: w.appCaptureMask.OWN_CAPTURE_HANDLE }) };
     const S = {
         isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true,
         screenCaptureStream: { active: true, getVideoTracks: () => [track], getTracks: () => [track] },
@@ -490,13 +505,13 @@ test('single-shot (proactive / screenshot_request): the returned frame is alread
     assert.equal(shot.via, 'stream');
 });
 
-test('single-shot: chat moved during capture -> both positions are covered', async () => {
+test('single-shot: chat moved during capture -> not masked in that frame (when unsure, mask less)', async () => {
     const { w } = bootProactive({
         elements: [makeElement({ x: 10, y: 10, w: 50, h: 50 })],
         duringCapture(state) { state.elements[0].rect = { x: 400, y: 400, w: 50, h: 50 }; },
     });
     const shot = await w.appProactive.captureProactiveChatScreenshotWithSource();
-    assert.deepEqual(fillsOf(shot.dataUrl), [[2, 2, 66, 66], [392, 392, 66, 66]]);
+    assert.equal(shot.dataUrl, RAW_FRAME);
 });
 
 test('single-shot: Gal off and chat collapsed are paired with the masked cases', async () => {
@@ -573,7 +588,7 @@ test('buildMaskedStreamDataMessage: camera frames pass through untouched', async
     assert.equal(msg.data, RAW_FRAME);
 });
 
-test('shell: production hints carry no captureType and the pre-capture answer is still unioned', async () => {
+test('shell: production hints carry no captureType and the pre-capture answer is still used', async () => {
     const answers = [
         { ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] },
         { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.1, height: 0.1 }] },
@@ -581,9 +596,10 @@ test('shell: production hints carry no captureType and the pre-capture answer is
     const shell = shellStub(async (_req, n) => answers[n - 1] || answers[1]);
     const { w } = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1000, 1000] } });
     // Callers only know sourceId / via before capture; captureType is decided afterwards.
+    // The pre-capture answer is compared (no overlap -> nothing certain), not discarded.
     const session = w.appCaptureMask.beginMaskSession({ sourceId: 'screen:1:0', via: 'stream' });
     const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { sourceId: 'screen:1:0', via: 'stream', captureType: 'screen' }, session);
-    assert.deepEqual(fillsOf(out), [[0, 0, 100, 100], [500, 500, 100, 100]]);
+    assert.equal(out, RAW_FRAME);
 });
 
 test('voice-time vision heartbeat: the stream_data frame is masked before it is sent', async () => {
@@ -780,9 +796,9 @@ test('single-shot entries pass the source they actually captured to the shell; b
 
 // ---------------------------------------------------------------- review round 1
 
-test('browser: the pre-capture sample keeps the window position it was taken at', async () => {
+test('browser: window moved during capture -> each sample keeps its own position; no overlap, nothing painted', async () => {
     // Whole-screen share; the browser window moves from x=0 to x=500 between
-    // the pre-capture sample and the post-capture sample.
+    // the pre-capture sample and the post-capture sample (chat unchanged in the page).
     const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
     const { w } = makeWindow({
         elements: [history],
@@ -791,9 +807,12 @@ test('browser: the pre-capture sample keeps the window position it was taken at'
     });
     const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
     w.screenX = 500;
-    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
-    // Old position (x=92), new position (x=592) and everything in between.
-    assert.deepEqual(fillsOf(out), [[92, 92, 616, 116]]);
+    assert.equal(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session), RAW_FRAME);
+    // Moved only a little: the overlap is painted.
+    const session2 = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    w.screenX = 540;
+    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session2);
+    assert.deepEqual(fillsOf(out), [[632, 92, 76, 116]]);
 });
 
 test('single-shot: a remembered window that changes while the frame is being masked is declined', async () => {
@@ -921,13 +940,18 @@ test('fallback policy is told why: position unknown vs painting failed', async (
     seen.push(...unknown.w.__reasons);
     const broken = makeWindow({ elements: chatElements({ galOpen: true }) });
     vm.runInContext(src, broken.w);
-    assert.equal(await broken.w.appCaptureMask.maskFrameForModel('data:bad,xx', { captureType: 'viewport' }), 'data:bad,xx');
+    assert.equal(await broken.w.appCaptureMask.maskFrameForModel('data:bad,xx', { captureType: 'viewport', stream: ownTab(broken.w) }), 'data:bad,xx');
     seen.push(...broken.w.__reasons);
     assert.deepEqual(seen, ['position_unknown', 'paint_failed']);
 });
 
 
 // ---------------------------------------------------------------- review round 3: background tab / own-tab detection
+
+// A browser-tab share of this page (the stream carries this page's capture handle).
+function ownTab(w) {
+    return tabStream(w.appCaptureMask.OWN_CAPTURE_HANDLE);
+}
 
 function tabStream(handle) {
     const track = {
@@ -996,14 +1020,18 @@ test('own-tab check uses only the stream the frame came from, never the cached o
     assert.equal(env.w.appCaptureMask.isOwnTabCapture(null), null);
 });
 
-test('no Capture Handle API: tab share keeps the old rule (visible page masked, hidden page not)', async () => {
-    const env = makeWindow({ elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
+test('no Capture Handle API: a tab share cannot be tied to this page -> position unknown, sent unmasked', async () => {
+    const env = makeWindow({ captureHandle: false, elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
     const stream = tabStream(undefined);
     assert.equal(env.w.appCaptureMask.isOwnTabCapture(stream), null);
-    const visible = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', stream });
-    assert.equal(fillsOf(visible).length, 2);
-    env.w.document.visibilityState = 'hidden';
-    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', stream }), RAW_FRAME);
+    for (const visibility of ['visible', 'hidden']) {
+        env.w.document.visibilityState = visibility;
+        assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', stream }), RAW_FRAME, visibility);
+    }
+    // It goes through the fallback decision (a "drop" policy would drop it).
+    vm.runInContext(maskSource.replace("return 'send-unmasked';", "return 'drop';"), env.w);
+    env.w.document.visibilityState = 'visible';
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', stream }), null);
 });
 
 test('browser screen share of this tab in the background: the sent stream_data frame is masked', async () => {
@@ -1083,78 +1111,32 @@ test('single-shot: backend desktop frames are re-encoded at their capture qualit
 
 // ---------------------------------------------------------------- review round 4
 
-function coversRect(fills, [x, y, w, h]) {
-    return fills.some(([fx, fy, fw, fh]) => fx <= x && fy <= y && fx + fw >= x + w && fy + fh >= y + h);
-}
-
-test('browser: window moved AND regions changed mid-capture -> both samples are covered along the whole move', async () => {
-    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
-    const { w } = makeWindow({
-        elements: [history],
-        geom: { innerWidth: 1000, innerHeight: 800, outerWidth: 1000, outerHeight: 800, screenX: 0, screenY: 0, screenWidth: 2000, screenHeight: 1000 },
-        imageSizes: { [RAW_FRAME]: [2000, 1000] },
-    });
-    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
-    w.screenX = 500;
-    history.rect = { x: 300, y: 100, w: 100, h: 100 };
-    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
-    const fills = fillsOf(out);
-    // Padded region (116 px) of each sample, with the window at x = 0, 250 (mid-drag) and 500.
-    for (const shift of [0, 250, 500]) {
-        assert.ok(coversRect(fills, [92 + shift, 92, 116, 116]), `pre-capture region, window at ${shift}`);
-        assert.ok(coversRect(fills, [292 + shift, 92, 116, 116]), `post-capture region, window at ${shift}`);
-    }
-    // Nothing beyond the sweep.
-    assert.deepEqual(fills.map((f) => [f[0], f[0] + f[2]]).sort((p, q) => p[0] - q[0]), [[92, 708], [292, 908]]);
-});
-
-test('browser: screen reference changed mid-capture (window not moved) -> regions are mapped with both references', async () => {
-    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
-    const { w } = makeWindow({ elements: [history], geom: { screenWidth: 2000, screenHeight: 1000 }, imageSizes: { [RAW_FRAME]: [2000, 1000] } });
-    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
-    w.screen.width = 1000; // e.g. display settings changed; the window itself did not move
-    history.rect = { x: 300, y: 100, w: 100, h: 100 }; // and the region changed too
-    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
-    const fills = fillsOf(out);
-    assert.ok(coversRect(fills, [92, 92, 116, 116]), 'old region, old reference');
-    assert.ok(coversRect(fills, [184, 92, 232, 116]), 'old region, new reference');
-    assert.ok(coversRect(fills, [292, 92, 116, 116]), 'new region, old reference');
-    assert.ok(coversRect(fills, [584, 92, 232, 116]), 'new region, new reference');
-});
-
-test('browser: window not moved -> no cross-mapped extra regions', async () => {
-    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
-    const { w } = makeWindow({ elements: [history], geom: { screenWidth: 2000, screenHeight: 1000 }, imageSizes: { [RAW_FRAME]: [2000, 1000] } });
-    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
-    history.rect = { x: 300, y: 100, w: 100, h: 100 };
-    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
-    assert.deepEqual(fillsOf(out).map((f) => f[0]).sort((a, b) => a - b), [92, 292]);
-});
-
-// Options are open when the backend screenshot is taken and close right after it.
-function backendOptionsCloseShell() {
-    const state = { optionsOpen: true };
+// Records the order of shell queries and the backend screenshot.
+function backendOrderShell() {
+    const order = [];
     const shell = shellStub(async (req) => {
-        if (req.surface !== 'backend' || !state.optionsOpen) return { ok: true, rects: [] };
+        order.push(req.surface);
         return { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] };
     });
-    shell.fetchBackendScreenshot = async () => { state.optionsOpen = false; return { dataUrl: RAW_FRAME }; };
+    shell.order = order;
+    shell.fetchBackendScreenshot = async () => { order.push('screenshot'); return { dataUrl: RAW_FRAME }; };
     return shell;
 }
 
 test('single-shot backend frame: regions are sampled for the backend surface before the backend screenshot', async () => {
-    const shell = backendOptionsCloseShell();
+    const shell = backendOrderShell();
     const env = bootProactive({ multiWindow: true, shell });
     env.S.screenCaptureStream = null;
     env.w.appScreen.acquireOrReuseCachedStream = async () => null;
     env.w.appScreen.fetchBackendScreenshot = shell.fetchBackendScreenshot;
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(shot.via, 'backend');
-    assert.deepEqual(fillsOf(shot.dataUrl), [[500, 400, 250, 200]], 'options visible at screenshot time stay covered');
+    assert.deepEqual(shell.order, ['source', 'backend', 'screenshot', 'backend']);
+    assert.deepEqual(fillsOf(shot.dataUrl), [[500, 400, 250, 200]], 'backend frames are masked');
 });
 
 test('voice heartbeat backend frame: regions are sampled for the backend surface before the backend screenshot', async () => {
-    const shell = backendOptionsCloseShell();
+    const shell = backendOrderShell();
     const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
     Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
     env.w.appScreen.acquireOrReuseCachedStream = async () => null;
@@ -1162,6 +1144,7 @@ test('voice heartbeat backend frame: regions are sampled for the backend surface
     vm.runInContext(proactiveSource, env.w);
     await env.w.appProactive.sendOneProactiveVisionFrame();
     assert.equal(env.sent.length, 1);
+    assert.deepEqual(shell.order, ['source', 'backend', 'screenshot', 'backend']);
     assert.deepEqual(fillsOf(env.sent[0].data), [[500, 400, 250, 200]]);
 });
 
@@ -1232,59 +1215,39 @@ test('screenshot_response is only sent on the connection the request came in on 
 
 // ---------------------------------------------------------------- review round 6
 
-test('browser: window dragged in from off screen mid-capture -> the on-screen part of the sweep is covered', async () => {
-    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
-    const { w } = makeWindow({
-        elements: [history],
-        geom: { innerWidth: 1000, innerHeight: 800, outerWidth: 1000, outerHeight: 800, screenX: -400, screenY: 0, screenWidth: 2000, screenHeight: 1000 },
-        imageSizes: { [RAW_FRAME]: [2000, 1000] },
-    });
-    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
-    w.screenX = 500;
-    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
-    const fills = fillsOf(out);
-    // Region at window x = 0 (mid-drag) is [92, 208]; the old endpoint is entirely off screen.
-    assert.ok(coversRect(fills, [92, 92, 116, 116]), 'mid-drag position on screen');
-    assert.ok(coversRect(fills, [592, 92, 116, 116]), 'new position');
-    assert.deepEqual(fills, [[0, 92, 708, 116]], 'clipped to the image after the sweep');
-});
-
 test('voice heartbeat: the pre-capture sample follows the source the stream actually uses', async () => {
-    // acquireOrReuseCachedStream rewrites the selected source (null -> screen:1:0);
-    // options close right after the frame is taken.
-    const state = { optionsOpen: true };
-    const shell = shellStub(async (req) => (req.sourceId === 'screen:1:0' && state.optionsOpen
-        ? { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] } : { ok: true, rects: [] }));
+    // acquireOrReuseCachedStream rewrites the selected source (null -> screen:1:0).
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] }));
     const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
     Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
-    env.w.appScreen.captureFrameFromStream = async () => { await new Promise((r) => setImmediate(r)); state.optionsOpen = false; return { dataUrl: RAW_FRAME }; };
+    env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     vm.runInContext(proactiveSource, env.w);
     await env.w.appProactive.sendOneProactiveVisionFrame();
     assert.equal(env.sent.length, 1);
-    assert.deepEqual(fillsOf(env.sent[0].data), [[500, 400, 250, 200]]);
+    // pre (null, opened first), pre (screen:1:0, after the rewrite), post (screen:1:0)
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, 'screen:1:0', 'screen:1:0']);
 });
 
 test('single-shot: the pre-capture sample follows the source the stream actually uses', async () => {
-    const state = { optionsOpen: true };
-    const shell = shellStub(async (req) => (req.sourceId === 'screen:1:0' && state.optionsOpen
-        ? { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] } : { ok: true, rects: [] }));
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] }));
     const env = bootProactive({ multiWindow: true, shell });
     env.S.screenCaptureStream = null;
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
-    env.w.appScreen.captureFrameFromStream = async () => { await new Promise((r) => setImmediate(r)); state.optionsOpen = false; return { dataUrl: RAW_FRAME }; };
+    env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(shot.sourceId, 'screen:1:0');
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, 'screen:1:0', 'screen:1:0']);
     assert.deepEqual(fillsOf(shot.dataUrl), [[500, 400, 250, 200]]);
 });
 
 // ---------------------------------------------------------------- review round 7
 
-test('browser: window restored from minimized (-32000,-32000) mid-capture -> only the restored position is masked', async () => {
+test('browser: window restored from minimized (-32000,-32000) mid-capture -> nothing stretched, nothing painted in that frame', async () => {
     const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
     const { w } = makeWindow({
         elements: [history],
@@ -1294,8 +1257,10 @@ test('browser: window restored from minimized (-32000,-32000) mid-capture -> onl
     const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
     w.screenX = 500;
     w.screenY = 0;
-    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
-    assert.deepEqual(fillsOf(out), [[592, 92, 116, 116]]);
+    assert.equal(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session), RAW_FRAME);
+    // The next frame (window settled) is masked normally.
+    const next = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    assert.deepEqual(fillsOf(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, next)), [[592, 92, 116, 116]]);
 });
 
 test('voice heartbeat: a source that goes back to the original one reuses the first pre-capture sample', async () => {
@@ -1316,4 +1281,25 @@ test('voice heartbeat: a source that goes back to the original one reuses the fi
     assert.equal(env.sent.length, 1);
     // pre (screen:0:0), pre (screen:1:0), post (screen:0:0): going back does not open a third pre-capture query.
     assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:0:0', 'screen:1:0', 'screen:0:0']);
+});
+
+test('browser: whole-screen share with an unknown display count (no Screen.isExtended) -> position unknown, sent unmasked', async () => {
+    const { w } = makeWindow({
+        elements: chatElements({ galOpen: true }),
+        geom: { isExtended: undefined, screenWidth: 1000, screenHeight: 1000, innerWidth: 1000, innerHeight: 1000, outerWidth: 1000, outerHeight: 1000 },
+        imageSizes: { [RAW_FRAME]: [1000, 1000] },
+    });
+    assert.equal(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
+    vm.runInContext(maskSource.replace("return 'send-unmasked';", "return 'drop';"), w);
+    assert.equal(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), null, 'goes through the fallback decision');
+});
+
+test('browser: no Screen.isExtended but the desktop bridge knows there are several displays -> position unknown', async () => {
+    const { w } = makeWindow({
+        elements: chatElements({ galOpen: true }),
+        geom: { isExtended: undefined, screenWidth: 1000, screenHeight: 1000, innerWidth: 1000, innerHeight: 1000, outerWidth: 1000, outerHeight: 1000 },
+        imageSizes: { [RAW_FRAME]: [1000, 1000] },
+    });
+    w.appScreen = { isKnownMultiDisplay: () => true };
+    assert.equal(await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
 });
