@@ -581,6 +581,18 @@ async def agent_command(payload: Dict[str, Any]):
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info("[AgentTiming] request_id=%s command=%s key=%s set_flags_ms=%s total_ms=%s", request_id, command, key, set_ms, total_ms)
         return {"success": True, "request_id": request_id, "timing": {"set_flags_ms": set_ms, "agent_total_ms": total_ms}}
+    if command == "set_task_hud_visible":
+        # Whether the main page shows the task HUD (``app.agent_task_hud``): one setting for every
+        # character, so every main page is told.
+        value = (payload or {}).get("value")
+        if not isinstance(value, bool):
+            raise HTTPException(400, "invalid task hud value")
+        from app.agent_task_hud import set_visible as _set_task_hud_visible
+
+        if _set_task_hud_visible(value):
+            _bump_state_revision()
+            await _emit_agent_status_update()
+        return {"success": True, "request_id": request_id, "task_hud_visible": value}
     if command == "refresh_state":
         snapshot = _collect_agent_status_snapshot()
         await _emit_agent_status_update(lanlan_name=lanlan_name)

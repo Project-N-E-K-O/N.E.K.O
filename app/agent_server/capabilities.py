@@ -358,6 +358,7 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     # after a page refresh. Read from this process's view of the ledger;
     # nothing is opened or fetched here.
     from .nekoclaw_mount import hud
+    from app.agent_task_hud import get_visible as _task_hud_visible
 
     active_tasks = hud.active()
     note = _shared.Modules.notification
@@ -371,6 +372,8 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
         "gate": gate,
         "capabilities": capabilities,
         "active_tasks": active_tasks,
+        # Whether the main page shows the task HUD; None when never set here (``app.agent_task_hud``).
+        "task_hud_visible": _task_hud_visible(),
         "notification": note,
         "updated_at": _now_iso(),
     }

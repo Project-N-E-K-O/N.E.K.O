@@ -62,6 +62,49 @@ function setAgentTaskHudVisiblePreferenceEnabled(enabled) {
     } catch (_) {}
 }
 
+// 悬浮窗显不显示由 agent 进程记着（喵能力界面「使魔运行时 → 内置能力」里改，app/agent_task_hud.py），
+// 跟着状态快照的 task_hud_visible 过来；本地存储只是它的镜像，让同步读偏好的老代码照旧工作。
+window.AgentHUD.saveTaskHudPreference = function (visible) {
+    try {
+        return fetch('/api/agent/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: 'set_task_hud_visible', value: !!visible })
+        }).then(function (r) { return !!(r && r.ok); }).catch(function () { return false; });
+    } catch (_) {
+        return Promise.resolve(false);
+    }
+};
+
+let agentTaskHudPreferenceHandedIn = false;
+
+// 返回 true 表示本地的设置被改了。
+window.AgentHUD.syncTaskHudPreference = function (value) {
+    if (typeof value !== 'boolean') {
+        // 后端还没记过：本地关过的（以前在小面板里关的）交给后端一次，喵能力界面上才看得到它是关的。
+        if (value === null && !agentTaskHudPreferenceHandedIn && !isAgentTaskHudVisiblePreferenceEnabled()) {
+            agentTaskHudPreferenceHandedIn = true;
+            window.AgentHUD.saveTaskHudPreference(false);
+        }
+        return false;
+    }
+    if (isAgentTaskHudVisiblePreferenceEnabled() === value) return false;
+    setAgentTaskHudVisiblePreferenceEnabled(value);
+    ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach(function (prefix) {
+        const checkbox = document.getElementById(`${prefix}-agent-taskhud`);
+        if (checkbox && checkbox.checked !== value) {
+            checkbox.checked = value;
+            if (typeof checkbox._updateStyle === 'function') checkbox._updateStyle();
+        }
+    });
+    if (typeof window.checkAndToggleTaskHUD === 'function') {
+        window.checkAndToggleTaskHUD();
+    } else if (!value && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
+        window.AgentHUD.hideAgentTaskHUD();
+    }
+    return true;
+};
+
 function appendPluginDashboardOpenerOrigin(url) {
     const target = new URL(url, document.baseURI || window.location.href);
     if (window.location && window.location.origin) {
@@ -454,6 +497,8 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 }
                 taskHudCheckbox.addEventListener('change', (event) => {
                     setAgentTaskHudVisiblePreferenceEnabled(taskHudCheckbox.checked);
+                    // 不交给后端的话，下一份状态快照会把它改回去。
+                    window.AgentHUD.saveTaskHudPreference(taskHudCheckbox.checked);
                     if (typeof window.checkAndToggleTaskHUD === 'function') {
                         window.checkAndToggleTaskHUD(event);
                     } else if (!taskHudCheckbox.checked && typeof this.hideAgentTaskHUD === 'function') {

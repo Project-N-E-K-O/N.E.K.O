@@ -26,6 +26,7 @@
 |---|---|---|
 | `set_agent_enabled` | `enabled`，可选 `profile` | 切换总开关；关闭时会叫停全部在办的任务 |
 | `set_flag` | `key`、`value` | 切换 `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled` 之一 |
+| `set_task_hud_visible` | `value`（布尔） | 主界面显不显示任务悬浮窗；由 Agent 进程记着（`agent_task_hud.json`），放在状态快照的 `task_hud_visible` 里发出（没设过为 `null`） |
 | `refresh_state` | 无 | 返回并广播新的状态快照 |
 
 `request_id` 和 `lanlan_name` 可选。未知命令或 flag key 由 Agent Server 拒绝；上游/代理失败返回 `502`。

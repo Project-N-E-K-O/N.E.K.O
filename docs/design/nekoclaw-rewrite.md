@@ -1749,7 +1749,7 @@ token 数是本地按 `count_tokens` 数的。
 **页面怎么到后端**
 
 - 页面由插件服务提供。插件服务把 `/console/*` 原样转给 agent 进程（`plugin/server/routes/console_proxy.py` 转到 `app/agent_server/api_console.py`），带本机进程之间的口令。读要页面的引导口令，写要改动口令；后端在另一台机器上时，写一律回 501 `remote_backend`，页面只读。
-- `/console/switch` 是例外：开关归主服务管，这一条转给主服务的 `/api/agent/command`，只收 `{"enabled": 布尔}` 或 `{"key": 键鼠或浏览器, "value": 布尔}` 两种，多一个键少一个键都拒。
+- `/console/switch` 是例外：开关归主服务管，这一条转给主服务的 `/api/agent/command`，只收 `{"enabled": 布尔}` 或 `{"key": 键鼠、浏览器或悬浮窗, "value": 布尔}` 两种，多一个键少一个键都拒；悬浮窗的键是 `task_hud_visible`，转成 `set_task_hud_visible` 命令。
 - 被拒时 `detail` 是 `{"code": …}`，页面按 `code` 取八种语言的话；不认识的 `code` 说「出了点问题」。
 - 转发前路径逐段检查、逐段编码：空段、`.`、`..`、反斜杠、控制字符一律 404，发出前再确认地址仍在 `/console/` 下。路径到这里已经解码过，`..%2F` 不拦的话会带着进程间口令落到 agent 进程的别的路由上。
 
@@ -1759,6 +1759,7 @@ token 数是本地按 `count_tokens` 数的。
 - 「开没开」的判断没改：仍是总开关开着，而且键鼠、浏览器、插件至少开了一个（6.10 节）。打开时插件总是开的，所以对用户就是一个开关。
 - 主界面锤子按钮弹出的面板这个 PR 没动：教程的好几天都依赖它（[#3907](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3907)）。
 - 之后的小 PR 把锤子改成点一下直接打开喵能力界面（和小面板里「管理面板」同一个窗口；已经开着就只叫到前面，不刷新）。小面板照常建在页面里，只留给新手教程：教程运行时（`window.isInTutorial`、`universalTutorialManager.isTutorialRunning`、`isNekoShortcutBlockedByTutorial()` 任一为真）或面板正开着时，点锤子照旧弹 / 收面板。判断在 `static/avatar/avatar-ui-buttons/methods-buttons.js` 的 `window.nekoAgentButton`，开窗口是 `AgentHUD.openPowerWindow()`（`static/common-ui-hud.js`）。
+- 同一个 PR 把小面板里的「显示悬浮窗」搬进「使魔运行时 → 内置能力」：设置由 agent 进程记在 `agent_task_hud.json`（`app/agent_task_hud.py`，没设过为 `None`；不放进 `agent_runtime_intent.json`，那里的键启动时会当能力开关回放），状态快照和 `/console/switches` 里带 `task_hud_visible`，改它是 `set_task_hud_visible` 命令。主界面收到快照时同步到原来的本地存储并刷新悬浮窗（`AgentHUD.syncTaskHudPreference`）；后端没设过、而本地以前关掉过的，主界面把「关」交给后端一次。小面板里的复选框（只剩教程用）改了也交给后端。这个开关不受喵能力总开关管。
 
 **首页：使魔面板**
 
