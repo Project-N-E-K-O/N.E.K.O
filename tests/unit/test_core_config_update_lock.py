@@ -43,7 +43,19 @@ CORRUPT_IDS = ["broken-json", "array", "null", "bad-encoding"]
 
 class _FakeRequest:
     def __init__(self, payload):
+        from types import SimpleNamespace
+        from starlette.datastructures import Headers
+        from config import AUTOSTART_CSRF_TOKEN
+
         self._payload = payload
+        self.method = "POST"
+        self.base_url = "http://testserver/"
+        self.url = SimpleNamespace(path="/api/config/core_api")
+        self.headers = Headers({
+            "content-type": "application/json",
+            "origin": "http://testserver",
+            "x-csrf-token": AUTOSTART_CSRF_TOKEN,
+        })
 
     async def json(self):
         return self._payload
@@ -565,7 +577,10 @@ async def test_slow_request_body_does_not_hold_off_other_core_api_saves(
     body_started = asyncio.Event()
     release_body = asyncio.Event()
 
-    class _SlowBodyRequest:
+    class _SlowBodyRequest(_FakeRequest):
+        def __init__(self):
+            super().__init__(CORE_API_PAYLOAD)
+
         async def json(self):
             body_started.set()
             await release_body.wait()

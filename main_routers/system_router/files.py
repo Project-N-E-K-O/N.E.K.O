@@ -18,56 +18,96 @@
 Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
-from ._shared import _get_app_root, _is_path_within_base, logger, router
+from ._shared import (
+    _get_app_root,
+    _get_system_config_manager,
+    _is_path_within_base,
+    logger,
+    router,
+)
 import os
+import re
 from urllib.parse import unquote
 from fastapi.responses import JSONResponse
+from utils.workshop_utils import get_workshop_library_roots, get_workshop_path_async
+
+
+async def _get_file_exists_allowed_dirs() -> list[str]:
+    """Return canonical trusted base directories for /api/file-exists."""
+    base_dir = _get_app_root()
+    candidates: list[str] = [
+        os.path.join(base_dir, "static"),
+        os.path.join(base_dir, "assets"),
+    ]
+
+    try:
+        workshop_dir = await get_workshop_path_async()
+        if workshop_dir:
+            candidates.append(str(workshop_dir))
+    except Exception as exc:
+        logger.warning(f"file-exists: unable to resolve workshop directory: {exc}")
+
+    try:
+        for root in get_workshop_library_roots() or ():
+            if root:
+                candidates.append(str(root))
+    except Exception as exc:
+        logger.warning(f"file-exists: unable to resolve workshop library roots: {exc}")
+
+    try:
+        cm = _get_system_config_manager()
+        for attr in ("docs_dir", "app_docs_dir", "original_docs_dir"):
+            root = getattr(cm, attr, None)
+            if root:
+                candidates.append(str(root))
+    except Exception as exc:
+        logger.warning(f"file-exists: unable to resolve documents directory: {exc}")
+
+    if os.name == "nt":
+        xiao8_docs = os.path.join(os.path.expanduser("~"), "Documents", "Xiao8")
+        if os.path.exists(xiao8_docs):
+            candidates.append(xiao8_docs)
+
+    allowed_dirs: list[str] = []
+    for candidate in candidates:
+        real_candidate = os.path.realpath(candidate)
+        if real_candidate not in allowed_dirs:
+            allowed_dirs.append(real_candidate)
+    return allowed_dirs
 
 
 @router.get('/file-exists')
 async def check_file_exists(path: str = None):
-    """
-    Check whether a file exists.
-
-    Security: Validates against path traversal attacks by:
-    - URL-decoding the path
-    - Normalizing the path (resolves . and ..)
-    - Rejecting any path containing .. components (prevents escaping to parent dirs)
-    - Using os.path.realpath to get the canonical path
-    
-    Note: This endpoint allows access to user Documents and Steam Workshop
-    locations, so no whitelist restriction is applied.
-    """
+    """Check whether a file exists within trusted application or user data directories."""
     try:
         if not path:
             return JSONResponse(content={"exists": False}, status_code=400)
-        
-        # Decode the URL-encoded path
+
         decoded_path = unquote(path)
-        
-        # Windows path handling - normalize slashes
+        if not decoded_path or "\x00" in decoded_path:
+            return JSONResponse(content={"exists": False}, status_code=400)
+
+        if ".." in re.split(r"[/\\]", decoded_path):
+            logger.warning("Rejected path traversal attempt in file-exists")
+            return JSONResponse(content={"exists": False}, status_code=400)
+
         if os.name == 'nt':
             decoded_path = decoded_path.replace('/', '\\')
-        
-        # Security: Reject path traversal attempts
-        # Normalize first to catch encoded variants like %2e%2e
+
         normalized = os.path.normpath(decoded_path)
-        
-        # After normpath, check if path tries to escape via ..
-        # Split and check each component to be thorough
-        parts = normalized.split(os.sep)
-        if '..' in parts:
-            logger.warning(f"Rejected path traversal attempt in file-exists: {decoded_path}")
+        if '..' in re.split(r"[/\\]", normalized):
+            logger.warning("Rejected normalized path traversal attempt in file-exists")
             return JSONResponse(content={"exists": False}, status_code=400)
-        
-        # Resolve to canonical absolute path
+
         real_path = os.path.realpath(normalized)
-        
-        # Check if the file exists
+        allowed_dirs = await _get_file_exists_allowed_dirs()
+        if not any(_is_path_within_base(allowed_dir, real_path) for allowed_dir in allowed_dirs):
+            logger.warning("Rejected out-of-scope path probe in file-exists")
+            return JSONResponse(content={"exists": False}, status_code=403)
+
         exists = os.path.exists(real_path) and os.path.isfile(real_path)
-        
         return JSONResponse(content={"exists": exists})
-        
+
     except Exception as e:
         logger.error(f"检查文件存在失败: {e}")
         return JSONResponse(content={"exists": False}, status_code=500)

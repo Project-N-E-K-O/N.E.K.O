@@ -66,7 +66,19 @@ def core_config_router(monkeypatch):
 
 class _FakeRequest:
     def __init__(self, payload):
+        from types import SimpleNamespace
+        from starlette.datastructures import Headers
+        from config import AUTOSTART_CSRF_TOKEN
+
         self._payload = payload
+        self.method = 'POST'
+        self.base_url = 'http://testserver/'
+        self.url = SimpleNamespace(path='/api/config/core_api')
+        self.headers = Headers({
+            'content-type': 'application/json',
+            'origin': 'http://testserver',
+            'x-csrf-token': AUTOSTART_CSRF_TOKEN,
+        })
 
     async def json(self):
         return self._payload

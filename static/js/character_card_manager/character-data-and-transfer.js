@@ -7,6 +7,54 @@ let currentCharacterCardId = null;
 
 const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
 let characterCardLoadSequence = 0;
+let _charTransferCsrfToken = '';
+
+async function _getCharTransferMutationHeaders(forceRefresh) {
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await security.refreshToken();
+            }
+            const headers = await security.getMutationHeaders();
+            if (headers && typeof headers === 'object') {
+                return headers;
+            }
+        }
+    } catch (_) { /* fall back to page_config */ }
+    if (forceRefresh) _charTransferCsrfToken = '';
+    if (_charTransferCsrfToken) {
+        return { 'X-CSRF-Token': _charTransferCsrfToken };
+    }
+    try {
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+        const cfg = resp && resp.ok ? await resp.json() : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _charTransferCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (_) { /* guarded POST will surface rejection */ }
+    return {};
+}
+
+async function _charTransferMutationFetch(url, options) {
+    async function send(forceRefresh) {
+        const csrfHeaders = await _getCharTransferMutationHeaders(forceRefresh);
+        return fetch(url, Object.assign({}, options, {
+            headers: Object.assign({}, (options && options.headers) || {}, csrfHeaders),
+        }));
+    }
+    const response = await send(false);
+    if (response.status !== 403 || typeof response.clone !== 'function') return response;
+    try {
+        const payload = await response.clone().json();
+        if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+    } catch (_) {
+        return response;
+    }
+    return send(true);
+}
 
 function getCharacterCardDescriptionFromData(data) {
     if (!data || typeof data !== 'object') {
@@ -905,7 +953,7 @@ function renderCardMetaBlock(container, name, isNew, rawData) {
                 if (newVal === (author || '').trim()) return;
                 saving = true;
                 try {
-                    const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta', {
+                    const resp = await _charTransferMutationFetch('/api/characters/catgirl/' + encodeURIComponent(name) + '/card-meta', {
                         method: 'PUT',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ author: newVal })
@@ -1089,7 +1137,7 @@ async function handleImportCharacterCard(event) {
             formData.append('card_image', pngBlob, file.name || 'card.png');
         }
 
-        const response = await fetch('/api/characters/import-card', { method: 'POST', body: formData });
+        const response = await _charTransferMutationFetch('/api/characters/import-card', { method: 'POST', body: formData });
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({ error: '导入失败' }));
             throw new Error(errorData.error || `HTTP ${response.status}`);
@@ -1526,7 +1574,7 @@ async function handleMoliliArchiveImport(file) {
             // 后端只允许 self 改标为 molili；导入 / 创意工坊角色发了也必然 403，直接跳过
             //（这类角色照常导入记忆，只是不加 Molili 来源徽章）
             if (currentMeta.origin === 'self') {
-                const saveMetaResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, {
+                const saveMetaResponse = await _charTransferMutationFetch(`/api/characters/catgirl/${encodeURIComponent(characterName)}/card-meta`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ origin: 'molili' }),

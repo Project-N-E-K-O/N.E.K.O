@@ -22,17 +22,79 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 from ._shared import logger, router
 
 import asyncio
+import io
 import os
 import json
-import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from utils.file_utils import atomic_write_bytes, atomic_write_json
 from utils.config_manager import get_reserved
+from utils.workshop_utils import get_workshop_path_async
 
 from .content_gate import ContentFolderBusy, claim_partial_writer
+
+MAX_PREVIEW_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+async def _read_upload_bytes_bounded(
+    file, max_bytes: int, chunk_size: int = 64 * 1024
+) -> bytes:
+    """Read uploaded bytes in bounded chunks, stopping once ``max_bytes`` is exceeded."""
+    buf = bytearray()
+    try:
+        while True:
+            to_read = min(chunk_size, max_bytes - len(buf) + 1)
+            chunk = await file.read(to_read)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                return bytes(buf)
+        return bytes(buf)
+    finally:
+        close_fn = getattr(file, "close", None)
+        if callable(close_fn):
+            await close_fn()
+
+
+def _assert_workshop_path(path: str, base: str) -> str:
+    """Resolve ``path`` and verify containment inside ``base`` (case- and cross-drive-safe)."""
+    try:
+        resolved = os.path.realpath(os.path.normpath(path))
+        norm_full = os.path.normcase(resolved)
+        norm_base = os.path.normcase(os.path.realpath(os.path.normpath(base)))
+        if os.path.commonpath([norm_full, norm_base]) != norm_base:
+            raise PermissionError("path not allowed")
+        return resolved
+    except ValueError as exc:
+        raise PermissionError("path not allowed") from exc
+
+
+def _validate_preview_image_bytes(image_bytes: bytes) -> None:
+    """Verify uploaded preview bytes decode as a valid JPEG or PNG image."""
+    from PIL import Image
+
+    Image.MAX_IMAGE_PIXELS = 100_000_000
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        img.verify()
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        if (img.format or "").upper() not in {"JPEG", "PNG"}:
+            raise ValueError("Unsupported preview image format")
+        img.load()
+
+
+def _verify_preview_image_file(file_path: str) -> None:
+    """Verify an on-disk preview image file decodes cleanly with PIL."""
+    from PIL import Image
+
+    Image.MAX_IMAGE_PIXELS = 100_000_000
+    with Image.open(file_path) as img:
+        img.verify()
+    with Image.open(file_path) as img:
+        img.load()
 
 
 class _PreviewContentFolderMissing(RuntimeError):
@@ -506,28 +568,25 @@ def _write_preview_image(
             content_folder, preview_image_path, image_bytes
         )
     else:
+        os.makedirs(os.path.dirname(preview_image_path), exist_ok=True)
         atomic_write_bytes(preview_image_path, image_bytes)
 
 
 @router.post('/upload-preview-image')
 async def upload_preview_image(request: Request):
-    """
-    Upload a preview image, renamed uniformly to preview.* and saved into the given content folder (if provided).
-    """
-    try:  
-        # Receive uploaded files and form data
+    """Upload a preview image, renamed to preview.* and saved into content_folder or staging."""
+    try:
         form = await request.form()
         file = form.get('file')
         content_folder = form.get('content_folder')
-        
+
         if not file:
             return JSONResponse({
                 "success": False,
                 "error": "没有选择文件",
                 "message": "请选择要上传的图片文件"
             }, status_code=400)
-        
-        # Validate file type
+
         allowed_types = ['image/jpeg', 'image/png', 'image/jpg']
         if file.content_type not in allowed_types:
             return JSONResponse({
@@ -535,51 +594,85 @@ async def upload_preview_image(request: Request):
                 "error": "文件类型不允许",
                 "message": "只允许上传JPEG和PNG格式的图片"
             }, status_code=400)
-        
-        # Get the file extension
-        # Map extensions strictly from content-type; do not trust filename
+
         content_type_to_ext = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png"}
         file_extension = content_type_to_ext.get(file.content_type)
         if not file_extension:
             return JSONResponse({"success": False, "error": "文件类型不允许"}, status_code=400)
-                    
-        # Handle the content-folder path
+
+        workshop_base = await get_workshop_path_async()
+        resolved_workshop_base = os.path.realpath(os.path.normpath(workshop_base))
+
         if content_folder:
-            # Normalize the path
             import urllib.parse
-            content_folder = urllib.parse.unquote(content_folder)
+
+            content_folder = urllib.parse.unquote(str(content_folder))
+            if "\x00" in content_folder:
+                return JSONResponse({
+                    "success": False,
+                    "error": "无效路径",
+                    "message": "内容文件夹路径包含非法字符"
+                }, status_code=400)
             if os.name == 'nt':
                 content_folder = content_folder.replace('/', '\\')
-                if content_folder.startswith('\\\\'):
-                    content_folder = content_folder[2:]
-                else:
-                    content_folder = content_folder.replace('\\', '/')
-            
-            # Verify that the content folder exists
+
+            try:
+                resolved_folder = _assert_workshop_path(content_folder, workshop_base)
+                if os.path.normcase(resolved_folder) == os.path.normcase(resolved_workshop_base):
+                    raise PermissionError("cannot write directly into workshop root")
+                content_folder = resolved_folder
+            except PermissionError:
+                return JSONResponse({
+                    "success": False,
+                    "error": "权限错误",
+                    "message": "指定的内容文件夹不在允许的范围内"
+                }, status_code=403)
+
             if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
-                # Fall back to a temporary directory if the folder does not exist
-                logger.warning(f"指定的内容文件夹不存在: {content_folder}，使用临时目录")
-                content_folder = None
-        
-        # Create a consistently named preview-image path
-        if content_folder:
-            # Save directly to the content folder
-            preview_image_path = os.path.join(content_folder, f'preview{file_extension}')
+                return JSONResponse({
+                    "success": False,
+                    "error": "目录不存在",
+                    "message": "指定的内容文件夹不存在"
+                }, status_code=400)
+
+            preview_image_path = _assert_workshop_path(
+                os.path.join(content_folder, f'preview{file_extension}'),
+                content_folder,
+            )
         else:
-            # Use a temporary directory
-            import tempfile
-            temp_folder = tempfile.gettempdir()
-            preview_image_path = os.path.join(temp_folder, f'preview{file_extension}')
-        
-        # Finish reading from the asynchronous upload object, then pass the complete atomic disk-write unit to the worker.
-        image_bytes = await file.read()
+            content_folder = None
+            staging_dir = os.path.join(
+                resolved_workshop_base,
+                "WorkshopExport",
+                "_preview_staging",
+                uuid.uuid4().hex,
+            )
+            preview_image_path = os.path.join(staging_dir, f'preview{file_extension}')
+
+        image_bytes = await _read_upload_bytes_bounded(file, MAX_PREVIEW_UPLOAD_BYTES)
+        if not image_bytes or len(image_bytes) > MAX_PREVIEW_UPLOAD_BYTES:
+            return JSONResponse({
+                "success": False,
+                "error": "文件大小无效",
+                "message": "预览图片为空或超过10MB限制"
+            }, status_code=400)
+
+        try:
+            await asyncio.to_thread(_validate_preview_image_bytes, image_bytes)
+        except Exception:
+            return JSONResponse({
+                "success": False,
+                "error": "无效的图片文件",
+                "message": "上传的文件不是有效的JPEG或PNG图片"
+            }, status_code=400)
+
         await asyncio.to_thread(
             _write_preview_image,
             content_folder,
             preview_image_path,
             image_bytes,
         )
-        
+
         return JSONResponse({
             "success": True,
             "file_path": preview_image_path,
@@ -591,6 +684,12 @@ async def upload_preview_image(request: Request):
             "error": str(e),
             "message": str(e),
         }, status_code=409)
+    except PermissionError:
+        return JSONResponse({
+            "success": False,
+            "error": "权限错误",
+            "message": "指定的内容文件夹不在允许的范围内",
+        }, status_code=403)
     except Exception as e:
         logger.error(f"上传预览图片时出错: {e}")
         return JSONResponse({

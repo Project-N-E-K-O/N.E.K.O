@@ -1658,7 +1658,7 @@
 
     requestDialogue(payload, options = {}) {
       this._requireGrantedCapability('dialogue', 'dialogue');
-      return this._post(this._gameEndpoint('chat'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('chat'), this._trustedRuntimePayload(payload), {
         timeoutMs: 60000,
         operation: 'dialogue',
         ...options,
@@ -1669,7 +1669,7 @@
       this._requireGrantedCapability('runtime', 'route_start');
       const trustedPayload = this._trustedRuntimePayload(payload);
       const requestedRouteInstanceId = String(trustedPayload.sdk_route_instance_id || '').trim();
-      const response = await this._post(this._gameEndpoint('route/start'), trustedPayload, {
+      const response = await this._postWithCsrf(this._gameEndpoint('route/start'), trustedPayload, {
         timeoutMs: 60000,
         operation: 'route_start',
         ...options,
@@ -1708,7 +1708,7 @@
     async heartbeat(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'route_heartbeat');
       const trustedPayload = this._trustedRuntimePayload(payload);
-      const response = await this._post(this._gameEndpoint('route/heartbeat'), trustedPayload, {
+      const response = await this._postWithCsrf(this._gameEndpoint('route/heartbeat'), trustedPayload, {
         timeoutMs: DEFAULT_HEARTBEAT_TIMEOUT_MS,
         operation: 'route_heartbeat',
         ...options,
@@ -1727,7 +1727,7 @@
         sessionId: String(trustedPayload.session_id || ''),
         routeInstanceId: String(trustedPayload.sdk_route_instance_id || ''),
       });
-      const response = await this._post(
+      const response = await this._postWithCsrf(
         this._gameEndpoint('route/drain'),
         trustedPayload,
         {
@@ -2066,7 +2066,7 @@
 
     submitVoiceTranscript(payload, options = {}) {
       this._requireGrantedCapability('voice-input', 'voice_transcript');
-      return this._post(this._gameEndpoint('route/voice-transcript'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('route/voice-transcript'), this._trustedRuntimePayload(payload), {
         timeoutMs: 15000,
         operation: 'voice_transcript',
         ...options,
@@ -2075,7 +2075,15 @@
 
     sendRealtimeContext(payload, options = {}) {
       this._requireGrantedCapability('runtime', 'realtime_context');
-      return this._post(this._gameEndpoint('realtime-context'), this._trustedRuntimePayload(payload), {
+      if (options.headers && csrfTokenFromHeaders(options.headers)) {
+        return this._post(this._gameEndpoint('realtime-context'), this._trustedRuntimePayload(payload), {
+          timeoutMs: 15000,
+          operation: 'realtime_context',
+          ...options,
+          credentials: 'same-origin',
+        });
+      }
+      return this._postWithCsrf(this._gameEndpoint('realtime-context'), this._trustedRuntimePayload(payload), {
         timeoutMs: 15000,
         operation: 'realtime_context',
         ...options,
@@ -2085,7 +2093,7 @@
 
     mirrorAssistant(payload, options = {}) {
       this._requireGrantedCapability('dialogue', 'mirror_assistant');
-      return this._post(this._gameEndpoint('mirror-assistant'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('mirror-assistant'), this._trustedRuntimePayload(payload), {
         timeoutMs: 15000,
         operation: 'mirror_assistant',
         ...options,
@@ -2094,7 +2102,7 @@
 
     speak(payload, options = {}) {
       this._requireGrantedCapability('speech-output', 'speech_speak');
-      return this._post(this._gameEndpoint('speak'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('speak'), this._trustedRuntimePayload(payload), {
         timeoutMs: 60000,
         operation: 'speak',
         ...options,
@@ -2108,7 +2116,7 @@
 
     mirrorSpeechOutput(payload, options = {}) {
       this._requireGrantedCapability('speech-output', 'speech_mirror');
-      return this._post(this._gameEndpoint('mirror-assistant'), this._trustedRuntimePayload(payload), {
+      return this._postWithCsrf(this._gameEndpoint('mirror-assistant'), this._trustedRuntimePayload(payload), {
         timeoutMs: 15000,
         operation: 'speech_mirror',
         ...options,
@@ -2144,6 +2152,7 @@
           .then((config) => {
             if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
               headers['X-CSRF-Token'] = config.autostart_csrf_token;
+              this._cachedCsrfToken = config.autostart_csrf_token;
             }
             return headers;
           })
@@ -2154,7 +2163,12 @@
         return Promise.resolve(security.getMutationHeaders())
           .then((mutationHeaders) => {
             Object.assign(headers, mutationHeaders || {});
-            return csrfTokenFromHeaders(headers) ? headers : loadFromPageConfig();
+            const resolvedToken = csrfTokenFromHeaders(headers);
+            if (resolvedToken) {
+              this._cachedCsrfToken = resolvedToken;
+              return headers;
+            }
+            return loadFromPageConfig();
           })
           .catch(loadFromPageConfig);
       }
@@ -3613,7 +3627,15 @@
           operation: 'route_end',
         });
       }
-      let body = JSON.stringify(this._trustedRuntimePayload(parsedPayload));
+      const cachedCsrfToken = (
+        typeof this._window.nekoLocalMutationSecurity?.peekCachedToken === 'function'
+          ? this._window.nekoLocalMutationSecurity.peekCachedToken()
+          : ''
+      ) || this._cachedCsrfToken || '';
+      let fallbackPayloadObj = this._trustedRuntimePayload(parsedPayload);
+      let body = JSON.stringify(
+        cachedCsrfToken ? { ...fallbackPayloadObj, _csrf_token: cachedCsrfToken } : fallbackPayloadObj
+      );
       void this.flushLogger({ final: true });
       if (options.signal?.aborted) {
         throw this._hostError('cancelled', `${this.displayName} host request was cancelled`, {
@@ -3659,7 +3681,10 @@
           essential.reason = essential.reason.slice(0, ROUTE_END_ESSENTIAL_REASON_CHARS);
         }
         const shed = () => {
-          body = JSON.stringify(this._trustedRuntimePayload(essential));
+          fallbackPayloadObj = this._trustedRuntimePayload(essential);
+          body = JSON.stringify(
+            cachedCsrfToken ? { ...fallbackPayloadObj, _csrf_token: cachedCsrfToken } : fallbackPayloadObj
+          );
           return utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES;
         };
         if (!shed()) {
@@ -3682,7 +3707,7 @@
       // postgame entirely until server-side expiry. Dropping keepalive costs
       // nothing on the awaited path and is strictly better than certain failure
       // on the unload path.
-      const response = await this._post(this._gameEndpoint('end'), body, {
+      const response = await this._postWithCsrf(this._gameEndpoint('end'), fallbackPayloadObj, {
         // Page-exit keeps keepalive unconditionally: the body was already shed
         // above if it was oversized, and without keepalive an unloading document
         // cancels the request outright. The awaited path drops keepalive instead,

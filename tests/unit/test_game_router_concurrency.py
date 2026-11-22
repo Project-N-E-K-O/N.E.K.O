@@ -1069,10 +1069,22 @@ async def test_b1_supersede_then_chat_does_not_revive_closed_route(monkeypatch):
 
 
 class _FakeRouteStartRequest:
-    """Minimal stand-in for ``fastapi.Request`` exposing only ``json()``."""
+    """Minimal stand-in for ``fastapi.Request`` exposing ``json()`` and CSRF headers."""
 
     def __init__(self, payload):
+        from types import SimpleNamespace
+        from starlette.datastructures import Headers
+        from config import AUTOSTART_CSRF_TOKEN
+
         self._payload = payload
+        self.method = "POST"
+        self.base_url = "http://testserver/"
+        self.url = SimpleNamespace(path="/api/game/test/route/start")
+        self.headers = Headers({
+            "content-type": "application/json",
+            "origin": "http://testserver",
+            "x-csrf-token": AUTOSTART_CSRF_TOKEN,
+        })
 
     async def json(self):
         return self._payload

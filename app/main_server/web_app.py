@@ -22,16 +22,18 @@ import re
 import secrets
 import stat
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
-from fastapi import Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.responses import RangeNotSatisfiable
 from starlette.staticfiles import NotModifiedResponse
 
+from config import AUTOSTART_ALLOWED_ORIGINS, AUTOSTART_CSRF_TOKEN
+from utils.instance_access import _same_origin
 from utils.static_asset_aliases import LegacyStaticAssetAliasMixin
 
 from ._shared import runtime
@@ -569,9 +571,131 @@ async def get_card_drop_active_character(
     return JSONResponse(payload, headers=cors)
 
 
-@app.post("/api/beacon/shutdown")
+def _parse_beacon_origin_key(
+    raw_value: str | None,
+    *,
+    allow_path_query_fragment: bool = False,
+) -> tuple[str, str, int, int | None] | None:
+    """Parse an Origin, Referer, or allowed origin into (scheme, host, effective_port, explicit_port)."""
+    if not raw_value:
+        return None
+    value = raw_value.strip()
+    if not value or any(ord(ch) <= 0x20 or ch == "\\" for ch in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.netloc or not parsed.hostname:
+        return None
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        return None
+    if not allow_path_query_fragment and (
+        parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or "?" in value
+        or "#" in value
+    ):
+        return None
+    effective_port = port or (443 if scheme == "https" else 80)
+    return scheme, parsed.hostname.lower(), effective_port, port
+
+
+async def _validate_beacon_shutdown_origin(request: Request) -> None:
+    """Enforce strict exact-same-origin / Fetch-Metadata / CSRF protection on /api/beacon/shutdown."""
+    def _reject() -> None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "success": False,
+                "error_code": "csrf_validation_failed",
+                "error": "Request could not be verified",
+            },
+        )
+
+    if request.scope.get("neko.instance_identity") and not _same_origin(request):
+        _reject()
+
+    csrf_token = request.headers.get("x-csrf-token", "")
+    if not csrf_token:
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type == "application/json":
+            try:
+                body = await request.json()
+                if isinstance(body, dict) and isinstance(body.get("_csrf_token"), str):
+                    csrf_token = body["_csrf_token"]
+            except Exception:
+                pass
+    has_valid_csrf = bool(
+        csrf_token
+        and AUTOSTART_CSRF_TOKEN
+        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
+    )
+
+    origin_headers = request.headers.getlist("origin")
+    referer_headers = request.headers.getlist("referer")
+    if len(origin_headers) > 1 or len(referer_headers) > 1:
+        _reject()
+
+    sec_fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    raw_origin = origin_headers[0] if origin_headers else None
+    raw_referer = referer_headers[0] if referer_headers else None
+
+    allowed_keys = []
+    own_key = _parse_beacon_origin_key(str(request.base_url).rstrip("/"))
+    if own_key is not None:
+        allowed_keys.append(own_key)
+    for item in AUTOSTART_ALLOWED_ORIGINS:
+        if isinstance(item, str):
+            item_key = _parse_beacon_origin_key(item.strip().rstrip("/"))
+            if item_key is not None:
+                allowed_keys.append(item_key)
+
+    if raw_origin is not None:
+        origin_key = _parse_beacon_origin_key(raw_origin, allow_path_query_fragment=False)
+    elif raw_referer is not None:
+        origin_key = _parse_beacon_origin_key(raw_referer, allow_path_query_fragment=True)
+    else:
+        origin_key = None
+
+    # Reject explicit invalid/sandboxed Origin (e.g. Origin: null) or invalid Referer immediately.
+    if (raw_origin is not None or raw_referer is not None) and origin_key is None:
+        _reject()
+
+    # Reject cross-site Fetch Metadata unconditionally; reject non-same-origin unless valid CSRF + same-host mapping.
+    if sec_fetch_site:
+        if sec_fetch_site == "cross-site":
+            _reject()
+        if sec_fetch_site != "same-origin":
+            if not (
+                has_valid_csrf
+                and sec_fetch_site == "same-site"
+                and origin_key is not None
+                and any(entry[1] == origin_key[1] for entry in allowed_keys)
+            ):
+                _reject()
+
+    # If Origin or Referer is present, require exact scheme+host+effective_port match (not arbitrary loopback port).
+    if origin_key is not None:
+        if any(entry[:3] == origin_key[:3] for entry in allowed_keys):
+            return
+        if has_valid_csrf and any(entry[1] == origin_key[1] for entry in allowed_keys):
+            return
+        _reject()
+
+    # Headerless requests (no Origin/Referer): allow only with Sec-Fetch-Site: same-origin or valid CSRF token.
+    if sec_fetch_site == "same-origin" or has_valid_csrf:
+        return
+
+    _reject()
+
+
+@app.post("/api/beacon/shutdown", dependencies=[Depends(_validate_beacon_shutdown_origin)])
 async def beacon_shutdown():
-    """Beacon endpoint: used for graceful server shutdown"""
+    """Beacon endpoint: used for graceful server shutdown."""
     try:
         # Get configuration from app.state.
         current_config = runtime.get_start_config()

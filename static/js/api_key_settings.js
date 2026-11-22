@@ -4264,13 +4264,26 @@ async function saveApiKey(params) {
         });
         body.enableCustomApi = params.enableCustomApi ?? false;
 
-        const response = await fetch('/api/config/core_api', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(body)
-        });
+        async function postCoreApiOnce(forceRefresh) {
+            const csrfHeaders = await getSettingsMutationHeaders(forceRefresh);
+            return fetch('/api/config/core_api', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...csrfHeaders,
+                },
+                body: JSON.stringify(body)
+            });
+        }
+        let response = await postCoreApiOnce(false);
+        if (response.status === 403 && typeof response.clone === 'function') {
+            try {
+                const errPayload = await response.clone().json();
+                if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
+                    response = await postCoreApiOnce(true);
+                }
+            } catch (_) { /* keep original 403 */ }
+        }
 
         if (response.ok) {
             const result = await response.json();
@@ -4509,6 +4522,37 @@ function autoFillAssistApiKey(force) {
 }
 
 // Beacon功能 - 页面关闭时发送信号给服务器
+let _settingsCsrfToken = '';
+
+async function getSettingsMutationHeaders(forceRefresh) {
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await security.refreshToken();
+            }
+            const headers = await security.getMutationHeaders();
+            if (headers && typeof headers === 'object') {
+                return headers;
+            }
+        }
+    } catch (_) { /* fall back to page_config */ }
+    if (forceRefresh) _settingsCsrfToken = '';
+    if (_settingsCsrfToken) {
+        return { 'X-CSRF-Token': _settingsCsrfToken };
+    }
+    try {
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+        const cfg = resp && resp.ok ? await resp.json() : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _settingsCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (_) { /* guarded POST will surface rejection */ }
+    return {};
+}
+
 let beaconSent = false;
 
 function sendBeacon() {

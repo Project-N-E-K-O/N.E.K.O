@@ -23,6 +23,59 @@
         clamp
     } = namespace;
 
+    let _directorPageFlowCsrfToken = '';
+    async function getDirectorMutationHeaders(forceRefresh) {
+        try {
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                const headers = await security.getMutationHeaders();
+                if (headers && typeof headers === 'object') {
+                    return headers;
+                }
+            }
+        } catch (_) { /* fall back to page_config */ }
+        if (forceRefresh) _directorPageFlowCsrfToken = '';
+        if (_directorPageFlowCsrfToken) {
+            return { 'X-CSRF-Token': _directorPageFlowCsrfToken };
+        }
+        try {
+            const resp = await fetchWithTimeout('/api/config/page_config', { cache: 'no-store' }, 2000);
+            const cfg = resp && resp.ok ? await resp.json() : null;
+            const token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _directorPageFlowCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+        } catch (_) { /* guarded POST will surface rejection */ }
+        return {};
+    }
+
+    async function postAgentCommandWithCsrf(bodyObj, timeoutMs) {
+        const bodyJson = JSON.stringify(bodyObj);
+        async function sendOnce(forceRefresh) {
+            const csrfHeaders = await getDirectorMutationHeaders(forceRefresh);
+            return fetchWithTimeout('/api/agent/command', {
+                method: 'POST',
+                headers: Object.assign({
+                    'Content-Type': 'application/json'
+                }, csrfHeaders),
+                body: bodyJson
+            }, timeoutMs);
+        }
+        const response = await sendOnce(false);
+        if (response.status !== 403 || typeof response.clone !== 'function') return response;
+        try {
+            const payload = await response.clone().json();
+            if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+        } catch (_) {
+            return response;
+        }
+        return sendOnce(true);
+    }
+
     namespace.extendDirector({
         getHomeInteractionApi() {
             if (this.options && this.options.homeInteractionApi) {
@@ -731,16 +784,10 @@
         async setAgentMasterEnabled(enabled) {
             return this.callHomeInteractionApi('setAgentMasterEnabled', [enabled], async () => {
                 try {
-                    const response = await fetchWithTimeout('/api/agent/command', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                            command: 'set_agent_enabled',
-                            enabled: !!enabled
-                        })
+                    const response = await postAgentCommandWithCsrf({
+                        request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                        command: 'set_agent_enabled',
+                        enabled: !!enabled
                     }, 3600);
                     if (!response.ok) {
                         return false;
@@ -758,17 +805,11 @@
         async setAgentFlagEnabled(flagKey, enabled) {
             return this.callHomeInteractionApi('setAgentFlagEnabled', [flagKey, enabled], async () => {
                 try {
-                    const response = await fetchWithTimeout('/api/agent/command', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-                            command: 'set_flag',
-                            key: flagKey,
-                            value: !!enabled
-                        })
+                    const response = await postAgentCommandWithCsrf({
+                        request_id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+                        command: 'set_flag',
+                        key: flagKey,
+                        value: !!enabled
                     }, 3600);
                     if (!response.ok) {
                         return false;

@@ -750,6 +750,43 @@
         return null;
     }
 
+    var _handoffCsrfToken = '';
+    function getHandoffMutationHeaders(forceRefresh) {
+        try {
+            var security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                var refreshPromise = (forceRefresh && typeof security.refreshToken === 'function')
+                    ? Promise.resolve(security.refreshToken())
+                    : Promise.resolve();
+                return refreshPromise.then(function () {
+                    return security.getMutationHeaders();
+                }).then(function (headers) {
+                    return (headers && typeof headers === 'object') ? headers : {};
+                }).catch(function () {
+                    return {};
+                });
+            }
+        } catch (_) {}
+        if (forceRefresh) {
+            _handoffCsrfToken = '';
+        }
+        if (_handoffCsrfToken) {
+            return Promise.resolve({ 'X-CSRF-Token': _handoffCsrfToken });
+        }
+        return fetch('/api/config/page_config', { cache: 'no-store' }).then(function (resp) {
+            return resp && resp.ok ? resp.json() : null;
+        }).then(function (cfg) {
+            var token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _handoffCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+            return {};
+        }).catch(function () {
+            return {};
+        });
+    }
+
     function sendAgentCommand(command, payload) {
         var requestId = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
         var controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -758,16 +795,34 @@
                 controller.abort();
             }
         }, 4000);
-        return fetch('/api/agent/command', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            signal: controller ? controller.signal : undefined,
-            body: JSON.stringify(Object.assign({
-                request_id: requestId,
-                command: command
-            }, payload || {}))
+        var bodyJson = JSON.stringify(Object.assign({
+            request_id: requestId,
+            command: command
+        }, payload || {}));
+        function postOnce(forceRefresh) {
+            return getHandoffMutationHeaders(forceRefresh).then(function (csrfHeaders) {
+                return fetch('/api/agent/command', {
+                    method: 'POST',
+                    headers: Object.assign({
+                        'Content-Type': 'application/json'
+                    }, csrfHeaders || {}),
+                    signal: controller ? controller.signal : undefined,
+                    body: bodyJson
+                });
+            });
+        }
+        return postOnce(false).then(function (response) {
+            if (response.status === 403 && typeof response.clone === 'function') {
+                return response.clone().json().then(function (errPayload) {
+                    if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
+                        return postOnce(true);
+                    }
+                    return response;
+                }).catch(function () {
+                    return response;
+                });
+            }
+            return response;
         }).then(function (response) {
             if (!response.ok) {
                 throw new Error('command status ' + response.status);

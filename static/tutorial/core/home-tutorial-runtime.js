@@ -112,12 +112,62 @@
         return flags;
     }
 
+    let _homeTutorialCsrfToken = '';
+
+    async function getHomeTutorialMutationHeaders(forceRefresh) {
+        try {
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                const headers = await security.getMutationHeaders();
+                if (headers && typeof headers === 'object') {
+                    return headers;
+                }
+            }
+        } catch (_) { /* fall back to page_config */ }
+        if (forceRefresh) _homeTutorialCsrfToken = '';
+        if (_homeTutorialCsrfToken) {
+            return { 'X-CSRF-Token': _homeTutorialCsrfToken };
+        }
+        try {
+            const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+            const cfg = resp && resp.ok ? await resp.json() : null;
+            const token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _homeTutorialCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+        } catch (_) { /* guarded POST will surface rejection */ }
+        return {};
+    }
+
+    async function postJsonWithCsrf(url, bodyObj) {
+        const bodyJson = JSON.stringify(bodyObj);
+        async function sendOnce(forceRefresh) {
+            const csrfHeaders = await getHomeTutorialMutationHeaders(forceRefresh);
+            return fetch(url, {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
+                body: bodyJson,
+            });
+        }
+        const response = await sendOnce(false);
+        if (!response || response.status !== 403 || typeof response.clone !== 'function') {
+            return response;
+        }
+        try {
+            const payload = await response.clone().json();
+            if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+        } catch (_) {
+            return response;
+        }
+        return sendOnce(true);
+    }
+
     async function postAgentFlags(flags) {
-        const response = await fetch('/api/agent/flags', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ flags: flags }),
-        });
+        const response = await postJsonWithCsrf('/api/agent/flags', { flags: flags });
         if (!response || !response.ok) {
             throw new Error('agent_flags_post_failed');
         }
@@ -128,14 +178,10 @@
     }
 
     async function postAgentCommand(command, payload) {
-        const response = await fetch('/api/agent/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(Object.assign({
-                request_id: 'home-tutorial-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
-                command: command,
-            }, payload || {})),
-        });
+        const response = await postJsonWithCsrf('/api/agent/command', Object.assign({
+            request_id: 'home-tutorial-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+            command: command,
+        }, payload || {}));
         if (!response || !response.ok) {
             throw new Error('agent_command_post_failed');
         }

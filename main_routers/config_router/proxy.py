@@ -19,6 +19,7 @@ Split out of the former monolithic ``main_routers/config_router.py``.
 """
 
 from ._shared import logger, router
+from ..system_router._shared import _validate_local_mutation_request
 
 import os
 import threading
@@ -38,18 +39,43 @@ def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
     """Remove credentials from proxy URLs before returning to the client."""
     sanitized: dict[str, str] = {}
     for scheme, url in proxies.items():
+        if not isinstance(url, str):
+            sanitized[scheme] = "<redacted>"
+            continue
         try:
-            parsed = urllib.parse.urlparse(url)
-            if parsed.username or parsed.password:
-                # Rebuild without credentials
-                netloc = parsed.hostname or ""
-                if parsed.port:
-                    netloc += f":{parsed.port}"
-                sanitized[scheme] = urllib.parse.urlunparse(
-                    (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+            has_explicit_scheme = "://" in url or url.startswith("//")
+            candidate = url if has_explicit_scheme else f"//{url}"
+            parsed = urllib.parse.urlparse(candidate)
+            if (
+                parsed.username is not None
+                or parsed.password is not None
+                or "@" in parsed.netloc
+            ):
+                if parsed.netloc.count("@") > 1:
+                    sanitized[scheme] = "<redacted>"
+                    continue
+                hostname = parsed.hostname or ""
+                if not hostname or any(ch.isspace() for ch in hostname):
+                    sanitized[scheme] = "<redacted>"
+                    continue
+                if ":" in hostname and not hostname.startswith("["):
+                    hostname = f"[{hostname}]"
+                netloc = f"{hostname}:{parsed.port}" if parsed.port else hostname
+                rebuilt = urllib.parse.urlunparse(
+                    (
+                        parsed.scheme,
+                        netloc,
+                        parsed.path,
+                        parsed.params,
+                        parsed.query,
+                        parsed.fragment,
+                    )
                 )
+                if not has_explicit_scheme and rebuilt.startswith("//"):
+                    rebuilt = rebuilt[2:]
+                sanitized[scheme] = "<redacted>" if "@" in rebuilt else rebuilt
             else:
-                sanitized[scheme] = url
+                sanitized[scheme] = "<redacted>" if "@" in url else url
         except Exception:
             sanitized[scheme] = "<redacted>"
     return sanitized
@@ -59,11 +85,29 @@ def _sanitize_proxies(proxies: dict[str, str]) -> dict[str, str]:
 async def set_proxy_mode(request: Request):
     """Hot-switch the proxy mode at runtime.
 
-    body: { "direct": true }   → direct connection (disable proxy)
-    body: { "direct": false }  → restore the system proxy
+    body: { "direct": true }   -> direct connection (disable proxy)
+    body: { "direct": false }  -> restore the system proxy
     """
     try:
-        data = await request.json()
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            return JSONResponse(
+                {"success": False, "error": "Content-Type must be application/json"},
+                status_code=415,
+            )
+        try:
+            data = await request.json()
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            return JSONResponse({"success": False, "error": "无效的JSON数据"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "无效的数据"}, status_code=400)
+        validation_error = _validate_local_mutation_request(
+            request,
+            payload=data,
+            error_defaults={"success": False},
+        )
+        if validation_error is not None:
+            return validation_error
         raw_direct = data.get("direct", False)
         if isinstance(raw_direct, bool):
             direct = raw_direct

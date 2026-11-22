@@ -25,7 +25,9 @@ import asyncio
 import json
 from copy import deepcopy
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from ..shared_state import get_session_manager, get_initialize_character_data
+from ..system_router._shared import _validate_local_mutation_request
 from utils.file_utils import read_json_async
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
@@ -407,7 +409,25 @@ async def update_core_config(request: Request):
     """Update the core config (API keys); the snapshot-to-write section runs one save at a time."""
     save_lock_held = False
     try:
-        data = await request.json()
+        media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            return JSONResponse(
+                {"success": False, "error": "Content-Type must be application/json"},
+                status_code=415,
+            )
+        try:
+            data = await request.json()
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            return JSONResponse({"success": False, "error": "无效的JSON数据"}, status_code=400)
+        if not isinstance(data, dict):
+            return JSONResponse({"success": False, "error": "无效的数据"}, status_code=400)
+        validation_error = _validate_local_mutation_request(
+            request,
+            payload=data,
+            error_defaults={"success": False},
+        )
+        if validation_error is not None:
+            return validation_error
         if not data:
             return {"success": False, "error": "无效的数据"}
         

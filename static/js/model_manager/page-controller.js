@@ -2,6 +2,54 @@
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('[模型管理] DOMContentLoaded 开始初始化');
 
+    let _modelManagerCsrfToken = '';
+    async function getModelManagerMutationHeaders(forceRefresh) {
+        try {
+            const security = window.nekoLocalMutationSecurity;
+            if (security && typeof security.getMutationHeaders === 'function') {
+                if (forceRefresh && typeof security.refreshToken === 'function') {
+                    await security.refreshToken();
+                }
+                const headers = await security.getMutationHeaders();
+                if (headers && typeof headers === 'object') {
+                    return headers;
+                }
+            }
+        } catch (_) { /* fall back to page_config */ }
+        if (forceRefresh) _modelManagerCsrfToken = '';
+        if (_modelManagerCsrfToken) {
+            return { 'X-CSRF-Token': _modelManagerCsrfToken };
+        }
+        try {
+            const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+            const cfg = resp && resp.ok ? await resp.json() : null;
+            const token = cfg && cfg.autostart_csrf_token;
+            if (typeof token === 'string' && token) {
+                _modelManagerCsrfToken = token;
+                return { 'X-CSRF-Token': token };
+            }
+        } catch (_) { /* guarded POST will surface rejection */ }
+        return {};
+    }
+
+    async function modelManagerMutationFetch(url, options) {
+        async function send(forceRefresh) {
+            const csrfHeaders = await getModelManagerMutationHeaders(forceRefresh);
+            return fetch(url, Object.assign({}, options, {
+                headers: Object.assign({}, (options && options.headers) || {}, csrfHeaders),
+            }));
+        }
+        const response = await send(false);
+        if (response.status !== 403 || typeof response.clone !== 'function') return response;
+        try {
+            const payload = await response.clone().json();
+            if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
+        } catch (_) {
+            return response;
+        }
+        return send(true);
+    }
+
     // ═══ 早期绑定"返回主页"按钮，确保即使初始化失败也能导航 ═══
     const _earlyBackBtn = document.getElementById('backToMainBtn');
     const _earlyBackHandler = () => {
@@ -8127,7 +8175,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 formData.append('file', file);
                 formData.append('file_type', 'motion');
 
-                const response = await fetch(`/api/live2d/upload_file/${encodeURIComponent(currentModelInfo.name)}`, {
+                const response = await modelManagerMutationFetch(`/api/live2d/upload_file/${encodeURIComponent(currentModelInfo.name)}`, {
                     method: 'POST',
                     body: formData
                 });
@@ -8195,7 +8243,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const formData = new FormData();
                 formData.append('file', file);
 
-                const response = await fetch('/api/model/vrm/upload_animation', {
+                const response = await modelManagerMutationFetch('/api/model/vrm/upload_animation', {
                     method: 'POST',
                     body: formData
                 });
@@ -8388,7 +8436,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 formData.append('file', file);
                 formData.append('file_type', 'expression');
 
-                const response = await fetch(`/api/live2d/upload_file/${encodeURIComponent(currentModelInfo.name)}`, {
+                const response = await modelManagerMutationFetch(`/api/live2d/upload_file/${encodeURIComponent(currentModelInfo.name)}`, {
                     method: 'POST',
                     body: formData
                 });
@@ -8454,7 +8502,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 formData.append('files', file, file.webkitRelativePath || file.name);
             }
 
-            const response = await fetch('/api/live2d/upload_model', {
+            const response = await modelManagerMutationFetch('/api/live2d/upload_model', {
                 method: 'POST',
                 body: formData
             });
@@ -8644,10 +8692,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 注意：后端参数名是 file（单数），不是 files
             formData.append('file', vrmFile, vrmFile.name);
 
-            const response = await fetch('/api/model/vrm/upload', {
-                method: 'POST',
-                body: formData
-            });
+            const response = await (async () => {
+                async function sendVrmUpload(forceRefresh) {
+                    const csrfHeaders = await getModelManagerMutationHeaders(forceRefresh);
+                    return fetch('/api/model/vrm/upload', {
+                        method: 'POST',
+                        headers: csrfHeaders,
+                        body: formData
+                    });
+                }
+                const firstResp = await sendVrmUpload(false);
+                if (firstResp.status === 403 && typeof firstResp.clone === 'function') {
+                    try {
+                        const errPayload = await firstResp.clone().json();
+                        if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
+                            return sendVrmUpload(true);
+                        }
+                    } catch (_) { /* keep original 403 */ }
+                }
+                return firstResp;
+            })();
 
             const result = await response.json();
 

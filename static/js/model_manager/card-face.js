@@ -1,4 +1,35 @@
 
+let _modelManagerCardFaceCsrfToken = '';
+
+async function _getModelManagerCardFaceHeaders(forceRefresh) {
+    try {
+        const security = window.nekoLocalMutationSecurity;
+        if (security && typeof security.getMutationHeaders === 'function') {
+            if (forceRefresh && typeof security.refreshToken === 'function') {
+                await security.refreshToken();
+            }
+            const headers = await security.getMutationHeaders();
+            if (headers && typeof headers === 'object') {
+                return headers;
+            }
+        }
+    } catch (_) { /* fall back to page_config */ }
+    if (forceRefresh) _modelManagerCardFaceCsrfToken = '';
+    if (_modelManagerCardFaceCsrfToken) {
+        return { 'X-CSRF-Token': _modelManagerCardFaceCsrfToken };
+    }
+    try {
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
+        const cfg = resp && resp.ok ? await resp.json() : null;
+        const token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+            _modelManagerCardFaceCsrfToken = token;
+            return { 'X-CSRF-Token': token };
+        }
+    } catch (_) { /* guarded PUT will surface rejection */ }
+    return {};
+}
+
 function canvasToPngBlob(canvas) {
     return new Promise((resolve, reject) => {
         canvas.toBlob(blob => {
@@ -406,10 +437,22 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
         let response;
         try {
             throwIfCancelled();
-            response = await fetch(
-                `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
-                { method: 'PUT', body: formData, signal: controller.signal }
-            );
+            async function putCardFaceOnce(forceRefresh) {
+                const csrfHeaders = await _getModelManagerCardFaceHeaders(forceRefresh);
+                return fetch(
+                    `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
+                    { method: 'PUT', headers: csrfHeaders, body: formData, signal: controller.signal }
+                );
+            }
+            response = await putCardFaceOnce(false);
+            if (response.status === 403 && typeof response.clone === 'function') {
+                try {
+                    const errPayload = await response.clone().json();
+                    if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
+                        response = await putCardFaceOnce(true);
+                    }
+                } catch (_) { /* keep original 403 */ }
+            }
         } catch (error) {
             if (error && error.name === 'AbortError') {
                 if ((shouldCancel && shouldCancel()) || abortSignal?.aborted) {

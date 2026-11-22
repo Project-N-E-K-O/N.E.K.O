@@ -2633,14 +2633,103 @@
     badmintonCharacterLanguagePreferenceResolved = true;
   });
   function api(path) { return '/api/game/badminton' + path; }
+  var _badmintonCsrfToken = '';
+  var _badmintonCsrfInflight = null;
+  function _getCachedBadmintonCsrfToken() {
+    var token = '';
+    try {
+      if (window.nekoLocalMutationSecurity && typeof window.nekoLocalMutationSecurity.peekCachedToken === 'function') {
+        token = window.nekoLocalMutationSecurity.peekCachedToken() || '';
+      }
+    } catch (_) {}
+    return token || _badmintonCsrfToken || '';
+  }
+  function _buildBadmintonJsonHeaders(token) {
+    return token
+      ? { 'Content-Type': 'application/json', 'X-CSRF-Token': token }
+      : { 'Content-Type': 'application/json' };
+  }
+  function _getBadmintonMutationHeaders(forceRefresh) {
+    try {
+      var security = window.nekoLocalMutationSecurity;
+      if (security && typeof security.getMutationHeaders === 'function') {
+        var refreshP = (forceRefresh && typeof security.refreshToken === 'function')
+          ? Promise.resolve(security.refreshToken())
+          : Promise.resolve();
+        return refreshP.then(function () {
+          return security.getMutationHeaders();
+        }).then(function (headers) {
+          var token = headers && (headers['X-CSRF-Token'] || headers['x-csrf-token']);
+          if (token) _badmintonCsrfToken = token;
+          return headers || {};
+        }).catch(function () { return {}; });
+      }
+    } catch (_) {}
+    if (forceRefresh) {
+      _badmintonCsrfToken = '';
+      _badmintonCsrfInflight = null;
+    }
+    if (_badmintonCsrfToken) {
+      return Promise.resolve({ 'X-CSRF-Token': _badmintonCsrfToken });
+    }
+    if (_badmintonCsrfInflight) {
+      return _badmintonCsrfInflight;
+    }
+    var inflight = fetch('/api/config/page_config', { cache: 'no-store', credentials: 'same-origin' })
+      .then(function (r) { return r && r.ok ? r.json() : null; })
+      .then(function (cfg) {
+        var token = cfg && cfg.autostart_csrf_token;
+        if (typeof token === 'string' && token) {
+          _badmintonCsrfToken = token;
+          return { 'X-CSRF-Token': token };
+        }
+        return {};
+      })
+      .catch(function () { return {}; })
+      .then(function (headers) {
+        if (_badmintonCsrfInflight === inflight) _badmintonCsrfInflight = null;
+        return headers;
+      });
+    _badmintonCsrfInflight = inflight;
+    return inflight;
+  }
+  function _badmintonFetchWithCsrf(url, buildInit) {
+    function sendOnce(forceRefresh) {
+      return _getBadmintonMutationHeaders(forceRefresh).then(function (csrfHeaders) {
+        var init = buildInit(csrfHeaders || {});
+        return fetch(url, init);
+      });
+    }
+    return sendOnce(false).then(function (r) {
+      if (r.status === 403 && typeof r.clone === 'function') {
+        return r.clone().json().then(function (errPayload) {
+          if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
+            return sendOnce(true);
+          }
+          return r;
+        }).catch(function () { return r; });
+      }
+      return r;
+    });
+  }
+  function _badmintonBeaconPayload(payloadObj) {
+    var token = _getCachedBadmintonCsrfToken();
+    if (token) {
+      return JSON.stringify(Object.assign({}, payloadObj, { _csrf_token: token }));
+    }
+    return JSON.stringify(payloadObj);
+  }
   function post(path, body, timeoutMs) {
     var controller = window.AbortController ? new AbortController() : null;
     var timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs || 5000) : 0;
-    return fetch(api(path), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
-      signal: controller ? controller.signal : undefined
+    var bodyJson = JSON.stringify(body || {});
+    return _badmintonFetchWithCsrf(api(path), function (csrfHeaders) {
+      return {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
+        body: bodyJson,
+        signal: controller ? controller.signal : undefined
+      };
     }).then(function (r) {
       if (!r.ok) {
         return r.text().then(function (text) {
@@ -9798,7 +9887,7 @@
       payloadObj.currentState.duel = payloadObj.duel;
     }
     Object.assign(payloadObj, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload());
-    var payload = JSON.stringify(payloadObj);
+    var payload = _badmintonBeaconPayload(payloadObj);
     var url = api('/route/end');
     if (useBeacon && navigator.sendBeacon) {
       try {
@@ -9812,8 +9901,23 @@
         }
       } catch (_) {}
     }
+    var initialRouteEndToken = _getCachedBadmintonCsrfToken();
     if (!detached) routeEndFetchPending = true;
-    var routeEndRequest = fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).then(function (res) {
+    var routeEndRequest = fetch(url, { method: 'POST', headers: _buildBadmintonJsonHeaders(initialRouteEndToken), body: payload, keepalive: true }).then(function (res) {
+      if (res && res.status === 403 && typeof res.clone === 'function') {
+        return res.clone().json().then(function (errPayload) {
+          if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
+            return _getBadmintonMutationHeaders(!!initialRouteEndToken).then(function (csrfHeaders) {
+              var retryHeaders = Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders || {});
+              var retryPayload = _badmintonBeaconPayload(payloadObj);
+              return fetch(url, { method: 'POST', headers: retryHeaders, body: retryPayload, keepalive: true });
+            });
+          }
+          return res;
+        }).catch(function () { return res; });
+      }
+      return res;
+    }).then(function (res) {
       if (!detached) routeEndFetchPending = false;
       return res.json().catch(function () { return { ok: res.ok }; });
     }).then(function (res) {
@@ -10523,6 +10627,7 @@
   applyStaticI18n();
   _syncGameAudioVolumeControls();
   _initBadmintonGameMemoryToggle();
+  _getBadmintonMutationHeaders(false).catch(function () {});
   installBadmintonDemoApi();
   setDebugVisible((function () {
     return debugMode || localStorage.getItem('bdDebugVisible') === '1';

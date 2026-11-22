@@ -47,22 +47,37 @@ def vrm_api(tmp_path, monkeypatch):
     # Never resolve the real Workshop folder; tests that need one point it at tmp_path.
     monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: None)
     monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: None)
+    from config import AUTOSTART_CSRF_TOKEN
+
     app = FastAPI()
     app.include_router(vrm_router.router)
     app.include_router(live2d_models.router)
     app.mount("/user_vrm", StaticFiles(directory=user_dir))
     app.mount("/static/vrm", StaticFiles(directory=project_root / "static" / "vrm"))
-    with TestClient(app) as client:
+    with TestClient(
+        app,
+        headers={
+            "Origin": "http://testserver",
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+        },
+    ) as client:
         yield client, config
 
 
 @pytest_asyncio.fixture
 async def vrm_async_api(vrm_api):
+    from config import AUTOSTART_CSRF_TOKEN
+
     client, config = vrm_api
     # Starlette 1.3.1 TestClient unquotes HTTPX's already-decoded URL path.
     # ASGITransport preserves the server's single-decode semantics for literal percent names.
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=client.app), base_url="http://testserver",
+        transport=httpx.ASGITransport(app=client.app),
+        base_url="http://testserver",
+        headers={
+            "Origin": "http://testserver",
+            "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+        },
     ) as async_client:
         yield async_client, config, client.app
 

@@ -21,7 +21,7 @@
       enumerable: false,
       writable: false,
       value(payload = {}, requestOptions = {}) {
-        return host._post(
+        return host._postWithCsrf(
           host._gameEndpoint('passive-guard'),
           host._trustedRuntimePayload(payload),
           {
