@@ -121,7 +121,11 @@ class _Gate(NamedTuple):
 
 
 def _push_blockers(state: RepoState) -> list[str]:
-    from plugin.neko_plugin_cli.commands.release_cmd import _BRANCH_PLACEHOLDER, _shell_argument
+    from plugin.neko_plugin_cli.commands.release_cmd import (
+        _BRANCH_PLACEHOLDER,
+        _push_refspec,
+        _shell_argument,
+    )
 
     branch = state.branch
     if state.head is None:
@@ -129,7 +133,7 @@ def _push_blockers(state: RepoState) -> list[str]:
     if state.detached:
         return ["HEAD is detached; check out the branch to publish from"]
     # The messages name the branch; the command quotes it like the CLI's.
-    set_upstream = f"git push -u origin {_shell_argument(branch or '', _BRANCH_PLACEHOLDER)}"
+    set_upstream = f"git push -u origin {_shell_argument(_push_refspec(branch or ''), _BRANCH_PLACEHOLDER)}"
     if state.upstream is None:
         return [f"branch {branch} has no upstream; run {set_upstream}"]
     if not state.upstream.startswith("origin/"):

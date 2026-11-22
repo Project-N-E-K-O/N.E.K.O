@@ -531,7 +531,7 @@ def _branch_argument(branch: str) -> str:
 def _push_step(plugin_dir: Path) -> tuple[str, str | None]:
     """The push command, and the branch when the command shows its placeholder."""
     branch = _current_branch(plugin_dir)
-    argument = _branch_argument(branch)
+    argument = _branch_argument(release_cmd._push_refspec(branch))
     hidden = branch if argument == release_cmd._BRANCH_PLACEHOLDER else None
     return _git_command(plugin_dir, f"push -u origin {argument}"), hidden
 

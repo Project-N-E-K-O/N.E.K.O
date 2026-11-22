@@ -1839,6 +1839,29 @@ def test_publish_quotes_the_branch_in_its_push_hints(
     assert "run git push origin 'feat;$(x):main' " in str(exc_info.value)
 
 
+def test_publish_push_hints_never_force_a_branch_starting_with_plus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # git reads a leading + as "force": "+feat:main" would overwrite origin/main.
+    plugin_dir, _ = _make_publish_repo(tmp_path, monkeypatch)
+    _run_git(plugin_dir, "checkout", "-b", "+feat")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+
+    with pytest.raises(RuntimeError, match="has no upstream") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert "run git push -u origin refs/heads/+feat " in str(exc_info.value)
+
+    _run_git(plugin_dir, "branch", "--set-upstream-to", "origin/main")
+    (plugin_dir / "README.md").write_text("local-only commit\n", encoding="utf-8")
+    _run_git(plugin_dir, "add", "README.md")
+    _run_git(plugin_dir, "commit", "-m", "local only")
+    head = _run_git(plugin_dir, "rev-parse", "HEAD")
+    with pytest.raises(RuntimeError, match="HEAD is not pushed") as exc_info:
+        publish_cmd._ensure_head_pushed(plugin_dir, head=head)
+    assert "run git push origin refs/heads/+feat:main " in str(exc_info.value)
+
+
 def test_publish_names_the_branch_behind_a_windows_placeholder(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -573,7 +573,8 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
         )
     # Quoted like init's push step; the messages name the branch itself.
     set_upstream = (
-        f"git push -u origin {release_cmd._shell_argument(branch, release_cmd._BRANCH_PLACEHOLDER)}"
+        "git push -u origin "
+        + release_cmd._shell_argument(release_cmd._push_refspec(branch), release_cmd._BRANCH_PLACEHOLDER)
     )
     upstream = git_output(
         plugin_dir,
@@ -603,10 +604,11 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
     remote_head = output.split(maxsplit=1)[0] if output else None
     if remote_head != head:
         if remote_branch == branch:
-            refspec, placeholder = branch, release_cmd._BRANCH_PLACEHOLDER
+            refspec, placeholder = release_cmd._push_refspec(branch), release_cmd._BRANCH_PLACEHOLDER
             notes = (f" (branch: {branch})", f"（分支：{branch}）", f"（ブランチ：{branch}）")
         else:
-            refspec, placeholder = f"{branch}:{remote_branch}", _REFSPEC_PLACEHOLDER
+            refspec = release_cmd._push_refspec(branch, remote_branch)
+            placeholder = _REFSPEC_PLACEHOLDER
             notes = (
                 f" (branch: {branch}, remote branch: {remote_branch})",
                 f"（分支：{branch}，远程分支：{remote_branch}）",

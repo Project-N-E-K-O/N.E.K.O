@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import io
-import threading
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -488,6 +488,8 @@ async def test_task_lookup_for_a_project_that_never_published(app, tmp_path):
             "run git push -u origin 'feat;$(x)'",
             marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell quoting"),
         ),
+        # A leading + would make git force-push main instead.
+        ({"branch": "+main", "upstream": None, "head_pushed": None}, "run git push -u origin refs/heads/+main"),
         ({"head_pushed": False}, "HEAD is not pushed to origin/main; run git push"),
         ({"tag_exists": True, "tag_at_head": False}, "tag v0.1.0 already points at another commit"),
     ],

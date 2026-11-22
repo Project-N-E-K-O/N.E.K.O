@@ -734,6 +734,20 @@ def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
 _SHELL_PLAIN = re.compile(r"[\w+:./-][\w@+=:./-]*")
 
 
+def _push_refspec(branch: str, remote_branch: str | None = None) -> str:
+    """The ``git push`` refspec for exactly these branches.
+
+    A branch name may start with +, which git reads as "force" at the start of
+    a refspec (``git push origin +main`` force-pushes main), and no quoting
+    hides it from git. Such a side is spelled out as refs/heads/<name>.
+    """
+
+    def side(name: str) -> str:
+        return f"refs/heads/{name}" if name.startswith("+") else name
+
+    return side(branch) if remote_branch is None else f"{side(branch)}:{side(remote_branch)}"
+
+
 def _shell_argument(value: str, placeholder: str) -> str:
     """``value`` as one argument of a printed command, or ``placeholder``.
 

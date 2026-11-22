@@ -4,6 +4,7 @@ fall back to manual steps when gh is unavailable."""
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -57,6 +58,40 @@ def test_printed_branch_and_remote_stay_one_literal_argument_in_a_posix_shell(tm
     remote = "https://user:t$ken@github.com/octocat/demo.git"
     message = init_cmd._existing_repository_remote_message(Path("/work/demo"), remote)
     assert message.endswith("git -C /work/demo remote add origin 'https://user:t$ken@github.com/octocat/demo.git'")
+
+
+def test_push_refspec_spells_out_a_branch_starting_with_plus():
+    # A leading + in a refspec means "force"; no quoting hides it from git.
+    assert release_cmd._push_refspec("main") == "main"
+    assert release_cmd._push_refspec("+main") == "refs/heads/+main"
+    assert release_cmd._push_refspec("+feat", "main") == "refs/heads/+feat:main"
+    assert release_cmd._push_refspec("feat", "+x") == "feat:refs/heads/+x"
+
+
+@pytest.mark.skipif(release_cmd._WINDOWS_SHELL, reason="runs the printed command in sh")
+def test_printed_push_of_a_plus_branch_pushes_that_branch_without_force(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    remote = tmp_path / "origin.git"
+    _git(tmp_path, "init", "--bare", "-q", str(remote))
+    plugin_dir = _make_plugin_dir(tmp_path / "plugins")
+    _commit_all(plugin_dir)
+    _git(plugin_dir, "remote", "add", "origin", str(remote))
+    _git(plugin_dir, "push", "-q", "origin", "main")
+    pushed_main = _git(plugin_dir, "rev-parse", "main")
+    # Local main moves on: a forced "+main" push would overwrite origin/main.
+    (plugin_dir / "local.txt").write_text("local\n", encoding="utf-8")
+    _git(plugin_dir, "add", "local.txt")
+    _git(plugin_dir, "commit", "-q", "--amend", "-m", "rewritten")
+    _git(plugin_dir, "checkout", "-q", "-b", "+main")
+
+    command, hidden = init_cmd._push_step(plugin_dir)
+    assert hidden is None
+    assert command.endswith(" push -u origin refs/heads/+main")
+    subprocess.run(["sh", "-c", command], cwd=tmp_path, check=True, capture_output=True)
+
+    assert _git(remote, "rev-parse", "refs/heads/main") == pushed_main
+    assert _git(remote, "rev-parse", "refs/heads/+main") == _git(plugin_dir, "rev-parse", "HEAD")
 
 
 def test_printed_branch_and_remote_for_windows_shells(monkeypatch):
