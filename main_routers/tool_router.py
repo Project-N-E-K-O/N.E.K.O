@@ -937,7 +937,9 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
             ):
                 # Same owner, but another registration of the name (e.g. a
                 # newer one made after the registration this call targets).
+                # Its id lets the owner target exactly that one next.
                 refusal["reason"] = "different registration"
+                refusal["registration_id"] = str(e.existing.metadata.get("registration_id") or "")
             refused.append(refusal)
         except Exception as e:
             # One role's sync failure must not 500 the whole cross-role request; callers need

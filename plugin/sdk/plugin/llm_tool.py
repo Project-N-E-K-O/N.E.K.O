@@ -333,6 +333,8 @@ class LlmToolRoleRefusal(TypedDict, total=False):
     # "different registration": same owner, but not the registration this
     # unregister targeted (e.g. a newer one); left untouched.
     reason: str
+    # With that reason: the id of the registration holding the name.
+    registration_id: str
 
 
 class LlmToolUnregisterResult(TypedDict):
@@ -342,8 +344,8 @@ class LlmToolUnregisterResult(TypedDict):
     source (left untouched, and not ours to remove), or, with
     ``reason="different registration"``, to another registration of this
     plugin than the one targeted (the cleanup after a failed register
-    leaves those alone; ``unregister_llm_tool_async`` then removes the name
-    without the registration filter)."""
+    leaves those alone; ``unregister_llm_tool_async`` then removes each one
+    by the ``registration_id`` reported with it)."""
 
     ok: bool
     removed: bool

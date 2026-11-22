@@ -512,10 +512,7 @@ async def unregister_remote_tool(
             isinstance(r, dict) and r.get("reason") == "different registration"
             for r in (refused_roles or [])
         )
-        if tracked is not None and not other_registration and (
-            expected_registration_id is None
-            or tracked.get("registration_id") in (None, expected_registration_id)
-        ):
+        if tracked is not None and not other_registration:
             # A refusal for "different registration" means main_server still
             # holds another registration of this plugin under the name (e.g.
             # a timed-out register that landed late): model calls still come

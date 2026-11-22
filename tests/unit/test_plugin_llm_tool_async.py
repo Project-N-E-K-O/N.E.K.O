@@ -481,7 +481,7 @@ async def test_unregister_removes_a_stale_registration_that_displaced_the_held_o
     plugin, _ = await _plugin_with_tool()
     host = _ScriptedHost(
         {"ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
-         "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin", "reason": "different registration"}]},
+         "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin", "reason": "different registration", "registration_id": "stale"}]},
         dict(_CLEANED),
     )
     _install_host(plugin, host)
@@ -489,9 +489,46 @@ async def test_unregister_removes_a_stale_registration_that_displaced_the_held_o
     result = await plugin.unregister_llm_tool_async("tool_a")
 
     assert result["ok"] is True and result["removed"] is True
-    assert "expected_registration_id" in host.calls[0]["request_data"]
-    assert "expected_registration_id" not in host.calls[1]["request_data"]
+    held = host.calls[0]["request_data"]["expected_registration_id"]
+    assert held and held != "stale"
+    # Exactly the registration main_server reported, never an unfiltered one
+    # that a late arrival could turn against a later registration.
+    assert host.calls[1]["request_data"]["expected_registration_id"] == "stale"
     assert _local_names(plugin) == set()
+
+
+@pytest.mark.asyncio
+async def test_stale_registration_without_a_reported_id_is_not_removed_broadly():
+    plugin, _ = await _plugin_with_tool()
+    host = _ScriptedHost(
+        {"ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
+         "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin", "reason": "different registration"}]},
+    )
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is False and result["error"] == "partial_failure"
+    assert len(host.calls) == 1
+    assert _local_names(plugin) == {"tool_a"}
+
+
+@pytest.mark.asyncio
+async def test_stale_removal_that_meets_yet_another_registration_is_not_ok():
+    plugin, _ = await _plugin_with_tool()
+    reported = lambda rid: {  # noqa: E731
+        "ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
+        "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin",
+                           "reason": "different registration", "registration_id": rid}],
+    }
+    host = _ScriptedHost(reported("stale"), reported("newer"))
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is False
+    assert len(host.calls) == 2
+    assert _local_names(plugin) == {"tool_a"}
 
 
 @pytest.mark.asyncio
@@ -499,7 +536,7 @@ async def test_failed_stale_removal_keeps_the_handler():
     plugin, _ = await _plugin_with_tool()
     host = _ScriptedHost(
         {"ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
-         "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin", "reason": "different registration"}]},
+         "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin", "reason": "different registration", "registration_id": "stale"}]},
         TimeoutError("late"),
     )
     _install_host(plugin, host)
@@ -516,7 +553,7 @@ async def test_stale_removal_uses_what_is_left_of_request_timeout(monkeypatch):
 
     plugin, _ = await _plugin_with_tool()
     refused = {"ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
-               "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin", "reason": "different registration"}]}
+               "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin", "reason": "different registration", "registration_id": "stale"}]}
     host = _ScriptedHost(dict(refused), dict(_CLEANED))
     _install_host(plugin, host)
 

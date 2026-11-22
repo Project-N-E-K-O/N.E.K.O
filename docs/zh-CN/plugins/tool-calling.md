@@ -164,7 +164,7 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 
 可选字段：`expected_source`（只删这个 source 的工具，其他归属的放进 `refused_roles`）和
 `expected_registration_id`（只删 `/register` 返回的那个 `registration_id` 对应的那次注册；同名的其他注册放进
-`refused_roles`，带 `"reason": "different registration"`）。`/register` 接受可选的 `registration_id`，并总是返回
+`refused_roles`，带 `"reason": "different registration"` 和那次注册的 `registration_id`）。`/register` 接受可选的 `registration_id`，并总是返回
 实际存下的那个。不带这些字段时行为不变。
 
 ### `POST /api/tools/clear`
@@ -466,7 +466,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 - 每次 `register_llm_tool_async` 都带一个自己的注册 ID，它的补发清理和之后的 `unregister_llm_tool_async`
   只删这一次注册。所以超时了、但还在 `main_server` 上执行的清理或注销，删不掉同名的新注册；那个 role 会出现在
   `refused_roles` 里，带 `"reason": "different registration"`。补发清理不会动这样的注册；而
-  `unregister_llm_tool_async` 会把它也删掉（不带 ID 再发一次），因为插件要的就是这个名字不再存在。通过同步接口或 `@llm_tool` 注册的工具，以及本地已经
+  `unregister_llm_tool_async` 会按 `main_server` 报告的那个 ID 把它也删掉（不会发不带 ID 的宽泛注销），因为插件要的就是这个名字不再存在。通过同步接口或 `@llm_tool` 注册的工具，以及本地已经
   没有的名字，注销时不带 ID（删本插件的任何一次注册），和以前一样。
 - `unregister_llm_tool_async` 只在 `ok` 为真时删掉 handler；否则工具在插件里照旧登记，
   和 host 一致，还挂着它的 role 照常能用，再调一次就是重试。

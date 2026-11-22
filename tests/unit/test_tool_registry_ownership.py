@@ -422,10 +422,14 @@ async def test_late_unregister_of_an_old_registration_keeps_the_newer_one(mgr):
         registration_id="reg-1",
     ))
     mgr.release.clear()
+    # Re-arm: the first register already set it, and the replacement must
+    # land only after the old unregister has reached its pause point.
+    mgr.paused.clear()
     pending = asyncio.create_task(tr.unregister_tool(tr.ToolUnregisterRequest(
         name="x", expected_source="plugin:a", expected_registration_id="reg-1",
     )))
     await mgr.paused.wait()
+    assert not pending.done()  # the old unregister is in flight, paused
     # The newer registration of the same source lands meanwhile.
     newer = _tool("x", "plugin:a", registration_id="reg-2")
     mgr.tool_registry.register(newer)
@@ -436,7 +440,7 @@ async def test_late_unregister_of_an_old_registration_keeps_the_newer_one(mgr):
     assert mgr.tool_registry.get("x") is newer
     assert result["removed"] is False
     assert result["refused_roles"] == [
-        {"role": "Alpha", "owned_by": "plugin:a", "reason": "different registration"},
+        {"role": "Alpha", "owned_by": "plugin:a", "reason": "different registration", "registration_id": "reg-2"},
     ]
     assert tr._remote_tool_ledger[(None, "x")].tool is newer
 

@@ -619,7 +619,7 @@ async def test_replay_after_a_newer_registration_keeps_refusing_the_old_id(monke
     ))
     assert late["removed"] is False
     assert late["refused_roles"] == [
-        {"role": "Alpha", "owned_by": "plugin:mc", "reason": "different registration"},
+        {"role": "Alpha", "owned_by": "plugin:mc", "reason": "different registration", "registration_id": "reg-2"},
     ]
     assert fresh.tool_registry.get("minecraft_task").metadata["registration_id"] == "reg-2"
     assert tr.replay_remote_tools(_rebuilt("Alpha"), "Alpha") == ["minecraft_task"]

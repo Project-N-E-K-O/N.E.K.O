@@ -1082,6 +1082,67 @@ class NekoPluginBase(_SharedNekoPluginBase):
         except _LlmToolLockTimeout:
             return self._llm_tool_lock_timeout_result(build_register_result, meta.name, request_timeout)
 
+    async def _remove_reported_llm_tool_registrations(
+        self,
+        name: str,
+        role: str | None,
+        first: LlmToolUnregisterResult,
+        deadline: float,
+        request_timeout: float,
+    ) -> LlmToolUnregisterResult:
+        """Unregister each registration that ``first`` reported as holding
+        the name instead of ours, by its id, and merge the outcomes.
+
+        ``ok`` only when every reported registration was removed. A
+        refusal without an id is not acted on (no unfiltered unregister).
+        """
+        held = [
+            r for r in first["refused_roles"] if r.get("reason") == "different registration"
+        ]
+        ids = list(dict.fromkeys(r.get("registration_id") or "" for r in held))
+        results: list[LlmToolUnregisterResult] = []
+        error: str | None = None
+        message: str | None = None
+        for rid in ids:
+            left = deadline - time.monotonic()
+            if not rid:
+                error, message = "partial_failure", (
+                    f"another registration of {name!r} holds the name but main_server did not "
+                    "report its id; not removed"
+                )
+                break
+            if left <= 0:
+                error, message = "timeout", (
+                    f"another registration of {name!r} holds the name and no budget is left of "
+                    f"{request_timeout}s to remove it"
+                )
+                break
+            outcome = await self._request_llm_tool_change(
+                request_type="LLM_TOOL_UNREGISTER_REQUEST",
+                payload={
+                    "plugin_id": self.plugin_id, "name": name, "role": role,
+                    "expected_registration_id": rid,
+                },
+                request_timeout=left,
+                build_result=build_unregister_result,
+            )
+            results.append(outcome)
+            if not outcome["ok"] or any(
+                r.get("reason") == "different registration" for r in outcome["refused_roles"]
+            ):
+                error = outcome["error"] or "partial_failure"
+                message = outcome["message"] or (
+                    f"registration {rid} of {name!r} was not removed from every role"
+                )
+                break
+        merged = {
+            "removed": any(r["removed"] for r in results),
+            "affected_roles": [x for r in results for x in r["affected_roles"]],
+            "failed_roles": [x for r in results for x in r["failed_roles"]],
+            "refused_roles": (results[-1]["refused_roles"] if results else first["refused_roles"]),
+        }
+        return build_unregister_result(merged, ok=error is None, error=error, message=message)
+
     async def _clean_up_failed_llm_tool_register(self, meta: "LlmToolMeta") -> LlmToolUnregisterResult:
         """Unregister a tool whose register reported failure, still under
         the name lock.
@@ -1166,24 +1227,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
                     ):
                         # Another registration of this plugin holds the name
                         # (e.g. a timed-out register that landed late, after
-                        # the one we hold). The caller wants the name gone and
-                        # no newer async call can run meanwhile (we hold the
-                        # name lock), so remove whichever registration it is,
+                        # the one we hold). The caller wants the name gone, so
+                        # remove exactly the registration(s) main_server
+                        # reported -- never an unfiltered unregister, which a
+                        # late arrival could turn against a later registration --
                         # within what is left of this call's budget.
-                        left = deadline - time.monotonic()
-                        if left <= 0:
-                            return build_unregister_result(
-                                result, ok=False, error="timeout",
-                                message=(
-                                    f"another registration of {name!r} holds the name and no "
-                                    f"budget is left of {request_timeout}s to remove it"
-                                ),
-                            )
-                        result = await self._request_llm_tool_change(
-                            request_type="LLM_TOOL_UNREGISTER_REQUEST",
-                            payload={"plugin_id": self.plugin_id, "name": name, "role": meta.role},
-                            request_timeout=left,
-                            build_result=build_unregister_result,
+                        result = await self._remove_reported_llm_tool_registrations(
+                            name, meta.role, result, deadline, request_timeout,
                         )
                     if result["ok"]:
                         self._release_llm_tool_locally(meta)
