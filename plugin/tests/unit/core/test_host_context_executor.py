@@ -142,6 +142,8 @@ def test_to_thread_still_carries_context():
 
 
 def test_executor_is_shut_down_when_the_loop_closes():
+    # Reads CPython internals (loop._default_executor, executor._threads,
+    # executor._shutdown); the project pins Python 3.11.
     captured = {}
 
     async def work():
