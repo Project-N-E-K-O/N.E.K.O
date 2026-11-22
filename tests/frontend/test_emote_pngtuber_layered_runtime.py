@@ -832,6 +832,67 @@ def test_costume_packs_are_not_disturbed(page, running_server):
                 body: JSON.stringify({ folder: f }) })""", [COSTUME_FOLDER])
 
 
+@pytest.mark.parametrize('mode', ['partial', 'empty', 'legacy', 'plus'])
+def test_emotion_mappings_are_complete_and_legacy_numbered_states_remain_supported(page, running_server, mode):
+    folder = f'neko-layered-emotion-mappings-{mode}'
+    if mode == 'legacy':
+        states = [{'key':name+'_image','rgb':[30+index*35,90,160]}
+                  for index,name in enumerate(['idle','happy','sad','angry','surprised'])]
+    elif mode == 'plus':
+        states = [{'key':f'costume_{index}','rgb':[30+index*35,90,160]} for index in range(5)]
+    else:
+        states = SLOT_STATES if mode == 'partial' else SLOT_STATES[:4]+[{'key':'pose_image','rgb':[70,80,90]}]
+    _upload_states(page, running_server, folder, states, 'emotion')
+    if mode in ('legacy', 'plus'):
+        def legacy_metadata(route):
+            payload = route.fetch().json()
+            payload.pop('emotion_mappings', None)
+            payload['source_format'] = 'pngtube_remix_pngremix' if mode == 'legacy' else 'pngtuber_plus_save'
+            route.fulfill(json=payload)
+
+        page.route('**/user_pngtuber/**/metadata.json', legacy_metadata)
+    try:
+        _runtime_page(page, running_server)
+        result = page.evaluate('''async ([folder]) => {
+            const container=document.createElement('div');container.id='mapping-container';
+            container.appendChild(Object.assign(document.createElement('img'),{id:'mapping-image'}));
+            document.body.appendChild(container);
+            const root='/user_pngtuber/'+encodeURIComponent(folder);
+            const config=(await (await fetch(root+'/model.json')).json()).pngtuber;
+            config.layered_metadata=root+'/metadata.json';config.idle_image=root+'/idle.png';
+            const manager=new PNGTuberManager('mapping-container');
+            try {
+                await manager.load(config);
+                const mapped=manager.layeredMetadata.emotion_mappings;
+                const results=['sad','angry','surprised','happy'].map(emotion=>{
+                    manager.clearEmotion();manager.setLayeredStateIndex(0,{source:'test'});
+                    const accepted=manager.setEmotion(emotion,{durationMs:0});
+                    return {emotion,target:manager.layeredEmotionTarget(emotion),accepted,index:manager.layeredStateIndex};
+                });
+                return {count:manager.getLayeredStateCount(),supported:manager.layeredEmotionSupported(),mapped,results};
+            } finally {manager.dispose();}
+        }''', [folder])
+        assert result['count'] == 5
+        if mode in ('legacy', 'plus'):
+            assert result.get('mapped') is None, 'the legacy fixture must load without an explicit mapping table'
+        if mode == 'legacy':
+            expected = [2,3,4,1]
+        elif mode == 'partial':
+            assert result['mapped'] == {'happy':{'state_index':4}}
+            expected = [None,None,None,4]
+        else:
+            if mode == 'empty':
+                assert result['mapped'] == {}
+            expected = [None]*4
+        assert result['supported'] is (mode in ('partial','legacy'))
+        assert [row['target'] for row in result['results']] == expected
+        assert [row['accepted'] for row in result['results']] == [index is not None for index in expected]
+        assert [row['index'] for row in result['results']] == [index or 0 for index in expected]
+    finally:
+        page.evaluate('''async folder=>fetch('/api/model/pngtuber/model',{
+            method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder})})''', folder)
+
+
 # ── 平铺包：说话优先时，情绪不得从口型节拍里漏出来 ─────────────────────────────
 # 报上来的现象是"就算说话优先，说话中还是会夹情绪动作"。成因在平铺这边：
 # 口型每 ~150ms 在 talking/idle 之间切一次 src，而 stateToSrc('idle') 返回

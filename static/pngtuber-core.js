@@ -662,6 +662,9 @@
                 if (mapping && typeof mapping === 'object' && Number.isFinite(Number(mapping.state_index))) {
                     return Number(mapping.state_index);
                 }
+                // An explicit table defines all supported emotions, even when
+                // empty. Its missing keys must not address unrelated states.
+                return null;
             }
             const fallbackOrder = { happy: 1, sad: 2, angry: 3, surprised: 4 };
             const fallbackIndex = fallbackOrder[emotionName];
