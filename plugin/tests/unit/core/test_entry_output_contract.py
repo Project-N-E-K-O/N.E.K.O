@@ -213,6 +213,88 @@ def test_forward_reference_is_resolved_against_the_owner_class():
     assert _meta_of(Demo.forward).output_model is Demo.Reply
 
 
+@pytest.mark.parametrize("wrapper", [classmethod, staticmethod])
+def test_classmethod_and_staticmethod_entries_are_finished_by_the_class_marker(wrapper):
+    class Demo:
+        @wrapper
+        @plugin_decorators.plugin_entry(id="forward")
+        async def forward() -> "Reply":  # type: ignore[misc]
+            return None
+
+        class Reply(BaseModel):
+            ok: bool
+
+    meta = _meta_of(vars(Demo)["forward"].__func__)
+    assert (meta.output_schema, meta.llm_result_schema) == (None, None)
+    neko_plugin(Demo)
+    assert meta.output_model is Demo.Reply
+    assert meta.output_schema == Demo.Reply.model_json_schema()
+    assert meta.llm_result_model is Demo.Reply
+    assert meta.llm_result_fields == ["ok"]
+
+
+def test_router_forward_reference_is_resolved_against_the_router_class():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class DemoRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="forward")
+        async def forward(self) -> "Reply":
+            return self.Reply(ok=True)
+
+        class Reply(BaseModel):
+            ok: bool
+
+    shared = _meta_of(DemoRouter.forward)
+    meta = DemoRouter(prefix="r_").collect_entries()["r_forward"].meta
+    assert meta.output_model is DemoRouter.Reply
+    assert meta.output_schema == DemoRouter.Reply.model_json_schema()
+    assert meta.llm_result_model is DemoRouter.Reply
+    assert meta.llm_result_fields == ["ok"]
+    assert build_output_check(meta) is not None
+    # Only the router's own copy carries the inference.
+    assert (shared.output_schema, shared.output_model, shared.llm_result_schema) == (None, None, None)
+
+
+def test_deferred_inference_never_replaces_explicit_contracts():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    explicit_schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+
+    def entries():
+        @plugin_decorators.plugin_entry(id="explicit", output_schema=explicit_schema, llm_result_fields=["count"])
+        async def explicit(self) -> "Reply":
+            return None
+
+        @classmethod
+        @plugin_decorators.plugin_entry(id="cls_explicit", output_schema=explicit_schema, llm_result_fields=["count"])
+        async def cls_explicit(cls) -> "Reply":
+            return None
+
+        return explicit, cls_explicit
+
+    class Demo:
+        explicit, cls_explicit = entries()
+
+        class Reply(BaseModel):
+            ok: bool
+
+    class DemoRouter(PluginRouter):
+        explicit, cls_explicit = entries()
+
+        class Reply(BaseModel):
+            ok: bool
+
+    neko_plugin(Demo)
+    metas = [_meta_of(Demo.explicit), _meta_of(vars(Demo)["cls_explicit"].__func__)]
+    metas += [handler.meta for handler in DemoRouter().collect_entries().values()]
+    assert len(metas) == 4
+    for meta in metas:
+        assert meta.output_schema == explicit_schema
+        assert meta.output_model is None
+        assert meta.llm_result_fields == ["count"]
+        assert meta.llm_result_model is None
+
+
 def test_explicit_output_schema_wins_and_is_published_only():
     schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
 

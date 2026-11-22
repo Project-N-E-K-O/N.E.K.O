@@ -19,7 +19,7 @@ from plugin.sdk.shared.constants import (
     PERSIST_ATTR,
 )
 from .events import EventMeta, QuickActionConfig
-from plugin._types.entry_metadata import detached_copy
+from plugin._types.entry_metadata import check_schema_depth, detached_copy
 
 from .output_contract import is_pydantic_model
 from .result_contract import (
@@ -345,34 +345,58 @@ def neko_plugin(cls: type) -> type:
 
 def _finalize_plugin_entry_inference(owner: type) -> None:
     for member in vars(owner).values():
-        if not callable(member):
+        # Same unwrapping as the entry collectors: a classmethod/staticmethod
+        # object is not callable itself, its function carries the metadata.
+        target = member.__func__ if isinstance(member, (staticmethod, classmethod)) else member
+        if not callable(target):
             continue
-        meta = getattr(member, EVENT_META_ATTR, None)
+        meta = getattr(target, EVENT_META_ATTR, None)
         if not isinstance(meta, EventMeta) or meta.event_type != "plugin_entry":
             continue
 
-        if getattr(member, _AUTO_INFER_PARAMS_ATTR, False):
-            inferred_model, inferred_schema = _infer_single_params_model_from_owner(member, owner)
-            if inferred_model is not None and inferred_schema is not None:
-                meta.params = inferred_model
-                meta.input_schema = cast(InputSchema, inferred_schema)
-                setattr(member, _PARAMS_MODEL_ATTR, inferred_model)
+        inferred = _deferred_entry_inference(target, owner)
+        for field_name, value in inferred.items():
+            setattr(meta, field_name, value)
+        if "params" in inferred:
+            setattr(target, _PARAMS_MODEL_ATTR, inferred["params"])
 
-        if getattr(member, _AUTO_INFER_LLM_RESULT_ATTR, False):
-            inferred_llm_model, inferred_llm_schema = _infer_llm_result_model_from_owner(member, owner)
-            if inferred_llm_model is not None and inferred_llm_schema is not None:
-                meta.llm_result_model = inferred_llm_model
-                meta.llm_result_schema = cast(InputSchema, inferred_llm_schema)
-                fields = fields_from_schema(inferred_llm_schema)
-                meta.llm_result_fields = fields if fields else None
 
-        if getattr(member, _AUTO_INFER_OUTPUT_ATTR, False):
-            # Same return-annotation inference as llm_result_*, resolved
-            # against the owner class for forward references.
-            inferred_output_model, inferred_output_schema = _infer_output_contract_from_owner(member, owner)
-            if inferred_output_model is not None and inferred_output_schema is not None:
-                meta.output_model = inferred_output_model
-                meta.output_schema = cast(InputSchema, inferred_output_schema)
+def _deferred_entry_inference(
+    fn: Callable[..., object],
+    owner: type,
+    *,
+    include_params: bool = True,
+) -> dict[str, object]:
+    """EventMeta fields whose decoration-time inference failed and now resolve against ``owner``.
+
+    Only inferences still marked pending by ``@plugin_entry`` run, so an
+    explicit ``params``/``input_schema``, ``llm_result_*`` or ``output_schema``
+    is never replaced. Nothing is written here: the class marker applies the
+    result to the shared metadata, routers apply it to their own copy.
+    """
+    inferred: dict[str, object] = {}
+    if include_params and getattr(fn, _AUTO_INFER_PARAMS_ATTR, False):
+        inferred_model, inferred_schema = _infer_single_params_model_from_owner(fn, owner)
+        if inferred_model is not None and inferred_schema is not None:
+            inferred["params"] = inferred_model
+            inferred["input_schema"] = cast(InputSchema, inferred_schema)
+
+    if getattr(fn, _AUTO_INFER_LLM_RESULT_ATTR, False):
+        inferred_llm_model, inferred_llm_schema = _infer_llm_result_model_from_owner(fn, owner)
+        if inferred_llm_model is not None and inferred_llm_schema is not None:
+            inferred["llm_result_model"] = inferred_llm_model
+            inferred["llm_result_schema"] = cast(InputSchema, inferred_llm_schema)
+            fields = fields_from_schema(inferred_llm_schema)
+            inferred["llm_result_fields"] = fields if fields else None
+
+    if getattr(fn, _AUTO_INFER_OUTPUT_ATTR, False):
+        # Same return-annotation inference as llm_result_*, resolved
+        # against the owner class for forward references.
+        inferred_output_model, inferred_output_schema = _infer_output_contract_from_owner(fn, owner)
+        if inferred_output_model is not None and inferred_output_schema is not None:
+            inferred["output_model"] = inferred_output_model
+            inferred["output_schema"] = cast(InputSchema, inferred_output_schema)
+    return inferred
 
 
 def on_event(
@@ -443,6 +467,8 @@ def plugin_entry(
 ) -> Callable[[F], F]:
     if output_schema is not None and not isinstance(output_schema, Mapping):
         raise ValueError("output_schema must be a JSON schema mapping")
+    if output_schema is not None:
+        check_schema_depth(output_schema, "output_schema")
     if input_schema is not None and params is not None:
         raise ValueError("input_schema and params are mutually exclusive")
     if sum(
