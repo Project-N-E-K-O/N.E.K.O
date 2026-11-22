@@ -221,3 +221,16 @@ def test_hand_entered_endpoint_never_inherits_the_recognition_key(config_manager
     small = config_manager.get_model_api_config('agent_small')
     assert small['base_url'] == 'https://my.test/v1'
     assert small['api_key'] == ''
+
+
+def test_named_provider_with_a_foreign_url_never_gets_the_recognition_key(config_manager):
+    # Greptile security P1: kimi_code + a foreign URL + no saved key while the
+    # recognition slot holds another provider's key.
+    _write_core_config(config_manager, {
+        **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM,
+        'agentSmallModelProvider': 'kimi_code', 'agentSmallModelUrl': 'https://my.test/v1',
+        'agentSmallModelId': 'x-model',
+    })
+    small = config_manager.get_model_api_config('agent_small')
+    assert small['base_url'] == 'https://my.test/v1'
+    assert small['api_key'] != 'sk-emotion-custom'

@@ -1520,8 +1520,10 @@ class CoreConfigMixin:
                     config[url_key] = config.get('EMOTION_MODEL_URL', '')
                     config[apikey_key] = config.get('EMOTION_MODEL_API_KEY', '')
                     own_url = str(core_cfg.get('agentSmallModelUrl') or '').strip()
-                    if provider in ('', 'custom') and own_url and own_url != config[url_key]:
-                        # A hand-entered endpoint never inherits another endpoint's key.
+                    if own_url and own_url != config[url_key]:
+                        # A typed endpoint never inherits another endpoint's key, whatever the
+                        # provider: a named provider whose URL is foreign gets no ledger key
+                        # either, and must not fall back to this inherited one.
                         config[apikey_key] = ''
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
