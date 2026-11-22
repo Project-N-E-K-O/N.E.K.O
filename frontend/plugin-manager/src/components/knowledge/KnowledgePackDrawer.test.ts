@@ -15,6 +15,13 @@ const NativeMutationObserver = globalThis.MutationObserver
 const confirmAction = 'confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>
 let cleanup: (() => void) | undefined
 async function flush() { for (let index = 0; index < 10; index++) { await Promise.resolve(); await nextTick() } }
+async function flushDialogTransition() {
+  // Vue applies v-show after its two animation frames; microtasks alone can
+  // leave a closed dialog visibly present and hide a late-close regression.
+  await flush()
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  await flush()
+}
 function buttons(label: string) { return [...document.querySelectorAll<HTMLButtonElement>('button')].filter(row => row.textContent?.trim() === label) }
 
 async function mount(jobs: KnowledgePackJob[] = [], extra: Partial<KnowledgePack> = {}) {
@@ -22,7 +29,7 @@ async function mount(jobs: KnowledgePackJob[] = [], extra: Partial<KnowledgePack
   document.body.append(root)
   const pack = { pack_id: 'imp.test', source: { name: 'Notes', homepage: '', license: '' }, enabled: false,
     origin: 'imported', sources_managed: true, chunks_ready: 2, chunks_total: 2, export_ready: true, vector_state: 'complete', ...extra } as KnowledgePack
-  const state = reactive({ modelValue: true, pack: pack as KnowledgePack | null, jobs })
+  const state = reactive({ modelValue: true, pack: pack as KnowledgePack | null, jobs, onUpdated: vi.fn() })
   const app = createApp({ render: () => h(KnowledgePackDrawer, state) })
   app.use(ElementPlus)
   app.use(createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': enUS } }))
@@ -131,6 +138,56 @@ describe('pack documents, versions and publication', () => {
     restore[0]!.click()
     await flush()
     expect(api.restoreSource).toHaveBeenCalledWith({ pack_id: 'imp.test', doc_id: 'doc-1', version: 1, enabled_confirmed: false })
+    await flushDialogTransition()
+    expect(document.querySelector<HTMLElement>('.el-dialog')!.closest<HTMLElement>('.el-overlay')!.style.display).toBe('none')
+  })
+
+  it.each(['success', 'failure'])('keeps another document history open after a pending restore finishes with %s', async outcome => {
+    let finish!: (result: object) => void
+    let fail!: (error: unknown) => void
+    api.restoreSource.mockReturnValueOnce(new Promise((resolve, reject) => { finish = resolve; fail = reject }))
+    api.sources.mockResolvedValue({ ok: true, sources: [
+      { doc_id: 'doc-1', name: 'Notes.txt', chars: 30, current_version: 2, versions_count: 2 },
+      { doc_id: 'doc-2', name: 'Other.txt', chars: 40, current_version: 4, versions_count: 2 },
+    ] })
+    api.sourceVersions.mockImplementation(async ({ doc_id }) => ({ ok: true, versions: [
+      { version: doc_id === 'doc-1' ? 1 : 3, name: doc_id === 'doc-1' ? 'Notes.txt' : 'Other.txt', chars: 20, sha256: 'old', created_at: '', current: false },
+    ] }))
+    const state = await mount()
+    buttons('Version history')[0]!.click()
+    await flush()
+    buttons('Restore')[0]!.click()
+    await flush()
+    expect(api.restoreSource).toHaveBeenCalledExactlyOnceWith({ pack_id: 'imp.test', doc_id: 'doc-1', version: 1, enabled_confirmed: false })
+    // Navigate through the real dialog while the earlier API request is pending.
+    document.querySelector<HTMLElement>('.el-dialog__headerbtn')!.click()
+    await flushDialogTransition()
+    buttons('Version history')[1]!.click()
+    await flushDialogTransition()
+    const dialog = document.querySelector<HTMLElement>('.el-dialog')!
+    const overlay = dialog.closest<HTMLElement>('.el-overlay')!
+    expect(overlay.style.display).not.toBe('none')
+    expect(dialog.textContent).toContain('Other.txt')
+    expect(api.sourceVersions).toHaveBeenLastCalledWith({ pack_id: 'imp.test', doc_id: 'doc-2' })
+    expect(buttons('Restore')[0]!.disabled).toBe(true)
+    if (outcome === 'success') finish({ ok: true, state: 'queued' })
+    else fail(new KnowledgeApiError('operation_failed'))
+    await flush()
+    await flushDialogTransition()
+    expect(overlay.style.display).not.toBe('none')
+    expect(dialog.textContent).toContain('Other.txt')
+    expect(dialog.textContent).not.toContain('Notes.txt')
+    expect(buttons('Restore')[0]!.disabled).toBe(false)
+    expect(api.sourceVersions).toHaveBeenCalledTimes(2)
+    if (outcome === 'success') {
+      expect(state.onUpdated).toHaveBeenCalledTimes(1)
+      expect(api.sources).toHaveBeenCalledTimes(2)
+      expect(document.body.textContent).toContain(enUS.knowledge.sourceQueued)
+    } else {
+      expect(state.onUpdated).not.toHaveBeenCalled()
+      expect(api.sources).toHaveBeenCalledTimes(1)
+      expect(document.body.textContent).toContain(enUS.knowledge.reasons.operation_failed)
+    }
   })
 
   it('requires explicit acknowledgement before restoring history into an enabled pack', async () => {

@@ -264,12 +264,14 @@ async function removeSource(row: KnowledgeDocument) {
 async function restore(version: KnowledgeDocumentVersion) {
   if (!props.pack || !historySource.value || mutating.value || (requiresAcknowledgment.value && !acknowledged.value)) return
   mutating.value = true
+  const request = historyGeneration
   try {
     // History can include versions rejected on activation. Restoring into an
     // enabled pack needs the same document consent as appending a source.
     await knowledgeApi.restoreSource({ pack_id: props.pack.pack_id, doc_id: historySource.value.doc_id, version: version.version,
       enabled_confirmed: requiresAcknowledgment.value && acknowledged.value })
-    historyOpen.value = false
+    // A completed restore must not close another history opened in the meantime.
+    if (request === historyGeneration) historyOpen.value = false
     ElMessage.success(t('knowledge.sourceQueued'))
     sourceCommitted()
   } catch (error) { failure(error) }
