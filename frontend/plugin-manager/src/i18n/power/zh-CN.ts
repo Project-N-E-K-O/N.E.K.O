@@ -262,6 +262,7 @@ const messages: PowerMessages = {
       summary: '到目前为止',
       noSummary: '还没有记下什么。它办完一件事以后会有摘要。',
       runtime: '运行时',
+      builtinRuntime: '内置',
       model: '模型',
       context: '上下文占用',
       editCard: '编辑',

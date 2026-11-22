@@ -25,7 +25,7 @@
       </header>
 
       <dl class="facts">
-        <div v-if="selected.runtime"><dt>{{ t('power.space.familiars.runtime') }}</dt><dd>{{ selected.runtime }}</dd></div>
+        <div v-if="selected.runtime"><dt>{{ t('power.space.familiars.runtime') }}</dt><dd>{{ selected.runtime === 'builtin' ? t('power.space.familiars.builtinRuntime') : selected.runtime }}</dd></div>
         <div v-if="selected.model"><dt>{{ t('power.space.familiars.model') }}</dt><dd>{{ selected.model }}</dd></div>
         <div v-if="selected.context_tokens">
           <dt>{{ t('power.space.familiars.context') }}</dt><dd>{{ selected.context_tokens.toLocaleString() }}</dd>

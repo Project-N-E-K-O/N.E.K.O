@@ -262,6 +262,7 @@ const messages: PowerMessages = {
       summary: 'これまでのまとめ',
       noSummary: 'まだ何も記録されていません。用事をひとつ終えると要約がつきます。',
       runtime: 'ランタイム',
+      builtinRuntime: '内蔵',
       model: 'モデル',
       context: 'コンテキスト使用量',
       editCard: '編集',

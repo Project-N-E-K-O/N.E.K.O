@@ -262,6 +262,7 @@ const messages: PowerMessages = {
       summary: '지금까지',
       noSummary: '아직 기록된 것이 없어요. 일을 하나 마치면 요약이 생겨요.',
       runtime: '런타임',
+      builtinRuntime: '내장',
       model: '모델',
       context: '컨텍스트 사용량',
       editCard: '편집',

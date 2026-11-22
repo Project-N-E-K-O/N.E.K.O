@@ -262,6 +262,7 @@ const messages: PowerMessages = {
       summary: 'На данный момент',
       noSummary: 'Пока ничего не записано. Сводка появится, когда он закончит какую-нибудь задачу.',
       runtime: 'Среда выполнения',
+      builtinRuntime: 'Встроенная',
       model: 'Модель',
       context: 'Заполнение контекста',
       editCard: 'Изменить',

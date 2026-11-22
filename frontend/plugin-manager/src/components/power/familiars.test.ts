@@ -166,6 +166,9 @@ describe('a familiar up close', () => {
     const working = card({ state: 'working', doing: 'Changed export.py', commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 } })
     const { container } = await show([working])
     expect(container.querySelector('[data-detail="s1"]')?.textContent).toContain('Add an Excel export')
+    // The runtime is named in the user's words, not by its key.
+    expect(container.querySelector('[data-detail="s1"]')?.textContent).toContain(words.space.familiars.builtinRuntime)
+    expect(container.querySelector('[data-detail="s1"]')?.textContent).not.toContain('builtin')
     expect(byTest('familiar-ask')).toBeNull()
 
     api.tellCommission.mockResolvedValue({ success: true })

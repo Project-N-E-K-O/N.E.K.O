@@ -269,6 +269,7 @@ const messages = {
       summary: 'So far',
       noSummary: 'Nothing written down yet. A summary appears after it has finished something.',
       runtime: 'Runtime',
+      builtinRuntime: 'Built-in',
       model: 'Model',
       context: 'Context in use',
       editCard: 'Edit',

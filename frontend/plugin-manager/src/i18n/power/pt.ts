@@ -262,6 +262,7 @@ const messages: PowerMessages = {
       summary: 'Até agora',
       noSummary: 'Ainda não há nada anotado. Haverá um resumo quando ele concluir uma tarefa.',
       runtime: 'Ambiente de execução',
+      builtinRuntime: 'Integrado',
       model: 'Modelo',
       context: 'Uso do contexto',
       editCard: 'Editar',
