@@ -21,7 +21,7 @@ from plugin.server.infrastructure.plugin_permissions import (
     MESSAGES_PUSH,
     PluginPermissionStore,
     PluginSource,
-    normalize_permission_id,
+    normalize_permission,
 )
 
 pytestmark = pytest.mark.plugin_unit
@@ -365,10 +365,10 @@ def test_clear_returns_a_permission_to_undecided(manager):
     assert store.clear("x", MEMORY_READ)["permissions"] == {}
 
 
-def test_normalize_permission_id_maps_legacy_names_only():
-    assert normalize_permission_id("memory.read") == MEMORY_READ
-    assert normalize_permission_id(MEMORY_READ) == MEMORY_READ
-    assert normalize_permission_id("system.fs:read") == "system.fs:read"
+def test_normalize_permission_maps_legacy_names_only():
+    assert normalize_permission("memory.read") == MEMORY_READ
+    assert normalize_permission(MEMORY_READ) == MEMORY_READ
+    assert normalize_permission("system.fs:read") == "system.fs:read"
 
 
 # ---------------------------------------------------------------------------

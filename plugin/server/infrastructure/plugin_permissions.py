@@ -56,12 +56,13 @@ LEGACY_FILENAME = "plugin_consents.json"
 LEGACY_SCHEMA_VERSION = 2
 
 # Permission ids that legacy capability names map to.
-# TODO: reference the shared permission vocabulary once it lands in the SDK.
+# TODO: import these from plugin.sdk.shared.permissions (catalog) once it lands;
+# names and values here mirror that vocabulary so the swap is a pure import.
 MEMORY_READ = "plugin_sdk.main_agent.memory:read"
 CONVERSATIONS_READ = "plugin_sdk.main_agent.conversations:read"
 MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
 
-LEGACY_PERMISSION_IDS: dict[str, str] = {
+LEGACY_PERMISSION_NAMES: dict[str, str] = {
     "conversations.read": CONVERSATIONS_READ,
     "memory.read": MEMORY_READ,
     "messages.push": MESSAGES_PUSH,
@@ -83,9 +84,9 @@ SCOPE_ALL = "all"
 LEGACY_DENIED = "legacy_denied"
 
 
-def normalize_permission_id(name: str) -> str:
+def normalize_permission(name: str) -> str:
     """Map a legacy capability name to its permission id; other ids pass through."""
-    return LEGACY_PERMISSION_IDS.get(name, name)
+    return LEGACY_PERMISSION_NAMES.get(name, name)
 
 
 def _now() -> str:
@@ -246,7 +247,7 @@ class PluginPermissionStore:
             if not isinstance(names, list):
                 return None
             for name in names:
-                permission_id = LEGACY_PERMISSION_IDS.get(name) if isinstance(name, str) else None
+                permission_id = LEGACY_PERMISSION_NAMES.get(name) if isinstance(name, str) else None
                 if permission_id is None:
                     logger.warning(
                         "legacy capability {!r} has no permission mapping; not imported",
@@ -375,7 +376,7 @@ class PluginPermissionStore:
         """
         if not plugin_id:
             raise ValueError("plugin_id is required")
-        permission_id = normalize_permission_id(permission_id)
+        permission_id = normalize_permission(permission_id)
         if not permission_id:
             raise ValueError("permission_id is required")
         if state not in STATES:
@@ -406,7 +407,7 @@ class PluginPermissionStore:
 
     def clear(self, plugin_id: str, permission_id: str) -> dict:
         """Return one permission to undecided."""
-        permission_id = normalize_permission_id(permission_id)
+        permission_id = normalize_permission(permission_id)
         with self._lock:
             manager = self._load()
             record = self._document["plugins"].get(plugin_id)
