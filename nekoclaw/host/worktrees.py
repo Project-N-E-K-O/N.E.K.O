@@ -477,17 +477,22 @@ class WorktreeManager:
         assert found.repo_root is not None
         target = await asyncio.to_thread(_absolute, Path(path))
         worktree_id = _worktree_id(target)
-        registered = any(_same_path(known, target) for known in await self._registered(found.repo_root))
-        if not registered:
-            # Its registration may have gone with a removal git gave up half
-            # way; its .git file still says whose it is.
-            common = Path(
-                (await self._git(found.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
-            )
-            registered = await asyncio.to_thread(_points_into, target, common)
-        if not registered or not await asyncio.to_thread(target.is_dir):
-            raise WorktreeError(f"{target} is not a worktree of {found.repo_root}")
-        start = await self._resolve_commit(found.repo_root, _start_ref(worktree_id))
+        # Under the lock: one being made (or cleaned up after failing) is
+        # seen whole or not at all.
+        async with await self._lock(found.repo_root):
+            registered = any(_same_path(known, target) for known in await self._registered(found.repo_root))
+            if not registered:
+                # Its registration may have gone (removed by hand); its .git
+                # file still says whose it is.
+                common = Path(
+                    (
+                        await self._git(found.repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+                    ).lines()[0]
+                )
+                registered = await asyncio.to_thread(_points_into, target, common)
+            if not registered or not await asyncio.to_thread(target.is_dir):
+                raise WorktreeError(f"{target} is not a worktree of {found.repo_root}")
+            start = await self._resolve_commit(found.repo_root, _start_ref(worktree_id))
         return Worktree(worktree_id, found.repo_root, target, found.subpath, start)
 
     async def merge_back(self, worktree: Worktree, landing: Landing | None = None) -> MergeResult:
@@ -1103,7 +1108,38 @@ class WorktreeManager:
         now = await self._snapshot(path, "nekoclaw: worktree result", start)
         # Files left out of the snapshot (large, or a repository of its own)
         # were made in the worktree: the project's are never copied into it.
-        return bool(now.skipped) or now.tree != await self._resolve_commit(path, f"{start}^{{tree}}", kind="tree")
+        if now.skipped or now.tree != await self._resolve_commit(path, f"{start}^{{tree}}", kind="tree"):
+            return True
+        return await self._staged_only(path, start)
+
+    async def _staged_only(self, path: Path, start: str) -> bool:
+        """Return whether the worktree's own index holds what neither its HEAD nor its start has.
+
+        Asked once its files are found to be its start: a snapshot is taken
+        of its files, not of what was staged, so a version staged and then
+        undone in the file would go with the worktree.
+        """
+        index = Path((await self._git(path, "rev-parse", "--path-format=absolute", "--git-path", "index")).lines()[0])
+        if not await asyncio.to_thread(index.exists):
+            return False
+        written = await self._git(path, "write-tree", check=False, timeout=settings.WORKTREE_GIT_WORK_SECONDS)
+        if not written.ok:  # unmerged entries, for one: something is half done there
+            return True
+        staged = written.lines()[0]
+        head = await self._try_resolve(path, "HEAD^{tree}")
+        differing: set[bytes] | None = None
+        for other in (start, head):
+            if other is None:
+                continue
+            listed = await self._git(
+                path, "diff-tree", "-r", "-z", "--name-only", "--no-renames", staged, other,
+                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+            )
+            names = {name for name in listed.stdout.split(b"\0") if name}
+            differing = names if differing is None else differing & names
+            if not differing:
+                return False
+        return bool(differing)
 
     # -- landing on the working files ------------------------------------------
 
@@ -1901,6 +1937,8 @@ def _drop_registration(common_dir: Path, path: Path) -> None:
             where = entry / where
         if _same_path(where.parent, path):
             _remove_tree(entry)
+            if os.path.lexists(_fs(entry)):
+                raise WorktreeError(f"the registration {entry} could not be removed entirely; the refs are kept")
 
 
 @dataclass(frozen=True)
