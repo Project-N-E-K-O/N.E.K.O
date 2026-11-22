@@ -55,12 +55,21 @@ def _csrf_header_accepted(request: Request) -> bool:
 
     token = request.headers.get(system_shared._AUTOSTART_CSRF_HEADER, "")
     expected = system_shared.AUTOSTART_CSRF_TOKEN
-    # compare_digest raises TypeError on non-ASCII str; such a token is invalid.
+    # Compare bytes: compare_digest raises TypeError on non-ASCII str, which
+    # either side (request header or configured token) may contain.
     if not (
         token
         and expected
-        and token.isascii()
-        and secrets.compare_digest(token, expected)
+        and secrets.compare_digest(
+            token.encode("utf-8", "surrogatepass"),
+            str(expected).encode("utf-8", "surrogatepass"),
+        )
+    ):
+        return False
+    # Same rule as the general check: a present but opaque or malformed Origin
+    # ("null") is never replaced by Referer.
+    if "origin" in request.headers and not system_shared._normalize_origin_value(
+        request.headers.get("origin")
     ):
         return False
     # Without Origin/Referer the original check always fails; skip it so a
