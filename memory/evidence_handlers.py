@@ -604,8 +604,13 @@ def make_reflection_archive_handler(reflection_engine):
                 keep_status = str(survivor.get('status') or 'pending')
                 # Evidence signals that landed on drop after the failed merge
                 # would be archived away with the old snapshot.
+                # The snapshot was taken from the loaded, normalized row; the
+                # raw file may lack the defaults it filled (rows written by
+                # multi-device sync), so compare against the same normalization.
+                normalize = getattr(reflection_engine, '_normalize_reflection', None)
+                drop_view = normalize(dict(drop)) if callable(normalize) else drop
                 evidence_changed = isinstance(entry_snapshot, dict) and any(
-                    key in entry_snapshot and drop.get(key) != entry_snapshot[key]
+                    key in entry_snapshot and drop_view.get(key) != entry_snapshot[key]
                     for key in _REFLECTION_EVIDENCE_SNAPSHOT_KEYS
                 )
                 if (

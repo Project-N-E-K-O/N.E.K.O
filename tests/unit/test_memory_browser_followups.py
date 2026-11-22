@@ -1169,3 +1169,33 @@ async def test_startup_pre_run_skips_a_cancelled_newer_restore(tmp_path):
     )
     assert await reconciler.arun_pending_ahead(NAME, "memory.snapshot_restored") is True
     assert _read_json(char_dir / "facts.json")[0]["id"] == "f1"
+
+
+
+def test_merge_recovery_compares_a_synced_drop_row_after_normalizing(tmp_path):
+    from memory.evidence_handlers import make_reflection_archive_handler
+    from memory.reflection.persistence import normalize_reflection
+
+    pm = _persona_manager(tmp_path)
+    eng = _reflection_engine(tmp_path, pm)
+    handler = make_reflection_archive_handler(eng)
+    # A row written by sync lacks the defaults the loader fills in.
+    raw_drop = {"id": "r_drop", "text": "drop", "status": "pending"}
+    snapshot = normalize_reflection(dict(raw_drop))
+    assert any(key not in raw_drop for key in snapshot)
+    path = _seed_reflections(tmp_path, [
+        {"id": "r_keep", "text": "keep before", "status": "pending"},
+        raw_drop,
+    ])
+    payload = {
+        "reflection_id": "r_drop", "to": "archived", "from": "pending",
+        "merged_keep_id": "r_keep",
+        "merged_keep_text_sha256": _sha("merged"),
+        "merged_keep_text": "merged",
+        "merged_keep_previous_text_sha256": _sha("keep before"),
+        "merged_keep_status": "pending",
+        "entry_snapshot": snapshot,
+    }
+    assert handler(NAME, payload) is True
+    rows = _read_json(path)
+    assert [r["id"] for r in rows] == ["r_keep"] and rows[0]["text"] == "merged"
