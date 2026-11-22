@@ -273,8 +273,8 @@ test('switching core providers preserves key-book provenance in the save payload
 
 test('all secret-bearing form fields use masked loading and masked save accessors', () => {
     const modelTypes = [
-        'conversation', 'summary', 'gameMain', 'gameSummary',
-        'emotion', 'decision', 'vision', 'agent', 'omni', 'tts',
+        'conversation', 'memory', 'gameMain', 'gameSummary',
+        'recognition', 'decision', 'vision', 'agent', 'omni', 'tts',
     ];
     for (const modelType of modelTypes) {
         assert.match(

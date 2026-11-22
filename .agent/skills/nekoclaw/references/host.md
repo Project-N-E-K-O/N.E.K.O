@@ -62,7 +62,7 @@
 
 **消耗上限**：
 
-- 复盘、归档总结和整理条目用 `summary` 档位，不计入 task agent 的每日额度。整理条目一层一次调用、每轮最多两层（`SPACE_CONSOLIDATE_*`），输入、输出上限由 `tests/unit/nekoclaw/test_host_space_tidy.py` 守着；调大要先报消耗对比。
+- 复盘、归档总结和整理条目用 `memory` 档位（记忆整理，2026-11 前叫 `summary`），不计入 task agent 的每日额度。整理条目一层一次调用、每轮最多两层（`SPACE_CONSOLIDATE_*`），输入、输出上限由 `tests/unit/nekoclaw/test_host_space_tidy.py` 守着；调大要先报消耗对比。
 - 复盘输入上限 `TASK_AGENT_REVIEW_INPUT_MAX_TOKENS`、输出上限 `TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS` 是定过的消耗上限，调大要先报消耗对比。各部分的上限加起来已经贴着输入上限，往复盘提示词里加字要先在别的部分让出位置；`tests/unit/nekoclaw/test_host_space_keeper.py` 守着「各部分都到上限时不超」。
 - 开工时带的四段（全局守则、全局索引、项目约定、项目索引）各有上限，合计 `SPACE_BRIEF_MAX_TOKENS`；使魔空间是空的时候一个 token 都不加。
 

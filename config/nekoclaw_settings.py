@@ -394,7 +394,7 @@ SESSION_DRAFT_RULES_MAX_TOKENS = 220
 SESSION_DRAFT_SECONDS = 45.0
 """How long that call may take before it is given up as failed."""
 
-SESSION_DRAFT_MODEL_SLOT = "summary"
+SESSION_DRAFT_MODEL_SLOT = "memory"
 """Which of the user's configured models fills in that form."""
 
 TASK_AGENT_CONTINUED_RESULT_MAX_TOKENS = 500
@@ -1053,11 +1053,11 @@ written and no entry is made from one, so that model call is never made;
 what task agents file themselves is still kept, and idle projects are still
 archived."""
 
-TASK_AGENT_REVIEW_MODEL_SLOT = "summary"
+TASK_AGENT_REVIEW_MODEL_SLOT = "memory"
 """Which of the user's configured models writes reviews: ``summary`` (the
 cheap one) or ``emotion``."""
 
-SPACE_ARCHIVE_MODEL_SLOT = "summary"
+SPACE_ARCHIVE_MODEL_SLOT = "memory"
 """Which of the user's configured models summarises a project that is
 archived; as above."""
 
@@ -1206,7 +1206,7 @@ SPACE_CONSOLIDATE_ENABLED = True
 thing, have gone out of date, are easily confused, or say "yesterday".
 With False that model call is never made; nothing else changes."""
 
-SPACE_CONSOLIDATE_MODEL_SLOT = "summary"
+SPACE_CONSOLIDATE_MODEL_SLOT = "memory"
 """Which of the user's configured models does that; see
 ``TASK_AGENT_REVIEW_MODEL_SLOT``."""
 

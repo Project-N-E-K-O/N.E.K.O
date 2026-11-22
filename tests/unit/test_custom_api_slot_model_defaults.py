@@ -46,8 +46,8 @@ def _profiles():
 
 _TEXT_TIERS = (
     ('conversation', 'conversation', 'CONVERSATION_MODEL'),
-    ('summary', 'summary', 'MEMORY_MODEL'),
-    ('emotion', 'emotion', 'RECOGNITION_MODEL'),
+    ('memory', 'memory', 'MEMORY_MODEL'),
+    ('recognition', 'recognition', 'RECOGNITION_MODEL'),
     ('vision', 'vision', 'VISION_MODEL'),
     ('agent', 'agent', 'AGENT_MODEL'),
 )
@@ -56,7 +56,7 @@ _TEXT_TIERS = (
 @pytest.mark.unit
 @pytest.mark.parametrize('prefix,model_type,profile_key,text_prefix', [
     ('gameMain', 'game_main', 'CONVERSATION_MODEL', 'conversation'),
-    ('gameSummary', 'game_summary', 'MEMORY_MODEL', 'summary'),
+    ('gameSummary', 'game_summary', 'MEMORY_MODEL', 'memory'),
 ])
 @pytest.mark.parametrize('text_model', ['', 'user-core-model'])
 def test_game_follow_assist_keeps_assist_default_after_text_override(

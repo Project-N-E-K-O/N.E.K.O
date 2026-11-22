@@ -263,3 +263,28 @@ def test_model_list_reuses_a_key_saved_under_the_old_name(model_type):
     ), dict(_OLD_SLOTS))
 
     assert target['api_key'] == 'sk-old-recognition'
+
+
+@pytest.mark.unit
+def test_production_code_uses_the_new_tier_names():
+    # The aliases exist for saved configs and for nekoclaw/host (left untouched on purpose);
+    # new code naming a tier the old way would keep them alive forever.
+    import os
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    old_tier = re.compile(
+        r"""(?:get_model_api_config\(\s*|model_type\s*(?::\s*str\s*)?=\s*|_MODEL_(?:TIER|SLOT)\s*=\s*)"""
+        r"""['"](?:summary|emotion)['"]"""
+    )
+    pruned = {'tests', 'node_modules', '.venv', '.git', 'dist', 'build', '__pycache__', 'static', 'frontend'}
+    offenders = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = Path(dirpath).relative_to(root).as_posix()
+        dirnames[:] = [d for d in dirnames if d not in pruned and f'{rel}/{d}'.lstrip('./') != 'nekoclaw/host']
+        for name in filenames:
+            if name.endswith('.py'):
+                text = (Path(dirpath) / name).read_text(encoding='utf-8', errors='ignore')
+                offenders += [f'{rel}/{name}:{n}' for n, line in enumerate(text.splitlines(), 1) if old_tier.search(line)]
+    assert offenders == []

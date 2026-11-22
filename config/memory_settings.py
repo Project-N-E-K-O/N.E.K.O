@@ -1323,7 +1323,7 @@ REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT = 10   # Reference the latest N abso
 REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # Within N days as well.
 
 # Gate 3: LLM tier selection (candidates in RFC §6.5 Gate 3 table).
-# "summary" = large model (memory upkeep); "emotion" = small, latency-sensitive model.
+# "memory" = large model (memory upkeep); "recognition" = small, latency-sensitive model.
 EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "memory"       # Stage-1 fact extraction.
 EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "memory"      # Stage-2 signal mapping decisions.
 EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "recognition"     # Secondary keyword classification (latency-sensitive).
