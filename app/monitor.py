@@ -46,7 +46,7 @@ import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import _is_within, find_models, find_model_config_file, find_model_directory
 from utils.live2d_model_refs import sanitize_emotion_mapping
-from utils.workshop_utils import get_default_workshop_folder
+from utils.workshop_utils import create_workshop_static_files, get_default_workshop_folder
 from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
 # Setup logger
@@ -160,11 +160,23 @@ if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
         app.mount("/user_live2d_local", StaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
         logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
 
-# Mount the workshop directory (consistent with the main_server package)
-workshop_path = get_default_workshop_folder()
-if workshop_path and os.path.exists(workshop_path):
-    app.mount("/workshop", StaticFiles(directory=workshop_path), name="workshop")
-    logger.info(f"已挂载创意工坊目录: {workshop_path}")
+def _mount_model_roots(target_app, workshop_path, user_mod_path):
+    """Mount /workshop and /user_mods the way the main server does.
+
+    /workshop is the same multi-library app as app/main_server/workshop_runtime.py
+    (mounted even without a usable root, so Steam libraries registered later are still
+    served) and /user_mods matches app/main_server/web_app.py, so every URL that
+    find_model_config_file can return is served here too.
+    """
+    target_app.mount("/workshop", create_workshop_static_files(workshop_path), name="workshop")
+    if workshop_path:
+        logger.info(f"已挂载创意工坊目录: {workshop_path}")
+    if user_mod_path and os.path.isdir(user_mod_path):
+        target_app.mount("/user_mods", StaticFiles(directory=user_mod_path), name="user_mods")
+        logger.info(f"已挂载用户mod路径: {user_mod_path}")
+
+
+_mount_model_roots(app, get_default_workshop_folder(), _config_manager.get_workshop_path())
 
 @app.get("/subtitle")
 async def get_subtitle():
