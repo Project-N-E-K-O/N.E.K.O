@@ -239,6 +239,32 @@ def test_read_failure_without_any_earlier_read_denies_enforced_permissions(monke
     assert "PLUGIN_PERMISSIONS_CORRUPT" in log.lines[0][1]
 
 
+def _unreadable(monkeypatch):
+    def unreadable(_pid):
+        raise ServerDomainError(plugin_permissions.READ_FAILED, "x", 503)
+
+    monkeypatch.setattr(permission_service, "permission_record", unreadable)
+
+
+def test_removed_grants_are_not_reused_after_a_read_failure(monkeypatch, store):
+    store.decide("demo", MEMORY_READ, "granted")
+    assert _states("demo").get(MEMORY_READ).status == "granted"
+    permission_service.forget_permissions("demo")
+    monkeypatch.setattr(permission_service, "logger", Log())
+    _unreadable(monkeypatch)
+    assert _states("demo").get(MEMORY_READ).status == "denied"
+
+
+def test_an_older_read_does_not_replace_a_newer_remembered_record(monkeypatch, store):
+    store.decide("demo", MEMORY_READ, "granted")
+    newer = permission_service.permission_snapshot("demo")["revision"]
+    # A snapshot numbered earlier that finishes reading later.
+    monkeypatch.setattr(permission_service, "_snapshot_revision", iter([newer - 1]))
+    monkeypatch.setattr(permission_service, "permission_record", lambda _pid: {"permissions": {}})
+    permission_service.permission_snapshot("demo")
+    assert permission_service._last_records["demo"][0] == newer
+
+
 def test_snapshot_revisions_grow(store):
     first = permission_service.permission_snapshot("demo")["revision"]
     second = permission_service.permission_snapshot("demo")["revision"]

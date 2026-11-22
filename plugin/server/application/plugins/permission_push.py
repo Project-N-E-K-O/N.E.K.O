@@ -12,6 +12,11 @@ in, the last snapshot a plugin keeps was read after the last write. Writers
 therefore do not need to hold any lock while pushing, and the start path
 (which sends its snapshot with the launch options, before the host is
 registered here) pushes once more after registering.
+
+A write that is later undone (the consent flow mirrors its decision before
+writing the consent file and restores the record if that fails) is pushed
+too, so a plugin may briefly see the undone state; the restore is a write
+of its own and is pushed after it.
 """
 
 from __future__ import annotations
@@ -38,7 +43,9 @@ async def push_permissions(plugin_id: str, host: Any | None = None) -> bool:
     from plugin.server.application.plugins.permission_service import permission_snapshot
 
     if host is None:
-        host = state.get_plugin_hosts_snapshot_cached(timeout=1.0).get(plugin_id)
+        # The hosts lock may be held by a start or stop: never wait on the loop.
+        hosts = await asyncio.to_thread(state.get_plugin_hosts_snapshot_cached, 1.0)
+        host = hosts.get(plugin_id)
     push = getattr(host, "push_permissions", None)
     if host is None or not callable(push):
         return False
@@ -74,9 +81,9 @@ class PermissionPushService:
 
     def start(self) -> None:
         """Start on the running (server) loop; idempotent."""
-        if self._task is not None and not self._task.done():
-            return
         loop = asyncio.get_running_loop()
+        if self._task is not None and not self._task.done() and self._loop is loop:
+            return
         with self._lock:
             self._loop = loop
             self._wakeup = asyncio.Event()
@@ -110,13 +117,26 @@ class PermissionPushService:
             # The loop is closing; the plugins are going down with it.
             logger.warning("permission update not scheduled: server loop is closed")
 
-    def _take(self) -> set[str]:
+    async def _take(self) -> set[str]:
         with self._lock:
             pending, self._pending = self._pending, set()
             everyone, self._all = self._all, False
         if everyone:
-            pending |= set(state.get_plugin_hosts_snapshot_cached(timeout=1.0, force=True))
+            hosts = await asyncio.to_thread(state.get_plugin_hosts_snapshot_cached, 1.0, True)
+            pending |= set(hosts)
         return pending
+
+    async def _push_one(self, plugin_id: str) -> None:
+        try:
+            await push_permissions(plugin_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "permission update failed: plugin_id={}, error={}",
+                plugin_id,
+                type(exc).__name__,
+            )
 
     async def _run(self) -> None:
         wakeup = self._wakeup
@@ -124,17 +144,8 @@ class PermissionPushService:
         while True:
             await wakeup.wait()
             wakeup.clear()
-            for plugin_id in sorted(self._take()):
-                try:
-                    await push_permissions(plugin_id)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.error(
-                        "permission update failed: plugin_id={}, error={}",
-                        plugin_id,
-                        type(exc).__name__,
-                    )
+            # Concurrently, so one plugin with a stuck downlink delays no other.
+            await asyncio.gather(*(self._push_one(plugin_id) for plugin_id in sorted(await self._take())))
 
 
 permission_push_service = PermissionPushService()

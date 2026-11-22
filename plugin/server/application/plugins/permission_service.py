@@ -234,7 +234,9 @@ def decide_permission(
 
 def forget_permissions(plugin_id: str) -> dict | None:
     """Drop all grants of an uninstalled plugin; returns the removed record."""
-    return permission_store.forget(plugin_id)
+    removed = permission_store.forget(plugin_id)
+    _forget_last_record(plugin_id)
+    return removed
 
 
 class PermissionSnapshot:
@@ -309,6 +311,8 @@ def snapshot_permissions(plugin_id: str) -> PermissionSnapshot:
 def restore_permissions(plugin_id: str, record: dict | None) -> None:
     """Put back an earlier record; ``None`` removes the plugin's record."""
     permission_store.restore(plugin_id, record)
+    if record is None:
+        _forget_last_record(plugin_id)
 
 
 # ----------------------------------------------------------------------
@@ -317,8 +321,15 @@ def restore_permissions(plugin_id: str, record: dict | None) -> None:
 
 _snapshot_lock = threading.Lock()
 _snapshot_revision = itertools.count(1)
-# Last record read successfully per plugin: a later read failure keeps using it.
-_last_records: dict[str, dict] = {}
+# Last record read successfully per plugin, with the revision of the snapshot
+# that read it: a later read failure keeps using it.
+_last_records: dict[str, tuple[int, dict]] = {}
+
+
+def _forget_last_record(plugin_id: str) -> None:
+    """A plugin whose grants were removed must not fall back to them."""
+    with _snapshot_lock:
+        _last_records.pop(plugin_id, None)
 
 
 def _resolve_state(permission: str, record: dict | None, *, checks_off: bool) -> PermissionState:
@@ -370,11 +381,13 @@ def permission_snapshot(plugin_id: str) -> dict:
     try:
         record: dict | None = permission_record(plugin_id)
         with _snapshot_lock:
-            _last_records[plugin_id] = copy.deepcopy(record)
+            # Snapshots read concurrently: only a newer read replaces an older one.
+            if _last_records.get(plugin_id, (0, None))[0] < revision:
+                _last_records[plugin_id] = (revision, copy.deepcopy(record))
     except Exception as exc:
         code = getattr(exc, "code", None)
         with _snapshot_lock:
-            record = copy.deepcopy(_last_records.get(plugin_id))
+            record = copy.deepcopy(_last_records.get(plugin_id, (0, None))[1])
         logger.error(
             "plugin permissions could not be read for the plugin process: plugin_id={}, error={}, using={}",
             plugin_id,
