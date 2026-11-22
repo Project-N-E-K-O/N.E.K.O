@@ -213,24 +213,50 @@ def test_forward_reference_is_resolved_against_the_owner_class():
     assert _meta_of(Demo.forward).output_model is Demo.Reply
 
 
-@pytest.mark.parametrize("wrapper", [classmethod, staticmethod])
-def test_classmethod_and_staticmethod_entries_are_finished_by_the_class_marker(wrapper):
-    class Demo:
-        @wrapper
+def _class_and_static_entry_owners() -> list[type]:
+    class WithClassmethod:
+        @classmethod
         @plugin_decorators.plugin_entry(id="forward")
-        async def forward() -> "Reply":  # type: ignore[misc]
-            return None
+        async def forward(cls, ask: "Ask") -> "Reply":
+            return cls.Reply(ok=ask.flag)
+
+        class Ask(BaseModel):
+            flag: bool
 
         class Reply(BaseModel):
             ok: bool
 
+    class WithStaticmethod:
+        @staticmethod
+        @plugin_decorators.plugin_entry(id="forward")
+        async def forward(ask: "Ask") -> "Reply":
+            return WithStaticmethod.Reply(ok=ask.flag)
+
+        class Ask(BaseModel):
+            flag: bool
+
+        class Reply(BaseModel):
+            ok: bool
+
+    return [WithClassmethod, WithStaticmethod]
+
+
+@pytest.mark.parametrize("index", [0, 1], ids=["classmethod", "staticmethod"])
+async def test_classmethod_and_staticmethod_entries_are_finished_by_the_class_marker(index):
+    Demo = _class_and_static_entry_owners()[index]
     meta = _meta_of(vars(Demo)["forward"].__func__)
-    assert (meta.output_schema, meta.llm_result_schema) == (None, None)
+    assert (meta.output_schema, meta.llm_result_schema, meta.params) == (None, None, None)
     neko_plugin(Demo)
     assert meta.output_model is Demo.Reply
     assert meta.output_schema == Demo.Reply.model_json_schema()
     assert meta.llm_result_model is Demo.Reply
     assert meta.llm_result_fields == ["ok"]
+    # params inference is finished by the same pass, as for plain methods.
+    assert meta.params is Demo.Ask
+    assert meta.input_schema == Demo.Ask.model_json_schema()
+    # The handler the entry collectors bind (getattr on the instance) is callable.
+    handler = getattr(Demo(), "forward")
+    assert await handler(ask=Demo.Ask(flag=True)) == Demo.Reply(ok=True)
 
 
 def test_router_forward_reference_is_resolved_against_the_router_class():
@@ -275,6 +301,65 @@ def test_inherited_router_entry_resolves_in_the_class_that_defines_it():
         meta = router.collect_entries()["forward"].meta
         assert meta.output_model is BaseRouter.Later
         assert meta.llm_result_fields == ["ok"]
+
+
+def _too_deep_schema() -> dict[str, object]:
+    schema: dict[str, object] = {"type": "object"}
+    for _ in range(200):
+        schema = {"type": "object", "properties": {"x": schema}}
+    return schema
+
+
+class TooDeep(BaseModel):
+    x: int = 0
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):  # type: ignore[override]
+        return _too_deep_schema()
+
+
+def test_too_deep_inferred_output_schema_is_rejected_like_an_explicit_one():
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        @plugin_decorators.plugin_entry(id="deep")
+        async def deep() -> TooDeep:
+            return TooDeep()
+
+    class Demo:
+        @plugin_decorators.plugin_entry(id="deep_later")
+        async def deep_later(self) -> "Later":
+            return None
+
+        class Later(TooDeep):
+            pass
+
+    meta = _meta_of(Demo.deep_later)
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        neko_plugin(Demo)
+    assert meta.output_schema is None
+
+
+def test_router_cache_accepts_an_unhashable_callable_entry():
+    import dataclasses
+
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    @dataclasses.dataclass  # eq=True without frozen: instances are unhashable
+    class Handler:
+        __name__ = "callable_entry"
+
+        async def __call__(self):
+            return {}
+
+    handler = plugin_decorators.plugin_entry(id="callable_entry")(Handler())
+    with pytest.raises(TypeError):
+        hash(handler)
+
+    class DemoRouter(PluginRouter):
+        callable_entry = handler
+
+    router = DemoRouter()
+    assert router.entry_ids == ["callable_entry"]
+    assert router.collect_entries()["callable_entry"].handler is handler
 
 
 def test_deferred_inference_never_replaces_explicit_contracts():

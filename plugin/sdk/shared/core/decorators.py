@@ -292,6 +292,9 @@ def _output_contract_from_signature(
         if defs is not None:
             nullable["$defs"] = defs
         schema = nullable
+    # Inferred contracts are bounded like explicit ones; both inference paths
+    # (decoration time and the owner-class pass) come through here.
+    check_schema_depth(schema, "output_schema")
     return model, schema
 
 

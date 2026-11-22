@@ -80,7 +80,9 @@ class PluginRouter:
         # Contract fields inferred against this router class, per decorated entry
         # (keyed by the handler's function). Kept apart from the shared metadata;
         # computed once, when entries are first resolved (after import).
-        self._deferred_inference: dict[object, dict[str, object]] = {}
+        # Keyed by id() so an unhashable callable works; the entry keeps the
+        # function alive, and it is stored alongside so the id cannot be reused.
+        self._deferred_inference: dict[int, tuple[object, dict[str, object]]] = {}
         self._main_plugin: object | None = None
         self._collect_decorated_entries()
 
@@ -251,11 +253,11 @@ class PluginRouter:
     def _inferred_contract_fields(self, handler: RouteHandler) -> dict[str, object]:
         """Contract fields the decorator left pending, resolved against this router (cached per entry)."""
         fn = getattr(handler, "__func__", handler)
-        cached = self._deferred_inference.get(fn)
+        cached = self._deferred_inference.get(id(fn))
         if cached is None:
-            cached = router_entry_inference(fn, type(self))
-            self._deferred_inference[fn] = cached
-        return cached
+            cached = (fn, router_entry_inference(fn, type(self)))
+            self._deferred_inference[id(fn)] = cached
+        return cached[1]
 
     def on_mount(self) -> None:
         return None
