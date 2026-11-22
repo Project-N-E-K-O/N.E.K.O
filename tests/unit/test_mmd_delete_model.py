@@ -135,12 +135,15 @@ async def test_f0210_delete_solo_subdir_and_top_level_model(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_f0210_delete_model_succeeds_and_keeps_mapping_on_scan_oserror(monkeypatch, tmp_path):
-    from pathlib import Path
+async def test_f0210_delete_model_keeps_mapping_when_a_directory_cannot_be_listed(monkeypatch, tmp_path):
+    import os
 
     mmd_dir = _setup_mmd_env(monkeypatch, tmp_path)
     workshop_dir = tmp_path / "workshop"
-    workshop_dir.mkdir()
+    locked = workshop_dir / "item" / "locked"
+    locked.mkdir(parents=True)
+    # Same-named model hidden inside a directory that cannot be listed.
+    (locked / "Solo.pmx").write_bytes(b"workshop")
     cm = mmd_router.get_config_manager()
     cm.get_steam_workshop_path = lambda: str(workshop_dir)
 
@@ -150,14 +153,15 @@ async def test_f0210_delete_model_succeeds_and_keeps_mapping_on_scan_oserror(mon
     mapping.parent.mkdir()
     mapping.write_text('{"happy":1}')
 
-    real_rglob = Path.rglob
+    real_scandir = os.scandir
 
-    def guarded_rglob(self, pattern):
-        if self == workshop_dir:
-            raise PermissionError("workshop locked")
-        return real_rglob(self, pattern)
+    def guarded_scandir(path="."):
+        if os.path.abspath(os.fspath(path)) == os.path.abspath(locked):
+            raise PermissionError(13, "Permission denied", os.fspath(path))
+        return real_scandir(path)
 
-    monkeypatch.setattr(Path, "rglob", guarded_rglob)
+    # Inject at the listing layer: Path.rglob would swallow this silently on Python 3.11.
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
 
     resp = await mmd_router.delete_mmd_model(_DummyRequest({"url": "/user_mmd/Solo.pmx"}))
     body = json.loads(resp.body)

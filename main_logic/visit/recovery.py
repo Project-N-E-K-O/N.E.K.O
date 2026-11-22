@@ -862,6 +862,9 @@ async def _upload_pending(
         owner = state["own_uid"] if state else None
         char_uid = _owner_or_none(state.get("own_char_uid")) if state else None
         reseal_reason = reason
+        # Identity used to rebuild / reseal the stream. Kept apart from ``owner`` (state.json's account),
+        # which the corrupt-stream branch below still uses to attribute the queued report.
+        seal_owner, seal_char = owner, char_uid
         sealed_doc = None
         if visit_id in sealed:
             # Crash after writing .upload.json but before deleting log: upload file is the visit's actual sealed copy;
@@ -890,20 +893,22 @@ async def _upload_pending(
                 # Use the same reason when resealing mismatched files too: valid file format with other field mismatches
                 # must not change normally ended visits to crash either.
                 reseal_reason = sealed_reason if reason in (None, "crash") else reason
-                if owner is None or char_uid is None:
+                if seal_owner is None or seal_char is None:
                     # Consult memory spool header before falling back to sealed_doc, so an intact
                     # spool header still overrides a tampered sealed envelope; only take identity
                     # from the verified sealed_doc when state.json and memory spool both lack it.
-                    owner, char_uid = await asyncio.to_thread(
-                        _with_header_fallback, spool_dir, visit_id, owner, char_uid,
+                    # In that last case the envelope identity is no longer checked independently:
+                    # expected and sealed_doc share it, and sealed_doc is the only source left.
+                    seal_owner, seal_char = await asyncio.to_thread(
+                        _with_header_fallback, spool_dir, visit_id, seal_owner, seal_char,
                     )
-                    if owner is None:
-                        owner = _owner_or_none(sealed_doc.get("own_visit_uid"))
-                    if char_uid is None:
-                        char_uid = _owner_or_none(sealed_doc.get("own_char_uid"))
+                    if seal_owner is None:
+                        seal_owner = _owner_or_none(sealed_doc.get("own_visit_uid"))
+                    if seal_char is None:
+                        seal_char = _owner_or_none(sealed_doc.get("own_char_uid"))
                 try:
                     expected = await asyncio.to_thread(
-                        _stream_doc_sync, spool_dir, visit_id, reseal_reason, owner, char_uid,
+                        _stream_doc_sync, spool_dir, visit_id, reseal_reason, seal_owner, seal_char,
                     )
                 except (OSError, ValueError, TypeError, OverflowError) as exc:
                     # Log exists but temporarily unreadable (permissions / locked), or rebuilding fails (same exceptions as sealing below):
@@ -932,7 +937,9 @@ async def _upload_pending(
         try:
             # Failed sealing may delete corrupt logs; first capture room account from log header for reasons if state.json unreadable.
             stream_owner = await asyncio.to_thread(_upload_stream_owner_sync, spool_dir, visit_id)
-            doc = await asyncio.to_thread(_seal_stream_sync, spool_dir, visit_id, reseal_reason, owner, char_uid)
+            doc = await asyncio.to_thread(
+                _seal_stream_sync, spool_dir, visit_id, reseal_reason, seal_owner, seal_char,
+            )
         except (OSError, ValueError, TypeError, OverflowError) as exc:
             # Skip only an unreadable/unwritable log, without blocking other visits' uploads and reports.
             logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)

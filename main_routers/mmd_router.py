@@ -901,6 +901,28 @@ def _count_and_rmtree(path: Path) -> int:
     return count
 
 
+def _tree_has_model_named(root: Path, key: str, skip_top_dirs: frozenset[str] = frozenset()) -> bool:
+    """Whether root holds a model file whose normalised stem matches key.
+
+    Uses os.walk instead of Path.rglob: on Python 3.11 rglob silently skips
+    directories it cannot list, which would hide a same-named model. Raises
+    the first listing error when the scan was incomplete and no match was found.
+    """
+    errors: list[OSError] = []
+    wanted = key.casefold()
+    for dirpath, dirnames, filenames in os.walk(root, onerror=errors.append):
+        if skip_top_dirs and Path(dirpath) == root:
+            dirnames[:] = [name for name in dirnames if name.lower() not in skip_top_dirs]
+        for name in filenames:
+            candidate = Path(name)
+            if (candidate.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
+                    and candidate.stem.replace("..", "_").casefold() == wanted):
+                return True
+    if errors:
+        raise errors[0]
+    return False
+
+
 def _remove_unused_emotion_mapping(config_mgr, mmd_dir: Path, model_name: str) -> None:
     key = model_name.replace("..", "_")
     mapping_dir = mmd_dir / "emotion_config"
@@ -913,15 +935,15 @@ def _remove_unused_emotion_mapping(config_mgr, mmd_dir: Path, model_name: str) -
             if folder:
                 roots.append(Path(folder))
         for root in dict.fromkeys(roots):
-            for path in root.rglob("*"):
-                if root == mmd_dir and path.relative_to(root).parts[0].lower() in RESERVED_DIRS:
-                    continue
-                if (path.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
-                        and path.stem.replace("..", "_").casefold() == key.casefold() and path.is_file()):
-                    return
+            if not root.is_dir():
+                continue
+            skip = frozenset(RESERVED_DIRS) if root == mmd_dir else frozenset()
+            if _tree_has_model_named(root, key, skip):
+                return
         mapping.unlink(missing_ok=True)
         logger.info("删除 MMD 情感映射配置: %s", mapping.name)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
+        # Best-effort cleanup: an incomplete scan (or a symlink loop in resolve) keeps the mapping.
         logger.warning("清理 MMD 情感映射配置失败，保留原文件 %s: %s", mapping.name, exc)
 
 
