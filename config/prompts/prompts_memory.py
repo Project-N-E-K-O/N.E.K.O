@@ -7458,7 +7458,7 @@ DEEP_CONFLICT_CHECK_PROMPT: dict[str, str] = {
 ======以上为候選記憶對======
 
 要求：
-- 只輸出合法 JSON 陣列（不要附加 markdown 程式碼區塊或額外解釋），`pair_id` 必須原樣返回方括號中的字串識別符（如 `"P1"`），不要重新編號：
+- 只輸出合法 JSON 陣列（不要附加 markdown 程式碼區塊或額外解釋），`pair_id` 必須原樣傳回方括號中的字串識別符（如 `"P1"`），不要重新編號：
 [{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "一句話簡明理由"}]""",
     "en": """Judge the semantic relationship for each candidate memory pair below using one of four verdicts:
 - contradiction: clearly conflicting facts or preferences
