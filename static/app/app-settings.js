@@ -1142,7 +1142,14 @@
         if (!Object.prototype.hasOwnProperty.call(serverSettings, key)) return false;
         const token = _knownSharedKeyWrites[key];
         if (!token || !Number.isInteger(token.confirmedRevision)) return false;
-        return serverRevision > token.confirmedRevision
+        // A delayed 412 can be older than a server value this window has
+        // since taken from a server merge; only a snapshot newer than both
+        // may replace the current value.
+        const localServerRevision = _knownServerKeyRevisions[key];
+        const floor = Number.isInteger(localServerRevision)
+            ? Math.max(token.confirmedRevision, localServerRevision)
+            : token.confirmedRevision;
+        return serverRevision > floor
             && serverSettings[key] !== getConversationSettings()[key];
     }
 

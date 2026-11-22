@@ -112,6 +112,11 @@ _HARNESS = textwrap.dedent(
             if (win && win.holdPosts) {
               return new Promise((resolve) => win.heldPosts.push(() => resolve(arrive())));
             }
+            // The server handles the POST now; its response is delivered late.
+            if (win && win.holdResponses) {
+              const late = arrive();
+              return new Promise((resolve) => win.heldPosts.push(() => resolve(late)));
+            }
             return Promise.resolve(arrive());
           }
           const etag = '"conversation-settings-' + serverRevision + '"';
@@ -163,9 +168,11 @@ _HARNESS = textwrap.dedent(
       win = {
         name,
         holdPosts: false,
+        holdResponses: false,
         heldPosts: [],
         releasePosts() {
           this.holdPosts = false;
+          this.holdResponses = false;
           while (this.heldPosts.length) this.heldPosts.shift()();
         },
         runtime,
@@ -717,6 +724,74 @@ _HARNESS = textwrap.dedent(
         'a genuine newer edit still syncs to every window and the server');
     }
 
+    // The 412 rule must not let a delayed conflict response replace a newer
+    // server value. D holds A's confirmed write. Another device turns the key
+    // off; D's unrelated POST conflicts with that revision, but the response
+    // is late. Meanwhile the device turns it back on and E merges that newer
+    // value, which D receives. The late 412 ("off") is older than what D now
+    // holds and must not be written back.
+    async function delayedConflictBelowServerFloor() {
+      const key = 'mergeMessagesEnabled';
+      const a = makeWindow('A');
+      const d = makeWindow('D');
+      await settle();
+      a.deliver();
+      d.deliver();
+      a.S[key] = true;
+      a.mod.saveSettings();
+      await settle();
+      a.S.focusModeEnabled = !a.S.focusModeEnabled;
+      a.mod.saveSettings();
+      await settle();
+      d.deliver();
+      await settle();
+      const token = JSON.parse(store.get('project_neko_settings'))
+        ._sharedWriteMeta.knownKeyWrites[key];
+      assert(d.S[key] === true && token && Number.isInteger(token.confirmedRevision),
+        'precondition: D has A\\'s confirmed value');
+      serverSettings = Object.assign({}, serverSettings, { [key]: false });
+      serverRevision += 1;
+      d.holdResponses = true;
+      d.S.focusModeEnabled = !d.S.focusModeEnabled;
+      const focusWanted = d.S.focusModeEnabled;
+      d.mod.saveSettings();
+      await settle();
+      assert(d.heldPosts.length === 1, 'precondition: D\\'s conflict response is held');
+      serverSettings = Object.assign({}, serverSettings, { [key]: true });
+      serverRevision += 1;
+      const onRevision = serverRevision;
+      const e = makeWindow('E');
+      await settle();
+      const merged = JSON.parse(store.get('project_neko_settings'));
+      assert(merged[key] === true
+        && merged._sharedWriteMeta.serverRevision === onRevision
+        && (merged._sharedWriteMeta.serverAuthoritativeKeys || []).indexOf(key) !== -1,
+        'precondition: E merged the newer server value');
+      d.deliver();
+      await settle();
+      assert(d.S[key] === true, 'precondition: D holds the newer server value');
+      a.inbox.length = 0;
+      d.releasePosts();
+      await settle();
+      // The retry's own CAS would catch the older snapshot later; D must not
+      // even flip to the old value or write it out in between.
+      const writtenByD = a.inbox
+        .filter((ev) => ev.key === 'project_neko_settings')
+        .map((ev) => JSON.parse(ev.newValue)[key]);
+      assert(writtenByD.every((v) => v === true),
+        'D must not write the older 412 value out: ' + JSON.stringify(writtenByD));
+      assert(serverSettings[key] === true,
+        'a late, older 412 must not overwrite the newer server value: '
+          + JSON.stringify(d.postBodies.map((b) => b[key])));
+      assert(d.S[key] === true, 'D keeps the newer server value');
+      assert(serverSettings.focusModeEnabled === focusWanted,
+        'D\\'s own edit is still saved after the 412');
+      e.deliver();
+      a.deliver();
+      await settle();
+      assert(a.S[key] === true && e.S[key] === true, 'all windows keep the newer value');
+    }
+
     async function main() {
       if (__MODE__ === 'single') {
         await singleWindow();
@@ -738,6 +813,12 @@ _HARNESS = textwrap.dedent(
       }
       if (typeof __MODE__ === 'string' && __MODE__.indexOf('stale:') === 0) {
         await staleSwitchCopy(__MODE__.slice('stale:'.length));
+        console.log('HARNESS_OK');
+        process.exitCode = 0;
+        return;
+      }
+      if (__MODE__ === 'delayed-412') {
+        await delayedConflictBelowServerFloor();
         console.log('HARNESS_OK');
         process.exitCode = 0;
         return;
@@ -1117,6 +1198,16 @@ def test_stale_copy_below_server_floor_does_not_roll_back_harness(key):
     result = _run("server-floor:" + key)
     assert result.returncode == 0, (
         f"stale {key} copy below server floor harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_delayed_conflict_does_not_overwrite_newer_server_value_harness():
+    result = _run("delayed-412")
+    assert result.returncode == 0, (
+        "delayed 412 below server floor harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
