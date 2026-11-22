@@ -168,7 +168,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
         async def _invalidate_current_socket(reason: str) -> None:
             """Retire the active socket while preserving speech identity and buffered text."""
-            nonlocal ws, receive_task, session_configured, buffer_committed, idle_closed
+            nonlocal ws, receive_task, session_configured, buffer_committed
             if receive_task and not receive_task.done():
                 qwen_audio_jitter.flush()
                 receive_task.cancel()
@@ -183,7 +183,6 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 except Exception as close_exc:
                     logger.debug("%s WebSocket 关闭失败: %s", reason, close_exc)
             ws = None
-            idle_closed = False
             session_ready.clear()
             session_configured = False
             buffer_committed = False

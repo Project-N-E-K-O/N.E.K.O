@@ -996,3 +996,95 @@ def test_qwen_idle_timeout_after_audio_started_with_terminal_finish_emits_audio_
     assert ("__tts_sentence_failed__", _SID, "") not in emitted
     assert not any(isinstance(item, tuple) and item[0] == "__error__" for item in emitted)
     assert emitted.count(("__audio_done__", _SID)) == 1
+
+
+def test_qwen_idle_timeout_overlapping_inflight_send_preserves_idle_closed(
+    monkeypatch,
+):
+    """Socket invalidation after send error must preserve idle_closed recorded during backpressure."""
+    audio_received = threading.Event()
+    resp_q = queue.Queue()
+    real_sleep = qwen_mod.asyncio.sleep
+
+    class _OverlappingIdleTimeoutSocket(_FakeQwenSocket):
+        def __init__(self):
+            super().__init__()
+            self._append_count = 0
+
+        async def send(self, payload):
+            event = json.loads(payload)
+            if event.get("type") == "input_text_buffer.append":
+                self._append_count += 1
+                if self._append_count == 1:
+                    await super().send(payload)
+                    self._events.put(
+                        json.dumps({"type": "response.audio.delta", "delta": "AAAAAA=="})
+                    )
+                    return
+                if self._append_count == 2:
+                    self._events.put(
+                        json.dumps({"type": "error", "error": {"message": "request timeout"}})
+                    )
+                    deadline = time.monotonic() + 2.0
+                    while not self.closed.is_set() and time.monotonic() < deadline:
+                        await real_sleep(0.005)
+                    assert self.closed.is_set(), "receive loop did not close timed-out socket"
+                    raise RuntimeError("socket closed during send")
+            await super().send(payload)
+
+    def resample(*_args):
+        audio_received.set()
+        return b""
+
+    initial = _FakeQwenSocket()
+    first = _OverlappingIdleTimeoutSocket()
+    recovered = _FakeQwenSocket()
+    recovered._on_send = {
+        "session.update": [{"type": "session.updated"}],
+        "input_text_buffer.commit": [{"type": "response.done"}],
+    }
+    sockets = iter([initial, first, recovered])
+    connect_count = 0
+
+    async def fake_connect(*_args, **_kwargs):
+        nonlocal connect_count
+        connect_count += 1
+        return next(sockets)
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
+
+    def wait_audio_started():
+        assert audio_received.wait(2.0)
+
+    def wait_done():
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with resp_q.mutex:
+                if ("__audio_done__", _SID) in resp_q.queue:
+                    return
+            time.sleep(0.005)
+
+    monkeypatch.setattr(qwen_mod, "_resample_audio", resample)
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect)
+    monkeypatch.setattr(qwen_mod.asyncio, "sleep", fast_sleep)
+
+    req_q = _Requests(
+        (_SID, "第一句已经出声。"),
+        wait_audio_started,
+        (_SID, "重叠发送的第二句。"),
+        (None, None),
+        wait_done,
+    )
+    qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
+
+    emitted = list(resp_q.queue)
+    assert connect_count == 3
+    assert [
+        p["text"]
+        for p in recovered.sent
+        if p.get("type") == "input_text_buffer.append"
+    ] == ["重叠发送的第二句。"]
+    assert ("__tts_sentence_failed__", _SID, "") not in emitted
+    assert not any(isinstance(item, tuple) and item[0] == "__error__" for item in emitted)
+    assert emitted.count(("__audio_done__", _SID)) == 1

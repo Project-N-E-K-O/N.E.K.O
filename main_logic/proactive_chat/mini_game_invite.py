@@ -1037,7 +1037,7 @@ _PUNCT_CLAUSE_SPLIT_RE = re.compile(
     r"[,，.。!！?？;；:：、…~～\-—()（）\[\]【】「」『』\"']+"
 )
 _CJK_PREFIX_RE = re.compile(
-    r"^(?:但是|但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|就|我|咱们|咱們|咱|先|还是|還是|"
+    r"^(?:但是|但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|就|我们|我們|我|咱们|咱們|咱|先|还是|還是|"
     r"现在|現在|今天|这次|這次|好吧|行吧|好啊|好的|行啊|来吧|來吧|うん|うーん|いや|でも|"
     r"じゃあ|それ|ちょっと|また|もう|あとで|いま|응|어|음|아니|나는|나도|나|난|지금|좀|일단)*+$"
 )
@@ -1055,12 +1055,17 @@ _ZH_ALL_KEYWORDS = frozenset(
     for bucket in MINI_GAME_INVITE_KEYWORDS.get(locale, {}).values()
     for kw in bucket
 )
-_ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS = frozenset({"好啊", "行啊", "来吧", "來吧", "一起玩"})
+_ZH_ACCEPT_KEYWORDS = frozenset(
+    kw
+    for locale in ("zh", "zh-TW")
+    for kw in MINI_GAME_INVITE_KEYWORDS.get(locale, {}).get("accept", ())
+)
+_ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS = frozenset({"好啊", "行啊", "来吧", "來吧"})
 _ZH_MODAL_CLAUSE_BREAK_RE = re.compile(r"^(?:[儿兒])?[吧呀啊呢啦哦嘛呗唄咯喔哈呵]")
 _ZH_LE_CLAUSE_BREAK_KEYWORDS = frozenset(
     {"不玩", "不想", "不要", "没空", "沒空", "算了", "拒绝", "拒絕"}
 )
-_ZH_HAODE_CONTINUATION_RE = re.compile(r"^(?:我|咱|来|來|一起)")
+_ZH_HAODE_CONTINUATION_RE = re.compile(r"^(?:我们|我們|我|咱们|咱們|咱|来|來|一起)")
 _ZH_DECLINE_OBJECT_RE = re.compile(
     r"^(?:玩(?:这个|這個|那个|那個)?(?:小游戏|小遊戲|游戏|遊戲)?"
     r"|(?:这个|這個|那个|那個)(?:小游戏|小遊戲|游戏|遊戲)?"
@@ -1075,10 +1080,17 @@ def _cjk_affixes_match(keyword: str, prefix: str, suffix: str) -> bool:
     if len(keyword) >= 2:
         while suffix.startswith(keyword):
             suffix = suffix[len(keyword):]
-    # Clause-initial Chinese accept phrases ending in a particle or verb phrase
-    # (never noun modifiers like "好的衣服") accept any trailing continuation;
-    # decline/later priority still wins when another clause declines or defers.
+    # Never treat a question ending in 吗/嗎 as affirmative consent
+    # (e.g. "一起玩需要下载吗", "好啊需要下载吗", "好的我们要下载吗").
+    if keyword in _ZH_ACCEPT_KEYWORDS and suffix.endswith(("吗", "嗎")):
+        return False
+    # Clause-initial Chinese accept phrases ending in a particle
+    # (never noun modifiers like "好的衣服" or noun compounds like "来吧台坐坐")
+    # accept trailing continuations; decline/later priority still wins when
+    # another clause declines or defers.
     if keyword in _ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS:
+        if keyword in {"来吧", "來吧"} and suffix.startswith(("台", "臺")):
+            return False
         return True
     if keyword == "好的" and _ZH_HAODE_CONTINUATION_RE.match(suffix):
         return True

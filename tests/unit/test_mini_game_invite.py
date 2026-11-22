@@ -2112,3 +2112,38 @@ def test_chinese_natural_continuations_and_reduplication_match_without_false_pos
 ):
     """F0170: natural Chinese replies with trailing content or reduplication still match safely."""
     assert sr._match_mini_game_invite_keyword(text) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('一起玩需要下载吗', None),
+    ('一起玩需要下載嗎', None),
+    ('一起玩需要下载', None),
+    ('一起玩吗', None),
+    ('一起玩吧要下载吗', None),
+    ('好啊需要下载吗', None),
+    ('来吧需要下载吗', None),
+    ('好的我们要下载吗', None),
+    ('来吧台坐坐', None),
+    ('來吧台坐坐', None),
+    ('來吧臺坐坐', None),
+    ('好的我们不想玩游戏', 'decline'),
+    ('好的我們不想玩遊戲', 'decline'),
+    ('好啊我们不想玩游戏', 'decline'),
+    ('好啊我們不想玩遊戲', 'decline'),
+    ('算了吧好吗', 'decline'),
+    ('等下吧好吗', 'later'),
+    ('一起玩', 'accept'),
+    ('一起玩吧', 'accept'),
+    ('那就一起玩', 'accept'),
+    ('好啊一起玩', 'accept'),
+    ('来吧', 'accept'),
+    ('來吧', 'accept'),
+    ('好啊我们玩吧', 'accept'),
+    ('好的我们玩吧', 'accept'),
+    ('好的我們玩吧', 'accept'),
+])
+def test_chinese_questions_bar_counter_and_plural_pronoun_refusal_priority(
+    text, expected,
+):
+    """F0170: exclude questions and noun compounds while keeping plural-subject refusal priority."""
+    assert sr._match_mini_game_invite_keyword(text) == expected
