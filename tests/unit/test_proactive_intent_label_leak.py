@@ -293,3 +293,26 @@ def test_strip_commitment_label_does_not_cross_paren_boundary_into_prose() -> No
         _strip_proactive_intent_label_leak("Promise (due 2026-11-03) is something (aside): keep me")
         == "Promise (due 2026-11-03) is something (aside): keep me"
     )
+
+
+def test_unclosed_templated_commitment_label_avoids_catastrophic_backtracking() -> None:
+    """Reject long unclosed templated labels in linear time without ReDoS stalling."""
+    import time
+
+    from config.prompts.prompts_activity import get_proactive_intent_leak_label_patterns
+
+    patterns = get_proactive_intent_leak_label_patterns()
+    adversarial_inputs = [
+        "Promise (due " + "a" * 2000,
+        "Promise (due " + "(x)a" * 500,
+        "Promise (due " + "a(" * 500,
+        "约定（截止 " + "あ" * 2000,
+        "约定（截止 " + "（日）あ" * 500,
+    ]
+    start = time.perf_counter()
+    for text in adversarial_inputs:
+        for pattern in patterns:
+            assert pattern.match(text) is None
+        assert _strip_proactive_intent_label_leak(text) == text
+    elapsed = time.perf_counter() - start
+    assert elapsed < 0.5, f"Unclosed commitment label check took too long: {elapsed:.3f}s"

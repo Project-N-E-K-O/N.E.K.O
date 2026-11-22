@@ -1542,10 +1542,12 @@ def get_proactive_intent_leak_label_patterns() -> tuple[re.Pattern[str], ...]:
         # Keep {due} matching bounded to its enclosing parentheses (allowing at most one
         # level of nested parentheses inside {due}, e.g. "Promise (due Nov 3 (Mon))") so a
         # trailing parenthetical in message prose cannot extend the label across the line.
+        # Unroll non-paren runs explicitly outside/after each nested paren group to avoid
+        # nested-quantifier ReDoS backtracking on unclosed labels.
         if '(' in before and after.startswith(')'):
-            due_pattern = r'(?:[^()\r\n]+|\([^()\r\n]*\))*'
+            due_pattern = r'[^()\r\n]*(?:\([^()\r\n]*\)[^()\r\n]*)*'
         elif '（' in before and after.startswith('）'):
-            due_pattern = r'(?:[^（）\r\n]+|（[^（）\r\n]*）)*'
+            due_pattern = r'[^（）\r\n]*(?:（[^（）\r\n]*）[^（）\r\n]*)*'
         else:
             due_pattern = r'[^\r\n]*?'
         regex = f"^{re.escape(before)}{due_pattern}{re.escape(after)}$"
