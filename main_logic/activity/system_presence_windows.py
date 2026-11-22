@@ -33,7 +33,10 @@ subscribes to three notifications for *this* session only:
   to top-level windows, hence a hidden top-level window rather than a
   message-only one.
 
-Any failure marks the state as failed (allow) and logs once. On interpreter
+Any failure marks the state as failed (allow) and logs once. The one
+exception is re-registering the display notification after a reconnect: a
+failure there only leaves the gate unarmed (allow), logs once, and the next
+reconnect tries again. On interpreter
 exit the window is closed, which unregisters both notifications.
 """
 
@@ -69,6 +72,7 @@ WTS_CURRENT_SESSION = 0xFFFFFFFF
 WTS_SESSION_INFO_EX = 25  # WTS_INFO_CLASS.WTSSessionInfoEx
 WTS_SESSIONSTATE_LOCK = 0
 WTS_SESSIONSTATE_UNLOCK = 1
+ERROR_INVALID_HANDLE = 6
 
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
@@ -238,6 +242,7 @@ class _Watcher:
         self._wndproc = WNDPROC(self._window_proc)  # keep a reference alive
         self._apis = None
         self._error_logged = False
+        self._reregister_warned = False
         self.thread = threading.Thread(
             target=self._run, name='neko-system-presence', daemon=True,
         )
@@ -291,6 +296,11 @@ class _Watcher:
             self._fail('notification handling failed', exc)
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
+    def _warn_reregister_once(self, message: str) -> None:
+        if not self._reregister_warned:
+            self._reregister_warned = True
+            logger.warning('System presence watcher, after session reconnect: %s', message)
+
     def _reregister_display_notification(self) -> None:
         """Re-subscribe to display status after a session reconnect.
 
@@ -299,24 +309,34 @@ class _Watcher:
         registration makes Windows report the current value right away. If the
         display is off at that moment the gate still waits for it to come on
         (it arms only after the display was seen on), same as at startup.
-        At most one registration is held: if the old one cannot be released,
-        it is kept and no new one is added (the state just stays unarmed until
-        the next transition, as before). A failed new registration fails open.
+
+        At most one registration is held. If the old one cannot be released it
+        is kept and no new one is added, unless the handle is already invalid
+        (then it is dropped and a new one registered). Failures here do not
+        mark the watcher failed: without a display report the gate simply stays
+        unarmed (allows), and the next reconnect tries again.
         """
         if not self._apis or not self._hwnd:
             return
         user32 = self._apis[0]
         if self._power_notify:
             if not user32.UnregisterPowerSettingNotification(self._power_notify):
-                logger.debug('UnregisterPowerSettingNotification error %s, keeping the old registration',
-                             ctypes.get_last_error())
-                return
+                error = ctypes.get_last_error()
+                if error != ERROR_INVALID_HANDLE:
+                    self._warn_reregister_once(
+                        f'UnregisterPowerSettingNotification error {error}; keeping the old registration, '
+                        'display-off gating resumes after the next display change')
+                    return
+                # Already invalid: nothing to release, so a new one does not stack.
+                self._warn_reregister_once('display notification handle was already invalid; registering a new one')
             self._power_notify = None
         handle = user32.RegisterPowerSettingNotification(
             self._hwnd, ctypes.byref(GUID_SESSION_DISPLAY_STATUS), DEVICE_NOTIFY_WINDOW_HANDLE,
         )
         if not handle:
-            self._fail(f'RegisterPowerSettingNotification error {ctypes.get_last_error()} after session reconnect')
+            self._warn_reregister_once(
+                f'RegisterPowerSettingNotification error {ctypes.get_last_error()}; display-off gating stays '
+                'inactive (allowing proactive chat) until a later reconnect')
             return
         self._power_notify = handle
 
