@@ -589,7 +589,12 @@ class KnowledgeService:
                         job.state, job.reason, job.committed, job.published = "active", "", True, True
                     else:
                         job.state, job.reason = "failed", "process_interrupted"
-                    atomic_write_json(path, self._job_record(job))
+                    try:
+                        atomic_write_json(path, self._job_record(job))
+                    except OSError:
+                        # A valid task stays visible and retryable even when
+                        # its reconciled status cannot be written back yet.
+                        logger.warning("[Knowledge] job reconcile writeback failed job=%s", job.job_id)
                 loaded.append(job)
             except (OSError, ValueError, TypeError):
                 continue
@@ -976,8 +981,7 @@ class KnowledgeService:
 
         The request's place in the order is taken here, before any await.
         """
-        self._request_seq += 1
-        my_seq = self._request_seq
+        my_seq = self._reserve_arrival()
         removal = (my_seq, releases)
         self._pending_removals[pack_id] = self._pending_removals.get(pack_id, frozenset()) | {removal}
 
@@ -1189,7 +1193,7 @@ class KnowledgeService:
 
     async def _project_sources(
         self, pack_id: str, name: str, documents: list[dict], *, enabled: bool = False,
-        source_confirmation: bool | None = None,
+        source_confirmation: bool | None = None, arrived_at: int | None = None,
     ) -> dict[str, Any]:
         """Send a source projection through the one existing import runner."""
         pack = await self._thread(project_pack, pack_id, name, documents)
@@ -1205,7 +1209,7 @@ class KnowledgeService:
             # another window can change that flag before this task activates.
             frozen.update(source_confirmation_required=True, enabled_confirmed=source_confirmation)
         return await self.import_pack(canonical, _options={"kind": "import_commit", "origin": "imported", "enabled": enabled,
-                                                           "frozen_input": frozen})
+                                                           "frozen_input": frozen}, _arrived_at=arrived_at)
 
     async def discard_preview(self, preview_id: str) -> dict[str, Any]:
         """Delete a cancelled or replaced preview; committed ones are kept.
@@ -1220,6 +1224,9 @@ class KnowledgeService:
         self, preview_id: str, sha256: str, *, enabled: bool = False, enabled_confirmed: bool = False,
     ) -> dict[str, Any]:
         """Retain the frozen original, then enqueue a disabled-by-default pack."""
+        # Reserve before waiting for the source lock, so later pack removals
+        # supersede this request even when staging finishes after deletion.
+        arrived_at = self._reserve_arrival()
         async def run():
             value = await self._thread(self._sources.retain_preview, preview_id, sha256)
             pack_id = value["pack_id"]
@@ -1227,11 +1234,13 @@ class KnowledgeService:
             documents = await self._thread(self._sources.documents, pack, pack_id)
             documents = [row for row in documents if row["doc_id"] != value["doc_id"]] + [value]
             return await self._project_sources(pack_id, value["pack_name"], documents, enabled=enabled,
-                                               source_confirmation=enabled_confirmed)
+                                               source_confirmation=enabled_confirmed, arrived_at=arrived_at)
         return await self._locked(run)
 
     async def remove_source(self, pack_id: str, doc_id: str) -> dict[str, Any]:
         """Remove an active selection without deleting its original or history."""
+        # A nonempty projection retains this request's original arrival.
+        arrived_at = self._reserve_arrival()
         async def selection() -> list[dict]:
             pack = await self._thread(self._source_pack, pack_id)
             if pack is None:
@@ -1254,7 +1263,7 @@ class KnowledgeService:
                 if not retained:
                     return None
                 pack = await self._thread(self._source_pack, pack_id)
-                return await self._project_sources(pack_id, pack.source.name, retained)
+                return await self._project_sources(pack_id, pack.source.name, retained, arrived_at=arrived_at)
             result = await self._locked(run)
             if result is not None:
                 return result
@@ -1289,12 +1298,15 @@ class KnowledgeService:
 
     async def restore_source(self, pack_id: str, doc_id: str, version: int) -> dict[str, Any]:
         """Select an immutable past version through the same pack import path."""
+        # Restoring history must not overtake a later pack removal either.
+        arrived_at = self._reserve_arrival()
         async def run():
             value = await self._thread(self._sources.version, pack_id, doc_id, version)
             pack = await self._thread(self._source_pack, pack_id)
             documents = await self._thread(self._sources.documents, pack, pack_id)
             documents = [row for row in documents if row["doc_id"] != doc_id] + [value]
-            return await self._project_sources(pack_id, pack.source.name if pack else value["pack_name"], documents)
+            return await self._project_sources(pack_id, pack.source.name if pack else value["pack_name"], documents,
+                                               arrived_at=arrived_at)
         return await self._locked(run)
 
     async def _import_archive_input(
@@ -1344,20 +1356,28 @@ class KnowledgeService:
                 existed = output.exists()
                 output.parent.mkdir(parents=True, exist_ok=True)
                 stage = output.with_suffix(".tmp")
-                with path.open("rb") as source, stage.open("wb") as target:
-                    shutil.copyfileobj(source, target, 64 * 1024)
-                    target.flush()
-                    import os
-                    os.fsync(target.fileno())
-                hasher = hashlib.sha256()
-                with stage.open("rb") as source:
-                    for block in iter(lambda: source.read(64 * 1024), b""):
-                        hasher.update(block)
-                if hasher.hexdigest() != digest:
-                    stage.unlink(missing_ok=True)
-                    raise KnowledgePackError("artifact_hash_mismatch")
-                stage.replace(output)
-                return not existed
+                created_stage = False
+                try:
+                    with path.open("rb") as source, stage.open("wb") as target:
+                        created_stage = True
+                        shutil.copyfileobj(source, target, 64 * 1024)
+                        target.flush()
+                        import os
+                        os.fsync(target.fileno())
+                    hasher = hashlib.sha256()
+                    with stage.open("rb") as source:
+                        for block in iter(lambda: source.read(64 * 1024), b""):
+                            hasher.update(block)
+                    if hasher.hexdigest() != digest:
+                        raise KnowledgePackError("artifact_hash_mismatch")
+                    stage.replace(output)
+                    return not existed
+                finally:
+                    # Only this temporary copy is ours to clean. Never delete
+                    # the retained target or mask the original I/O failure.
+                    if created_stage:
+                        with contextlib.suppress(OSError):
+                            stage.unlink(missing_ok=True)
             async def retain_and_admit():
                 # Export deletion uses the same mutation lock. Keep the exact
                 # ZIP alive until its import job owns the recovery reference;
@@ -1432,9 +1452,9 @@ class KnowledgeService:
         if record is None:
             raise KnowledgePackError("not_found")
         active = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
-        if any(job.pack_id == pack_id for job in active):
+        if pack_id in self._admitting or any(job.pack_id == pack_id for job in active):
             raise KnowledgePackError("job_in_progress")
-        if len(active) >= MAX_PENDING_IMPORTS:
+        if self._admission_count() >= MAX_PENDING_IMPORTS:
             raise KnowledgePackError("knowledge_busy")
         stamp = utc_now()
         job_id = uuid.uuid4().hex
@@ -1445,8 +1465,7 @@ class KnowledgeService:
         job = ImportJob(job_id, pack_id, "queued", stamp, stamp,
                         kind="pack_export", staged_sha256=record.pack_sha256,
                         export_version=version)
-        self._request_seq += 1
-        job.arrived_at = self._request_seq
+        job.arrived_at = self._reserve_arrival()
         self._remember_job(job)
         async def admit():
             # The request may stop waiting while its write thread is alive.
@@ -1561,7 +1580,7 @@ class KnowledgeService:
 
     async def import_pack(
         self, raw: bytes | Path, *, subscription: KnowledgeSubscription | None = None,
-        _options: dict[str, Any] | None = None,
+        _options: dict[str, Any] | None = None, _arrived_at: int | None = None,
     ) -> dict[str, Any]:
         """Import a pack; ``subscription`` marks a verified plugin-market artifact."""
         self._require_ready()
@@ -1574,8 +1593,9 @@ class KnowledgeService:
             # answered with that import: the slots may be full of exactly it.
             staged = await self._staged_repeat(raw, subscription) if subscription is not None else None
             return staged or {"ok": False, "reason": "knowledge_busy"}
-        self._request_seq += 1
-        arrived_at = self._request_seq
+        # Source operations already reserved their order before waiting for
+        # the write lock; ordinary imports and explicit retries reserve here.
+        arrived_at = self._reserve_arrival() if _arrived_at is None else _arrived_at
         # The reservation lasts until the request is answered (including the
         # unchanged-file check, which reads from disk) or admitted, so parsed
         # copies of a pack never pile up uncounted.
@@ -1673,15 +1693,27 @@ class KnowledgeService:
         staged = self._staged_subscription_job(subscription)
         return {"ok": True, **staged.to_json(), "existing": True} if staged is not None else None
 
+    def _reserve_arrival(self) -> int:
+        """Reserve a mutation's order before its first asynchronous wait."""
+        self._request_seq += 1
+        return self._request_seq
+
     def _admission_settled(self, arrived_at: int) -> None:
         self._admission_owned.discard(arrived_at)
         self._incoming.pop(arrived_at, None)
 
+    def _admission_count(self) -> int:
+        """Count queued work and reservations without counting an import twice."""
+        active = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
+        # Staging remembers the import before its reservation's finally runs.
+        # Only that import represents the reservation; an export does not.
+        registered_imports = {job.pack_id for job in active if job.kind != "pack_export"}
+        return len(active) + sum(pack_id not in registered_imports for pack_id in self._admitting)
+
     def import_busy(self) -> bool:
         """Whether a new import would be refused for lack of room right now."""
-        pending = sum(1 for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES)
         return (
-            pending + len(self._admitting) >= MAX_PENDING_IMPORTS
+            self._admission_count() >= MAX_PENDING_IMPORTS
             or self._parsing >= MAX_PENDING_IMPORTS
         )
 
@@ -1756,7 +1788,7 @@ class KnowledgeService:
         pending = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
         if pack.pack_id in self._admitting or any(job.pack_id == pack.pack_id for job in pending):
             return {"ok": False, "reason": "job_in_progress"}
-        if len(pending) + len(self._admitting) >= MAX_PENDING_IMPORTS:
+        if self._admission_count() >= MAX_PENDING_IMPORTS:
             return {"ok": False, "reason": "knowledge_busy"}
         self._admitting[pack.pack_id] = len(canonical)
 
@@ -2833,6 +2865,11 @@ class KnowledgeService:
         if model_id is None:
             return 0
         if self._index_model_id != model_id:
+            provider = getattr(self.embedder, "spec", None)
+            if callable(provider) and await self._thread(provider) is None:
+                # A modern provider has not certified this model transition
+                # yet. Preserve failures until its resources are available.
+                return 0
             # Failure counts belong to the model (and process) that produced
             # them: a new model, or a restart, retries every chunk once more.
             await self._locked(lambda: self._thread(self._store.reset_attempts), wait=True)
