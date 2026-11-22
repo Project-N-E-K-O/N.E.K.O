@@ -505,9 +505,11 @@ result = await self.unregister_llm_tool_async("custom_tool")
   `unregister_llm_tool_async(name)` を呼びます。ローカルにない名前もホストへ送られ、全 role を対象に
   解除されるため、`main_server` 上の残留は削除されます。プラグイン停止時にはいずれにせよ全て消去されます。
 - 同じ名前の async 呼び出しは呼び出し順に 1 つずつ実行され、それぞれ前の呼び出しの応答を待ちます。
+  異なるイベントループ（例：エントリとインターバルタイマー）からの呼び出しも同様です。
   例えば `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))` の後、`t` はどこにも
-  残りません。異なる名前同士は待ち合わせません。`request_timeout` は各呼び出し自身の
-  リクエストにだけ適用され、同じ名前の先行呼び出しを待つ時間は含みません。
+  残りません。異なる名前同士は待ち合わせません。`request_timeout` は呼び出し全体に
+  適用され、同じ名前の先行呼び出しを待つ時間も含みます。待機中に使い切った場合は `timeout` となり、
+  ホストには何も送られていません。
 
 引数エラーは同期版と同じく例外になります（`ValueError`、`TypeError`、`EntryConflictError`）。
 async 版はさらに、`request_timeout` が不正な場合と、登録時の `timeout` が (0, 300] の範囲外の場合

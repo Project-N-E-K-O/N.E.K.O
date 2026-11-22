@@ -129,7 +129,7 @@ async def test_register_async_success_keeps_local_and_reports_roles():
     assert _entry_registered(plugin, "tool_a")
     (call,) = host.calls
     assert call["request_type"] == "LLM_TOOL_REGISTER_REQUEST"
-    assert call["timeout"] == 3.0
+    assert 2.9 < call["timeout"] <= 3.0  # budget left after taking the name lock
     assert call["wrap_result"] is False
     payload = call["request_data"]
     assert payload["name"] == "tool_a"
@@ -388,7 +388,7 @@ async def test_unregister_async_success_drops_local():
     assert not _entry_registered(plugin, "tool_a")
     (call,) = host.calls
     assert call["request_type"] == "LLM_TOOL_UNREGISTER_REQUEST"
-    assert call["timeout"] == 4.0
+    assert 3.9 < call["timeout"] <= 4.0
     assert call["request_data"]["name"] == "tool_a"
     assert call["request_data"]["role"] == "Lanlan"
     assert not [m for m in _drain(ctx) if m.get("type") == "LLM_TOOL_UNREGISTER"]
@@ -594,6 +594,165 @@ async def test_late_unregister_does_not_remove_a_newer_registration():
         "LLM_TOOL_REGISTER_REQUEST", "LLM_TOOL_UNREGISTER_REQUEST",
         "LLM_TOOL_UNREGISTER_REQUEST", "LLM_TOOL_REGISTER_REQUEST",
     ]
+    assert plugin._llm_tool_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_lock_wait_counts_against_request_timeout():
+    """A call stuck behind an earlier same-name call returns ``timeout``
+    within its own budget, without sending anything or claiming the name."""
+    plugin, _ = _make_plugin()
+    gate = asyncio.Event()
+    calls: list[str] = []
+
+    async def host(*, request_type, **_):
+        calls.append(request_type)
+        await gate.wait()
+        return {"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}
+
+    _install_host(plugin, host)
+    first = asyncio.create_task(plugin.register_llm_tool_async(**_register_kwargs()))
+    await asyncio.sleep(0)
+
+    late = await asyncio.wait_for(
+        plugin.unregister_llm_tool_async("tool_a", request_timeout=0.1), timeout=2.0,
+    )
+
+    assert late["ok"] is False
+    assert late["error"] == "timeout"
+    assert "nothing was sent" in (late["message"] or "")
+    assert calls == ["LLM_TOOL_REGISTER_REQUEST"]
+    gate.set()
+    assert (await first)["ok"] is True
+    assert _local_names(plugin) == {"tool_a"}
+    assert plugin._llm_tool_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_lock_waiter_does_not_block_later_calls():
+    plugin, _ = _make_plugin()
+    gate = asyncio.Event()
+
+    async def host(*, request_type, **_):
+        if request_type == "LLM_TOOL_REGISTER_REQUEST":
+            await gate.wait()
+            return {"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}
+        return {"ok": True, "removed": True, "affected_roles": ["Lanlan"],
+                "failed_roles": [], "refused_roles": []}
+
+    _install_host(plugin, host)
+    first = asyncio.create_task(plugin.register_llm_tool_async(**_register_kwargs()))
+    await asyncio.sleep(0)
+    waiter = asyncio.create_task(plugin.unregister_llm_tool_async("tool_a"))
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    gate.set()
+    assert (await first)["ok"] is True
+    removed = await asyncio.wait_for(plugin.unregister_llm_tool_async("tool_a"), 1.0)
+    assert removed["ok"] is True
+    assert _local_names(plugin) == set()
+    assert plugin._llm_tool_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_cross_loop_lock_skips_a_waiter_cancelled_while_queued():
+    from plugin.sdk.plugin.base import _CrossLoopLock
+
+    lock = _CrossLoopLock()
+    await lock.acquire(1.0)
+    a = asyncio.create_task(lock.acquire(1.0))
+    b = asyncio.create_task(lock.acquire(1.0))
+    await asyncio.sleep(0)
+    a.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await a
+    lock.release()
+    await asyncio.wait_for(b, 0.5)  # b, not the cancelled a, got the lock
+    lock.release()
+    await asyncio.wait_for(lock.acquire(0.5), 0.5)
+
+
+@pytest.mark.asyncio
+async def test_cross_loop_lock_passes_on_ownership_granted_during_cancel():
+    from plugin.sdk.plugin.base import _CrossLoopLock
+
+    lock = _CrossLoopLock()
+    await lock.acquire(1.0)
+    a = asyncio.create_task(lock.acquire(1.0))
+    b = asyncio.create_task(lock.acquire(1.0))
+    await asyncio.sleep(0)
+    lock.release()  # hands the lock to a ...
+    a.cancel()      # ... which is cancelled before it runs
+    with pytest.raises(asyncio.CancelledError):
+        await a
+    await asyncio.wait_for(b, 0.5)  # a passed it on
+
+
+def test_same_name_calls_from_two_event_loops_are_serialised():
+    """Plugin entries run on the command loop while interval timers run on
+    their own threads with their own ``asyncio.run``. Same-name calls from
+    both must still run one at a time, and the waiter on the other loop
+    must be woken (asyncio.Lock can do neither)."""
+    import threading
+
+    import time
+
+    plugin, _ = _make_plugin()
+    state = {"active": 0, "max_active": 0, "remote": set()}
+    state_lock = threading.Lock()
+    first_in_flight = threading.Event()
+    second_queued = threading.Event()
+
+    async def host(*, request_type, request_data, **_):
+        with state_lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        first_in_flight.set()
+        # Hold the first request until the other loop's call is queued on
+        # the lock, so the two calls really contend.
+        await asyncio.to_thread(second_queued.wait, 5.0)
+        with state_lock:
+            state["active"] -= 1
+            name = request_data["name"]
+            if request_type == "LLM_TOOL_REGISTER_REQUEST":
+                state["remote"].add(name)
+                return {"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}
+            removed = name in state["remote"]
+            state["remote"].discard(name)
+        return {"ok": True, "removed": removed, "affected_roles": [], "failed_roles": [], "refused_roles": []}
+
+    _install_host(plugin, host)
+    results: dict[str, object] = {}
+
+    def command_loop():
+        results["register"] = asyncio.run(plugin.register_llm_tool_async(**_register_kwargs()))
+
+    def timer_loop():
+        first_in_flight.wait(2.0)
+        results["unregister"] = asyncio.run(plugin.unregister_llm_tool_async("tool_a"))
+
+    threads = [threading.Thread(target=command_loop), threading.Thread(target=timer_loop)]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        entry = plugin._llm_tool_locks.get("tool_a")
+        if entry is not None and entry[0]._waiters:
+            break
+        time.sleep(0.005)
+    assert plugin._llm_tool_locks["tool_a"][0]._waiters, "second call never queued"
+    second_queued.set()
+    for t in threads:
+        t.join(5.0)
+        assert not t.is_alive()
+
+    assert results["register"]["ok"] is True
+    assert results["unregister"]["ok"] is True and results["unregister"]["removed"] is True
+    assert state["max_active"] == 1
+    assert state["remote"] == set()
+    assert _local_names(plugin) == set()
     assert plugin._llm_tool_locks == {}
 
 

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import math
+import threading
+import time
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -50,6 +53,72 @@ from .llm_tool import (
 )
 
 DEFAULT_PLUGIN_VERSION = _DEFAULT_PLUGIN_VERSION
+
+
+def _grant_waiter(future: asyncio.Future) -> None:
+    if not future.done():
+        future.set_result(None)
+
+
+class _CrossLoopLock:
+    """FIFO async lock whose waiters may sit on different event loops.
+
+    ``asyncio.Lock`` binds to one loop and is not thread-safe, but plugin
+    code runs on several loops at once: entries on the command loop, each
+    interval timer on its own thread with its own ``asyncio.run``. State is
+    guarded by a ``threading.Lock``; ownership is handed directly to the
+    next waiter and its future is resolved on that waiter's own loop.
+    """
+
+    def __init__(self) -> None:
+        self._mutex = threading.Lock()
+        self._held = False
+        # [loop, future, granted]
+        self._waiters: collections.deque[list[Any]] = collections.deque()
+
+    async def acquire(self, timeout: float) -> None:
+        """Wait at most ``timeout`` seconds; raise ``TimeoutError`` if the
+        lock was not obtained in time (nothing is held then)."""
+        with self._mutex:
+            if not self._held:
+                self._held = True
+                return
+            loop = asyncio.get_running_loop()
+            waiter: list[Any] = [loop, loop.create_future(), False]
+            self._waiters.append(waiter)
+        try:
+            async with asyncio.timeout(timeout):
+                await waiter[1]
+        except BaseException:
+            with self._mutex:
+                granted = waiter[2]
+                if not granted:
+                    self._waiters.remove(waiter)
+            if granted:
+                # Ownership arrived while we were being cancelled or timed
+                # out: pass it on instead of keeping it.
+                self.release()
+            raise
+
+    def release(self) -> None:
+        with self._mutex:
+            while self._waiters:
+                waiter = self._waiters.popleft()
+                loop, future, _ = waiter
+                waiter[2] = True
+                try:
+                    loop.call_soon_threadsafe(_grant_waiter, future)
+                except RuntimeError:
+                    # The waiter's loop is closed; its task is gone.
+                    waiter[2] = False
+                    continue
+                return
+            self._held = False
+
+
+class _LlmToolLockTimeout(Exception):
+    """An async LLM tool call waited its whole budget behind earlier calls
+    for the same name; nothing was sent to the host."""
 
 # How long register_llm_tool_async / unregister_llm_tool_async wait for the
 # host by default. The host's main_server call can spend up to 10s waiting for
@@ -154,6 +223,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         # unregister_llm_tool_async for one name from the local read to the
         # local update after the host answered. Dropped when unused.
         self._llm_tool_locks: dict[str, list[Any]] = {}
+        self._llm_tool_locks_mutex = threading.Lock()
         # Auto-register every method tagged with ``@llm_tool``. Doing
         # this at the end of ``super().__init__()`` means subclasses
         # don't need to remember to call anything — the decorator alone
@@ -679,27 +749,54 @@ class NekoPluginBase(_SharedNekoPluginBase):
         )
 
     @contextlib.asynccontextmanager
-    async def _llm_tool_name_lock(self, name: str) -> AsyncIterator[None]:
-        """Hold the per-name lock of the async register/unregister calls.
+    async def _llm_tool_name_lock(self, name: str, request_timeout: float) -> AsyncIterator[float]:
+        """Hold the per-name lock of the async register/unregister calls and
+        yield what is left of ``request_timeout`` once it is held.
 
         Without it, two async calls for one name can interleave at the host
         (both requests are in flight at once) and leave the plugin and
         main_server disagreeing, e.g. ``gather(register, unregister)`` with
         both answering ``ok=True`` while main_server keeps the tool and the
-        plugin has no handler. The sync calls are not serialised by it.
+        plugin has no handler. Calls may come from different event loops
+        (command loop, timer threads), hence ``_CrossLoopLock``. The wait
+        counts against ``request_timeout``; when the budget runs out first,
+        ``_LlmToolLockTimeout`` is raised and nothing has been sent. The
+        sync calls are not serialised by it.
         """
-        entry = self._llm_tool_locks.get(name)
-        if entry is None:
-            entry = [asyncio.Lock(), 0]
-            self._llm_tool_locks[name] = entry
-        entry[1] += 1
+        started = time.monotonic()
+        with self._llm_tool_locks_mutex:
+            entry = self._llm_tool_locks.get(name)
+            if entry is None:
+                entry = [_CrossLoopLock(), 0]
+                self._llm_tool_locks[name] = entry
+            entry[1] += 1
         try:
-            async with entry[0]:
-                yield
+            try:
+                await entry[0].acquire(request_timeout)
+            except TimeoutError:
+                raise _LlmToolLockTimeout() from None
+            try:
+                remaining = request_timeout - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise _LlmToolLockTimeout()
+                yield remaining
+            finally:
+                entry[0].release()
         finally:
-            entry[1] -= 1
-            if entry[1] == 0 and self._llm_tool_locks.get(name) is entry:
-                del self._llm_tool_locks[name]
+            with self._llm_tool_locks_mutex:
+                entry[1] -= 1
+                if entry[1] == 0 and self._llm_tool_locks.get(name) is entry:
+                    del self._llm_tool_locks[name]
+
+    @staticmethod
+    def _llm_tool_lock_timeout_result(build_result: Any, name: str, request_timeout: float) -> Any:
+        return build_result(
+            {}, ok=False, error="timeout",
+            message=(
+                f"waited {request_timeout}s behind earlier calls for {name!r}; "
+                "nothing was sent to the host"
+            ),
+        )
 
     @staticmethod
     def _validate_llm_tool_timeout(timeout: float) -> None:
@@ -872,8 +969,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         clears it.
 
         Async calls for the same name run one at a time, in call order
-        (each waits for the previous one's answer; ``request_timeout``
-        covers this call's own request, not that wait), so for example
+        (each waits for the previous one's answer, also across event
+        loops such as timer threads; ``request_timeout`` covers that wait
+        plus this call's own request), so for example
         ``gather(register_llm_tool_async("t", ...),
         unregister_llm_tool_async("t"))`` ends with ``t`` gone everywhere.
         The sync calls do not take part in that ordering: use one style
@@ -892,23 +990,26 @@ class NekoPluginBase(_SharedNekoPluginBase):
             name=name, description=description, parameters=parameters,
             timeout=timeout, role=role, reply_tail=reply_tail,
         )
-        async with self._llm_tool_name_lock(meta.name):
-            self._claim_llm_tool_locally(meta, handler)
-            try:
-                result = await self._request_llm_tool_change(
-                    request_type="LLM_TOOL_REGISTER_REQUEST",
-                    payload=meta.to_ipc_payload(plugin_id=self.plugin_id),
-                    request_timeout=request_timeout,
-                    build_result=build_register_result,
-                )
-            except BaseException:
-                # Cancelled while waiting: the outcome is unknown, so do not
-                # leave a local tool the caller never got a result for.
-                self._release_llm_tool_locally(meta)
-                raise
-            if not result["ok"]:
-                self._release_llm_tool_locally(meta)
-            return result
+        try:
+            async with self._llm_tool_name_lock(meta.name, request_timeout) as remaining:
+                self._claim_llm_tool_locally(meta, handler)
+                try:
+                    result = await self._request_llm_tool_change(
+                        request_type="LLM_TOOL_REGISTER_REQUEST",
+                        payload=meta.to_ipc_payload(plugin_id=self.plugin_id),
+                        request_timeout=remaining,
+                        build_result=build_register_result,
+                    )
+                except BaseException:
+                    # Cancelled while waiting: the outcome is unknown, so do not
+                    # leave a local tool the caller never got a result for.
+                    self._release_llm_tool_locally(meta)
+                    raise
+                if not result["ok"]:
+                    self._release_llm_tool_locally(meta)
+                return result
+        except _LlmToolLockTimeout:
+            return self._llm_tool_lock_timeout_result(build_register_result, meta.name, request_timeout)
 
     async def unregister_llm_tool_async(
         self,
@@ -943,25 +1044,28 @@ class NekoPluginBase(_SharedNekoPluginBase):
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
         validate_tool_name(name)
-        async with self._llm_tool_name_lock(name):
-            meta = self._llm_tools.get(name)
-            result = await self._request_llm_tool_change(
-                request_type="LLM_TOOL_UNREGISTER_REQUEST",
-                # Without a local record the role is unknown: all roles.
-                payload={"plugin_id": self.plugin_id, "name": name, "role": meta.role if meta else None},
-                request_timeout=request_timeout,
-                build_result=build_unregister_result,
-            )
-            if meta is not None:
-                if result["ok"]:
-                    self._release_llm_tool_locally(meta)
-                return result
-            if result["ok"] and not result["removed"]:
-                return build_unregister_result(
-                    result, ok=False, error="not_registered",
-                    message=f"no LLM tool named {name!r} is registered by this plugin",
+        try:
+            async with self._llm_tool_name_lock(name, request_timeout) as remaining:
+                meta = self._llm_tools.get(name)
+                result = await self._request_llm_tool_change(
+                    request_type="LLM_TOOL_UNREGISTER_REQUEST",
+                    # Without a local record the role is unknown: all roles.
+                    payload={"plugin_id": self.plugin_id, "name": name, "role": meta.role if meta else None},
+                    request_timeout=remaining,
+                    build_result=build_unregister_result,
                 )
-            return result
+                if meta is not None:
+                    if result["ok"]:
+                        self._release_llm_tool_locally(meta)
+                    return result
+                if result["ok"] and not result["removed"]:
+                    return build_unregister_result(
+                        result, ok=False, error="not_registered",
+                        message=f"no LLM tool named {name!r} is registered by this plugin",
+                    )
+                return result
+        except _LlmToolLockTimeout:
+            return self._llm_tool_lock_timeout_result(build_unregister_result, name, request_timeout)
 
     def list_llm_tools(self) -> list[dict[str, Any]]:
         """Return the LLM tools this plugin currently has registered."""

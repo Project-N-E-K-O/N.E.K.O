@@ -536,11 +536,13 @@ Local state follows `ok`, so the plugin and the host agree:
   leftover on `main_server` is removed. Stopping the plugin clears
   everything either way.
 - Async calls for the same name run one at a time, in call order, each
-  waiting for the previous one's answer. For example,
+  waiting for the previous one's answer, also when they come from
+  different event loops (e.g. an entry and an interval timer). For example,
   `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))`
   ends with `t` gone everywhere. Different names do not wait for each
-  other. `request_timeout` covers each call's own request, not the time
-  spent waiting behind earlier calls for the same name.
+  other. `request_timeout` covers the whole call, including the time spent
+  waiting behind earlier calls for the same name; if it runs out while
+  waiting, the result is `timeout` and nothing was sent to the host.
 
 Argument errors raise like the sync calls (`ValueError`, `TypeError`,
 `EntryConflictError`). The async calls also raise `ValueError` for a bad

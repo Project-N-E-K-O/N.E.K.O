@@ -457,9 +457,9 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 - `timeout` 表示 `main_server` 上的结果未知。注册超时后再注册同名即可收敛（同 source 注册
   会覆盖旧的）；如果不想要这个工具了，直接调 `unregister_llm_tool_async(name)`：本地已经没有的
   名字也会发给 host、按全部 role 注销，`main_server` 上的残留会被删掉。插件停止时无论如何都会全部清掉。
-- 同一个名字的 async 调用按调用顺序逐个执行，每个都等上一个的答复。例如
+- 同一个名字的 async 调用按调用顺序逐个执行，每个都等上一个的答复；来自不同事件循环（例如入口和定时器）的调用也一样。例如
   `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))` 结束后 `t` 在各处都不存在。
-  不同名字之间互不等待。`request_timeout` 只管本次调用自己的请求，不含排在同名前面调用后面等待的时间。
+  不同名字之间互不等待。`request_timeout` 管整次调用，包括排在同名前面调用后面等待的时间；等待期间就用完时返回 `timeout`，这时什么都没发给 host。
 
 参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`）。async 版本
 另外在 `request_timeout` 不合法、或注册时 `timeout` 不在 (0, 300] 内（`main_server` 的上限；同步版本
