@@ -483,6 +483,27 @@ async def test_non_ascii_configured_csrf_token_is_not_500(app, save_recorder, mo
 
 
 @pytest.mark.asyncio
+async def test_matching_non_ascii_csrf_token_is_not_500(app, save_recorder, monkeypatch):
+    """Equal non-ASCII tokens must not reach a str compare_digest (TypeError)."""
+    from main_routers.system_router import _shared as system_shared
+
+    monkeypatch.setattr(system_shared, "AUTOSTART_CSRF_TOKEN", "t\u00f6ken")
+    async with _client(app, base_url="http://neko.lan:48911") as client:
+        response = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers=[
+                ("Content-Type", "application/json"),
+                ("Origin", "http://neko.lan:1081"),
+                ("X-CSRF-Token", "t\u00f6ken".encode("latin-1")),
+            ],
+        )
+    assert response.status_code == 403
+    assert response.json()["success"] is False
+    assert save_recorder.calls == []
+
+
+@pytest.mark.asyncio
 async def test_valid_csrf_does_not_let_referer_replace_opaque_origin(app, save_recorder, csrf_token):
     """Origin "null" plus a Referer the CSRF rule would accept is still rejected."""
     async with _client(app, base_url="http://neko.lan:48911") as client:

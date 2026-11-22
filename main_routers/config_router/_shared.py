@@ -55,15 +55,17 @@ def _csrf_header_accepted(request: Request) -> bool:
 
     token = request.headers.get(system_shared._AUTOSTART_CSRF_HEADER, "")
     expected = system_shared.AUTOSTART_CSRF_TOKEN
-    # Compare bytes: compare_digest raises TypeError on non-ASCII str, which
-    # either side (request header or configured token) may contain.
+    # compare_digest raises TypeError on non-ASCII str, both here and in
+    # _validate_local_mutation_request below; a non-ASCII token on either side
+    # (request header or configured value) is simply not accepted.
     if not (
-        token
+        isinstance(token, str)
+        and isinstance(expected, str)
+        and token
         and expected
-        and secrets.compare_digest(
-            token.encode("utf-8", "surrogatepass"),
-            str(expected).encode("utf-8", "surrogatepass"),
-        )
+        and token.isascii()
+        and expected.isascii()
+        and secrets.compare_digest(token, expected)
     ):
         return False
     # Same rule as the general check: a present but opaque or malformed Origin
