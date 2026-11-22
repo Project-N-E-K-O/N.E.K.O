@@ -266,6 +266,7 @@ async def get_vrm_models():
         models = []
         seen_urls = set()  # Use a set to deduplicate by URL.
         skipped = 0  # Non-UTF-8 names cannot be quoted or serialized (#3230).
+        unchecked = 0  # Paths whose type cannot be checked (e.g. EACCES on Python 3.11).
 
         # 1. Find project VRM files (static/vrm/).
         project_root = config_mgr.project_root
@@ -274,6 +275,7 @@ async def get_vrm_models():
             for vrm_file in _iter_vrm_model_files(static_vrm_dir):
                 # Type cannot be checked: leave it out so the other models still list.
                 if not _file_check(vrm_file):
+                    unchecked += 1
                     continue
                 if not is_utf8_text(vrm_file.name):
                     skipped += 1
@@ -301,6 +303,7 @@ async def get_vrm_models():
             for vrm_file in _iter_vrm_model_files(vrm_dir):
                 # Type cannot be checked: leave it out so the other models still list.
                 if not _file_check(vrm_file):
+                    unchecked += 1
                     continue
                 if not is_utf8_text(vrm_file.name):
                     skipped += 1
@@ -387,6 +390,8 @@ async def get_vrm_models():
 
         if skipped:
             logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VRM 模型")
+        if unchecked:
+            logger.warning(f"跳过 {unchecked} 个无法检查类型的 VRM 模型路径")
         return JSONResponse(content={
             "success": True,
             "models": models

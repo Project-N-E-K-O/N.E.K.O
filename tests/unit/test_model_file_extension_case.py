@@ -13,7 +13,7 @@ listed URL is served, and that the MMD animation can be deleted.
 import io
 import zipfile
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import quote
 
 from fastapi import FastAPI
@@ -338,6 +338,8 @@ def test_models_list_skips_uncheckable_paths_and_keeps_the_rest(mmd_app, monkeyp
         return real_is_file(self)
 
     monkeypatch.setattr(Path, "is_file", is_file)
+    logger = MagicMock()
+    monkeypatch.setattr(mmd_router, "logger", logger)
     with TestClient(mmd_app.app) as client:
         response = client.get("/api/model/mmd/models")
 
@@ -347,6 +349,7 @@ def test_models_list_skips_uncheckable_paths_and_keeps_the_rest(mmd_app, monkeyp
         "/user_mmd/Good/Good.pmx",
         "/workshop/123/Shop.pmx",
     ]
+    logger.warning.assert_any_call("跳过 3 个无法检查类型的 MMD 模型路径")
     assert (mmd_app.mmd_dir / "Locked" / "Locked.PMX").exists()
 
 
@@ -438,6 +441,8 @@ def test_vrm_models_list_skips_uncheckable_paths_and_keeps_the_rest(vrm_app, mon
     (vrm_app.vrm_dir / "Good.VRM").write_bytes(b"glTF")
     (vrm_app.vrm_dir / "Hidden.vrm").write_bytes(b"glTF")
     _raise_for_names(monkeypatch, "is_file", {"Locked.VRM", "Hidden.vrm"})
+    logger = MagicMock()
+    monkeypatch.setattr(vrm_router, "logger", logger)
 
     with TestClient(vrm_app.app) as client:
         response = client.get("/api/model/vrm/models")
@@ -446,6 +451,7 @@ def test_vrm_models_list_skips_uncheckable_paths_and_keeps_the_rest(vrm_app, mon
     assert sorted(model["url"] for model in response.json()["models"]) == [
         "/static/vrm/Builtin.vrm", "/user_vrm/Good.VRM",
     ]
+    logger.warning.assert_any_call("跳过 2 个无法检查类型的 VRM 模型路径")
 
 
 def test_vrm_uncheckable_model_still_counts_as_existing(vrm_app, monkeypatch):
@@ -471,6 +477,8 @@ def test_mmd_models_list_skips_an_uncheckable_top_folder(mmd_app, monkeypatch):
     (mmd_app.mmd_dir / "Residue" / "tex.png").write_bytes(b"png")
     (mmd_app.mmd_dir / "Locked").mkdir()
     _raise_for_names(monkeypatch, "is_dir", {"Locked"})
+    logger = MagicMock()
+    monkeypatch.setattr(mmd_router, "logger", logger)
 
     with TestClient(mmd_app.app) as client:
         response = client.get("/api/model/mmd/models")
@@ -479,6 +487,21 @@ def test_mmd_models_list_skips_an_uncheckable_top_folder(mmd_app, monkeypatch):
     models = response.json()["models"]
     assert sorted(model["url"] for model in models if not model.get("broken")) == ["/user_mmd/Good/Good.pmx"]
     assert sorted(model["url"] for model in models if model.get("broken")) == ["/user_mmd/Residue"]
+    logger.warning.assert_any_call("跳过 1 个无法检查类型的 MMD 模型路径")
+
+
+def test_mmd_delete_by_folder_refuses_an_uncheckable_folder(mmd_app, monkeypatch):
+    # is_dir() raising on the folder answered 500; it is now refused like any
+    # other non-deletable path, and the folder is kept.
+    (mmd_app.mmd_dir / "Locked").mkdir()
+    (mmd_app.mmd_dir / "Locked" / "tex.png").write_bytes(b"png")
+    _raise_for_names(monkeypatch, "is_dir", {"Locked"})
+
+    with TestClient(mmd_app.app) as client:
+        response = client.request("DELETE", "/api/model/mmd/model", json={"url": "/user_mmd/Locked"})
+
+    assert response.status_code == 400, response.text
+    assert (mmd_app.mmd_dir / "Locked" / "tex.png").exists()
 
 
 @pytest.mark.parametrize("url", ["/user_mmd/Residue", "/user_mmd/Model/Model.pmx"])

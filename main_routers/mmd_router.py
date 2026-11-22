@@ -613,6 +613,7 @@ async def get_mmd_models():
         models = []
         seen_urls = set()
         skipped = 0  # Non-UTF-8 names cannot be serialized or requested (#3230).
+        unchecked = 0  # Paths whose type cannot be checked (e.g. EACCES on Python 3.11).
 
         # 1. Project static/mmd/, recursively.
         project_root = config_mgr.project_root
@@ -621,7 +622,10 @@ async def get_mmd_models():
             for model_file in _iter_model_files(static_mmd_dir):
                 # Dangling or looping link, or a path whose type cannot be checked:
                 # leave it out so the other models still list.
-                if not _file_check(model_file):
+                is_file = _file_check(model_file)
+                if not is_file:
+                    if is_file is None:
+                        unchecked += 1
                     continue
                 rel_path = model_file.relative_to(static_mmd_dir)
                 if not is_utf8_text(rel_path.as_posix()):
@@ -663,6 +667,7 @@ async def get_mmd_models():
                     # Type cannot be checked: leave it out so the other models still
                     # list. Its folder was recorded above, so it is not offered as
                     # deletable residue (delete-by-folder would refuse it anyway).
+                    unchecked += 1
                     continue
                 if not is_utf8_text(rel_path.as_posix()):
                     skipped += 1
@@ -689,6 +694,7 @@ async def get_mmd_models():
                 except OSError:
                     # Type cannot be checked (e.g. EACCES on Python 3.11): not
                     # offered as residue, and the rest of the list still loads.
+                    unchecked += 1
                     continue
                 if is_dir and item.name.lower() not in RESERVED_DIRS and item.name not in found_top_dirs:
                     if not is_utf8_text(item.name):
@@ -718,7 +724,10 @@ async def get_mmd_models():
                         installed_path = Path(installed_folder)
                         for model_file in _iter_model_files(installed_path):
                             # Dangling or looping link, or type cannot be checked.
-                            if not _file_check(model_file):
+                            is_file = _file_check(model_file)
+                            if not is_file:
+                                if is_file is None:
+                                    unchecked += 1
                                 continue
                             try:
                                 rel_path = model_file.relative_to(installed_path)
@@ -747,6 +756,8 @@ async def get_mmd_models():
 
         if skipped:
             logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 MMD 模型")
+        if unchecked:
+            logger.warning(f"跳过 {unchecked} 个无法检查类型的 MMD 模型路径")
         return JSONResponse(content={"success": True, "models": models})
     except Exception as e:
         logger.error(f"获取 MMD 模型列表失败: {e}")
@@ -943,7 +954,8 @@ async def update_emotion_mapping(request: Request):
 
 
 def _count_and_rmtree(path: Path) -> int:
-    # An entry whose type cannot be checked is not counted and does not stop the delete.
+    # Counts checkable files only: an entry whose type cannot be checked is not
+    # counted (rmtree still removes it) and does not stop the delete.
     count = sum(1 for f in path.rglob('*') if _file_check(f))
     shutil.rmtree(path)
     return count
@@ -978,7 +990,12 @@ async def delete_mmd_model(request: Request):
             # safe_mmd_path rejects directories, but incomplete model directories must be deletable.
             # Check direct child of mmd_dir and presence of model files.
             candidate = (mmd_dir / rel_path).resolve()
-            if candidate.is_dir() and candidate.parent.resolve() == mmd_dir.resolve() and candidate.is_relative_to(mmd_dir.resolve()) and candidate.name.lower() not in RESERVED_DIRS:
+            try:
+                candidate_is_dir = candidate.is_dir()
+            except OSError:
+                # Type cannot be checked: refuse with the path error below instead of 500.
+                candidate_is_dir = False
+            if candidate_is_dir and candidate.parent.resolve() == mmd_dir.resolve() and candidate.is_relative_to(mmd_dir.resolve()) and candidate.name.lower() not in RESERVED_DIRS:
                 has_model = any(_iter_model_files(candidate))
                 if has_model:
                     # Valid models present: delete by model URL, never directory path.
