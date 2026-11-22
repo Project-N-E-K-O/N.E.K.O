@@ -170,6 +170,28 @@ describe('the runtime tab', () => {
     await flush()
     expect(builtin().checked).toBe(true)
     expect(byTest('dsh-state')?.textContent).toContain(words.runtime.dsh.installed)
+    // Nothing asks any more: the answer that came late did not start the asking again.
+    const asked = api.getRuntime.mock.calls.length
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(api.getRuntime).toHaveBeenCalledTimes(asked)
+  })
+
+  it('says nothing of a reading that failed after a change was taken', async () => {
+    vi.useFakeTimers()
+    api.getRuntime.mockResolvedValueOnce(runtime({ downloading: true, downloaded_bytes: 1000 }))
+    await mount(RuntimeTab)
+    const builtin = () => document.querySelector('[data-testid="runtime-preference"] input[value="builtin"]') as HTMLInputElement
+    let fail!: (reason: unknown) => void
+    api.getRuntime.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject }))
+    await vi.advanceTimersByTimeAsync(1000)
+    api.setRuntimePreference.mockResolvedValueOnce(runtime({ downloading: false, installed: true, preference: 'builtin' }))
+    await click(builtin())
+    fail(refusal('agent_unreachable'))
+    await flush()
+    expect(document.body.textContent).not.toContain(words.errors.agent_unreachable)
+    const asked = api.getRuntime.mock.calls.length
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(api.getRuntime).toHaveBeenCalledTimes(asked)
   })
 
   it('does not offer to remove dsh while a task runs in it, and passes on what else goes', async () => {

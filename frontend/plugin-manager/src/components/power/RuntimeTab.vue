@@ -153,19 +153,22 @@ function show(next: RuntimeView) {
 // Answers are shown in the order they were asked for: one that was asked for before a change does not undo it.
 let asked = 0
 let shown = 0
-function showIfNewer(mine: number, next: RuntimeView) {
-  if (mine < shown) return
+function showIfNewer(mine: number, next: RuntimeView): boolean {
+  if (mine < shown) return false
   shown = mine
   show(next)
+  return true
 }
 
 async function load(quiet = false) {
   if (!quiet) loading.value = true
   const mine = ++asked
   try {
-    showIfNewer(mine, await getRuntime())
-    error.value = ''
+    // An answer that is older than what is shown says nothing: neither what it holds nor that it came.
+    if (showIfNewer(mine, await getRuntime())) error.value = ''
   } catch (failure) {
+    // Nor does one that failed: a change was taken since it was asked for, and asks again by itself.
+    if (mine < shown) return
     error.value = describeConsoleError(failure, t, te)
     if (quiet && alive) timer = setTimeout(() => void load(true), POLL_MS * 3)
   } finally {

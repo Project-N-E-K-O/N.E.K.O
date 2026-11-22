@@ -215,7 +215,7 @@ def main() -> int:
         "" if good else (
             # The application goes by the environment's proxy; this run may not have.
             f"这次{'走系统代理' if options.use_system_proxy else '直连'}试的全部地址都没下成；应用按系统代理下载，"
-            f"{'所以它的下载按钮在这个网络上也会失败。' if options.use_system_proxy else '它走代理时可能仍然下得成，加 --use-system-proxy 再试一次。'}"
+            f"{'它的下载按钮在这个网络上多半也会失败（它读代理设置的办法和这个脚本不完全一样，不能说一定）。' if options.use_system_proxy else '它走代理时可能仍然下得成，加 --use-system-proxy 再试一次。'}"
             if tried_all else "这次选的地址都没下成；没试的地址不在结论里。"
         )
     ))
