@@ -110,6 +110,8 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._report_lock = threading.Lock()
+        self._bypass_report_interval = False
         self._config_manager = get_config_manager()
 
         # Unpersisted incremental data (cleared after a successful save)

@@ -674,8 +674,18 @@ def rename_character_memory_storage(
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     roots = iter_character_memory_roots(config_manager)
     if old_name != new_name:
+        colliding_name = find_character_name_collision(
+            config_manager,
+            new_name,
+            exclude_names=(old_name,),
+        )
+        if colliding_name is not None:
+            raise FileExistsError(
+                f"Refusing to rename memory storage {old_name!r} -> {new_name!r}: "
+                f"target path {runtime_target_dir} collides with existing character {colliding_name!r}"
+            )
         for other_name in _iter_registered_catgirl_names(config_manager):
-            if other_name in (old_name, new_name):
+            if other_name == old_name:
                 continue
             for base_dir in dict.fromkeys([runtime_target_dir.parent, *roots]):
                 if _paths_refer_to_same_entry(base_dir / other_name, runtime_target_dir):

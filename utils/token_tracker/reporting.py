@@ -22,6 +22,7 @@ import hmac
 import json
 import os
 import secrets
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -204,6 +205,17 @@ def record_avatar_state() -> None:
 class ReportingMixin:
     """Remote reporting and periodic persistence methods."""
 
+    def _get_report_lock(self) -> threading.Lock:
+        """Return the per-instance lock serializing remote telemetry reporting."""
+        lock = getattr(self, "_report_lock", None)
+        if lock is None:
+            with self._lock:
+                lock = getattr(self, "_report_lock", None)
+                if lock is None:
+                    lock = threading.Lock()
+                    self._report_lock = lock
+        return lock
+
     @property
     def _unsent_queue_path(self) -> Path:
         """Persistence file for the unsent remote-reporting queue.
@@ -265,6 +277,7 @@ class ReportingMixin:
         # by batch_seq, preventing double counting.
         with self._lock:
             self._last_report_time = 0.0
+            self._bypass_report_interval = True
 
         # ── 3) save() sends daily_stats plus freshly emitted instrument snapshots ──
         try:
@@ -290,6 +303,7 @@ class ReportingMixin:
                     and _TELEMETRY_SERVER_URL and not _DO_NOT_TRACK):
                 with self._lock:
                     self._last_report_time = 0.0
+                    self._bypass_report_interval = True
                 self.save()
         except Exception:
             # A final instrument flush is best-effort during interpreter shutdown.
@@ -503,204 +517,212 @@ class ReportingMixin:
         if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
             return
 
-        # Accumulate unsent data.
-        with self._lock:
-            for day_key, day_delta in delta_daily.items():
-                if day_key not in self._unsent_daily:
-                    self._unsent_daily[day_key] = copy.deepcopy(day_delta)
-                else:
-                    _merge_day_stats(self._unsent_daily[day_key], day_delta)
-            self._unsent_records.extend(delta_records)
-            if len(self._unsent_records) > 200:
-                self._unsent_records = self._unsent_records[-200:]
-
-        # Persist unsent queue against process kills.
-        self._save_unsent_queue()
-
-        # Check reporting interval.
-        now = time.time()
-        if now - self._last_report_time < self._report_interval:
-            return
-
-        # Peek accumulated instruments: even without daily_stats (no LLM calls but frontend
-        # interaction counters), any instrument data merits a report.
-        try:
-            from utils.instrument import has_data as _instrument_has_data
-            has_instruments = _instrument_has_data()
-        except Exception:
-            has_instruments = False
-
-        # Retrieve outgoing data, distinguishing:
-        #   is_retry=False: fresh window, new batch_seq, normal instrument snapshot.
-        #   is_retry=True: retransmission of failed data with the same batch_seq; **exclude**
-        #                   new instruments because server seen_batches already knows
-        #                   this batch_id, deduplicating the entire batch as duplicate,
-        #                   silently discarding any added instruments too.
-        #                   Retain them in buffer and send separately in the next fresh window
-        #                   with a new batch_seq.
-        with self._lock:
-            if not self._unsent_daily and not has_instruments:
+        with self._get_report_lock():
+            if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
                 return
-            send_daily = self._unsent_daily
-            send_records = self._unsent_records
-            self._unsent_daily = {}
-            self._unsent_records = []
-            is_retry = self._pending_batch_seq is not None
-            if self._pending_batch_seq is None:
-                self._pending_batch_seq = secrets.token_hex(8)
-            batch_seq = self._pending_batch_seq
-        # Track whether daily/records accompany this send; needed to clear stale
-        # batch_seq after instrument-only failure (see except comments).
-        had_unsent_payload = bool(send_daily or send_records)
-        # Persist the active batch_seq alongside daily/records before sending the HTTP request
-        # so a mid-request crash retains the exact idempotency key on restart.
-        if send_daily:
-            self._persist_unsent_payload(send_daily, send_records, batch_seq)
 
-        # Snapshot instruments only for fresh windows; retries preserve them for later.
-        instruments_snapshot: dict = {}
-        if not is_retry:
-            try:
-                from utils.instrument import snapshot as _instrument_snapshot
-                instruments_snapshot = _instrument_snapshot()
-            except Exception as e:
-                logger.debug(f"Token tracker: instrument snapshot failed (non-critical): {e}")
-
-        try:
-            if not self._device_id:
-                self._device_id = _get_anonymous_device_id()
-            if not self._branch:
-                self._branch = _get_telemetry_branch(self._config_manager.config_dir)
-
-            app_version = _get_app_version_from_changelog()
-            telemetry_locale = _get_telemetry_locale()
-            telemetry_timezone = _get_telemetry_timezone()
-            # Get distribution +steam_user_id in one call from one source, avoiding
-            # two GetSteamID calls crossing SDK readiness and producing inconsistent
-            # release +nonempty Steam64.
-            telemetry_distribution, telemetry_steam_user_id = _get_telemetry_metadata()
-            telemetry_device_hw = _get_device_hw()
-
-            payload = {
-                "device_id": self._device_id,
-                # During migration include the old-algorithm ID for server matching in events.payload
-                # for future legacy->new mappings that fold historical cohorts. Current server
-                # Pydantic models omit this field and ignore it by default; HMAC
-                # covers canonical JSON of the entire payload dict,
-                # so server verification automatically includes it without changes.
-                "device_id_legacy": _get_legacy_device_id(),
-                "app_version": app_version,
-                "branch": self._branch,
-                "locale": telemetry_locale,
-                "timezone": telemetry_timezone,
-                "distribution": telemetry_distribution,
-                # Populate only when Steamworks SDK is ready and Steam64 available; otherwise use
-                # empty string. Server preserve-known semantics retain historical values on empties.
-                "steam_user_id": telemetry_steam_user_id,
-                # Device hardware profile (low-cardinality composite enums). Server preserve-known
-                # UPSERTs device attributes for retention joins analyzing day-one low-end-device churn.
-                "device_hw": telemetry_device_hw,
-                "daily_stats": send_daily,
-                "recent_records": send_records,
-            }
-            # Instrument snapshots use optional fields: old servers ignore them; new servers
-            # store unchanged in events.payload for later dashboard parsing. HMAC
-            # covers the whole payload, so added fields preserve verification.
-            if instruments_snapshot:
-                payload["instruments"] = instruments_snapshot
-            payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-
-            ts = time.time()
-            sig = _compute_telemetry_signature(payload_json, ts)
-
-            # batch_id supports server seen_batches idempotent deduplication with two goals:
-            #   (a) Failed retries / network timeouts after server commit without client 200
-            #       must preserve batch_id when resending the same daily data,
-            #       letting the server recognize and skip duplicate commits.
-            #   (b) Different windows, including instrument-only ones without daily data,
-            #       need unique batch_ids, or prior seen_batches entries
-            #       wrongly discard all subsequent instruments.
-            #
-            # batch_seq meets both: allocate on first entry to a window; preserve on retries,
-            # including after killed-process restarts; clear after 200. Hash the sequence,
-            # without hashing daily/records/instruments themselves, especially clear-on-read
-            # instruments that cannot recur on retry and would otherwise
-            # violate (a).
-            #
-            # batch_core uses **only retry-stable fields**: device_id +batch_seq.
-            # Deliberately exclude app_version, read live from changelog each report;
-            # updating the app between retries would change the same unsent batch's ID,
-            # bypassing seen_batches on new-version restart after timeout-after-commit
-            # and double-counting committed daily_stats (Codex P1). Exclude device_id_legacy
-            # too, dependent on unstable multi-interface uuid.getnode() enumeration.
-            # batch_seq is unique per window and stable across retries; device_id prevents
-            # cross-device collisions. Enough; HMAC still covers the entire payload including app_version.
-            batch_core = {
-                "device_id": payload["device_id"],
-                "batch_seq": batch_seq,
-            }
-            batch_id = hashlib.sha256(
-                json.dumps(batch_core, ensure_ascii=False, sort_keys=True).encode()
-            ).hexdigest()[:32]
-            submission = {
-                "timestamp": ts,
-                "signature": sig,
-                "payload": payload,
-                "batch_id": batch_id,
-            }
-            body = json.dumps(submission, ensure_ascii=False).encode("utf-8")
-            headers = {"Content-Type": "application/json"}
-
-            # Gzip only >=1KB: smaller payloads are not worth it (see _TELEMETRY_GZIP_THRESHOLD).
-            # mtime=0 makes identical bodies produce identical compressed bytes, avoiding timestamp
-            # differences resembling duplicate reports during diff debugging/fuzzing.
-            if len(body) >= _TELEMETRY_GZIP_THRESHOLD:
-                body = gzip.compress(body, compresslevel=6, mtime=0)
-                headers["Content-Encoding"] = "gzip"
-
-            req = urllib.request.Request(
-                f"{_TELEMETRY_SERVER_URL}/api/v1/telemetry",
-                data=body,
-                headers=headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(
-                req, timeout=_TELEMETRY_TIMEOUT if timeout is None else timeout,
-            ) as resp:
-                if resp.status == 200:
-                    self._last_report_time = now
-                    # Success: clear batch_seq for the next window and remove unsent files.
-                    with self._lock:
-                        self._pending_batch_seq = None
-                    self._unsent_queue_path.unlink(missing_ok=True)
-                    logger.debug("Token tracker: telemetry reported successfully")
-                    return
-
-            raise Exception(f"HTTP {resp.status}")
-
-        except Exception as e:
-            logger.debug(f"Token tracker: telemetry report failed (non-critical): {e}")
-            # Failure: restore/persist unsent. Daily-bearing failures **retain**
-            # _pending_batch_seq for retries, so server seen_batches deduplicates
-            # uncertain outcomes where network timed out after server commit.
-            #
-            # Instrument-only failures (empty send_daily/send_records,
-            # had_unsent_payload=False) must clear batch_seq: instruments are
-            # clear-on-read with nothing to restore. Stale sequences make the **next fresh window**
-            # reuse a committed batch_id hash, so the server
-            # returns duplicate, skipped, silently dropping new data.
+            # Accumulate unsent data.
+            now = time.time()
             with self._lock:
-                for day_key, day_delta in send_daily.items():
+                for day_key, day_delta in delta_daily.items():
                     if day_key not in self._unsent_daily:
-                        self._unsent_daily[day_key] = day_delta
+                        self._unsent_daily[day_key] = copy.deepcopy(day_delta)
                     else:
                         _merge_day_stats(self._unsent_daily[day_key], day_delta)
-                restored = send_records + self._unsent_records
-                self._unsent_records = restored[-200:]
-                if not had_unsent_payload:
-                    # No actual retry content: prevent stale sequences harming the next window.
-                    self._pending_batch_seq = None
+                self._unsent_records.extend(delta_records)
+                if len(self._unsent_records) > 200:
+                    self._unsent_records = self._unsent_records[-200:]
+                last_report_time = self._last_report_time
+                bypass_interval = bool(getattr(self, "_bypass_report_interval", False))
+                if bypass_interval:
+                    self._bypass_report_interval = False
+
+            # Persist unsent queue against process kills.
             self._save_unsent_queue()
+
+            # Check reporting interval.
+            if not bypass_interval and now - last_report_time < self._report_interval:
+                return
+
+            # Peek accumulated instruments: even without daily_stats (no LLM calls but frontend
+            # interaction counters), any instrument data merits a report.
+            try:
+                from utils.instrument import has_data as _instrument_has_data
+                has_instruments = _instrument_has_data()
+            except Exception:
+                has_instruments = False
+
+            # Retrieve outgoing data, distinguishing:
+            #   is_retry=False: fresh window, new batch_seq, normal instrument snapshot.
+            #   is_retry=True: retransmission of failed data with the same batch_seq; **exclude**
+            #                   new instruments because server seen_batches already knows
+            #                   this batch_id, deduplicating the entire batch as duplicate,
+            #                   silently discarding any added instruments too.
+            #                   Retain them in buffer and send separately in the next fresh window
+            #                   with a new batch_seq.
+            with self._lock:
+                if not self._unsent_daily and not has_instruments:
+                    return
+                send_daily = self._unsent_daily
+                send_records = self._unsent_records
+                self._unsent_daily = {}
+                self._unsent_records = []
+                is_retry = self._pending_batch_seq is not None
+                if self._pending_batch_seq is None:
+                    self._pending_batch_seq = secrets.token_hex(8)
+                batch_seq = self._pending_batch_seq
+            # Track whether daily/records accompany this send; needed to clear stale
+            # batch_seq after instrument-only failure (see except comments).
+            had_unsent_payload = bool(send_daily or send_records)
+            # Persist the active batch_seq alongside daily/records before sending the HTTP request
+            # so a mid-request crash retains the exact idempotency key on restart.
+            if send_daily:
+                self._persist_unsent_payload(send_daily, send_records, batch_seq)
+
+            # Snapshot instruments only for fresh windows; retries preserve them for later.
+            instruments_snapshot: dict = {}
+            if not is_retry:
+                try:
+                    from utils.instrument import snapshot as _instrument_snapshot
+                    instruments_snapshot = _instrument_snapshot()
+                except Exception as e:
+                    logger.debug(f"Token tracker: instrument snapshot failed (non-critical): {e}")
+
+            try:
+                if not self._device_id:
+                    self._device_id = _get_anonymous_device_id()
+                if not self._branch:
+                    self._branch = _get_telemetry_branch(self._config_manager.config_dir)
+
+                app_version = _get_app_version_from_changelog()
+                telemetry_locale = _get_telemetry_locale()
+                telemetry_timezone = _get_telemetry_timezone()
+                # Get distribution +steam_user_id in one call from one source, avoiding
+                # two GetSteamID calls crossing SDK readiness and producing inconsistent
+                # release +nonempty Steam64.
+                telemetry_distribution, telemetry_steam_user_id = _get_telemetry_metadata()
+                telemetry_device_hw = _get_device_hw()
+
+                payload = {
+                    "device_id": self._device_id,
+                    # During migration include the old-algorithm ID for server matching in events.payload
+                    # for future legacy->new mappings that fold historical cohorts. Current server
+                    # Pydantic models omit this field and ignore it by default; HMAC
+                    # covers canonical JSON of the entire payload dict,
+                    # so server verification automatically includes it without changes.
+                    "device_id_legacy": _get_legacy_device_id(),
+                    "app_version": app_version,
+                    "branch": self._branch,
+                    "locale": telemetry_locale,
+                    "timezone": telemetry_timezone,
+                    "distribution": telemetry_distribution,
+                    # Populate only when Steamworks SDK is ready and Steam64 available; otherwise use
+                    # empty string. Server preserve-known semantics retain historical values on empties.
+                    "steam_user_id": telemetry_steam_user_id,
+                    # Device hardware profile (low-cardinality composite enums). Server preserve-known
+                    # UPSERTs device attributes for retention joins analyzing day-one low-end-device churn.
+                    "device_hw": telemetry_device_hw,
+                    "daily_stats": send_daily,
+                    "recent_records": send_records,
+                }
+                # Instrument snapshots use optional fields: old servers ignore them; new servers
+                # store unchanged in events.payload for later dashboard parsing. HMAC
+                # covers the whole payload, so added fields preserve verification.
+                if instruments_snapshot:
+                    payload["instruments"] = instruments_snapshot
+                payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+                ts = time.time()
+                sig = _compute_telemetry_signature(payload_json, ts)
+
+                # batch_id supports server seen_batches idempotent deduplication with two goals:
+                #   (a) Failed retries / network timeouts after server commit without client 200
+                #       must preserve batch_id when resending the same daily data,
+                #       letting the server recognize and skip duplicate commits.
+                #   (b) Different windows, including instrument-only ones without daily data,
+                #       need unique batch_ids, or prior seen_batches entries
+                #       wrongly discard all subsequent instruments.
+                #
+                # batch_seq meets both: allocate on first entry to a window; preserve on retries,
+                # including after killed-process restarts; clear after 200. Hash the sequence,
+                # without hashing daily/records/instruments themselves, especially clear-on-read
+                # instruments that cannot recur on retry and would otherwise
+                # violate (a).
+                #
+                # batch_core uses **only retry-stable fields**: device_id +batch_seq.
+                # Deliberately exclude app_version, read live from changelog each report;
+                # updating the app between retries would change the same unsent batch's ID,
+                # bypassing seen_batches on new-version restart after timeout-after-commit
+                # and double-counting committed daily_stats (Codex P1). Exclude device_id_legacy
+                # too, dependent on unstable multi-interface uuid.getnode() enumeration.
+                # batch_seq is unique per window and stable across retries; device_id prevents
+                # cross-device collisions. Enough; HMAC still covers the entire payload including app_version.
+                batch_core = {
+                    "device_id": payload["device_id"],
+                    "batch_seq": batch_seq,
+                }
+                batch_id = hashlib.sha256(
+                    json.dumps(batch_core, ensure_ascii=False, sort_keys=True).encode()
+                ).hexdigest()[:32]
+                submission = {
+                    "timestamp": ts,
+                    "signature": sig,
+                    "payload": payload,
+                    "batch_id": batch_id,
+                }
+                body = json.dumps(submission, ensure_ascii=False).encode("utf-8")
+                headers = {"Content-Type": "application/json"}
+
+                # Gzip only >=1KB: smaller payloads are not worth it (see _TELEMETRY_GZIP_THRESHOLD).
+                # mtime=0 makes identical bodies produce identical compressed bytes, avoiding timestamp
+                # differences resembling duplicate reports during diff debugging/fuzzing.
+                if len(body) >= _TELEMETRY_GZIP_THRESHOLD:
+                    body = gzip.compress(body, compresslevel=6, mtime=0)
+                    headers["Content-Encoding"] = "gzip"
+
+                req = urllib.request.Request(
+                    f"{_TELEMETRY_SERVER_URL}/api/v1/telemetry",
+                    data=body,
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(
+                    req, timeout=_TELEMETRY_TIMEOUT if timeout is None else timeout,
+                ) as resp:
+                    if resp.status == 200:
+                        # Success: clear batch_seq for the next window and remove unsent files.
+                        with self._lock:
+                            self._last_report_time = now
+                            self._pending_batch_seq = None
+                        self._unsent_queue_path.unlink(missing_ok=True)
+                        logger.debug("Token tracker: telemetry reported successfully")
+                        return
+
+                raise Exception(f"HTTP {resp.status}")
+
+            except Exception as e:
+                logger.debug(f"Token tracker: telemetry report failed (non-critical): {e}")
+                # Failure: restore/persist unsent. Daily-bearing failures **retain**
+                # _pending_batch_seq for retries, so server seen_batches deduplicates
+                # uncertain outcomes where network timed out after server commit.
+                #
+                # Instrument-only failures (empty send_daily/send_records,
+                # had_unsent_payload=False) must clear batch_seq: instruments are
+                # clear-on-read with nothing to restore. Stale sequences make the **next fresh window**
+                # reuse a committed batch_id hash, so the server
+                # returns duplicate, skipped, silently dropping new data.
+                with self._lock:
+                    for day_key, day_delta in send_daily.items():
+                        if day_key not in self._unsent_daily:
+                            self._unsent_daily[day_key] = day_delta
+                        else:
+                            _merge_day_stats(self._unsent_daily[day_key], day_delta)
+                    restored = send_records + self._unsent_records
+                    self._unsent_records = restored[-200:]
+                    if not had_unsent_payload:
+                        # No actual retry content: prevent stale sequences harming the next window.
+                        self._pending_batch_seq = None
+                self._save_unsent_queue()
 
     def start_periodic_save(self):
         """Start the background periodic save task. Must be called inside an asyncio loop."""

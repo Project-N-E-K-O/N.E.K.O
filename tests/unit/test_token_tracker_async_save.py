@@ -328,3 +328,224 @@ def test_legacy_migration_preserves_source_files_on_atomic_write_failure_and_rec
     assert merged["daily_stats"]["2026-11-01"]["call_count"] == 3
     assert len(merged["recent_records"]) == 2
 
+
+def test_concurrent_report_to_server_serializes_batches_and_keeps_record_nonblocking(
+    tracker_factory, monkeypatch
+):
+    """F0546: concurrent reports serialize behind _report_lock without blocking record()."""
+    from contextlib import contextmanager
+    from datetime import date
+    from utils.token_tracker import reporting
+
+    tracker = tracker_factory()
+    tracker.record("model-1", 6, 4, 10)
+
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    sent_payloads = []
+    disk_while_first_inflight = []
+    call_count = {"n": 0}
+
+    @contextmanager
+    def slow_first_then_fast(request, *, timeout):
+        body = request.data
+        if request.get_header("Content-encoding") == "gzip":
+            body = gzip.decompress(body)
+        idx = call_count["n"]
+        call_count["n"] += 1
+        sent_payloads.append(json.loads(body))
+        if idx == 0:
+            first_entered.set()
+            assert release_first.wait(5)
+            disk_while_first_inflight.append(
+                json.loads(tracker._unsent_queue_path.read_text(encoding="utf-8"))
+            )
+        yield SimpleNamespace(status=200)
+
+    monkeypatch.setattr(reporting.urllib.request, "urlopen", slow_first_then_fast)
+
+    t1 = threading.Thread(target=tracker.save)
+    t1.start()
+    assert first_entered.wait(5)
+
+    # record() only uses self._lock and must not block while Thread 1 is mid-urlopen.
+    record_done = threading.Event()
+
+    def record_in_flight():
+        tracker.record("model-inflight", 1, 1, 2)
+        record_done.set()
+
+    t_rec = threading.Thread(target=record_in_flight)
+    t_rec.start()
+    assert record_done.wait(1.0), "record() blocked on in-flight urlopen"
+    t_rec.join(1.0)
+
+    # Start concurrent _report_to_server (Thread 2) while Thread 1 is still inside urlopen.
+    today = date.today().isoformat()
+    t2_entered = threading.Event()
+    t2_done = threading.Event()
+
+    def run_t2():
+        t2_entered.set()
+        tracker._report_to_server(
+            {today: {"total_tokens": 20, "call_count": 1}},
+            [{"ts": 2.0, "model": "model-2", "tt": 20}],
+        )
+        t2_done.set()
+
+    t2 = threading.Thread(target=run_t2)
+    t2.start()
+    assert t2_entered.wait(5)
+    # Give Thread 2 a brief window to attempt entering _report_to_server; it must wait on _report_lock.
+    assert not t2_done.wait(0.05)
+    assert len(sent_payloads) == 1
+    assert json.loads(tracker._unsent_queue_path.read_text(encoding="utf-8"))["records"][0]["model"] == "model-1"
+
+    release_first.set()
+    t1.join(5)
+    t2.join(5)
+    assert not t1.is_alive() and not t2.is_alive()
+
+    assert len(disk_while_first_inflight) == 1
+    assert disk_while_first_inflight[0]["records"][0]["model"] == "model-1"
+    assert len(sent_payloads) == 2
+    assert sent_payloads[0]["batch_id"] != sent_payloads[1]["batch_id"]
+    assert sent_payloads[0]["payload"]["recent_records"][0]["model"] == "model-1"
+    assert sent_payloads[1]["payload"]["recent_records"][0]["model"] == "model-2"
+    assert not tracker._unsent_queue_path.exists()
+    assert tracker._pending_batch_seq is None
+
+
+def test_concurrent_below_interval_report_does_not_clobber_inflight_unsent_queue(
+    tracker_factory, monkeypatch
+):
+    """F0546: a concurrent below-interval call cannot overwrite an in-flight batch on disk."""
+    from datetime import date
+    from utils.token_tracker import reporting
+
+    tracker = tracker_factory()
+    tracker.record("model-1", 6, 4, 10)
+
+    first_entered = threading.Event()
+    release_first = threading.Event()
+
+    def failing_slow_urlopen(request, *, timeout):
+        first_entered.set()
+        assert release_first.wait(5)
+        raise TimeoutError("offline")
+
+    monkeypatch.setattr(reporting.urllib.request, "urlopen", failing_slow_urlopen)
+
+    t1 = threading.Thread(target=tracker.save)
+    t1.start()
+    assert first_entered.wait(5)
+
+    # Thread 2 arrives while Thread 1 is mid-urlopen, with interval now larger than elapsed time.
+    tracker._report_interval = float("inf")
+    today = date.today().isoformat()
+    t2_done = threading.Event()
+
+    def run_t2():
+        tracker._report_to_server(
+            {today: {"total_tokens": 20, "call_count": 1}},
+            [{"ts": 2.0, "model": "model-2", "tt": 20}],
+        )
+        t2_done.set()
+
+    t2 = threading.Thread(target=run_t2)
+    t2.start()
+    assert not t2_done.wait(0.05)
+
+    # While Thread 1 is still in-flight, disk still holds model-1 with its batch_seq.
+    disk_mid = json.loads(tracker._unsent_queue_path.read_text(encoding="utf-8"))
+    assert disk_mid["daily"][today]["total_tokens"] == 10
+    inflight_seq = disk_mid["batch_seq"]
+    assert isinstance(inflight_seq, str) and inflight_seq
+
+    release_first.set()
+    t1.join(5)
+    t2.join(5)
+    assert not t1.is_alive() and not t2.is_alive()
+
+    # After Thread 1 fails and Thread 2 runs its below-interval persistence, both batches are preserved.
+    disk_after = json.loads(tracker._unsent_queue_path.read_text(encoding="utf-8"))
+    assert disk_after["daily"][today]["total_tokens"] == 30
+    assert disk_after["batch_seq"] == inflight_seq
+
+
+def test_legacy_migration_is_idempotent_across_partial_unlink_permission_errors(
+    tracker_factory, monkeypatch
+):
+    """F0549: partial unlink PermissionError after atomic_write_json must not double-count on restart."""
+    from pathlib import Path
+
+    seed = tracker_factory()
+    storage_dir = seed._storage_dir
+
+    legacy_1 = storage_dir / "token_usage_1.json"
+    legacy_2 = storage_dir / "token_usage_2.json"
+    legacy_1.write_text(
+        json.dumps({
+            "version": 1,
+            "daily_stats": {"2026-11-01": {"total_tokens": 100, "call_count": 1}},
+            "recent_records": [{"ts": "2026-11-01T00:00:00", "m": "m1", "tt": 100}],
+        }),
+        encoding="utf-8",
+    )
+    legacy_2.write_text(
+        json.dumps({
+            "version": 1,
+            "daily_stats": {"2026-11-01": {"total_tokens": 200, "call_count": 2}},
+            "recent_records": [{"ts": "2026-11-01T00:01:00", "m": "m1", "tt": 200}],
+        }),
+        encoding="utf-8",
+    )
+
+    real_unlink = Path.unlink
+
+    def partial_locked_unlink(self, missing_ok=False):
+        if self.name == "token_usage_2.json":
+            raise PermissionError("file locked")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", partial_locked_unlink)
+
+    first = tracker_factory()
+    assert not legacy_1.exists()
+    assert legacy_2.exists()
+    merged_1 = json.loads(first._storage_path.read_text(encoding="utf-8"))
+    assert merged_1["daily_stats"]["2026-11-01"]["total_tokens"] == 300
+    assert merged_1["daily_stats"]["2026-11-01"]["call_count"] == 3
+
+    # Second startup while token_usage_2.json is still locked must NOT double-count (300, not 500).
+    second = tracker_factory()
+    assert legacy_2.exists()
+    merged_2 = json.loads(second._storage_path.read_text(encoding="utf-8"))
+    assert merged_2["daily_stats"]["2026-11-01"]["total_tokens"] == 300
+    assert merged_2["daily_stats"]["2026-11-01"]["call_count"] == 3
+
+    # Once lock clears, startup cleans up token_usage_2.json and prunes migrated index without double-counting.
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    third = tracker_factory()
+    assert not legacy_2.exists()
+    merged_3 = json.loads(third._storage_path.read_text(encoding="utf-8"))
+    assert merged_3["daily_stats"]["2026-11-01"]["total_tokens"] == 300
+    assert merged_3["daily_stats"]["2026-11-01"]["call_count"] == 3
+    assert "migrated_legacy_files" not in merged_3
+
+    # A truly new legacy file with different content under the same name still migrates cleanly.
+    legacy_2.write_text(
+        json.dumps({
+            "version": 1,
+            "daily_stats": {"2026-11-01": {"total_tokens": 50, "call_count": 1}},
+            "recent_records": [{"ts": "2026-11-01T00:02:00", "m": "m1", "tt": 50}],
+        }),
+        encoding="utf-8",
+    )
+    fourth = tracker_factory()
+    assert not legacy_2.exists()
+    merged_4 = json.loads(fourth._storage_path.read_text(encoding="utf-8"))
+    assert merged_4["daily_stats"]["2026-11-01"]["total_tokens"] == 350
+    assert merged_4["daily_stats"]["2026-11-01"]["call_count"] == 4
+
+

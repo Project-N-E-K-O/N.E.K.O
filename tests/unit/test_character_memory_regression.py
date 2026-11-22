@@ -7743,3 +7743,46 @@ def test_f0064_samefile_case_only_rename_and_collision_guards(tmp_path, monkeypa
             assert removed == []
             assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
 
+
+@pytest.mark.unit
+@pytest.mark.parametrize("seed_in_project_dir", [False, True])
+def test_f0064_rename_rejects_casefold_collision_without_runtime_dir_on_disk(
+    tmp_path, seed_in_project_dir
+):
+    """F0064: renaming onto a registered character's case-folded name must raise even without memory_dir/<other>."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    project_root = Path(cm.project_memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "neko",
+            "猫娘": {
+                "neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    if seed_in_project_dir:
+        seed_dir = project_root / "neko"
+        seed_dir.mkdir(parents=True)
+        (seed_dir / "facts.json").write_text('["neko-seed"]', encoding="utf-8")
+
+    assert not (memory_root / "neko").exists()
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-data"]', encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="collides with existing character"):
+        character_memory.rename_character_memory_storage(cm, "other", "Neko")
+
+    assert (other_dir / "facts.json").read_text(encoding="utf-8") == '["other-data"]'
+    assert not (memory_root / "Neko").exists()
+    if seed_in_project_dir:
+        assert (project_root / "neko" / "facts.json").read_text(encoding="utf-8") == '["neko-seed"]'
+
+

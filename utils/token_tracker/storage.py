@@ -14,6 +14,7 @@
 # limitations under the License.
 """Local token-usage storage and migration methods."""
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -39,7 +40,8 @@ class StorageMixin:
     def _migrate_legacy_files(self):
         """Merge legacy token_usage_{instance_id}.json files into the new single file.
 
-        Runs only once at first instantiation. Old files are deleted after migration.
+        Runs only once per legacy file content. Old files are deleted only after
+        the merged snapshot (including migrated file digests) is written atomically.
         """
         try:
             if not any(self._storage_dir.glob("token_usage_*.json")):
@@ -57,37 +59,83 @@ class StorageMixin:
                 if not existing:
                     existing = self._empty_file_data()
 
-                migrated_files: list[Path] = []
+                raw_migrated = existing.get("migrated_legacy_files")
+                migrated_map: dict[str, str] = (
+                    {
+                        str(k): str(v)
+                        for k, v in raw_migrated.items()
+                        if isinstance(k, str) and isinstance(v, str)
+                    }
+                    if isinstance(raw_migrated, dict)
+                    else {}
+                )
+                present_names = {p.name for p in legacy_files}
+                pruned_map = {k: v for k, v in migrated_map.items() if k in present_names}
+                index_dirty = pruned_map != migrated_map
+                migrated_map = pruned_map
+
+                cleanup_files: list[Path] = []
+                merged_new = False
                 for p in legacy_files:
                     try:
+                        file_digest = hashlib.sha256(p.read_bytes()).hexdigest()
+                        if migrated_map.get(p.name) == file_digest:
+                            cleanup_files.append(p)
+                            continue
                         data = self._load_file(p)
                         if data:
-                            for day_key, day_val in data.get("daily_stats", {}).items():
+                            daily_stats = data.get("daily_stats", {})
+                            recent_records = data.get("recent_records", [])
+                            if not isinstance(daily_stats, dict) or not isinstance(recent_records, list):
+                                raise TypeError("legacy token_usage schema invalid")
+                            for day_key, day_val in daily_stats.items():
                                 if day_key not in existing["daily_stats"]:
                                     existing["daily_stats"][day_key] = day_val
                                 else:
                                     _merge_day_stats(existing["daily_stats"][day_key], day_val)
-                            existing["recent_records"].extend(data.get("recent_records", []))
-                        migrated_files.append(p)
+                            existing["recent_records"].extend(recent_records)
+                        migrated_map[p.name] = file_digest
+                        cleanup_files.append(p)
+                        merged_new = True
+                        index_dirty = True
                     except Exception as e:
                         logger.debug(f"Token tracker: failed to migrate {p.name}: {e}")
 
-                if not migrated_files:
+                if not merged_new and not index_dirty and not cleanup_files:
                     return
 
-                # Deduplicate recent_records.
-                existing["recent_records"] = self._dedupe_records(existing["recent_records"])
-                existing["last_saved"] = datetime.now().isoformat()
-
-                self._storage_dir.mkdir(parents=True, exist_ok=True)
-                atomic_write_json(self._storage_path, existing)
+                if merged_new or index_dirty:
+                    if merged_new:
+                        existing["recent_records"] = self._dedupe_records(existing["recent_records"])
+                        existing["last_saved"] = datetime.now().isoformat()
+                    if migrated_map:
+                        existing["migrated_legacy_files"] = migrated_map
+                    else:
+                        existing.pop("migrated_legacy_files", None)
+                    self._storage_dir.mkdir(parents=True, exist_ok=True)
+                    atomic_write_json(self._storage_path, existing)
 
                 # Migration complete: delete the old files only after atomic write succeeds.
-                for p in migrated_files:
+                unlinked_names: set[str] = set()
+                for p in cleanup_files:
                     try:
                         p.unlink(missing_ok=True)
+                        if not p.exists():
+                            unlinked_names.add(p.name)
                     except Exception as e:
                         logger.debug(f"Token tracker: failed to remove migrated file {p.name}: {e}")
+
+                if unlinked_names:
+                    for name in unlinked_names:
+                        migrated_map.pop(name, None)
+                    if migrated_map:
+                        existing["migrated_legacy_files"] = migrated_map
+                    else:
+                        existing.pop("migrated_legacy_files", None)
+                    try:
+                        atomic_write_json(self._storage_path, existing)
+                    except Exception as e:
+                        logger.debug(f"Token tracker: failed to prune migrated file index: {e}")
 
             logger.info("Token tracker: legacy file migration complete")
         except Exception as e:
