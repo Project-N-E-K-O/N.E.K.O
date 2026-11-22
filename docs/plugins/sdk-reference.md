@@ -354,12 +354,13 @@ chain.callers        # plugin ids that led here, root first; () when the host ca
 chain.origin.kind    # "run", "chat_tool", "chat_hook", "ui_action", "plugin_self" or "system"
 chain.origin.ref     # an id such as the run id; never message text
 chain.hops           # each step as (plugin_id, event_type, event_id)
-chain.rights         # capabilities every plugin on the chain has been approved for
+chain.rights         # permissions every plugin on the chain has been approved for
 chain.rights_known   # False when the host did not say (see below)
-chain.allows("memory.read")
+chain.allows("plugin_sdk.main_agent.memory:read")
 ```
 
-- It is never `None`. Outside an invocation (a timer, a background task still running after your entry returned) or when the host has the policy off, it is a chain holding only your plugin, with `rights_known=False`.
+- It is never `None`. Outside an invocation (a timer, a background task still running after your entry returned), it is a chain holding only your plugin, with `rights_known=False`.
+- `rights` holds permission ids such as `plugin_sdk.main_agent.memory:read`. For one release it also holds the earlier names (`memory.read`, `conversations.read`, `messages.push`), and `allows()` accepts either form.
 - `allows()` is advisory. It answers `False` whenever the rights are unknown, so "not allowed" and "do not know" both read `False`; check `rights_known` to tell them apart. The host decides every use on its own: a `False` here does not mean the host will refuse, and a `True` is a snapshot taken when the call was delivered.
 - Work you hand to `loop.run_in_executor` or a bare `threading.Thread` loses the invocation context, so the host sees those requests as your plugin acting on its own. `asyncio.to_thread` keeps it; for a thread of your own, run the work under `contextvars.copy_context().run(...)`.
 - This is separate from the older in-process helpers in `plugin.sdk.shared.runtime.call_chain`, which only track calls inside one plugin process.

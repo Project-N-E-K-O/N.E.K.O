@@ -10,9 +10,13 @@ from pathlib import Path
 from threading import Event
 from collections.abc import Iterator
 
+from plugin.sdk.shared.permissions import PERMISSIONS
 from plugin.utils.source_paths import iter_plugin_python_files
 
-CAPABILITIES = ("conversations.read", "memory.read", "messages.push")
+# What the analyzer reports, in the earlier capability names that stored
+# reports and approvals use; each maps to a permission id in
+# plugin.sdk.shared.permissions.
+CAPABILITIES = tuple(sorted(spec.legacy_name for spec in PERMISSIONS.values() if spec.legacy_name))
 # Bump when a change to analysis makes persisted reports stale.
 ANALYZER_VERSION = 4
 MAX_FILES = 500

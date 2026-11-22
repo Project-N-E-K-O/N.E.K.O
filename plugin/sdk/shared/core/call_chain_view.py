@@ -13,6 +13,8 @@ import contextvars
 from dataclasses import dataclass
 from typing import Any
 
+from plugin.sdk.shared.permissions import legacy_name, normalize_permission
+
 
 @dataclass(frozen=True, slots=True)
 class CallOrigin:
@@ -32,11 +34,12 @@ class CallHop:
 class CallChainView:
     """Where the current invocation came from.
 
-    ``rights`` is the intersection of capabilities approved for every plugin
-    on the chain when the host delivered the call. ``rights_known`` is False
-    when the host did not provide it (outside an invocation, or policy off).
-    ``allows`` is advisory and never widens: False whenever rights are
-    unknown. The host makes the final decision on every use.
+    ``rights`` is the intersection of permissions approved for every plugin
+    on the chain when the host delivered the call: permission ids, plus their
+    earlier capability names for one release. ``rights_known`` is False when
+    the host did not provide it (outside an invocation). ``allows`` takes an
+    id or an earlier name; it is advisory and never widens: False whenever
+    rights are unknown. The host makes the final decision on every use.
     """
 
     plugin_id: str
@@ -50,7 +53,16 @@ class CallChainView:
     rights_known: bool
 
     def allows(self, capability: str) -> bool:
-        return self.rights_known and capability in self.rights
+        if not self.rights_known:
+            return False
+        if capability in self.rights:
+            return True
+        permission = normalize_permission(capability)
+        if permission is None:
+            return False
+        # Either form may be all the host sent: an id, or its earlier name.
+        earlier = legacy_name(permission)
+        return permission in self.rights or (earlier is not None and earlier in self.rights)
 
 
 def self_only_view(plugin_id: str) -> CallChainView:
@@ -70,7 +82,7 @@ def view_from_wire(plugin_id: str, payload: Any) -> CallChainView:
             plugin_id, payload.get("trace_id"), payload.get("call_id"), len(hops) - 1,
             CallOrigin(origin["kind"], origin.get("ref")), hops,
             tuple(hop.plugin_id for hop in hops[:-1]),
-            frozenset(rights or ()), isinstance(rights, list),
+            frozenset(right for right in rights or () if isinstance(right, str)), isinstance(rights, list),
         )
     except Exception:
         return self_only_view(plugin_id)
