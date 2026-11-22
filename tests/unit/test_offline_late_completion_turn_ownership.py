@@ -720,6 +720,9 @@ async def test_takeover_unbound_completion_emits_turn_abandoned_and_compare_clea
     async def clear_tts():
         if intervened:
             mgr._active_text_request_id = "req-2"
+            mgr._current_ai_turn_text = "新回复"
+            mgr._pending_turn_meta = {"request_id": "req-2"}
+            mgr._discarded_turn_open = True
 
     mgr._clear_tts_pipeline = AsyncMock(side_effect=clear_tts)
 
@@ -728,6 +731,25 @@ async def test_takeover_unbound_completion_emits_turn_abandoned_and_compare_clea
     assert [m.get("request_id") for m in _ws(mgr, "turn abandoned")] == ["req-1"]
     assert _sync(mgr, "turn end") == []
     assert mgr._active_text_request_id == ("req-2" if intervened else None)
+    if intervened:
+        assert mgr._current_ai_turn_text == "新回复"
+        assert mgr._pending_turn_meta == {"request_id": "req-2"}
+        assert mgr._discarded_turn_open
+
+
+async def test_takeover_completion_on_installed_client_preserves_rotated_speech():
+    mgr = _core_manager()
+    mgr._takeover_active = True
+    reply_turn = _retired_reply(mgr)
+    reply_turn.session = mgr.session
+    mgr.current_speech_id = "mirror"
+    mgr._current_ai_turn_text = "镜像台词"
+    mgr._clear_tts_pipeline = AsyncMock()
+    await mgr.handle_response_complete(reply_turn=reply_turn)
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert mgr._current_ai_turn_text == "镜像台词"
+    assert mgr._active_text_request_id is None
+    assert [m["request_id"] for m in _ws(mgr, "turn abandoned")] == ["req-A"]
 
 
 async def test_the_avatar_path_hands_its_own_snapshot_to_the_client(monkeypatch):

@@ -2064,6 +2064,12 @@ def test_korean_space_keywords_and_suffix_boundaries(text, expected):
 
 
 @pytest.mark.parametrize(('text', 'expected'), [
+    ('嗯好的，算了不玩了', 'decline'),
+    ('好的，不过我现在没空玩游戏', 'decline'),
+    ('好啊，等下再看看', 'later'),
+    ('好啊，但是我不想玩游戏', 'decline'),
+    ('好的，但是不要玩游戏', 'decline'),
+    ('那就一起玩', 'accept'),
     ('好的，但是不要', 'decline'),
     ('好的，但是不行', 'decline'),
     ('好吧，但是没空', 'decline'),

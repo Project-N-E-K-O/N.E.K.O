@@ -1829,14 +1829,14 @@ class VoiceIdentityService:
             else:
                 self._set_ineffective(VoiceIdentityEffectiveReason.DISABLED)
             return self.status()
-        if self._enrollment is not None:
-            self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
-            raise VoiceIdentityServiceError("audio_contract_changed")
         if (
             enabled is self._runtime_noise_reduction_enabled
             and not self._runtime_audio_contract_transition_pending
         ):
             return self.status()
+        if self._enrollment is not None:
+            self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            raise VoiceIdentityServiceError("audio_contract_changed")
         self._runtime_noise_reduction_enabled = enabled
         profile = self._profile
         if not self._requested_enabled:

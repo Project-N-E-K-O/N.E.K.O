@@ -39,7 +39,7 @@ from utils.music_crawlers import fetch_music_content
 from utils.music_audio import filter_playable_candidates
 
 from .music_refusal import reset_music_card_skips
-from .state import _clear_channel_from_proactive_history
+from .state import _clear_channel_from_proactive_history, _source_in_hard_skip_window
 
 logger = get_module_logger(__name__, "Main")
 
@@ -163,6 +163,7 @@ def _select_music_recommendation(
         music_content.get("_source_decay_checked")
         or (music_content.get("raw_data") or {}).get("_source_decay_checked")
     )
+    skip_source = _source_in_hard_skip_window if already_decay_checked else should_skip_source
     eligible_tracks = []
     seen_identities = set()
     picked_key = ""
@@ -177,9 +178,9 @@ def _select_music_recommendation(
         identity = key or legacy_key
         if identity and identity in seen_identities:
             continue
-        if not already_decay_checked and (
-            (key and should_skip_source(key))
-            or (legacy_key and legacy_key != key and should_skip_source(legacy_key))
+        if (
+            (key and skip_source(key))
+            or (legacy_key and legacy_key != key and skip_source(legacy_key))
         ):
             logger.debug("[%s] 音乐候选去重命中，跳过: %s", lanlan_name, name)
             continue

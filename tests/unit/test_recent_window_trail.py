@@ -149,3 +149,26 @@ def test_recent_window_trail_stops_dwell_on_signal_loss():
 
     trail = sm.recent_window_trail(now=t0 + 500.0)
     assert trail == [('VS Code', 60.0), ('Chrome', 30.0)]
+
+
+def test_same_window_after_signal_loss_resets_dwell_without_counting_a_switch():
+    from dataclasses import replace
+    from main_logic.activity.system_signals import SystemSnapshot
+
+    sm = _sm()
+    live = SystemSnapshot(1000, 0, 0, 0, None, None)
+    work = _win('VS Code', 'work', 'ide')
+    sm.update_system(live)
+    sm.update_window(work, now=1000)
+    sm.update_window(None, now=1080)
+    assert sm.get_snapshot(now=1095).state == "focused_work"
+    for t in range(1100, 1180, 20):
+        sm.update_system(replace(live, os_signals_available=False))
+        sm.update_window(None, now=t)
+        sm.update_system(live)
+        sm.update_window(work, now=t + 10)
+    snap = sm.get_snapshot(now=1175)
+    assert snap.window_switch_rate_5min == 1
+    assert snap.state != "focused_work"
+    sm.update_window(_win('Chrome', 'entertainment', 'browser'), now=1180)
+    assert sm.get_snapshot(now=1180).window_switch_rate_5min == 2

@@ -1049,11 +1049,16 @@ class TopicHookPool:
             today_records = []
             for record in self._used_topics.get(name, []):
                 used_at = _coerce_used_at(record)
-                if used_at is None or used_at > current_time:
+                if used_at is None:
                     continue
                 try:
                     used_day = _local_day(used_at)
                 except (OSError, OverflowError, ValueError):
+                    continue
+                if used_at > current_time:
+                    # Keep records within the retention horizon across clock rollbacks.
+                    if used_at - current_time < _USED_TOPIC_RECENT_SECONDS:
+                        records.append(record)
                     continue
                 if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
                     records.append(record)

@@ -3208,7 +3208,7 @@ async def test_topic_pool_success_still_clears_when_only_a_new_turn_arrived():
     assert pool.get_ready_materials("妮可") == []
 
 
-def test_future_used_at_timestamps_are_ignored_and_pruned():
+def test_future_used_at_timestamps_are_ignored_until_clock_recovers():
     """F0175: future used_at from clock rollback must not stall the 4h trigger gap or daily quota."""
     pool = TopicHookPool(
         auto_schedule=False,
@@ -3237,5 +3237,4 @@ def test_future_used_at_timestamps_are_ignored_and_pruned():
     assert pool._recent_used_topics("妮可", now=now) == []
     assert pool._seconds_until_next_topic_trigger("妮可", now=now) == 0.0
     assert pool._daily_quota_reached("妮可", now=now) is False
-    with pool._used_topics_lock:
-        assert pool._used_topics.get("妮可") is None
+    assert pool._daily_quota_reached("妮可", now=now + 3600.0) is True

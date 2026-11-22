@@ -627,3 +627,29 @@ async def test_stream_text_think_stripper_pretool_residual_goes_through_prefix_a
     assert assistant_tool_msgs[-1]["content"] == "先查一下"
     if len(assistant_tool_msgs) > 1:
         assert assistant_tool_msgs[0]["content"] == ""
+
+
+@pytest.mark.parametrize("tool_boundary", [True, False])
+async def test_think_flush_gibberish_tail_preserves_prefix_once(monkeypatch, tool_boundary):
+    from main_logic.omni_offline_client import _streaming
+
+    client = _client(handler=_recording_handler([]))
+    client.model = "qwen3.5-plus"
+    client.enable_response_guard = True
+    client.enable_long_response_summary = True
+    client.llm.max_completion_tokens = 40
+    client.max_response_length = 4
+    monkeypatch.setattr(_streaming, "count_tokens", len)
+    monkeypatch.setattr(_streaming, "truncate_to_tokens", lambda text, limit: text[:limit])
+    monkeypatch.setattr(_streaming, "_SUMMARY_GIBBERISH_RECHECK_TOKENS", 5)
+    prefix = "一二三四，然后。"
+    tail = "x" * 400
+    last_chunk = _tool_calls("c1") if tool_boundary else _text("", "stop")
+    client.script = [[_text(prefix + tail), last_chunk]]
+    await client.stream_text("Q", thinking_on=True)
+
+    spoken = "".join(call.args[0] for call in client.on_text_delta.await_args_list
+                     if call.kwargs.get("tts_enabled", True))
+    history = [text for role, text, _ in _history_shape(client) if role in {"ai", "assistant"}]
+    assert spoken and "x" not in spoken
+    assert history == [spoken]

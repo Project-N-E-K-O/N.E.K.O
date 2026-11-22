@@ -284,6 +284,7 @@ def test_refusal_after_commit_is_reported_once_and_pinned_to_the_round():
     error_index = heads.index("__error__")
     assert error_index == marker_index + 1, "marker 必须紧邻 error 之前"
     assert emitted[marker_index][1] == _SID
+    assert emitted.count(("__audio_done__", _SID)) == 1
 
 
 def test_recoverable_close_reports_nothing():
@@ -366,6 +367,12 @@ class _FakeQwenSocket(_Socket):
             fail_on=fail_on_send,
         )
 
+    async def send(self, payload):
+        if json.loads(payload)["type"] == "input_text_buffer.commit":
+            if not any(event.get("text", "").strip() for event in self.sent):
+                raise RuntimeError("empty text buffer")
+        await super().send(payload)
+
     async def __anext__(self):
         while self._events.empty():
             if self._server_close is not None:
@@ -445,7 +452,7 @@ def test_qwen_append_failure_replays_failed_and_subsequent_chunks_in_order(monke
     qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
 
     appends = [p["text"] for p in recovered.sent if p["type"] == "input_text_buffer.append"]
-    assert "".join(appends) == "第二段失败。第三段。"
+    assert "".join(appends) == "第一段足够长的文字。第二段失败。第三段。"
     assert any(p["type"] == "input_text_buffer.commit" for p in recovered.sent)
 
 
@@ -674,7 +681,10 @@ def test_qwen_commit_transient_failure_retries_and_emits_audio_done(monkeypatch,
     qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
 
     emitted = list(resp_q.queue)
-    assert any(p.get("type") == "input_text_buffer.commit" for p in recovered.sent)
+    assert [p["type"] for p in recovered.sent] == [
+        "session.update", "input_text_buffer.append", "input_text_buffer.commit",
+    ]
+    assert recovered.sent[1]["text"] == text
     assert emitted.count(("__audio_done__", _SID)) == 1
 
 
@@ -732,3 +742,59 @@ def test_qwen_connect_succeeds_then_send_fails_stays_capped_at_max_retries(
         for p in recovered.sent
         if p.get("type") == "input_text_buffer.append"
     )
+
+
+def test_interrupt_during_reconnect_discards_staged_audio(monkeypatch):
+    requests = _Requests((_SID, _TEXT), (None, None))
+    initial = _FakeQwenSocket()
+    recovered = _FakeQwenSocket()
+    sockets = iter([initial, None, recovered])
+
+    async def connect(*_args, **_kwargs):
+        socket = next(sockets)
+        if socket is None:
+            raise OSError("connection unavailable")
+        if socket is recovered:
+            requests._items.append(("__interrupt__", None))
+        return socket
+
+    monkeypatch.setattr(qwen_mod.websockets, "connect", connect)
+    responses = queue.Queue()
+    qwen_realtime_tts_worker(requests, responses, "test-key", "")
+    assert recovered.closed.is_set()
+    assert recovered.sent == []
+    assert ("__audio_done__", _SID) not in responses.queue
+
+
+def test_partial_audio_before_commit_failure_is_never_replayed(monkeypatch):
+    requests = _Requests((_SID, _TEXT), (None, None))
+    audio_received = threading.Event()
+
+    class Socket(_FakeQwenSocket):
+        async def send(self, payload):
+            await super().send(payload)
+            if json.loads(payload)["type"] == "input_text_buffer.append":
+                self._events.put(json.dumps({"type": "response.audio.delta", "delta": "AAAAAA=="}))
+                assert await asyncio.to_thread(audio_received.wait, 2)
+
+    def resample(*args):
+        audio_received.set()
+        return b""
+
+    sockets = iter([_FakeQwenSocket(), Socket(fail_on_send=("input_text_buffer.commit",))])
+    connect_count = 0
+
+    async def connect(*_args, **_kwargs):
+        nonlocal connect_count
+        connect_count += 1
+        return next(sockets)
+
+    monkeypatch.setattr(qwen_mod, "_resample_audio", resample)
+    monkeypatch.setattr(qwen_mod.websockets, "connect", connect)
+    responses = queue.Queue()
+    qwen_realtime_tts_worker(requests, responses, "test-key", "")
+    emitted = list(responses.queue)
+    assert audio_received.is_set()
+    assert connect_count == 2
+    assert emitted.count(("__tts_sentence_failed__", _SID, "")) == 1
+    assert emitted.count(("__audio_done__", _SID)) == 1

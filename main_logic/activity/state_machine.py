@@ -372,6 +372,7 @@ class _WindowEntry:
     """One observed window-state event (a category change or signal loss), with its start time."""
     timestamp: float
     observation: WindowObservation | None
+    counts_as_switch: bool = True
 
 
 # ── State machine ──────────────────────────────────────────────────
@@ -532,6 +533,8 @@ class ActivityStateMachine:
         """
         ts = now if now is not None else time.time()
         if obs is None:
+            if self._latest_system is not None and self._latest_system.os_signals_available:
+                return  # A single untitled sample does not interrupt dwell.
             if self._current_window is not None:
                 self._window_history.append(_WindowEntry(timestamp=ts, observation=None))
             self._current_window = None
@@ -573,6 +576,10 @@ class ActivityStateMachine:
             )
 
         prev = self._current_window
+        if prev is None and len(self._window_history) >= 2:
+            # A loss boundary closes the previous dwell. Compare the last
+            # observed window to distinguish recovery from an actual switch.
+            prev = self._window_history[-2].observation
         # Include intensity / genre in the equivalence check: when a user
         # hot-reloads ``user_game_overrides`` while the same game stays
         # foreground, the new observation has identical
@@ -588,10 +595,10 @@ class ActivityStateMachine:
             and prev.intensity == obs.intensity
             and prev.genre == obs.genre
         )
-        if not same:
+        if not same or self._current_window is None:
             self._current_window = obs
             self._current_window_started_at = ts
-            self._window_history.append(_WindowEntry(timestamp=ts, observation=obs))
+            self._window_history.append(_WindowEntry(timestamp=ts, observation=obs, counts_as_switch=not same))
 
     def recent_window_trail(
         self, *, now: float, limit: int = 3, max_age_seconds: float | None = None,
@@ -769,7 +776,7 @@ class ActivityStateMachine:
         switch_rate = (
             sum(
                 1 for entry in self._window_history
-                if entry.observation is not None
+                if entry.observation is not None and entry.counts_as_switch
                 and ts - entry.timestamp <= self._window_history_lookback_seconds
             )
             if os_available else 0
@@ -974,7 +981,7 @@ class ActivityStateMachine:
         if os_available:
             switches = sum(
                 1 for entry in self._window_history
-                if entry.observation is not None
+                if entry.observation is not None and entry.counts_as_switch
                 and now - entry.timestamp <= self._window_history_lookback_seconds
             )
             if switches >= self._window_switch_transition_threshold:

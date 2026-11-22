@@ -1470,6 +1470,7 @@ class _StreamingMixin:
                         # TTS (otherwise it is never heard), then reset all states to idle.
                         summary_state = 'idle'
                         summary_prefix_for_history = ""  # assistant_message snapshot at cutover trigger.
+                        summary_prefix_persisted = False
                         summary_tail_buffer = ""        # Post-cutover UI-only text.
                         summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
                         summary_trigger_tokens = 0     # _total when summary triggers (logging only).
@@ -1487,6 +1488,23 @@ class _StreamingMixin:
                             if not recovery_text.startswith(length_guard_persisted_prefix):
                                 return False
                             return bool(recovery_text[len(length_guard_persisted_prefix):].strip())
+
+                        def _check_summary_tail() -> None:
+                            nonlocal summary_state, summary_next_gibberish_check
+                            if summary_state != 'cutover_done' or not summary_tail_buffer:
+                                return
+                            tail_tokens = count_tokens(summary_tail_buffer)
+                            if tail_tokens < summary_next_gibberish_check:
+                                return
+                            if _is_gibberish_response(summary_tail_buffer):
+                                summary_state = 'gibberish_fallback'
+                                logger.warning(
+                                    "OmniOfflineClient summary: tail gibberish 命中 (%d tokens)，中止本轮生成",
+                                    tail_tokens,
+                                )
+                                self._pause_response_generation(response_generation)
+                            else:
+                                summary_next_gibberish_check = tail_tokens + _SUMMARY_GIBBERISH_RECHECK_TOKENS
 
                         async def _flush_prefix_buffer() -> None:
                             nonlocal prefix_buffer, prefix_checked, guard_triggered, discard_reason
@@ -1626,6 +1644,7 @@ class _StreamingMixin:
                                             ui_enabled=True, tts_enabled=False,
                                         )
                                     is_first_chunk = False
+                                _check_summary_tail()
                             else:
                                 assistant_message += emit_flush_text
                                 assistant_message_total += emit_flush_text
@@ -1791,12 +1810,11 @@ class _StreamingMixin:
                                 # Always align the persisted tool-round message
                                 # with what actually reached UI/TTS (stripped,
                                 # fenced, guarded, or empty on cancellation).
-                                self._trim_cancelled_round_text(
-                                    assistant_message, _turn_tool_rounds,
-                                )
-                                segment_round = self._last_tool_round_of(
-                                    _turn_tool_rounds,
-                                )
+                                segment_round = self._last_tool_round_of(_turn_tool_rounds)
+                                if summary_state == 'gibberish_fallback' and segment_round is not None:
+                                    assistant_message = summary_prefix_for_history
+                                    summary_prefix_persisted = True
+                                self._trim_cancelled_round_text(assistant_message, _turn_tool_rounds)
                                 # Reset fence / prefix buffer: the next segment is a new semantic
                                 # unit (model text based on tool results) and must not
                                 # reuse the preceding fence / prefix state.
@@ -2023,25 +2041,7 @@ class _StreamingMixin:
                                                     )
                                                 is_first_chunk = False
 
-                                            # Recheck gibberish after cutover_done (including pending→done
-                                            # within the same chunk): every _SUMMARY_GIBBERISH_RECHECK_TOKENS
-                                            # tail tokens, recheck; on detection switch to fallback for epilogue handling.
-                                            # RESPONSE_INVALID。
-                                            if summary_state == 'cutover_done' and summary_tail_buffer:
-                                                tail_tokens = count_tokens(summary_tail_buffer)
-                                                if tail_tokens >= summary_next_gibberish_check:
-                                                    if _is_gibberish_response(summary_tail_buffer):
-                                                        summary_state = 'gibberish_fallback'
-                                                        logger.warning(
-                                                            "OmniOfflineClient summary: tail gibberish "
-                                                            "命中 (%d tokens)，中止本轮生成",
-                                                            tail_tokens,
-                                                        )
-                                                        self._pause_response_generation(response_generation)
-                                                    else:
-                                                        summary_next_gibberish_check = (
-                                                            tail_tokens + _SUMMARY_GIBBERISH_RECHECK_TOKENS
-                                                        )
+                                            _check_summary_tail()
                                         else:
                                             assistant_message += emit_content
                                             assistant_message_total += emit_content
@@ -2294,7 +2294,8 @@ class _StreamingMixin:
                             # to _recent_responses, contaminating later repetition decisions.
                             cut_keeps_shown = False
                             _live_at_commit = self._commit_reply(
-                                user_message, summary_prefix_for_history, response_generation,
+                                user_message, "" if summary_prefix_persisted else summary_prefix_for_history,
+                                response_generation,
                                 turn_history=turn_history,
                             )
                             self._mark_reply_tail_completed(

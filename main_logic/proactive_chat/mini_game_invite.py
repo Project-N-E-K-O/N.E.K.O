@@ -1037,14 +1037,14 @@ _PUNCT_CLAUSE_SPLIT_RE = re.compile(
     r"[,，.。!！?？;；:：、…~～\-—()（）\[\]【】「」『』\"']+"
 )
 _CJK_PREFIX_RE = re.compile(
-    r"^(?:但是|但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|那就|就|我|咱|咱们|咱們|先|还是|還是|"
+    r"^(?:但是|但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|就|我|咱们|咱們|咱|先|还是|還是|"
     r"现在|現在|今天|这次|這次|好吧|行吧|好啊|好的|行啊|来吧|來吧|うん|うーん|いや|でも|"
-    r"じゃあ|それ|ちょっと|また|もう|あとで|いま|응|어|음|아니|나|난|나는|나도|지금|좀|일단)*$"
+    r"じゃあ|それ|ちょっと|また|もう|あとで|いま|응|어|음|아니|나는|나도|나|난|지금|좀|일단)*+$"
 )
 _CJK_SUFFIX_RE = re.compile(
     r"^(?:吧|呀|啊|呢|啦|哦|嘛|呗|唄|咯|喔|哈|呵|了|的|儿|兒|玩|说|說|再说|再說|"
-    r"再玩|再聊|再看|一会|一會|一下|~|等下|等会|等會|一起玩|よ|ね|な|か|わ|さ|ぞ|ぜ|"
-    r"だ|です|ます|かな|かも|する|요|네|지|야|만|에|은|는|다|가)*$"
+    r"再玩|再聊|再看|一会|一會|一下|~|等下|等会|等會|一起玩|よ|ね|な|わ|さ|ぞ|ぜ|"
+    r"だ|です|ます|かな|かも|か|する|요|네|지|야|만|에|은|는|다|가)*+$"
 )
 
 
@@ -1052,6 +1052,13 @@ _KEYWORD_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
 
 
 def _cjk_affixes_match(keyword: str, prefix: str, suffix: str) -> bool:
+    # Refusals and deferrals can name the game or propose looking again later.
+    if keyword == "算了":
+        suffix = suffix.removeprefix("不玩")
+    if keyword in {"算了", "不玩", "不想", "没空", "沒空", "不要"}:
+        suffix = re.sub(r"^(?:玩(?:这个|這個)?)?(?:小游戏|小遊戲|游戏|遊戲)", "", suffix)
+    elif keyword in {"等下", "等会", "等會", "回头", "回頭", "稍后", "稍後", "晚点", "晚點"}:
+        suffix = suffix.removeprefix("再看看")
     if not (_CJK_PREFIX_RE.fullmatch(prefix) and _CJK_SUFFIX_RE.fullmatch(suffix)):
         return False
     # Korean "그래" only takes polite "요" ("그래요") as an affirmative reply;
@@ -1063,6 +1070,10 @@ def _cjk_affixes_match(keyword: str, prefix: str, suffix: str) -> bool:
 
 
 def _match_east_asian_candidate(keyword: str, candidate: str) -> bool:
+    # A conversational reply has only short particles around the keyword.
+    # Bound the text inspected for each possible keyword position.
+    if len(candidate) > len(keyword) + 64:
+        return False
     if candidate == keyword:
         return True
     start = 0

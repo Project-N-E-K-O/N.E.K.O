@@ -304,6 +304,15 @@ async def test_pool_backed_music_recommendation_rolls_source_decay_once(monkeypa
     assert selection.topic_key != ''
     assert len(skip_calls) == calls_from_pool
 
+    monkeypatch.setattr(state, "_source_history_authoritative", True)
+    monkeypatch.setitem(state._source_history, selection.topic_key, {"ts": state.time.time()})
+    fresh_selection = rec._select_music_recommendation(
+        {"formatted_content": "Single Track - Singer", "raw_data": result},
+        lang="zh", source_hash=state._source_hash, should_skip_source=tracking_skip,
+    )
+    assert fresh_selection.content is None
+    assert len(skip_calls) == calls_from_pool
+
     # Direct _select_music_recommendation call (strict path / unpooled) still rolls once.
     plain_raw = {'success': True, 'data': [{'name': 'Direct Track', 'artist': 'Singer', 'url': '/api/music/play/netease/2'}]}
     rec._select_music_recommendation(

@@ -1842,6 +1842,7 @@ async def test_regen_bm25_block_records_its_own_reason_and_fragment(monkeypatch)
     [
         ("[CHAT]\n屏幕观察：换个话题聊聊呀", "换个话题聊聊呀", None),
         ("[CHAT]\n[Screen]\n换个话题聊聊呀", "换个话题聊聊呀", None),
+        ("[CHAT][Screen][PASS]换个话题聊聊呀", None, "PASS_DUPLICATE"),
         ("[CHAT]\n[Screen]\n", None, "PASS_DUPLICATE"),
     ],
 )

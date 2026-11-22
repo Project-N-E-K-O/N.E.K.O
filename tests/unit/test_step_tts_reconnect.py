@@ -2,6 +2,8 @@ import json
 import queue
 import threading
 
+import pytest
+
 from main_logic.tts_client._infra import TTS_SHUTDOWN_SENTINEL
 from main_logic.tts_client.workers import _step_protocol
 
@@ -814,7 +816,7 @@ def test_shutdown_arriving_during_handshake_timeout_close_preempts(monkeypatch):
     )
 
 
-def _run_step_delta_failure_scenario(monkeypatch, queue_items):
+def _run_step_delta_failure_scenario(monkeypatch, queue_items, *, fail_finish=False):
     initial = _FakeTtsSocket([
         {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
         {"type": "tts.response.created"},
@@ -824,9 +826,10 @@ def _run_step_delta_failure_scenario(monkeypatch, queue_items):
         [{"type": "tts.connection.done", "data": {"session_id": "s1"}}],
         fail_send_at=3,
     )
-    second_speech = _FakeTtsSocket([
-        {"type": "tts.connection.done", "data": {"session_id": "s2"}},
-    ])
+    second_speech = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "s2"}}],
+        fail_send_at=3 if fail_finish else None,
+    )
     sockets = [initial, first_speech, second_speech]
     connect_attempt = 0
 
@@ -848,14 +851,14 @@ def _run_step_delta_failure_scenario(monkeypatch, queue_items):
         "test-voice",
         provider_key="step",
     )
-    return first_speech, second_speech
+    return first_speech, second_speech, list(responses.queue)
 
 
 def test_text_delta_send_failure_preserves_chunk_for_terminal_reconnect(monkeypatch):
     """F0178: failed tts.text.delta followed by (None, None) must reconnect and replay chunk."""
     first_chunk = "第一句话已经足够长可以触发建连。"
     second_chunk = "第二句话。"
-    first, second = _run_step_delta_failure_scenario(
+    first, second, _ = _run_step_delta_failure_scenario(
         monkeypatch,
         [
             ("s1", first_chunk),
@@ -876,7 +879,7 @@ def test_text_delta_send_failure_preserves_chunk_for_terminal_reconnect(monkeypa
 def test_text_delta_send_failure_followed_by_next_chunk_replays_in_order(monkeypatch):
     """F0178: failed chunk followed by another same-speech chunk replays both in order."""
     first_chunk = "第一句话已经足够长可以触发建连。"
-    _first, second = _run_step_delta_failure_scenario(
+    _first, second, _ = _run_step_delta_failure_scenario(
         monkeypatch,
         [
             ("s1", first_chunk),
@@ -894,7 +897,7 @@ def test_text_delta_send_failure_followed_by_next_chunk_replays_in_order(monkeyp
 def test_text_delta_send_failure_followed_by_new_speech_discards_old_chunk(monkeypatch):
     """F0178: switching to a new speech_id after send failure must discard old unsent text."""
     first_chunk = "第一句话已经足够长可以触发建连。"
-    _first, second = _run_step_delta_failure_scenario(
+    _first, second, _ = _run_step_delta_failure_scenario(
         monkeypatch,
         [
             ("s1", first_chunk),
@@ -908,8 +911,13 @@ def test_text_delta_send_failure_followed_by_new_speech_discards_old_chunk(monke
     assert all("被丢弃" not in d for d in deltas)
 
 
+@pytest.mark.parametrize("interrupt", [False, True])
+@pytest.mark.parametrize(("reason", "error_code"), [
+    ("Total daily connection time limit reached", "API_QUOTA_TIME"),
+    ("Access denied", "API_ACCESS_DENIED"),
+])
 def test_transient_delta_failure_then_terminal_handshake_rejection_emits_audio_done(
-    monkeypatch,
+    monkeypatch, interrupt, reason, error_code,
 ):
     """F0178: server 1008 handshake rejection during finish_requested reconnect must emit audio_done."""
     import websockets
@@ -917,8 +925,10 @@ def test_transient_delta_failure_then_terminal_handshake_rejection_emits_audio_d
 
     class _RejectHandshakeSocket(_FakeTtsSocket):
         async def __anext__(self):
+            if interrupt:
+                requests.put(("__interrupt__", None))
             raise websockets.exceptions.ConnectionClosedError(
-                Close(1008, "Total daily connection time limit reached"),
+                Close(1008, reason),
                 None,
             )
 
@@ -960,16 +970,25 @@ def test_transient_delta_failure_then_terminal_handshake_rejection_emits_audio_d
 
     emitted = list(responses.queue)
     assert ("__tts_sentence_failed__", "speech-1", "") in emitted
-    assert emitted.count(("__audio_done__", "speech-1")) == 1
+    assert emitted.count(("__audio_done__", "speech-1")) == (0 if interrupt else 1)
     errors = [
         json.loads(item[1])
         for item in emitted
         if isinstance(item, tuple) and item[0] == "__error__"
     ]
-    assert [err["code"] for err in errors] == ["API_QUOTA_TIME"]
-    assert [e["type"] for e in recovered.sent] == [
-        "tts.create",
-        "tts.text.delta",
-        "tts.text.done",
-    ]
-    assert recovered.sent[1]["data"]["text"] == "第二轮恢复已经足够长。"
+    assert [err["code"] for err in errors] == [error_code]
+    if not interrupt and error_code == "API_QUOTA_TIME":
+        assert [e["type"] for e in recovered.sent] == ["tts.create", "tts.text.delta", "tts.text.done"]
+        assert recovered.sent[1]["data"]["text"] == "第二轮恢复已经足够长。"
+
+
+def test_terminal_send_failure_after_replay_closes_round_as_failed(monkeypatch):
+    _, recovered, emitted = _run_step_delta_failure_scenario(
+        monkeypatch,
+        [("s1", "第一句话已经足够长。"), ("s1", "第二句。"), (None, None)],
+        fail_finish=True,
+    )
+    assert [e["type"] for e in recovered.sent] == ["tts.create", "tts.text.delta"]
+    assert emitted.count(("__tts_sentence_failed__", "s1", "")) == 1
+    assert emitted.count(("__audio_done__", "s1")) == 1
+    assert [m[0] for m in emitted][-3:] == ["__tts_sentence_failed__", "__error__", "__audio_done__"]

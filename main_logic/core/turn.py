@@ -1531,24 +1531,23 @@ class TurnMixin:
 
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime response completion", self.lanlan_name)
-            try:
-                await self._clear_tts_pipeline()
-                if active_request_id:
-                    await self._send_turn_abandoned(active_request_id)
-            finally:
-                if reply_turn is None:
-                    self._pending_turn_meta = None
-                elif (
-                    reply_turn.meta is not None
-                    and getattr(self, "_pending_turn_meta", None) is reply_turn.meta
-                ):
-                    self._pending_turn_meta = None
+            owns_speech = reply_turn is None or self.current_speech_id == reply_turn.speech_id
+            # Release the old turn before either await can admit a successor.
+            if reply_turn is None or getattr(self, "_pending_turn_meta", None) is reply_turn.meta:
+                self._pending_turn_meta = None
+            if owns_speech:
                 self._reset_ai_turn_buffer()
                 self._discarded_turn_open = False
-                if reply_turn is not None:
-                    reply_turn.turn_ended = True
-                if self._active_text_request_id == active_request_id:
-                    self._active_text_request_id = None
+            if reply_turn is not None:
+                reply_turn.turn_ended = True
+            if self._active_text_request_id == active_request_id:
+                self._active_text_request_id = None
+            try:
+                if owns_speech:
+                    await self._clear_tts_pipeline()
+            finally:
+                if active_request_id:
+                    await self._send_turn_abandoned(active_request_id)
             return
 
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():

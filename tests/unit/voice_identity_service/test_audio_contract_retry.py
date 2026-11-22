@@ -21,6 +21,9 @@ async def test_failed_audio_contract_reconcile_retries_same_setting(
     await service.initialize()
     try:
         enrollment = await service.start_enrollment()
+        assert await service.prepare_runtime_audio_contract_change(enabled)
+        await service.update_runtime_noise_reduction_enabled(enabled)
+        assert not service._runtime_audio_contract_transition_pending
         await service.complete_enrollment(enrollment.enrollment_id, "profile-a", _pcm())
         if not already_matching:
             assert await service.prepare_runtime_audio_contract_change(not enabled)
