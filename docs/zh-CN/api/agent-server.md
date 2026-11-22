@@ -4,7 +4,7 @@
 
 **配置项：** `TOOL_SERVER_PORT`
 
-Agent Server 是内部环回服务，里面有猫爪宿主（任务大脑、task agent、能力网关）、给 HUD 用的任务视图、键鼠和浏览器两组内置工具，以及内嵌的插件服务。主服务器通过 `/api/agent` 暴露受支持的浏览器侧子集；本地进程组之外的调用方应使用该代理，而不是直接调用以下路由。
+Agent Server 是内部环回服务，里面有喵能力宿主（任务大脑、task agent、能力网关）、给 HUD 用的任务视图、键鼠和浏览器两组内置工具，以及内嵌的插件服务。主服务器通过 `/api/agent` 暴露受支持的浏览器侧子集；本地进程组之外的调用方应使用该代理，而不是直接调用以下路由。
 
 Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件。因此 HTTP 是控制/查询面，ZeroMQ 是事件面；并不是“只使用 ZeroMQ 而不使用 HTTP”。
 
@@ -37,7 +37,7 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 
 `/api/agent/tasks/{task_id}/complete` 和 `/notify_config_changed` 属于进程内部。不得把 `/admin/control` 和 `/nekoclaw/*` 路由暴露到不可信网络。
 
-## 猫爪路由
+## 喵能力路由
 
 这三个路由由同一台机器上的主服务器调用，替主对话模型办事；不代理给浏览器。
 

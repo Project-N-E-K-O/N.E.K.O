@@ -3,6 +3,7 @@ import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import powerMessages from '../power/es'
 
 /**
  * Paquete de idioma español
@@ -13,6 +14,7 @@ export default {
   marketFeedback: marketFeedbackMessages['es'],
   modelApi: modelApiMessages['es'],
   modelBindings: modelBindingsMessages['es'],
+  power: powerMessages,
   common: {
     chooseLanguage: "Elegir idioma",
     surfaceLanguagePending: "El idioma de la aplicación cambió. Se conserva el idioma del panel para proteger el trabajo sin guardar.",
@@ -1102,7 +1104,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'Gestor de plugins N.E.K.O'
+    titleSuffix: 'N.E.K.O NekoPower'
   },
   tutorial: {
     yuiGuide: {
