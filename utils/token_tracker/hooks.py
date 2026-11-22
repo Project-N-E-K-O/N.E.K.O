@@ -173,7 +173,23 @@ def calculate_cache_hit_rate(prompt_tokens: int, cached_tokens: int) -> float:
     cached_tokens = max(0, min(cached_tokens, prompt_tokens))
     return cached_tokens / prompt_tokens
 
-def _record_usage_from_response(response, call_type: str, *, success: bool = True):
+def _dispatch_tracker_record(tracker, *, defer_if_locked: bool, **kwargs) -> None:
+    """Call ``_record_deferrable`` during generator-exit teardown when supported."""
+    if defer_if_locked:
+        defer_fn = getattr(tracker, "_record_deferrable", None)
+        if callable(defer_fn):
+            defer_fn(**kwargs)
+            return
+    tracker.record(**kwargs)
+
+
+def _record_usage_from_response(
+    response,
+    call_type: str,
+    *,
+    success: bool = True,
+    defer_if_locked: bool = False,
+):
     """Extract usage from an OpenAI SDK response and record it.
 
     Extracted fields:
@@ -197,7 +213,9 @@ def _record_usage_from_response(response, call_type: str, *, success: bool = Tru
 
         cached_tokens = _extract_cached_tokens(usage_dict)
 
-        TokenTracker.get_instance().record(
+        _dispatch_tracker_record(
+            TokenTracker.get_instance(),
+            defer_if_locked=defer_if_locked,
             model=model,
             prompt_tokens=usage_dict.get('prompt_tokens', 0) or 0,
             completion_tokens=usage_dict.get('completion_tokens', 0) or 0,
@@ -488,7 +506,7 @@ class _BaseStreamWrapper:
         if hasattr(chunk, 'usage') and chunk.usage is not None:
             self._last_usage_chunk = chunk
 
-    def _finalize_tracking(self) -> None:
+    def _finalize_tracking(self, *, defer_if_locked: bool = False) -> None:
         lock = getattr(self, '_finalize_lock', None)
         if lock is None:
             return
@@ -502,9 +520,12 @@ class _BaseStreamWrapper:
                     self._last_usage_chunk,
                     self._call_type,
                     success=not self._failed,
+                    defer_if_locked=defer_if_locked,
                 )
             elif not self._completed:
-                TokenTracker.get_instance().record(
+                _dispatch_tracker_record(
+                    TokenTracker.get_instance(),
+                    defer_if_locked=defer_if_locked,
                     model=self._model,
                     prompt_tokens=0,
                     completion_tokens=0,
@@ -528,16 +549,20 @@ class _SyncStreamWrapper(_BaseStreamWrapper):
     """
 
     def __iter__(self):
+        from_generator_exit = False
         try:
             for chunk in self._stream:
                 self._observe_chunk(chunk)
                 yield chunk
             self._completed = True
+        except GeneratorExit:
+            from_generator_exit = True
+            raise
         except Exception:
             self._failed = True
             raise
         finally:
-            self._finalize_tracking()
+            self._finalize_tracking(defer_if_locked=from_generator_exit)
 
     def close(self):
         try:
@@ -579,16 +604,20 @@ class _AsyncStreamWrapper(_BaseStreamWrapper):
         return gen
 
     async def _aiter_and_track(self):
+        from_generator_exit = False
         try:
             async for chunk in self._stream:
                 self._observe_chunk(chunk)
                 yield chunk
             self._completed = True
+        except GeneratorExit:
+            from_generator_exit = True
+            raise
         except Exception:
             self._failed = True
             raise
         finally:
-            self._finalize_tracking()
+            self._finalize_tracking(defer_if_locked=from_generator_exit)
 
     async def _close_underlying(self):
         close_fn = getattr(self._stream, 'aclose', None)

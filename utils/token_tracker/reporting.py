@@ -403,6 +403,7 @@ class ReportingMixin:
         """
         report_options = {} if report_timeout is None else {"timeout": report_timeout}
         with self._lock:
+            self._drain_pending_locked()
             if not self._dirty:
                 report_only = True
                 delta_daily: dict = {}
@@ -700,7 +701,7 @@ class ReportingMixin:
             #       but instruments accumulated a window due on the 60s cadence.
             # save() takes report-only paths for (b), skipping local writes and only calling
             # _report_to_server; (a) takes full write +report.
-            need_save = self._dirty
+            need_save = self._dirty or bool(getattr(self, "_pending_records", None))
             if not need_save:
                 try:
                     from utils.instrument import has_data as _instrument_has_data

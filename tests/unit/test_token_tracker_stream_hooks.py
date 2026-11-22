@@ -496,3 +496,108 @@ def test_dropped_stream_wrapper_gc_under_tracker_lock_does_not_deadlock():
     thread.join(timeout=3.0)
     assert not thread.is_alive(), "Deadlock detected during GC while TokenTracker._lock was held"
     assert error == []
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expected_tt"),
+    [
+        ([_chunk(11, 7), _chunk(None)], 18),
+        ([_chunk(None), _chunk(None)], 0),
+    ],
+)
+def test_started_sync_iterator_dropped_under_tracker_lock_defers_and_drains_once(
+    tmp_path, monkeypatch, chunks, expected_tt
+):
+    """Deleting a started sync iterator under TokenTracker._lock never deadlocks and drains on stats read."""
+    import atexit
+    from datetime import date
+    import threading
+
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(tt, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = tt.TokenTracker()
+    atexit.unregister(tracker._atexit_save)
+    error: list[BaseException] = []
+    wrapper_holder: list = []
+
+    def _worker():
+        try:
+            with patch.object(tt.TokenTracker, "get_instance", return_value=tracker):
+                wrapper = _handle_sync_stream(
+                    SimpleNamespace(),
+                    lambda *_a, **_kw: _FakeSyncStream(chunks),
+                    (),
+                    {"model": "gpt-iter-lock"},
+                    "conversation",
+                )
+                wrapper_holder.append(wrapper)
+                it = iter(wrapper)
+                next(it)
+                with tracker._lock:
+                    del it
+                    gc.collect()
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            error.append(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive(), "Deadlock detected closing started sync iterator while TokenTracker._lock was held"
+    assert error == []
+    assert len(tracker._pending_records) == 1
+    assert tracker._dirty is False
+
+    # Reading today's or window stats drains pending records and keeps idempotency on explicit close().
+    today_stats = tracker.get_today_stats()["stats"]
+    assert today_stats["call_count"] == 1
+    assert today_stats["total_tokens"] == expected_tt
+    assert len(tracker._pending_records) == 0
+
+    with patch.object(tt.TokenTracker, "get_instance", return_value=tracker):
+        wrapper_holder[0].close()
+
+    stats = tracker.get_stats(days=1)["daily_stats"][date.today().isoformat()]
+    assert stats["call_count"] == 1
+    assert stats["total_tokens"] == expected_tt
+
+
+def test_save_drains_deferred_iterator_records_even_when_dirty_was_false(tmp_path, monkeypatch):
+    """Calling save() persists records queued in _pending_records even before _dirty becomes True."""
+    import atexit
+    from datetime import date
+    import json
+
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(tt, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = tt.TokenTracker()
+    atexit.unregister(tracker._atexit_save)
+
+    with patch.object(tt.TokenTracker, "get_instance", return_value=tracker):
+        wrapper = _handle_sync_stream(
+            SimpleNamespace(),
+            lambda *_a, **_kw: _FakeSyncStream([_chunk(5, 9), _chunk(None)]),
+            (),
+            {"model": "gpt-save-drain"},
+            "conversation",
+        )
+        it = iter(wrapper)
+        next(it)
+        with tracker._lock:
+            del it
+            gc.collect()
+
+    assert tracker._dirty is False
+    assert len(tracker._pending_records) == 1
+
+    tracker.save()
+    assert tracker._dirty is False
+    assert len(tracker._pending_records) == 0
+
+    persisted = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    day = persisted["daily_stats"][date.today().isoformat()]
+    assert day["call_count"] == 1
+    assert day["total_tokens"] == 14
