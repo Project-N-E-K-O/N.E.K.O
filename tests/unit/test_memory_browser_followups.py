@@ -1105,7 +1105,10 @@ def test_compaction_always_keeps_the_newest_completed_restore(tmp_path):
 
     log = _event_log(tmp_path)
     old = (datetime.now() - timedelta(days=40)).isoformat()
-    rows = [{"event_id": "r_done", "type": EVT_MEMORY_SNAPSHOT_RESTORED, "payload": {"pre_restore_snapshot_id": "done"}}]
+    rows = [
+        {"event_id": "old", "type": EVT_REFLECTION_EVIDENCE_UPDATED, "payload": {}},
+        {"event_id": "r_done", "type": EVT_MEMORY_SNAPSHOT_RESTORED, "payload": {"pre_restore_snapshot_id": "done"}},
+    ]
     rows += [
         {"event_id": f"r_never{i}", "type": EVT_MEMORY_SNAPSHOT_RESTORED,
          "payload": {"pre_restore_snapshot_id": f"never{i}"}}
@@ -1128,7 +1131,7 @@ def test_compaction_always_keeps_the_newest_completed_restore(tmp_path):
             restore_cancelled=make_restore_cancelled_check(char_dir),
             restore_completed=make_restore_completed_check(char_dir),
         )
-    assert result.kept_restore == 4
+    assert result.outcome == "compacted" and result.kept_restore == 4
     assert [e["event_id"] for e in _journal(tmp_path)] == [
         "r_done", "r_never0", "r_never1", "r_never2", "anchor",
     ]
