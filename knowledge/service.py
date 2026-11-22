@@ -1231,6 +1231,12 @@ class KnowledgeService:
         # supersede this request even when staging finishes after deletion.
         arrived_at = self._reserve_arrival()
         async def run():
+            preview = await self._thread(self._sources.find_preview, preview_id)
+            # Check append intent under the same write lock, before retaining
+            # a version. Legacy previews lack this field and keep their prior
+            # creation semantics; no existing preview or history is migrated.
+            if preview.get("requires_existing_pack", False) and preview["pack_id"] not in self._registry.packs:
+                raise KnowledgePackError("source_not_found")
             value = await self._thread(self._sources.retain_preview, preview_id, sha256)
             pack_id = value["pack_id"]
             pack = await self._thread(self._source_pack, pack_id)
@@ -3866,8 +3872,11 @@ class KnowledgeService:
                     "updated_at": record.updated_at,
                 }
             )
+        # Removal may commit while the history scan waits. Deduplicate against
+        # the active rows already emitted, rather than the newer live registry.
+        listed_pack_ids = {row["pack_id"] for row in packs}
         for retained in await self._thread(self._sources.retained_packs):
-            if retained["pack_id"] in self._registry.packs:
+            if retained["pack_id"] in listed_pack_ids:
                 continue
             packs.append({"pack_id": retained["pack_id"], "source": {"name": retained["name"], "homepage": "", "license": ""},
                           "declared_material_type": "knowledge", "material_type_override": None, "effective_material_type": "knowledge",
