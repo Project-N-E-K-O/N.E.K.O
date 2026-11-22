@@ -4948,6 +4948,11 @@ async def _do_upgrade(
                 manual_snapshot_sha256=manual_snapshot_sha256,
                 rollback_install_source=rollback_install_source,
             )
+        except _TaskError:
+            # Refused before replacing anything (plan changed, grants could
+            # not be bound): nothing was changed, so there is no rollback.
+            task["rollback"] = None
+            raise
         except ReplacePluginError as exc:
             rollback_ok = exc.rollback_status == "completed" and source_restored
             cause_code = (

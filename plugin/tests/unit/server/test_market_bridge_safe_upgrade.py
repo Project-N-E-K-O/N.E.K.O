@@ -19,6 +19,7 @@ from plugin.server.application.install_source.scanner import PluginDirectoryScan
 from plugin.server.application.plugins.installation_transactions import (
     replace as replacement_transaction,
 )
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.routes import market_bridge
 from plugin.server.application.plugins import operation_lock
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
@@ -1288,6 +1289,50 @@ async def test_market_upgrade_exposes_rollback_while_files_are_being_restored(
     assert exc_info.value.code == "upgrade_rollback_completed"
     assert task["rollback"]["running"] is False
     assert task["rollback"]["restored"] is True
+
+
+@pytest.mark.asyncio
+async def test_market_upgrade_refused_before_replacing_reports_no_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transaction can refuse before it replaces anything (here: grants
+    cannot be bound). Nothing changed, so the task must not show a rollback."""
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("version = '1.0.0'\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+
+    _configure_paths(monkeypatch, plugins_root=plugins_root, profiles_root=profiles_root)
+    monkeypatch.setattr(market_bridge, "_download_package", lambda _url, _task: _async_value(package_path))
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+    installs: list[dict[str, Any]] = []
+
+    async def install(**kwargs: Any) -> dict[str, object]:
+        installs.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(
+        plugin_cli_application, "_service", SimpleNamespace(upload_and_install=install)
+    )
+
+    def cannot_bind(_plugin_id: str, _entry: object) -> None:
+        raise ServerDomainError("PLUGIN_PERMISSIONS_WRITE_FAILED", "store unavailable", 503)
+
+    monkeypatch.setattr(market_bridge, "bind_entry_permission_source", cannot_bind)
+
+    task: dict[str, Any] = {}
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await market_bridge._do_upgrade(task, _payload(), {})
+
+    assert exc_info.value.code == "plugin_permissions_write_failed"
+    assert task["rollback"] is None
+    assert installs == []
+    assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == "version = '1.0.0'\n"
 
 
 @pytest.mark.asyncio
