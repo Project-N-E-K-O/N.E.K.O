@@ -2265,7 +2265,7 @@
         wardrobeRetryTimer = setTimeout(() => {
             wardrobeRetryTimer = 0;
             if (key !== wardrobeTemplateKey || key !== currentTemplateKey()) return;
-            if (packBusy || capturingFrames || wardrobeGestureActive || historyBusy) {
+            if (packBusy || capturingFrames || wardrobeGestureActive || wardrobeFileBusy || historyBusy) {
                 wardrobeRetryTimer = setTimeout(() => scheduleWardrobeRetry(key), 250);
                 return;
             }
@@ -2532,14 +2532,7 @@
         updateHistoryButtons();
         try {
             const path = `${WARDROBE_SPRITE_PREFIX}${sprite.id}.png`;
-            let blob = sprite.blob;
-            if (!blob) {
-                try {
-                    blob = await readTemplateTexture(key, path);
-                } catch (error) {
-                    if (!sprite.restoreFailed) throw error;
-                }
-            }
+            const blob = sprite.blob || await readTemplateTexture(key, path);
             if (!blob && !sprite.restoreFailed) throw new Error('sprite_save_failed');
             const placement = wardrobePlacement(sprite);
             const index = [...wardrobeSprites.keys()].indexOf(sprite.id);

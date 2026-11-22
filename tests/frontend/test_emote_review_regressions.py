@@ -25,6 +25,7 @@ def editor(page, running_server, emote_template_library_dir):
         captureStageSource, openStateStage, requestExportDirectory,
         stageSession: () => stateStageSession, stageQuality: STAGE_QUALITY,
         isPackBusy: () => packBusy,
+        isWardrobeBusy: () => wardrobeFileBusy,
         restoreStageImages,
         switchTemplate, downloadPng, refreshTemplateArchiveSizes,
         pickedAnimations: () => [...pickedAnimations],
@@ -1114,13 +1115,23 @@ def _save_wardrobe_test_sprites(editor, server, key, sprites):
 @pytest.mark.parametrize('failure', ['404', 'decode'])
 def test_permanently_failed_accessory_stops_retrying_and_can_be_deleted_and_undone(
         editor, running_server, builtin_emote_template_dir, failure):
+    editor.clock.install()
     key = 'builtin:yui-0.2'
     sprite = {'id': 'sprite-00000000000000f1', 'x': .3, 'y': .3, 'size': .16, 'behind': False}
     _save_wardrobe_test_sprites(editor, running_server, key, [sprite])
+    editor.evaluate('''id=>{
+        window.reviewAccessoryErrors=0;
+        document.addEventListener('error',event=>{
+            if(event.target instanceof HTMLImageElement && event.target.src.includes(id)) reviewAccessoryErrors++;
+        },true);
+    }''', sprite['id'])
     reads = []
 
     def broken(route):
         if sprite['id'] not in route.request.url:
+            route.continue_()
+            return
+        if failure == 'decode' and route.request.resource_type != 'image':
             route.continue_()
             return
         reads.append(route.request.url)
@@ -1130,11 +1141,10 @@ def test_permanently_failed_accessory_stops_retrying_and_can_be_deleted_and_undo
     editor.locator('[data-template-built-in="true"] .template-lib-open').click()
     editor.wait_for_function('''id=>document.querySelector('.wardrobe-placement.is-missing img')?.src.includes(id)''',
                              arg=sprite['id'])
-    editor.wait_for_timeout(3400)
+    editor.wait_for_function('reviewAccessoryErrors===3')
     assert len(reads) == 3
-    for _ in range(4):
-        editor.evaluate('reviewEditor.syncWardrobePlacements()')
-    editor.wait_for_timeout(1200)
+    editor.clock.fast_forward(5000)
+    editor.wait_for_timeout(150)
     assert len(reads) == 3
     placeholder = editor.locator('.wardrobe-placement.is-missing')
     assert placeholder.is_visible()
@@ -1145,8 +1155,59 @@ def test_permanently_failed_accessory_stops_retrying_and_can_be_deleted_and_undo
     editor.wait_for_function('reviewEditor.wardrobeSnapshot().length===0')
     editor.keyboard.press('Control+z')
     editor.wait_for_function('reviewEditor.wardrobeSnapshot().length===1')
-    assert editor.locator('.wardrobe-placement.is-missing').is_visible()
+    assert editor.locator('.wardrobe-placement.is-missing' if failure == '404' else
+                          '.wardrobe-placement:not(.is-missing)').is_visible()
     assert editor.evaluate('reviewEditor.wardrobeSnapshot()[0].id') == sprite['id']
+
+
+def test_failed_accessory_read_keeps_original_bytes_and_history_until_a_safe_delete_retry(
+        editor, running_server, builtin_emote_template_dir):
+    key = 'builtin:yui-0.2'
+    sprite = {'id': 'sprite-00000000000000e1', 'x': .3, 'y': .3, 'size': .16}
+    _save_wardrobe_test_sprites(editor, running_server, key, [sprite])
+    reads, removals = [], []
+
+    def texture(route):
+        if sprite['id'] not in route.request.url:
+            route.continue_()
+        elif route.request.resource_type == 'image':
+            route.fulfill(status=503, body=b'broken')
+        else:
+            reads.append(route.request.url)
+            if len(reads) == 1:
+                route.fulfill(status=503)
+            else:
+                route.continue_()
+
+    editor.route('**/api/emote-maker/library/texture?**', texture)
+    editor.on('request', lambda request: removals.append(request.url)
+              if '/library/textures/remove?' in request.url else None)
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    placeholder = editor.locator('.wardrobe-placement.is-missing')
+    placeholder.wait_for(state='visible')
+    undo_was_disabled = editor.locator('#undo-btn').is_disabled()
+    with editor.expect_response(lambda r: sprite['id'] in r.url and r.request.resource_type == 'fetch'):
+        placeholder.press('Delete')
+    editor.wait_for_function('!reviewEditor.isWardrobeBusy()')
+    assert removals == []
+    assert editor.locator('#undo-btn').is_disabled() == undo_was_disabled
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot().map(s=>s.id)') == [sprite['id']]
+    response = editor.request.get(running_server + '/api/emote-maker/library/texture',
+        params={'key': key, 'path': f"WardrobeSprites/{sprite['id']}.png"})
+    assert response.ok and response.body() == _wardrobe_test_image()
+    with editor.expect_response(lambda r: '/library/textures/remove?' in r.url):
+        placeholder.press('Delete')
+    editor.wait_for_function('reviewEditor.wardrobeSnapshot().length===0')
+    editor.keyboard.press('Control+z')
+    editor.wait_for_function('''() => {
+        const image=document.querySelector('.wardrobe-placement img');
+        return image?.complete && image.naturalWidth===32;
+    }''')
+    assert len(removals) == 1
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot()[0].id') == sprite['id']
+    restored = editor.request.get(running_server + '/api/emote-maker/library/texture',
+        params={'key': key, 'path': f"WardrobeSprites/{sprite['id']}.png"})
+    assert restored.ok and restored.body() == _wardrobe_test_image()
 
 
 def test_layer_moves_skip_failed_accessories_without_dropping_their_saved_order(
@@ -1200,6 +1261,7 @@ def test_switching_builtin_templates_isolates_accessories_and_late_retries(
         reads.append(key)
         if key == a and old_state == 'pending':
             pending.append(route)
+            editor.evaluate('window.reviewAccessoryRequestHeld=true')
         else:
             route.fulfill(status=503 if key == a and old_state == 'failed' else 200,
                           content_type='image/png',
@@ -1208,6 +1270,9 @@ def test_switching_builtin_templates_isolates_accessories_and_late_retries(
     editor.route('**/api/emote-maker/library/texture?**', texture)
     editor.locator(f'[data-template-key="{a}"] .template-lib-open').click()
     editor.wait_for_function('reviewEditor.wardrobeSnapshot().length===1')
+    if old_state == 'pending':
+        editor.wait_for_function('window.reviewAccessoryRequestHeld===true', timeout=3000)
+        assert len(pending) == 1
     if old_state == 'failed':
         editor.locator('.wardrobe-placement.is-missing').wait_for(state='visible')
     editor.locator(f'[data-template-key="{b}"] .template-lib-open').click()
