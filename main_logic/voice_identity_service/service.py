@@ -854,6 +854,15 @@ class VoiceIdentityService:
                 operation_task=operation_task,
             )
         except _StaleEnrollmentOperation as exc:
+            async with self._operation_lock:
+                if self._session_operation_matches(
+                    session,
+                    session_generation,
+                    operation_nonce,
+                    segment_index,
+                    operation_task,
+                ):
+                    self._clear_segment_operation(session)
             raise VoiceIdentityServiceError("stale_enrollment") from exc
         except EnrollmentAudioError as exc:
             async with self._operation_lock:
@@ -944,16 +953,28 @@ class VoiceIdentityService:
             )
             raise asyncio.CancelledError
         try:
-            if not self._session_operation_matches(
-                session,
-                session_generation,
-                operation_nonce,
-                segment_index,
-                operation_task,
-            ) or self._session_expired(session):
+            if (
+                not self._session_operation_matches(
+                    session,
+                    session_generation,
+                    operation_nonce,
+                    segment_index,
+                    operation_task,
+                )
+                or self._session_expired(session)
+                or self._runtime_audio_contract_transition_pending
+            ):
                 computed.wipe()
                 if self._enrollment is session and self._session_expired(session):
                     await self._retire_expired_session(session)
+                elif self._session_operation_matches(
+                    session,
+                    session_generation,
+                    operation_nonce,
+                    segment_index,
+                    operation_task,
+                ):
+                    self._clear_segment_operation(session)
                 raise VoiceIdentityServiceError("stale_enrollment")
 
             if segment_index in (1, 2):
@@ -1255,6 +1276,7 @@ class VoiceIdentityService:
                 operation_task,
             )
             or self._session_expired(session)
+            or self._runtime_audio_contract_transition_pending
         ):
             raise _StaleEnrollmentOperation
 
@@ -1695,6 +1717,7 @@ class VoiceIdentityService:
             or session.profile_id != profile_id
             or session.phase != "committing"
             or self._session_expired(session)
+            or self._runtime_audio_contract_transition_pending
         ):
             raise VoiceIdentityServiceError("stale_enrollment")
 

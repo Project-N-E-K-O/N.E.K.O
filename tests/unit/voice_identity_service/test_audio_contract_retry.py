@@ -6,7 +6,7 @@ from main_logic.voice_identity_service.service import VoiceIdentityServiceError
 from main_logic.voice_identity_service.audio_contract import (
     OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
 )
-from tests.support.voice_identity_fakes import _pcm, _service
+from tests.support.voice_identity_fakes import _pcm, _service, _verification_pcm
 
 
 @pytest.mark.asyncio
@@ -238,4 +238,113 @@ async def test_preferences_noise_reduction_toggle_protects_initial_enrollment(
         assert done.state.effective_reason == "ready"
     finally:
         preferences.configure_voice_identity_audio_contract_callbacks()
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_f0593_inflight_segment_during_direct_reconcile_race(tmp_path):
+    """F0593: in-flight segment 1 must raise stale_enrollment when direct reconcile sets transition_pending."""
+    import asyncio
+
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    try:
+        enrollment = await service.start_enrollment()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        original_compute = service._compute_enrollment_segment
+
+        async def gated_compute(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await original_compute(*args, **kwargs)
+
+        service._compute_enrollment_segment = gated_compute
+        seg_task = asyncio.create_task(
+            service.submit_enrollment_segment(
+                enrollment.enrollment_id,
+                "profile-a",
+                1,
+                _pcm(),
+                sample_rate_hz=48_000,
+                audio_contract_id=OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+        with pytest.raises(VoiceIdentityServiceError, match="audio_contract_changed"):
+            await service.update_runtime_noise_reduction_enabled(
+                False, runtime_ready=True
+            )
+        assert service._runtime_audio_contract_transition_pending is True
+
+        release.set()
+        with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
+            await seg_task
+        assert service._enrollment is not None
+        assert service._enrollment.in_flight_segment_index is None
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_f0593_inflight_seg4_commits_stale_profile_during_direct_reconcile_race(
+    tmp_path,
+):
+    """F0593: in-flight segment 4 must not commit/activate a stale profile after direct reconcile rejects."""
+    import asyncio
+
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    try:
+        enrollment = await service.start_enrollment()
+        for segment_index in (1, 2, 3):
+            await service.submit_enrollment_segment(
+                enrollment.enrollment_id,
+                "profile-a",
+                segment_index,
+                _pcm(),
+                sample_rate_hz=48_000,
+                audio_contract_id=OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
+            )
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        original_compute = service._compute_enrollment_segment
+
+        async def gated_compute(*args, **kwargs):
+            result = await original_compute(*args, **kwargs)
+            entered.set()
+            await release.wait()
+            return result
+
+        service._compute_enrollment_segment = gated_compute
+        seg4_task = asyncio.create_task(
+            service.submit_enrollment_segment(
+                enrollment.enrollment_id,
+                "profile-a",
+                4,
+                _verification_pcm(),
+                sample_rate_hz=48_000,
+                audio_contract_id=OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+        with pytest.raises(VoiceIdentityServiceError, match="audio_contract_changed"):
+            await service.update_runtime_noise_reduction_enabled(
+                False, runtime_ready=True
+            )
+        assert service._runtime_audio_contract_transition_pending is True
+
+        release.set()
+        with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
+            await seg4_task
+
+        status = service.status()
+        assert service._profile is None
+        assert service._runtime_audio_contract_transition_pending is True
+        assert status.state.effective_enabled is False
+        assert status.state.effective_reason == "runtime_degraded"
+    finally:
         await service.close()

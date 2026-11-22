@@ -528,3 +528,207 @@ def test_qwen_control_signal_preempts_reconnect_backoff(monkeypatch):
 
     assert attempts == 2
     assert sleep_calls == []
+
+
+def test_qwen_exhausted_retries_fences_remaining_chunks_of_same_speech(monkeypatch):
+    """F0180: exhausted retries must fence subsequent chunks and terminal of that speech_id."""
+    initial = _FakeQwenSocket()
+    recovered = _FakeQwenSocket()
+    attempts = 0
+
+    async def fake_connect(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return initial
+        if attempts <= 1 + qwen_mod._QWEN_MAX_RECONNECT_ATTEMPTS:
+            raise OSError("persistent network outage")
+        return recovered
+
+    real_sleep = qwen_mod.asyncio.sleep
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
+
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect)
+    monkeypatch.setattr(qwen_mod.asyncio, "sleep", fast_sleep)
+
+    req_q = _Requests(
+        (_SID, "第一句。"),
+        (_SID, "同轮第二句。"),
+        (None, None),
+        ("speech-2", "第二轮恢复。"),
+        (None, None),
+    )
+    resp_q = queue.Queue()
+    qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
+
+    emitted = list(resp_q.queue)
+    assert emitted.count(("__tts_sentence_failed__", _SID, "")) == 1
+    errors = [
+        json.loads(item[1])
+        for item in emitted
+        if isinstance(item, tuple) and item[0] == "__error__"
+    ]
+    assert [err.get("code") for err in errors] == ["TTS_CONNECTION_FAILED"]
+    assert emitted.count(("__audio_done__", _SID)) == 1
+    appends = [
+        p["text"]
+        for p in recovered.sent
+        if p.get("type") == "input_text_buffer.append"
+    ]
+    assert appends == ["第二轮恢复。"]
+    assert attempts == 1 + qwen_mod._QWEN_MAX_RECONNECT_ATTEMPTS + 1
+
+
+def test_qwen_finish_requested_flush_failure_retries_and_exhausts(monkeypatch):
+    """F0180: transient finish_requested flush failure retries and exhaustion emits audio_done."""
+    # Part 1: transient flush failure on terminal reconnect retries and succeeds.
+    initial = _FakeQwenSocket()
+    broken_flush = _FakeQwenSocket(fail_on_send=("session.update",))
+    recovered = _FakeQwenSocket()
+    recovered._on_send = {
+        "session.update": [{"type": "session.updated"}],
+        "input_text_buffer.commit": [{"type": "response.done"}],
+    }
+    sockets = iter([initial, broken_flush, recovered])
+
+    async def fake_connect_recover(*_args, **_kwargs):
+        return next(sockets)
+
+    real_sleep = qwen_mod.asyncio.sleep
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
+
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect_recover)
+    monkeypatch.setattr(qwen_mod.asyncio, "sleep", fast_sleep)
+
+    req_q = _Requests((_SID, "短句"), (None, None))
+    resp_q = queue.Queue()
+    qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
+
+    emitted = list(resp_q.queue)
+    assert [p["type"] for p in recovered.sent] == [
+        "session.update",
+        "input_text_buffer.append",
+        "input_text_buffer.commit",
+    ]
+    assert recovered.sent[1]["text"] == "短句"
+    assert emitted.count(("__audio_done__", _SID)) == 1
+
+    # Part 2: persistent finish_requested flush failure exhausts with error + audio_done and recovers.
+    initial_2 = _FakeQwenSocket()
+    recovered_2 = _FakeQwenSocket()
+    connect_calls = 0
+
+    async def fake_connect_exhaust(*_args, **_kwargs):
+        nonlocal connect_calls
+        connect_calls += 1
+        if connect_calls == 1:
+            return initial_2
+        if connect_calls <= 1 + qwen_mod._QWEN_MAX_RECONNECT_ATTEMPTS:
+            return _FakeQwenSocket(fail_on_send=("session.update",))
+        return recovered_2
+
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect_exhaust)
+    req_q_2 = _Requests((_SID, "短句"), (None, None), ("speech-2", "第二轮。"), (None, None))
+    resp_q_2 = queue.Queue()
+    qwen_realtime_tts_worker(req_q_2, resp_q_2, "sk-test-key", "")
+
+    emitted_2 = list(resp_q_2.queue)
+    assert emitted_2.count(("__tts_sentence_failed__", _SID, "")) == 1
+    assert emitted_2.count(("__audio_done__", _SID)) == 1
+    assert any(
+        p.get("text") == "第二轮。"
+        for p in recovered_2.sent
+        if p.get("type") == "input_text_buffer.append"
+    )
+
+
+@pytest.mark.parametrize("text", ["短句", "这是一段足够长的正常回复文本。"])
+def test_qwen_commit_transient_failure_retries_and_emits_audio_done(monkeypatch, text):
+    """F0180: transient input_text_buffer.commit failure must retry and emit audio_done."""
+    initial = _FakeQwenSocket()
+    broken_commit = _FakeQwenSocket(fail_on_send=("input_text_buffer.commit",))
+    recovered = _FakeQwenSocket()
+    recovered._on_send = {
+        "session.update": [{"type": "session.updated"}],
+        "input_text_buffer.commit": [{"type": "response.done"}],
+    }
+    sockets = iter([initial, broken_commit, recovered])
+
+    async def fake_connect(*_args, **_kwargs):
+        return next(sockets)
+
+    real_sleep = qwen_mod.asyncio.sleep
+
+    async def fast_sleep(_delay):
+        await real_sleep(0)
+
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect)
+    monkeypatch.setattr(qwen_mod.asyncio, "sleep", fast_sleep)
+
+    req_q = _Requests((_SID, text), (None, None))
+    resp_q = queue.Queue()
+    qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
+
+    emitted = list(resp_q.queue)
+    assert any(p.get("type") == "input_text_buffer.commit" for p in recovered.sent)
+    assert emitted.count(("__audio_done__", _SID)) == 1
+
+
+@pytest.mark.parametrize("fail_event", ["session.update", "input_text_buffer.append"])
+def test_qwen_connect_succeeds_then_send_fails_stays_capped_at_max_retries(
+    monkeypatch, fail_event
+):
+    """F0180: connect success followed by immediate send failure must stay capped at max retries."""
+    initial = _FakeQwenSocket()
+    recovered = _FakeQwenSocket()
+    attempts = 0
+    delays = []
+
+    async def fake_connect(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return initial
+        if attempts <= 1 + qwen_mod._QWEN_MAX_RECONNECT_ATTEMPTS:
+            return _FakeQwenSocket(fail_on_send=(fail_event,))
+        return recovered
+
+    real_sleep = qwen_mod.asyncio.sleep
+
+    async def record_sleep(delay):
+        if delay >= 0.5:
+            delays.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect)
+    monkeypatch.setattr(qwen_mod.asyncio, "sleep", record_sleep)
+
+    req_q = _Requests(
+        (_SID, "第一段足够长的测试文本。"),
+        (None, None),
+        ("speech-2", "第二轮恢复文本。"),
+        (None, None),
+    )
+    resp_q = queue.Queue()
+    qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
+
+    emitted = list(resp_q.queue)
+    assert attempts == 1 + qwen_mod._QWEN_MAX_RECONNECT_ATTEMPTS + 1
+    assert delays == [0.5, 1.0]
+    assert emitted.count(("__tts_sentence_failed__", _SID, "")) == 1
+    errors = [
+        json.loads(item[1])
+        for item in emitted
+        if isinstance(item, tuple) and item[0] == "__error__"
+    ]
+    assert [err.get("code") for err in errors] == ["TTS_CONNECTION_FAILED"]
+    assert emitted.count(("__audio_done__", _SID)) == 1
+    assert any(
+        p.get("text") == "第二轮恢复文本。"
+        for p in recovered.sent
+        if p.get("type") == "input_text_buffer.append"
+    )

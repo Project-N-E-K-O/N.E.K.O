@@ -121,7 +121,41 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         # while the later observation only classifies it, making core count one rejection as one failure, symmetric with _step_protocol.
         rejected_speech_id = None
         deferred_requests = deque()
+        pending = None  # Retain the current segment locally during disconnected retries to preserve order, without returning it to the shared queue
         reconnect_attempts = 0
+        commit_retry_pending = False
+        last_flush_error = None
+
+        async def _record_transient_retry_or_exhaust(
+            sid_value,
+            *,
+            pending_item,
+            err: Exception,
+        ) -> None:
+            """Advance the bounded reconnect counter, or retire the speech round."""
+            nonlocal pending, pending_text_buffer, reconnect_attempts
+            nonlocal rejected_speech_id, commit_retry_pending
+            reconnect_attempts += 1
+            if reconnect_attempts >= _QWEN_MAX_RECONNECT_ATTEMPTS:
+                response_queue.put(("__tts_sentence_failed__", str(sid_value), ""))
+                _enqueue_error(
+                    response_queue,
+                    json.dumps({"code": "TTS_CONNECTION_FAILED", "msg": str(err)}),
+                )
+                audio_done.emit(str(sid_value))
+                rejected_speech_id = str(sid_value)
+                pending = None
+                pending_text_buffer = ""
+                commit_retry_pending = False
+                reconnect_attempts = 0
+                return
+            pending = pending_item
+            response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
+            if _defer_queued_work_until_control():
+                return
+            delay = min(2.0, 0.5 * (2 ** (reconnect_attempts - 1)))
+            await asyncio.sleep(delay)
+            _defer_queued_work_until_control()
 
         async def _invalidate_current_socket(reason: str) -> None:
             """Retire the active socket while preserving speech identity and buffered text."""
@@ -216,18 +250,20 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             - Below threshold and not force: returns False.
             - Already sent or after executing: returns True.
             """
-            nonlocal session_configured, pending_text_buffer
+            nonlocal session_configured, pending_text_buffer, last_flush_error
             if session_configured:
                 return True
             if not ws:
                 return False
             if not force and len(pending_text_buffer) < TTS_LANG_DETECT_MIN_CHARS:
                 return False
+            last_flush_error = None
             lang_hint = detect_tts_language_hint(pending_text_buffer)
             try:
                 await ws.send(json.dumps(build_config_message(lang_hint)))
             except Exception as e:
                 logger.error(f"发送延迟 session.update 失败: {e}")
+                last_flush_error = e
                 _report_server_rejection(e, current_speech_id)
                 await _invalidate_current_socket("发送延迟 session.update 失败后的")
                 return False
@@ -248,6 +284,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # Failed append usually means disconnection; roll back session_configured
                     # and retain pending_text_buffer so reconnection can replay it cleanly.
                     logger.error(f"发送缓冲文本失败: {e}")
+                    last_flush_error = e
                     session_configured = False
                     _report_server_rejection(e, current_speech_id)
                     await _invalidate_current_socket("发送缓冲文本失败后的")
@@ -412,6 +449,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         deferred_requests.clear()
                         reconnect_attempts = 0
                         rejected_speech_id = None
+                        commit_retry_pending = False
+                        last_flush_error = None
                         qwen_audio_jitter.reset()
                         qwen_audio_jitter.end_interrupt()
                         audio_done.reset()
@@ -419,8 +458,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     continue
 
                 if rejected_speech_id is not None and (
-                    sid == rejected_speech_id
-                    or (sid is None and current_speech_id == rejected_speech_id)
+                    (sid is not None and str(sid) == rejected_speech_id)
+                    or (sid is None and str(current_speech_id or "") == rejected_speech_id)
                 ):
                     if sid is None:
                         audio_done.emit(rejected_speech_id)
@@ -431,18 +470,28 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # Audio continues from receive_task into response_queue;
                     # the next speech_id switch or __interrupt__ closes the connection
                     if ws and current_speech_id is not None:
+                        staged_before_flush = ""
                         # If this turn has fewer than MIN_CHARS and session.update was not sent, force it once
                         if not session_configured:
+                            staged_before_flush = pending_text_buffer
                             flushed = await _flush_deferred_config(force=True)
                             if not flushed:
                                 if (
                                     rejected_speech_id is not None
                                     and str(current_speech_id) == rejected_speech_id
                                 ):
+                                    pending_text_buffer = ""
+                                    commit_retry_pending = False
                                     audio_done.emit(rejected_speech_id)
                                     continue
                                 if not pending_text_buffer.strip():
                                     continue
+                                await _record_transient_retry_or_exhaust(
+                                    current_speech_id,
+                                    pending_item=(None, None),
+                                    err=last_flush_error or RuntimeError("deferred config flush failed"),
+                                )
+                                continue
                         if ws and session_configured and not buffer_committed:
                             try:
                                 await ws.send(json.dumps({
@@ -450,19 +499,32 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     "event_id": f"event_{int(time.time() * 1000)}_commit"
                                 }))
                                 buffer_committed = True
+                                commit_retry_pending = False
+                                reconnect_attempts = 0
                             except Exception as e:
                                 logger.warning(f"提交缓冲区失败: {e}")
                                 rejected_now = _report_server_rejection(e, current_speech_id)
                                 await _invalidate_current_socket("提交缓冲区失败后的")
                                 if rejected_now:
+                                    pending_text_buffer = ""
+                                    commit_retry_pending = False
                                     audio_done.emit(str(current_speech_id))
+                                else:
+                                    if staged_before_flush and not pending_text_buffer.strip():
+                                        pending_text_buffer = staged_before_flush
+                                    commit_retry_pending = True
+                                    await _record_transient_retry_or_exhaust(
+                                        current_speech_id,
+                                        pending_item=(None, None),
+                                        err=e,
+                                    )
                             continue
                         if ws:
                             continue
                     if (
                         current_speech_id is None
                         or buffer_committed
-                        or not pending_text_buffer.strip()
+                        or (not pending_text_buffer.strip() and not commit_retry_pending)
                     ):
                         continue
                     finish_requested = True
@@ -475,6 +537,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         current_speech_id = sid
                         pending_text_buffer = ""
                         reconnect_attempts = 0
+                        commit_retry_pending = False
+                        last_flush_error = None
                     buffer_committed = False
                     session_configured = False
                     response_done.clear()
@@ -511,7 +575,6 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     try:
                         ws = await websockets.connect(tts_url, additional_headers=headers)
                         session_ready.clear()
-                        reconnect_attempts = 0
 
                         # Start a new receive task that also observes session.updated
                         async def receive_messages(bound_speech_id, bound_ws):
@@ -573,36 +636,24 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         if _report_server_rejection(e, sid):
                             pending = None
                             pending_text_buffer = ""
+                            commit_retry_pending = False
                             audio_done.emit(str(sid))
                             continue
                         if 'HTTP 503' in str(e):
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
-                        reconnect_attempts += 1
-                        if reconnect_attempts >= _QWEN_MAX_RECONNECT_ATTEMPTS:
-                            response_queue.put(("__tts_sentence_failed__", str(sid), ""))
-                            _enqueue_error(
-                                response_queue,
-                                json.dumps({"code": "TTS_CONNECTION_FAILED", "msg": str(e)}),
-                            )
-                            audio_done.emit(str(sid))
-                            pending = None
-                            pending_text_buffer = ""
-                            reconnect_attempts = 0
-                            continue
-                        pending = (
-                            (None, None)
-                            if finish_requested
-                            else (sid, "" if text_staged_for_reconnect else tts_text)
+                        await _record_transient_retry_or_exhaust(
+                            sid,
+                            pending_item=(
+                                (None, None)
+                                if finish_requested
+                                else (sid, "" if text_staged_for_reconnect else tts_text)
+                            ),
+                            err=e,
                         )
-                        response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
-                        if _defer_queued_work_until_control():
-                            continue
-                        delay = min(2.0, 0.5 * (2 ** (reconnect_attempts - 1)))
-                        await asyncio.sleep(delay)
-                        _defer_queued_work_until_control()
                         continue
 
                 if finish_requested:
+                    staged_before_flush = pending_text_buffer
                     flushed = await _flush_deferred_config(force=True)
                     if flushed and ws and not buffer_committed:
                         try:
@@ -611,17 +662,39 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 "event_id": f"event_{int(time.time() * 1000)}_commit"
                             }))
                             buffer_committed = True
+                            commit_retry_pending = False
+                            reconnect_attempts = 0
                         except Exception as e:
                             logger.warning(f"提交缓冲区失败: {e}")
                             rejected_now = _report_server_rejection(e, current_speech_id)
                             await _invalidate_current_socket("提交缓冲区失败后的")
                             if rejected_now:
+                                pending_text_buffer = ""
+                                commit_retry_pending = False
                                 audio_done.emit(str(current_speech_id))
-                    elif not flushed and (
-                        rejected_speech_id is not None
-                        and str(current_speech_id) == rejected_speech_id
-                    ):
-                        audio_done.emit(rejected_speech_id)
+                            else:
+                                if staged_before_flush and not pending_text_buffer.strip():
+                                    pending_text_buffer = staged_before_flush
+                                commit_retry_pending = True
+                                await _record_transient_retry_or_exhaust(
+                                    current_speech_id,
+                                    pending_item=(None, None),
+                                    err=e,
+                                )
+                    elif not flushed:
+                        if (
+                            rejected_speech_id is not None
+                            and str(current_speech_id) == rejected_speech_id
+                        ):
+                            pending_text_buffer = ""
+                            commit_retry_pending = False
+                            audio_done.emit(rejected_speech_id)
+                        elif pending_text_buffer.strip() or commit_retry_pending:
+                            await _record_transient_retry_or_exhaust(
+                                current_speech_id,
+                                pending_item=(None, None),
+                                err=last_flush_error or RuntimeError("deferred config flush failed"),
+                            )
                     continue
 
                 # Validate text (allow staged reconnect buffers even when tts_text is "")
@@ -640,7 +713,17 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         pending_text_buffer += tts_text
                     ready = await _flush_deferred_config(force=False)
                     if not ready:
+                        if not ws and not (
+                            rejected_speech_id is not None
+                            and str(sid) == rejected_speech_id
+                        ):
+                            await _record_transient_retry_or_exhaust(
+                                sid,
+                                pending_item=(sid, ""),
+                                err=last_flush_error or RuntimeError("deferred config flush failed"),
+                            )
                         continue
+                    reconnect_attempts = 0
                     # _flush_deferred_config already sent pending_text_buffer with append
                     continue
 
@@ -658,6 +741,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         "text": tts_text
                     }))
                     _record_tts_telemetry("qwen", len(tts_text))
+                    reconnect_attempts = 0
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     # Report before invalidating below: this is the actual branch taken by
@@ -665,7 +749,11 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     rejected_now = _report_server_rejection(e, sid)
                     await _invalidate_current_socket("发送TTS文本失败后的")
                     if not rejected_now:
-                        pending = (sid, tts_text)
+                        await _record_transient_retry_or_exhaust(
+                            sid,
+                            pending_item=(sid, tts_text),
+                            err=e,
+                        )
         
         except Exception as e:
             logger.error(f"Qwen实时TTS Worker错误: {type(e).__name__}: {e!r}", exc_info=True)

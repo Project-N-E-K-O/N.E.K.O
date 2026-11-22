@@ -906,3 +906,70 @@ def test_text_delta_send_failure_followed_by_new_speech_discards_old_chunk(monke
     deltas = [e["data"]["text"] for e in second.sent if e["type"] == "tts.text.delta"]
     assert deltas == ["全新回合已经足够长。"]
     assert all("被丢弃" not in d for d in deltas)
+
+
+def test_transient_delta_failure_then_terminal_handshake_rejection_emits_audio_done(
+    monkeypatch,
+):
+    """F0178: server 1008 handshake rejection during finish_requested reconnect must emit audio_done."""
+    import websockets
+    from websockets.frames import Close
+
+    class _RejectHandshakeSocket(_FakeTtsSocket):
+        async def __anext__(self):
+            raise websockets.exceptions.ConnectionClosedError(
+                Close(1008, "Total daily connection time limit reached"),
+                None,
+            )
+
+    initial = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
+        {"type": "tts.response.created"},
+    ])
+    broken = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "s1"}}],
+        fail_send_at=3,
+    )
+    rejected = _RejectHandshakeSocket([])
+    recovered = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "s2"}},
+    ])
+    sockets = iter([initial, broken, rejected, recovered])
+
+    async def connect(*_args, **_kwargs):
+        return next(sockets)
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+    monkeypatch.setattr(_step_protocol, "_adjust_free_tts_url", lambda _url: "wss://www.lanlan.app/tts")
+
+    requests = _AutoShutdownQueue()
+    responses = queue.Queue()
+    requests.put(("speech-1", "第一句话已经足够长可以触发建连。"))
+    requests.put(("speech-1", "第二句话触发瞬时发送失败。"))
+    requests.put((None, None))
+    requests.put(("speech-2", "第二轮恢复已经足够长。"))
+    requests.put((None, None))
+
+    _step_protocol.run_step_protocol_tts_worker(
+        requests,
+        responses,
+        "test-key",
+        "test-voice",
+        provider_key="free",
+    )
+
+    emitted = list(responses.queue)
+    assert ("__tts_sentence_failed__", "speech-1", "") in emitted
+    assert emitted.count(("__audio_done__", "speech-1")) == 1
+    errors = [
+        json.loads(item[1])
+        for item in emitted
+        if isinstance(item, tuple) and item[0] == "__error__"
+    ]
+    assert [err["code"] for err in errors] == ["API_QUOTA_TIME"]
+    assert [e["type"] for e in recovered.sent] == [
+        "tts.create",
+        "tts.text.delta",
+        "tts.text.done",
+    ]
+    assert recovered.sent[1]["data"]["text"] == "第二轮恢复已经足够长。"

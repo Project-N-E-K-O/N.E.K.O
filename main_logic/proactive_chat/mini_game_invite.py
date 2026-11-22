@@ -1033,22 +1033,49 @@ async def _push_mini_game_invite_resolved(
 # matching so embedded substrings in ordinary sentences do not trigger false positives.
 _LETTER_ONLY_KW_RE = re.compile(r"^[0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ\s'\-]+$")
 _LETTER_BOUNDARY_CLASS = "0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ"
-_CLAUSE_SPLIT_RE = re.compile(
-    r"[\s,，.。!！?？;；:：、…~～\-—()（）\[\]【】「」『』\"']+"
+_PUNCT_CLAUSE_SPLIT_RE = re.compile(
+    r"[,，.。!！?？;；:：、…~～\-—()（）\[\]【】「」『』\"']+"
 )
 _CJK_PREFIX_RE = re.compile(
-    r"^(?:但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|那就|就|我|咱|咱们|咱們|先|还是|還是|"
+    r"^(?:但是|但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|那就|就|我|咱|咱们|咱們|先|还是|還是|"
     r"现在|現在|今天|这次|這次|好吧|行吧|好啊|好的|行啊|来吧|來吧|うん|うーん|いや|でも|"
     r"じゃあ|それ|ちょっと|また|もう|あとで|いま|응|어|음|아니|나|난|나는|나도|지금|좀|일단)*$"
 )
 _CJK_SUFFIX_RE = re.compile(
     r"^(?:吧|呀|啊|呢|啦|哦|嘛|呗|唄|咯|喔|哈|呵|了|的|儿|兒|玩|说|說|再说|再說|"
     r"再玩|再聊|再看|一会|一會|一下|~|等下|等会|等會|一起玩|よ|ね|な|か|わ|さ|ぞ|ぜ|"
-    r"だ|です|ます|かな|かも|する|요|서|네|지|야|만|에|은|는|도|다|가)*$"
+    r"だ|です|ます|かな|かも|する|요|네|지|야|만|에|은|는|다|가)*$"
 )
 
 
 _KEYWORD_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
+
+
+def _cjk_affixes_match(keyword: str, prefix: str, suffix: str) -> bool:
+    if not (_CJK_PREFIX_RE.fullmatch(prefix) and _CJK_SUFFIX_RE.fullmatch(suffix)):
+        return False
+    # Korean "그래" only takes polite "요" ("그래요") as an affirmative reply;
+    # other Hangul suffixes form distinct discourse connectors or predicates
+    # (e.g. "그래서", "그래도", "그래야").
+    if keyword == "그래" and suffix and suffix != "요":
+        return False
+    return True
+
+
+def _match_east_asian_candidate(keyword: str, candidate: str) -> bool:
+    if candidate == keyword:
+        return True
+    start = 0
+    while True:
+        idx = candidate.find(keyword, start)
+        if idx < 0:
+            break
+        prefix = candidate[:idx]
+        suffix = candidate[idx + len(keyword):]
+        if _cjk_affixes_match(keyword, prefix, suffix):
+            return True
+        start = idx + 1
+    return False
 
 
 def _keyword_matches(keyword: str, norm_text: str) -> bool:
@@ -1074,21 +1101,23 @@ def _keyword_matches(keyword: str, norm_text: str) -> bool:
             )
             _KEYWORD_PATTERN_CACHE[keyword] = pattern
         return bool(pattern.search(norm_text))
-    for clause in _CLAUSE_SPLIT_RE.split(norm_text):
-        if not clause:
+    kw_tokens = keyword.split()
+    kw_token_count = len(kw_tokens)
+    for punct_clause in _PUNCT_CLAUSE_SPLIT_RE.split(norm_text):
+        tokens = punct_clause.split()
+        if not tokens:
             continue
-        if clause == keyword:
-            return True
-        start = 0
-        while True:
-            idx = clause.find(keyword, start)
-            if idx < 0:
-                break
-            prefix = clause[:idx]
-            suffix = clause[idx + len(keyword):]
-            if _CJK_PREFIX_RE.fullmatch(prefix) and _CJK_SUFFIX_RE.fullmatch(suffix):
-                return True
-            start = idx + 1
+        if kw_token_count <= 1:
+            for token in tokens:
+                if _match_east_asian_candidate(keyword, token):
+                    return True
+        else:
+            if len(tokens) < kw_token_count:
+                continue
+            for idx in range(len(tokens) - kw_token_count + 1):
+                span = " ".join(tokens[idx : idx + kw_token_count])
+                if _match_east_asian_candidate(keyword, span):
+                    return True
     return False
 
 

@@ -823,8 +823,14 @@ def run_step_protocol_tts_worker(
                     # after tts.response.done; other upstream connections close on
                     # the next speech_id change / __interrupt__.
                     if ws and session_id and current_speech_id is not None and not text_done_sent:
-                        if not await _finish_current_speech() and pending_text_buffer.strip():
-                            await _queue_finish_retry(current_speech_id)
+                        if not await _finish_current_speech():
+                            if (
+                                rejected_speech_id is not None
+                                and current_speech_id == rejected_speech_id
+                            ):
+                                audio_done.emit(rejected_speech_id)
+                            elif pending_text_buffer.strip():
+                                await _queue_finish_retry(current_speech_id)
                         continue
                     if (
                         current_speech_id is None
@@ -952,6 +958,8 @@ def run_step_protocol_tts_worker(
                                 # the server. The next speech tries again.
                                 rejected_speech_id = current_speech_id
                                 pending_text_buffer = ""
+                                if finish_requested:
+                                    audio_done.emit(rejected_speech_id)
                                 continue
                             if not control_preempted:
                                 control_preempted = _defer_queued_work_until_control()
@@ -1073,8 +1081,14 @@ def run_step_protocol_tts_worker(
                         continue
 
                 if finish_requested:
-                    if not await _finish_current_speech() and pending_text_buffer.strip():
-                        await _queue_finish_retry(current_speech_id)
+                    if not await _finish_current_speech():
+                        if (
+                            rejected_speech_id is not None
+                            and current_speech_id == rejected_speech_id
+                        ):
+                            audio_done.emit(rejected_speech_id)
+                        elif pending_text_buffer.strip():
+                            await _queue_finish_retry(current_speech_id)
                     continue
 
                 # Validate text.

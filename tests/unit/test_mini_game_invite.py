@@ -2039,3 +2039,40 @@ def test_cjk_false_positive_sentences_do_not_match_keywords(text):
 def test_accented_latin_word_boundary_matches_spanish_and_portuguese(text, expected):
     """F0170: accented Latin keywords must use boundary matching, not bare substring."""
     assert sr._match_mini_game_invite_keyword(text) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('안 해', 'decline'),
+    ('안 해요', 'decline'),
+    ('나는 안 해', 'decline'),
+    ('좋아 안 해', 'decline'),
+    ('좋아, 안 해', 'decline'),
+    ('그건 안 해봤어', None),
+    ('숙제 안 해도 돼', None),
+    ('그래', 'accept'),
+    ('응 그래', 'accept'),
+    ('그래요', 'accept'),
+    ('그래서 밥 먹었어', None),
+    ('그래도 괜찮아', None),
+    ('그래야', None),
+    ('좋은', None),
+    ('나중에 보자고 했어', 'later'),
+])
+def test_korean_space_keywords_and_suffix_boundaries(text, expected):
+    """F0170: Korean space-containing keywords match while connectors do not false-positive."""
+    assert sr._match_mini_game_invite_keyword(text) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('好的，但是不要', 'decline'),
+    ('好的，但是不行', 'decline'),
+    ('好吧，但是没空', 'decline'),
+    ('好啊，但是沒空', 'decline'),
+    ('好的 但是不要', 'decline'),
+    ('但是好的衣服', None),
+    ('好的衣服', None),
+    ('你好啊', None),
+])
+def test_chinese_danshi_conjunction_preserves_decline_priority(text, expected):
+    """F0170: Chinese conjunction prefix preserves decline > later > accept without substring leaks."""
+    assert sr._match_mini_game_invite_keyword(text) == expected
