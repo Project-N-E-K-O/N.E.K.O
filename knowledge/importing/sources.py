@@ -62,12 +62,16 @@ class SourceStore:
             with raw.open("rb") as stream:
                 raw = stream.read(SourceLimits().max_document_bytes + 1)
         parsed = parse_source(filename, raw, SourceLimits())
+        # Preserve whether the user selected an existing target before a new
+        # preview's generated ID makes the two creation paths look identical.
+        requires_existing_pack = bool(pack_id)
         pack_id = pack_id or "imp." + uuid.uuid4().hex
         doc_id = _id(doc_id) if doc_id else uuid.uuid4().hex
         folder = self.directory(pack_id) / "previews"
         folder.mkdir(parents=True, exist_ok=True)
         preview_id = uuid.uuid4().hex
         preview = {"preview_id": preview_id, "pack_id": pack_id, "doc_id": doc_id,
+                   "requires_existing_pack": requires_existing_pack,
                    "name": parsed["filename"], "pack_name": (name or parsed["filename"])[:200],
                    "sha256": hashlib.sha256(raw).hexdigest(), "content": parsed["content"],
                    "sections": parsed["sections"], "chars": len(parsed["content"]), "created_at": utc_now()}

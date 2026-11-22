@@ -224,13 +224,20 @@ async def test_discarding_a_job_deletes_only_its_own_frozen_retry_input(tmp_path
                 return original(self, *args, **kwargs)
 
             monkeypatch.setattr(Path, "unlink", refuse)
-        assert await service.discard_job(discarded.job_id) is True
-        await asyncio.gather(*tuple(service._detached))
-        assert not (jobs / (discarded.job_id + ".json")).exists()
-        # A failed delete is logged, never turned into a failed discard.
+        if unlink_fails:
+            with pytest.raises(OSError, match="synthetic delete failure"):
+                await service.discard_job(discarded.job_id)
+        else:
+            assert await service.discard_job(discarded.job_id) is True
+        await asyncio.gather(*tuple(service._detached), return_exceptions=True)
+        # Input unlink failure precedes metadata deletion: neither the card
+        # nor its record is removed before the requested cleanup succeeds.
+        assert (jobs / (discarded.job_id + ".json")).exists() is unlink_fails
         assert (jobs / (discarded.job_id + ".pack.json")).exists() is unlink_fails
         assert (jobs / (kept.job_id + ".pack.json")).exists()
-        assert [job["job_id"] for job in service.list_jobs()] == [kept.job_id]
+        assert [job["job_id"] for job in service.list_jobs()] == (
+            [kept.job_id, discarded.job_id] if unlink_fails else [kept.job_id]
+        )
     finally:
         await service.stop()
 

@@ -1231,6 +1231,12 @@ class KnowledgeService:
         # supersede this request even when staging finishes after deletion.
         arrived_at = self._reserve_arrival()
         async def run():
+            preview = await self._thread(self._sources.find_preview, preview_id)
+            # Check append intent under the same write lock, before retaining
+            # a version. Legacy previews lack this field and keep their prior
+            # creation semantics; no existing preview or history is migrated.
+            if preview.get("requires_existing_pack", False) and preview["pack_id"] not in self._registry.packs:
+                raise KnowledgePackError("source_not_found")
             value = await self._thread(self._sources.retain_preview, preview_id, sha256)
             pack_id = value["pack_id"]
             pack = await self._thread(self._source_pack, pack_id)
@@ -2129,20 +2135,16 @@ class KnowledgeService:
                 if self._holds_artifact(job):
                     # Only delete_export may remove a finished export with its ZIP.
                     return False
+                # Discarding is an explicit user deletion; the frozen retry
+                # input belongs only to this job. Delete it first so a failed
+                # unlink leaves the card and its durable record available.
+                await self._thread((self.root / "jobs" / (job_id + ".pack.json")).unlink, missing_ok=True)
+                # If this second step fails, the card stays visible but JSON
+                # retry input may already be gone. Retrying discard can finish;
+                # late flushes share this lock and cannot revive a removed job.
                 await self._thread((self.root / "jobs" / (job_id + ".json")).unlink, missing_ok=True)
-                # Disk removal is the commit point: failure leaves the card
-                # and retry input intact. Late flushes take this same lock and
-                # see the flag only after deletion has actually succeeded.
                 job.export_deleted = True
                 self._jobs.pop(job_id, None)
-                # Discarding is an explicit user deletion; the frozen retry
-                # input it removes the only entry to goes with it. The copy is
-                # named by and read only for this job. Other retained inputs
-                # are untouched.
-                try:
-                    await self._thread((self.root / "jobs" / (job_id + ".pack.json")).unlink, missing_ok=True)
-                except OSError:
-                    logger.warning("[Knowledge] could not delete the retry input of discarded job %s", job_id)
                 return True
         task = asyncio.create_task(discard())
         self._detached.add(task)

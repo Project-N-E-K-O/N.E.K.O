@@ -31,7 +31,7 @@ async def _retryable_job(service):
     return job, frozen
 
 
-async def test_record_unlink_failure_reports_failure_and_keeps_the_job_retryable(tmp_path, monkeypatch):
+async def test_record_unlink_failure_keeps_the_card_after_removing_its_retry_input(tmp_path, monkeypatch):
     service = KnowledgeService(tmp_path)
     await service.start()
     job, frozen = await _retryable_job(service)
@@ -52,7 +52,7 @@ async def test_record_unlink_failure_reports_failure_and_keeps_the_job_retryable
             response = await http.post("/internal/knowledge/packs/jobs/discard", json={"job_id": job.job_id})
         await asyncio.gather(*tuple(service._detached), return_exceptions=True)
         visible_before_restart = job.job_id in service._jobs
-        assert record.exists() and frozen.exists()
+        assert record.exists() and not frozen.exists()
         await service.stop()
         service = KnowledgeService(tmp_path)
         await service.start()
@@ -61,12 +61,11 @@ async def test_record_unlink_failure_reports_failure_and_keeps_the_job_retryable
         assert (response.status_code, response.json()["ok"], visible_before_restart,
                 job.job_id in service._jobs) == (500, False, True, True)
         monkeypatch.setattr(Path, "unlink", original)
-        retried = await service.retry_job(job.job_id)
-        assert retried["ok"] and retried["job_id"] != job.job_id
+        with pytest.raises(KnowledgePackError) as error:
+            await service.retry_job(job.job_id)
+        assert error.value.reason == "job_not_retryable"
         assert await service.discard_job(job.job_id)
         assert not record.exists() and not frozen.exists()
-        # Discarding the original never deletes the retry's independent copy.
-        assert (service.root / "jobs" / (retried["job_id"] + ".pack.json")).exists()
     finally:
         await service.stop()
 
@@ -91,7 +90,9 @@ async def test_discard_owner_survives_caller_cancellation_and_blocks_late_flush(
         request = asyncio.create_task(service.discard_job(job.job_id))
         assert await asyncio.to_thread(entered.wait, 2)
         assert not request.done() and service._jobs[job.job_id] is job
-        assert not job.export_deleted and frozen.exists()
+        # Input deletion precedes this paused metadata unlink. The durable
+        # card is still visible until the shielded owner finishes both steps.
+        assert not job.export_deleted and not frozen.exists() and record.exists()
         # A cancelled worker/request can still have a terminal flush pending.
         late_flush = asyncio.create_task(service._persist_job(job))
         request.cancel()
@@ -136,6 +137,8 @@ async def test_retry_and_discard_keep_only_independently_owned_inputs(tmp_path, 
         assert not frozen.exists()
         release.set()
         if read_before_discard:
+            # The retry already owns its bytes independently of the two
+            # unlinks, so it may finish and freeze a new task-specific copy.
             result = await retry
             assert result["ok"] and result["job_id"] != job.job_id
             assert (service.root / "jobs" / (result["job_id"] + ".pack.json")).exists()
@@ -144,6 +147,7 @@ async def test_retry_and_discard_keep_only_independently_owned_inputs(tmp_path, 
                 await retry
             assert error.value.reason == "job_not_retryable"
         assert job.job_id not in service._jobs
+        assert not (service.root / "jobs" / (job.job_id + ".json")).exists()
     finally:
         release.set()
         if retry is not None:
