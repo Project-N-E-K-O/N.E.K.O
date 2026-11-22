@@ -229,8 +229,13 @@ def test_realtime_workers_flush_tail_before_normal_receiver_cancel():
         start = source.index(branch_marker)
         end = source.index("receive_task = asyncio.create_task", start)
         block = source[start:end]
+        # Only the flush guarding the normal receiver cancel counts: the
+        # branch may flush elsewhere first (qwen does for a reconnect after
+        # partial audio), which must not satisfy this check.
+        guard = block.index("if receive_task and not receive_task.done():")
+        cancel = block.index("receive_task.cancel()", guard)
         flush_call = "qwen_audio_jitter.flush()" if provider == "qwen" else "audio_jitter.flush()"
-        assert block.index(flush_call) < block.index("receive_task.cancel()"), provider
+        assert flush_call in block[guard:cancel], provider
 
     elevenlabs = REALTIME_WORKERS["elevenlabs"].read_text(encoding="utf-8")
     close_start = elevenlabs.index("async def _close_ws")
