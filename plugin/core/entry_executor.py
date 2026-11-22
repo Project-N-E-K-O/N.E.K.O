@@ -19,6 +19,7 @@ from plugin._types.exceptions import (
 from plugin.core.rpc import (
     RpcDeadlineExceededError,
     log_rpc_failure,
+    narrow_scope_deadline,
     remaining_budget,
     request_deadline,
     request_scope,
@@ -239,6 +240,10 @@ class EntryExecutor:
         budget = remaining_budget(budget, deadline)
         if budget is not None and budget <= 0:
             raise RpcDeadlineExceededError(f"{label} deadline expired before execution")
+        if budget is not None:
+            # The entry's own budget is also the deadline of everything it
+            # calls: nested requests take the earlier of it and their own.
+            narrow_scope_deadline(time.monotonic() + budget)
         # The contract this call is checked against: resolved with the handler,
         # not re-read after it returns.
         call_meta = self._metadata.get(event_id) if event_type == "plugin_entry" else None
