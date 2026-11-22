@@ -1303,3 +1303,20 @@ def test_aliases_of_builtins_keep_their_blind_spots(tmp_path, source, kind):
 def test_aliases_of_plugin_defined_names_are_not_builtins(tmp_path):
     source = "def eval(x):\n    return x\nexecute = eval\nexecute('1')\n"
     assert _scan(tmp_path, source)["blind_spots"] == []
+
+
+# --- review round 11 -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f(open):\n    reader = open\n    reader('x')\n",
+        "def f(eval):\n    e = eval\n    e('1')\n",
+        "for eval in fs:\n    e = eval\n    e('1')\n",
+    ],
+)
+def test_aliases_of_local_names_with_builtin_spelling_are_not_builtins(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"] == {}
+    assert report["blind_spots"] == []

@@ -257,6 +257,9 @@ class _Reference:
     written: bool = False
     # The right side of an `in` / `not in` test.
     membership: bool = False
+    # The root is an alias of a name bound locally (a parameter, a loop
+    # target ...) that shares a builtin's spelling, not of the builtin.
+    shadowed_builtin_alias: bool = False
     # The root name holds a value read from the environment earlier
     # (tok = os.environ.get()), whose own line is already the evidence. Other
     # stored call results (p = Path(); p.write_text()) still count.
@@ -291,6 +294,14 @@ def _references(tree, walker: _AnalysisWalker):
             if isinstance(op, (ast.In, ast.NotIn))
         }
         comprehension_locals = _comprehension_locals(nodes, walker)
+        # e = eval where eval is a parameter or loop target here: not the builtin.
+        shadowed_aliases = {
+            key
+            for key, value in assignments
+            if isinstance(value, ast.Name)
+            and value.id in _BUILTINS
+            and (value.id in rebound or (value.id in bindings and bindings[value.id][0] is None))
+        }
 
         def nested(body, inherited, parameters=(), function="", owner=None):
             # A function or lambda defined inside a comprehension also sees
@@ -311,6 +322,8 @@ def _references(tree, walker: _AnalysisWalker):
                     changes["written"] = True
                 if id(reference.node) in membership:
                     changes["membership"] = True
+                if reference.raw_root in shadowed_aliases:
+                    changes["shadowed_builtin_alias"] = True
                 if changes:
                     reference = replace(reference, **changes)
             yield reference
@@ -864,7 +877,12 @@ def _origin_name(reference: _Reference) -> str | None:
     # An alias of a builtin (execute = eval): the binding resolved to the bare
     # builtin name. A plugin-defined or imported name of the same spelling is
     # bound as external instead and does not get here.
-    if reference.bound is True and not reference.external and reference.method in _BUILTINS:
+    if (
+        reference.bound is True
+        and not reference.external
+        and reference.method in _BUILTINS
+        and not reference.shadowed_builtin_alias
+    ):
         return "builtins." + reference.method
     if reference.external and reference.bound:
         return reference.method
