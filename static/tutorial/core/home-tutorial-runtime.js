@@ -14,6 +14,7 @@
 
     const mod = {};
     let interruptedRestoreRetryTimer = null;
+    let interruptedRestoreRetryCancel = null;
     const state = {
         featureSuppression: {
             active: false,
@@ -173,6 +174,11 @@
             clearTimeout(interruptedRestoreRetryTimer);
             interruptedRestoreRetryTimer = null;
         }
+        if (typeof interruptedRestoreRetryCancel === 'function') {
+            const cancel = interruptedRestoreRetryCancel;
+            interruptedRestoreRetryCancel = null;
+            cancel(false);
+        }
     }
 
     function hasAnyEnabledAgentFlag(flags) {
@@ -184,53 +190,64 @@
         });
     }
 
-    function hasUnexpectedChildFlagEnabled(currentFlags, expectedFlags) {
+    function hasUnexpectedChildFlagEnabled(currentFlags, expectedFlags, options) {
         if (!currentFlags || typeof currentFlags !== 'object') {
             return false;
         }
+        const allowMasterPluginSideEffect = !!(options && options.allowMasterPluginSideEffect);
         return HOME_TUTORIAL_AGENT_FLAG_KEYS.some(function (key) {
-            return key !== 'agent_enabled'
-                && currentFlags[key] === true
+            if (key === 'agent_enabled') {
+                return false;
+            }
+            if (allowMasterPluginSideEffect && key === 'user_plugin_enabled') {
+                return false;
+            }
+            return currentFlags[key] === true
                 && !(expectedFlags && expectedFlags[key] === true);
         });
     }
 
-    function readPersistedAgentRestoreSnapshot() {
+    function inspectPersistedAgentRestoreSnapshot() {
         try {
             const raw = localStorage.getItem(HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY);
             if (!raw) {
-                return null;
+                return { status: 'empty', payload: null };
             }
             const payload = JSON.parse(raw);
             if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-                return null;
+                return { status: 'invalid', payload: null };
             }
             if (payload.version !== 1) {
-                return null;
+                return { status: 'invalid', payload: null };
             }
             if (!payload.agentFlags || typeof payload.agentFlags !== 'object' || Array.isArray(payload.agentFlags)) {
-                return null;
+                return { status: 'invalid', payload: null };
             }
             if (typeof payload.createdAt !== 'number' || !Number.isFinite(payload.createdAt)) {
-                return null;
+                return { status: 'invalid', payload: null };
             }
             const now = Date.now();
             if (payload.createdAt > now + HOME_TUTORIAL_AGENT_RESTORE_MAX_FUTURE_SKEW_MS) {
-                return null;
+                return { status: 'invalid', payload: null };
             }
             if (now - payload.createdAt > HOME_TUTORIAL_AGENT_RESTORE_MAX_AGE_MS) {
-                return null;
+                return { status: 'invalid', payload: null };
             }
             const snapshotOwner = typeof payload.lanlanName === 'string' ? payload.lanlanName.trim() : '';
             const currentOwner = getCurrentLanlanName();
             if (snapshotOwner && currentOwner && snapshotOwner !== currentOwner) {
-                return null;
+                return { status: 'owner_mismatch', payload: payload };
             }
-            return payload;
+            return { status: 'valid', payload: payload };
         } catch (error) {
             console.warn('[HomeTutorialRuntime] failed to read persisted agent restore snapshot:', error);
-            return null;
+            return { status: 'invalid', payload: null };
         }
+    }
+
+    function readPersistedAgentRestoreSnapshot() {
+        const inspected = inspectPersistedAgentRestoreSnapshot();
+        return inspected.status === 'valid' ? inspected.payload : null;
     }
 
     function persistAgentRestoreSnapshot(flags, token, reason) {
@@ -254,8 +271,8 @@
     function clearPersistedAgentRestoreSnapshot(token) {
         try {
             if (token !== undefined) {
-                const payload = readPersistedAgentRestoreSnapshot();
-                if (payload && payload.token !== token) {
+                const inspected = inspectPersistedAgentRestoreSnapshot();
+                if (inspected.payload && inspected.payload.token !== token) {
                     return;
                 }
             }
@@ -295,19 +312,24 @@
             && state.featureSuppression.token === token;
     }
 
-    async function restoreAgentSnapshot(flags, restoreToken, attemptState) {
+    async function restoreAgentSnapshot(flags, restoreToken, attemptState, options) {
         if (!flags) {
             return false;
         }
         if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
             return false;
         }
-        if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')) {
+        const skipMasterEnable = !!(options && options.skipMasterEnable);
+        if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')
+            && !(skipMasterEnable && flags.agent_enabled === true)) {
+            if (attemptState && flags.agent_enabled) {
+                attemptState.masterAttempted = true;
+            }
             await postAgentCommand('set_agent_enabled', {
                 enabled: !!flags.agent_enabled,
             });
             if (attemptState && flags.agent_enabled) {
-                attemptState.masterAppliedInAttempt = true;
+                attemptState.masterApplied = true;
             }
         }
         if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
@@ -554,27 +576,36 @@
             return false;
         }
 
-        const persisted = readPersistedAgentRestoreSnapshot();
-        if (!persisted) {
+        const inspected = inspectPersistedAgentRestoreSnapshot();
+        if (inspected.status === 'empty' || inspected.status === 'owner_mismatch') {
+            return false;
+        }
+        if (inspected.status !== 'valid' || !inspected.payload) {
             clearPersistedAgentRestoreSnapshot();
             return false;
         }
+        const persisted = inspected.payload;
         if (!hasAnyEnabledAgentFlag(persisted.agentFlags)) {
             clearPersistedAgentRestoreSnapshot(persisted.token);
             return true;
         }
 
-        const attemptState = { masterAppliedInAttempt: false };
+        const attemptState = { masterAttempted: false, masterApplied: false };
 
         async function runRestoreAttempt(retryIndex) {
             if (!canRestoreAgentSnapshot(restoreToken)) {
                 return false;
             }
-            const latestPersisted = readPersistedAgentRestoreSnapshot();
-            if (!latestPersisted || latestPersisted.token !== persisted.token) {
-                if (!latestPersisted) {
-                    clearPersistedAgentRestoreSnapshot();
-                }
+            const latestInspected = inspectPersistedAgentRestoreSnapshot();
+            if (latestInspected.status === 'owner_mismatch' || latestInspected.status === 'empty') {
+                return false;
+            }
+            if (latestInspected.status !== 'valid' || !latestInspected.payload) {
+                clearPersistedAgentRestoreSnapshot();
+                return false;
+            }
+            const latestPersisted = latestInspected.payload;
+            if (latestPersisted.token !== persisted.token) {
                 return false;
             }
 
@@ -583,17 +614,46 @@
                 if (!canRestoreAgentSnapshot(restoreToken)) {
                     return false;
                 }
-                if (!attemptState.masterAppliedInAttempt) {
+                const expectsMasterOn = persisted.agentFlags.agent_enabled === true;
+                let skipMasterEnable = false;
+
+                if (!attemptState.masterAttempted) {
                     if (hasAnyEnabledAgentFlag(currentFlags)) {
                         clearPersistedAgentRestoreSnapshot(persisted.token);
                         return false;
                     }
-                } else if (hasUnexpectedChildFlagEnabled(currentFlags, persisted.agentFlags)) {
-                    clearPersistedAgentRestoreSnapshot(persisted.token);
-                    return false;
+                } else if (attemptState.masterApplied) {
+                    if (expectsMasterOn && currentFlags.agent_enabled !== true) {
+                        clearPersistedAgentRestoreSnapshot(persisted.token);
+                        return false;
+                    }
+                    if (hasUnexpectedChildFlagEnabled(currentFlags, persisted.agentFlags, { allowMasterPluginSideEffect: expectsMasterOn })) {
+                        clearPersistedAgentRestoreSnapshot(persisted.token);
+                        return false;
+                    }
+                    if (expectsMasterOn && currentFlags.agent_enabled === true) {
+                        skipMasterEnable = true;
+                    }
+                } else {
+                    if (currentFlags.agent_enabled === true) {
+                        if (hasUnexpectedChildFlagEnabled(currentFlags, persisted.agentFlags, { allowMasterPluginSideEffect: expectsMasterOn })) {
+                            clearPersistedAgentRestoreSnapshot(persisted.token);
+                            return false;
+                        }
+                        attemptState.masterApplied = true;
+                        skipMasterEnable = true;
+                    } else if (hasAnyEnabledAgentFlag(currentFlags)) {
+                        clearPersistedAgentRestoreSnapshot(persisted.token);
+                        return false;
+                    }
                 }
 
-                const restored = await restoreAgentSnapshot(persisted.agentFlags, restoreToken, attemptState);
+                const restored = await restoreAgentSnapshot(
+                    persisted.agentFlags,
+                    restoreToken,
+                    attemptState,
+                    { skipMasterEnable: skipMasterEnable }
+                );
                 if (restored && canRestoreAgentSnapshot(restoreToken)) {
                     clearPersistedAgentRestoreSnapshot(persisted.token);
                     syncAgentFlagsUi();
@@ -607,9 +667,24 @@
                 if (retryIndex < HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS.length) {
                     const delayMs = HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS[retryIndex];
                     return await new Promise(function (resolve) {
+                        let settled = false;
+                        const finish = function (result) {
+                            if (settled) {
+                                return;
+                            }
+                            settled = true;
+                            if (interruptedRestoreRetryCancel === finish) {
+                                interruptedRestoreRetryCancel = null;
+                            }
+                            resolve(result);
+                        };
+                        interruptedRestoreRetryCancel = finish;
                         interruptedRestoreRetryTimer = setTimeout(function () {
                             interruptedRestoreRetryTimer = null;
-                            void runRestoreAttempt(retryIndex + 1).then(resolve);
+                            if (interruptedRestoreRetryCancel === finish) {
+                                interruptedRestoreRetryCancel = null;
+                            }
+                            void runRestoreAttempt(retryIndex + 1).then(finish);
                         }, delayMs);
                     });
                 }

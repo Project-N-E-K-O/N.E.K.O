@@ -2328,6 +2328,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (window.pngtuberManager) window.pngtuberManager.hide();
             await loadLive2DModelOptions({ showLoadedStatus: false });
+            if (switchGeneration !== modelDisplaySwitchGeneration || currentModelType !== 'live2d') {
+                return false;
+            }
             // 【新增】清理VRM资源
             if (window.vrmManager) {
                 try {
@@ -2377,6 +2380,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } catch (cleanupError) {
                     console.warn('[模型管理] VRM清理时出现警告:', cleanupError);
                 }
+            }
+
+            if (switchGeneration !== modelDisplaySwitchGeneration || currentModelType !== 'live2d') {
+                return false;
             }
 
             if (live2dModelGroup) live2dModelGroup.style.display = 'flex';
@@ -5062,10 +5069,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             const modelPath = e.target.value;
             updateMMDModelSelectButtonText();
             if (!modelPath) return;
+            if (!isSuppressedModelManagerChangeEvent(e)) {
+                userModelSelectionGeneration += 1;
+            }
+            const mmdLoadSwitchGen = modelDisplaySwitchGeneration;
+            const isMmdLoadSuperseded = (requireManager) => (
+                currentModelType !== 'live3d'
+                || currentLive3dSubType !== 'mmd'
+                || mmdLoadSwitchGen !== modelDisplaySwitchGeneration
+                || (requireManager && !window.mmdManager)
+            );
             const mmdCanvas = document.getElementById('mmd-canvas');
             const loadingSessionId = window._createMMDLoadingSessionId
                 ? window._createMMDLoadingSessionId('mmd-manager')
                 : `mmd-manager-${Date.now()}`;
+            const abortSupersededMmdLoad = () => {
+                if (window.MMDLoadingOverlay) {
+                    window.MMDLoadingOverlay.end(loadingSessionId);
+                }
+                if (mmdCanvas) {
+                    restoreMMDCanvasForLoadingSession(mmdCanvas, loadingSessionId);
+                }
+            };
             if (window.MMDLoadingOverlay) {
                 window.MMDLoadingOverlay.begin(loadingSessionId, { stage: 'engine' });
             }
@@ -5136,16 +5161,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                             }, 8000);
                         });
                     }
+                    if (isMmdLoadSuperseded(false)) {
+                        abortSupersededMmdLoad();
+                        return;
+                    }
                 }
 
                 // 初始化 mmdManager（如果尚未存在）
                 if (!window.mmdManager && typeof window.initMMDModel === 'function') {
                     await window.initMMDModel();
+                    if (isMmdLoadSuperseded(false)) {
+                        abortSupersededMmdLoad();
+                        return;
+                    }
                 } else if (!window.mmdManager && typeof window.MMDManager !== 'undefined') {
                     window.mmdManager = new window.MMDManager();
                 }
 
                 if (!window.mmdManager) {
+                    if (isMmdLoadSuperseded(false)) {
+                        abortSupersededMmdLoad();
+                        return;
+                    }
                     if (window.MMDLoadingOverlay) {
                         window.MMDLoadingOverlay.fail(loadingSessionId, {
                             detail: t('mmd.managerInitFailed', 'MMD管理器初始化失败')
@@ -5170,11 +5207,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 if (!window.mmdManager.scene) {
                     await window.mmdManager.init('mmd-canvas', 'mmd-container');
+                    if (isMmdLoadSuperseded(true)) {
+                        abortSupersededMmdLoad();
+                        return;
+                    }
                 }
                 // 预置物理开关，避免 loadModel 时使用默认的 true
                 // 等待进行中的设置加载完成，避免读到过期的 localStorage
                 if (_mmdSettingsLoadPromise) {
                     await _mmdSettingsLoadPromise;
+                    if (isMmdLoadSuperseded(true)) {
+                        abortSupersededMmdLoad();
+                        return;
+                    }
                 }
                 try {
                     if (window.MMDLoadingOverlay) {
@@ -5192,6 +5237,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'model' });
                 }
                 await window.mmdManager.loadModel(modelPath, { loadingSessionId });
+                if (isMmdLoadSuperseded(true)) {
+                    abortSupersededMmdLoad();
+                    return;
+                }
                 showStatusForMMDLoadingSession(mmdCanvas, loadingSessionId, t('mmd.modelLoaded', 'MMD模型加载成功'), 2000);
 
                 // 加载后立即播内置 wait03 防 T-pose; 用户保存的 idle 选择
@@ -5201,25 +5250,45 @@ document.addEventListener('DOMContentLoaded', async () => {
                         window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'idle' });
                     }
                     await window.mmdManager.loadAnimation('/static/mmd/animation/wait03.vmd');
+                    if (isMmdLoadSuperseded(true)) {
+                        abortSupersededMmdLoad();
+                        return;
+                    }
                     window.mmdManager.playAnimation();
                     isMmdIdlePlaying = true;
                     if (playMmdAnimationBtn) playMmdAnimationBtn.disabled = false;
                 } catch (e) {
+                    if (isMmdLoadSuperseded(false)) {
+                        abortSupersededMmdLoad();
+                        return;
+                    }
                     console.warn('[MMD] 播放 wait03 待机动作失败:', e);
                 }
 
                 await loadCharacterLighting();
+                if (isMmdLoadSuperseded(true)) {
+                    abortSupersededMmdLoad();
+                    return;
+                }
                 if (window.MMDLoadingOverlay) {
                     window.MMDLoadingOverlay.update(loadingSessionId, { stage: 'done' });
                 }
                 if (window._waitForMMDRenderFrame) {
                     await window._waitForMMDRenderFrame(window.mmdManager);
+                    if (isMmdLoadSuperseded(false)) {
+                        abortSupersededMmdLoad();
+                        return;
+                    }
                 }
                 if (window.MMDLoadingOverlay) {
                     window.MMDLoadingOverlay.end(loadingSessionId);
                 }
                 restoreMMDCanvasForLoadingSession(mmdCanvas, loadingSessionId);
             } catch (error) {
+                if (isMmdLoadSuperseded(false)) {
+                    abortSupersededMmdLoad();
+                    return;
+                }
                 console.error('加载MMD模型失败:', error);
                 if (window.MMDLoadingOverlay) {
                     window.MMDLoadingOverlay.fail(loadingSessionId, {
@@ -9122,14 +9191,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 刷新 Live3D 模型下拉（VRM/MMD）
         if (deletedLive3D) {
+            const getSelectionGen = () => (typeof userModelSelectionGeneration === 'number' ? userModelSelectionGeneration : 0);
+            const selectionGenAtSnapshot = getSelectionGen();
             const prevVrmValue = vrmModelSelect ? vrmModelSelect.value : '';
             const prevMmdValue = mmdModelSelect ? mmdModelSelect.value : '';
-            const restoreSelectSelection = (selectEl, prevValue, allowMmdFallback) => {
+            const restoreSelectSelection = (selectEl, prevValue, allowMmdFallback, selectionChanged) => {
                 if (!selectEl || !selectEl.options) return false;
                 const options = Array.from(selectEl.options);
-                let matched = prevValue ? options.find(opt => opt.value === prevValue) : null;
-                if (!matched && currentModelInfo && (currentModelInfo.type === 'vrm' || (allowMmdFallback && currentModelInfo.type === 'mmd'))) {
-                    const activeCandidates = [currentModelInfo.url, currentModelInfo.path].filter(Boolean);
+                let matched = (!selectionChanged && prevValue)
+                    ? (options.find(opt => opt.value === prevValue) || null)
+                    : null;
+                const activeLoadUrl = (typeof vrmAdmittedSelectionLoad !== 'undefined' && vrmAdmittedSelectionLoad?.modelUrl)
+                    || (typeof vrmSelectionLoad !== 'undefined' && vrmSelectionLoad?.modelUrl)
+                    || '';
+                const infoCandidates = (currentModelInfo && (currentModelInfo.type === 'vrm' || (allowMmdFallback && currentModelInfo.type === 'mmd')))
+                    ? [currentModelInfo.url, currentModelInfo.path]
+                    : [];
+                const activeCandidates = [activeLoadUrl, ...infoCandidates].filter(Boolean);
+                if (!matched && activeCandidates.length > 0) {
                     matched = options.find(opt => {
                         const dataPath = typeof opt.getAttribute === 'function' ? opt.getAttribute('data-path') : '';
                         return activeCandidates.includes(opt.value) || (dataPath && activeCandidates.includes(dataPath));
@@ -9144,14 +9223,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 if (typeof loadLive3DModels === 'function') {
                     await loadLive3DModels();
-                    if (restoreSelectSelection(vrmModelSelect, prevVrmValue, true)
+                    const vrmSelectionChanged = getSelectionGen() !== selectionGenAtSnapshot
+                        || (typeof vrmSelectionLoad !== 'undefined' && !!(vrmSelectionLoad?.modelUrl && vrmSelectionLoad.modelUrl !== prevVrmValue));
+                    if (restoreSelectSelection(vrmModelSelect, prevVrmValue, true, vrmSelectionChanged)
                         && typeof updateVRMModelSelectButtonText === 'function') {
                         updateVRMModelSelectButtonText();
                     }
                 }
                 if (typeof loadMMDModels === 'function') {
                     await loadMMDModels();
-                    if (restoreSelectSelection(mmdModelSelect, prevMmdValue, true)
+                    const mmdSelectionChanged = getSelectionGen() !== selectionGenAtSnapshot
+                        || (typeof vrmSelectionLoad !== 'undefined' && !!(vrmSelectionLoad?.modelUrl && vrmSelectionLoad.modelUrl !== prevMmdValue));
+                    if (restoreSelectSelection(mmdModelSelect, prevMmdValue, true, mmdSelectionChanged)
                         && typeof updateMMDModelSelectButtonText === 'function') {
                         updateMMDModelSelectButtonText();
                     }

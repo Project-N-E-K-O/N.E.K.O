@@ -223,3 +223,7 @@ jobs:
       - name: Run VRM emotion load-state regression suites
         timeout-minutes: 5
         run: node --test tests/frontend/vrm_emotion_manager.test.cjs tests/frontend/vrm_emotion_source.test.cjs
+
+      - name: Run Live2D emotion manager regression suite
+        timeout-minutes: 5
+        run: node --test tests/frontend/pr23_live2d_emotion_manager.test.cjs

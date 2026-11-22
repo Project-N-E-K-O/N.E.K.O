@@ -873,6 +873,8 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
     let initialMotionToPlay = '';
     if (motionSelect) {
         motionSelect.value = '';
+        motionSelect.dataset.userChanged = 'false';
+        motionSelect.dataset.savedIdleMotionUnresolved = 'false';
     }
     if (savedIdleAnimationBaseName && motionSelect) {
         const matchingSavedMotion = availableMotionFiles.find(file => {
@@ -883,6 +885,8 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
         if (matchingSavedMotion) {
             motionSelect.value = matchingSavedMotion;
             initialMotionToPlay = matchingSavedMotion;
+        } else {
+            motionSelect.dataset.savedIdleMotionUnresolved = 'true';
         }
     }
 
@@ -1259,6 +1263,8 @@ function hidePreviewControls() {
     if (motionSelect) {
         motionSelect.innerHTML = '<option value="">' + window.t('live2d.pleaseLoadModel', '请先加载模型') + '</option>';
         motionSelect.disabled = true;
+        motionSelect.dataset.userChanged = 'false';
+        motionSelect.dataset.savedIdleMotionUnresolved = 'false';
     }
 
     if (expressionSelect) {
@@ -1382,6 +1388,15 @@ function handlePreviewExpressionPlay() {
 }
 
 function ensurePreviewPlaybackBindings() {
+    const motionSelect = document.getElementById('preview-motion-select');
+    if (motionSelect && motionSelect.dataset.previewMotionChangeBound !== 'true') {
+        motionSelect.addEventListener('change', () => {
+            motionSelect.dataset.userChanged = 'true';
+            motionSelect.dataset.savedIdleMotionUnresolved = 'false';
+        });
+        motionSelect.dataset.previewMotionChangeBound = 'true';
+    }
+
     const playMotionBtn = document.getElementById('preview-play-motion-btn');
     if (playMotionBtn && playMotionBtn.dataset.previewMotionBound !== 'true') {
         playMotionBtn.addEventListener('click', handlePreviewMotionPlay);

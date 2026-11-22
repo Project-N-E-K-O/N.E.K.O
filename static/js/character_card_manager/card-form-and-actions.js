@@ -841,6 +841,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalityClearBtn.dataset.testid = 'character-personality-clear';
     personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span data-i18n="character.personalityClear">'
         + (window.t ? window.t('character.personalityClear') : '恢复默认') + '</span>';
+    form._personalitySyncSequence = 0;
     function refreshPersonalityDisplay() {
         const currentPersonality = readCharacterPersonalitySelection(cat);
         if (currentPersonality.hasOverride) {
@@ -859,6 +860,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         if (!name || personalityClearBtn.disabled) {
             return;
         }
+        const syncSequence = (form._personalitySyncSequence || 0) + 1;
+        form._personalitySyncSequence = syncSequence;
         try {
             const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
                 method: 'DELETE',
@@ -866,6 +869,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             const result = await response.json();
             if (!response.ok || !result.success) {
                 throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
+            }
+            if (form._personalitySyncSequence !== syncSequence) {
+                return;
             }
             applyCharacterPersonalitySelection(result.selection);
             if (isPersonalityPanelAlive() && form.isConnected) {
@@ -939,8 +945,16 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     defaultOption.dataset.i18n = 'character.voiceNotSet';
     defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
     voiceSelect.appendChild(defaultOption);
+    const initialVoiceId = String(cat['voice_id'] || '').trim();
+    form._previousVoiceId = initialVoiceId;
+    form._selectedVoiceId = initialVoiceId;
+    voiceSelect._selectedVoiceId = initialVoiceId;
+    voiceSelect.dataset.userChanged = 'false';
     voiceSelect.addEventListener('change', () => {
         voiceSelect.dataset.userChanged = 'true';
+        const nextVoiceId = String(voiceSelect.value || '').trim();
+        form._selectedVoiceId = nextVoiceId;
+        voiceSelect._selectedVoiceId = nextVoiceId;
     });
     voiceRow.appendChild(voiceSelect);
     const voiceSelectUi = _panelCreateVoiceSelectUi(voiceSelect);
@@ -1089,6 +1103,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             if (String(detail.characterName || '').trim() !== name) {
                 return;
             }
+            const syncSequence = (form._personalitySyncSequence || 0) + 1;
+            form._personalitySyncSequence = syncSequence;
             try {
                 const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
                     cache: 'no-store',
@@ -1096,6 +1112,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 const result = await response.json();
                 if (!response.ok || !result.success) {
                     throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
+                }
+                if (form._personalitySyncSequence !== syncSequence) {
+                    return;
                 }
                 applyCharacterPersonalitySelection(result.selection);
                 if (isPersonalityPanelAlive() && form.isConnected) {
@@ -1145,7 +1164,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     };
 
     // Keep unsaved edits in place while rebuilding locale-dependent voice labels.
-    const voicesLoadPromise = refreshVoiceCatalog(String(cat['voice_id'] || '').trim());
+    const voicesLoadPromise = refreshVoiceCatalog(initialVoiceId);
     form._voicesLoadPromise = voicesLoadPromise;
 
     form._lastRenderedLocale = String(window.i18n && window.i18n.language || '');
@@ -1161,13 +1180,21 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         refreshPersonalityDisplay();
 
-        form._voicesLoadPromise = refreshVoiceCatalog(voiceSelect.value);
+        const pendingVoiceId = voiceSelect.dataset.userChanged === 'true'
+            ? String(voiceSelect.value || '').trim()
+            : String(form._selectedVoiceId ?? form._previousVoiceId ?? '').trim();
+        form._voicesLoadPromise = refreshVoiceCatalog(pendingVoiceId);
     };
     window.addEventListener('localechange', form._localeChangeHandler);
 
-    form._previousVoiceId = String(cat['voice_id'] || '').trim();
     form._live2dModel = live2dPath;
     form._modelType = normalizedModelType;
+    form._previousLive2dIdleAnimation = String(
+        cat?._reserved?.avatar?.live2d?.idle_animation
+        || cat?.avatar?.live2d?.idle_animation
+        || cat?.live2d_idle_animation
+        || ''
+    ).trim();
 
     // 初始化textarea自动调整
     setTimeout(() => {
@@ -1781,17 +1808,28 @@ function _panelCreateVoiceSelectUi(selectEl) {
 async function _loadPanelVoices(selectEl, currentVoiceId) {
     if (!selectEl) return;
     const GSV_PREFIX = 'gsv:';
+    const loadSeq = (selectEl._voiceLoadSeq || 0) + 1;
+    selectEl._voiceLoadSeq = loadSeq;
+    const isLatestLoad = () => selectEl._voiceLoadSeq === loadSeq;
+    const getTargetVoiceId = () => (
+        selectEl.dataset?.userChanged === 'true'
+            ? String(selectEl._selectedVoiceId ?? selectEl.value ?? '').trim()
+            : String(currentVoiceId || '').trim()
+    );
     selectEl._voiceCatalogLoaded = false;
 
     try {
         const response = await fetch('/api/characters/voices');
+        if (!isLatestLoad()) return;
         if (!response.ok) {
             console.warn('加载音色列表失败: HTTP', response.status);
         } else {
             const data = await response.json();
+            if (!isLatestLoad()) return;
 
             if (data && data.voices && typeof data.voices === 'object') {
                 selectEl._voiceCatalogLoaded = true;
+                const targetVoiceId = getTargetVoiceId();
                 // 清空现有选项
                 while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
                 const defaultOption = document.createElement('option');
@@ -1812,7 +1850,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                             ? window.t(pin.i18n_key)
                             : (pin.prefix || pin.voice_id);
                         option.title = pin.voice_id;
-                        if (pin.voice_id === currentVoiceId) option.selected = true;
+                        if (pin.voice_id === targetVoiceId) option.selected = true;
                         selectEl.appendChild(option);
                     });
                 }
@@ -1837,7 +1875,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                     // 克隆音色的可读名称存在 prefix 中，不能被角色占用信息或 voice_id 覆盖。
                     option.textContent = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
                     option.title = voiceId;
-                    if (voiceId === currentVoiceId) option.selected = true;
+                    if (voiceId === targetVoiceId) option.selected = true;
                     _cloneGroups[groupKey].appendChild(option);
                 });
 
@@ -1850,7 +1888,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                         const option = document.createElement('option');
                         option.value = voiceId;
                         option.textContent = window.t ? window.t('voice.freeVoice.' + voiceKey) : voiceKey;
-                        if (voiceId === currentVoiceId) option.selected = true;
+                        if (voiceId === targetVoiceId) option.selected = true;
                         freeGroup.appendChild(option);
                     });
                     selectEl.appendChild(freeGroup);
@@ -1886,7 +1924,7 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                             option.value = voiceId;
                             option.textContent = _panelNativeVoiceDisplayName(voiceId, voiceData);
                             option.title = voiceId;
-                            if (voiceId === currentVoiceId) option.selected = true;
+                            if (voiceId === targetVoiceId) option.selected = true;
                             nativeGroup.appendChild(option);
                         });
                         selectEl.appendChild(nativeGroup);
@@ -1894,47 +1932,60 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
                 }
 
                 // 加载 GPT-SoVITS 声音列表
-                await _loadPanelGsvVoices(selectEl, currentVoiceId);
+                await _loadPanelGsvVoices(selectEl, targetVoiceId, isLatestLoad);
+                if (!isLatestLoad()) return;
             }
         }
     } catch (e) {
+        if (!isLatestLoad()) return;
         console.warn('加载音色列表失败:', e);
     }
+
+    if (!isLatestLoad()) return;
 
     // 保底：currentVoiceId 在任何分支都没渲染时（包括目录请求失败、Gemini 别名、
     // 免费版被过滤掉的 CosyVoice 云端 voice_id、catalog 没暴露的 ID 等），下拉里没匹配项
     // select 会回到首项；下次保存表单会被误判为"已清空"走 unregister_voice 分支，把
     // 用户保存的音色丢掉。给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
-    const hasCurrentVoiceOption = !!(currentVoiceId
-        && Array.from(selectEl.options || []).some(opt => opt.value === currentVoiceId));
-    if (currentVoiceId && !hasCurrentVoiceOption) {
+    const finalTargetVoiceId = getTargetVoiceId();
+    const hasCurrentVoiceOption = !!(finalTargetVoiceId
+        && Array.from(selectEl.options || []).some(opt => opt.value === finalTargetVoiceId));
+    if (finalTargetVoiceId && !hasCurrentVoiceOption) {
         const fallbackGroup = document.createElement('optgroup');
         const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
         fallbackGroup.label = _panelNormalizeVoiceGroupLabel(fallbackLabel);
         fallbackGroup.dataset.savedVoiceFallbackGroup = 'true';
         const fallbackOption = document.createElement('option');
-        fallbackOption.value = currentVoiceId;
-        fallbackOption.textContent = currentVoiceId.startsWith(GSV_PREFIX)
-            ? currentVoiceId.substring(GSV_PREFIX.length) + ' (?)'
-            : currentVoiceId + ' (?)';
-        fallbackOption.title = currentVoiceId;
+        fallbackOption.value = finalTargetVoiceId;
+        fallbackOption.textContent = finalTargetVoiceId.startsWith(GSV_PREFIX)
+            ? finalTargetVoiceId.substring(GSV_PREFIX.length) + ' (?)'
+            : finalTargetVoiceId + ' (?)';
+        fallbackOption.title = finalTargetVoiceId;
         fallbackOption.selected = true;
         fallbackGroup.appendChild(fallbackOption);
         selectEl.appendChild(fallbackGroup);
-        selectEl.value = currentVoiceId;
+        selectEl.value = finalTargetVoiceId;
     } else if (hasCurrentVoiceOption) {
-        selectEl.value = currentVoiceId;
+        selectEl.value = finalTargetVoiceId;
     }
 }
 
 // GPT-SoVITS 声音列表
-async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
+async function _loadPanelGsvVoices(selectEl, currentVoiceId, isLatestLoad) {
     const GSV_PREFIX = 'gsv:';
+    const isStaleLoad = () => typeof isLatestLoad === 'function' && !isLatestLoad();
+    const getEffectiveVoiceId = () => (
+        selectEl.dataset?.userChanged === 'true'
+            ? String(selectEl._selectedVoiceId ?? selectEl.value ?? '').trim()
+            : String(currentVoiceId || '').trim()
+    );
 
     function ensureGsvFallback() {
-        if (!currentVoiceId || !currentVoiceId.startsWith(GSV_PREFIX)) return;
-        if (selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
-            selectEl.value = currentVoiceId;
+        if (isStaleLoad()) return;
+        const effectiveVoiceId = getEffectiveVoiceId();
+        if (!effectiveVoiceId || !effectiveVoiceId.startsWith(GSV_PREFIX)) return;
+        if (Array.from(selectEl.options || []).some(opt => opt.value === effectiveVoiceId)) {
+            selectEl.value = effectiveVoiceId;
             return;
         }
         let gsvGroup = selectEl.querySelector('optgroup[data-gsv-group="true"]');
@@ -1946,10 +1997,10 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
             selectEl.appendChild(gsvGroup);
         }
         const fallbackOpt = document.createElement('option');
-        fallbackOpt.value = currentVoiceId;
-        fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+        fallbackOpt.value = effectiveVoiceId;
+        fallbackOpt.textContent = effectiveVoiceId.substring(GSV_PREFIX.length) + ' (?)';
         gsvGroup.appendChild(fallbackOpt);
-        selectEl.value = currentVoiceId;
+        selectEl.value = effectiveVoiceId;
     }
 
     // GSV 不可用时把后端给的 code 翻成一行人话塞到下拉里——以前是静默丢，
@@ -1957,6 +2008,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     const _gsvT = (key, fallback) => (window.t && typeof window.t === 'function' && window.t(key)) || fallback;
 
     function _appendGsvDiagnosticOption(message) {
+        if (isStaleLoad()) return;
         const diagGroup = document.createElement('optgroup');
         diagGroup.label = '── GPT-SoVITS ──';
         diagGroup.dataset.gsvDiagGroup = 'true';
@@ -1995,9 +2047,12 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
     try {
         const resp = await fetch('/api/characters/custom_tts_voices?provider=gptsovits', { signal: controller.signal });
         clearTimeout(timeoutId);
+        if (isStaleLoad()) return;
         // 网关/反代可能返回 HTML 或空体，resp.json() 抛错会把 "Unexpected token <"
         // 这种技术细节经 catch 暴露给用户，这里兜底成空对象走正常诊断分支。
         const result = await resp.json().catch(() => ({}));
+        if (isStaleLoad()) return;
+        const effectiveVoiceId = getEffectiveVoiceId();
         if (result.success && Array.isArray(result.voices) && result.voices.length > 0) {
             const gsvGroup = document.createElement('optgroup');
             gsvGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('gptsovits', 'clone'));
@@ -2008,18 +2063,19 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
                 option.value = v.voice_id;
                 option.textContent = v.name + (v.version ? ' (' + v.version + ')' : '');
                 if (v.description) option.title = v.description;
-                if (v.voice_id === currentVoiceId) option.selected = true;
+                if (v.voice_id === effectiveVoiceId) option.selected = true;
                 gsvGroup.appendChild(option);
             });
             selectEl.appendChild(gsvGroup);
-            if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX) && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
+            if (effectiveVoiceId && effectiveVoiceId.startsWith(GSV_PREFIX)
+                    && !Array.from(selectEl.options || []).some(opt => opt.value === effectiveVoiceId)) {
                 const fallbackOpt = document.createElement('option');
-                fallbackOpt.value = currentVoiceId;
-                fallbackOpt.textContent = currentVoiceId.substring(GSV_PREFIX.length) + ' (?)';
+                fallbackOpt.value = effectiveVoiceId;
+                fallbackOpt.textContent = effectiveVoiceId.substring(GSV_PREFIX.length) + ' (?)';
                 gsvGroup.appendChild(fallbackOpt);
             }
-            if (currentVoiceId && currentVoiceId.startsWith(GSV_PREFIX)) {
-                selectEl.value = currentVoiceId;
+            if (effectiveVoiceId && effectiveVoiceId.startsWith(GSV_PREFIX)) {
+                selectEl.value = effectiveVoiceId;
             }
         } else if (result && result.success && Array.isArray(result.voices) && result.voices.length === 0) {
             _appendGsvDiagnosticOption(_gsvT('character.gsvDiagEmpty', 'GPT-SoVITS server 没有任何声音 (空列表)'));
@@ -2029,6 +2085,7 @@ async function _loadPanelGsvVoices(selectEl, currentVoiceId) {
         ensureGsvFallback();
     } catch (e) {
         clearTimeout(timeoutId);
+        if (isStaleLoad()) return;
         console.debug('GPT-SoVITS voices not available:', e.message);
         if (e.name === 'AbortError') {
             _appendGsvDiagnosticOption(_gsvT('character.gsvDiagTimeout', 'GPT-SoVITS server 响应超时 (>3s)'));
@@ -2105,10 +2162,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         const voiceSelect = form.querySelector('select[name="voice_id"]');
         const selectedVoiceId = (voiceSelect?.value ?? '').trim();
         const previousVoiceId = form._previousVoiceId || '';
-        const canUnregisterVoice = !!(voiceSelect && (
-            voiceSelect._voiceCatalogLoaded === true
-            || voiceSelect.dataset?.userChanged === 'true'
-        ));
+        const canUnregisterVoice = !!(voiceSelect && voiceSelect.dataset?.userChanged === 'true');
         const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
             baseData: { '档案名': nameInput.value.trim() },
             excludeFieldNames: ['档案名', 'voice_id', 'chat_sync_enabled'],
@@ -2250,20 +2304,37 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             );
             if (hasReadyMotionSelect) {
                 const idleAnimation = motionSelect.value || '';
-                try {
-                    const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(savedCatgirlName), {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            live2d_idle_animation: idleAnimation
-                        })
-                    });
-                    const l2dResult = await l2dResp.json().catch(() => ({}));
-                    if (!l2dResp.ok || l2dResult.success === false) {
-                        console.warn('[saveCatgirlFromPanel] 保存待机动作失败:', l2dResult.error || l2dResp.statusText);
+                const previousIdleAnimation = String(form._previousLive2dIdleAnimation || '').trim();
+                const previousIdleBaseName = previousIdleAnimation
+                    ? previousIdleAnimation.split('/').pop()
+                    : '';
+                const motionUserChanged = motionSelect.dataset?.userChanged === 'true';
+                const savedIdleMotionUnresolved = motionSelect.dataset?.savedIdleMotionUnresolved === 'true';
+                const hasSavedMotionInOptions = !!(previousIdleAnimation && Array.from(motionSelect.options || []).some(opt => {
+                    const optVal = String(opt?.value || '');
+                    return optVal === previousIdleAnimation
+                        || (previousIdleBaseName && optVal.split('/').pop() === previousIdleBaseName);
+                }));
+                const shouldSkipUnresolvedIdleClear = !idleAnimation
+                    && !!previousIdleAnimation
+                    && !motionUserChanged
+                    && (savedIdleMotionUnresolved || !hasSavedMotionInOptions);
+                if (!shouldSkipUnresolvedIdleClear) {
+                    try {
+                        const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(savedCatgirlName), {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                live2d_idle_animation: idleAnimation
+                            })
+                        });
+                        const l2dResult = await l2dResp.json().catch(() => ({}));
+                        if (!l2dResp.ok || l2dResult.success === false) {
+                            console.warn('[saveCatgirlFromPanel] 保存待机动作失败:', l2dResult.error || l2dResp.statusText);
+                        }
+                    } catch (l2dErr) {
+                        console.warn('[saveCatgirlFromPanel] 保存待机动作请求失败:', l2dErr);
                     }
-                } catch (l2dErr) {
-                    console.warn('[saveCatgirlFromPanel] 保存待机动作请求失败:', l2dErr);
                 }
             }
         }

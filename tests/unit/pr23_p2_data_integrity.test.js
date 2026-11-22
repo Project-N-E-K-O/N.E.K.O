@@ -476,27 +476,31 @@ test('F0585 & F0059: MMD->Live2D disposes mmdManager, allowLive2DReload bypasses
             waitForStorageLocationStartupBarrier: () => new Promise(() => {}),
             vrmManager: options.vrmManager || null,
             mmdManager: options.mmdManager || null,
-            live2dManager: {
-                modelName: 'mao_pro',
-                touchSet: undefined,
-                _touchSetLoadedAt: 0,
-                getCurrentModel() {
-                    return {
-                        internalModel: {
-                            settings: {
-                                hitAreas: [{ id: 'Head', Name: 'Head' }],
-                                json: {
-                                    FileReferences: {
-                                        Motions: { Idle: [{ File: 'motions/idle.motion3.json' }] },
-                                        Expressions: [{ Name: 'happy_smile' }],
-                                    },
+            live2dManager: (() => {
+                const defaultModel = {
+                    internalModel: {
+                        settings: {
+                            hitAreas: [{ id: 'Head', Name: 'Head' }],
+                            json: {
+                                FileReferences: {
+                                    Motions: { Idle: [{ File: 'motions/idle.motion3.json' }] },
+                                    Expressions: [{ Name: 'happy_smile' }],
                                 },
                             },
                         },
-                    };
-                },
-                setupHitAreaInteraction() {},
-            },
+                    },
+                };
+                return {
+                    modelName: 'mao_pro',
+                    touchSet: undefined,
+                    _touchSetLoadedAt: 0,
+                    currentModel: defaultModel,
+                    getCurrentModel() {
+                        return this.currentModel;
+                    },
+                    setupHitAreaInteraction() {},
+                };
+            })(),
         };
         win.window = win;
 
@@ -677,4 +681,299 @@ test('F0585 & F0059: MMD->Live2D disposes mmdManager, allowLive2DReload bypasses
         assert.equal(patchCalls.length, 1, 'closing with pending edit must flush 1 PATCH');
         assert.deepEqual(Array.from(patchCalls[0].touch_set.Head.motions), ['idle']);
     }
+
+    // Scenario F (#3 / #16): model switches during /api/characters fetch inside touchPage_open -> aborts silently, 0 PATCHes
+    {
+        const patchCalls = [];
+        const floatingMessages = [];
+        let resolveCharsFetch;
+        const modelA = {
+            internalModel: {
+                settings: {
+                    hitAreas: [{ id: 'Head', Name: 'Head' }],
+                    json: { FileReferences: { Motions: {}, Expressions: [] } },
+                },
+            },
+        };
+        const modelB = {
+            internalModel: {
+                settings: {
+                    hitAreas: [{ id: 'Body', Name: 'Body' }],
+                    json: { FileReferences: { Motions: {}, Expressions: [] } },
+                },
+            },
+        };
+        let activeModel = modelA;
+        const { ctx, win, doc } = setupTouchConfig(async (url, init = {}) => {
+            if (String(url).includes('/touch_set') && init.method === 'PATCH') {
+                patchCalls.push(JSON.parse(init.body));
+                return { ok: true, json: async () => ({ success: true }) };
+            }
+            if (String(url) === '/api/characters') {
+                return await new Promise(resolve => {
+                    resolveCharsFetch = resolve;
+                });
+            }
+            return { ok: true, json: async () => ({ success: true }) };
+        });
+        win.live2dManager.getCurrentModel = () => activeModel;
+        const origCreateWindow = ctx.createTouchConfigFloatingWindow;
+        ctx.createTouchConfigFloatingWindow = (opts) => {
+            floatingMessages.push(opts);
+            return origCreateWindow(opts);
+        };
+
+        const openPromise = ctx.touchPage_open();
+        await new Promise(r => setImmediate(r));
+        assert.equal(typeof resolveCharsFetch, 'function');
+
+        // User switches model A -> B while /api/characters is in flight
+        win.live2dManager.modelName = 'haru';
+        activeModel = modelB;
+
+        resolveCharsFetch({
+            ok: true,
+            json: async () => ({
+                '猫娘': {
+                    NekoA: {
+                        _reserved: {
+                            touch_set: {
+                                mao_pro: { Head: { motions: ['idle'], expressions: [] } },
+                                haru: { Body: { motions: ['tap'], expressions: [] } },
+                            },
+                        },
+                    },
+                },
+            }),
+        });
+        await openPromise;
+        assert.equal(doc.querySelector('.touch-config-overlay'), null, 'must NOT open config window for stale model after switch');
+        assert.equal(floatingMessages.length, 0, 'must abort silently without error popup on switch');
+        assert.equal(patchCalls.length, 0, 'must send 0 PATCHes');
+    }
+
+    // Scenario G (wehos opt #5): InitializationTouchSet returns 'superseded' because a newer load already populated the same model -> opens cleanly
+    {
+        const floatingMessages = [];
+        let resolveSlowFetch;
+        let fetchCount = 0;
+        const { ctx, doc } = setupTouchConfig(async (url) => {
+            if (String(url) === '/api/characters') {
+                fetchCount += 1;
+                if (fetchCount === 1) {
+                    return await new Promise(resolve => {
+                        resolveSlowFetch = resolve;
+                    });
+                }
+                return {
+                    ok: true,
+                    json: async () => ({
+                        '猫娘': {
+                            NekoA: {
+                                _reserved: {
+                                    touch_set: {
+                                        mao_pro: { Head: { motions: ['idle'], expressions: [] } },
+                                    },
+                                },
+                            },
+                        },
+                    }),
+                };
+            }
+            return { ok: true, json: async () => ({ success: true }) };
+        });
+        const origCreateWindow = ctx.createTouchConfigFloatingWindow;
+        ctx.createTouchConfigFloatingWindow = (opts) => {
+            floatingMessages.push(opts);
+            return origCreateWindow(opts);
+        };
+
+        const openPromise = ctx.touchPage_open();
+        await new Promise(r => setImmediate(r));
+        assert.equal(typeof resolveSlowFetch, 'function');
+
+        // A newer refresh completes for the exact same model first
+        const newerResult = await ctx.InitializationTouchSet(undefined, { allowLive2DReload: true });
+        assert.equal(newerResult, true);
+
+        // Now the older fetch inside touchPage_open resolves -> 'superseded', yet touchSet is populated for mao_pro
+        resolveSlowFetch({
+            ok: true,
+            json: async () => ({
+                '猫娘': {
+                    NekoA: {
+                        _reserved: {
+                            touch_set: {
+                                mao_pro: { Head: { motions: [], expressions: [] } },
+                            },
+                        },
+                    },
+                },
+            }),
+        });
+        await openPromise;
+        assert.ok(doc.querySelector('.touch-config-overlay'), 'superseded result with loaded same-model touchSet must open cleanly');
+        assert.equal(floatingMessages.filter(m => m && m.content).length, 0, 'must not show modelDataNotReady error popup');
+    }
+});
+
+test('PR3976 #14 & #15: switchModelDisplay aborts stale live2d switch before MMD dispose and deleteSelectedModels preserves newer Live3D selection', async () => {
+    const controllerCode = fs.readFileSync(
+        path.join(ROOT, 'static/js/model_manager/page-controller.js'),
+        'utf8'
+    );
+
+    // Part 1 (#14): switchModelDisplay('live2d') superseded during loadLive2DModelOptions must not dispose window.mmdManager
+    const switchStart = controllerCode.indexOf('async function switchModelDisplay(type, subType, options = {})');
+    const switchEnd = controllerCode.indexOf('    // 模型类型选择事件', switchStart);
+    assert.ok(switchStart > 0 && switchEnd > switchStart);
+    const switchFnCode = controllerCode.slice(switchStart, switchEnd);
+
+    const { doc } = createDomStub();
+    let resolveLive2dOptions;
+    let mmdDisposedCount = 0;
+    const mmdManagerObj = {
+        currentModel: { name: 'miku' },
+        stopAnimation() {},
+        dispose() { mmdDisposedCount += 1; },
+    };
+    const noopEl = () => ({ style: { setProperty() {} }, classList: { add() {}, remove() {}, toggle() {} }, appendChild() {} });
+    const switchCtx = vm.createContext({
+        currentModelType: 'live3d',
+        currentLive3dSubType: 'mmd',
+        modelDisplaySwitchGeneration: 1,
+        pngtuberPreviewGeneration: 0,
+        pendingPNGTuberPreview: null,
+        unfinalizedPNGTuberCommit: null,
+        currentModelInfo: null,
+        modelSelect: null,
+        modelTypeSelect: { value: 'live3d' },
+        modelTypeManager: { updateButtonText() {} },
+        pngtuberPreviewGroup: null,
+        pngtuberContainer: null,
+        live2dModelGroup: null,
+        vrmModelGroup: null,
+        live2dContainer: noopEl(),
+        vrmExpressionGroup: null,
+        vrmContainer: null,
+        mmdContainer: noopEl(),
+        mmdModelGroup: null,
+        mmdAnimationGroup: null,
+        vrmAnimationGroup: null,
+        playMmdAnimationBtn: null,
+        uploadBtn: null,
+        modelUpload: null,
+        vrmFileUpload: null,
+        isMmdAnimationPlaying: false,
+        isMmdIdlePlaying: false,
+        isVrmAnimationPlaying: false,
+        isVrmExpressionPlaying: false,
+        vrmManager: null,
+        clearPNGTuberPreviewControls() {},
+        stopIdleRotation() {},
+        updateMMDAnimationPlayButtonIcon() {},
+        loadLive2DModelOptions() {
+            return new Promise(resolve => { resolveLive2dOptions = resolve; });
+        },
+        localStorage: { setItem() {}, getItem: () => null },
+        document: doc,
+        window: {
+            mmdManager: mmdManagerObj,
+            pngtuberManager: null,
+            vrmManager: null,
+            live2dManager: null,
+            dispatchEvent() {},
+        },
+        CustomEvent: class { constructor(type, o = {}) { this.type = type; this.detail = o.detail; } },
+        t: (_k, fb) => fb,
+        showStatus() {},
+        console,
+    });
+    vm.runInContext(switchFnCode, switchCtx);
+
+    const staleSwitchPromise = switchCtx.switchModelDisplay('live2d');
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveLive2dOptions, 'function');
+
+    // User switches back to live3d/mmd while loadLive2DModelOptions is still awaiting
+    switchCtx.modelDisplaySwitchGeneration += 1;
+    switchCtx.currentModelType = 'live3d';
+    switchCtx.currentLive3dSubType = 'mmd';
+
+    resolveLive2dOptions();
+    const staleResult = await staleSwitchPromise;
+    assert.equal(staleResult, false, 'superseded switchModelDisplay(live2d) must return false');
+    assert.equal(mmdDisposedCount, 0, 'superseded live2d switch must NOT dispose active window.mmdManager');
+    assert.equal(switchCtx.window.mmdManager, mmdManagerObj, 'superseded live2d switch must NOT null window.mmdManager');
+
+    // Part 2 (#15): deleteSelectedModels preserves newer user selection made while loadLive3DModels() is in flight
+    const deleteStart = controllerCode.indexOf('async function deleteSelectedModels()');
+    const deleteEnd = controllerCode.indexOf('    if (deleteModelBtn) {', deleteStart);
+    const deleteFnCode = controllerCode.slice(deleteStart, deleteEnd);
+
+    const makeOption = (val, subType = 'vrm') => ({
+        value: val,
+        getAttribute(k) {
+            if (k === 'data-sub-type') return subType;
+            if (k === 'data-path') return val;
+            return null;
+        },
+    });
+    const makeSelect = (options, initialIndex = 0) => ({
+        options: options.slice(),
+        selectedIndex: initialIndex,
+        get value() { return this.options[this.selectedIndex]?.value || ''; },
+        set value(v) {
+            const idx = this.options.findIndex(o => o.value === v);
+            if (idx >= 0) this.selectedIndex = idx;
+        },
+    });
+
+    const optDel = makeOption('/user_vrm/Del.vrm');
+    const optA = makeOption('/user_vrm/A.vrm');
+    const optB = makeOption('/user_vrm/B.vrm');
+    const vrmModelSelect = makeSelect([optDel, optA, optB], 1); // Starts on A
+    const mmdModelSelect = makeSelect([], -1);
+
+    const deleteCtx = vm.createContext({
+        userModelSelectionGeneration: 1,
+        vrmAdmittedSelectionLoad: null,
+        vrmSelectionLoad: { modelUrl: '/user_vrm/A.vrm' },
+        selectedDeleteModels: new Set(['vrm:/user_vrm/Del.vrm']),
+        selectedDeleteCount: null,
+        deleteSelectedInfo: null,
+        confirmDeleteBtn: { disabled: false, textContent: '' },
+        currentModelType: 'live3d',
+        currentModelInfo: { type: 'vrm', path: '/user_vrm/A.vrm', url: '/user_vrm/A.vrm' },
+        vrmModelSelect,
+        mmdModelSelect,
+        modelSelect: null,
+        t: (_k, fb) => fb,
+        showStatus() {},
+        showConfirm: async () => true,
+        showAlert: async () => {},
+        hideDeleteModelModal() {},
+        updateConfirmDeleteButton() {},
+        isBoundPNGTuberDeleteKey: () => false,
+        getBoundPNGTuberDeleteKeys: () => ({ committed: '', pending: '' }),
+        RequestHelper: { async fetchJson() { return { success: true }; } },
+        loadUserModels: async () => {},
+        loadLive3DModels: async () => {
+            // Simulate user selecting B while loadLive3DModels is awaiting server
+            deleteCtx.userModelSelectionGeneration += 1;
+            deleteCtx.vrmSelectionLoad = { modelUrl: '/user_vrm/B.vrm' };
+            deleteCtx.currentModelInfo = { type: 'vrm', path: '/user_vrm/B.vrm', url: '/user_vrm/B.vrm' };
+            vrmModelSelect.options = [optA, optB];
+            vrmModelSelect.selectedIndex = 0; // List rebuild resets selectedIndex to 0 (A)
+        },
+        loadMMDModels: async () => {},
+        updateVRMModelSelectButtonText() {},
+        updateMMDModelSelectButtonText() {},
+        console,
+        encodeURIComponent,
+    });
+    vm.runInContext(deleteFnCode, deleteCtx);
+    await deleteCtx.deleteSelectedModels();
+
+    assert.equal(vrmModelSelect.value, '/user_vrm/B.vrm', 'deleteSelectedModels must restore newer user selection B instead of stale snapshot A');
 });

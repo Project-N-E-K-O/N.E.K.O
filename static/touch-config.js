@@ -246,7 +246,13 @@ async function touchPage_open(){
         const modelName = live2dManager.modelName || ''
         if (!hasLoadedTouchSetForModel(live2dManager, modelName)) {
             const loaded = await InitializationTouchSet(undefined, { allowLive2DReload: true })
-            if (loaded !== true || !hasLoadedTouchSetForModel(live2dManager, modelName)) {
+            if (window.live2dManager !== live2dManager
+                || (live2dManager.modelName || '') !== modelName
+                || live2dManager.getCurrentModel() !== model
+                || model.internalModel !== internalModel) {
+                return
+            }
+            if ((loaded !== true && loaded !== 'superseded') || !hasLoadedTouchSetForModel(live2dManager, modelName)) {
                 createTouchConfigFloatingWindow({ content: window.t('live2d.touchAnim.modelDataNotReady', '模型内部数据未准备好') })
                 return
             }

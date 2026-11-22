@@ -286,12 +286,14 @@
         startPlayTimeTracking() {
             // 约每 60 秒上报一次（官方常见节奏：定期/存档点/退出时同步）
             const REPORT_INTERVAL_MS = 60000;
+            const REQUEST_TIMEOUT_MS = 15000;
             let prevTs = Date.now();
             let inFlightFlush = null;
             let pendingForceFlush = false;
 
             const flushPlayTime = ({ force = false } = {}) => {
-                // 严格单飞串行：不 abort 已发出的请求，避免与服务端无锁读写竞态或重复累加。
+                // 严格单飞串行：不在 force 时 abort 已发出的请求，避免与服务端无锁读写竞态或重复累加；
+                // 仅通过 15s 请求超时防止挂起的请求永久阻塞后续定时上报。
                 if (inFlightFlush) {
                     if (force) {
                         pendingForceFlush = true;
@@ -299,16 +301,19 @@
                     return inFlightFlush;
                 }
 
-                const run = (async () => {
-                    const now = Date.now();
-                    const elapsedSeconds = Math.min(
-                        3600,
-                        Math.max(0, Math.floor((now - prevTs) / 1000))
-                    );
-                    if (elapsedSeconds < 1) {
-                        return;
-                    }
+                const now = Date.now();
+                const rawElapsedSeconds = Math.max(0, Math.floor((now - prevTs) / 1000));
+                const elapsedSeconds = Math.min(3600, rawElapsedSeconds);
+                if (elapsedSeconds < 1) {
+                    return Promise.resolve();
+                }
 
+                const run = (async () => {
+
+                    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+                    const timeoutId = controller
+                        ? setTimeout(() => { try { controller.abort(); } catch (_) { } }, REQUEST_TIMEOUT_MS)
+                        : null;
                     try {
                         const playtimeHeaders = { 'Content-Type': 'application/json' };
                         const sec = window.nekoLocalMutationSecurity;
@@ -325,16 +330,22 @@
                         if (!hasCachedToken && sec && typeof sec.getMutationHeaders === 'function') {
                             try { Object.assign(playtimeHeaders, await sec.getMutationHeaders()); } catch (_) { }
                         }
-                        const response = await fetch('/api/steam/update-playtime', {
+                        const fetchOptions = {
                             method: 'POST',
                             headers: playtimeHeaders,
                             // 全量开启 keepalive（单飞且请求体极小），确保常规在途请求在卸载时也能送达而无需中止重发
                             keepalive: true,
                             body: JSON.stringify({ seconds: elapsedSeconds })
-                        });
+                        };
+                        if (controller) {
+                            fetchOptions.signal = controller.signal;
+                        }
+                        const response = await fetch('/api/steam/update-playtime', fetchOptions);
 
                         if (response.ok) {
-                            prevTs = now;
+                            // 未触及 3600s 上限时仅推进已上报的整秒，保留不足 1 秒的余量；
+                            // 触及上限时推进到 now，避免后续补报有意丢弃的超额时间。
+                            prevTs = rawElapsedSeconds > 3600 ? now : (prevTs + elapsedSeconds * 1000);
                             const data = await response.json().catch(() => ({}));
                             this.syncProgressStatAchievements(data);
                         } else if (response.status === 503) {
@@ -345,6 +356,10 @@
                         // 其他错误保留 prevTs，下次重试这段时间
                     } catch (error) {
                         console.debug('更新游戏时长进度失败:', error && error.message ? error.message : error);
+                    } finally {
+                        if (timeoutId !== null) {
+                            clearTimeout(timeoutId);
+                        }
                     }
                 })().finally(() => {
                     inFlightFlush = null;

@@ -1292,6 +1292,46 @@
             });
         }
 
+        function safeDecodePercent(value) {
+            return String(value).replace(/(%[0-9a-fA-F]{2})+/g, seq => {
+                try {
+                    return decodeURIComponent(seq);
+                } catch (_) {
+                    return seq;
+                }
+            });
+        }
+
+        function isSafeRelativeModelRef(filePath) {
+            if (typeof filePath !== 'string' || !filePath) {
+                return false;
+            }
+            const decoded = safeDecodePercent(filePath);
+            const candidates = Array.from(new Set([
+                filePath,
+                decoded,
+                filePath.replace(/^ +| +$/g, ''),
+                decoded.replace(/^ +| +$/g, '')
+            ]));
+            for (const candidate of candidates) {
+                if (!candidate || /[:?#\x00-\x1f\x7f]/.test(candidate)) {
+                    return false;
+                }
+                const normalized = candidate.replace(/\\/g, '/');
+                if (normalized.startsWith('/')) {
+                    return false;
+                }
+                const parts = normalized.split('/');
+                if (parts.some(part => part === '..')) {
+                    return false;
+                }
+                if (parts.filter(part => part !== '' && part !== '.').length === 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         function normalizePreservedFileList(rawFiles) {
             const list = typeof rawFiles === 'string'
                 ? [rawFiles]
@@ -1303,7 +1343,37 @@
                     return '';
                 })
                 .map(path => path.replace(/\\/g, '/').trim())
-                .filter(Boolean);
+                .filter(path => path && isSafeRelativeModelRef(path));
+        }
+
+        function hasLossyExpressionRebuild(rawExpressions, groupName, files) {
+            if (!Array.isArray(rawExpressions) || rawExpressions.length === 0) {
+                return false;
+            }
+            const prefix = `${groupName}_`;
+            const expectedFiles = new Set(files);
+            return rawExpressions.some(item => {
+                if (!item || typeof item !== 'object') {
+                    return false;
+                }
+                const itemName = typeof item.Name === 'string' ? item.Name : '';
+                if (!itemName.startsWith(prefix)) {
+                    return false;
+                }
+                const extraKeys = Object.keys(item).filter(key => key !== 'Name' && key !== 'File');
+                if (extraKeys.length > 0) {
+                    return true;
+                }
+                const normalizedFile = typeof item.File === 'string'
+                    ? item.File.replace(/\\/g, '/').trim()
+                    : '';
+                if (!normalizedFile || !expectedFiles.has(normalizedFile)) {
+                    return true;
+                }
+                const base = normalizedFile.split('/').pop() || '';
+                const baseNoExt = base.replace(/\.exp3\.json$/, '');
+                return itemName !== `${groupName}_${baseNoExt}`;
+            });
         }
 
         async function fetchPreservedModelConfig(modelName, modelInfo, signal) {
@@ -1319,7 +1389,26 @@
                 throw new Error((mappingData && mappingData.error) || t('common.unknownError'));
             }
 
+            const modelConfigUrl = (modelInfo && modelInfo.source !== 'user_mods' && modelInfo.item_id)
+                ? `/api/live2d/model_config_by_id/${modelInfo.item_id}`
+                : `/api/live2d/model_config/${encodeURIComponent(modelName)}`;
+            const cfgResp = await fetch(modelConfigUrl, signal ? { signal } : undefined);
+            if (!cfgResp.ok) {
+                throw new Error(`HTTP ${cfgResp.status}: ${cfgResp.statusText}`);
+            }
+            const cfgData = await cfgResp.json();
+            if (!cfgData || !cfgData.success || !cfgData.config || typeof cfgData.config !== 'object') {
+                throw new Error((cfgData && cfgData.error) || t('common.unknownError'));
+            }
+
             const existingConfig = mappingData.config;
+            const rawModelConfig = cfgData.config;
+            const fileRefs = rawModelConfig.FileReferences && typeof rawModelConfig.FileReferences === 'object'
+                ? rawModelConfig.FileReferences
+                : {};
+            const rawEmotionMapping = rawModelConfig.EmotionMapping && typeof rawModelConfig.EmotionMapping === 'object'
+                ? rawModelConfig.EmotionMapping
+                : null;
             const preservedMotions = {};
             const preservedExpressions = {};
 
@@ -1332,41 +1421,43 @@
                 });
             }
 
-            if (existingConfig.expressions && typeof existingConfig.expressions === 'object') {
-                Object.entries(existingConfig.expressions).forEach(([groupName, files]) => {
-                    if (emotions.includes(groupName)) {
+            const rawMotions = fileRefs.Motions;
+            if (rawMotions && typeof rawMotions === 'object') {
+                Object.entries(rawMotions).forEach(([groupName, items]) => {
+                    if (emotions.includes(groupName) || groupName === '常驻') {
                         return;
                     }
-                    preservedExpressions[groupName] = normalizePreservedFileList(files);
+                    const sanitizedFiles = normalizePreservedFileList(items);
+                    if (!Object.prototype.hasOwnProperty.call(preservedMotions, groupName)
+                        || preservedMotions[groupName].length === 0) {
+                        if (sanitizedFiles.length > 0 || (Array.isArray(items) && items.length === 0)) {
+                            preservedMotions[groupName] = sanitizedFiles;
+                        }
+                    }
                 });
             }
 
-            try {
-                const modelConfigUrl = (modelInfo && modelInfo.source !== 'user_mods' && modelInfo.item_id)
-                    ? `/api/live2d/model_config_by_id/${modelInfo.item_id}`
-                    : `/api/live2d/model_config/${encodeURIComponent(modelName)}`;
-                const cfgResp = await fetch(modelConfigUrl, signal ? { signal } : undefined);
-                if (cfgResp.ok) {
-                    const cfgData = await cfgResp.json();
-                    const rawMotions = cfgData && cfgData.success && cfgData.config && cfgData.config.FileReferences
-                        ? cfgData.config.FileReferences.Motions
-                        : null;
-                    if (rawMotions && typeof rawMotions === 'object') {
-                        Object.entries(rawMotions).forEach(([groupName, items]) => {
-                            if (emotions.includes(groupName) || groupName === '常驻') {
-                                return;
-                            }
-                            if (!Object.prototype.hasOwnProperty.call(preservedMotions, groupName)) {
-                                preservedMotions[groupName] = normalizePreservedFileList(items);
-                            }
-                        });
+            const rawExpressions = Array.isArray(fileRefs.Expressions) ? fileRefs.Expressions : [];
+            const explicitStoredExpressions = rawEmotionMapping && rawEmotionMapping.expressions && typeof rawEmotionMapping.expressions === 'object'
+                ? rawEmotionMapping.expressions
+                : null;
+            if (explicitStoredExpressions) {
+                Object.entries(explicitStoredExpressions).forEach(([groupName, rawGroupFiles]) => {
+                    if (emotions.includes(groupName)) {
+                        return;
                     }
-                }
-            } catch (cfgErr) {
-                if (cfgErr && cfgErr.name === 'AbortError') {
-                    throw cfgErr;
-                }
-                console.warn('补充读取模型 FileReferences.Motions 失败，仅保留 EmotionMapping 中的非 UI 组:', cfgErr);
+                    const sanitizedFromMapping = existingConfig.expressions && typeof existingConfig.expressions === 'object'
+                        && Object.prototype.hasOwnProperty.call(existingConfig.expressions, groupName)
+                        ? normalizePreservedFileList(existingConfig.expressions[groupName])
+                        : normalizePreservedFileList(rawGroupFiles);
+                    if (sanitizedFromMapping.length === 0) {
+                        return;
+                    }
+                    if (hasLossyExpressionRebuild(rawExpressions, groupName, sanitizedFromMapping)) {
+                        return;
+                    }
+                    preservedExpressions[groupName] = sanitizedFromMapping;
+                });
             }
 
             return {

@@ -468,6 +468,7 @@
         let chatUiClearedForSwitch = false;
         let previousChatContainerNodes = null;
         let previousReactMessages = null;
+        let previousReactSwitchSnapshot = null;
         let previousDocumentTitle = document.title;
         let previousChatTurnState = null;
 
@@ -481,21 +482,59 @@
                 }
                 const chatContainer = document.getElementById('chatContainer');
                 if (chatContainer && Array.isArray(previousChatContainerNodes)) {
+                    const postClearNodes = Array.from(chatContainer.childNodes);
                     chatContainer.innerHTML = '';
                     previousChatContainerNodes.forEach(node => {
                         try { chatContainer.appendChild(node); } catch (_e) { /* ignore */ }
                     });
+                    postClearNodes.forEach(node => {
+                        if (!previousChatContainerNodes.includes(node)) {
+                            try { chatContainer.appendChild(node); } catch (_e) { /* ignore */ }
+                        }
+                    });
                 }
-                if (Array.isArray(previousReactMessages) && window.reactChatWindowHost) {
+                if (previousReactSwitchSnapshot
+                        && window.reactChatWindowHost
+                        && typeof window.reactChatWindowHost.restoreSwitchSnapshot === 'function') {
+                    window.reactChatWindowHost.restoreSwitchSnapshot(previousReactSwitchSnapshot);
+                } else if (Array.isArray(previousReactMessages) && window.reactChatWindowHost) {
+                    const currentReactState = (typeof window.reactChatWindowHost.getState === 'function')
+                        ? window.reactChatWindowHost.getState()
+                        : null;
+                    const liveReactMessages = (currentReactState && Array.isArray(currentReactState.messages))
+                        ? currentReactState.messages
+                        : [];
+                    const seenIds = new Set(
+                        previousReactMessages
+                            .map(msg => (msg && msg.id !== undefined && msg.id !== null && msg.id !== '' ? String(msg.id) : ''))
+                            .filter(Boolean)
+                    );
+                    const postClearReactMessages = liveReactMessages.filter(msg => {
+                        if (!msg) return false;
+                        const msgId = (msg.id !== undefined && msg.id !== null && msg.id !== '') ? String(msg.id) : '';
+                        if (!msgId) return true;
+                        if (seenIds.has(msgId)) return false;
+                        seenIds.add(msgId);
+                        return true;
+                    });
+                    const mergedReactMessages = previousReactMessages.concat(postClearReactMessages);
                     if (typeof window.reactChatWindowHost.setMessages === 'function') {
-                        window.reactChatWindowHost.setMessages(previousReactMessages);
+                        window.reactChatWindowHost.setMessages(mergedReactMessages);
                     } else if (typeof window.reactChatWindowHost.appendMessage === 'function') {
-                        previousReactMessages.forEach(msg => {
+                        mergedReactMessages.forEach(msg => {
                             try { window.reactChatWindowHost.appendMessage(msg); } catch (_e) { /* ignore */ }
                         });
                     }
                 }
-                if (previousChatTurnState) {
+                const hasNewTurnState = !!(
+                    window.currentGeminiMessage
+                    || window._geminiTurnFullText
+                    || window._geminiTurnEndSealed
+                    || (Array.isArray(window.currentTurnGeminiBubbles) && window.currentTurnGeminiBubbles.length > 0)
+                    || (Array.isArray(window.currentTurnGeminiAttachments) && window.currentTurnGeminiAttachments.length > 0)
+                );
+                const socketStillBelongsToOldSession = !S.socket || S.socket === _switchOldSocket;
+                if (previousChatTurnState && !hasNewTurnState && socketStillBelongsToOldSession) {
                     window.currentGeminiMessage = previousChatTurnState.currentGeminiMessage;
                     window._geminiTurnFullText = previousChatTurnState._geminiTurnFullText;
                     window._geminiTurnEndSealed = previousChatTurnState._geminiTurnEndSealed;
@@ -934,6 +973,9 @@
             // 先保存旧角色聊天 UI 与全局 turn 状态快照，以便未 commit 前失败回滚时恢复
             const chatContainer = document.getElementById('chatContainer');
             previousChatContainerNodes = chatContainer ? Array.from(chatContainer.childNodes) : null;
+            previousReactSwitchSnapshot = (window.reactChatWindowHost && typeof window.reactChatWindowHost.captureSwitchSnapshot === 'function')
+                ? window.reactChatWindowHost.captureSwitchSnapshot()
+                : null;
             const reactState = (window.reactChatWindowHost && typeof window.reactChatWindowHost.getState === 'function')
                 ? window.reactChatWindowHost.getState()
                 : null;

@@ -122,6 +122,18 @@ test('F0507: switching models hides config, disables save/reset until ready, and
                 }),
             };
         }
+        if (u === '/api/live2d/model_config/ModelB') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    success: true,
+                    config: {
+                        FileReferences: { Motions: {}, Expressions: [] },
+                    },
+                }),
+            };
+        }
         return { ok: true, status: 200, json: async () => ({ success: true }) };
     });
 
@@ -336,12 +348,23 @@ test('F0063: saveEmotionMapping preserves non-UI FileReferences.Motions and pers
                 json: async () => ({
                     success: true,
                     config: {
+                        EmotionMapping: {
+                            motions: {
+                                happy: ['motions/happy1.motion3.json'],
+                            },
+                            expressions: {
+                                '常驻': ['expressions/perm.exp3.json'],
+                            },
+                        },
                         FileReferences: {
                             Motions: {
                                 TapBody: [{ File: 'motions/tap.motion3.json' }],
                                 idle: [{ File: 'motions/idle_lower.motion3.json' }],
                                 happy: [{ File: 'motions/happy1.motion3.json' }],
                             },
+                            Expressions: [
+                                { Name: '常驻_perm', File: 'expressions/perm.exp3.json' },
+                            ],
                         },
                     },
                 }),
@@ -382,4 +405,149 @@ test('F0063: saveEmotionMapping preserves non-UI FileReferences.Motions and pers
     failPreSaveMappingGet = true;
     await w.saveEmotionMapping();
     assert.equal(postBodies.length, 2, 'must abort POST when pre-save GET fails');
+});
+
+test('F0063: saveEmotionMapping aborts POST when /model_config supplemental read fails (HTTP/business/network)', async () => {
+    const postBodies = [];
+    let cfgFailureMode = 'http500';
+
+    const { w, doc } = createEmotionManagerDom(async (url, init = {}) => {
+        const u = String(url);
+        if (u === '/api/live2d/models') {
+            return { ok: true, status: 200, json: async () => ([{ name: 'ModelCfgFail', source: 'user_mods' }]) };
+        }
+        if (u === '/api/live2d/model_files/ModelCfgFail') {
+            return { ok: true, status: 200, json: async () => ({ success: true, motion_files: ['motions/happy1.motion3.json'], expression_files: [] }) };
+        }
+        if (u === '/api/live2d/emotion_mapping/ModelCfgFail') {
+            if ((init.method || 'GET') === 'POST') {
+                postBodies.push(JSON.parse(init.body));
+                return { ok: true, status: 200, json: async () => ({ success: true }) };
+            }
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({ success: true, config: { motions: { happy: ['motions/happy1.motion3.json'] }, expressions: {} } }),
+            };
+        }
+        if (u === '/api/live2d/model_config/ModelCfgFail') {
+            if (cfgFailureMode === 'http500') {
+                return { ok: false, status: 500, statusText: 'Server Error', json: async () => ({}) };
+            }
+            if (cfgFailureMode === 'biz_fail') {
+                return { ok: true, status: 200, json: async () => ({ success: false, error: 'boom' }) };
+            }
+            if (cfgFailureMode === 'network') {
+                throw new Error('ECONNRESET');
+            }
+        }
+        throw new Error(`Unexpected fetch URL: ${u}`);
+    });
+
+    await flushMicrotasks();
+    doc.querySelector('.singleselect-item').click();
+    await flushMicrotasks(30);
+
+    for (const mode of ['http500', 'biz_fail', 'network']) {
+        cfgFailureMode = mode;
+        await w.saveEmotionMapping();
+        assert.equal(postBodies.length, 0, `must abort POST on /model_config ${mode}`);
+        assert.equal(doc.getElementById('save-btn').disabled, false, 'save button must be re-enabled after aborted save');
+    }
+});
+
+test('F0063: preserves custom FileReferences.Expressions losslessly, skips empty legacy 常驻 group, and strips unsafe raw motion refs', async () => {
+    const postBodies = [];
+    let modelConfigOverride = null;
+    let mappingOverride = null;
+
+    const { w, doc } = createEmotionManagerDom(async (url, init = {}) => {
+        const u = String(url);
+        if (u === '/api/live2d/models') {
+            return { ok: true, status: 200, json: async () => ([{ name: 'ModelEdge', source: 'user_mods' }]) };
+        }
+        if (u === '/api/live2d/model_files/ModelEdge') {
+            return { ok: true, status: 200, json: async () => ({ success: true, motion_files: ['motions/happy1.motion3.json'], expression_files: ['expressions/happy.exp3.json'] }) };
+        }
+        if (u === '/api/live2d/emotion_mapping/ModelEdge') {
+            if ((init.method || 'GET') === 'POST') {
+                postBodies.push(JSON.parse(init.body));
+                return { ok: true, status: 200, json: async () => ({ success: true }) };
+            }
+            return { ok: true, status: 200, json: async () => ({ success: true, config: mappingOverride }) };
+        }
+        if (u === '/api/live2d/model_config/ModelEdge') {
+            return { ok: true, status: 200, json: async () => ({ success: true, config: modelConfigOverride }) };
+        }
+        throw new Error(`Unexpected fetch URL: ${u}`);
+    });
+
+    // Case A: EmotionMapping absent -> derived 'custom' from FileReferences.Expressions must NOT be submitted to avoid stripping FadeInTime/Name
+    mappingOverride = {
+        motions: { happy: ['motions/happy1.motion3.json'] },
+        expressions: { custom: ['expressions/face.exp3.json'] },
+    };
+    modelConfigOverride = {
+        FileReferences: {
+            Motions: {
+                TapBody: [
+                    { File: '../shared/tap.motion3.json' },
+                    { File: 'http://evil/x.motion3.json' },
+                    { File: '%2e%2e/escape.motion3.json' },
+                    { File: 'motions/tap_ok.motion3.json' },
+                ],
+                happy: [{ File: 'motions/happy1.motion3.json' }],
+            },
+            Expressions: [
+                { Name: 'custom_keep', File: 'expressions/face.exp3.json', FadeInTime: 0.8 },
+            ],
+        },
+    };
+
+    await flushMicrotasks();
+    doc.querySelector('.singleselect-item').click();
+    await flushMicrotasks(30);
+
+    await w.saveEmotionMapping();
+    assert.equal(postBodies.length, 1);
+    assert.deepEqual(postBodies[0].motions, {
+        TapBody: ['motions/tap_ok.motion3.json'],
+        happy: ['motions/happy1.motion3.json'],
+    });
+    assert.deepEqual(postBodies[0].expressions, {}, 'derived custom expression group must not be rebuilt through POST');
+
+    // Case B: EmotionMapping explicitly stores custom AND legacy empty 常驻:[] alongside FileReferences custom_keep & 常驻_blush
+    mappingOverride = {
+        motions: { happy: ['motions/happy1.motion3.json'] },
+        expressions: {
+            custom: ['expressions/face.exp3.json'],
+            '常驻': [],
+        },
+    };
+    modelConfigOverride = {
+        EmotionMapping: {
+            motions: { happy: ['motions/happy1.motion3.json'] },
+            expressions: {
+                custom: ['expressions/face.exp3.json'],
+                '常驻': [],
+            },
+        },
+        FileReferences: {
+            Motions: {
+                happy: [{ File: 'motions/happy1.motion3.json' }],
+            },
+            Expressions: [
+                { Name: 'custom_keep', File: 'expressions/face.exp3.json', FadeInTime: 0.8 },
+                { Name: '常驻_blush', File: 'expressions/blush.exp3.json' },
+            ],
+        },
+    };
+
+    await w.saveEmotionMapping();
+    assert.equal(postBodies.length, 2);
+    assert.deepEqual(
+        postBodies[1].expressions,
+        {},
+        'lossy custom expression group and empty legacy 常驻:[] fallback must be omitted so backend preserves FileReferences.Expressions'
+    );
 });

@@ -425,8 +425,9 @@ test('F0050: _loadPanelVoices failure preserves saved voice_id and prevents /unr
 test('F0050: explicit user selection of empty voice after 200 catalog load still calls /unregister_voice', async () => {
     const calls = [];
     const fetchImpl = async (url, init = {}) => {
-        calls.push({ url: String(url), method: init.method || 'GET', body: init.body });
-        if (String(url) === '/api/characters/voices') {
+        const u = String(url);
+        calls.push({ url: u, method: init.method || 'GET', body: init.body });
+        if (u === '/api/characters/voices') {
             return {
                 ok: true,
                 status: 200,
@@ -437,10 +438,19 @@ test('F0050: explicit user selection of empty voice after 200 catalog load still
                 }),
             };
         }
-        if (String(url) === '/api/characters/gptsovits_voices') {
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
             return { ok: true, status: 200, json: async () => ({ success: true, voices: [] }) };
         }
-        return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        if (u === '/api/characters/catgirl/NekoA' && (init.method || 'GET') === 'PUT') {
+            return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        }
+        if (u === '/api/characters/catgirl/NekoA/unregister_voice' && init.method === 'POST') {
+            return { ok: true, status: 200, json: async () => ({ success: true }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
     };
 
     const { ctx, doc } = loadCardFormContext(fetchImpl);
@@ -473,22 +483,78 @@ test('F0050: explicit user selection of empty voice after 200 catalog load still
     );
 });
 
+test('F0050 (nitpick #2): explicit user selection of empty voice after 500 catalog failure still calls /unregister_voice', async () => {
+    const calls = [];
+    const fetchImpl = async (url, init = {}) => {
+        const u = String(url);
+        calls.push({ url: u, method: init.method || 'GET', body: init.body });
+        if (u === '/api/characters/voices') {
+            return { ok: false, status: 500, json: async () => ({}) };
+        }
+        if (u === '/api/characters/catgirl/NekoA' && (init.method || 'GET') === 'PUT') {
+            return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        }
+        if (u === '/api/characters/catgirl/NekoA/unregister_voice' && init.method === 'POST') {
+            return { ok: true, status: 200, json: async () => ({ success: true }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
+    };
+
+    const { ctx, doc } = loadCardFormContext(fetchImpl);
+    const overlay = doc.createElement('div');
+    overlay.className = 'catgirl-panel-overlay active';
+    const container = doc.createElement('div');
+    overlay.appendChild(container);
+    doc.body.appendChild(overlay);
+
+    ctx.buildCatgirlDetailForm('NekoA', {
+        '档案名': 'NekoA',
+        '性格': '温柔',
+        voice_id: 'custom123',
+        model_type: 'vrm',
+    }, false, container);
+
+    const form = container.querySelector('form');
+    await form._voicesLoadPromise;
+
+    const voiceSelect = form.querySelector('select[name="voice_id"]');
+    assert.equal(voiceSelect._voiceCatalogLoaded, false);
+    assert.equal(voiceSelect.value, 'custom123', 'fallback option must preserve saved voice_id on 500');
+
+    voiceSelect.value = '';
+    voiceSelect.dispatchEvent({ type: 'change' });
+
+    await ctx.saveCatgirlFromPanel(form, 'NekoA', false);
+    assert.equal(
+        calls.some(c => c.url === '/api/characters/catgirl/NekoA/unregister_voice' && c.method === 'POST'),
+        true,
+        'explicit clear with userChanged=true must call /unregister_voice even when catalog returned 500'
+    );
+});
+
 test('F0441: personality update and clear refresh in place without reverting edited fields', async () => {
     let serverSelection = { mode: 'override', preset_id: 'tsundere_sister', source: 'preset', selected_at: '2026-01-01', profile: {} };
     const fetchImpl = async (url, init = {}) => {
-        if (String(url).endsWith('/persona-selection')) {
+        const u = String(url);
+        if (u === '/api/characters/character/NekoA/persona-selection') {
             if ((init.method || 'GET') === 'DELETE') {
                 serverSelection = { mode: 'default', preset_id: '', profile: {} };
             }
             return { ok: true, status: 200, json: async () => ({ success: true, selection: serverSelection }) };
         }
-        if (String(url) === '/api/characters/voices') {
+        if (u === '/api/characters/voices') {
             return { ok: true, status: 200, json: async () => ({ voices: {} }) };
         }
-        if (String(url) === '/api/characters/gptsovits_voices') {
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
             return { ok: true, status: 200, json: async () => ({ success: true, voices: [] }) };
         }
-        return { ok: true, status: 200, json: async () => ({ success: true }) };
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
     };
 
     const { ctx, win, doc } = loadCardFormContext(fetchImpl);
@@ -534,17 +600,24 @@ test('F0441: personality update and clear refresh in place without reverting edi
 test('F0443: saveCatgirlFromPanel skips /l2d PUT when #preview-motion-select is missing, empty, or disabled', async () => {
     const l2dCalls = [];
     const fetchImpl = async (url, init = {}) => {
-        if (String(url).startsWith('/api/characters/catgirl/l2d/')) {
-            l2dCalls.push({ url: String(url), body: JSON.parse(init.body) });
+        const u = String(url);
+        if (u === '/api/characters/catgirl/l2d/NekoA' && init.method === 'PUT') {
+            l2dCalls.push({ url: u, body: JSON.parse(init.body) });
             return { ok: true, status: 200, json: async () => ({ success: true }) };
         }
-        if (String(url) === '/api/characters/voices') {
+        if (u === '/api/characters/catgirl/NekoA' && (init.method || 'GET') === 'PUT') {
+            return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        }
+        if (u === '/api/characters/voices') {
             return { ok: true, status: 200, json: async () => ({ voices: {} }) };
         }
-        if (String(url) === '/api/characters/gptsovits_voices') {
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
             return { ok: true, status: 200, json: async () => ({ success: true, voices: [] }) };
         }
-        return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
     };
 
     const { ctx, doc } = loadCardFormContext(fetchImpl);
@@ -882,15 +955,624 @@ test('F0355: handleCatgirlSwitch restores chatContainer, reactChatWindowHost, ti
     assert.equal(typeof watchdogCallback, 'function');
     assert.equal(reactMessages.length, 0, 'cleared during hang before watchdog');
     watchdogCallback();
+    assert.equal(appState.isSwitchingCatgirl, false, 'watchdog must clear isSwitchingCatgirl itself');
     assert.equal(win.lanlan_config.lanlan_name, 'CatA');
     assert.equal(chatContainer.children.length, 1);
     assert.deepEqual(reactMessages.map(m => m.id), ['m1', 'm2']);
 
-    // Case 4: successful switch commits with cleared chat UI
+    // Case 4: successful switch commits with cleared chat UI (without manual flag reset)
     hangForever = false;
-    appState.isSwitchingCatgirl = false;
     await win.handleCatgirlSwitch('CatB', 'CatA');
     assert.equal(win.lanlan_config.lanlan_name, 'CatB');
     assert.equal(reactMessages.length, 0);
     assert.equal(chatContainer.children.length, 0);
+});
+
+test('PR3976 #7 & #8: optimistic React message reconciles removed screenshots on send and deletes message when nothing was sent', async () => {
+    const { doc } = createMiniDom();
+    const mountIds = [
+        'micButton', 'muteButton', 'screenButton', 'stopButton', 'resetSessionButton',
+        'returnSessionButton', 'textSendButton', 'textInputBox', 'screenshotButton',
+        'screenshots-list', 'screenshot-thumbnail-container', 'screenshot-count', 'clear-all-screenshots',
+    ];
+    for (const id of mountIds) {
+        const el = doc.createElement(id === 'textInputBox' ? 'textarea' : 'div');
+        el.id = id;
+        doc.body.appendChild(el);
+    }
+
+    let resolveSessionStart;
+    const sentFrames = [];
+    let reactMsgs = [];
+    const updateCalls = [];
+    const removeCalls = [];
+
+    const appState = {
+        dom: {},
+        screenshotCounter: 0,
+        isTextSessionActive: false,
+        isSwitchingCatgirl: false,
+        socket: {
+            readyState: 1,
+            send(raw) { sentFrames.push(JSON.parse(raw)); },
+        },
+    };
+
+    const win = {
+        document: doc,
+        location: { pathname: '/' },
+        appState,
+        appConst: {},
+        appUtils: { isMobile: () => false },
+        t: null,
+        setInterval: () => 1,
+        clearInterval: () => {},
+        addEventListener() {},
+        removeEventListener() {},
+        dispatchEvent() {},
+        showStatusToast() {},
+        appendMessage() {},
+        resetProactiveChatBackoff() {},
+        hasAnyChatModeEnabled: () => true,
+        hideVoicePreparingToast() {},
+        showCurrentModel: async () => {},
+        unlockAchievement: async () => {},
+        ensureWebSocketOpen: async () => {},
+        claimSessionStart: (_type, resolve, _reject) => {
+            resolveSessionStart = resolve;
+            return { id: 1 };
+        },
+        sessionStartRequestId: () => 'req-start-1',
+        sessionStartIsCurrent: () => true,
+        releaseSessionStart() {},
+        appChat: {
+            ensureUserDisplayName: async () => {},
+            appendReactUserMessage(payload) {
+                const msg = { id: payload.id, status: payload.status, text: payload.text, imageUrls: payload.imageUrls };
+                reactMsgs.push(msg);
+                return msg;
+            },
+        },
+        reactChatWindowHost: {
+            setComposerAttachments() {},
+            setOnComposerRemoveAttachment() {},
+            setOnComposerImportImage() {},
+            setOnComposerScreenshot() {},
+            setOnComposerSubmit() {},
+            updateMessage(id, patch) {
+                updateCalls.push({ id, patch });
+            },
+            removeMessage(id) {
+                removeCalls.push(id);
+                reactMsgs = reactMsgs.filter(m => m.id !== id);
+                return true;
+            },
+        },
+        navigator: {},
+    };
+    win.window = win;
+
+    const ctx = vm.createContext({
+        window: win,
+        document: doc,
+        WebSocket: { OPEN: 1 },
+        CustomEvent: class { constructor(type, o = {}) { this.type = type; this.detail = o.detail; } },
+        File: class {},
+        Image: class {
+            set src(v) {
+                this._src = v;
+                this.naturalWidth = 100;
+                this.naturalHeight = 100;
+                this.width = 100;
+                this.height = 100;
+                if (typeof this.onload === 'function') this.onload();
+            }
+            get src() { return this._src; }
+        },
+        console,
+        setTimeout: (fn, ms) => {
+            const h = setTimeout(fn, ms);
+            if (h && typeof h.unref === 'function') h.unref();
+            return h;
+        },
+        clearTimeout,
+    });
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'static/app/app-buttons.js'), 'utf8'), ctx);
+    win.appButtons.init();
+
+    // Case A (#7): text + screenshot -> screenshot removed during start_session -> blocks updated to text-only
+    const item1 = win.appButtons.addScreenshotToList('data:image/jpeg;base64,REMOVED', null, { source: 'screenshot' });
+    const sendPromise1 = win.appButtons.sendTextPayload('hello after remove', { source: 'react-chat-window' });
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveSessionStart, 'function');
+    assert.equal(reactMsgs.length, 1);
+    const optimisticId1 = reactMsgs[0].id;
+
+    win.appButtons.removeScreenshotFromList(item1);
+    resolveSessionStart();
+    const ok1 = await sendPromise1;
+    assert.equal(ok1, true);
+    const sentUpdate = updateCalls.find(c => c.id === optimisticId1 && c.patch.status === 'sent');
+    assert.ok(sentUpdate, 'must update optimistic message to sent');
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(sentUpdate.patch.blocks)),
+        [{ type: 'text', text: 'hello after remove' }],
+        'must strip removed screenshot block from optimistic message'
+    );
+
+    // Case B (#8): screenshot-only -> screenshot removed during start_session -> optimistic message removed & returns false
+    appState.isTextSessionActive = false;
+    updateCalls.length = 0;
+    removeCalls.length = 0;
+    sentFrames.length = 0;
+    reactMsgs = [];
+
+    const item2 = win.appButtons.addScreenshotToList('data:image/jpeg;base64,ONLY', null, { source: 'screenshot' });
+    const sendPromise2 = win.appButtons.sendTextPayload('', { source: 'react-chat-window' });
+    await new Promise(r => setImmediate(r));
+    assert.equal(reactMsgs.length, 1);
+    const optimisticId2 = reactMsgs[0].id;
+
+    win.appButtons.removeScreenshotFromList(item2);
+    resolveSessionStart();
+    const ok2 = await sendPromise2;
+    assert.equal(ok2, false, 'empty send after screenshot removal must return false');
+    assert.deepEqual(removeCalls, [optimisticId2], 'must remove optimistic bubble when nothing was sent');
+    assert.equal(reactMsgs.length, 0);
+    assert.equal(updateCalls.some(c => c.patch && c.patch.status === 'sent'), false, 'must NOT mark empty unsent message as sent');
+});
+
+test('PR3976 #9a & #9b: rollback restores choicePrompt, mini-game session dedupe, post-clear messages, and avoids stale turn clobber', async () => {
+    const { doc } = createMiniDom();
+    doc.readyState = 'loading';
+    const docEl = doc.createElement('html');
+    doc.documentElement = docEl;
+
+    const chatContainer = doc.createElement('div');
+    chatContainer.id = 'chatContainer';
+    const oldNode = doc.createElement('div');
+    oldNode.textContent = 'PreSwitch Legacy';
+    chatContainer.appendChild(oldNode);
+    doc.body.appendChild(chatContainer);
+    doc.title = 'CatA Terminal - Project N.E.K.O.';
+
+    const scheduledTimeouts = [];
+    let tid = 1;
+    const winListeners = new Map();
+    const oldSocket = { readyState: 1, close() {} };
+    let newSocket = null;
+    const appState = {
+        isSwitchingCatgirl: false,
+        _currentSwitchAttemptId: null,
+        _switchAttemptCounter: 0,
+        socket: oldSocket,
+        heartbeatInterval: null,
+        incomingAudioEpoch: 0,
+        incomingAudioBlobQueue: [],
+        pendingAudioChunkMetaQueue: [],
+        isRecording: false,
+        isTextSessionActive: false,
+    };
+
+    const win = {
+        document: doc,
+        location: { pathname: '/' },
+        localStorage: { getItem: () => null, setItem() {} },
+        navigator: { userAgent: 'node-test' },
+        appState,
+        lanlan_config: { lanlan_name: 'CatA', model_type: 'live2d', live3d_sub_type: '' },
+        currentGeminiMessage: { id: 'old-g1' },
+        _geminiTurnFullText: 'old partial',
+        _geminiTurnEndSealed: true,
+        currentTurnGeminiBubbles: ['old-b1'],
+        currentTurnGeminiAttachments: ['old-att1'],
+        invalidatePendingMusicSearch() {},
+        showStatusToast() {},
+        clearAudioQueue: async () => {},
+        connectWebSocket() {
+            newSocket = { readyState: 1, close() {} };
+            appState.socket = newSocket;
+        },
+        syncVoiceChatComposerHidden() {},
+        resetAgentUiForCharacterSwitch: async () => {},
+        unlockAchievement: async () => {},
+        addEventListener(type, fn) {
+            if (!winListeners.has(type)) winListeners.set(type, new Set());
+            winListeners.get(type).add(fn);
+        },
+        removeEventListener(type, fn) { winListeners.get(type)?.delete(fn); },
+        dispatchEvent() { return true; },
+        live2dManager: {
+            clearEmotion() {},
+            setModelVisible() {},
+            initPIXI: async () => {},
+            loadUserPreferences: async () => [],
+            getCurrentModel: () => null,
+            loadModel: async () => { throw new Error('model missing'); },
+            pixi_app: { renderer: {}, ticker: { started: true, stop() {}, start() {}, update() {} } },
+        },
+        innerWidth: 1280,
+        innerHeight: 800,
+        _resetReactChatSwitchState() {},
+        setTimeout(fn, ms) {
+            if (ms === 45000 || (ms >= 4000 && ms <= 5000)) {
+                const id = tid++;
+                scheduledTimeouts.push({ id, fn, ms, cleared: false });
+                return id;
+            }
+            const h = setTimeout(fn, ms);
+            if (h && typeof h.unref === 'function') h.unref();
+            return h;
+        },
+        clearTimeout(id) {
+            const t = scheduledTimeouts.find(x => x.id === id);
+            if (t) {
+                t.cleared = true;
+                return;
+            }
+            clearTimeout(id);
+        },
+    };
+    win.window = win;
+
+    const fakeFetch = async (url) => {
+        if (String(url) === '/api/characters') {
+            return {
+                ok: true,
+                json: async () => ({
+                    '猫娘': {
+                        CatA: { model_type: 'live2d', live2d: 'CatA' },
+                        CatB: { model_type: 'live2d', live2d: 'CatB' },
+                    },
+                }),
+            };
+        }
+        if (String(url).startsWith('/api/characters/current_live2d_model')) {
+            // Simulate post-clear activity occurring while async model load is in flight before throwing
+            const postClearDom = doc.createElement('div');
+            postClearDom.textContent = 'PostClear Legacy';
+            chatContainer.appendChild(postClearDom);
+            win.reactChatWindowHost.appendMessage({
+                id: 'post-clear-m1',
+                role: 'assistant',
+                blocks: [{ type: 'text', text: 'post-clear greeting' }],
+            });
+            win._geminiTurnFullText = 'post-clear live turn';
+            return {
+                ok: true,
+                json: async () => ({
+                    success: true,
+                    model_type: 'live2d',
+                    model_info: { path: '/static/live2d/CatB/CatB.model3.json', name: 'CatB' },
+                }),
+            };
+        }
+        return { ok: true, json: async () => ({ success: true }) };
+    };
+
+    const ctx = vm.createContext({
+        window: win,
+        document: doc,
+        location: win.location,
+        localStorage: win.localStorage,
+        navigator: win.navigator,
+        fetch: fakeFetch,
+        WebSocket: { OPEN: 1, CLOSED: 3, CLOSING: 2 },
+        CustomEvent: class { constructor(type, o = {}) { this.type = type; this.detail = o.detail; } },
+        Element: class {},
+        console,
+        setTimeout: win.setTimeout,
+        clearTimeout: win.clearTimeout,
+        clearInterval,
+        requestAnimationFrame: () => 1,
+        cancelAnimationFrame: () => {},
+        encodeURIComponent,
+    });
+
+    // Load real app-react-chat-window parts first, then keep a handle to internal state via helper
+    for (const part of ['bootstrap-state-and-geometry.js', 'geometry-and-messages.js', 'message-bundle-actions-and-prompts.js']) {
+        vm.runInContext(fs.readFileSync(path.join(ROOT, 'static/app/app-react-chat-window', part), 'utf8'), ctx);
+    }
+    const reactParts = win.__appReactChatWindowParts;
+    const realState = reactParts.state;
+    reactParts.renderWindow = () => {};
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'static/app/app-react-chat-window/resize-drag-and-api.js'), 'utf8'), ctx);
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'static/app/app-character.js'), 'utf8'), ctx);
+
+    // Seed pre-switch React messages, delayed choicePrompt, and launched mini-game session dedupe
+    win.reactChatWindowHost.setMessages([
+        { id: 'pre-m1', role: 'user', blocks: [{ type: 'text', text: 'hi' }] },
+        { id: 'pre-m2', role: 'assistant', blocks: [{ type: 'text', text: 'hello' }] },
+    ]);
+    win.reactChatWindowHost.setNewUserIcebreakerPrompt({
+        sessionId: 'ice-1',
+        revealDelayMs: 5000,
+        options: [{ choice: 'A', label: 'Opt A' }],
+    });
+    realState._launchedMiniGameSessionIds['mg-sess-99'] = true;
+
+    await win.handleCatgirlSwitch('CatB', 'CatA');
+
+    // Rollback occurred after connectWebSocket failed at loadModel
+    assert.equal(win.lanlan_config.lanlan_name, 'CatA');
+    assert.deepEqual(
+        Array.from(chatContainer.children, n => n.textContent),
+        ['PreSwitch Legacy', 'PostClear Legacy'],
+        '#9b: post-clear DOM nodes must be preserved after pre-switch nodes'
+    );
+    const finalMsgs = win.reactChatWindowHost.getState().messages;
+    assert.deepEqual(
+        finalMsgs.map(m => m.id),
+        ['pre-m1', 'pre-m2', 'post-clear-m1'],
+        '#9b: post-clear React messages must be preserved in order after pre-switch messages'
+    );
+    assert.ok(realState.choicePrompt && realState.choicePrompt.sessionId === 'ice-1', '#9a: choicePrompt must be restored');
+    assert.equal(realState._launchedMiniGameSessionIds['mg-sess-99'], true, '#9a: _launchedMiniGameSessionIds must be restored');
+    assert.equal(reactParts.getRevealedChoicePrompt(), null, '#9a: delayed choicePrompt stays hidden until reveal timer fires');
+    const activeRevealTimers = scheduledTimeouts.filter(t => !t.cleared && t.ms >= 4000 && t.ms <= 5000);
+    assert.ok(activeRevealTimers.length >= 1, '#9a: reveal timer must be re-armed on rollback');
+    activeRevealTimers[activeRevealTimers.length - 1].fn();
+    assert.ok(reactParts.getRevealedChoicePrompt(), '#9a: firing re-armed timer reveals restored choicePrompt');
+    assert.equal(win._geminiTurnFullText, 'post-clear live turn', '#9b: active post-clear turn text must NOT be clobbered by old partial');
+    assert.equal(appState.socket, newSocket, '#9b: newSocket remained active while oldSocket retired');
+});
+
+test('PR3976 #10: stale personality GET vs click-clear DELETE sequence guard keeps latest state', async () => {
+    let resolveSlowGet;
+    const fetchImpl = async (url, init = {}) => {
+        const u = String(url);
+        if (u === '/api/characters/character/NekoA/persona-selection') {
+            if ((init.method || 'GET') === 'DELETE') {
+                return { ok: true, status: 200, json: async () => ({ success: true, selection: { mode: 'default', preset_id: '', profile: {} } }) };
+            }
+            return await new Promise(resolve => {
+                resolveSlowGet = resolve;
+            });
+        }
+        if (u === '/api/characters/voices') {
+            return { ok: true, status: 200, json: async () => ({ voices: {} }) };
+        }
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
+            return { ok: true, status: 200, json: async () => ({ success: true, voices: [] }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
+    };
+
+    const { ctx, win, doc } = loadCardFormContext(fetchImpl);
+    const overlay = doc.createElement('div');
+    overlay.className = 'catgirl-panel-overlay active';
+    const container = doc.createElement('div');
+    overlay.appendChild(container);
+    doc.body.appendChild(overlay);
+
+    ctx.buildCatgirlDetailForm('NekoA', {
+        '档案名': 'NekoA',
+        _reserved: { persona_override: { preset_id: 'initial_preset' } },
+    }, false, container);
+    const form = container.querySelector('form');
+    await form._voicesLoadPromise;
+    const clearBtn = form.querySelector('[data-testid="character-personality-clear"]');
+    assert.equal(clearBtn.disabled, false);
+
+    // Start slow GET via personality-updated event
+    win.dispatchEvent(new ctx.CustomEvent('neko:character-personality-updated', {
+        detail: { characterName: 'NekoA' },
+    }));
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveSlowGet, 'function');
+
+    // User clicks clear before slow GET resolves
+    await clearBtn.click();
+    await new Promise(r => setImmediate(r));
+    assert.equal(clearBtn.disabled, true, 'clear must disable button immediately');
+
+    // Now stale GET resolves with override -> MUST be dropped
+    resolveSlowGet({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, selection: { mode: 'override', preset_id: 'stale_preset', profile: {} } }),
+    });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(clearBtn.disabled, true, 'stale GET resolving after DELETE must NOT re-enable override');
+});
+
+test('PR3976 #11 & #12: overlapping _loadPanelVoices discards stale load and localechange during flight preserves initial voice_id', async () => {
+    let resolveFirstVoices;
+    let resolveSecondGsv;
+    let voicesCallCount = 0;
+    const calls = [];
+
+    const fetchImpl = async (url, init = {}) => {
+        const u = String(url);
+        calls.push({ url: u, method: init.method || 'GET', body: init.body });
+        if (u === '/api/characters/voices') {
+            voicesCallCount += 1;
+            if (voicesCallCount === 1) {
+                return await new Promise(resolve => { resolveFirstVoices = resolve; });
+            }
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    voices: { custom123: { prefix: 'NewVoice', provider: 'minimax', source: 'clone' } },
+                    free_voices: {},
+                    native_voices: {},
+                }),
+            };
+        }
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
+            return await new Promise(resolve => { resolveSecondGsv = resolve; });
+        }
+        if (u === '/api/characters/catgirl/NekoA' && (init.method || 'GET') === 'PUT') {
+            return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
+    };
+
+    const { ctx, win, doc } = loadCardFormContext(fetchImpl);
+    const overlay = doc.createElement('div');
+    overlay.className = 'catgirl-panel-overlay active';
+    const container = doc.createElement('div');
+    overlay.appendChild(container);
+    doc.body.appendChild(overlay);
+
+    ctx.buildCatgirlDetailForm('NekoA', {
+        '档案名': 'NekoA',
+        '性格': '温柔',
+        voice_id: 'custom123',
+        model_type: 'vrm',
+    }, false, container);
+    const form = container.querySelector('form');
+    const voiceSelect = form.querySelector('select[name="voice_id"]');
+
+    // While first /api/characters/voices is still pending, voiceSelect.value is '' and user changes locale
+    assert.equal(voiceSelect.value, '');
+    win.i18n.language = 'en';
+    win.dispatchEvent(new ctx.Event('localechange'));
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveFirstVoices, 'function');
+    assert.equal(typeof resolveSecondGsv, 'function');
+
+    // Second (newer) GSV resolves first -> catalog complete with custom123 preserved
+    resolveSecondGsv({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, voices: [{ voice_id: 'gsv:extra', name: 'Extra' }] }),
+    });
+    await form._voicesLoadPromise;
+    assert.equal(voiceSelect.value, 'custom123', '#12: localechange during load must preserve initialVoiceId');
+    const optgroupCountAfterNew = voiceSelect.children.filter(c => c.tagName === 'OPTGROUP').length;
+
+    // Now the stale first /voices response resolves (simulating HTTP 500 or old catalog) -> MUST be ignored
+    resolveFirstVoices({ ok: false, status: 500, json: async () => ({}) });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+
+    assert.equal(voiceSelect._voiceCatalogLoaded, true, '#11: stale load must not reset _voiceCatalogLoaded');
+    assert.equal(
+        voiceSelect.children.filter(c => c.tagName === 'OPTGROUP').length,
+        optgroupCountAfterNew,
+        '#11: stale load must not append duplicate optgroups or fallback options'
+    );
+    assert.equal(voiceSelect.value, 'custom123');
+
+    // Saving without explicit change must NOT call /unregister_voice
+    await ctx.saveCatgirlFromPanel(form, 'NekoA', false);
+    assert.equal(calls.some(c => c.url.includes('/unregister_voice')), false, '#12: save must not unregister untouched voice');
+});
+
+test('PR3976 #13: unresolved saved Live2D idle animation skips /l2d PUT until user explicitly clears it', async () => {
+    const l2dCalls = [];
+    const fetchImpl = async (url, init = {}) => {
+        const u = String(url);
+        if (u === '/api/characters/catgirl/l2d/NekoA' && init.method === 'PUT') {
+            l2dCalls.push(JSON.parse(init.body));
+            return { ok: true, status: 200, json: async () => ({ success: true }) };
+        }
+        if (u === '/api/characters/catgirl/NekoA' && (init.method || 'GET') === 'PUT') {
+            return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        }
+        if (u === '/api/characters/voices') {
+            return { ok: true, status: 200, json: async () => ({ voices: {} }) };
+        }
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
+            return { ok: true, status: 200, json: async () => ({ success: true, voices: [] }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
+    };
+
+    const { ctx, win, doc } = loadCardFormContext(fetchImpl);
+
+    // Mount preview DOM elements and run real model-previews.js helpers
+    const placeholder = doc.createElement('div');
+    placeholder.className = 'preview-placeholder';
+    const controlsDiv = doc.createElement('div');
+    controlsDiv.id = 'live2d-preview-controls';
+    const motionSelect = doc.createElement('select');
+    motionSelect.id = 'preview-motion-select';
+    const exprSelect = doc.createElement('select');
+    exprSelect.id = 'preview-expression-select';
+    const playMotionBtn = doc.createElement('button');
+    playMotionBtn.id = 'preview-play-motion-btn';
+    const playExprBtn = doc.createElement('button');
+    playExprBtn.id = 'preview-play-expression-btn';
+    doc.body.append(placeholder, controlsDiv, motionSelect, exprSelect, playMotionBtn, playExprBtn);
+
+    const previewCode = fs.readFileSync(
+        path.join(ROOT, 'static/js/character_card_manager/model-previews.js'),
+        'utf8'
+    );
+    const fnStart = previewCode.indexOf('// 模型加载后更新预览控件');
+    const fnEnd = previewCode.indexOf('// 更新角色卡信息预览', fnStart);
+    const hideStart = previewCode.indexOf('// 隐藏预览控件');
+    const hideEnd = previewCode.indexOf('// 注意事项标签功能', hideStart);
+    const previewSnippet = previewCode.slice(fnStart, fnEnd) + '\n' + previewCode.slice(hideStart, hideEnd);
+
+    const previewCtx = vm.createContext({
+        window: Object.assign(win, {
+            _currentCardRawData: {
+                '档案名': 'NekoA',
+                model_type: 'live2d',
+                live2d: 'mao_pro',
+                live2d_idle_animation: 'motions/missing.motion3.json',
+            },
+            _previewMotionFiles: [],
+            t: (_k, fb) => fb,
+        }),
+        document: doc,
+        live2dPreviewManager: { _userIdleAnimations: [], currentModel: null },
+        currentPreviewModel: null,
+        requestAnimationFrame: () => 1,
+        console,
+    });
+    vm.runInContext(previewSnippet, previewCtx);
+
+    await previewCtx.updatePreviewControlsAfterModelLoad({
+        motion_files: ['motions/idle.motion3.json'],
+        expression_files: [],
+    });
+
+    assert.equal(motionSelect.value, '');
+    assert.equal(motionSelect.dataset.savedIdleMotionUnresolved, 'true');
+    assert.equal(motionSelect.dataset.userChanged, 'false');
+
+    const overlay = doc.createElement('div');
+    overlay.className = 'catgirl-panel-overlay active';
+    const container = doc.createElement('div');
+    overlay.appendChild(container);
+    doc.body.appendChild(overlay);
+
+    ctx.buildCatgirlDetailForm('NekoA', {
+        '档案名': 'NekoA',
+        '性格': '温柔',
+        model_type: 'live2d',
+        live2d: 'mao_pro',
+        live2d_idle_animation: 'motions/missing.motion3.json',
+    }, false, container);
+    let form = container.querySelector('form');
+    await form._voicesLoadPromise;
+
+    // Auto-default '' for unresolved saved idle motion -> must NOT wipe via PUT /l2d
+    await ctx.saveCatgirlFromPanel(form, 'NekoA', false);
+    assert.equal(l2dCalls.length, 0, 'unresolved saved idle motion must skip PUT /l2d clear');
+    form = container.querySelector('form');
+    await form._voicesLoadPromise;
+
+    // Now user explicitly selects '' (No Idle Motion) -> MUST send PUT /l2d with ''
+    motionSelect.value = '';
+    motionSelect.dispatchEvent({ type: 'change' });
+    assert.equal(motionSelect.dataset.userChanged, 'true');
+    await ctx.saveCatgirlFromPanel(form, 'NekoA', false);
+    assert.equal(l2dCalls.length, 1, 'explicit user clear must send PUT /l2d');
+    assert.deepEqual(l2dCalls[0], { live2d_idle_animation: '' });
 });

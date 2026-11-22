@@ -3243,12 +3243,34 @@
                 return !isVisitLine && !isReactWindowSource && !(forceReactOptimisticMessage && reactOptimisticMessageAppended !== null);
             }
 
-            function updateReactOptimisticMessageStatus(status) {
+            function buildReactUserBlocks(displayTextValue, imageUrls) {
+                var trimmedText = String(displayTextValue || '').trim();
+                var urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
+                var blocks = [];
+                if (trimmedText) {
+                    blocks.push({
+                        type: 'text',
+                        text: trimmedText
+                    });
+                }
+                urls.forEach(function (url, index) {
+                    var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
+                    blocks.push({
+                        type: 'image',
+                        url: String(url),
+                        alt: (typeof translatedAlt === 'string' && translatedAlt ? translatedAlt : '图片 ' + (index + 1))
+                    });
+                });
+                return blocks;
+            }
+
+            function updateReactOptimisticMessageStatus(status, extraPatch) {
                 if (reactOptimisticMessageAppended === null || !reactOptimisticMessageId) return;
                 if (window.reactChatWindowHost && typeof window.reactChatWindowHost.updateMessage === 'function') {
-                    window.reactChatWindowHost.updateMessage(reactOptimisticMessageId, {
-                        status: status
-                    });
+                    window.reactChatWindowHost.updateMessage(
+                        reactOptimisticMessageId,
+                        Object.assign({ status: status }, extraPatch || {})
+                    );
                 }
             }
 
@@ -3388,10 +3410,12 @@
                     if (hasScreenshots) {
                         var screenshotItems = getActiveScreenshotItems();
                         if (screenshotItems.length > 0) {
+                            var sentScreenshotCount = 0;
                             for (var i = 0; i < screenshotItems.length; i++) {
                                 var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
                                 if (img && img.src) {
                                     sentImageUrls.push(img.src);
+                                    sentScreenshotCount += 1;
                                     var msg = {
                                         action: 'stream_data',
                                         data: img.src,
@@ -3407,19 +3431,20 @@
                                 }
                             }
 
-                            if (!isReactWindowSource) {
-                                var screenshotItemCount = screenshotItems.length;
-                                window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
-                                    skipReactSync: true
-                                });
-                            }
-                            sentUserContent = true;
+                            if (sentScreenshotCount > 0) {
+                                if (!isReactWindowSource) {
+                                    window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + sentScreenshotCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                                        skipReactSync: true
+                                    });
+                                }
+                                sentUserContent = true;
 
-                            // Achievement: send image
-                            if (window.unlockAchievement) {
-                                window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
-                                    console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
-                                });
+                                // Achievement: send image
+                                if (window.unlockAchievement) {
+                                    window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
+                                        console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
+                                    });
+                                }
                             }
 
                             // Clear screenshot list
@@ -3516,7 +3541,28 @@
                         });
                     }
 
-                    updateReactOptimisticMessageStatus('sent');
+                    if (!sentUserContent) {
+                        if (reactOptimisticMessageAppended !== null && reactOptimisticMessageId) {
+                            if (window.reactChatWindowHost && typeof window.reactChatWindowHost.removeMessage === 'function') {
+                                window.reactChatWindowHost.removeMessage(reactOptimisticMessageId);
+                            } else {
+                                updateReactOptimisticMessageStatus('failed');
+                            }
+                        }
+                        return false;
+                    }
+
+                    var sentPatch = null;
+                    var imagesChanged = sentImageUrls.length !== optimisticImageUrls.length
+                        || sentImageUrls.some(function (url, idx) {
+                            return optimisticImageUrls[idx] !== url;
+                        });
+                    if (imagesChanged) {
+                        sentPatch = {
+                            blocks: buildReactUserBlocks(displayText, sentImageUrls)
+                        };
+                    }
+                    updateReactOptimisticMessageStatus('sent', sentPatch);
                     rememberSentTextSubmission(requestId, reactOptimisticMessageAppended !== null ? reactOptimisticMessageId : '', !isVisitLine, startedTextSessionHere);
 
                     if (sentUserContent) {
