@@ -2308,6 +2308,12 @@ def test_hidden_vision_slot_is_kept_on_save_and_cleared_only_on_clear(mock_page:
     payload = mock_page.evaluate(capture)
     assert not any(key.startswith("visionModel") for key in payload)
 
+    # A clear whose save failed is dropped when the saved settings reload.
+    mock_page.evaluate("confirmClearCustomApi()")
+    mock_page.evaluate("loadCurrentApiKey()")
+    payload = mock_page.evaluate(capture)
+    assert not any(key.startswith("visionModel") for key in payload)
+
     mock_page.evaluate("confirmClearCustomApi()")
     # Without custom models the page asks for the provider key before saving.
     mock_page.evaluate("document.getElementById('apiKeyInput').value = 'test-key'")

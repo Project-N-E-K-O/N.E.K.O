@@ -3047,6 +3047,9 @@ async function loadCurrentApiKey() {
             }
 
             // 加载用户自定义API配置
+            // 表单回到已保存的状态：未保存成功的「清空」不再生效，
+            // 否则下一次无关的保存会把隐藏的旧看图配置删掉。
+            _clearLegacyVisionOnSave = false;
             setInputValue('conversationModelUrl', data.conversationModelUrl);
             setInputValue('conversationModelId', data.conversationModelId);
             setSecretInputValue('conversationModelApiKey', data.conversationModelApiKey);
