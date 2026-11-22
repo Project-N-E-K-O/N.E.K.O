@@ -822,4 +822,156 @@ async def test_periodic_save_loop_retries_pending_dir_sync_and_unread_queue_whil
     assert tracker._needs_periodic_save() is False
 
 
+def test_unsent_queue_isolates_non_finite_window_without_blocking_valid_window(
+    tracker_factory, monkeypatch
+):
+    """Non-finite numbers in one unsent queue window must not discard or block the other."""
+    from datetime import date
+
+    today = date.today().isoformat()
+
+    # Part A: valid pending numbered batch + corrupt next window -> preserves seq-a without renumbering.
+    seed_a = tracker_factory()
+    seed_a._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "seq-a",
+                "daily": {today: {"total_tokens": 10, "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "model-a", "tt": 10}],
+                "next_daily": {today: {"total_tokens": float("inf")}},
+                "next_records": [{"ts": 2.0, "model": "bad-next", "tt": 99}],
+            },
+            allow_nan=True,
+        ),
+        encoding="utf-8",
+    )
+    tracker_a = tracker_factory()
+    sent_a = []
+    monkeypatch.setattr(tracker_a, "_send_report", lambda *args: sent_a.append(args))
+    tracker_a.record("model-b", 6, 4, 10)
+    tracker_a.save()
+
+    assert len(sent_a) == 2
+    assert sent_a[0][0][today]["total_tokens"] == 10
+    assert [r["model"] for r in sent_a[0][1]] == ["model-a"]
+    assert sent_a[0][2] == "seq-a"
+    assert sent_a[0][3] is True
+    assert sent_a[1][0][today]["total_tokens"] == 10
+    assert [r["model"] for r in sent_a[1][1]] == ["model-b"]
+    assert not tracker_a._unsent_queue_path.exists()
+
+    # Part B: corrupt primary numbered batch + valid next window -> quarantines seq-bad, recovers next window.
+    seed_a._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "seq-bad",
+                "daily": {today: {"total_tokens": float("inf")}},
+                "records": [{"ts": 1.0, "model": "bad-primary", "tt": 10}],
+                "next_daily": {today: {"total_tokens": 25, "call_count": 1}},
+                "next_records": [{"ts": 2.0, "model": "model-next", "tt": 25}],
+            },
+            allow_nan=True,
+        ),
+        encoding="utf-8",
+    )
+    tracker_b = tracker_factory()
+    sent_b = []
+    monkeypatch.setattr(tracker_b, "_send_report", lambda *args: sent_b.append(args))
+    tracker_b.record("model-c", 3, 2, 5)
+    tracker_b.save()
+
+    assert len(sent_b) == 1
+    assert sent_b[0][0][today]["total_tokens"] == 30
+    assert [r["model"] for r in sent_b[0][1]] == ["model-next", "model-c"]
+    assert sent_b[0][2] != "seq-bad"
+    assert sent_b[0][3] is False
+    assert not tracker_b._unsent_queue_path.exists()
+
+
+def test_legacy_migration_syncs_parent_dir_before_pruning_digests_and_retains_on_sync_error(
+    tracker_factory, monkeypatch
+):
+    """Legacy migration fsyncs parent directory after unlink before removing migrated_legacy_files digests."""
+    import errno
+    from pathlib import Path
+    from utils import file_utils
+    from utils.token_tracker import reporting, storage
+
+    # Part A: unlink -> _fsync_directory -> pruning atomic_write_json ordering.
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    monkeypatch.setattr(reporting, "_TELEMETRY_SERVER_URL", "")
+    tracker = tracker_factory()
+    folder = tracker._storage_dir
+    legacy = folder / "token_usage_legacy.json"
+    legacy.write_text(
+        json.dumps({"version": 1, "daily_stats": {"2026-11-01": {"total_tokens": 42}}}),
+        encoding="utf-8",
+    )
+
+    events = []
+    real_unlink = Path.unlink
+    real_fsync_dir = file_utils._fsync_directory
+    real_atomic_write = storage.atomic_write_json
+
+    def spy_unlink(self, *args, **kwargs):
+        if self == legacy:
+            events.append("unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    def spy_fsync(path):
+        if Path(path) == folder:
+            events.append("fsync_dir")
+        return real_fsync_dir(path)
+
+    def spy_atomic_write(path, data, *args, **kwargs):
+        if Path(path) == tracker._storage_path:
+            events.append(("write", "migrated_legacy_files" in data))
+        return real_atomic_write(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", spy_unlink)
+    monkeypatch.setattr(file_utils, "_fsync_directory", spy_fsync)
+    monkeypatch.setattr(storage, "atomic_write_json", spy_atomic_write)
+
+    tracker._migrate_legacy_files()
+    assert events == [
+        ("write", True),
+        "fsync_dir",
+        "unlink",
+        "fsync_dir",
+        ("write", False),
+        "fsync_dir",
+    ]
+
+    # Part B: fsync error on the deleted legacy dir preserves migrated_legacy_files digest.
+    legacy_b = folder / "token_usage_b.json"
+    legacy_b.write_text(
+        json.dumps({"version": 1, "daily_stats": {"2026-11-02": {"total_tokens": 11}}}),
+        encoding="utf-8",
+    )
+    events.clear()
+    seen_unlink = False
+
+    def fail_post_unlink_fsync(path):
+        nonlocal seen_unlink
+        if Path(path) == folder and seen_unlink:
+            raise OSError(errno.EIO, "dir sync failed after unlink")
+        return real_fsync_dir(path)
+
+    def track_unlink_b(self, *args, **kwargs):
+        nonlocal seen_unlink
+        if self == legacy_b:
+            seen_unlink = True
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", track_unlink_b)
+    monkeypatch.setattr(file_utils, "_fsync_directory", fail_post_unlink_fsync)
+
+    tracker._migrate_legacy_files()
+    assert not legacy_b.exists()
+    persisted = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert persisted["daily_stats"]["2026-11-02"]["total_tokens"] == 11
+    assert legacy_b.name in persisted.get("migrated_legacy_files", {})
+
+
+
 

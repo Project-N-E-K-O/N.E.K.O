@@ -382,18 +382,21 @@ async def test_delete_shared_memory_rollback_preserves_co_owner_concurrent_write
         lower_meta.symlink_to(upper_meta.name)
 
     reload_calls = 0
+    observed_on_second_reload: tuple[str, bytes, bytes] | None = None
 
     async def co_owner_writes_then_fail_reload(**_kwargs):
-        nonlocal reload_calls
+        nonlocal reload_calls, observed_on_second_reload
         reload_calls += 1
         if reload_calls == 1:
             facts_file.write_text('["before", "co-owner-write"]', encoding="utf-8")
             upper_face.write_bytes(b"face-updated")
             upper_meta.write_bytes(b'{"v":2}')
             return False
-        assert facts_file.read_text(encoding="utf-8") == '["before", "co-owner-write"]'
-        assert upper_face.read_bytes() == b"face-updated"
-        assert upper_meta.read_bytes() == b'{"v":2}'
+        observed_on_second_reload = (
+            facts_file.read_text(encoding="utf-8"),
+            upper_face.read_bytes(),
+            upper_meta.read_bytes(),
+        )
         return True
 
     with patch("utils.config_manager._config_manager", cm):
@@ -405,6 +408,11 @@ async def test_delete_shared_memory_rollback_preserves_co_owner_concurrent_write
             assert status == 500
 
     assert reload_calls == 2
+    assert observed_on_second_reload == (
+        '["before", "co-owner-write"]',
+        b"face-updated",
+        b'{"v":2}',
+    )
     assert facts_file.read_text(encoding="utf-8") == '["before", "co-owner-write"]'
     assert upper_face.read_bytes() == b"face-updated"
     assert upper_meta.read_bytes() == b'{"v":2}'
@@ -431,6 +439,8 @@ async def test_delete_late_unshared_card_asset_is_backed_up_and_restored_on_roll
 
     real_delete = character_memory.delete_character_memory_storage
     reload_calls = 0
+    observed_removed_before_rollback: tuple[bool, bool] | None = None
+    observed_restored_before_second_reload: tuple[bytes, bytes] | None = None
 
     def delete_then_replace_shared_assets(*args, **kwargs):
         result = real_delete(*args, **kwargs)
@@ -441,14 +451,18 @@ async def test_delete_late_unshared_card_asset_is_backed_up_and_restored_on_roll
         return result
 
     async def reload_failing_after_unlink(**_kwargs):
-        nonlocal reload_calls
+        nonlocal reload_calls, observed_removed_before_rollback, observed_restored_before_second_reload
         reload_calls += 1
         if reload_calls == 1:
-            assert not alias_face.exists()
-            assert not alias_meta.exists()
+            observed_removed_before_rollback = (
+                os.path.lexists(alias_face),
+                os.path.lexists(alias_meta),
+            )
             return False
-        assert alias_face.read_bytes() == b"replaced-alias-face"
-        assert alias_meta.read_bytes() == b'{"replaced":true}'
+        observed_restored_before_second_reload = (
+            alias_face.read_bytes(),
+            alias_meta.read_bytes(),
+        )
         return True
 
     with patch("utils.config_manager._config_manager", cm):
@@ -462,10 +476,168 @@ async def test_delete_late_unshared_card_asset_is_backed_up_and_restored_on_roll
             assert status == 500
 
     assert reload_calls == 2
+    assert observed_removed_before_rollback == (False, False)
+    assert observed_restored_before_second_reload == (
+        b"replaced-alias-face",
+        b'{"replaced":true}',
+    )
     assert alias_face.read_bytes() == b"replaced-alias-face"
     assert alias_meta.read_bytes() == b'{"replaced":true}'
     assert neko_face.read_bytes() == b"shared-face"
     assert neko_meta.read_bytes() == b'{"owner":"Neko"}'
+
+
+async def test_delete_late_unshared_memory_entry_is_backed_up_and_restored_on_rollback(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}, "Other": {"昵称": "Other"}},
+    )
+    memory_root = Path(cm.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    facts_other = memory_root / "facts_Other.json"
+    facts_other.write_text('["shared-facts"]', encoding="utf-8")
+    facts_old = memory_root / "facts_Old.json"
+    dir_other = memory_root / "Other"
+    dir_other.mkdir(parents=True, exist_ok=True)
+    (dir_other / "notes.json").write_text('["other-note"]', encoding="utf-8")
+    dir_old = memory_root / "Old"
+    try:
+        os.link(facts_other, facts_old)
+        dir_old.symlink_to(dir_other, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"hardlinks/symlinks unsupported on this platform: {exc}")
+
+    crud = _init_router_state(cm)
+    real_snapshot = crud._snapshot_existing_paths
+    reload_calls = 0
+    observed_removed_before_rollback: tuple[bool, bool] | None = None
+    observed_restored_before_second_reload: tuple[str, str] | None = None
+
+    async def release_then_unshare_hardlink(*_args, **_kwargs):
+        replacement = facts_other.with_name("facts_Other.json.tmp")
+        replacement.write_text('["other-updated"]', encoding="utf-8")
+        os.replace(replacement, facts_other)
+        return True
+
+    def snapshot_then_unshare_dir(targets, backup_root):
+        records = real_snapshot(targets, backup_root)
+        dir_old.unlink()
+        dir_old.mkdir(parents=True, exist_ok=True)
+        (dir_old / "facts.json").write_text('["exclusive-dir-fact"]', encoding="utf-8")
+        return records
+
+    async def reload_failing_after_memory_delete(**_kwargs):
+        nonlocal reload_calls, observed_removed_before_rollback, observed_restored_before_second_reload
+        reload_calls += 1
+        if reload_calls == 1:
+            observed_removed_before_rollback = (
+                os.path.lexists(facts_old),
+                os.path.lexists(dir_old),
+            )
+            return False
+        observed_restored_before_second_reload = (
+            facts_old.read_text(encoding="utf-8"),
+            (dir_old / "facts.json").read_text(encoding="utf-8"),
+        )
+        return True
+
+    with patch("utils.config_manager._config_manager", cm):
+        with patch.object(
+            crud, "release_memory_server_character", side_effect=release_then_unshare_hardlink
+        ), patch.object(
+            crud, "_snapshot_existing_paths", side_effect=snapshot_then_unshare_dir
+        ), patch.object(
+            crud, "notify_memory_server_reload", side_effect=reload_failing_after_memory_delete
+        ):
+            status, _ = _result(await crud.delete_catgirl("Old"))
+            assert status == 500
+
+    assert reload_calls == 2
+    assert observed_removed_before_rollback == (False, False)
+    assert observed_restored_before_second_reload == (
+        '["shared-facts"]',
+        '["exclusive-dir-fact"]',
+    )
+    assert facts_old.read_text(encoding="utf-8") == '["shared-facts"]'
+    assert (dir_old / "facts.json").read_text(encoding="utf-8") == '["exclusive-dir-fact"]'
+    assert facts_other.read_text(encoding="utf-8") == '["other-updated"]'
+    assert (dir_other / "notes.json").read_text(encoding="utf-8") == '["other-note"]'
+
+
+async def test_delete_card_asset_symlink_and_late_shared_skip_rollback(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {
+            "Current": {"昵称": "Current"},
+            "Target": {"昵称": "Target"},
+            "SymChar": {"昵称": "SymChar"},
+            "NewlyShared": {"昵称": "NewlyShared"},
+        },
+    )
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    shared_backing = cm.card_faces_dir / "Backing.png"
+    shared_backing.write_bytes(b"backing-v1")
+    sym_face = cm.card_faces_dir / "SymChar.png"
+    newly_shared_face = cm.card_faces_dir / "NewlyShared.png"
+    newly_shared_face.write_bytes(b"old-unshared")
+    target_face = cm.card_faces_dir / "Target.png"
+    try:
+        sym_face.symlink_to(shared_backing.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    # Part A: Deleting SymChar (unshared symlink) preserves symlink kind across rollback.
+    crud = _init_router_state(cm)
+    sym_reload_calls = 0
+
+    async def fail_once(**_kwargs):
+        nonlocal sym_reload_calls
+        sym_reload_calls += 1
+        return sym_reload_calls > 1
+
+    with patch("utils.config_manager._config_manager", cm):
+        with patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)), patch.object(
+            crud, "notify_memory_server_reload", side_effect=fail_once
+        ):
+            status_a, _ = _result(await crud.delete_catgirl("SymChar"))
+            assert status_a == 500
+
+    assert sym_face.is_symlink()
+    assert os.readlink(sym_face) == shared_backing.name
+
+    # Part B: Unshared at snapshot time -> becomes co-owned by Target before unlink ->
+    # skipped at unlink and its stale snapshot record is dropped so rollback keeps Target's update.
+    real_delete = character_memory.delete_character_memory_storage
+    shared_reload_calls = 0
+
+    def delete_then_share_and_update(*args, **kwargs):
+        result = real_delete(*args, **kwargs)
+        newly_shared_face.unlink()
+        target_face.write_bytes(b"target-co-owned-v2")
+        newly_shared_face.symlink_to(target_face.name)
+        return result
+
+    async def fail_once_shared(**_kwargs):
+        nonlocal shared_reload_calls
+        shared_reload_calls += 1
+        return shared_reload_calls > 1
+
+    with patch("utils.config_manager._config_manager", cm):
+        crud2 = _init_router_state(cm)
+        with patch.object(
+            crud2, "release_memory_server_character", AsyncMock(return_value=True)
+        ), patch.object(
+            crud2, "delete_character_memory_storage", side_effect=delete_then_share_and_update
+        ), patch.object(
+            crud2, "notify_memory_server_reload", side_effect=fail_once_shared
+        ):
+            status_b, _ = _result(await crud2.delete_catgirl("NewlyShared"))
+            assert status_b == 500
+
+    assert target_face.read_bytes() == b"target-co-owned-v2"
+    assert newly_shared_face.is_symlink()
+    assert newly_shared_face.samefile(target_face)
+    assert newly_shared_face.read_bytes() == b"target-co-owned-v2"
 
 
 async def test_delete_skips_shared_card_face_and_meta_but_deletes_unshared_assets(tmp_path):
@@ -503,6 +675,8 @@ async def test_delete_skips_shared_card_face_and_meta_but_deletes_unshared_asset
         assert status == 200 and body["success"] is True
         assert upper_face.exists() and upper_face.read_bytes() == b"shared-face"
         assert upper_meta.exists() and upper_meta.read_bytes() == b'{"owner":"Neko"}'
+        assert lower_face.samefile(upper_face)
+        assert lower_meta.samefile(upper_meta)
 
         status2, body2 = await _delete(cm, "Solo")
         assert status2 == 200 and body2["success"] is True

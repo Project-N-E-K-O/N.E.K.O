@@ -339,6 +339,21 @@ class ReportingMixin:
         finally:
             _TELEMETRY_SERVER_URL = ""
 
+    @staticmethod
+    def _is_valid_unsent_window(days, records) -> bool:
+        """Return True when an unsent queue window has valid containers and finite JSON numbers."""
+        if (
+            not isinstance(days, dict)
+            or not isinstance(records, list)
+            or not all(isinstance(day_val, dict) for day_val in days.values())
+        ):
+            return False
+        try:
+            json.dumps({"daily": days, "records": records}, allow_nan=False)
+        except (TypeError, ValueError):
+            return False
+        return True
+
     def _load_unsent_queue_locked(self) -> bool:
         """Load persisted unsent queue while the caller holds ``self._get_report_lock()``.
 
@@ -352,18 +367,6 @@ class ReportingMixin:
             data = json.loads(self._unsent_queue_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("invalid telemetry queue")
-            daily, records = data.get("daily", {}), data.get("records", [])
-            next_daily, next_records = data.get("next_daily", {}), data.get("next_records", [])
-            if (
-                not all(isinstance(days, dict) for days in (daily, next_daily))
-                or not all(isinstance(items, list) for items in (records, next_records))
-                or not all(
-                    isinstance(day_val, dict)
-                    for days in (daily, next_daily)
-                    for day_val in days.values()
-                )
-            ):
-                raise ValueError("invalid telemetry queue")
         except FileNotFoundError:
             self._unsent_queue_loaded = True
             return True
@@ -375,15 +378,43 @@ class ReportingMixin:
             self._unsent_queue_loaded = True
             return True
 
+        raw_daily, raw_records = data.get("daily", {}), data.get("records", [])
+        raw_next_daily, raw_next_records = data.get("next_daily", {}), data.get("next_records", [])
+        has_batch_seq = isinstance(data.get("batch_seq"), str) and bool(data["batch_seq"])
+        primary_valid = self._is_valid_unsent_window(raw_daily, raw_records)
+        next_valid = (
+            self._is_valid_unsent_window(raw_next_daily, raw_next_records)
+            if has_batch_seq
+            else False
+        )
+
         with self._lock:
-            if isinstance(data.get("batch_seq"), str) and data["batch_seq"]:
-                pending_seq: str | None = data["batch_seq"]
-                pending_daily, pending_records = daily, records
-                recovered_daily, recovered_records = next_daily, next_records
+            if has_batch_seq:
+                if primary_valid:
+                    pending_seq: str | None = data["batch_seq"]
+                    pending_daily, pending_records = raw_daily, raw_records
+                else:
+                    logger.debug(
+                        "Token tracker: discarding malformed pending batch window (%s)",
+                        data["batch_seq"],
+                    )
+                    pending_seq = None
+                    pending_daily, pending_records = {}, []
+
+                if next_valid:
+                    recovered_daily, recovered_records = raw_next_daily, raw_next_records
+                else:
+                    if "next_daily" in data or "next_records" in data:
+                        logger.debug("Token tracker: discarding malformed next unsent queue window")
+                    recovered_daily, recovered_records = {}, []
             else:
                 pending_seq = None
                 pending_daily, pending_records = {}, []
-                recovered_daily, recovered_records = daily, records
+                if primary_valid:
+                    recovered_daily, recovered_records = raw_daily, raw_records
+                else:
+                    logger.debug("Token tracker: discarding malformed unsent queue window")
+                    recovered_daily, recovered_records = {}, []
 
             try:
                 merged_daily = copy.deepcopy(recovered_daily)
@@ -393,10 +424,14 @@ class ReportingMixin:
                     else:
                         _merge_day_stats(merged_daily[day_key], day_delta)
                 merged_records = (list(recovered_records) + list(self._unsent_records))[-200:]
+                json.dumps(
+                    {"daily": merged_daily, "records": merged_records},
+                    allow_nan=False,
+                )
             except (TypeError, ValueError, AttributeError) as exc:
                 logger.debug("Token tracker: ignoring malformed unsent queue totals: %s", exc)
-                self._unsent_queue_loaded = True
-                return True
+                merged_daily = copy.deepcopy(self._unsent_daily)
+                merged_records = list(self._unsent_records)
 
             self._pending_batch_seq = pending_seq
             self._pending_report_daily = pending_daily

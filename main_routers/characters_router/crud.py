@@ -44,6 +44,7 @@ import os
 import shutil
 import asyncio
 import copy
+import errno
 import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
@@ -404,6 +405,37 @@ def _flatten_catgirl_for_response(catgirl_data: dict) -> dict:
     return flatten_reserved(data)
 
 
+def _snapshot_target_key(path: Path) -> str:
+    """Return a normalized key for matching snapshot record targets."""
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _remove_snapshot_record(snapshot_records: list[dict] | None, target_path: Path) -> None:
+    """Remove any snapshot record matching ``target_path`` in place."""
+    if snapshot_records is None:
+        return
+    target_key = _snapshot_target_key(target_path)
+    snapshot_records[:] = [
+        record
+        for record in snapshot_records
+        if _snapshot_target_key(record["target"]) != target_key
+    ]
+
+
+def _copy_path_to_backup_sync(source_path: Path, backup_path: Path) -> None:
+    """Copy a file, symlink, or directory tree into ``backup_path`` without dereferencing symlinks."""
+    if os.path.lexists(backup_path):
+        if backup_path.is_dir() and not backup_path.is_symlink():
+            shutil.rmtree(backup_path)
+        else:
+            backup_path.unlink()
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.is_dir() and not source_path.is_symlink():
+        shutil.copytree(source_path, backup_path, symlinks=True, dirs_exist_ok=True)
+    else:
+        shutil.copy2(source_path, backup_path, follow_symlinks=False)
+
+
 def _snapshot_existing_paths(targets: list[Path], backup_root: Path):
     records = []
     seen: set[str] = set()
@@ -415,13 +447,9 @@ def _snapshot_existing_paths(targets: list[Path], backup_root: Path):
         seen.add(normalized_path)
 
         backup_path = None
-        if target_path.exists():
+        if os.path.lexists(target_path):
             backup_path = backup_root / f"{index:02d}" / target_path.name
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            if target_path.is_dir():
-                shutil.copytree(target_path, backup_path, dirs_exist_ok=True)
-            else:
-                shutil.copy2(target_path, backup_path)
+            _copy_path_to_backup_sync(target_path, backup_path)
 
         records.append({
             "target": target_path,
@@ -816,20 +844,20 @@ def _restore_snapshot_paths(records) -> None:
         target_path = record["target"]
         backup_path = record.get("backup")
 
-        if target_path.exists():
-            if target_path.is_dir():
+        if os.path.lexists(target_path):
+            if target_path.is_dir() and not target_path.is_symlink():
                 shutil.rmtree(target_path)
             else:
                 target_path.unlink()
 
-        if backup_path is None or not backup_path.exists():
+        if backup_path is None or not os.path.lexists(backup_path):
             continue
 
-        if backup_path.is_dir():
-            shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+        if backup_path.is_dir() and not backup_path.is_symlink():
+            shutil.copytree(backup_path, target_path, symlinks=True, dirs_exist_ok=True)
         else:
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(backup_path, target_path)
+            shutil.copy2(backup_path, target_path, follow_symlinks=False)
 
 
 def _build_character_tombstones_state(config_manager, character_name: str) -> dict:
@@ -1222,14 +1250,13 @@ def _unlink_unshared_card_asset_sync(
     backup_root: Path | None = None,
     snapshot_records: list[dict] | None = None,
 ) -> str | None:
-    """Unlink ``asset_path`` unless shared with another registered character.
+    """Remove ``asset_path`` unless shared with another registered character.
 
-    If the asset was not backed up at snapshot time (for example, it was
-    shared at snapshot time and concurrently replaced before unlink), copy it
-    into ``backup_root`` and record it in ``snapshot_records`` before unlinking
-    so a subsequent rollback can restore the exact removed file.
+    When ``backup_root`` and ``snapshot_records`` are provided, atomically moves
+    the removed entry into ``backup_root`` (falling back to copy + unlink across
+    filesystems) so rollback always restores the exact removed file or symlink.
     """
-    if not asset_path.exists():
+    if not os.path.lexists(asset_path):
         return None
     co_owner = _find_card_asset_co_owner_sync(
         config_manager,
@@ -1238,24 +1265,41 @@ def _unlink_unshared_card_asset_sync(
         is_meta=is_meta,
     )
     if co_owner is not None:
+        _remove_snapshot_record(snapshot_records, asset_path)
         return co_owner
     if backup_root is not None and snapshot_records is not None:
+        label = "late_meta" if is_meta else "late_face"
+        backup_path = backup_root / label / asset_path.name
+        if os.path.lexists(backup_path):
+            if backup_path.is_dir() and not backup_path.is_symlink():
+                shutil.rmtree(backup_path)
+            else:
+                backup_path.unlink()
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(asset_path, backup_path)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            _copy_path_to_backup_sync(asset_path, backup_path)
+            asset_path.unlink()
+        target_key = _snapshot_target_key(asset_path)
         existing_record = next(
-            (record for record in snapshot_records if record.get("target") == asset_path),
+            (
+                record
+                for record in snapshot_records
+                if _snapshot_target_key(record["target"]) == target_key
+            ),
             None,
         )
-        if existing_record is None or existing_record.get("backup") is None:
-            label = "late_meta" if is_meta else "late_face"
-            backup_path = backup_root / label / asset_path.name
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(asset_path, backup_path)
-            if existing_record is None:
-                snapshot_records.append({
-                    "target": asset_path,
-                    "backup": backup_path,
-                })
-            else:
-                existing_record["backup"] = backup_path
+        if existing_record is None:
+            snapshot_records.append({
+                "target": asset_path,
+                "backup": backup_path,
+            })
+        else:
+            existing_record["backup"] = backup_path
+        return None
     asset_path.unlink()
     return None
 
@@ -2700,6 +2744,39 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             if not is_cloudsave_disabled_due_to_local_state_unavailable():
                 tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
+            late_memory_index = 0
+
+            def _backup_late_memory_entry_sync(entry_path: Path) -> None:
+                nonlocal late_memory_index
+                if not os.path.lexists(entry_path):
+                    return
+                target_key = _snapshot_target_key(entry_path)
+                existing_record = next(
+                    (
+                        record
+                        for record in memory_snapshot_records
+                        if _snapshot_target_key(record["target"]) == target_key
+                    ),
+                    None,
+                )
+                if existing_record is not None and existing_record.get("backup") is not None:
+                    return
+                backup_path = (
+                    Path(temp_dir) / "late_memory" / f"{late_memory_index:02d}" / entry_path.name
+                )
+                late_memory_index += 1
+                _copy_path_to_backup_sync(entry_path, backup_path)
+                if existing_record is None:
+                    memory_snapshot_records.append({
+                        "target": entry_path,
+                        "backup": backup_path,
+                    })
+                else:
+                    existing_record["backup"] = backup_path
+
+            def _drop_shared_memory_snapshot_sync(entry_path: Path, _co_owner: str) -> None:
+                _remove_snapshot_record(memory_snapshot_records, entry_path)
+
             try:
                 delete_result, delete_cancelled = await _await_thread_call_to_completion(
                     delete_character_memory_storage,
@@ -2708,6 +2785,8 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                     capture_pending=True,
                     keep_recent_locks=True,
                     recent_transaction=recent_transaction,
+                    before_remove=_backup_late_memory_entry_sync,
+                    on_skip_shared=_drop_shared_memory_snapshot_sync,
                 )
             except BaseException:
                 # It retires the name as its first act, so a raise partway

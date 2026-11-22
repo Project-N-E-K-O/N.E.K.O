@@ -24,7 +24,7 @@ import sys
 import threading
 import unicodedata
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -1328,7 +1328,15 @@ def delete_character_memory_storage(
     capture_pending: bool = False,
     keep_recent_locks: bool = False,
     recent_transaction: dict[str, Any] | None = None,
+    before_remove: Callable[[Path], None] | None = None,
+    on_skip_shared: Callable[[Path, str], None] | None = None,
 ) -> list[Path] | tuple[list[Path], dict[str, Any]]:
+    """Remove unshared character memory entries and clear recent state.
+
+    When provided, ``before_remove(entry_path)`` runs immediately before deleting
+    each unshared path, and ``on_skip_shared(entry_path, co_owner)`` runs when
+    an entry is skipped because another registered character co-owns it.
+    """
     transaction = recent_transaction or begin_character_recent_transaction(
         config_manager, character_name,
     )
@@ -1371,6 +1379,8 @@ def delete_character_memory_storage(
                 existing_names=registered_names,
             )
             if co_owner is not None:
+                if on_skip_shared is not None:
+                    on_skip_shared(entry_path, co_owner)
                 logger.warning(
                     "[CharacterMemory] skipping deletion of %s for %r because it is shared with character %r",
                     entry_path,
@@ -1378,7 +1388,9 @@ def delete_character_memory_storage(
                     co_owner,
                 )
                 continue
-            if entry_path.is_dir():
+            if before_remove is not None:
+                before_remove(entry_path)
+            if entry_path.is_dir() and not entry_path.is_symlink():
                 shutil.rmtree(entry_path)
             else:
                 entry_path.unlink()

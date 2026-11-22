@@ -293,6 +293,41 @@ def test_delete_failure_drops_cached_entry(tmp_path):
         assert manager.load("weibo") == {"SUB": "replacement"}
 
 
+def test_published_sync_failure_evicts_stale_cached_credentials_and_keeps_0o600(
+    tmp_path, monkeypatch
+):
+    """Post-replace directory sync failure evicts stale READY cache and preserves 0o600 permissions."""
+    import errno
+    import stat
+    import sys
+
+    from utils import file_utils
+
+    cookie_file = tmp_path / "config" / "weibo_cookies.json"
+    monkeypatch.chdir(tmp_path)
+
+    with _patched_weibo_paths(tmp_path, cookie_file):
+        manager = CredentialManager()
+        assert manager.save("weibo", {"SUB": "existing"}, encrypt=True) is True
+        assert manager.load("weibo") == {"SUB": "existing"}
+
+        real_fsync_dir = file_utils._fsync_directory
+        fail_sync = True
+
+        def flaky_fsync_dir(path):
+            if fail_sync and Path(path) == cookie_file.parent:
+                raise OSError(errno.EIO, "directory sync failed")
+            return real_fsync_dir(path)
+
+        monkeypatch.setattr(file_utils, "_fsync_directory", flaky_fsync_dir)
+        assert manager.save("weibo", {"SUB": "replacement"}, encrypt=True) is False
+        fail_sync = False
+
+        if sys.platform != "win32":
+            assert stat.S_IMODE(cookie_file.stat().st_mode) == 0o600
+        assert manager.load("weibo") == {"SUB": "replacement"}
+
+
 @contextmanager
 def _patched_weibo_paths(tmp_path: Path, cookie_file: Path):
     with (

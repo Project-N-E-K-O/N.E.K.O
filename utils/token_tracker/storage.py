@@ -19,6 +19,7 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
+from utils import file_utils as _file_utils
 from utils.file_utils import atomic_write_json
 
 from ._shared import _file_lock, _merge_day_stats, logger
@@ -135,25 +136,36 @@ class StorageMixin:
 
                 # Migration complete: delete the old files only after atomic write succeeds.
                 unlinked_names: set[str] = set()
+                unlinked_dirs: set[Path] = set()
                 for p in cleanup_files:
                     try:
                         p.unlink(missing_ok=True)
                         if not p.exists():
                             unlinked_names.add(p.name)
+                            unlinked_dirs.add(p.parent)
                     except Exception as e:
                         logger.debug(f"Token tracker: failed to remove migrated file {p.name}: {e}")
 
                 if unlinked_names:
-                    for name in unlinked_names:
-                        migrated_map.pop(name, None)
-                    if migrated_map:
-                        existing["migrated_legacy_files"] = migrated_map
-                    else:
-                        existing.pop("migrated_legacy_files", None)
                     try:
-                        atomic_write_json(self._storage_path, existing)
-                    except Exception as e:
-                        logger.debug(f"Token tracker: failed to prune migrated file index: {e}")
+                        for parent_dir in sorted(unlinked_dirs):
+                            _file_utils._fsync_directory(parent_dir)
+                    except OSError as e:
+                        logger.debug(
+                            "Token tracker: failed to sync migrated directory before pruning index: %s",
+                            e,
+                        )
+                    else:
+                        for name in unlinked_names:
+                            migrated_map.pop(name, None)
+                        if migrated_map:
+                            existing["migrated_legacy_files"] = migrated_map
+                        else:
+                            existing.pop("migrated_legacy_files", None)
+                        try:
+                            atomic_write_json(self._storage_path, existing)
+                        except Exception as e:
+                            logger.debug(f"Token tracker: failed to prune migrated file index: {e}")
 
             logger.info("Token tracker: legacy file migration complete")
         except Exception as e:
