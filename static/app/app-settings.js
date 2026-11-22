@@ -1634,6 +1634,15 @@
                     // than the revision known when the request was sent is not
                     // late (the server had reached that revision already): the
                     // server's revision went back, so adopt it as before.
+                    // A skip still uses up an attempt. Known cost: if the
+                    // revision this window holds was raised while the request
+                    // was in flight, a 412 that is not late is skipped once
+                    // and adopted on the next attempt. That happens with a
+                    // losing ASR decision (its 412 has the If-Match
+                    // revision), or after a rollback when another window
+                    // broadcasts the pre-rollback revision. Only further
+                    // concurrent writes using up every attempt drop the sync;
+                    // the edit stays pending for the next save.
                     if (response.status === 412
                         && Number.isInteger(data.revision)
                         && Number.isInteger(_conversationSettingsRevision)
