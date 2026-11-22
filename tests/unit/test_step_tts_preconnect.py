@@ -40,9 +40,17 @@ _PRECONNECT = (TTS_PRECONNECT_SENTINEL, None)
 class _StatefulSocket(_Socket):
     """A fake socket that reports its open state like a websockets connection."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.send_attempts = 0
+
     @property
     def state(self):
         return State.CLOSED if self.closed.is_set() else State.OPEN
+
+    async def send(self, payload):
+        self.send_attempts += 1
+        await super().send(payload)
 
 
 def _socket(session_id, *, final_events=(), **kwargs):
@@ -183,7 +191,9 @@ def test_spare_dropped_by_the_server_is_not_adopted(monkeypatch):
         queue.Queue(),
     )
 
-    assert spare.sent == []
+    # Checked before use, not discovered by a failed tts.create and a
+    # recovery reconnect: the speech goes straight to a fresh socket.
+    assert spare.send_attempts == 0
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
