@@ -613,3 +613,15 @@ def test_legacy_import_takes_source_from_install_record(install_sources, manager
 
     assert store.read("demo")["source"] == MANUAL.to_dict()
 
+
+
+def test_current_source_without_fingerprint_is_unknown(install_sources):
+    install_sources["manager"] = FakeInstallSources([_lock_entry(channel="market")])
+    assert permission_service.current_source("demo") is None
+
+    empty_hash = _lock_entry(
+        channel="imported",
+        source_detail=SourceDetailImported(package_filename="p", package_sha256=""),
+    )
+    install_sources["manager"] = FakeInstallSources([empty_hash])
+    assert permission_service.current_source("demo") is None

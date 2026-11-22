@@ -264,6 +264,8 @@ class PluginPermissionStore:
             record[LEGACY_DENIED] = True
         else:
             return None
+        # Legacy records carry no source; bind the current install record.
+        # When it is unknown the record is bound on the first known source.
         source = self._resolve_source(plugin_id)
         record["source"] = source.to_dict() if source is not None else None
         return record

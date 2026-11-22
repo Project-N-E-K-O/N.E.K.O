@@ -35,19 +35,22 @@ def _plugin_directory(plugin_id: str) -> Path | None:
     return Path(path).parent if path else None
 
 
-def _source_of(entry) -> PluginSource:
+def _source_of(entry) -> PluginSource | None:
     from plugin.server.application.install_source.models import (
         SourceDetailImported,
         SourceDetailMarket,
     )
 
     detail = entry.source_detail
-    fingerprint: str | None = None
-    if entry.channel == "market" and isinstance(detail, SourceDetailMarket):
-        fingerprint = detail.plugin_market_id or None
-    elif entry.channel == "imported" and isinstance(detail, SourceDetailImported):
-        fingerprint = detail.package_sha256 or None
-    return PluginSource(entry.channel, fingerprint)
+    if entry.channel == "market":
+        fingerprint = detail.plugin_market_id if isinstance(detail, SourceDetailMarket) else ""
+    elif entry.channel == "imported":
+        fingerprint = detail.package_sha256 if isinstance(detail, SourceDetailImported) else ""
+    else:
+        return PluginSource(entry.channel)
+    # A market/imported entry without its fingerprint is an incomplete
+    # record, not a different source: treat it as unknown.
+    return PluginSource(entry.channel, fingerprint) if fingerprint else None
 
 
 def current_source(plugin_id: str) -> PluginSource | None:
