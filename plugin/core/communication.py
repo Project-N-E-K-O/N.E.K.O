@@ -1057,12 +1057,16 @@ class PluginCommunicationResourceManager:
 
         Errors are logged but never re-raised — the plugin already
         committed locally, and a transient ``main_server`` outage
-        shouldn't crash the plugin's uplink consumer. The plugin can
-        observe success/failure later via list_tools or by issuing a
-        re-register.
+        shouldn't crash the plugin's uplink consumer. Plugins that need
+        the real outcome use ``register_llm_tool_async``, which goes
+        through the request-response handler in
+        ``plugin/server/messaging/handlers/llm_tools.py`` instead.
         """
         try:
-            from plugin.server.messaging.llm_tool_registry import register_remote_tool
+            from plugin.server.messaging.llm_tool_registry import (
+                parse_register_request,
+                register_remote_tool,
+            )
 
             incoming_pid = msg.get("plugin_id")
             if incoming_pid and incoming_pid != self.plugin_id:
@@ -1072,34 +1076,15 @@ class PluginCommunicationResourceManager:
                 )
                 return
 
-            name = msg.get("name")
-            if not isinstance(name, str) or not name:
-                self.logger.warning("LLM_TOOL_REGISTER missing name: {}", msg)
+            fields = parse_register_request(msg)
+            if fields is None:
+                self.logger.warning("LLM_TOOL_REGISTER missing or invalid name: {}", msg.get("name"))
                 return
 
-            description = msg.get("description") or ""
-            parameters = msg.get("parameters")
-            if not isinstance(parameters, dict):
-                parameters = {"type": "object", "properties": {}}
-            timeout_seconds = msg.get("timeout_seconds")
-            if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
-                timeout_seconds = 30.0
-            role = msg.get("role")
-            if role is not None and not isinstance(role, str):
-                role = None
-
-            await register_remote_tool(
-                plugin_id=self.plugin_id,
-                name=name,
-                description=str(description),
-                parameters=parameters,
-                timeout_seconds=float(timeout_seconds),
-                role=role,
-                **({"reply_tail": True} if msg.get("reply_tail") is True else {}),
-            )
+            await register_remote_tool(plugin_id=self.plugin_id, **fields)
             self.logger.info(
                 "LLM tool registered with main_server: plugin={} name={}",
-                self.plugin_id, name,
+                self.plugin_id, fields["name"],
             )
         except Exception:
             self.logger.exception("Failed to handle LLM_TOOL_REGISTER")
@@ -1107,7 +1092,10 @@ class PluginCommunicationResourceManager:
     async def _handle_llm_tool_unregister(self, msg: Dict[str, Any]) -> None:
         """Handle an LLM_TOOL_UNREGISTER IPC notification from a plugin."""
         try:
-            from plugin.server.messaging.llm_tool_registry import unregister_remote_tool
+            from plugin.server.messaging.llm_tool_registry import (
+                parse_unregister_request,
+                unregister_remote_tool,
+            )
 
             incoming_pid = msg.get("plugin_id")
             if incoming_pid and incoming_pid != self.plugin_id:
@@ -1117,22 +1105,15 @@ class PluginCommunicationResourceManager:
                 )
                 return
 
-            name = msg.get("name")
-            if not isinstance(name, str) or not name:
-                self.logger.warning("LLM_TOOL_UNREGISTER missing name: {}", msg)
+            fields = parse_unregister_request(msg)
+            if fields is None:
+                self.logger.warning("LLM_TOOL_UNREGISTER missing or invalid name: {}", msg.get("name"))
                 return
-            role = msg.get("role")
-            if role is not None and not isinstance(role, str):
-                role = None
 
-            await unregister_remote_tool(
-                plugin_id=self.plugin_id,
-                name=name,
-                role=role,
-            )
+            await unregister_remote_tool(plugin_id=self.plugin_id, **fields)
             self.logger.info(
                 "LLM tool unregistered from main_server: plugin={} name={}",
-                self.plugin_id, name,
+                self.plugin_id, fields["name"],
             )
         except Exception:
             self.logger.exception("Failed to handle LLM_TOOL_UNREGISTER")
