@@ -3,6 +3,8 @@
 > **文档性质：approved proposal（P0–P4 的实施计划）。** P0、P1 随第一个 PR 落地，其余阶段各自另开 PR，落地后在对应小节补「落地说明」。代码和测试是权威；本页和代码对不上时以代码为准。
 >
 > 设计 / 需求方：wislap（插件 SDK 负责人）。设计 v2 的判定规则、粒度、调用链、插件侧视图、Origin、开放问题的结论都是既定方向，本页只把它们落到文件和函数，不重新讨论。
+>
+> **后续变更：** 3.1 的三档开关 `PLUGIN_CAPABILITY_POLICY` 已由插件权限总开关取代（`NEKO_PLUGIN_PERMISSION_CHECKS_DISABLED`，见 `plugin/core/capability_policy.py`）：调用登记、判定和审计始终运行，开关只决定是否拒绝，审计端点不再返回 `mode: "off"`；旧变量设置时作为别名读取一个版本（`off`、`observe` 等于打开总开关，`enforce` 等于检查生效）。能力名改为权限 id，词表在 `plugin/sdk/shared/permissions/catalog.py`，`rights` 在一个版本内同时带新旧两种名字。
 
 ## 0. 一句话
 

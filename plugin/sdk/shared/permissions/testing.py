@@ -41,9 +41,10 @@ class FakePermissions:
 
     ``states`` maps a permission id to a status string, a ``PermissionState``
     or a mapping with ``status`` / ``background`` / ``enforced``. Ids not
-    listed get ``default``. ``enforced`` defaults to the vocabulary's value for
-    the id (False for disclosure-only ones), or False for all of them with
-    ``checks_disabled=True``. ``answers`` is what ``request()`` resolves an id
+    listed get ``default``. For a string, or a mapping without ``enforced``,
+    ``enforced`` comes from the vocabulary (False for disclosure-only ids); a
+    ``PermissionState`` is used as given. ``checks_disabled=True`` makes it
+    False for every id, as the host's master switch does. ``answers`` is what ``request()`` resolves an id
     to, as if the user had answered; without one it returns the current state.
     Unknown ids raise ``ValueError`` so a typo fails the test.
     """

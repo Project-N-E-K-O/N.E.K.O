@@ -16,6 +16,7 @@ from plugin.sdk.plugin import (
     PermissionState,
     SdkError,
     SystemPermissionDeniedError,
+    TransportError,
 )
 from plugin.sdk.shared.conversations.client import SdkConversationsV2Bus
 from plugin.sdk.shared.core.call_chain_view import view_from_wire
@@ -174,6 +175,15 @@ async def test_conversations_raise_permission_denied():
             await call
         assert caught.value.permission == "plugin_sdk.main_agent.conversations:read"
         assert caught.value.__cause__ is error
+    # The message-plane reads raise TransportError carrying the host code and details.
+    plane_error = TransportError("PLUGIN_PERMISSION_DENIED: refused", code=PLUGIN_PERMISSION_DENIED,
+                                 details={"permission": "plugin_sdk.main_agent.conversations:read", "reason": "denied"})
+    plane = _Raising(plane_error)
+    for call in (SdkConversationsV2Bus(plane, host_ctx=plane).get(),
+                 SdkConversationsV2Bus(plane, host_ctx=plane).get_message("m")):
+        with pytest.raises(PermissionDeniedError) as caught:
+            await call
+        assert (caught.value.permission, caught.value.reason) == ("plugin_sdk.main_agent.conversations:read", "denied")
     other = _Raising(RpcRemoteError({"code": "PERMISSION_DENIED"}))
     with pytest.raises(RpcRemoteError):
         await SdkConversationsV2Bus(other, host_ctx=other).get_reply("r")

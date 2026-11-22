@@ -212,9 +212,10 @@ def test_operation_table_and_route_use_permission_ids():
         assert constant in PERMISSIONS
 
 
-def test_every_literal_handed_to_the_gate_is_a_permission_id():
-    calls = {"check": 2, "capability_checked": 0, "decide": 0, "is_enforced": 0}
-    found = 0
+def test_every_permission_handed_to_the_gate_is_an_id():
+    """Literals and gate constants passed to the decision helpers must be vocabulary ids."""
+    positions = {"check": 2, "capability_checked": 0, "decide": 0, "is_enforced": 0}
+    resolved = []
     for path in (REPO / "plugin").rglob("*.py"):
         if "tests" in path.parts:
             continue
@@ -222,13 +223,21 @@ def test_every_literal_handed_to_the_gate_is_a_permission_id():
             if not isinstance(node, ast.Call):
                 continue
             name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
-            if name not in calls or len(node.args) <= calls[name]:
+            if name not in positions or len(node.args) <= positions[name]:
                 continue
-            arg = node.args[calls[name]]
+            arg = node.args[positions[name]]
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                found += 1
-                assert arg.value in PERMISSIONS, f"{path}:{node.lineno} {arg.value!r}"
-    assert found == 0  # host code names permissions through capability_gate constants
+                value = arg.value
+            elif isinstance(arg, ast.Attribute) and isinstance(arg.value, ast.Name) and arg.value.id == "capability_gate":
+                value = getattr(capability_gate, arg.attr)
+            elif isinstance(arg, ast.Name) and arg.id.isupper():
+                value = getattr(capability_gate, arg.id)
+            else:
+                continue  # a variable, e.g. the wrapper forwarding its own argument
+            resolved.append((path.name, value))
+            assert value in PERMISSIONS, f"{path}:{node.lineno} {value!r}"
+    # The MESSAGE_PUSH route is one of them.
+    assert ("communication.py", capability_gate.MESSAGES_PUSH) in resolved
 
 
 def test_analyzer_names_all_map_to_permission_ids():
