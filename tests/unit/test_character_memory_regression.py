@@ -7733,15 +7733,13 @@ def test_f0064_samefile_case_only_rename_and_collision_guards(tmp_path, monkeypa
         },
         bypass_write_fence=True,
     )
-    if os.path.exists(memory_root / "neko") and os.path.samefile(memory_root / "neko", target_dir):
-        removed = character_memory.delete_character_memory_storage(cm, "neko")
-        assert removed == []
-        assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
-    else:
-        with patch.object(character_memory.os.path, "samefile", lambda a, b: {Path(a).name, Path(b).name} == {"neko", "Neko"}):
-            removed = character_memory.delete_character_memory_storage(cm, "neko")
-            assert removed == []
-            assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+    alias = memory_root / "neko"
+    if not alias.exists():
+        alias.symlink_to(target_dir, target_is_directory=True)
+    assert alias.samefile(target_dir)
+    assert alias in character_memory.list_character_memory_paths(cm, "neko")
+    assert character_memory.delete_character_memory_storage(cm, "neko") == []
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
 
 
 @pytest.mark.unit

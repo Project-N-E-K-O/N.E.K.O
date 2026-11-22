@@ -1147,6 +1147,13 @@ class AvatarToolStore:
                     complete = False
                     continue
                 else:
+                    # A readable final may still be awaiting its post-publish sync.
+                    try:
+                        _fsync_directory(self.root, strict=True)
+                    except OSError as exc:
+                        defer(exc)
+                        complete = False
+                        continue
                     remove_owned_directory(updating)
                     remove_owned_directory(backup)
                     continue
@@ -2967,6 +2974,7 @@ class AvatarToolStore:
                         "Local avatar tool ID already belongs to a different creation",
                         status_code=409,
                     )
+                _fsync_directory(self.root, strict=True)
                 self._release_quarantine(tool_id)
                 return self._public_item(current)
             if final_kind != "absent":

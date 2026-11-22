@@ -19,81 +19,60 @@ def _make_client() -> QwenVoiceCloneClient:
 
 
 @pytest.mark.asyncio
-async def test_timeout_adopts_newly_created_voice_without_retrying_create(monkeypatch):
-    """When create_voice times out after succeeding remotely, adopt the new voice without retrying."""
+@pytest.mark.parametrize("outcome", [
+    "OK", "DEPLOYING", "empty", "wrong_audio", "wrong_model", "UNDEPLOYED",
+    "detail_rejected", "ambiguous", "missing_link",
+])
+async def test_timeout_reconciles_only_the_uploaded_audio(monkeypatch, outcome):
+    import httpx
+
     client = _make_client()
-    create_calls = 0
-    list_calls = 0
+    audio_url = "https://example.test/this-upload.wav"
+    model = "cosyvoice-v3-plus"
+    calls = []
 
-    async def fake_upload_file(*args, **kwargs):
-        return "https://example.test/audio.wav"
+    async def upload(*args):
+        return audio_url
 
-    def fake_list_voices_by_prefix(prefix: str):
-        nonlocal list_calls
-        list_calls += 1
-        if list_calls == 1:
-            return [{"voice_id": "preexisting-v1", "gmt_create": "2026-01-01 00:00:00"}]
-        return [
-            {"voice_id": "preexisting-v1", "gmt_create": "2026-01-01 00:00:00"},
-            {"voice_id": "new-voice-v2", "gmt_create": "2026-11-22 00:00:00"},
-        ]
+    def post(endpoint, *, headers, json, timeout):
+        assert endpoint == "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
+        assert headers["Authorization"] == "Bearer test-api-key"
+        fields = json["input"]
+        action = fields["action"]
+        calls.append(action)
+        if action == "create_voice":
+            assert fields["url"] == audio_url
+            raise httpx.ReadTimeout("connection interrupted after commit")
+        if action == "list_voice":
+            rows = [{"voice_id": "old", "status": "OK"}]
+            if calls.count(action) == 2 and outcome != "empty":
+                rows.extend([
+                    {"voice_id": "another-upload", "status": "OK"},
+                    {"voice_id": "candidate", "status": outcome if outcome == "UNDEPLOYED" else "OK"},
+                ])
+            return httpx.Response(200, json={"output": {"voice_list": rows}})
+        assert action == "query_voice"
+        assert fields["voice_id"] != "old"
+        matches_upload = fields["voice_id"] == "candidate" or outcome == "ambiguous"
+        output = {
+            "resource_link": audio_url if matches_upload and outcome != "wrong_audio" else "different-url",
+            "target_model": "other-model" if outcome == "wrong_model" else model,
+            "status": {"detail_rejected": "UNDEPLOYED", "DEPLOYING": "DEPLOYING"}.get(outcome, "OK"),
+        }
+        if outcome == "missing_link":
+            output.pop("resource_link")
+        return httpx.Response(200, json={"output": output})
 
-    def fake_create_voice(**kwargs):
-        nonlocal create_calls
-        create_calls += 1
-        raise QwenVoiceCloneError("ResponseTimeout: request timed out")
-
-    monkeypatch.setattr(client, "upload_file", fake_upload_file)
-    monkeypatch.setattr(client, "_list_voices_by_prefix", fake_list_voices_by_prefix)
-    monkeypatch.setattr(client, "create_voice", fake_create_voice)
-
-    voice_id, file_url, _ = await client.clone_voice(
-        io.BytesIO(b"audio"),
-        "sample.wav",
-        "neko01",
-        ["zh"],
-    )
-
-    assert voice_id == "new-voice-v2"
-    assert file_url == "https://example.test/audio.wav"
-    assert create_calls == 1
-    assert list_calls == 2
-
-
-@pytest.mark.asyncio
-async def test_timeout_retries_only_when_list_voices_confirms_no_new_voice(monkeypatch):
-    """When list_voices confirms no new voice was created, create_voice may retry cleanly."""
-    client = _make_client()
-    create_calls = 0
-
-    async def fake_upload_file(*args, **kwargs):
-        return "https://example.test/audio.wav"
-
-    def fake_list_voices_by_prefix(prefix: str):
-        return [{"voice_id": "preexisting-v1", "gmt_create": "2026-01-01 00:00:00"}]
-
-    def fake_create_voice(**kwargs):
-        nonlocal create_calls
-        create_calls += 1
-        if create_calls == 1:
-            raise QwenVoiceCloneError("ResponseTimeout")
-        return ("created-on-retry-v3", "req-2")
-
-    monkeypatch.setattr(client, "upload_file", fake_upload_file)
-    monkeypatch.setattr(client, "_list_voices_by_prefix", fake_list_voices_by_prefix)
-    monkeypatch.setattr(client, "create_voice", fake_create_voice)
-
-    voice_id, file_url, req_id = await client.clone_voice(
-        io.BytesIO(b"audio"),
-        "sample.wav",
-        "neko01",
-        ["zh"],
-    )
-
-    assert voice_id == "created-on-retry-v3"
-    assert file_url == "https://example.test/audio.wav"
-    assert req_id == "req-2"
-    assert create_calls == 2
+    monkeypatch.setattr(client, "upload_file", upload)
+    monkeypatch.setattr(httpx, "post", post)
+    result = client.clone_voice(io.BytesIO(b"audio"), "sample.wav", "neko01", [], target_model=model)
+    if outcome in ("OK", "DEPLOYING"):
+        assert await result == ("candidate", audio_url, None)
+    else:
+        with pytest.raises(QwenVoiceCloneError, match="已停止重试"):
+            await result
+    assert calls.count("create_voice") == 1
+    assert calls.count("list_voice") == 2
 
 
 @pytest.mark.asyncio

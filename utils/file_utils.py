@@ -829,21 +829,31 @@ def move_aside(path: str | os.PathLike[str], suffix: str) -> Path | None:
 
 
 def _fsync_directory(path: str | os.PathLike[str]) -> None:
-    """Best-effort fsync of a directory entry on POSIX platforms."""
+    """Sync a directory entry where supported, surfacing genuine I/O errors."""
     if os.name == "nt":
         return
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
-        fd = os.open(os.fspath(path), flags)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        with suppress(OSError):
+        fd = os.open(os.fspath(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
             os.close(fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.EBADF, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+
+
+class PublishedFileSyncError(OSError):
+    """The target was replaced, but its directory entry may not be durable."""
+
+
+def _sync_replaced_file(target: Path) -> None:
+    try:
+        _fsync_directory(target.parent)
+    except OSError as exc:
+        raise PublishedFileSyncError(
+            exc.errno, f"File replaced but directory sync failed: {exc}", str(target)
+        ) from exc
 
 
 def atomic_write_text(
@@ -874,7 +884,6 @@ def atomic_write_text(
             temp_file.flush()
             os.fsync(temp_file.fileno())
         _replace_with_busy_retry(temp_path, target_path)
-        _fsync_directory(target_path.parent)
     except BaseException:
         # Catch BaseException: Ctrl-C/SystemExit during write/fsync is common; Exception alone
         # leaves tmp files until the next sweep window plus 24h.
@@ -888,6 +897,7 @@ def atomic_write_text(
         with suppress(OSError):
             os.remove(temp_path)
         raise
+    _sync_replaced_file(target_path)
 
 
 def atomic_write_bytes(path: str | os.PathLike[str], content: bytes) -> None:
@@ -905,11 +915,11 @@ def atomic_write_bytes(path: str | os.PathLike[str], content: bytes) -> None:
             temp_file.flush()
             os.fsync(temp_file.fileno())
         _replace_with_busy_retry(temp_path, target_path)
-        _fsync_directory(target_path.parent)
     except BaseException:
         with suppress(OSError):
             os.remove(temp_path)
         raise
+    _sync_replaced_file(target_path)
 
 
 def atomic_write_json(

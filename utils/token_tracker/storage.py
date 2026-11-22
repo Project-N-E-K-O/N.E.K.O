@@ -14,6 +14,7 @@
 # limitations under the License.
 """Local token-usage storage and migration methods."""
 
+import copy
 import hashlib
 import json
 from datetime import datetime
@@ -57,6 +58,8 @@ class StorageMixin:
                 # Read the existing merged file, if any.
                 existing = self._load_file(self._storage_path)
                 if not existing:
+                    if self._storage_path.exists():
+                        raise ValueError("cannot read migration target")
                     existing = self._empty_file_data()
 
                 raw_migrated = existing.get("migrated_legacy_files")
@@ -78,22 +81,29 @@ class StorageMixin:
                 merged_new = False
                 for p in legacy_files:
                     try:
-                        file_digest = hashlib.sha256(p.read_bytes()).hexdigest()
+                        raw = p.read_bytes()
+                        file_digest = hashlib.sha256(raw).hexdigest()
                         if migrated_map.get(p.name) == file_digest:
                             cleanup_files.append(p)
                             continue
-                        data = self._load_file(p)
-                        if data:
-                            daily_stats = data.get("daily_stats", {})
-                            recent_records = data.get("recent_records", [])
-                            if not isinstance(daily_stats, dict) or not isinstance(recent_records, list):
-                                raise TypeError("legacy token_usage schema invalid")
-                            for day_key, day_val in daily_stats.items():
-                                if day_key not in existing["daily_stats"]:
-                                    existing["daily_stats"][day_key] = day_val
-                                else:
-                                    _merge_day_stats(existing["daily_stats"][day_key], day_val)
-                            existing["recent_records"].extend(recent_records)
+                        data = json.loads(raw)
+                        if not isinstance(data, dict) or data.get("version") != 1:
+                            raise ValueError("unsupported legacy token_usage version")
+                        daily_stats = data["daily_stats"]
+                        records = data.get("recent_records", [])
+                        if not isinstance(daily_stats, dict) or not isinstance(records, list):
+                            raise TypeError("legacy token_usage schema invalid")
+
+                        # Stage only the affected days. A malformed later bucket or
+                        # record must not leave any contribution from this source.
+                        staged_days = {}
+                        for day, delta in daily_stats.items():
+                            staged = copy.deepcopy(existing["daily_stats"].get(day, {}))
+                            _merge_day_stats(staged, delta)
+                            staged_days[day] = staged
+                        staged_records = self._dedupe_records(existing["recent_records"] + records)
+                        existing["daily_stats"].update(staged_days)
+                        existing["recent_records"] = staged_records
                         migrated_map[p.name] = file_digest
                         cleanup_files.append(p)
                         merged_new = True
@@ -104,16 +114,16 @@ class StorageMixin:
                 if not merged_new and not index_dirty and not cleanup_files:
                     return
 
-                if merged_new or index_dirty:
-                    if merged_new:
-                        existing["recent_records"] = self._dedupe_records(existing["recent_records"])
-                        existing["last_saved"] = datetime.now().isoformat()
-                    if migrated_map:
-                        existing["migrated_legacy_files"] = migrated_map
-                    else:
-                        existing.pop("migrated_legacy_files", None)
-                    self._storage_dir.mkdir(parents=True, exist_ok=True)
-                    atomic_write_json(self._storage_path, existing)
+                # Even an existing digest can follow a replace whose directory
+                # sync failed. Re-establish durability before unlinking its source.
+                if merged_new:
+                    existing["last_saved"] = datetime.now().isoformat()
+                if migrated_map:
+                    existing["migrated_legacy_files"] = migrated_map
+                else:
+                    existing.pop("migrated_legacy_files", None)
+                self._storage_dir.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(self._storage_path, existing)
 
                 # Migration complete: delete the old files only after atomic write succeeds.
                 unlinked_names: set[str] = set()

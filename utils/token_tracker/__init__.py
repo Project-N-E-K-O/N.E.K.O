@@ -135,6 +135,9 @@ class TokenTracker(_StorageMixin, _RecordingMixin, _ReportingMixin):
         # seen_batches can deduplicate retries after a network timeout when the server already committed.
         # Clear after a successful 200; allocate a new seq for the next window. Persist alongside _unsent_daily.
         self._pending_batch_seq: Optional[str] = None
+        self._pending_daily: dict = {}
+        self._pending_records: list = []
+        self._unsent_queue_loaded = False
         self._has_recorded_app_start: bool = False  # 🔒 One-time app_start reporting lock
         self._session_start_ts: float = 0.0  # Used to calculate session_end duration
         self._session_process: str = "unknown"

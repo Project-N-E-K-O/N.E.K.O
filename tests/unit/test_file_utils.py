@@ -1207,3 +1207,24 @@ def test_fsync_directory_tolerates_oserror_and_windows_short_circuits(
     monkeypatch.setattr(file_utils, "os", nt_os)
     file_utils._fsync_directory(tmp_path)
 
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync")
+@pytest.mark.parametrize("writer,payload", [(atomic_write_text, "new"), (file_utils.atomic_write_bytes, b"new")])
+def test_directory_io_error_identifies_published_target(tmp_path, monkeypatch, writer, payload):
+    import errno
+    import stat
+
+    target = tmp_path / "state"
+    target.write_bytes(b"old")
+    real_sync = os.fsync
+
+    def fail_directory_sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "injected directory error")
+        real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_sync)
+    with pytest.raises(file_utils.PublishedFileSyncError, match="File replaced") as exc:
+        writer(target, payload)
+    assert exc.value.errno == errno.EIO
+    assert target.read_bytes() == b"new"

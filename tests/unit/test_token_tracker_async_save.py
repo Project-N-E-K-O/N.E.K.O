@@ -262,12 +262,15 @@ def test_instrument_only_report_does_not_persist_stale_batch_seq_and_below_inter
     monkeypatch.setattr(instrument, "has_data", lambda: True)
     monkeypatch.setattr(instrument, "snapshot", lambda: {"counters": {"ui_click": 2}})
 
+    queue_at_request = []
+
     def failing_urlopen(request, *, timeout):
-        assert not tracker._unsent_queue_path.exists()
+        queue_at_request.append(tracker._unsent_queue_path.exists())
         raise TimeoutError("offline")
 
     monkeypatch.setattr(reporting.urllib.request, "urlopen", failing_urlopen)
     tracker.save()
+    assert queue_at_request == [False]
     assert tracker._pending_batch_seq is None
     assert not tracker._unsent_queue_path.exists()
 
@@ -469,8 +472,74 @@ def test_concurrent_below_interval_report_does_not_clobber_inflight_unsent_queue
 
     # After Thread 1 fails and Thread 2 runs its below-interval persistence, both batches are preserved.
     disk_after = json.loads(tracker._unsent_queue_path.read_text(encoding="utf-8"))
-    assert disk_after["daily"][today]["total_tokens"] == 30
+    assert disk_after["daily"][today]["total_tokens"] == 10
+    assert disk_after["next_daily"][today]["total_tokens"] == 20
     assert disk_after["batch_seq"] == inflight_seq
+
+
+    restarted = tracker_factory()
+    restarted._load_unsent_queue()
+    assert restarted._unsent_queue_path.exists()
+    batches = []
+
+    def capture(daily, records, seq, is_retry, timeout):
+        batches.append((daily[today]["total_tokens"], [r["model"] for r in records], seq))
+
+    monkeypatch.setattr(restarted, "_send_report", capture)
+    restarted.save()
+    assert batches[0] == (10, ["model-1"], inflight_seq)
+    assert batches[1][:2] == (20, ["model-2"])
+    assert batches[1][2] != inflight_seq
+    assert len(batches) == 2
+    assert not restarted._unsent_queue_path.exists()
+
+
+def test_numbered_queue_write_failure_defers_post(tracker_factory, monkeypatch):
+    from utils.token_tracker import reporting
+
+    tracker = tracker_factory()
+    tracker._report_interval = float("inf")
+    tracker.record("model", 6, 4, 10)
+    tracker.save()
+    tracker._report_interval = 0
+    real_write = reporting.atomic_write_json
+    sent = []
+
+    def disk_full(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(reporting, "atomic_write_json", disk_full)
+    monkeypatch.setattr(tracker, "_send_report", lambda *args: sent.append(args))
+    tracker.save()
+    assert not sent
+    assert json.loads(tracker._unsent_queue_path.read_text())["batch_seq"] is None
+    seq = tracker._pending_batch_seq
+    assert seq
+    monkeypatch.setattr(reporting, "atomic_write_json", real_write)
+    tracker.save()
+    assert len(sent) == 1
+    assert sent[0][2] == seq
+    assert sent[0][1][0]["tt"] == 10
+
+
+@pytest.mark.parametrize("bad", [
+    "{", '{"version": 2}', '{"version": 1, "daily_stats":{"day":{"total_tokens":10,"by_model":[]}}}',
+    '{"version":1,"daily_stats":{"day":{"total_tokens":10}},"recent_records":[null]}',
+])
+def test_invalid_legacy_file_cannot_contribute_or_be_removed(tracker_factory, bad):
+    tracker = tracker_factory()
+    folder = tracker._storage_dir
+    invalid = folder / "token_usage_b.json"
+    invalid.write_text(bad)
+    for suffix in ("a", "c"):
+        (folder / f"token_usage_{suffix}.json").write_text(json.dumps({
+            "version": 1, "daily_stats": {"day": {"total_tokens": 1}},
+        }))
+    tracker._migrate_legacy_files()
+    assert invalid.read_text() == bad
+    merged = json.loads(tracker._storage_path.read_text())
+    assert merged["daily_stats"]["day"]["total_tokens"] == 2
+    assert invalid.name not in merged.get("migrated_legacy_files", {})
 
 
 def test_legacy_migration_is_idempotent_across_partial_unlink_permission_errors(
