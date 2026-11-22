@@ -364,9 +364,10 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             omni: rect(cards[4]),
             tts: rect(cards[5]),
             agent: rect(cards[6]),
-            game: rect(cards[7]),
-            image: rect(cards[8]),
-            vision: rect(cards[9]),
+            agentSmall: rect(cards[7]),
+            game: rect(cards[8]),
+            image: rect(cards[9]),
+            vision: rect(cards[10]),
         };
     }""")
 
@@ -380,6 +381,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "omni-model-content",
         "tts-model-content",
         "agent-model-content",
+        "agent-small-model-content",
         "game-model-content",
         "image-model-content",
         "vision-model-content",
@@ -392,6 +394,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.realtimeModelConfig",
         "api.ttsModelConfig",
         "api.agentApiConfigTitle",
+        "api.agentSmallApiConfigTitle",
         "api.gameModelsConfig",
         "api.imageModelConfig",
         "api.visionModelConfig",
@@ -403,6 +406,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "emotion",
         "omni",
         "agent",
+        "agentSmall",
         "tts",
         "gameMain",
         "gameSummary",
@@ -415,10 +419,10 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "decision": "emotion",
         "omni": "tts",
         "tts": "omni",
-        "agent": "game",
-        "game": "agent",
-        "image": "vision",
-        "vision": "image",
+        "agent": "agent-small",
+        "agent-small": "agent",
+        "game": "image",
+        "image": "game",
     }
     assert desktop["conversation"]["top"] == desktop["summary"]["top"]
     assert desktop["conversation"]["left"] < desktop["summary"]["left"]
@@ -427,10 +431,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["emotion"]["left"] < desktop["decision"]["left"]
     assert abs(desktop["emotion"]["width"] - desktop["decision"]["width"]) <= 1
     assert desktop["omni"]["top"] == desktop["tts"]["top"]
-    assert desktop["agent"]["top"] == desktop["game"]["top"]
+    assert desktop["agent"]["top"] == desktop["agentSmall"]["top"]
+    assert desktop["agent"]["left"] < desktop["agentSmall"]["left"]
     assert desktop["agent"]["top"] > desktop["omni"]["top"]
-    assert desktop["image"]["top"] == desktop["vision"]["top"]
-    assert desktop["image"]["left"] < desktop["vision"]["left"]
+    assert desktop["game"]["top"] == desktop["image"]["top"]
+    assert desktop["game"]["left"] < desktop["image"]["left"]
+    assert desktop["vision"]["top"] > desktop["game"]["top"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)

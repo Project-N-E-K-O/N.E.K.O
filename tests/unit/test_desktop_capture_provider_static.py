@@ -254,7 +254,13 @@ def test_native_frame_stream_lifecycle_preserves_source_and_cancels_stale_frames
     assert "captureSocket.send(JSON.stringify(" in native_stream
     assert native_stream.count("await stopScreenSharing(true);") >= 4
     assert "normalizeNativeCaptureDataUrlForStream(result.dataUrl)" in native_stream
-    assert "buildStreamDataMessage(streamDataUrl, inputType, sourceId)" in native_stream
+    # The native frame keeps the source it was captured from and is masked
+    # (#3474) before the message is built and sent.
+    masked_build = re.search(
+        r"await buildMaskedStreamDataMessage\(\s*streamDataUrl, inputType, sourceId,", native_stream
+    )
+    assert masked_build
+    assert masked_build.start() < native_stream.index("captureSocket.send(JSON.stringify(nativeMessage))")
     normalize_index = native_stream.index(
         "normalizeNativeCaptureDataUrlForStream(result.dataUrl)"
     )
