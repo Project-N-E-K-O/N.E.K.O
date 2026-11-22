@@ -36,7 +36,6 @@ from ._shared import (
 
 
 from ._shared import (
-    canonical_realtime_dialect,
     resolve_effective_realtime_api_type,
     resolve_realtime_dialect,
 )
@@ -564,7 +563,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Share apply_tools_to_session's dialect vocabulary: this previously compared api_type directly,
         # but 'gpt' was never valid (the real value is 'openai'), and 'qwen_intl'
         # never matched 'qwen'. The field has no readers currently, but retaining a wrong criterion invites future misuse.
-        self._supports_tools_wire = canonical_realtime_dialect(self._api_type) in (
+        self._supports_tools_wire = self._realtime_dialect in (
             'gpt', 'glm', 'qwen', 'step', 'free', 'gemini', 'grok'
         )
         # Per-call accumulator for OpenAI-Realtime / StepFun delta arguments

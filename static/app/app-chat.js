@@ -107,7 +107,23 @@
             var val = sanitizeDisplayName(profile[MASTER_NICKNAME_KEYS[i]]);
             if (val) return val;
         }
-        return sanitizeDisplayName(profile['nickname']);
+        var keys = Object.keys(profile);
+        var folded = {};
+        for (var j = 0; j < keys.length; j += 1) {
+            var rawKey = keys[j];
+            var foldedKey = String(rawKey).toLowerCase();
+            var candidate = sanitizeDisplayName(profile[rawKey]);
+            if (candidate && !Object.prototype.hasOwnProperty.call(folded, foldedKey)) {
+                folded[foldedKey] = candidate;
+            }
+        }
+        for (var m = 0; m < MASTER_NICKNAME_KEYS.length; m += 1) {
+            var targetKey = MASTER_NICKNAME_KEYS[m].toLowerCase();
+            if (Object.prototype.hasOwnProperty.call(folded, targetKey)) {
+                return folded[targetKey];
+            }
+        }
+        return '';
     }
 
     function resolveMasterDisplayNameFromProfile(masterProfile) {

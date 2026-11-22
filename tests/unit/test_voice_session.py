@@ -1695,3 +1695,93 @@ async def test_connect_local_freeform_model_does_not_enter_free_dialect():
     )
     with pytest.raises(ValueError, match="Invalid model"):
         await _run_connect_and_capture_session(client)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_apply_tools_to_session_uses_resolved_dialect_for_inferred_free_route():
+    """Fallback free route (api_type='', model='free-model', lanlan.tech) must push tools mid-session."""
+    from main_logic.tool_calling import ToolDefinition
+
+    client = OmniRealtimeClient(
+        base_url="wss://lanlan.tech/ws",
+        api_key="sk-test",
+        model="free-model",
+        api_type="",
+        tool_definitions=[ToolDefinition("ping", "ping tool")],
+        on_tool_call=AsyncMock(),
+    )
+    assert client._supports_tools_wire is True
+
+    sent_events: list[dict] = []
+
+    async def fake_send(payload):
+        sent_events.append(json.loads(payload))
+
+    mock_ws = AsyncMock()
+    mock_ws.send = AsyncMock(side_effect=fake_send)
+    with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = mock_ws
+        try:
+            await client.connect(instructions="You are helpful.", native_audio=True)
+            sent_events.clear()
+            await client.apply_tools_to_session()
+        finally:
+            await client.close()
+
+    updates = [e for e in sent_events if e.get("type") == "session.update"]
+    assert len(updates) == 1
+    tools = updates[0]["session"]["tools"]
+    assert any(t.get("type") == "function" and t.get("function", {}).get("name") == "ping" for t in tools)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_tool_results_openai_realtime_omits_call_id_for_fallback_glm_model():
+    """GLM with api_type='' and model='glm-realtime' must omit call_id from function_call_output."""
+    from main_logic.tool_calling import ToolResult
+
+    client = OmniRealtimeClient(
+        base_url="wss://glm.example.test/realtime",
+        api_key="sk-test",
+        model="glm-realtime",
+        api_type="",
+    )
+    assert client._supports_tools_wire is True
+
+    sent_events: list[dict] = []
+
+    async def fake_send(payload):
+        sent_events.append(json.loads(payload))
+
+    mock_ws = AsyncMock()
+    mock_ws.send = AsyncMock(side_effect=fake_send)
+    with patch("websockets.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = mock_ws
+        try:
+            await client.connect(instructions="You are helpful.", native_audio=True)
+            sent_events.clear()
+            await client._send_tool_results_openai_realtime(
+                [ToolResult(call_id="glm_r1_0", name="ping", output={"ok": True})]
+            )
+        finally:
+            await client.close()
+
+    item_creates = [e for e in sent_events if e.get("type") == "conversation.item.create"]
+    assert len(item_creates) == 1
+    item = item_creates[0]["item"]
+    assert item["type"] == "function_call_output"
+    assert "call_id" not in item
+
+
+@pytest.mark.unit
+def test_tooling_realtime_dialect_falls_back_on_minimal_double():
+    """Minimal _ToolingMixin test doubles without _resolved_realtime_dialect fall back to _api_type."""
+    from main_logic.omni_realtime_client._tools import _ToolingMixin
+
+    class _MinimalDouble(_ToolingMixin):
+        def __init__(self, api_type: str):
+            self._api_type = api_type
+
+    assert _MinimalDouble("openai")._tooling_realtime_dialect() == "gpt"
+    assert _MinimalDouble("qwen_intl")._tooling_realtime_dialect() == "qwen"

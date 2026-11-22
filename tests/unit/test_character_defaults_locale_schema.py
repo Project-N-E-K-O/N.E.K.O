@@ -98,6 +98,30 @@ async def test_translation_service_splits_comma_separated_localized_nickname_fie
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_translation_service_matches_fields_to_translate_case_insensitively():
+    service = TranslationService.__new__(TranslationService)
+    service.translate_text_robust = AsyncMock(side_effect=lambda text, _lang: f"T:{text}")
+
+    translated = await service.translate_dict(
+        {
+            "nickname": "Alice, Bob",
+            "NICKNAME": "Charlie",
+            "apodo": "Juan",
+            "gender": "Female",
+            "档案名": "KeepRaw",
+        },
+        "ja",
+        fields_to_translate=list(CHARACTER_NICKNAME_FIELD_KEYS + CHARACTER_GENDER_FIELD_KEYS),
+    )
+    assert translated["nickname"] == "T:Alice, T:Bob"
+    assert translated["NICKNAME"] == "T:Charlie"
+    assert translated["apodo"] == "T:Juan"
+    assert translated["gender"] == "T:Female"
+    assert translated["档案名"] == "KeepRaw"
+
+
+@pytest.mark.unit
 def test_app_chat_js_resolves_localized_master_nicknames():
     js_path = REPO_ROOT / "static" / "app" / "app-chat.js"
     script = (
@@ -107,6 +131,12 @@ def test_app_chat_js_resolves_localized_master_nicknames():
         "(async () => {\n"
         "  for (const [profile, expectedDisplay, expectedNick] of [\n"
         "    [{ Nickname: 'Human, Buddy', '档案名': 'Carbon' }, 'Human', 'Human, Buddy'],\n"
+        "    [{ nickname: 'lower, nick', '档案名': 'Carbon' }, 'lower', 'lower, nick'],\n"
+        "    [{ NICKNAME: 'CaseUpper', '档案名': 'Carbon' }, 'CaseUpper', 'CaseUpper'],\n"
+        "    [{ apodo: 'CaseLower', '档案名': 'Carbon' }, 'CaseLower', 'CaseLower'],\n"
+        "    [{ APELIDO: 'CasePt', '档案名': 'Carbon' }, 'CasePt', 'CasePt'],\n"
+        "    [{ 'прозвище': 'Боб', '档案名': 'Carbon' }, 'Боб', 'Боб'],\n"
+        "    [{ NICKNAME: '  ', nickname: 'NonEmptyFallback', '档案名': 'Carbon' }, 'NonEmptyFallback', 'NonEmptyFallback'],\n"
         "    [{ '닉네임': '인간', '档案名': '탄소' }, '인간', '인간'],\n"
         "    [{ 'Прозвище': 'Человек' }, 'Человек', 'Человек'],\n"
         "    [{ '档案名': 'FallbackProfile' }, 'FallbackProfile', ''],\n"
