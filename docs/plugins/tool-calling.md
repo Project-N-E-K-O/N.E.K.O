@@ -521,9 +521,10 @@ returns what `main_server` answered:
 owned by another source), `partial_failure` (unregister: some roles
 failed), `main_server_unavailable` (the request could not reach
 `main_server`; nothing was applied), `main_server_error`
-(HTTP status >= 400, e.g. unknown role, or an answer that is not a JSON object), `timeout` (no answer in time, from the host
-within `request_timeout` or from `main_server` after the request was sent;
-the outcome is unknown), `host_unavailable` (the request could
+(HTTP status >= 400, e.g. unknown role), `timeout` (no usable answer: none
+from the host within `request_timeout`, none from `main_server` after the
+request was sent, or an answer that is not a JSON object; the outcome is
+unknown), `host_unavailable` (the request could
 not reach the host), `busy` (earlier calls for the same name used up the
 budget before this one could be sent; nothing was sent and `cleanup` is
 `None`), `not_registered` (unregister: the plugin had no local

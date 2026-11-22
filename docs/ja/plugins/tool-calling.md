@@ -492,8 +492,8 @@ result = await self.unregister_llm_tool_async("custom_tool")
 
 `error` コード：`rejected`（登録：どの role も受け付けなかった。例：名前が別 source に使われている）、
 `partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（リクエストが `main_server` に届かず、何も適用されていない）、
-`main_server_error`（HTTP ステータス >= 400。例：存在しない role。または JSON オブジェクトでない応答）、`timeout`（時間内に応答がなかった：`request_timeout` 内にホストが応答しなかった、
-またはリクエスト送信後に `main_server` が応答しなかった。結果は不明）、`host_unavailable`（リクエストがホストに届かなかった）、
+`main_server_error`（HTTP ステータス >= 400。例：存在しない role）、`timeout`（使える応答がなかった：`request_timeout` 内にホストが応答しなかった、
+リクエスト送信後に `main_server` が応答しなかった、または応答が JSON オブジェクトでなかった。結果は不明）、`host_unavailable`（リクエストがホストに届かなかった）、
 `busy`（同じ名前の先行呼び出しが予算を使い切り、この呼び出しは送られなかった。何も送られておらず `cleanup` は `None`）、`not_registered`（解除：プラグイン側にその名前の記録がなく、`main_server` 上でもこのプラグインのその名前の
 ツールが何も削除されなかった。ローカルに記録がある場合、同じ応答は `ok=True, removed=False` となりローカルのハンドラを外します）、
 `invalid_request`。

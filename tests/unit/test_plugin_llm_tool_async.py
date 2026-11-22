@@ -511,6 +511,43 @@ async def test_failed_stale_removal_keeps_the_handler():
 
 
 @pytest.mark.asyncio
+async def test_stale_removal_uses_what_is_left_of_request_timeout(monkeypatch):
+    from plugin.sdk.plugin import base
+
+    plugin, _ = await _plugin_with_tool()
+    refused = {"ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
+               "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:demo_plugin", "reason": "different registration"}]}
+    host = _ScriptedHost(dict(refused), dict(_CLEANED))
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a", request_timeout=2.0)
+
+    assert result["ok"] is True
+    assert 0 < host.calls[1]["timeout"] <= 2.0  # not a fresh 15s
+
+    # Budget used up by the first request: no second request, handler kept.
+    plugin2, _ = await _plugin_with_tool()
+    host2 = _ScriptedHost(dict(refused), dict(_CLEANED))
+    _install_host(plugin2, host2)
+    real = base.time.monotonic
+    calls = {"n": 0}
+
+    class _Clock:
+        @staticmethod
+        def monotonic():
+            calls["n"] += 1
+            # lock start, lock acquired, deadline base, then "after the first request"
+            return real() + (100.0 if calls["n"] > 3 else 0.0)
+
+    monkeypatch.setattr(base, "time", _Clock)
+    late = await plugin2.unregister_llm_tool_async("tool_a", request_timeout=2.0)
+
+    assert late["ok"] is False and late["error"] == "timeout"
+    assert len(host2.calls) == 1
+    assert _local_names(plugin2) == {"tool_a"}
+
+
+@pytest.mark.asyncio
 async def test_timed_out_cleanup_does_not_remove_the_retry(monkeypatch):
     """greptile P1: the cleanup after a failed register times out but keeps
     running at main_server; the plugin registers the name again; when the
@@ -1476,7 +1513,7 @@ class _RawResp:
     ('["a list"]', "application/json"),
     ("null", "application/json"),
 ])
-async def test_host_unreadable_answer_is_main_server_error(monkeypatch, registry, op, text, content_type):
+async def test_host_unreadable_answer_is_an_unknown_outcome(monkeypatch, registry, op, text, content_type):
     from plugin.server.messaging.handlers.llm_tools import (
         handle_llm_tool_register,
         handle_llm_tool_unregister,
@@ -1495,7 +1532,9 @@ async def test_host_unreadable_answer_is_main_server_error(monkeypatch, registry
         result = await handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST))
 
     assert result["ok"] is False
-    assert result["error"] == "main_server_error"
+    # main_server answered but we cannot read what it did: outcome
+    # unknown, so the SDK cleans up after a register (like a timeout).
+    assert result["error"] == "timeout"
     # Neither path drops existing tracking on an unreadable answer.
     assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
 
@@ -1640,6 +1679,27 @@ async def test_host_refuses_an_invalid_expected_registration_id(monkeypatch, reg
     )
     assert result["error"] == "invalid_request"
     assert server.posts == []
+
+
+@pytest.mark.asyncio
+async def test_host_keeps_tracking_when_another_registration_holds_the_name(monkeypatch, registry):
+    """A late-landed older registration holds the name at main_server while
+    host tracking still has the id the SDK targets. The targeted unregister
+    is refused there: tracking must stay, or model calls to the name that
+    main_server still advertises would be rejected by the host."""
+    from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_unregister
+
+    async with registry._lock:
+        registry._plugin_tools[PLUGIN_ID]["tool_a"] = {"timeout_seconds": 12.0, "registration_id": "held"}
+    _use_main_server(monkeypatch, registry, _FakeMainServer({
+        "ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
+        "refused_roles": [{"role": "Lanlan", "owned_by": f"plugin:{PLUGIN_ID}", "reason": "different registration"}],
+    }))
+
+    result = await handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST, expected_registration_id="held"))
+
+    assert result["ok"] is True and result["removed"] is False
+    assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
 
 
 def test_request_handlers_include_llm_tool_operations():

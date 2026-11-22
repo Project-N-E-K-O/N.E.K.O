@@ -306,13 +306,13 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 # ``error`` codes:
 #   host side  -- "invalid_request", "main_server_unavailable" (the
 #                 request could not reach main_server: connect failure or
-#                 no pooled connection), "main_server_error" (HTTP status >= 400 or
-#                 an answer that is not a JSON object),
+#                 no pooled connection), "main_server_error" (HTTP status >= 400),
 #                 "rejected" (register: no role accepted the tool),
 #                 "partial_failure" (unregister: some roles failed).
-#   both       -- "timeout" (no answer in time: from the host within
-#                 ``request_timeout``, or from main_server to the host after
-#                 the request was sent; the outcome on main_server is unknown).
+#   both       -- "timeout" (no usable answer: none from the host within
+#                 ``request_timeout``, or none from main_server after the
+#                 request was sent, or one that is not a JSON object; the
+#                 outcome on main_server is unknown).
 #   SDK side   -- "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "busy" (earlier calls for
 #                 the same name used up the budget; nothing was sent),

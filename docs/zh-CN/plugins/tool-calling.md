@@ -448,8 +448,8 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
 `partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（请求没能送到 `main_server`，什么都没生效）、
-`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在；或回复不是 JSON 对象）、`timeout`（没按时拿到回复：`request_timeout` 内 host 没回复，或请求已发出后
-`main_server` 没回复；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，这次来不及发出；什么都没发，`cleanup` 为 `None`）、`not_registered`（注销：插件本地没有这个名字的记录，
+`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在）、`timeout`（没拿到能用的回复：`request_timeout` 内 host 没回复、请求已发出后
+`main_server` 没回复，或回复不是 JSON 对象；结果未知）、`host_unavailable`（请求没送到 host）、`busy`（同名前面的调用用掉了预算，这次来不及发出；什么都没发，`cleanup` 为 `None`）、`not_registered`（注销：插件本地没有这个名字的记录，
 `main_server` 上也没删到本插件的这个名字；本地有记录时同样的答复是 `ok=True, removed=False`，并删掉本地 handler）、`invalid_request`。
 
 本地状态跟着 `ok` 走，插件和 host 两边一致：

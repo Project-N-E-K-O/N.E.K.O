@@ -1142,6 +1142,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self._validate_async_llm_tool_name(name)
         try:
             async with self._llm_tool_name_lock(name, request_timeout) as remaining:
+                deadline = time.monotonic() + remaining
                 meta = self._llm_tools.get(name)
                 result = await self._request_llm_tool_change(
                     request_type="LLM_TOOL_UNREGISTER_REQUEST",
@@ -1167,11 +1168,21 @@ class NekoPluginBase(_SharedNekoPluginBase):
                         # (e.g. a timed-out register that landed late, after
                         # the one we hold). The caller wants the name gone and
                         # no newer async call can run meanwhile (we hold the
-                        # name lock), so remove whichever registration it is.
+                        # name lock), so remove whichever registration it is,
+                        # within what is left of this call's budget.
+                        left = deadline - time.monotonic()
+                        if left <= 0:
+                            return build_unregister_result(
+                                result, ok=False, error="timeout",
+                                message=(
+                                    f"another registration of {name!r} holds the name and no "
+                                    f"budget is left of {request_timeout}s to remove it"
+                                ),
+                            )
                         result = await self._request_llm_tool_change(
                             request_type="LLM_TOOL_UNREGISTER_REQUEST",
                             payload={"plugin_id": self.plugin_id, "name": name, "role": meta.role},
-                            request_timeout=_LLM_TOOL_CLEANUP_TIMEOUT,
+                            request_timeout=left,
                             build_result=build_unregister_result,
                         )
                     if result["ok"]:

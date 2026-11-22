@@ -201,6 +201,9 @@ class RemoteToolError(RuntimeError):
     * ``"main_server_error"`` -- HTTP status >= 400 (e.g. unknown role).
     * ``"rejected"`` -- register: no role accepted the tool (``ok: false``).
     * ``"partial_failure"`` -- unregister: some roles reported ``failed_roles``.
+    * ``"timeout"`` -- the answer is not a JSON object: main_server may have
+      applied the change, so the outcome is unknown (the SDK then cleans up
+      after a register, as for a timeout).
 
     ``body`` is the parsed JSON body when there is one, so callers can report
     the per-role outcome instead of a flattened message. Subclasses
@@ -373,12 +376,12 @@ async def register_remote_tool(
     except ValueError as exc:
         raise RemoteToolError(
             f"main_server /api/tools/register returned an unreadable body: {exc}",
-            code="main_server_error",
+            code="timeout",  # answered, but unreadable: outcome unknown
         ) from exc
     if not isinstance(body, dict):
         raise RemoteToolError(
             "main_server /api/tools/register returned a non-object body",
-            code="main_server_error",
+            code="timeout",  # answered, but unreadable: outcome unknown
         )
     # ``main_server`` distinguishes HTTP-level failures (caught above as
     # status >= 400) from per-role logic failures — the latter come back
@@ -472,12 +475,12 @@ async def unregister_remote_tool(
     except ValueError as exc:
         raise RemoteToolError(
             f"main_server /api/tools/unregister returned an unreadable body: {exc}",
-            code="main_server_error",
+            code="timeout",  # answered, but unreadable: outcome unknown
         ) from exc
     if not isinstance(body, dict):
         raise RemoteToolError(
             "main_server /api/tools/unregister returned a non-object body",
-            code="main_server_error",
+            code="timeout",  # answered, but unreadable: outcome unknown
         )
     refused_roles = body.get("refused_roles")
     if refused_roles:
@@ -505,10 +508,18 @@ async def unregister_remote_tool(
     async with _lock:
         owned = _plugin_tools.get(plugin_id)
         tracked = owned.get(name) if owned is not None else None
-        if tracked is not None and (
+        other_registration = any(
+            isinstance(r, dict) and r.get("reason") == "different registration"
+            for r in (refused_roles or [])
+        )
+        if tracked is not None and not other_registration and (
             expected_registration_id is None
             or tracked.get("registration_id") in (None, expected_registration_id)
         ):
+            # A refusal for "different registration" means main_server still
+            # holds another registration of this plugin under the name (e.g.
+            # a timed-out register that landed late): model calls still come
+            # here, so keep tracking until that one is removed too.
             owned.pop(name, None)
             if not owned:
                 _plugin_tools.pop(plugin_id, None)
