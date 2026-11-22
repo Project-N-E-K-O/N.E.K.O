@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -74,6 +75,17 @@ def _revoke_hot_reload_recovery(plugin_id: str) -> None:
     from plugin.server.application.plugins.lifecycle_service import revoke_hot_reload_recovery
 
     revoke_hot_reload_recovery(plugin_id)
+
+
+def _snapshot_permissions(plugin_id: str):
+    from plugin.server.application.plugins.permission_service import (
+        PermissionSnapshot,
+        snapshot_permissions,
+    )
+
+    if not plugin_id:
+        return PermissionSnapshot("unusable")
+    return snapshot_permissions(plugin_id)
 
 
 async def _start_plugin(plugin_id: str) -> None:
@@ -372,6 +384,10 @@ async def replace_plugin(
             ensure_plugin_layout_runtime_config,
             layout,
         )
+    # Taken before anything changes (stopping does not touch grants): a
+    # restart below reconciles the stored grants with the new source, so a
+    # rollback must put the old source's grants back. Never raises.
+    permissions_before = await asyncio.to_thread(_snapshot_permissions, plugin_id)
     was_running = await _plugin_is_running(plugin_id)
     if was_running:
         await _stop_plugin(plugin_id)
@@ -491,6 +507,16 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
+        # Only a plugin start reconciles grants, so without one (the plugin
+        # was not running) a missing snapshot does not make this incomplete.
+        if code_restored and not await asyncio.to_thread(
+            functools.partial(
+                permissions_before.restore,
+                plugin_id,
+                store_may_have_changed=was_running,
+            )
+        ):
+            restored = False
         if not code_restored:
             # Old source was not restored exactly: the failed new package may remain, so old grants cannot authorize autostart.
             # Inspect only the plugin code directory; auxiliary directories, cache cleanup, and restart failures do not change source identity.

@@ -91,7 +91,7 @@ _UPLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
 _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
 from plugin.server.application.plugins.capability_analysis_service import (
-    notify_install_committed,
+    notify_install_committed_async,
 )
 
 logger = get_logger("server.application.plugin_cli")
@@ -515,7 +515,7 @@ class PluginCliService:
                 source=install_source,
             )
             if _analyze_after_commit:
-                notify_install_committed(result)
+                await notify_install_committed_async(result)
             return result
 
         if action == "override_builtin":
@@ -793,7 +793,7 @@ class PluginCliService:
                 source=install_source,
             )
         if _analyze_after_commit:
-            notify_install_committed(response)
+            await notify_install_committed_async(response)
         return response
 
     @serialized_plugin_operation
@@ -1032,7 +1032,7 @@ class PluginCliService:
             }
         )
         if _analyze_after_commit:
-            notify_install_committed(staged_result)
+            await notify_install_committed_async(staged_result)
         return staged_result
 
     async def _install_market_builtin_replacement(
@@ -1336,7 +1336,7 @@ class PluginCliService:
                 if warning is not None:
                     payload["install_source_warning"] = warning
                 if _analyze_after_commit:
-                    notify_install_committed(payload)
+                    await notify_install_committed_async(payload)
                 return payload
             except Exception:
                 self._cleanup_after_failure(
@@ -1414,7 +1414,7 @@ class PluginCliService:
                     warnings=[str(warning)] if warning else [],
                 )
                 if _analyze_after_commit:
-                    notify_install_committed(result)
+                    await notify_install_committed_async(result)
                 return result
             forced_directory_name = install_source_override.get("directory_name")
             use_staging = install_mode == "install" or isinstance(
@@ -1500,7 +1500,7 @@ class PluginCliService:
                     warnings=warnings,
                 )
                 if _analyze_after_commit:
-                    notify_install_committed(result)
+                    await notify_install_committed_async(result)
                 return result
 
             # Step 4b — plugin identity consistency check.
@@ -1641,7 +1641,7 @@ class PluginCliService:
                 warnings=warnings,
             )
             if _analyze_after_commit:
-                notify_install_committed(result)
+                await notify_install_committed_async(result)
             return result
 
         except InstallSourceError:
