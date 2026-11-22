@@ -2158,8 +2158,11 @@ class Ledger:
 
         def work(conn: sqlite3.Connection) -> None:
             row = conn.execute(
-                "SELECT status, resting_since FROM commissions WHERE id = ?", (commission_id,)
+                "SELECT status, resting_since, session_id FROM commissions WHERE id = ?", (commission_id,)
             ).fetchone()
+            if row is not None and row["session_id"] != session_id:
+                conn.execute("UPDATE sessions SET status = 'closed' WHERE id = ? AND status != 'cleared'", (session_id,))
+                return
             status = row["status"] if row is not None else None
             resting = status == "working" and row["resting_since"] is not None
             if status in ("queued", "working") and not resting:
