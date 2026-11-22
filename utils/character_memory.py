@@ -408,7 +408,7 @@ def _iter_registered_catgirl_names(config_manager) -> list[str]:
 
 
 def _normalize_collision_key(name: str) -> str:
-    return unicodedata.normalize("NFC", name).casefold()
+    return unicodedata.normalize("NFC", str(name or "").strip()).casefold()
 
 
 def find_character_name_collision(
@@ -424,7 +424,8 @@ def find_character_name_collision(
     Unicode NFC/NFD equivalents, and filesystem ``os.path.samefile`` aliases under
     active character memory roots.
     """
-    candidate = str(candidate_name or "").strip()
+    raw_candidate = str(candidate_name or "")
+    candidate = raw_candidate.strip()
     if not candidate:
         return None
     excluded = {str(name) for name in exclude_names if name}
@@ -441,8 +442,9 @@ def find_character_name_collision(
         if _normalize_collision_key(existing_name) == candidate_key:
             return existing_name
         for base_dir in roots:
-            if _paths_refer_to_same_entry(base_dir / existing_name, base_dir / candidate):
-                return existing_name
+            for candidate_part in dict.fromkeys([raw_candidate, candidate]):
+                if _paths_refer_to_same_entry(base_dir / existing_name, base_dir / candidate_part):
+                    return existing_name
     return None
 
 

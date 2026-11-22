@@ -7786,3 +7786,105 @@ def test_f0064_rename_rejects_casefold_collision_without_runtime_dir_on_disk(
         assert (project_root / "neko" / "facts.json").read_text(encoding="utf-8") == '["neko-seed"]'
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("existing_name", "candidate_name"),
+    [
+        ("  neko  ", "  Neko  "),
+        ("  neko  ", "Neko"),
+        ("neko ", "Neko"),
+        ("neko", "  Neko  "),
+    ],
+)
+@pytest.mark.parametrize("existing_on_disk", [False, True])
+def test_f0064_symmetric_whitespace_collision_detection_and_rename_guard(
+    tmp_path, existing_name, candidate_name, existing_on_disk
+):
+    """F0064: whitespace-padded existing and candidate names collide symmetrically."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": existing_name,
+            "猫娘": {
+                existing_name: {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    if existing_on_disk:
+        existing_dir = memory_root / existing_name
+        existing_dir.mkdir(parents=True)
+        (existing_dir / "facts.json").write_text('["existing-fact"]', encoding="utf-8")
+
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-data"]', encoding="utf-8")
+
+    assert (
+        character_memory.find_character_name_collision(
+            cm, candidate_name, exclude_names=("other",)
+        )
+        == existing_name
+    )
+    assert (
+        character_memory.find_character_name_collision(
+            None, candidate_name, exclude_names=("other",), existing_names=[existing_name, "other"]
+        )
+        == existing_name
+    )
+
+    with pytest.raises(FileExistsError, match="collides with existing character"):
+        character_memory.rename_character_memory_storage(cm, "other", candidate_name)
+
+    assert (other_dir / "facts.json").read_text(encoding="utf-8") == '["other-data"]'
+    if existing_on_disk:
+        assert (memory_root / existing_name / "facts.json").read_text(encoding="utf-8") == '["existing-fact"]'
+    else:
+        assert not (memory_root / candidate_name).exists()
+
+
+@pytest.mark.unit
+def test_f0064_same_character_whitespace_padded_case_only_rename_succeeds(tmp_path):
+    """F0064: renaming a whitespace-padded character onto its own case-variant succeeds."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    old_name = "  neko  "
+    new_name = "  Neko  "
+    cm.save_characters(
+        {
+            "当前猫娘": old_name,
+            "猫娘": {
+                old_name: {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    old_dir = memory_root / old_name
+    old_dir.mkdir(parents=True)
+    (old_dir / "facts.json").write_text('["padded-fact"]', encoding="utf-8")
+
+    assert (
+        character_memory.find_character_name_collision(
+            cm, new_name, exclude_names=(old_name,)
+        )
+        is None
+    )
+
+    result = character_memory.rename_character_memory_storage(cm, old_name, new_name)
+    target_dir = result["runtime_dir"]
+    assert target_dir.name == new_name
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["padded-fact"]'
+
+
+
