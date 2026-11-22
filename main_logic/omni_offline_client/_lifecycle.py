@@ -755,7 +755,6 @@ class _LifecycleMixin:
                         completion_mode,
                     )
                     return False
-                _note_legacy_vision(self, "offline proactive media")
             # Use stream_text's budget ladder: normalize to model tier -> sample -> recompress ->
             # discard last. Previously the **only** image-bearing model call without any budget gate:
             # every image became an unchanged data URL and was sent.
@@ -823,6 +822,10 @@ class _LifecycleMixin:
                     _budget_notice if _budget_notice.get("user_visible") else None
                 )
             if _budget_images:
+                # Images are really going out: only now is a retired vision
+                # route (switched to above) used.
+                if self.vision_model:
+                    _note_legacy_vision(self, "offline proactive media")
                 _ephemeral_content: list = []
                 for img_b64 in _budget_images:
                     _ephemeral_content.append({

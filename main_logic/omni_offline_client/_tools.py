@@ -759,6 +759,7 @@ class _ToolingMixin(_TurnContextMixin):
             getattr(self, "api_key", None),
             getattr(self, "provider_type", None),
         ):
+            _note_legacy_vision(self, "offline tool image")
             return True
         on_genai = bool(
             getattr(self, "_use_genai_sdk", False)

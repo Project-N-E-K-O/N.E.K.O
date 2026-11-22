@@ -199,3 +199,67 @@ async def test_dropped_proactive_switch_does_not_spend_the_notice():
 
     await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
     assert notices == []
+
+
+async def test_rejected_images_leave_history_so_text_chat_recovers():
+    from utils.image_history import image_count
+
+    client = _session()
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [_refusal(), [_text("好。"), _text("", "stop")]]
+
+    await client.stream_text("看看这个")
+    await client.stream_text("那算了，聊点别的")
+
+    # The second, text-only request no longer carries the rejected picture.
+    assert len(client.requests) == 2
+    assert all(image_count(getattr(m, "content", "")) == 0 for m in client.requests[1])
+    assert _emitted(client) == ["好。"]
+
+
+async def test_tool_images_already_on_the_vision_route_still_note_the_use():
+    notices = []
+    lv.register_notice_sink(notices.append)
+    client = _session(vision=VISION)
+    client.model = VISION["model"]
+    client.base_url = VISION["base_url"]
+    client.api_key = None
+    client.vision_api_key = None
+    assert await client.prepare_for_tool_images() is True
+    client.switch_model.assert_not_awaited()
+    assert len(notices) == 1
+
+
+async def test_proactive_media_dropped_by_the_budget_does_not_note_the_use(monkeypatch):
+    import main_logic.omni_offline_client._lifecycle as lifecycle_mod
+
+    async def drop_all(images, _budget):
+        return [], {"user_visible": True, "original_count": len(images), "final_count": 0,
+                    "normalized": 0, "sampled": 0, "compressed": 0, "dropped": len(images)}
+
+    monkeypatch.setattr(lifecycle_mod, "fit_images_to_turn_budget", drop_all)
+    notices = []
+    lv.register_notice_sink(notices.append)
+    client = _session(vision=VISION)
+    client.script = [[_text("嗯。"), _text("", "stop")]]
+
+    await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
+    assert notices == []
+
+
+async def test_older_image_turns_without_recorded_kinds_are_cleaned_too():
+    from main_logic.omni_offline_client._shared import HumanMessage
+    from utils.image_history import image_count
+
+    client = _session()
+    old = HumanMessage(content=[
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + _png_b64(4, 4)}},
+        {"type": "text", "text": "以前发过的图"},
+    ])
+    client._conversation_history.append(old)
+    client.script = [_refusal()]
+
+    await client.stream_text("这张呢")
+
+    assert image_count(old.content) == 0
+    assert "以前发过的图" in str(old.content)

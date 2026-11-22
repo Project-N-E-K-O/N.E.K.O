@@ -342,10 +342,15 @@ def _chat_image_refusal_hook(model_config: ProactiveModelConfig) -> Callable[[],
     A refusal from a separately configured (retired) vision route says nothing
     about the chat model, so no hook is returned for it.
     """
-    if (
+    choice = model_config.image_choice
+    if choice is not None:
+        if choice.using_legacy:
+            return None
+    elif (
         model_config.vision_model != model_config.conversation_model
         or (model_config.vision_base_url or None) != (model_config.conversation_base_url or None)
         or (model_config.vision_api_key or None) != (model_config.conversation_api_key or None)
+        or (model_config.vision_provider_type or None) != (model_config.conversation_provider_type or None)
     ):
         return None
     chat = {

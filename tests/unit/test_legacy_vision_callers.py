@@ -335,3 +335,28 @@ async def test_main_server_broadcast_reports_delivery(taken, delivered):
     finally:
         lv.register_notice_sink = original
     assert await captured["sink"]("{}") is delivered
+
+
+def test_refusal_hook_ignores_a_legacy_route_differing_only_in_protocol():
+    from main_logic.proactive_chat import generation
+    from main_logic.proactive_chat.generation import ProactiveModelConfig
+    from main_logic.proactive_chat.service import _proactive_model_config
+
+    _c, config = _proactive_model_config(CHAT, {**CHAT, "provider_type": "anthropic"}, "openai")
+    assert config.image_choice.using_legacy
+    assert generation._chat_image_refusal_hook(config) is None
+    # Without an image choice, the protocol is compared too.
+    bare = ProactiveModelConfig(
+        conversation_model="chat-x", conversation_base_url=CHAT["base_url"],
+        conversation_api_key="k", conversation_provider_type="openai",
+        vision_model="chat-x", vision_base_url=CHAT["base_url"],
+        vision_api_key="k", vision_provider_type="anthropic",
+    )
+    assert generation._chat_image_refusal_hook(bare) is None
+    same = ProactiveModelConfig(
+        conversation_model="chat-x", conversation_base_url=CHAT["base_url"],
+        conversation_api_key="k", conversation_provider_type="openai",
+        vision_model="chat-x", vision_base_url=CHAT["base_url"],
+        vision_api_key="k", vision_provider_type="openai",
+    )
+    assert generation._chat_image_refusal_hook(same) is not None

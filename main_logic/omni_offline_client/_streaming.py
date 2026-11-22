@@ -2527,6 +2527,16 @@ class _StreamingMixin:
                         # Images go to the chat model, and this one cannot read
                         # them. A refusal from a retired vision config the session
                         # switched to is not the chat model's: it keeps the raw error.
+                        # The rejected pictures leave history (text and receipts
+                        # stay), or every later text turn would carry them again.
+                        _drop_pixels = getattr(self, "_drop_history_image_pixels", None)
+                        if _drop_pixels is not None:
+                            _dropped = _drop_pixels()
+                            if _dropped:
+                                logger.info(
+                                    "🖼️ Dropped %d image(s) from history: the chat model cannot read images",
+                                    _dropped,
+                                )
                         status_error_payload = {"code": "CHAT_MODEL_IMAGE_UNSUPPORTED"}
                         discard_error_payload = status_error_payload
                         error_msg = f"💥 文本生成异常: 聊天模型不支持图片: {type(e).__name__}: {e}"
