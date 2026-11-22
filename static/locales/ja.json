@@ -1473,7 +1473,7 @@
         "customModelProviderFollowAssist": "汎用モデルのプロバイダーに従う",
         "customModelProviderFollowConversation": "テキスト対話モデルに従う",
         "customModelProviderFollowSummary": "要約モデルに従う",
-        "customModelProviderCustom": "手動で入力",
+        "customModelProviderCustom": "カスタム API",
         "keyAutoFilledFromModel": "Key は選択したモデル設定に従います",
         "keyBook": {
             "qwen": "Alibaba百炼（Qwen）",

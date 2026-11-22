@@ -1609,7 +1609,7 @@ function populateModelProviderDropdowns() {
         // custom
         const optCustom = document.createElement('option');
         optCustom.value = 'custom';
-        optCustom.textContent = window.t ? window.t('api.customModelProviderCustom') : '手动填写';
+        optCustom.textContent = window.t ? window.t('api.customModelProviderCustom') : '自定义';
         optCustom.setAttribute('data-i18n', 'api.customModelProviderCustom');
         sel.appendChild(optCustom);
 
