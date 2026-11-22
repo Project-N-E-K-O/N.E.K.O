@@ -1,6 +1,6 @@
 ---
 name: gemini-openai-api
-description: "Gemini 模型通过 OpenAI 兼容 API 接入指南。包含：(1) 辅助 API 配置（summary/correction/emotion/vision），(2) extra_body 格式用于控制 thinking，(3) 响应格式处理（markdown 代码块）。当需要将 Gemini 作为辅助模型接入、配置 thinking 参数、或处理 Gemini API 返回格式时使用。"
+description: "Gemini 模型通过 OpenAI 兼容 API 接入指南。包含：(1) 辅助 API 配置（summary/emotion/vision），(2) extra_body 格式用于控制 thinking，(3) 响应格式处理（markdown 代码块）。当需要将 Gemini 作为辅助模型接入、配置 thinking 参数、或处理 Gemini API 返回格式时使用。"
 ---
 
 # Gemini OpenAI 兼容 API 接入
@@ -25,7 +25,7 @@ https://generativelanguage.googleapis.com/v1beta/openai/
 
 | 用途                          | 推荐模型                   |
 |-------------------------------|---------------------------|
-| Correction / Agent          | `gemini-3.8-flash`        |
+| Agent                       | `gemini-3.8-flash`        |
 | Emotion Analysis              | `gemini-2.5-flash`        |
 
 ## 控制 Thinking
@@ -99,8 +99,7 @@ if result_text.startswith("```"):
   "name": "Gemini（Google）",
   "description": "Google AI 辅助模型，国内无法使用",
   "openrouter_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-  "summary_model": "gemini-3.8-flash",
-  "correction_model": "gemini-3.8-flash",
+  "summary_model": "gemini-3.1-flash-lite",
   "emotion_model": "gemini-2.5-flash",
   "vision_model": "gemini-3.8-flash"
 }

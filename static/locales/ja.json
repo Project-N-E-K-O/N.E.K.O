@@ -1474,7 +1474,7 @@
         "customModelProviderFollowCore": "コアAPIに従う",
         "customModelProviderFollowAssist": "アシストAPIに従う",
         "customModelProviderFollowConversation": "テキスト対話モデルに従う",
-        "customModelProviderFollowSummary": "要約モデルに従う",
+        "customModelProviderFollowSummary": "記憶整理モデルに従う",
         "customModelProviderCustom": "カスタム API",
         "keyAutoFilledFromModel": "Key は選択したモデル設定に従います",
         "keyBook": {
@@ -1526,8 +1526,7 @@
         "baseUrlExamplePlaceholder": "例: https://api.openai.com/v1",
         "modelExamplePlaceholder": "例: gpt-3.5-turbo, qwen-turbo",
         "conversationApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
-        "summaryApiKeyPlaceholder": "要約用APIキーを入力",
-        "correctionApiKeyPlaceholder": "修正用APIキーを入力",
+        "summaryApiKeyPlaceholder": "記憶整理用APIキーを入力",
         "emotionApiKeyPlaceholder": "感情分析用APIキーを入力",
         "visionModelExamplePlaceholder": "例: gpt-4-vision-preview",
         "visionApiKeyPlaceholder": "視覚用APIキーを入力",
@@ -1556,11 +1555,10 @@
             "message": "現在 Alibaba の米国 API を使用しています。この API は TTS とリアルタイム音声に対応していません。Alibaba のシンガポール API への切り替えをおすすめします。"
         },
         "conversationModelConfig": "テキストチャットモデル",
-        "summaryModelConfig": "要約モデル",
+        "summaryModelConfig": "記憶整理（大規模モデル）",
         "gameModelsConfig": "ミニゲームモデル",
         "gameMainModelConfig": "ミニゲーム主モデル設定",
         "gameSummaryModelConfig": "ミニゲーム要約モデル設定",
-        "correctionModelConfig": "修正モデル",
         "emotionModelConfig": "感情モデル",
         "decisionModelConfig": "意思決定モデル",
         "visionModelConfig": "視覚チャットモデル",
@@ -1577,7 +1575,6 @@
         "summaryModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "gameMainModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "gameSummaryModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
-        "correctionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "emotionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "decisionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "visionModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
@@ -4770,11 +4767,11 @@
             },
             "step8": {
                 "title": "✅ カスタムAPIを有効化",
-                "desc": "このオプションをチェックしてカスタムAPI設定を有効にしてください。有効にすると、要約、修正、感情分析など、異なるモジュール用に独立したAPIを設定できます。"
+                "desc": "このオプションをチェックしてカスタムAPI設定を有効にしてください。有効にすると、記憶整理、感情分析など、異なるモジュール用に独立したAPIを設定できます。"
             },
             "step9": {
-                "title": "📝 要約モデル",
-                "desc": "要約モデルは会話要約を生成し、メモリを管理します。要約生成タスク用に独立したAPIサービスを設定できます。"
+                "title": "📝 記憶整理（大規模モデル）",
+                "desc": "記憶整理モデルは彼女の記憶を整えます。会話履歴の圧縮、事実の抽出、振り返り、人物設定と記憶の見直しを担当します。専用のAPIサービスを設定できます。"
             }
         },
         "voice_clone": {

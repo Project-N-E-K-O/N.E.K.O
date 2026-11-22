@@ -144,7 +144,7 @@ def test_deepseek_thinking_is_disabled_only_for_memory_compression():
     compression = mgr._get_llm()
     review = mgr._get_review_llm()
 
-    assert mgr._config_manager.features == ["summary", "correction"]
+    assert mgr._config_manager.features == ["summary", "summary"]
     assert compression.extra_body == {"thinking": {"type": "disabled"}}
     # Memory organization overrides the factory's thinking-disabled parser, keeping thinking enabled. DeepSeek's
     # native thinking can exceed output limits (now enforced after max_tokens fix), so explicitly set low effort.

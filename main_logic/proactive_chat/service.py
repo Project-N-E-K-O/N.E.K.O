@@ -1727,7 +1727,7 @@ async def handle_proactive_chat(
 
         # ========== 4. Fetch LLM configuration ==========
         # Entire proactive pipeline (Phase1 selection /Phase2 generation /regen) uses conversation tier,
-        # not correction: without thinking, correction models struggle to consistently
+        # not the memory (summary) tier: without thinking, those models struggle to consistently
         # put source tag on first line and may output persona-constraint blocks. Conversation
         # main model follows format more reliably. Retain disable_thinking (vision+thinking times out).
         try:
