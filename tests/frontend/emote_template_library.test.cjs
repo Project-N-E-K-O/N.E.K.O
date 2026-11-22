@@ -269,6 +269,17 @@ test('老数据只有一份会话快照，升级后应当变成库里的一条',
     assert.equal(library.migrateFromLegacy(null, storage), null);
 });
 
+test('migrating a versioned recent snapshot preserves its graph before equal-revision selection', () => {
+    const graph={schemaVersion:1,nodes:[{id:'custom-idle',type:'output.state',params:{seconds:.7}}],links:[]};
+    const legacy={fingerprint:pkg().id,saveRevision:20,nodeGraph:graph};
+    const store=library.migrateFromLegacy(legacy,fakeStorage());
+    const saved=library.find(store,legacy.fingerprint).session;
+    assert.equal(saved.saveRevision,20);
+    assert.deepEqual(saved.nodeGraph,graph);
+    assert.deepEqual(library.selectSession(saved,legacy).nodeGraph,graph);
+    assert.equal(library.normalizeSession({}).nodeGraph,null);
+});
+
 test('副本占用讲成人话：KB/MB，不用 0 KB 糊弄', () => {
     assert.equal(library.formatBytes(0), '', '没副本就没字，别挂一个 0 KB');
     assert.equal(library.formatBytes(-5), '');

@@ -301,10 +301,7 @@
             key: legacy.fingerprint,
             packageName: legacy.packageName,
             displayName: legacy.displayName,
-            session: {
-                ...legacy,
-                nodeGraph: null,
-            },
+            session: legacy,
         }));
         return markCurrent(touch(next, legacy.fingerprint), legacy.fingerprint);
     }

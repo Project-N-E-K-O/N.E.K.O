@@ -25,6 +25,7 @@ def editor(page, running_server, emote_template_library_dir):
         captureStageSource, openStateStage,
         restoreStageImages,
         switchTemplate, downloadPng, refreshTemplateArchiveSizes,
+        pickedAnimations: () => [...pickedAnimations],
         stageImages: () => [...stageUserImages].map(([id,image])=>({id,name:image.name})),
         renderer: () => spineRenderer,
         generation: () => spineRendererGeneration,
@@ -236,6 +237,7 @@ def _assert_png_image_pack_timing(editor, pack_format, fps, start, seconds, expe
                     wanted_durations if name == 'idle.gif' else {yellow: 100}, abs=10 if quantized_edges else 1)
     else:
         metadata = json.loads(files['metadata.json'])
+        assert sorted(layer['name'] for layer in metadata['layers']) == ['idle_image', 'talking_image']
         for layer in metadata['layers']:
             state = next(state for state in layer['states'] if state['visible'])
             duration = seconds if layer['name'] == 'idle_image' else .1
@@ -526,6 +528,95 @@ def test_template_library_search_matches_alias_and_original_name(editor):
     for query in ['周末版', 'ORIGINAL-CHARACTER', 'no-such-template']:
         search.fill(query)
         assert editor.locator('.template-lib-card').count() == (0 if query == 'no-such-template' else 1)
+
+
+@pytest.mark.parametrize('key_action', ['cancel-enter', 'confirm-enter', 'escape'])
+def test_template_deletion_keyboard_respects_the_focused_confirmation_button(editor, key_action):
+    _import(editor, spine_zip())
+    key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    editor.wait_for_function('''async key => (await (await fetch('/api/emote-maker/library')).json())
+        .entries.some(entry=>entry.key===key)''', arg=key)
+    card = editor.locator(f'.template-lib-card[data-template-key="{key}"]')
+    card.locator('.template-lib-remove').click()
+    editor.locator('#emote-confirm').wait_for(state='visible')
+    assert editor.locator('#emote-confirm-ok').evaluate('button=>document.activeElement===button')
+    if key_action == 'cancel-enter':
+        editor.keyboard.press('Tab')
+        assert editor.locator('#emote-confirm-cancel').evaluate('button=>document.activeElement===button')
+    editor.keyboard.press('Escape' if key_action == 'escape' else 'Enter')
+    editor.locator('#emote-confirm').wait_for(state='hidden')
+    if key_action == 'confirm-enter':
+        card.wait_for(state='detached')
+        assert editor.evaluate('reviewEditor.currentTemplateKey()') == ''
+    else:
+        assert card.count() == 1
+        assert editor.evaluate('reviewEditor.currentTemplateKey()') == key
+        assert editor.evaluate('Boolean(reviewEditor.renderer()?.loaded)')
+    assert editor.evaluate('''async key => (await (await fetch('/api/emote-maker/library')).json())
+        .entries.some(entry=>entry.key===key)''', key) is (key_action != 'confirm-enter')
+
+
+def test_registry_switch_clears_cross_template_picks_but_current_template_activation_keeps_them(editor):
+    _import(editor, spine_zip(), 'A.zip')
+    a_key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    _import(editor, spine_zip('other'), 'B.zip')
+    editor.locator('.animation-card[data-animation-id="idle1"]').click(button='right')
+    assert editor.evaluate('reviewEditor.pickedAnimations()') == ['idle1']
+    assert editor.evaluate('key=>reviewEditor.applyTemplateFromRegistry(key)', a_key)
+    assert editor.evaluate('reviewEditor.pickedAnimations()') == []
+    assert editor.locator('.animation-card.is-picked').count() == 0
+    editor.locator('.animation-card[data-animation-id="idle1"]').click(button='right')
+    assert editor.evaluate('reviewEditor.pickedAnimations()') == ['idle1']
+    assert editor.evaluate('key=>reviewEditor.applyTemplateFromRegistry(key)', a_key)
+    assert editor.evaluate('reviewEditor.pickedAnimations()') == ['idle1']
+
+
+@pytest.mark.parametrize('versioned', [False, True])
+def test_migrating_the_recent_session_without_a_library_preserves_the_state_graph(editor, versioned):
+    _import(editor, spine_zip())
+    graph = editor.evaluate('''() => {
+        const q=reviewEditor;
+        q.state.nodeGraph=NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1,nodes:[
+            {id:'my-root',type:'source.default',params:{}},
+            {id:'my-idle',type:'output.state',params:{stateKey:'idle_image',seconds:.7,startAt:.1}},
+        ],links:[{from:'my-root',to:'my-idle',fromSocket:'look',toSocket:'look'}]});
+        q.persistTemplateToLibrary();return q.state.nodeGraph;
+    }''')
+    editor.wait_for_function('''async () => (await (await fetch('/api/emote-maker/library')).json()).entries.length===1''')
+    editor.add_init_script('''(() => {
+        const name='neko-emote-maker-last-template',saved=JSON.parse(localStorage.getItem(name));
+        if(__VERSIONED__) saved.saveRevision=20;else delete saved.saveRevision;
+        localStorage.setItem(name,JSON.stringify(saved));
+        localStorage.removeItem('neko-emote-maker-template-library');
+        localStorage.removeItem('neko-emote-maker-node-graph');
+    })();'''.replace('__VERSIONED__', json.dumps(versioned)))
+    editor.reload(wait_until='networkidle')
+    assert editor.evaluate('''JSON.parse(localStorage.getItem(NekoEmoteTemplateLibrary.STORAGE_KEY))
+        .entries[0].session.nodeGraph''') == graph
+    editor.locator('.template-lib-card:not([data-template-built-in]) .template-lib-open').first.click()
+    editor.wait_for_function('Boolean(reviewEditor.renderer()?.loaded)')
+    assert editor.evaluate('reviewEditor.state.nodeGraph') == graph
+
+
+def test_state_look_transform_is_baked_even_when_editor_adjustment_override_is_disabled(editor):
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async () => {
+        const q=reviewEditor,scene=q.getImportedScenes()[0];
+        q.state.adjustOverwrite=true;q.state.adjustments={x:0,y:0,rotation:0,scale:100};
+        const normal=q.currentLookDefaults(),moved=structuredClone(normal);
+        moved.transform={x:147,y:-8,rotation:24,scale:.8};
+        const jobs=[moved,normal].map((look,index)=>({stateKey:index?'talking_image':'idle_image',
+            sceneId:scene.id,look,frames:1,timeWindow:{from:0,to:.1}}));
+        const expected=await q.bakePackJobs(jobs,{fps:10,edge:64});
+        q.state.adjustOverwrite=false;
+        const actual=await q.bakePackJobs(jobs,{fps:10,edge:64});
+        const equal=(a,b)=>a.length===b.length && a.every((v,i)=>v===b[i]);
+        return {count:actual.length,moved:equal(actual[0].frames[0].data,expected[0].frames[0].data),
+            normal:equal(actual[1].frames[0].data,expected[1].frames[0].data),
+            distinct:!equal(expected[0].frames[0].data,expected[1].frames[0].data),
+            overwrite:q.state.adjustOverwrite,x:q.state.adjustments.x};
+    }''')
+    assert result == {'count':2,'moved':True,'normal':True,'distinct':True,'overwrite':False,'x':0}
 
 
 def test_switching_loaded_templates_survives_an_oversized_library_without_discarding_sessions(editor):

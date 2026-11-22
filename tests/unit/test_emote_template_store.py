@@ -360,6 +360,69 @@ def test_recovery_cleans_expired_staging_but_keeps_recent_and_active_copies(stor
     assert active.resolve() not in store_module._active_staging
 
 
+def test_cyclic_staging_symlink_does_not_block_opening_an_existing_template(store, monkeypatch):
+    store.save('normal', _zip())
+    loop = store.root / '.uploading-cyclic'
+    try:
+        loop.symlink_to(loop.name, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        # Exercise Python 3.11's cyclic-link API behaviour even on Windows
+        # accounts that cannot create symlinks.
+        loop.mkdir()
+        original_resolve = Path.resolve
+        original_is_symlink = Path.is_symlink
+
+        def resolve(path, *args, **kwargs):
+            if path == loop:
+                raise RuntimeError('Symlink loop')
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, 'resolve', resolve)
+        monkeypatch.setattr(Path, 'is_symlink', lambda path: path == loop or original_is_symlink(path))
+    with pytest.raises(RuntimeError):
+        loop.resolve()
+    reopened = EmoteTemplateArchiveStore(store.root)
+    assert reopened.archive_path('normal').read_bytes() == _zip()
+    assert loop.is_symlink()
+
+
+@pytest.mark.parametrize('limit', ['count', 'bytes'])
+def test_concurrent_texture_batches_check_the_latest_published_inventory(store, monkeypatch, limit):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    store.save('limited', _zip(), [('StageImages/base.png', b'b')])
+    if limit == 'count':
+        monkeypatch.setattr(store_module, 'MAX_TEXTURE_FILES', 2)
+    else:
+        monkeypatch.setattr(store_module, 'MAX_TEXTURE_TOTAL_BYTES', 2)
+    ready = Barrier(2)
+    original_staging = store._new_staging
+
+    def new_staging():
+        ready.wait(timeout=5)
+        return original_staging()
+
+    monkeypatch.setattr(store, '_new_staging', new_staging)
+
+    def write(name):
+        try:
+            store.save_textures('limited', [(f'StageImages/{name}.png', b'x')])
+            return 'saved'
+        except EmoteTemplateStoreError as error:
+            return str(error)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(write, ['one', 'two']))
+    assert results.count('saved') == 1
+    assert '超过上限' in next(result for result in results if result != 'saved')
+    paths = store.texture_paths('limited')
+    assert len(paths) == 2
+    assert sum(store.texture_path('limited', path).stat().st_size for path in paths) == 2
+    assert store.archive_path('limited').read_bytes() == _zip()
+    assert not list(store.root.glob('.uploading-*'))
+
+
 def test_discarding_staging_does_not_block_recovery_of_other_templates(store, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event

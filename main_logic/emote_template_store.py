@@ -125,8 +125,10 @@ class EmoteTemplateArchiveStore:
         root = self.root.resolve()
         for staging in self.root.glob('.uploading-*'):
             try:
+                if staging.is_symlink():
+                    continue
                 resolved = staging.resolve()
-                if (staging.is_symlink() or not staging.is_dir() or resolved.parent != root
+                if (not staging.is_dir() or resolved.parent != root
                         or resolved in _active_staging):
                     continue
                 modified = staging.stat().st_mtime
@@ -381,26 +383,26 @@ class EmoteTemplateArchiveStore:
         if not cleaned:
             return {"key": str(key), "textures": self.texture_paths(key)}
         textures_dir = self._entry_dir(key) / TEXTURES_DIR
-        existing = self.texture_paths(key)
-        spellings = {}
-        for relative in existing + [path for path, _ in cleaned]:
-            lowered = relative.lower()
-            if lowered in spellings and spellings[lowered] != relative:
-                raise EmoteTemplateStoreError(f"贴图路径大小写冲突：{relative}")
-            spellings[lowered] = relative
-        replacements = dict(cleaned)
-        total_bytes = sum(len(blob) for blob in replacements.values()) + sum(
-            self._safe_child(textures_dir, path).stat().st_size for path in existing if path not in replacements
-        )
-        if len(set(existing) | replacements.keys()) > MAX_TEXTURE_FILES:
-            raise EmoteTemplateStoreError(f"贴图数量超过上限（最多 {MAX_TEXTURE_FILES} 张）")
-        if total_bytes > MAX_TEXTURE_TOTAL_BYTES:
-            raise EmoteTemplateStoreError("附带贴图总大小超过上限")
         staging = self._new_staging()
         try:
             # Share unchanged files; detach replacements before writing so a
             # failed batch cannot modify the currently published generation.
             with _replacement_lock:
+                existing = self.texture_paths(key)
+                spellings = {}
+                for relative in existing + [path for path, _ in cleaned]:
+                    lowered = relative.lower()
+                    if lowered in spellings and spellings[lowered] != relative:
+                        raise EmoteTemplateStoreError(f"贴图路径大小写冲突：{relative}")
+                    spellings[lowered] = relative
+                replacements = dict(cleaned)
+                total_bytes = sum(len(blob) for blob in replacements.values()) + sum(
+                    self._safe_child(textures_dir, path).stat().st_size for path in existing if path not in replacements
+                )
+                if len(set(existing) | replacements.keys()) > MAX_TEXTURE_FILES:
+                    raise EmoteTemplateStoreError(f"贴图数量超过上限（最多 {MAX_TEXTURE_FILES} 张）")
+                if total_bytes > MAX_TEXTURE_TOTAL_BYTES:
+                    raise EmoteTemplateStoreError("附带贴图总大小超过上限")
                 shutil.copytree(self._entry_dir(key), staging, copy_function=_link_or_copy)
                 for relative, blob in cleaned:
                     target = self._safe_child(staging / TEXTURES_DIR, relative)

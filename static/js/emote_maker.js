@@ -6780,6 +6780,7 @@
         spineRendererGeneration += 1;
         disposeSpineRenderer();
         templatePackage = held.pkg;
+        setPickedAnimations([]);
         templateAssetStore = held.store;
         lastTemplate = {
             ...entry.session,
@@ -6879,7 +6880,8 @@
                 } else if (event.key === 'Enter') {
                     event.preventDefault();
                     event.stopPropagation();
-                    done(true);
+                    if (document.activeElement === ok) ok.click();
+                    else if (document.activeElement === cancel) cancel.click();
                 } else if (event.key === 'Tab') {
                     event.preventDefault();
                     event.stopPropagation();
@@ -7465,6 +7467,7 @@
                 if (generation !== spineRendererGeneration) return [];
                 applyLookToState(job.look);
                 const frames = await captureGifFramesNow({
+                    look: job.look,
                     scene,
                     maxFrames: job.frames,
                     fps,
@@ -7924,6 +7927,7 @@
         const releaseEditorView = retainCaptureEditorView();
         try {
             capturingFrames = true;
+            captureLook = options.look || captureLook;
             if (colorDraft) applyNativeCharacterState({ render: false });
             if (scene) {
                 state.selectedSceneId = scene.id;
