@@ -326,16 +326,17 @@ def bind_entry_permission_source(plugin_id: str, entry) -> None:
     Unlike :func:`bind_current_permission_source` this does not look the
     plugin up again. When the entry's source is incomplete (a Market or
     imported entry without its fingerprint) and the record has no source
-    either, raises ``ServerDomainError`` with ``SOURCE_UNKNOWN`` (409), so
-    the new source cannot bind those grants first. Otherwise raises like
-    :func:`bind_permission_source`.
+    but still grants a permission, raises ``ServerDomainError`` with
+    ``SOURCE_UNKNOWN`` (409), so the new source cannot take those grants
+    over. A record holding only denials or nothing is left alone. Otherwise
+    raises like :func:`bind_permission_source`.
     """
     source = _source_of(entry)
     if source is not None:
         bind_permission_source(plugin_id, source)
         return
     try:
-        record = permission_store.read(plugin_id)
+        held = permission_store.holds_unbound_grant(plugin_id)
     except ServerDomainError as exc:
         if exc.code not in _UNUSABLE_STORE_CODES:
             raise
@@ -343,7 +344,7 @@ def bind_entry_permission_source(plugin_id: str, entry) -> None:
             "plugin permission source not bound plugin_id={} code={}", plugin_id, exc.code
         )
         return
-    if record and PluginSource.from_dict(record.get("source")) is None:
+    if held:
         raise ServerDomainError(
             SOURCE_UNKNOWN,
             "the plugin's current install source is incomplete, so its permission "

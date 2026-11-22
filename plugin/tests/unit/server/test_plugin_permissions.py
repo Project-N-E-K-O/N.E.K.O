@@ -1406,6 +1406,61 @@ def test_bind_unbound_source_saves_a_pending_import_of_a_bound_record(manager):
     assert on_disk["plugins"]["x"]["source"] == {"channel": "builtin", "fingerprint": None}
 
 
+def test_holds_unbound_grant_counts_only_grants_of_a_source_less_record(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("granted", MEMORY_READ, "granted", source=None)
+    store.decide("denied", MEMORY_READ, "denied", source=None)
+    store.decide("cleared", MEMORY_READ, "granted", source=None)
+    store.clear("cleared", MEMORY_READ)
+    store.decide("bound", MEMORY_READ, "granted", source=MARKET)
+
+    assert store.holds_unbound_grant("granted") is True
+    assert store.holds_unbound_grant("denied") is False
+    assert store.holds_unbound_grant("cleared") is False
+    assert store.holds_unbound_grant("bound") is False
+    assert store.holds_unbound_grant("absent") is False
+
+
+def test_holds_unbound_grant_counts_legacy_grants_and_not_legacy_denials(manager):
+    _write_legacy(
+        manager,
+        {
+            "schema_version": 2,
+            "plugins": {
+                "approved": {"decision": "approved", "approved_capabilities": ["memory.read"]},
+                "denied": {"decision": "denied"},
+            },
+        },
+    )
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: None)
+
+    assert store.holds_unbound_grant("approved") is True
+    assert store.holds_unbound_grant("denied") is False
+
+
+def test_holds_unbound_grant_saves_a_pending_import_first(manager):
+    """A first-use import whose save failed must not be taken as on disk."""
+    _write_legacy(
+        manager,
+        {
+            "schema_version": 2,
+            "plugins": {"x": {"decision": "approved", "approved_capabilities": ["memory.read"]}},
+        },
+    )
+    manager.fail = OSError("disk full")
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: PluginSource("builtin"))
+    assert store.read("x")["source"] == {"channel": "builtin", "fingerprint": None}
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        store.holds_unbound_grant("x")
+    assert exc_info.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+
+    manager.fail = None
+    assert store.holds_unbound_grant("x") is False
+    on_disk = json.loads((manager.root / "plugin_permissions.json").read_text(encoding="utf-8"))
+    assert on_disk["plugins"]["x"]["source"] == {"channel": "builtin", "fingerprint": None}
+
+
 @pytest.mark.parametrize("installed", [None, 3])
 def test_forget_installed_plugins_tolerates_a_malformed_install_result(installed):
     assert permission_service.forget_installed_plugins({"installed_plugins": installed}) is True

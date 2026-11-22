@@ -4647,7 +4647,7 @@ async def _replace_market_plugin_transaction(
     # to the source of the entry validated above (not looked up again), so
     # the Market source recorded for the new package is a source change
     # rather than a first binding. A failed save, or an incomplete entry with
-    # a source-less record, stops the replacement here, unchanged.
+    # a source-less grant, stops the replacement here, unchanged.
     try:
         await asyncio.to_thread(
             bind_entry_permission_source, active_entry.plugin_id, active_entry
@@ -4948,11 +4948,6 @@ async def _do_upgrade(
                 manual_snapshot_sha256=manual_snapshot_sha256,
                 rollback_install_source=rollback_install_source,
             )
-        except _TaskError:
-            # Refused before replacing anything (plan changed, grants could
-            # not be bound): nothing was changed, so there is no rollback.
-            task["rollback"] = None
-            raise
         except ReplacePluginError as exc:
             rollback_ok = exc.rollback_status == "completed" and source_restored
             cause_code = (
@@ -4985,6 +4980,12 @@ async def _do_upgrade(
                     else f"升级失败且回滚未完整完成: {cause_message}"
                 ),
             ) from exc
+        except Exception:
+            # Anything else is raised before the transaction changes a file
+            # (plan changed, grants could not be bound, replacement
+            # pre-checks): there is no rollback to report.
+            task["rollback"] = None
+            raise
 
         result = _with_market_operation_status(
             replacement.install_result,

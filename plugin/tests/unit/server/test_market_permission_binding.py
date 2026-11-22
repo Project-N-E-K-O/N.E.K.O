@@ -163,15 +163,22 @@ async def test_market_upgrade_keeps_grants_of_an_unchanged_market_source(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("record", ["source_less", "bound", "absent"])
-async def test_market_upgrade_of_an_incomplete_entry_stops_only_for_a_source_less_record(
+@pytest.mark.parametrize("record", ["source_less", "denied", "cleared", "bound", "absent"])
+async def test_market_upgrade_of_an_incomplete_entry_stops_only_for_a_source_less_grant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
 ) -> None:
-    """A Market entry without its Market id has no known source. With a
-    source-less grant record the replacement stops unchanged; otherwise
-    there is nothing to bind and it goes ahead."""
+    """A Market entry without its Market id has no known source. When a
+    source-less record still grants a permission the replacement stops
+    unchanged; a record holding only denials or nothing, a bound record, or
+    no record lets it go ahead."""
+    store = permission_service.permission_store
     if record == "source_less":
         _grant_without_source()
+    elif record == "denied":
+        store.decide(PLUGIN_ID, PERMISSION, "denied", source=None)
+    elif record == "cleared":
+        _grant_without_source()
+        store.clear(PLUGIN_ID, PERMISSION)
     elif record == "bound":
         permission_service.permission_store.decide(
             PLUGIN_ID, PERMISSION, "granted", source=PluginSource("market", MARKET_ID)
@@ -244,21 +251,14 @@ async def test_market_replacement_stops_unchanged_when_the_binding_cannot_be_sav
 async def test_incomplete_entry_check_handles_an_unreadable_store(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str, proceeds: bool
 ) -> None:
-    """With an incomplete entry the record is read to see whether it has a
-    source: a read failure stops the replacement, a damaged or newer store
-    is skipped."""
-    store = permission_service.permission_store
-    real_read = type(store).read
-    reads = {"count": 0}
+    """With an incomplete entry the record is checked for source-less
+    grants: a store that cannot be read or saved stops the replacement, a
+    damaged or newer one is skipped."""
 
-    def first_read_fails(plugin_id):
-        # The check reads first; install_new reads again afterwards.
-        reads["count"] += 1
-        if reads["count"] == 1:
-            raise ServerDomainError(code, "permission store unavailable", 503)
-        return real_read(store, plugin_id)
+    def cannot_check(_plugin_id):
+        raise ServerDomainError(code, "permission store unavailable", 503)
 
-    monkeypatch.setattr(store, "read", first_read_fails)
+    monkeypatch.setattr(permission_service.permission_store, "holds_unbound_grant", cannot_check)
     entry = _entry("market", market_id="")
     calls: list[str] = []
 

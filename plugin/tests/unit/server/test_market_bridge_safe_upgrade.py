@@ -1292,9 +1292,18 @@ async def test_market_upgrade_exposes_rollback_while_files_are_being_restored(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ServerDomainError("PLUGIN_PERMISSIONS_WRITE_FAILED", "store unavailable", 503),
+        FileNotFoundError("installed plugin directory is missing"),
+    ],
+    ids=["task_error", "other_error"],
+)
 async def test_market_upgrade_refused_before_replacing_reports_no_rollback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
 ) -> None:
     """The transaction can refuse before it replaces anything (here: grants
     cannot be bound). Nothing changed, so the task must not show a rollback."""
@@ -1321,15 +1330,15 @@ async def test_market_upgrade_refused_before_replacing_reports_no_rollback(
     )
 
     def cannot_bind(_plugin_id: str, _entry: object) -> None:
-        raise ServerDomainError("PLUGIN_PERMISSIONS_WRITE_FAILED", "store unavailable", 503)
+        raise failure
 
     monkeypatch.setattr(market_bridge, "bind_entry_permission_source", cannot_bind)
 
     task: dict[str, Any] = {}
-    with pytest.raises(market_bridge._TaskError) as exc_info:
+    expected = market_bridge._TaskError if isinstance(failure, ServerDomainError) else type(failure)
+    with pytest.raises(expected):
         await market_bridge._do_upgrade(task, _payload(), {})
 
-    assert exc_info.value.code == "plugin_permissions_write_failed"
     assert task["rollback"] is None
     assert installs == []
     assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == "version = '1.0.0'\n"
