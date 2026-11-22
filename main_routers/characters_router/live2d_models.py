@@ -22,6 +22,7 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 from ._shared import logger, router
 from .voice_providers import _config_value_is_enabled
 
+import asyncio
 import re
 import os
 import math
@@ -212,6 +213,27 @@ def _get_persisted_avatar_model_type(catgirl: dict) -> str:
     if vrm_path or mmd_path:
         return 'live3d'
     return 'live2d'
+
+
+def _fallback_workshop_item_id(url_dir: str, model_file_path: str) -> str:
+    """Item id to report for a /workshop model found by name, or '' (blocking; run in a thread).
+
+    The frontend loads the model files with /api/live2d/model_files_by_id/<item_id>, so
+    the id must make that lookup pick this very file. The candidate is the item folder
+    (first segment of url_dir); it is reported only if the by-id choice
+    (find_workshop_item_by_id + find_workshop_item_model_file, as model_files_by_id uses)
+    is model_file_path. Otherwise (stale saved id, or another model of the same item
+    would win) no id is reported and the frontend looks the model up by name.
+    """
+    candidate_id = url_dir.split('/', 1)[0]
+    try:
+        item_dir, _ = find_workshop_item_by_id(candidate_id)
+        chosen = find_workshop_item_model_file(item_dir) if item_dir else None
+        if chosen and os.path.realpath(chosen) == os.path.realpath(model_file_path):
+            return candidate_id
+    except Exception as e:
+        logger.debug(f"按物品ID核对回退模型失败: {e}")
+    return ''
 
 
 def _find_live2d_model_catalog_entry(
@@ -503,29 +525,19 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             # model_dir was found by name, so build the URL from where it really
                             # sits under its mount (same as find_model_config_file), not from the
                             # saved item_id, which need not be the folder that was found.
-                            url_dir = model_url_dir(model_dir, url_prefix, live2d_model_name)
+                            url_dir = await asyncio.to_thread(
+                                model_url_dir, model_dir, url_prefix, live2d_model_name
+                            )
                             model_path = encode_url_path(f'{url_prefix}/{url_dir}/{model_file}')
                             logger.debug(f"按模型目录构建路径: {model_path}")
 
-                            # The frontend loads the model files by item_id
-                            # (/api/live2d/model_files_by_id/<item_id>), so only report an id
-                            # whose by-id lookup picks this very file: under /workshop the
-                            # candidate is the item folder (first segment of url_dir). If the
-                            # by-id choice differs (stale saved id, or another model of the
-                            # same item would win) or the folder is not a Workshop item, report
-                            # no id so the frontend looks the model up by name instead.
+                            # The frontend loads the model files by item_id, so only report
+                            # an id whose by-id lookup picks this very file (see helper).
                             found_item_id = ''
                             if saved_item_id and url_prefix == '/workshop':
-                                candidate_id = url_dir.split('/', 1)[0]
-                                try:
-                                    item_dir, _ = find_workshop_item_by_id(candidate_id)
-                                    chosen = find_workshop_item_model_file(item_dir) if item_dir else None
-                                    if chosen and os.path.realpath(chosen) == os.path.realpath(
-                                        os.path.join(model_dir, model_file)
-                                    ):
-                                        found_item_id = candidate_id
-                                except Exception as e:
-                                    logger.debug(f"按物品ID核对回退模型失败: {e}")
+                                found_item_id = await asyncio.to_thread(
+                                    _fallback_workshop_item_id, url_dir, os.path.join(model_dir, model_file)
+                                )
 
                             model_info = {
                                 'name': live2d_model_name,
@@ -569,7 +581,9 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
-                            url_dir = model_url_dir(model_dir, url_prefix, DEFAULT_LIVE2D_MODEL_NAME)
+                            url_dir = await asyncio.to_thread(
+                                model_url_dir, model_dir, url_prefix, DEFAULT_LIVE2D_MODEL_NAME
+                            )
                             model_path = f'{url_prefix}/{url_dir}/{model_file}'
                             model_info = {
                                 'name': DEFAULT_LIVE2D_MODEL_NAME,
