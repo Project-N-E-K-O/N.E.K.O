@@ -237,8 +237,11 @@ class _Reference:
     function: str
     is_call: bool
     # The root name is also rebound in this scope by a loop, with, except,
-    # walrus or unpacking target, so the resolved origin is not certain.
+    # walrus, unpacking or unresolvable assignment target, so the resolved
+    # origin is not certain.
     rebound: bool = False
+    # Root name as written in the source, before alias resolution.
+    raw_root: str = ""
 
 
 def _resolved_references(tree, walker: _AnalysisWalker):
@@ -256,10 +259,10 @@ def _references(tree, walker: _AnalysisWalker):
         _propagate_assignments(assignments, bindings, walker)
         rebound = _rebound_names(nodes, walker)
         for reference in _emit_references(nodes, bindings, scope, walker, function):
-            if rebound and _root_name(reference.method) in rebound and not reference.rebound:
+            if rebound and reference.raw_root in rebound and not reference.rebound:
                 reference = _Reference(
                     reference.node, reference.method, reference.external, reference.bound,
-                    reference.function, reference.is_call, True,
+                    reference.function, reference.is_call, True, reference.raw_root,
                 )
             yield reference
 
@@ -299,9 +302,14 @@ def _rebound_names(nodes, walker) -> frozenset[str]:
             names.add(node.name)
         elif isinstance(node, ast.NamedExpr):
             _target_names(node.target, names)
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, (ast.Tuple, ast.List)):
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            # A value the alias resolution cannot follow (a lambda, a
+            # conditional, a subscript ...) leaves the previous binding in
+            # place, so the name's origin is no longer certain.
+            opaque = node.value is None or isinstance(node, ast.AugAssign) or not _name(node.value)
+            for target in targets:
+                if isinstance(target, (ast.Tuple, ast.List)) or (opaque and isinstance(target, ast.Name)):
                     _target_names(target, names)
     return frozenset(names)
 
@@ -444,20 +452,29 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
             getattr_reference = _getattr_reference(node)
             if getattr_reference is not None:
                 receiver, attribute = getattr_reference
-                resolved, external, bound = _resolve_with_origin(_name(receiver), bindings)
+                raw = _name(receiver)
+                resolved, external, bound = _resolve_with_origin(raw, bindings)
+                # getattr(x, "f") only retrieves f; getattr(x, "f")() calls it.
                 yield _Reference(
                     node, resolved + "." + attribute, external, bound, function,
-                    isinstance(node, ast.Call),
+                    isinstance(node, ast.Call) and isinstance(node.func, ast.Call),
+                    raw_root=_root_name(raw),
                 )
             else:
-                resolved, external, bound = _resolve_with_origin(
-                    _name(node.func if isinstance(node, ast.Call) else node),
-                    bindings,
-                )
+                raw = _name(node.func if isinstance(node, ast.Call) else node)
+                resolved, external, bound = _resolve_with_origin(raw, bindings)
                 yield _Reference(
                     node, resolved, external, bound, function,
                     isinstance(node, ast.Call),
+                    raw_root=_root_name(raw),
                 )
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            # A bare name bound to a data attribute (from os import environ)
+            # reads it; other bare names are left to the attribute and call
+            # references so the legacy capability scan is unchanged.
+            resolved, external, bound = _resolve_with_origin(node.id, bindings)
+            if external and bound and _matches(resolved, _DATA_READS):
+                yield _Reference(node, resolved, external, bound, function, False, raw_root=node.id)
 
 
 def iter_capability_sources(root: Path) -> Iterator[Path]:
@@ -851,29 +868,46 @@ def _read_manifest(root: Path) -> dict | None:
         return None
 
 
-def _skipped_parts(root: Path, stop: Event | None) -> list[dict]:
-    """vendor/ and non-Python code files, bounded."""
-    skipped: list[dict] = []
+def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
+    """What the Python scan does not read: vendor/ and non-Python code files.
+
+    Bounded by _MAX_TREE_ENTRIES; ``truncated`` tells the walk stopped early.
+    Also part of the cached report's source revision, so adding or removing
+    such files refreshes the report.
+    """
+    inventory: dict = {"vendor": False, "non_python": [], "truncated": False}
     try:
-        if (root / "vendor").is_dir():
-            skipped.append({"reason": "vendor", "file": "vendor"})
+        inventory["vendor"] = (root / "vendor").is_dir()
         visited = 0
-        found = 0
         for current, directories, files in os.walk(root, followlinks=False):
             if stop is not None and stop.is_set():
+                inventory["truncated"] = True
                 break
             directories[:] = sorted(name for name in directories if name not in _NON_PYTHON_SKIPPED_DIRS)
             for name in sorted(files):
                 visited += 1
                 if visited > _MAX_TREE_ENTRIES:
-                    return skipped
+                    inventory["truncated"] = True
+                    return inventory
                 if Path(name).suffix.lower() in _NON_PYTHON_CODE_SUFFIXES:
-                    found += 1
-                    if found <= _MAX_NON_PYTHON_REPORTED:
-                        relative = (Path(current) / name).relative_to(root).as_posix()
-                        skipped.append({"reason": "non_python", "file": relative})
+                    inventory["non_python"].append((Path(current) / name).relative_to(root).as_posix())
     except OSError:
-        pass
+        inventory["truncated"] = True
+    return inventory
+
+
+def _skipped_parts(root: Path, stop: Event | None) -> list[dict]:
+    """Blind-spot rows for vendor/ and non-Python code files, bounded."""
+    inventory = skipped_inventory(root, stop)
+    skipped: list[dict] = []
+    if inventory["vendor"]:
+        skipped.append({"reason": "vendor", "file": "vendor"})
+    skipped.extend(
+        {"reason": "non_python", "file": relative}
+        for relative in inventory["non_python"][:_MAX_NON_PYTHON_REPORTED]
+    )
+    if inventory["truncated"]:
+        skipped.append({"reason": "budget_exceeded", "file": None})
     return skipped
 
 

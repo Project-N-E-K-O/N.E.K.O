@@ -19,6 +19,7 @@ from plugin.core.capability_analysis import (
     analyze_capabilities,
     iter_capability_sources,
     read_capability_sources,
+    skipped_inventory,
 )
 from plugin.core.state import state
 from plugin.logging_config import get_logger
@@ -58,6 +59,9 @@ def source_revision(root: Path, version: str, *, stop: threading.Event | None = 
         "size": stat.st_size,
         "python": hashlib.sha256(json.dumps(sources).encode()).hexdigest(),
         "truncated": truncated,
+        "skipped": hashlib.sha256(
+            json.dumps(skipped_inventory(root, stop), sort_keys=True).encode()
+        ).hexdigest(),
     }
 
 

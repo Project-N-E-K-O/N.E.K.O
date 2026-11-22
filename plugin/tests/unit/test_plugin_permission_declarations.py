@@ -711,3 +711,80 @@ def test_analyzer_upgrade_does_not_ask_approved_plugins_again(tmp_path):
     record = {"decision": "approved", "approved_capabilities": ["memory.read", "messages.push"]}
     view = derive_consent(record, report)
     assert (view.state, view.upgraded) == ("clear", False)
+
+
+# --- review follow-ups ----------------------------------------------------------------
+
+
+def _errors(report: dict) -> list[str]:
+    return [issue.params["permission"] for issue in compare_declarations(report) if issue.severity == "error"]
+
+
+def test_rebinding_is_checked_against_the_name_as_written(tmp_path):
+    report = _scan(tmp_path, "import os as o\nfor o in items:\n    o.system('x')\n")
+    assert report["permissions"]["system.process:spawn"]["basis"] == "suffix_match"
+    assert _errors(report) == []
+
+
+@pytest.mark.parametrize(
+    "source,direct",
+    [
+        ("import subprocess\nrunner = getattr(subprocess, 'run')\n", False),
+        ("import subprocess\ngetattr(subprocess, 'run')(['ls'])\n", True),
+    ],
+)
+def test_getattr_retrieval_is_not_a_call(tmp_path, source, direct):
+    report = _scan(tmp_path, source)
+    assert (report["permissions"]["system.process:spawn"]["basis"] == "resolved_call") is direct
+    assert bool(_errors(report)) is direct
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    ["lambda *args: None", "None", "pick() if flag else other", "handlers['run']"],
+)
+def test_a_name_reassigned_to_something_unresolvable_is_not_direct_evidence(tmp_path, replacement):
+    report = _scan(tmp_path, f"import subprocess\nrunner = subprocess.run\nrunner = {replacement}\nrunner('x')\n")
+    assert _errors(report) == []
+
+
+def test_reassignment_weakening_keeps_legacy_capabilities(tmp_path):
+    source = "from plugin.sdk import create_card\nmake = create_card\nmake = lambda: None\nmake()\n"
+    before = "from plugin.sdk import create_card\nmake = create_card\nmake()\n"
+    assert _scan(tmp_path, source)["capabilities"] == _scan(tmp_path, before)["capabilities"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from os import environ\nKEY = environ['KEY']\n",
+        "from os import environ as env\nKEY = env.get('KEY')\n",
+        "from os import environ\ndef f():\n    return dict(environ)\n",
+    ],
+)
+def test_imported_environ_reads_are_direct_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert _errors(report) == ["system.env:read"]
+    assert report["capabilities"] == []
+
+
+def test_a_truncated_tree_walk_is_a_blind_spot(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "_MAX_TREE_ENTRIES", 3)
+    for index in range(5):
+        (tmp_path / f"data_{index}.txt").write_text("x", encoding="utf-8")
+    report = _scan(tmp_path, "x = 1\n")
+    assert {"type": "not_analyzed", "file": None, "line": None, "reason": "budget_exceeded"} in report["blind_spots"]
+    assert scan_note(report) == "blind_spots"
+
+
+def test_source_revision_changes_when_non_python_code_is_added(tmp_path):
+    from plugin.server.application.plugins import capability_analysis_service as service
+
+    (tmp_path / "plugin.toml").write_text('[plugin]\nid = "x"\n', encoding="utf-8")
+    (tmp_path / "main.py").write_text("x = 1\n", encoding="utf-8")
+    before = service.source_revision(tmp_path, "1")
+    (tmp_path / "ui").mkdir()
+    (tmp_path / "ui" / "panel.tsx").write_text("export default 1", encoding="utf-8")
+    after = service.source_revision(tmp_path, "1")
+    assert before != after
+    assert service.source_revision(tmp_path, "1") == after
