@@ -89,9 +89,9 @@ Consequences:
   read who called it from `self.ctx.call_chain` (`plugin-system-surface-map.md`,
   Cross-Plugin Calls). `self.ctx.plugin_id in self.ctx.call_chain.callers`
   means the plugin was re-entered, but `callers` is empty in timers, in work
-  handed to `run_in_executor` or a bare thread, in a background task that
-  outlives the entry, and when the host's call-chain policy is off, so treat
-  it as a hint, not a guard.
+  handed to `run_in_executor` or a bare thread, and in a background task that
+  outlives the entry, so treat it as a hint, not a guard. The host's
+  permission-check switch does not change this.
 
 ## Other Threads
 

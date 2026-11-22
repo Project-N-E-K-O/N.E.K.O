@@ -1,3 +1,5 @@
+import { permissionLabels, withPermissionLabels } from './plugin-permissions'
+
 const en = {
   title: 'Permissions',
   dialogTitle: 'Confirm plugin capabilities',
@@ -512,13 +514,20 @@ const pt = {
     },
   },
 }
+function withPermissions<M extends { capabilities: Parameters<typeof withPermissionLabels>[0] }>(
+  messages: M,
+  labels: Parameters<typeof withPermissionLabels>[1],
+) {
+  return { ...messages, capabilities: withPermissionLabels(messages.capabilities, labels) }
+}
+
 export const pluginConsentMessages = {
-  'zh-CN': zhCN,
-  'en-US': en,
-  ja,
-  'zh-TW': zhTW,
-  ko,
-  ru,
-  es,
-  pt,
+  'zh-CN': withPermissions(zhCN, permissionLabels.zhCN),
+  'en-US': withPermissions(en, permissionLabels.en),
+  ja: withPermissions(ja, permissionLabels.ja),
+  'zh-TW': withPermissions(zhTW, permissionLabels.zhTW),
+  ko: withPermissions(ko, permissionLabels.ko),
+  ru: withPermissions(ru, permissionLabels.ru),
+  es: withPermissions(es, permissionLabels.es),
+  pt: withPermissions(pt, permissionLabels.pt),
 }

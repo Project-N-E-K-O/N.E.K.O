@@ -344,12 +344,13 @@ chain.callers        # ここまで呼び出してきたプラグイン ID（根
 chain.origin.kind    # "run"、"chat_tool"、"chat_hook"、"ui_action"、"plugin_self"、"system" のいずれか
 chain.origin.ref     # run ID などの識別子。メッセージ本文は含みません
 chain.hops           # 各ステップの (plugin_id, event_type, event_id)
-chain.rights         # チェーン上のすべてのプラグインがユーザーに承認されている能力
+chain.rights         # チェーン上のすべてのプラグインがユーザーに承認されている権限
 chain.rights_known   # ホストが示さなかった場合は False（後述）
-chain.allows("memory.read")
+chain.allows("plugin_sdk.main_agent.memory:read")
 ```
 
-- `None` になることはありません。呼び出しの外（タイマー、エントリが戻った後も動いているバックグラウンドタスク）や、ホスト側でポリシーがオフのときは、自分のプラグインだけを含むチェーンになり、`rights_known=False` です。
+- `None` になることはありません。呼び出しの外（タイマー、エントリが戻った後も動いているバックグラウンドタスク）では、自分のプラグインだけを含むチェーンになり、`rights_known=False` です。
+- `rights` には `plugin_sdk.main_agent.memory:read` のような権限 ID が入ります。1 バージョンの間は旧名（`memory.read`、`conversations.read`、`messages.push`）も併せて入り、`allows()` はどちらの形式も受け付けます。
 - `allows()` は参考情報です。権限が不明なときは常に `False` を返すため、「持っていない」と「わからない」はどちらも `False` になります。区別するには `rights_known` を見てください。各利用の可否はホストが判定します。ここで `False` でもホストが拒否するとは限らず、`True` も呼び出しが配送された時点のスナップショットです。
 - `loop.run_in_executor` や素の `threading.Thread` に渡した処理は呼び出しコンテキストを失い、ホストからはプラグインが自発的に行ったリクエストとして扱われます。`asyncio.to_thread` は保持します。独自のスレッドでは `contextvars.copy_context().run(...)` で処理を包んでください。
 - 旧来の `plugin.sdk.shared.runtime.call_chain`（1 つのプラグインプロセス内の呼び出しだけを追跡）とは別物です。

@@ -678,6 +678,48 @@
                                     </div>
                                 </div>
 
+                                <!-- 使魔模型·小 -->
+                                <div class="model-config-container">
+                                    <button type="button" class="model-header" onclick="toggleModelConfig('agent-small')"
+                                        aria-controls="agent-small-model-content" aria-expanded="false"
+                                        style="width: 100%; border: 0; text-align: left; font: inherit;">
+                                        <span class="model-title">
+                                            <img src="/static/icons/correction_model_icon.png"
+                                                data-i18n-alt="api.agentSmallApiConfigTitle" class="model-title-icon">
+                                            <span data-i18n="api.agentSmallApiConfigTitle">使魔模型·小</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </button>
+                                    <div id="agent-small-model-content" class="model-content">
+                                        <div class="field-row">
+                                            <label for="agentSmallModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                            <select id="agentSmallModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                            </select>
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="agentSmallModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                            <input type="text" id="agentSmallModelUrl"
+                                                data-i18n-placeholder="api.agentSmallModelUrlPlaceholder"
+                                                placeholder="Used only when both URL and model ID are set; otherwise the whole slot follows the recognition model"
+                                                value="" style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="agentSmallModelId" data-i18n="api.modelId">模型ID</label>
+                                            <input type="text" id="agentSmallModelId"
+                                                data-i18n-placeholder="api.agentSmallModelIdPlaceholder"
+                                                placeholder="Used only when both URL and model ID are set; otherwise the whole slot follows the recognition model"
+                                                value="" style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="agentSmallModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                            <input type="text" id="agentSmallModelApiKey"
+                                                data-i18n-placeholder="api.agentSmallModelApiKeyPlaceholder"
+                                                placeholder="Used when this slot is set on its own; leave blank to send no key"
+                                                value="" style="max-width: 600px;">
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <!-- 小游戏模型 -->
                                 <div class="model-config-container">
                                     <button type="button" class="model-header" onclick="toggleModelConfig('game')" aria-expanded="false" aria-controls="game-model-content">
