@@ -1282,3 +1282,24 @@ def test_cli_nested_class_body_uses_the_definition_time_snapshot(tmp_path):
         "[permissions]\n",
     )
     assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
+
+
+# --- review round 10 -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source,kind",
+    [
+        ("execute = eval\nexecute(code)\n", "code_exec"),
+        ("load = __import__\nload(name)\n", "dynamic_import"),
+        ("import os\ng = getattr\ng(os, 'system')('x')\n", "reflective_access"),
+    ],
+)
+def test_aliases_of_builtins_keep_their_blind_spots(tmp_path, source, kind):
+    spots = _scan(tmp_path, source)["blind_spots"]
+    assert any(spot["type"] == kind for spot in spots)
+
+
+def test_aliases_of_plugin_defined_names_are_not_builtins(tmp_path):
+    source = "def eval(x):\n    return x\nexecute = eval\nexecute('1')\n"
+    assert _scan(tmp_path, source)["blind_spots"] == []

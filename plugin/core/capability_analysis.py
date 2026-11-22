@@ -858,6 +858,11 @@ def _origin_name(reference: _Reference) -> str | None:
     """Fully qualified external name, or None when the origin is not external."""
     if reference.bound is None and reference.method in _BUILTINS:
         return "builtins." + reference.method
+    # An alias of a builtin (execute = eval): the binding resolved to the bare
+    # builtin name. A plugin-defined or imported name of the same spelling is
+    # bound as external instead and does not get here.
+    if reference.bound is True and not reference.external and reference.method in _BUILTINS:
+        return "builtins." + reference.method
     if reference.external and reference.bound:
         return reference.method
     return None
