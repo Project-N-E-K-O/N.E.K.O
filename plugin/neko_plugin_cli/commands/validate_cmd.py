@@ -1248,11 +1248,17 @@ _PERMISSION_NARROWING_DECORATORS = frozenset(
 def _check_permission_narrowing(
     decorator: ast.expr, label: str, declared: frozenset[str] | None, issues: list[tuple[str, str]]
 ) -> None:
-    if declared is None or not isinstance(decorator, ast.Call):
+    if not isinstance(decorator, ast.Call):
         return
     for item in decorator.keywords:
         if item.arg != "permissions":
             continue
+        # The SDK decorators are keyword-only and do not take this yet.
+        issues.append(
+            _permission_issue(PermissionIssue("warning", "narrowing_runtime_unsupported", {"label": label}))
+        )
+        if declared is None:
+            return
         try:
             value = ast.literal_eval(item.value)
         except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):

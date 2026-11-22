@@ -289,8 +289,10 @@ Don't need UI? Just don't include this section. See [Hosted UI](./hosted-ui) for
 "plugin_sdk.models:invoke" = { reason = "Turn the forecast into one sentence" }
 ```
 
-- `require`: the plugin cannot work without it; the user agrees when installing.
-- `ask`: the user is asked the first time the plugin really uses it.
+> **Current status:** declarations are currently used only by `neko-plugin check` / `check -r`, which compare them with the code. Confirming `require` permissions at install time and asking for `ask` permissions on first use are planned for a later release and are not active yet.
+
+- `require`: the plugin cannot work without it; the user will be asked to agree when installing.
+- `ask`: the user will be asked the first time the plugin really uses it.
 - Every entry needs a `reason`. Users see it next to the permission, so write it for them. It is either one string or a table of language codes; languages you leave out fall back to one you wrote.
 - An `ask` entry may add `background = true` together with a `background_reason` when the plugin also needs it while the user is not using it.
 - `hosts` (only for `system.network:connect`) is shown to the user for reference.

@@ -284,8 +284,10 @@ permissions = ["state:read"]
 "plugin_sdk.models:invoke" = { reason = "把天气写成一句提醒" }
 ```
 
-- `require`：没有它插件就不能工作，用户在安装时同意。
-- `ask`：插件第一次真正用到时再问用户。
+> **当前状态：** 目前声明只用于 `neko-plugin check` / `check -r` 和代码做比对。安装时确认 `require` 权限、首次使用时询问 `ask` 权限，会在后续版本启用，现在还没有生效。
+
+- `require`：没有它插件就不能工作，将来用户会在安装时确认同意。
+- `ask`：将来插件第一次真正用到时再问用户。
 - 每一项都要写 `reason`。用户会在这项权限旁边看到它，请写给用户看。可以是一个字符串，也可以是“语言代码 = 文字”的表；没写的语言会回退到你写了的某一种。
 - `ask` 项如果在用户没在使用时也要用，可以加 `background = true`，同时写 `background_reason`。
 - `hosts`（只用于 `system.network:connect`）只展示给用户参考。

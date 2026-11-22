@@ -7,7 +7,7 @@ import os
 import re
 import tokenize
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event
 from collections.abc import Iterator
@@ -18,7 +18,7 @@ from plugin.core.permission_declarations import (
     PermissionIssue,
     parse_permission_declarations,
 )
-from plugin.utils.source_paths import iter_plugin_python_files
+from plugin.utils.source_paths import is_vendor_sync_path, iter_plugin_python_files
 
 CAPABILITIES = ("conversations.read", "memory.read", "messages.push")
 # Bump when a change to analysis makes persisted reports stale.
@@ -242,6 +242,8 @@ class _Reference:
     rebound: bool = False
     # Root name as written in the source, before alias resolution.
     raw_root: str = ""
+    # Only stored into or deleted from (x[k] = v, del x[k]), never read.
+    written: bool = False
 
 
 def _resolved_references(tree, walker: _AnalysisWalker):
@@ -252,21 +254,52 @@ def _resolved_references(tree, walker: _AnalysisWalker):
 
 
 def _references(tree, walker: _AnalysisWalker):
-    def scope(body, inherited, parameters=(), function=""):
+    def scope(body, inherited, parameters=(), function="", outer_rebound=frozenset()):
         nodes = list(walker.scope_nodes(body))
         declared, assignments = _collect_declarations(nodes, parameters, walker)
         bindings = _build_bindings(declared, inherited, nodes, walker)
         _propagate_assignments(assignments, bindings, walker)
-        rebound = _rebound_names(nodes, walker)
-        for reference in _emit_references(nodes, bindings, scope, walker, function):
-            if rebound and reference.raw_root in rebound and not reference.rebound:
-                reference = _Reference(
-                    reference.node, reference.method, reference.external, reference.bound,
-                    reference.function, reference.is_call, True, reference.raw_root,
-                )
+        # Names rebound here, plus those inherited from enclosing scopes that
+        # this scope does not bind itself (it may import its own copy).
+        rebound = _rebound_names(nodes, walker) | (outer_rebound - declared)
+        own = {id(node) for node in nodes}
+        written = _written_targets(nodes, walker)
+
+        def nested(body, inherited, parameters=(), function=""):
+            return scope(body, inherited, parameters, function, rebound)
+
+        for reference in _emit_references(nodes, bindings, nested, walker, function):
+            # Nested scopes already applied their own view of rebinding.
+            if id(reference.node) in own:
+                changes = {}
+                if reference.raw_root in rebound and not reference.rebound:
+                    changes["rebound"] = True
+                if id(reference.node) in written:
+                    changes["written"] = True
+                if changes:
+                    reference = replace(reference, **changes)
             yield reference
 
     yield from scope(tree.body, {})
+
+
+def _written_targets(nodes, walker) -> set[int]:
+    """Values that are only changed, not read: x[k] = v, del x[k], x.update(...).
+
+    For a mutating method call both the receiver and the bound method count.
+    """
+    written = set()
+    for node in nodes:
+        walker.check()
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            written.add(id(node.value))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _DATA_WRITE_METHODS
+        ):
+            written.update((id(node.func), id(node.func.value)))
+    return written
 
 
 def _root_name(method: str) -> str:
@@ -653,6 +686,8 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 # Data attributes whose mere read is the use (no call needed).
 _DATA_READS = ("os.environ", "os.environb")
+# Methods on those that change the mapping rather than read it.
+_DATA_WRITE_METHODS = frozenset({"update", "clear", "pop", "popitem", "setdefault", "__setitem__", "__delitem__"})
 # SDK access points reported only under a permission id (no legacy name).
 _SDK_PERMISSION_SUFFIXES = ((".models.get_client", _MODELS),)
 # open()-like calls: function -> positional index of the mode argument.
@@ -761,7 +796,9 @@ def _open_permissions(reference: _Reference, name: str) -> tuple[tuple[str, ...]
     mode = _literal_string(argument)
     if mode is None:
         return (_FS_READ, _FS_WRITE), "unknown"
-    if any(flag in mode for flag in "wax+"):
+    if "+" in mode:
+        return (_FS_READ, _FS_WRITE), "read_write"
+    if any(flag in mode for flag in "wax"):
         return (_FS_WRITE,), "write"
     return (_FS_READ,), "read"
 
@@ -794,8 +831,13 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
     for permission, patterns in _EXTERNAL_RULES:
         if _matches(name, patterns):
             basis = direct
-            if not reference.is_call and _matches(name, _DATA_READS):
-                basis = named if reference.rebound else BASIS_RESOLVED_REFERENCE
+            if _matches(name, _DATA_READS):
+                if reference.written or (reference.is_call and name.rsplit(".", 1)[-1] in _DATA_WRITE_METHODS):
+                    # Writing the environment is not reading it; keep it as
+                    # a hint rather than definite evidence.
+                    basis = named
+                elif not reference.is_call:
+                    basis = named if reference.rebound else BASIS_RESOLVED_REFERENCE
             results.append((permission, basis, {}))
     return results
 
@@ -883,7 +925,13 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
             if stop is not None and stop.is_set():
                 inventory["truncated"] = True
                 break
-            directories[:] = sorted(name for name in directories if name not in _NON_PYTHON_SKIPPED_DIRS)
+            base = Path(current)
+            directories[:] = sorted(
+                name
+                for name in directories
+                if name not in _NON_PYTHON_SKIPPED_DIRS
+                and not is_vendor_sync_path((base / name).relative_to(root))
+            )
             for name in sorted(files):
                 visited += 1
                 if visited > _MAX_TREE_ENTRIES:
@@ -1114,6 +1162,8 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
             definite = bool(direct) and permission not in POSSIBLE_ONLY_PERMISSIONS
             shown = direct if definite else findings
             locations = [f"{row['file']}:{row['line']}" for row in shown[:3]]
+            if len(shown) > len(locations):
+                locations.append(f"+{len(shown) - len(locations)}")
             issues.append(
                 PermissionIssue(
                     "error" if definite else "warning",
@@ -1121,7 +1171,7 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
                     {
                         "permission": permission,
                         "locations": ", ".join(locations),
-                        "more": str(max(0, len(shown) - len(locations))),
+                        "more": str(max(0, len(shown) - 3)),
                     },
                 )
             )

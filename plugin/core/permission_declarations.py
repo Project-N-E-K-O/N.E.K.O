@@ -129,6 +129,8 @@ def parse_permission_declarations(
     declarations.status = "declared"
     for key in sorted(set(table) - set(SECTIONS)):
         issues.append(PermissionIssue("error", "unknown_section", {"label": f"[permissions].{key}"}))
+    # Every id seen, including entries dropped as invalid.
+    seen: set[str] = set()
     for section in SECTIONS:
         entries = table.get(section)
         if entries is None:
@@ -148,9 +150,10 @@ def parse_permission_declarations(
                     )
                 )
                 continue
-            if permission in declarations.items:
+            if permission in seen:
                 issues.append(PermissionIssue("error", "duplicate_permission", {"permission": permission}))
                 continue
+            seen.add(permission)
             declaration, entry_issues = _parse_entry(permission, section, entry, label)
             issues.extend(entry_issues)
             if declaration is not None:

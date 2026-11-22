@@ -301,7 +301,8 @@ def test_shadowed_or_plugin_owned_names_are_not_reported(tmp_path):
         ("open('a.txt')", {"system.fs:read"}, "read"),
         ("open('a.txt', 'rb')", {"system.fs:read"}, "read"),
         ("open('a.txt', mode='w')", {"system.fs:write"}, "write"),
-        ("open('a.txt', 'r+')", {"system.fs:write"}, "write"),
+        ("open('a.txt', 'r+')", {"system.fs:read", "system.fs:write"}, "read_write"),
+        ("open('a.txt', 'w+b')", {"system.fs:read", "system.fs:write"}, "read_write"),
         ("open('a.txt', mode)", {"system.fs:read", "system.fs:write"}, "unknown"),
         ("import pathlib\npathlib.Path('a').write_text('x')", {"system.fs:write"}, None),
         ("import shutil\nshutil.rmtree('a')", {"system.fs:write"}, None),
@@ -451,7 +452,7 @@ def test_error_locations_list_direct_evidence_and_count_the_rest():
     findings = [_finding("suffix_match", 1)] + [_finding("resolved_call", line) for line in range(2, 7)]
     report = _report({"system.env:read": {"declared": None, "findings": findings, "basis": "resolved_call"}})
     [issue] = compare_declarations(report)
-    assert issue.params["locations"] == "main.py:2, main.py:3, main.py:4"
+    assert issue.params["locations"] == "main.py:2, main.py:3, main.py:4, +2"
     assert issue.params["more"] == "2"
 
 
@@ -788,3 +789,78 @@ def test_source_revision_changes_when_non_python_code_is_added(tmp_path):
     after = service.source_revision(tmp_path, "1")
     assert before != after
     assert service.source_revision(tmp_path, "1") == after
+
+
+
+# --- review round 2 ----------------------------------------------------------------------
+
+
+def test_outer_rebinding_does_not_weaken_a_nested_scopes_own_import(tmp_path):
+    report = _scan(tmp_path, "os = None\ndef f():\n    import os\n    os.system('echo x')\n")
+    assert _errors(report) == ["system.process:spawn"]
+
+
+def test_outer_rebinding_still_weakens_nested_scopes_that_inherit_the_name(tmp_path):
+    report = _scan(tmp_path, "import os\nfor os in items:\n    pass\ndef f():\n    os.system('echo x')\n")
+    assert _errors(report) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from os import environ\nfound = 'KEY' in environ\n",
+        "from os import environ\nsnapshot = dict(environ)\n",
+    ],
+)
+def test_more_imported_environ_reads(tmp_path, source):
+    assert _errors(_scan(tmp_path, source)) == ["system.env:read"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nos.environ['X'] = '1'\n",
+        "import os\ndel os.environ['X']\n",
+        "import os\nos.environ.update(X='1')\n",
+        "import os\nos.environ.pop('X', None)\n",
+        "from os import environ\nenviron['X'] = '1'\n",
+    ],
+)
+def test_writing_the_environment_is_not_a_definite_read(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert "system.env:read" in report["permissions"]
+    assert _errors(report) == []
+
+
+def test_reading_and_writing_on_one_line_is_still_a_read(tmp_path):
+    report = _scan(tmp_path, "import os\nos.environ['X'] = os.environ['Y']\n")
+    assert _errors(report) == ["system.env:read"]
+
+
+def test_duplicate_is_reported_even_when_the_first_entry_is_invalid():
+    _declarations, issues = _parse(
+        '[permissions.require]\n"system.env:read" = { reason = "" }\n'
+        '[permissions.ask]\n"system.env:read" = { reason = "b" }\n'
+    )
+    assert ("error", "duplicate_permission") in _codes(issues)
+
+
+def test_vendor_sync_work_directories_are_not_reported(tmp_path):
+    (tmp_path / ".vendor.staging-0a1b2c3d").mkdir()
+    (tmp_path / ".vendor.staging-0a1b2c3d" / "x.js").write_text("1", encoding="utf-8")
+    assert _scan(tmp_path, "x = 1\n")["blind_spots"] == []
+
+
+def test_cli_warns_that_the_sdk_does_not_take_permissions_yet(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "from plugin.sdk.plugin import plugin_entry\n"
+        "class P:\n"
+        "    @plugin_entry(id='a', permissions=['system.network:connect'])\n"
+        "    async def a(self): ...\n",
+        '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
+    )
+    warnings = _issues(plugin_dir, "warning")
+    [warning] = [message for message in warnings if "does not accept permissions=" in message]
+    assert warning.startswith("@plugin_entry in worker.py:4:")
+    _assert_all_locales(warning)

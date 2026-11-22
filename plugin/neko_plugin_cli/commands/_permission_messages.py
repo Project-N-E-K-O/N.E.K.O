@@ -207,6 +207,22 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "es": "{label}: permissions= no es una lista literal, así que no se puede confirmar de forma estática",
         "pt": "{label}: permissions= não é uma lista literal, então não pode ser confirmado estaticamente",
     },
+    "narrowing_runtime_unsupported": {
+        "en": "{label}: the plugin SDK does not accept permissions= yet, so this decorator fails when the plugin loads; "
+        "remove it for now",
+        "zh-CN": "{label}：插件 SDK 目前还不接受 permissions= 参数，插件加载时这个装饰器会报错；请先去掉它",
+        "zh-TW": "{label}：外掛 SDK 目前還不接受 permissions= 參數，外掛載入時這個裝飾器會報錯；請先移除它",
+        "ja": "{label}：プラグイン SDK はまだ permissions= を受け付けないため、プラグインの読み込み時にこのデコレーターがエラーになります。"
+        "今は外してください",
+        "ko": "{label}: 플러그인 SDK가 아직 permissions=를 받지 않아 플러그인을 불러올 때 이 데코레이터에서 오류가 납니다. "
+        "지금은 제거하세요",
+        "ru": "{label}: SDK плагинов пока не принимает permissions=, поэтому этот декоратор вызовет ошибку при загрузке плагина; "
+        "пока уберите его",
+        "es": "{label}: el SDK de plugins todavía no acepta permissions=, así que este decorador falla al cargar el plugin; "
+        "quítalo por ahora",
+        "pt": "{label}: o SDK de plugins ainda não aceita permissions=, então este decorador falha ao carregar o plugin; "
+        "remova-o por enquanto",
+    },
     "used_undeclared": {
         "en": "the code uses {permission} ({locations}) but plugin.toml does not declare it; "
         "add it to [permissions.require] or [permissions.ask] with a reason",
