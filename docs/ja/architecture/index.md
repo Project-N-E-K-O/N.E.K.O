@@ -12,7 +12,7 @@ Project N.E.K.O. は三つの主要 Python service process で構成されます
 |---|---:|---|---|
 | **Main Server** | 48911 | `app/main_server/__main__.py` | Web UI/static asset、REST API、browser WebSocket、character 別 session、外部 TTS |
 | **Memory Server** | 48912 | `app/memory_server/__main__.py` | 会話 ingest、recent context、fact/reflection/persona、startup rendering、recall |
-| **Agent / Tool Server** | 48915 | `app/agent_server/__main__.py` | capability state、NekoClaw ホスト（タスク台帳、dispatch、task agent）、cancel、タスクの報告 |
+| **Agent / Tool Server** | 48915 | `app/agent_server/__main__.py` | capability state、NekoPower ホスト（タスク台帳、dispatch、task agent）、cancel、タスクの報告 |
 
 各 service の FastAPI app と実装は対応 package 内にあります。特に Agent 実装は `app/agent_server/` にあります。
 
@@ -61,4 +61,4 @@ Text input は `OmniOfflineClient`、audio input は `OmniRealtimeClient` を使
 - [データフロー](/ja/architecture/data-flow) — browser input から model output、persistence まで
 - [セッション管理](/ja/architecture/session-management) — mode selection と hot-swap lifecycle
 - [メモリシステム](/ja/architecture/memory-system) — persistence、automatic rendering、on-demand recall
-- [Agent システム](/ja/architecture/agent-system) — タスクツール、NekoClaw ホスト、報告、ターン後チェック
+- [Agent システム](/ja/architecture/agent-system) — タスクツール、NekoPower ホスト、報告、ターン後チェック

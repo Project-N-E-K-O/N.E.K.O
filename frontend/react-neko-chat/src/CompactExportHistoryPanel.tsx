@@ -861,6 +861,7 @@ export default function CompactExportHistoryPanel({
     <div
       className="compact-export-preview-region"
       data-compact-export-preview-open="true"
+      data-neko-capture-mask="history"
       data-compact-hit-region="true"
       data-compact-hit-region-id="history:preview"
       data-compact-hit-region-kind="preview"
@@ -1089,6 +1090,7 @@ export default function CompactExportHistoryPanel({
                     >
                       <div
                         className="compact-export-history-bubble"
+                        data-neko-capture-mask="history"
                         role={selectionEnabled ? 'button' : undefined}
                         aria-pressed={selectionEnabled ? selected : undefined}
                         aria-disabled={selectionEnabled ? false : undefined}
@@ -1136,7 +1138,7 @@ export default function CompactExportHistoryPanel({
                     data-message-role="assistant"
                     data-focus-thinking="true"
                   >
-                    <div className="compact-export-history-bubble focus-thinking-history-bubble">
+                    <div className="compact-export-history-bubble focus-thinking-history-bubble" data-neko-capture-mask="history">
                       <div className="compact-export-history-content">
                         <ThinkingDots label={thinkingLabel} />
                       </div>

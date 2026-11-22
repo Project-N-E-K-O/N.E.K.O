@@ -7,10 +7,11 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Awaitable, Mapping, Protocol
 
-from plugin._types.entry_metadata import detached_copy
+from plugin._types.entry_metadata import MAX_SCHEMA_DEPTH, detached_copy, schema_depth_exceeds
 from plugin.sdk.shared.constants import EVENT_META_ATTR
 from plugin.sdk.shared.models import Err, Ok, Result
 from plugin.sdk.shared.models.exceptions import EntryConflictError, PluginRouterError, RouterErrorLike
+from .decorators import _deferred_entry_inference
 from .events import EventHandler, EventMeta
 from .types import EntryHandler, JsonObject, JsonValue
 
@@ -27,6 +28,42 @@ class _EntryRecord:
     handler: RouteHandler
 
 
+def _entry_owner(fn: object, router_cls: type) -> type:
+    """The class in ``router_cls``'s MRO whose body defines ``fn``.
+
+    Forward references resolve against the namespace the entry was written
+    in; an entry inherited by a router subclass still names its base's models.
+    """
+    for cls in router_cls.__mro__:
+        for value in vars(cls).values():
+            target = value.__func__ if isinstance(value, (staticmethod, classmethod)) else value
+            if target is fn:
+                return cls
+    return router_cls
+
+
+def router_entry_inference(fn: object, router_cls: type) -> dict[str, object]:
+    """llm_result_* / output_schema ``@plugin_entry`` could not infer, resolved against the router class.
+
+    A return annotation naming a model defined later in the router class body
+    is a forward reference the decorator cannot resolve while the class body
+    runs; ``@neko_plugin`` finishes that for plugin classes, and this does the
+    same for routers (runtime entries and the host's static preview). Only
+    pending inferences run, so explicit contracts are never replaced. Params
+    inference stays with the decorator: switching a router entry to model
+    validation of its inputs would change which calls it accepts.
+    """
+    if not callable(fn):
+        return {}
+    return _deferred_entry_inference(fn, _entry_owner(fn, router_cls), include_params=False)
+
+
+def router_entry_meta(meta: EventMeta, fn: object, router_cls: type) -> EventMeta:
+    """``meta`` with the router-class inference applied, as a copy; the shared metadata is untouched."""
+    inferred = router_entry_inference(fn, router_cls)
+    return dataclasses.replace(meta, **inferred) if inferred else meta
+
+
 class PluginRouter:
     """Async-first router with light plugin-bound convenience accessors."""
 
@@ -40,6 +77,11 @@ class PluginRouter:
         # set_prefix() to change prefix; early insertion would prevent that later prefix from taking effect.
         # Instead resolve lazily in collect_entries() using the current prefix.
         self._decorated_entries: list[tuple[str, EventMeta, RouteHandler]] = []
+        # Contract fields inferred against this router class, one per decorated
+        # entry, kept apart from the shared metadata (caching rules: see
+        # _inferred_contract_fields). Keyed by id() so an unhashable callable
+        # works; the object is stored alongside, so its id cannot be reused.
+        self._deferred_inference: dict[int, tuple[object, dict[str, object]]] = {}
         self._main_plugin: object | None = None
         self._collect_decorated_entries()
 
@@ -132,6 +174,18 @@ class PluginRouter:
         return self._main_plugin
 
     def _bind(self, plugin: object) -> None:
+        # Finish the router-class inference once, when the plugin includes the
+        # router: a failure (an inferred schema over the depth bound) surfaces
+        # here, like @neko_plugin raises at class definition, instead of on
+        # every collect_entries() call.
+        # Nothing is cached until every entry succeeds, so a failed bind leaves
+        # the router as it was and a later bind infers again.
+        pending: dict[int, tuple[object, dict[str, object]]] = {}
+        for _, _, handler in self._decorated_entries:
+            fn = getattr(handler, "__func__", handler)
+            if id(fn) not in self._deferred_inference:
+                pending[id(fn)] = (fn, router_entry_inference(fn, type(self)))
+        self._deferred_inference.update(pending)
         self._main_plugin = plugin
 
     def _unbind(self) -> None:
@@ -191,19 +245,37 @@ class PluginRouter:
             # Copy every EventMeta field (dataclasses.replace), then override
             # identity and detach the mutable containers. Spelling fields out
             # one by one silently dropped any field added to EventMeta later.
+            inferred = self._inferred_contract_fields(handler)
+            source = dataclasses.replace(meta, **inferred) if inferred else meta
             normalized = dataclasses.replace(
-                meta,
+                source,
                 id=entry_id,
-                name=meta.name if meta.name else entry_id,
-                input_schema=dict(meta.input_schema) if meta.input_schema is not None else None,
-                llm_result_fields=list(meta.llm_result_fields) if meta.llm_result_fields else None,
-                llm_result_schema=dict(meta.llm_result_schema) if meta.llm_result_schema else None,
-                output_schema=detached_copy(meta.output_schema) if meta.output_schema is not None else None,
-                extra=dict(meta.extra),
-                metadata=dict(meta.metadata),
+                name=source.name if source.name else entry_id,
+                input_schema=dict(source.input_schema) if source.input_schema is not None else None,
+                llm_result_fields=list(source.llm_result_fields) if source.llm_result_fields else None,
+                llm_result_schema=dict(source.llm_result_schema) if source.llm_result_schema else None,
+                output_schema=detached_copy(source.output_schema) if source.output_schema is not None else None,
+                extra=dict(source.extra),
+                metadata=dict(source.metadata),
             )
             resolved[entry_id] = _EntryRecord(meta=normalized, handler=handler)
         return resolved
+
+    def _inferred_contract_fields(self, handler: RouteHandler) -> dict[str, object]:
+        """Contract fields the decorator left pending, resolved against this router (cached per entry).
+
+        Before the router is bound, an empty result is not cached: a model
+        defined after the router may still resolve later. From binding on
+        (module import is complete by then) every result is cached.
+        """
+        fn = getattr(handler, "__func__", handler)
+        cached = self._deferred_inference.get(id(fn))
+        if cached is not None:
+            return cached[1]
+        inferred = router_entry_inference(fn, type(self))
+        if inferred or self.is_bound:
+            self._deferred_inference[id(fn)] = (fn, inferred)
+        return inferred
 
     def on_mount(self) -> None:
         return None
@@ -228,6 +300,8 @@ class PluginRouter:
         full_entry_id = self._resolve_entry_id(trimmed)
         if full_entry_id in self._entries and not replace:
             return Err(EntryConflictError(f"duplicate entry id: {full_entry_id!r}"))
+        if output_schema is not None and schema_depth_exceeds(output_schema):
+            return Err(PluginRouterError(f"output_schema nests deeper than {MAX_SCHEMA_DEPTH} levels"))
         meta = EventMeta(
             event_type="plugin_entry",
             id=full_entry_id,

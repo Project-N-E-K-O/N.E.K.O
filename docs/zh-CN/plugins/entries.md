@@ -1,6 +1,6 @@
 # 入口与参数
 
-入口点是已加载插件暴露给插件管理器、其他插件和 Agent（猫爪，NekoClaw）的可调用操作。它由 `@plugin_entry(id=...)` 产生的运行时 `entry_id` 标识。
+入口点是已加载插件暴露给插件管理器、其他插件和 Agent（喵能力，NekoPower）的可调用操作。它由 `@plugin_entry(id=...)` 产生的运行时 `entry_id` 标识。
 
 不要把它与 `plugin.toml` 的 `[plugin].entry` 混淆：后者是宿主导入插件类时使用的 `module.path:ClassName`。也不要与 `@llm_tool` 混淆：LLM 工具注册到 main_server 的 `/api/tools` registry，由主对话模型在对话中调用；Agent 则是在一件事被交给它之后，才去选择插件的运行时入口。见[选择 `@plugin_entry` 还是 `@llm_tool`](/zh-CN/plugins/tool-calling#choosing-an-entry-type)。
 
@@ -262,7 +262,7 @@ def _make_handler(self, cmd_info):
 
 ## Agent 怎么调用入口
 
-只有主对话模型把一件事交出来时，Agent（猫爪，NekoClaw）才会去找入口：模型调用了 `dispatch_task` 工具，或者口头答应了、由事后检查替它派发。系统不再在每轮对话结束后自动分析。整条路径见[智能体系统](/zh-CN/architecture/agent-system)，插件怎么筛选见 [plugin.toml](./plugin-toml)。ID 以 `__llm_tool__` 开头的入口（由 `@llm_tool` 生成）不参与这套筛选，只由主对话模型调用。
+只有主对话模型把一件事交出来时，Agent（喵能力，NekoPower）才会去找入口：模型调用了 `dispatch_task` 工具，或者口头答应了、由事后检查替它派发。系统不再在每轮对话结束后自动分析。整条路径见[智能体系统](/zh-CN/architecture/agent-system)，插件怎么筛选见 [plugin.toml](./plugin-toml)。ID 以 `__llm_tool__` 开头的入口（由 `@llm_tool` 生成）不参与这套筛选，只由主对话模型调用。
 
 ### Agent 能看到哪些入口
 

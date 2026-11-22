@@ -1,6 +1,6 @@
 # エントリーとパラメーター
 
-entry point は、ロード済み plugin が Plugin Manager、他 plugin、Agent（ネコクロー、NekoClaw）に公開する callable operation です。`@plugin_entry(id=...)` の runtime `entry_id` で識別します。
+entry point は、ロード済み plugin が Plugin Manager、他 plugin、Agent（にゃんパワー、NekoPower）に公開する callable operation です。`@plugin_entry(id=...)` の runtime `entry_id` で識別します。
 
 `plugin.toml` の `[plugin].entry` と混同しないでください。そちらは plugin class を import する `module.path:ClassName` です。また `@llm_tool` とも別です。LLM tool は main_server の `/api/tools` registry に登録され、会話中にメインの対話モデルが呼びます。一方 Agent は、用件を任された後に plugin の runtime entry を選びます。[`@plugin_entry` と `@llm_tool` の選び方](/ja/plugins/tool-calling#choosing-an-entry-type)を参照してください。
 
@@ -264,7 +264,7 @@ def _make_handler(self, cmd_info):
 
 ## Agent が entry を呼ぶとき
 
-Agent（ネコクロー、NekoClaw）が entry を探すのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はありません。全体の流れは[エージェントシステム](/ja/architecture/agent-system)、plugin の絞り込み方は [plugin.toml](./plugin-toml) を参照してください。ID が `__llm_tool__` で始まる entry（`@llm_tool` が作るもの）はこの選択に加わらず、メインの対話モデルだけが呼びます。
+Agent（にゃんパワー、NekoPower）が entry を探すのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はありません。全体の流れは[エージェントシステム](/ja/architecture/agent-system)、plugin の絞り込み方は [plugin.toml](./plugin-toml) を参照してください。ID が `__llm_tool__` で始まる entry（`@llm_tool` が作るもの）はこの選択に加わらず、メインの対話モデルだけが呼びます。
 
 ### Agent に見える entry
 

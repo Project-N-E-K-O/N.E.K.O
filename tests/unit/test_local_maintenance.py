@@ -605,6 +605,100 @@ class MaintenanceTests(unittest.TestCase):
         receipt = self.assert_failed_verification(policy)
         self.assertFalse(receipt["source_unchanged"])
 
+    def test_official_identity_accepts_equivalent_ssh_and_https_forms(self):
+        for url in (
+            maintain.OFFICIAL_URL,
+            "https://github.com/Project-N-E-K-O/N.E.K.O",
+            "https://github.com/Project-N-E-K-O/N.E.K.O/",
+            "https://github.com/Project-N-E-K-O/N.E.K.O.git/",
+            "https://user@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "https://GitHub.com/project-n-e-k-o/n.e.k.o.GIT",
+            "git@github.com:Project-N-E-K-O/N.E.K.O.git",
+            "git@github.com:Project-N-E-K-O/N.E.K.O",
+            "github.com:Project-N-E-K-O/N.E.K.O.git",
+            "ssh://git@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "ssh://git@github.com:22/Project-N-E-K-O/N.E.K.O",
+            "git+ssh://git@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "ssh+git://git@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "https://github.com:443/Project-N-E-K-O/N.E.K.O.git",
+        ):
+            with self.subTest(url=url):
+                self.git("remote", "set-url", "origin", url)
+                maintain.official_required(self.repo)
+
+    def test_official_identity_rejects_other_repositories(self):
+        for url in (
+            "https://github.com/other/N.E.K.O.git",
+            "git@github.com:other/N.E.K.O.git",
+            "ssh://git@github.com/other/N.E.K.O.git",
+            "git@github.com:Project-N-E-K-O/N.E.K.O.-PC.git",
+            "git@gitlab.com:Project-N-E-K-O/N.E.K.O.git",
+            "https://github.com.evil.example/Project-N-E-K-O/N.E.K.O.git",
+            "https://github.com/Project-N-E-K-O/N.E.K.O/extra",
+            "https://github.com:8443/Project-N-E-K-O/N.E.K.O.git",
+            "http://github.com/Project-N-E-K-O/N.E.K.O.git",
+            "git://github.com/Project-N-E-K-O/N.E.K.O.git",
+            "file:///srv/github.com/Project-N-E-K-O/N.E.K.O.git",
+            "/srv/Project-N-E-K-O/N.E.K.O.git",
+            "../N.E.K.O",
+            "https://evil.example\\@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "ssh://evil.example\\@github.com/Project-N-E-K-O/N.E.K.O",
+            "https://a@evil.example@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "https://github.com//Project-N-E-K-O/N.E.K.O.git",
+            "https://github.com/Project-N-E-K-O/N.E.K.O..git",
+            "ssh://git%40evil.example%2F@github.com/Project-N-E-K-O/N.E.K.O.git",
+            "https://github.com/Project-N-E-K-O%2FN.E.K.O.git",
+            " https://github.com/Project-N-E-K-O/N.E.K.O.git",
+            "https://github.com/Project-N-E-K-O/N.E.K.O.git ",
+            "\tgit@github.com:Project-N-E-K-O/N.E.K.O.git",
+            "ssh://git@github.com/Project-N-E-K-O/N.E.K.O.git?",
+            "https://github.com/Project-N-E-K-O/N.E.K.O.git#",
+            "git@github.com:Project-N-E-K-O/N.E.K.O.git?",
+            "https://github.com/Project-N-E-K-O/N.E.\u212aO.git",
+            "git@github.com:Project-N-E-\u212a-O/N.E.K.O.git",
+        ):
+            with self.subTest(url=url):
+                self.git("remote", "set-url", "origin", url)
+                with self.assertRaisesRegex(ValueError, "not the configured") as ctx:
+                    maintain.official_required(self.repo)
+                self.assertIn(
+                    f"git remote set-url origin {maintain.OFFICIAL_URL}",
+                    str(ctx.exception),
+                )
+
+    def test_official_identity_rejects_configured_value_with_trailing_newline(self):
+        for suffix in ("\n", "\r\n", "\n\n"):
+            with self.subTest(suffix=suffix):
+                self.git(
+                    "config",
+                    "--replace-all",
+                    "remote.origin.url",
+                    maintain.OFFICIAL_URL + suffix,
+                )
+                with self.assertRaisesRegex(ValueError, "not the configured"):
+                    maintain.official_required(self.repo)
+
+    def test_missing_origin_is_reported_readably(self):
+        import io
+        from contextlib import redirect_stdout
+
+        self.git("remote", "remove", "origin")
+        with self.assertRaisesRegex(ValueError, "origin is not configured") as ctx:
+            maintain.official_required(self.repo)
+        self.assertIn(
+            f"git remote add origin {maintain.OFFICIAL_URL}", str(ctx.exception)
+        )
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            maintain.status(self.repo)
+        self.assertIsNone(json.loads(stream.getvalue())["origin"])
+
+    def test_origin_urls_surfaces_git_config_errors(self):
+        # Exit codes other than "key not set" must not read as a missing origin.
+        (self.repo / ".git" / "config").write_text("[broken\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            maintain.origin_urls(self.repo)
+
     def test_official_identity_rejects_multiple_origin_urls(self):
         self.git(
             "config",

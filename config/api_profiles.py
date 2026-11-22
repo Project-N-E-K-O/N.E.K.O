@@ -88,7 +88,7 @@ DEFAULT_CORE_API_PROFILES = {
     },
     'step': {
         'CORE_URL': "wss://api.stepfun.com/v1/realtime",
-        'CORE_MODEL': "stepaudio-3-realtime-preview",
+        'CORE_MODEL': "stepaudio-3-realtime",
     },
     'gemini': {
         # Gemini uses google-genai SDK rather than native WebSocket.
@@ -108,7 +108,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'EMOTION_MODEL': "free-mini-model",
         'DECISION_MODEL': "free-mini-model",
         'DECISION_PROTOCOL': "chat_fallback",
-        'VISION_MODEL': "free-vision-model",
+        'VISION_MODEL': "free-model",
         # Must match api_providers.json free agent_model and _free_agent_model_name,
         # or fallback to these defaults when JSON is missing skips free-agent quota and misclassifies is_agent_free.
         'AGENT_MODEL': "free-agent-model",
@@ -153,12 +153,12 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'glm': {
         'OPENROUTER_URL': "https://open.bigmodel.cn/api/paas/v4",
-        'CONVERSATION_MODEL': "glm-4.7-flash",
+        'CONVERSATION_MODEL': "glm-5.3-flash",
         'SUMMARY_MODEL': "glm-4.7-flash",
         'EMOTION_MODEL': "glm-4.7-flash",
         'DECISION_MODEL': "glm-4.7-flash",
         'DECISION_PROTOCOL': "chat_fallback",
-        'VISION_MODEL': "glm-4.6v-flash",
+        'VISION_MODEL': "glm-5.3-flash",
         'AGENT_MODEL': "glm-5v-turbo",
     },
     'step': {
@@ -173,13 +173,13 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'silicon': {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
-        'CONVERSATION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
+        'CONVERSATION_MODEL': "deepseek-ai/DeepSeek-V4.1-Flash",
         'SUMMARY_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
-        'EMOTION_MODEL': "inclusionAI/Ling-mini-2.0",
+        'EMOTION_MODEL': "Qwen/Qwen3.5-35B-A3B",
         'DECISION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
         'DECISION_PROTOCOL': "chat_fallback",
-        'VISION_MODEL': "Qwen/Qwen3.5-122B-A10B",
-        'AGENT_MODEL': "Qwen/Qwen3.5-122B-A10B",
+        'VISION_MODEL': "deepseek-ai/DeepSeek-V4.1-Flash",
+        'AGENT_MODEL': "deepseek-ai/DeepSeek-V4.1-Flash",
     },
     'gemini': {
         'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -194,13 +194,13 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'kimi': {
         'OPENROUTER_URL': "https://api.moonshot.cn/v1",
-        'CONVERSATION_MODEL': "kimi-k2.6",
-        'SUMMARY_MODEL': "kimi-k2.6",
-        'EMOTION_MODEL': "kimi-k2.6",
-        'DECISION_MODEL': "kimi-k2.6",
+        'CONVERSATION_MODEL': "kimi-k3",
+        'SUMMARY_MODEL': "kimi-k3",
+        'EMOTION_MODEL': "kimi-k3",
+        'DECISION_MODEL': "kimi-k3",
         'DECISION_PROTOCOL': "chat_fallback",
-        'VISION_MODEL': "kimi-k2.6",
-        'AGENT_MODEL': "kimi-k2.6",
+        'VISION_MODEL': "kimi-k3",
+        'AGENT_MODEL': "kimi-k3",
     },
     'kimi_code': {
         'OPENROUTER_URL': "https://api.kimi.com/coding",

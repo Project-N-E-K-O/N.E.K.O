@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
 import copy
 import importlib
 import importlib.machinery
@@ -836,8 +838,30 @@ def _deep_merge(base: dict, updates: dict) -> None:
             base[key] = value
 
 
+class _ContextCopyingThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
+    """Run each submitted call in a copy of the submitting thread's context.
+
+    Installed as the loop's default executor, so ``run_in_executor(None, ...)``
+    and asyncio's own executor work (``loop.getaddrinfo``) see the context
+    variables of the task that scheduled them, like ``asyncio.to_thread`` does.
+    The copy is taken at submit time, so each call gets its own snapshot.
+    """
+
+    def submit(self, fn, /, *args, **kwargs):
+        ctx = contextvars.copy_context()
+        return super().submit(ctx.run, fn, *args, **kwargs)
+
+
 async def _run_with_model_client_cleanup(ctx: PluginContext, awaitable: Any) -> Any:
-    """Release this loop's HTTP client before an asyncio.run loop closes."""
+    """Run plugin code on this asyncio.run loop and clean up before it closes.
+
+    The loop gets a context-copying default executor; ``asyncio.run`` shuts it
+    down when the loop finishes. This loop's HTTP client is released here.
+    """
+    # Same thread name prefix as asyncio's lazily created default executor.
+    asyncio.get_running_loop().set_default_executor(
+        _ContextCopyingThreadPoolExecutor(thread_name_prefix="asyncio")
+    )
     try:
         return await awaitable
     finally:

@@ -68,11 +68,8 @@ _CURRENT_LANLAN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 
 def _attach_parent_request_id(payload: Dict[str, Any]) -> None:
     """Let the host attribute this push to the invocation that made it."""
-    from plugin.core.capability_policy import policy_enabled
     from plugin.core.rpc import current_request_id
 
-    if not policy_enabled():
-        return
     parent = current_request_id()
     if parent is not None:
         payload["_rpc_parent_request_id"] = parent

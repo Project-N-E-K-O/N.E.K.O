@@ -5,10 +5,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from plugin.sdk.shared.contracts.conversations import ConversationMessage
-from plugin.sdk.shared.models.exceptions import TransportError
+from plugin.sdk.shared.models.exceptions import PermissionDeniedError, TransportError
 
 if TYPE_CHECKING:
     from plugin.sdk.shared.core.bus_context import SdkBusList
+
+
+def _raise_if_permission_denied(exc: Exception) -> None:
+    """Rebuild a host permission refusal as ``PermissionDeniedError`` and raise it."""
+    denied = PermissionDeniedError.from_exception(exc)
+    if denied is not None and denied is not exc:
+        raise denied from exc
 
 
 class SdkConversationsV2Bus:
@@ -37,17 +44,21 @@ class SdkConversationsV2Bus:
                 "conversations_v2 is not available on this host",
                 code="CAPABILITY_UNAVAILABLE",
             )
-        items = await method(
-            character=character,
-            role=role,
-            kind=kind,
-            input_source=input_source,
-            origin_kind=origin_kind,
-            max_count=max_count,
-            order=order,
-            since_ts=since_ts,
-            timeout=timeout,
-        )
+        try:
+            items = await method(
+                character=character,
+                role=role,
+                kind=kind,
+                input_source=input_source,
+                origin_kind=origin_kind,
+                max_count=max_count,
+                order=order,
+                since_ts=since_ts,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            _raise_if_permission_denied(exc)
+            raise
         return SdkBusList.from_raw(
             items,
             namespace="conversations_v2",
@@ -64,7 +75,11 @@ class SdkConversationsV2Bus:
                 "conversations_v2 is not available on this host",
                 code="CAPABILITY_UNAVAILABLE",
             )
-        item = await method(message_id, timeout=timeout)
+        try:
+            item = await method(message_id, timeout=timeout)
+        except Exception as exc:
+            _raise_if_permission_denied(exc)
+            raise
         return ConversationMessage.from_payload(item) if item is not None else None
 
     def watch(
@@ -144,6 +159,7 @@ class SdkConversationsV2Bus:
                     raise TimeoutError("conversation detail request timed out")
                 return decoded
         except Exception as exc:
+            _raise_if_permission_denied(exc)
             if getattr(exc, "code", None) == "UNKNOWN_OPERATION":
                 raise TransportError(
                     str(exc),

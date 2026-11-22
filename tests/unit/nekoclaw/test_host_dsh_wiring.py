@@ -1122,9 +1122,10 @@ async def test_a_ruling_on_a_search_does_not_wait_for_its_call_for_ever_or_outli
     assert len(asked) == 3 and host.task_agents._search_rulings == {}
 
 
-async def test_an_unidentified_dsh_plugin_asks_each_time_unless_the_user_configured_it(hosts, tmp_path):
+async def test_a_dsh_plugin_tool_is_not_asked_for_unless_the_user_configured_it(hosts, tmp_path):
+    """A plugin is confirmed when it is installed; its tools run without a question, five calls as one."""
     host = _host(hosts, tmp_path, ScriptedLLM(), Installation())
-    payload = {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": "w", "default": "allow"}
+    payload = {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": "w", "default": "ask"}
     asked = []
 
     async def once(commission_id, question):
@@ -1132,16 +1133,25 @@ async def test_an_unidentified_dsh_plugin_asks_each_time_unless_the_user_configu
         return "once"
 
     host.permissions.set_asker(once)
+    for _ in range(5):
+        assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
+    assert asked == []
+
+    # The user can have every call asked for, with nothing to allow for longer.
+    await host.permission_store.set_mode("other", "always_ask")
     for _ in range(2):
         assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
     assert asked == [("once", "deny")] * 2
 
-    await host.permission_store.set_mode("other", "allow")
-    assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
     await host.permission_store.set_mode("other", "deny")
     refused = await host.task_agents._cb_permission("c1", payload)
     assert refused["allow"] is False and "settings" in refused["reason"]
     assert len(asked) == 2
+
+    # Another category left on auto is still asked for at each call.
+    command = {"tool": "plugin_shell", "category": "run_command", "command": "dir", "cwd": "w", "workdir": "w", "default": "ask"}
+    await host.task_agents._cb_permission("c1", command)
+    assert len(asked) == 3
 
 
 # ---------------------------------------------------------------------------

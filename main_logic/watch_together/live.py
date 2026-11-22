@@ -218,7 +218,7 @@ async def compose(manager, *, mode: str, callbacks, video: dict, language: str,
     )
     from main_logic.core.callback_render import _build_callback_instruction
     from utils.tokenize import truncate_to_tokens
-    from .engine import structured_json_completion, vision_model_config
+    from .engine import image_json_completion, vision_model_choice
 
     async def bounded(text, budget):
         text = str(text or "").strip()
@@ -259,10 +259,11 @@ async def compose(manager, *, mode: str, callbacks, video: dict, language: str,
     if cm is None:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
-    cfg = await vision_model_config(cm)
-    value = await structured_json_completion(
-        cfg, system, content, {}, _validator(mode),
-        stage=f"Live {mode}", label=f"live_{mode}", max_completion_tokens=1024)
+    choice = await vision_model_choice(cm)
+    value = await image_json_completion(
+        choice, system, content, {}, _validator(mode),
+        stage=f"Live {mode}", label=f"live_{mode}", where="watch-together live",
+        max_completion_tokens=1024)
     raw = [value["line"]] if mode == "interject" else [value["summary"], *value.get("replies", [])[:MAX_REPLIES]]
     lines = []
     for line in raw:
