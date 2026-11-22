@@ -40,7 +40,8 @@ logger = get_logger("server.plugins.permission_push")
 
 PUSH_TIMEOUT_SECONDS = 5.0
 # Host table busy (a start or stop holds it): look again after this long, up
-# to this many times in a row before giving up on that update.
+# to this many times in a row; after that the update is kept and retried on
+# the slower backoff below until a lookup succeeds.
 HOSTS_BUSY_RETRY_SECONDS = 0.2
 HOSTS_BUSY_MAX_RETRIES = 25
 # Not delivered (send failed, or built without reading the grant store):
@@ -48,6 +49,10 @@ HOSTS_BUSY_MAX_RETRIES = 25
 # snapshot read from the store is delivered or the plugin stops.
 READ_RETRY_SECONDS = 5.0
 READ_RETRY_MAX_SECONDS = 60.0
+# Consecutive failed sends to one plugin: the first is logged as an error,
+# then one line per this many more.
+SEND_FAILURE_LOG_EVERY = 10
+_send_failures: dict[str, int] = {}
 # Waiting for the host table lock; a busy table is retried, not logged here.
 HOSTS_LOCK_TIMEOUT_SECONDS = 0.2
 
@@ -101,6 +106,7 @@ async def _deliver(plugin_id: str, host: Any | None = None) -> tuple[str, bool]:
         host = hosts.get(plugin_id)
     push = getattr(host, "push_permissions", None)
     if host is None or not callable(push):
+        _send_failures.pop(plugin_id, None)
         return NOT_RUNNING, False
     try:
         if not host.is_alive():
@@ -114,13 +120,22 @@ async def _deliver(plugin_id: str, host: Any | None = None) -> tuple[str, bool]:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.error(
-            "permission update was not delivered to the plugin process: plugin_id={}, revision={}, error={}",
-            plugin_id,
-            snapshot.get("revision"),
-            type(exc).__name__,
-        )
+        failures = _send_failures.get(plugin_id, 0) + 1
+        _send_failures[plugin_id] = failures
+        # Every failure is retried; the first of a run is an error and later
+        # ones are summarised every SEND_FAILURE_LOG_EVERY attempts.
+        if failures == 1 or failures % SEND_FAILURE_LOG_EVERY == 0:
+            logger.error(
+                "permission update was not delivered to the plugin process: plugin_id={}, revision={}, "
+                "error={}, failures_in_a_row={}",
+                plugin_id,
+                snapshot.get("revision"),
+                type(exc).__name__,
+                failures,
+            )
         return FAILED, read_failed
+    if _send_failures.pop(plugin_id, None):
+        logger.info("permission updates reach the plugin process again: plugin_id={}", plugin_id)
     return SENT, read_failed
 
 
@@ -275,13 +290,17 @@ class PermissionPushService:
             self._retry_later(key, HOSTS_BUSY_RETRY_SECONDS)
             return
         # Still busy: keep the update, but fall back to the slower retry
-        # backoff instead of polling the lock.
-        self._busy_retries.pop(key, None)
+        # backoff instead of polling the lock. The count stays exhausted until
+        # a lookup succeeds, so later busy lookups go straight to the backoff
+        # and the warning is logged once per busy stretch.
+        first = count == HOSTS_BUSY_MAX_RETRIES + 1
         if key == "*":
-            logger.warning("host table stayed busy; permission update to every plugin retried later")
+            if first:
+                logger.warning("host table stayed busy; permission update to every plugin retried later")
             self._retry_later(key, READ_RETRY_SECONDS)
         else:
-            logger.warning("host table stayed busy; permission update retried later: plugin_id={}", key)
+            if first:
+                logger.warning("host table stayed busy; permission update retried later: plugin_id={}", key)
             self._schedule_retry(key)
 
     def _spawn(self, plugin_id: str) -> None:

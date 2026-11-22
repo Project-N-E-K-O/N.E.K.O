@@ -64,6 +64,7 @@ def store(monkeypatch, manager):
     monkeypatch.setattr(permission_service, "_last_records", {})
     monkeypatch.setattr(permission_service, "_removals", {})
     monkeypatch.setattr(permission_service, "_reloads", 0)
+    monkeypatch.setattr(permission_push, "_send_failures", {})
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", None)
     return store
@@ -417,6 +418,7 @@ async def test_a_failed_push_is_logged(monkeypatch, store, hosts):
     assert await permission_push.push_permissions("demo") is False
     (level, line), = log.lines
     assert level == "error" and "plugin_id=demo" in line and "RuntimeError" in line
+    assert "failures_in_a_row=1" in line
 
 
 @pytest.mark.parametrize(
@@ -876,6 +878,7 @@ def test_the_first_read_is_remembered_even_though_it_loads_the_store(monkeypatch
     monkeypatch.setattr(permission_service, "_last_records", {})
     monkeypatch.setattr(permission_service, "_removals", {})
     monkeypatch.setattr(permission_service, "_reloads", 0)
+    monkeypatch.setattr(permission_push, "_send_failures", {})
     monkeypatch.setattr(
         plugin_permissions, "_change_listeners", [permission_service._on_store_change]
     )
@@ -932,3 +935,57 @@ def test_a_read_overtaken_by_reloads_twice_is_not_remembered(monkeypatch, store)
     monkeypatch.setattr(permission_service, "permission_record", always_reloading)
     permission_service.permission_snapshot("demo")
     assert "demo" not in permission_service._last_records
+
+
+async def test_a_busy_stretch_logs_one_warning_and_stays_on_the_backoff(monkeypatch, service, store, hosts):
+    monkeypatch.setattr(permission_push, "HOSTS_BUSY_RETRY_SECONDS", 0.001)
+    monkeypatch.setattr(permission_push, "HOSTS_BUSY_MAX_RETRIES", 2)
+    monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(permission_push, "READ_RETRY_MAX_SECONDS", 0.01)
+    log = Log()
+    monkeypatch.setattr(permission_push, "logger", log)
+    host = hosts["demo"] = Host()
+    host.set_initial_permissions(permission_service.permission_snapshot("demo"))
+    await _until(lambda: _idle(service))
+    busy["left"] = 8  # 2 quick polls, then several slow retries while still busy
+    await asyncio.to_thread(store.decide, "demo", MEMORY_READ, "granted")
+    await _until(lambda: host.permissions.get(MEMORY_READ).status == "granted" and _idle(service))
+    assert busy["left"] == 0
+    warnings = [line for level, line in log.lines if level == "warning"]
+    assert len(warnings) == 1
+    assert "demo" not in service._busy_retries
+
+
+def test_a_failed_re_read_after_a_reload_keeps_the_first_read(monkeypatch, store):
+    store.decide("demo", MEMORY_READ, "granted")
+    real_record = permission_service.permission_record
+    calls = {"n": 0}
+
+    def reload_then_fail(plugin_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            record = real_record(plugin_id)
+            permission_service._on_store_change(None)
+            return record
+        raise ServerDomainError(plugin_permissions.READ_FAILED, "x", 503)
+
+    monkeypatch.setattr(permission_service, "permission_record", reload_then_fail)
+    monkeypatch.setattr(permission_service, "logger", Log())
+    snapshot = permission_service.permission_snapshot("demo")
+    assert snapshot["states"][MEMORY_READ]["status"] == "granted"
+    assert not snapshot.get("read_failed")
+    assert "demo" not in permission_service._last_records
+
+
+async def test_repeated_send_failures_are_logged_sparingly(monkeypatch, store, hosts):
+    log = Log()
+    monkeypatch.setattr(permission_push, "logger", log)
+    host = hosts["demo"] = Host(fail=RuntimeError("downlink stuck"))
+    for _ in range(12):
+        assert await permission_push.push_permissions("demo") is False
+    errors = [line for level, line in log.lines if level == "error"]
+    assert len(errors) == 2  # the 1st and the 10th
+    assert "failures_in_a_row=10" in errors[1]
+    host.fail = None
+    assert await permission_push.push_permissions("demo")
+    assert any(level == "info" and "again" in line for level, line in log.lines)

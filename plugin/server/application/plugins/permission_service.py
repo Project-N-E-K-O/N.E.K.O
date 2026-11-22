@@ -365,23 +365,41 @@ def _generation(plugin_id: str) -> tuple[int, int]:
 def _read_and_remember(plugin_id: str, revision: int) -> dict:
     """Read the plugin's record and remember it for read failures, unless its
     grants changed while reading. A store (re)load during the read, usually
-    triggered by this very read, gets one re-read under the new generation."""
-    for attempt in range(2):
-        with _snapshot_lock:
-            generation = _generation(plugin_id)
-        record = permission_record(plugin_id)
-        with _snapshot_lock:
-            current = _generation(plugin_id)
-            if current == generation:
-                # Snapshots read concurrently: only a newer read replaces an older one.
-                if _last_records.get(plugin_id, (0, None))[0] < revision:
-                    _last_records[plugin_id] = (revision, copy.deepcopy(record))
-                return record
-            if current[1] != generation[1] or attempt:
-                # This plugin's grants changed meanwhile: use the read for this
-                # snapshot, remember nothing (the change schedules a new push).
-                return record
-    return record
+    triggered by this very read, gets one re-read under the new generation;
+    if that re-read fails, the first read is used but not remembered."""
+    with _snapshot_lock:
+        generation = _generation(plugin_id)
+    record = permission_record(plugin_id)
+    with _snapshot_lock:
+        current = _generation(plugin_id)
+        if current == generation:
+            _remember(plugin_id, revision, record)
+            return record
+    if current[1] != generation[1]:
+        # This plugin's grants changed meanwhile: use the read for this
+        # snapshot, remember nothing (the change schedules a new push).
+        return record
+    generation = current
+    try:
+        again = permission_record(plugin_id)
+    except Exception as exc:
+        logger.warning(
+            "plugin permissions re-read after a store reload failed; using the first read: plugin_id={}, error={}",
+            plugin_id,
+            getattr(exc, "code", None) or type(exc).__name__,
+        )
+        return record
+    with _snapshot_lock:
+        if _generation(plugin_id) == generation:
+            _remember(plugin_id, revision, again)
+    return again
+
+
+def _remember(plugin_id: str, revision: int, record: dict) -> None:
+    # Caller holds _snapshot_lock. Snapshots read concurrently: only a newer
+    # read replaces an older one.
+    if _last_records.get(plugin_id, (0, None))[0] < revision:
+        _last_records[plugin_id] = (revision, copy.deepcopy(record))
 
 
 add_change_listener(_on_store_change)
