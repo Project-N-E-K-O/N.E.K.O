@@ -239,6 +239,7 @@ async def arun_deep_conflict_check(
                 "duplicate": 0,
                 "complementary": 0,
                 "unrelated": 0,
+                "unverified": 0,
             },
         }
 
@@ -293,6 +294,7 @@ async def arun_deep_conflict_check(
                 "duplicate": 0,
                 "complementary": 0,
                 "unrelated": 0,
+                "unverified": 0,
             },
         }
 

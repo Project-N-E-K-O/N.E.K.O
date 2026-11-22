@@ -8409,6 +8409,8 @@ class _BrowserPersonaRestoreRequest(BaseModel):
     entity: str
     entry_id: str
     version_index: int
+    expected_text: str | None = None
+    expected_replaced_at: str | None = None
 
 
 class _BrowserCorrectionResolveRequest(BaseModel):
@@ -8543,6 +8545,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                         "suppress": bool(entry.get("suppress")),
                         "permanent_suppression": bool(entry.get("permanent_suppression")),
                         "created_at": entry.get("created_at") or entry.get("promoted_at"),
+                        "subject_id": str(entry.get("subject_id") or ""),
+                        "scope_kind": str(entry.get("scope_kind") or ""),
+                        "scope_id": str(entry.get("scope_id") or ""),
                         "score": 1.0,
                     })
     except Exception as exc:
@@ -8583,6 +8588,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                 "archived": is_archived_hit,
                 "protected": False,
                 "created_at": item.get("created_at"),
+                "subject_id": str(item.get("subject_id") or ""),
+                "scope_kind": str(item.get("scope_kind") or ""),
+                "scope_id": str(item.get("scope_id") or ""),
                 "score": float(item.get("score") or 0.0),
             })
     except Exception as exc:
@@ -8603,6 +8611,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                             "text": text,
                             "status": r.get("status"),
                             "created_at": r.get("created_at"),
+                            "subject_id": str(r.get("subject_id") or ""),
+                            "scope_kind": str(r.get("scope_kind") or ""),
+                            "scope_id": str(r.get("scope_id") or ""),
                             "score": 0.8,
                         })
             except Exception as refl_exc:
@@ -8621,6 +8632,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                             "entity": str(f.get("entity") or "master"),
                             "text": text,
                             "created_at": f.get("created_at"),
+                            "subject_id": str(f.get("subject_id") or ""),
+                            "scope_kind": str(f.get("scope_kind") or ""),
+                            "scope_id": str(f.get("scope_id") or ""),
                             "score": 0.7,
                         })
             except Exception as fact_exc:
@@ -8706,10 +8720,17 @@ async def browser_restore_persona_version(request: _BrowserPersonaRestoreRequest
     with _admit_browser_character_write(name):
         try:
             updated = await runtime.persona_manager.arestore_persona_version(
-                name, request.entity, request.entry_id, request.version_index,
+                name,
+                request.entity,
+                request.entry_id,
+                request.version_index,
+                expected_text=request.expected_text,
+                expected_replaced_at=request.expected_replaced_at,
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
         except (IndexError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:
@@ -8910,8 +8931,10 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
 
 @app.post("/internal/memory/browser/directive/add")
 async def browser_add_directive(request: _BrowserDirectiveRequest):
-    from memory.user_directives import get_user_directives_manager
+    from memory.user_directives import _normalize_term, get_user_directives_manager
     name = validate_lanlan_name(request.character_name)
+    if _normalize_term(request.term) is None:
+        raise HTTPException(status_code=400, detail="Directive term must be 2..40 characters")
     with _admit_browser_character_write(name):
         assert_cloudsave_writable(
             runtime._config_manager,
@@ -8927,7 +8950,10 @@ async def browser_add_directive(request: _BrowserDirectiveRequest):
             source="manual",
         )
     if not created:
-        raise HTTPException(status_code=400, detail="Directive term must be 2..40 characters")
+        raise HTTPException(
+            status_code=409,
+            detail="Directive could not be retained because the directive list is at capacity with newer entries",
+        )
     return {"success": True, "directive": created}
 
 
@@ -8959,6 +8985,9 @@ class _BrowserRelatedMemoriesRequest(BaseModel):
     entry_id: str
     text: str = ""
     top_k: int = 4
+    subject_id: str | None = None
+    scope_kind: str | None = None
+    scope_id: str | None = None
 
 
 @app.get("/internal/memory/browser/star_map/{lanlan_name}")
@@ -9042,6 +9071,9 @@ async def browser_related_memories(
             text=request.text,
             top_k=request.top_k,
             memory_dir=runtime._config_manager.memory_dir,
+            subject_id=request.subject_id,
+            scope_kind=request.scope_kind,
+            scope_id=request.scope_id,
         )
         return {"success": True, "related": items}
     except Exception as exc:

@@ -294,6 +294,7 @@
     async function fetchOverview(characterName) {
         if (!characterName) {
             overviewData = null;
+            overviewError = '';
             starMapData = null;
             relatedCheckContext = null;
             snapshotsList = [];
@@ -306,6 +307,10 @@
             return;
         }
         const reqId = ++loadingRequestId;
+        overviewError = '';
+        overviewData = null;
+        renderImprintPanel();
+        renderProfilePanel();
         fetchStarMap(characterName);
         fetchSnapshots(characterName);
         try {
@@ -628,9 +633,10 @@
         }
     }
 
-    async function checkRelatedMemoriesAfterMutation(kind, entryId, text, expectedChar) {
+    async function checkRelatedMemoriesAfterMutation(kind, entryId, text, expectedChar, scopeMeta) {
         const targetChar = expectedChar || activeCharacter;
         if (!targetChar || targetChar !== activeCharacter || !text) return;
+        const scope = scopeMeta || {};
         try {
             const resp = await postJsonWithCsrf(
                 '/api/memory/related/' + encodeURIComponent(targetChar),
@@ -639,6 +645,9 @@
                     entry_id: entryId || '',
                     text: text,
                     top_k: 4,
+                    subject_id: scope.subject_id || '',
+                    scope_kind: scope.scope_kind || '',
+                    scope_id: scope.scope_id || '',
                 }
             );
             const data = await resp.json();
@@ -1065,6 +1074,7 @@
                     onClick: function () {
                         overviewError = '';
                         renderImprintPanel();
+                        renderProfilePanel();
                         fetchOverview(activeCharacter);
                     },
                 }),
@@ -1860,7 +1870,11 @@
                         }, tr('memory.savedToast', '已保存修改'));
                     }
                     if (ok && targetChar === activeCharacter) {
-                        checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text || nextText, targetChar);
+                        checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text || nextText, targetChar, {
+                            subject_id: item.subject_id || '',
+                            scope_kind: item.scope_kind || '',
+                            scope_id: item.scope_id || '',
+                        });
                     }
                 },
             });
@@ -1966,7 +1980,11 @@
                         }, tr('memory.forgottenToast', '已遗忘该条记忆'));
                     }
                     if (ok && targetChar === activeCharacter) {
-                        checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text, targetChar);
+                        checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text, targetChar, {
+                            subject_id: item.subject_id || '',
+                            scope_kind: item.scope_kind || '',
+                            scope_id: item.scope_id || '',
+                        });
                     }
                 },
             }));
@@ -1998,6 +2016,8 @@
                                     entity: item.entity,
                                     entry_id: item.id,
                                     version_index: vh.index,
+                                    expected_text: vh.text || '',
+                                    expected_replaced_at: vh.replaced_at || '',
                                 }, tr('memory.restoredVersionToast', '已恢复为该历史版本'));
                             },
                         }),

@@ -1301,18 +1301,19 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
     char_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Cross-process UserDirectivesManager cache coherence
-    dm_main = UserDirectivesManager()
-    dm_mem = UserDirectivesManager()
-    dm_main._config_manager = cm
-    dm_mem._config_manager = cm
-    base_ts = 1_700_100_000.0
-    assert dm_main.get_active_terms(char_name, now=base_ts) == []
-    await dm_mem.arecord(char_name, locale="zh", kind="ban_topic", term="加班", now=base_ts)
-    assert "加班" in dm_main.get_active_terms(char_name, now=base_ts + 1)
-    assert await dm_mem.aremove(char_name, "加班") is True
-    assert dm_main.get_active_terms(char_name, now=base_ts + 2) == []
-    dm_main.invalidate_cache(char_name)
-    assert dm_main.get_active_terms(char_name, now=base_ts + 3) == []
+    with patch("memory.user_directives.get_config_manager", return_value=cm):
+        dm_main = UserDirectivesManager()
+        dm_mem = UserDirectivesManager()
+        dm_main._config_manager = cm
+        dm_mem._config_manager = cm
+        base_ts = 1_700_100_000.0
+        assert dm_main.get_active_terms(char_name, now=base_ts) == []
+        await dm_mem.arecord(char_name, locale="zh", kind="ban_topic", term="加班", now=base_ts)
+        assert "加班" in dm_main.get_active_terms(char_name, now=base_ts + 1)
+        assert await dm_mem.aremove(char_name, "加班") is True
+        assert dm_main.get_active_terms(char_name, now=base_ts + 2) == []
+        dm_main.invalidate_cache(char_name)
+        assert dm_main.get_active_terms(char_name, now=base_ts + 3) == []
 
     # 2. Ambiguous duplicate fact_id rejected in aedit_fact_manual & aarchive_fact_manual
     _write_json(
@@ -1322,15 +1323,21 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
             {"id": "dup_f1", "entity": "master", "subject_id": "friend", "text": "朋友喜欢绿茶"},
         ],
     )
-    fs = FactStore(config_manager=cm)
-    with pytest.raises(ValueError, match="Ambiguous"):
-        await fs.aedit_fact_manual(char_name, "dup_f1", "改喝美式")
-    with pytest.raises(ValueError, match="Ambiguous"):
-        await fs.aarchive_fact_manual(char_name, "dup_f1")
+    with (
+        patch("memory.facts.get_config_manager", return_value=cm),
+        patch("memory.facts.assert_cloudsave_writable"),
+    ):
+        fs = FactStore()
+        fs._config_manager = cm
+        with pytest.raises(ValueError, match="Ambiguous"):
+            await fs.aedit_fact_manual(char_name, "dup_f1", "改喝美式")
+        with pytest.raises(ValueError, match="Ambiguous"):
+            await fs.aarchive_fact_manual(char_name, "dup_f1")
 
     # 3. rebuild_fact_index skips malformed dict/list/bool IDs without raising TypeError
     ti = TimeIndexedMemory.__new__(TimeIndexedMemory)
     ti.engines = {}
+    ti._assert_timeindex_writable = lambda _name: None
     ti._ensure_engine_exists = lambda _name: True
     ti._ensure_fts_table = lambda _name: True
     ti.FACTS_FTS_TABLE = "facts_fts"
@@ -1355,16 +1362,20 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
             return _FakeConn()
 
     ti.engines[char_name] = _FakeEngine()
-    count = ti.rebuild_fact_index(
-        char_name,
-        [
-            {"id": ["bad"], "text": "malformed list id"},
-            {"id": {"k": "v"}, "text": "malformed dict id"},
-            {"id": True, "text": "malformed bool id"},
-            {"id": "ok_str", "text": "valid string fact"},
-            {"id": 42, "text": "valid int fact"},
-        ],
-    )
+    with (
+        patch("memory.timeindex.get_config_manager", return_value=cm),
+        patch("memory.timeindex.collect_stop_names", return_value=set()),
+    ):
+        count = ti.rebuild_fact_index(
+            char_name,
+            [
+                {"id": ["bad"], "text": "malformed list id"},
+                {"id": {"k": "v"}, "text": "malformed dict id"},
+                {"id": True, "text": "malformed bool id"},
+                {"id": "ok_str", "text": "valid string fact"},
+                {"id": 42, "text": "valid int fact"},
+            ],
+        )
     assert count == 2
     assert [fid for fid, _ in inserted] == ["ok_str", 42]
 
@@ -1391,9 +1402,129 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
     )
     overview = build_memory_overview(char_name, memory_dir=cm.memory_dir)
     dup_pairs = {
-        frozenset((d["entry_a"]["id"], d["entry_b"]["id"]))
-        for d in overview["duplicate_suggestions"]
+        frozenset((d["a_id"], d["b_id"]))
+        for d in overview["memories"]["near_duplicates"]
         if d.get("kind") == "fact"
     }
     assert frozenset(("sf1", "sf2")) in dup_pairs
+
+    # 5. Cascade related-memory lookup stays within the original memory's subject/scope
+    from memory.analytics.star_map import find_related_memories
+
+    _write_json(
+        char_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {
+                        "id": "p_priv",
+                        "text": "每天早上都会喝一杯燕麦拿铁",
+                        "source": "reflection",
+                    }
+                ]
+            }
+        },
+    )
+    _write_json(
+        char_dir / "facts.json",
+        [
+            {
+                "id": "f_priv",
+                "entity": "master",
+                "text": "每天早上都会喝一杯燕麦拿铁提神",
+            },
+            {
+                "id": "f_other_scope",
+                "entity": "master",
+                "subject_id": "guest_alice",
+                "scope_kind": "group",
+                "scope_id": "grp_1",
+                "text": "每天早上都会喝一杯燕麦拿铁",
+            },
+            {
+                "id": "f_other_scope_2",
+                "entity": "master",
+                "subject_id": "guest_alice",
+                "scope_kind": "group",
+                "scope_id": "grp_1",
+                "text": "每天早上都会喝一杯燕麦拿铁加冰",
+            },
+        ],
+    )
+    rel_priv = find_related_memories(
+        char_name,
+        kind="persona",
+        entry_id="p_priv",
+        text="每天早上都会喝一杯燕麦拿铁",
+        memory_dir=cm.memory_dir,
+    )
+    rel_priv_ids = {r["id"] for r in rel_priv}
+    assert "f_priv" in rel_priv_ids
+    assert "f_other_scope" not in rel_priv_ids
+
+    # Forgotten scoped entry passes explicit scope and only sees same-scope candidates
+    rel_scoped = find_related_memories(
+        char_name,
+        kind="fact",
+        entry_id="f_forgotten",
+        text="每天早上都会喝一杯燕麦拿铁",
+        memory_dir=cm.memory_dir,
+        subject_id="guest_alice",
+        scope_kind="group",
+        scope_id="grp_1",
+    )
+    rel_scoped_ids = {r["id"] for r in rel_scoped}
+    assert "f_other_scope" in rel_scoped_ids
+    assert "f_priv" not in rel_scoped_ids
+    assert "p_priv" not in rel_scoped_ids
+
+    # 6. Persona version restore rejects stale expected_text / expected_replaced_at
+    from memory.event_log import EventLog
+    from memory.persona.manager import PersonaManager
+
+    _write_json(
+        char_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {
+                        "id": "p_hist",
+                        "text": "当前版本",
+                        "source": "reflection",
+                        "version_history": [
+                            {"text": "版本二", "replaced_at": "2026-05-02T10:00:00", "reason": "manual_edit"},
+                            {"text": "版本三", "replaced_at": "2026-05-03T10:00:00", "reason": "manual_edit"},
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+    with (
+        patch("memory.event_log.get_config_manager", return_value=cm),
+        patch("memory.persona.manager.get_config_manager", return_value=cm),
+        patch("memory.persona.persistence.assert_cloudsave_writable"),
+        patch("memory.persona.facts.assert_cloudsave_writable"),
+    ):
+        ev_log = EventLog()
+        pm = PersonaManager(event_log=ev_log)
+        pm._config_manager = cm
+        with pytest.raises(LookupError):
+            await pm.arestore_persona_version(
+                char_name,
+                "master",
+                "p_hist",
+                0,
+                expected_text="版本一",
+                expected_replaced_at="2026-05-01T10:00:00",
+            )
+        restored = await pm.arestore_persona_version(
+            char_name,
+            "master",
+            "p_hist",
+            0,
+            expected_text="版本二",
+            expected_replaced_at="2026-05-02T10:00:00",
+        )
+        assert restored is not None and restored["text"] == "版本二"
 

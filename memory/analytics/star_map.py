@@ -54,7 +54,14 @@ from utils.logger_config import get_module_logger
 from utils.tokenize import count_tokens, truncate_to_tokens
 from utils.token_tracker import set_call_type
 
-from .imprint import _CORE_ENTITIES, _META_ENTITY, _read_json_safe, _strength_level, _text_bigrams
+from .imprint import (
+    _CORE_ENTITIES,
+    _META_ENTITY,
+    _entry_subject_scope_key,
+    _read_json_safe,
+    _strength_level,
+    _text_bigrams,
+)
 
 try:
     from memory.embeddings import decode_embedding
@@ -130,6 +137,10 @@ def _collect_memory_entries(char_dir: Path, now_dt: datetime) -> list[dict[str, 
                     "strength": _strength_level(score, rein),
                     "user_pinned": bool(entry.get("user_pinned")),
                     "embedding_raw": entry.get("embedding"),
+                    "scope_key": _entry_subject_scope_key(entry),
+                    "subject_id": str(entry.get("subject_id") or ""),
+                    "scope_kind": str(entry.get("scope_kind") or ""),
+                    "scope_id": str(entry.get("scope_id") or ""),
                 })
 
     reflections_raw = _read_json_safe(char_dir / "reflections.json", [])
@@ -159,6 +170,10 @@ def _collect_memory_entries(char_dir: Path, now_dt: datetime) -> list[dict[str, 
                 "strength": _strength_level(score, rein),
                 "user_pinned": False,
                 "embedding_raw": r.get("embedding"),
+                "scope_key": _entry_subject_scope_key(r),
+                "subject_id": str(r.get("subject_id") or ""),
+                "scope_kind": str(r.get("scope_kind") or ""),
+                "scope_id": str(r.get("scope_id") or ""),
             })
 
     facts_raw = _read_json_safe(char_dir / "facts.json", [])
@@ -184,6 +199,10 @@ def _collect_memory_entries(char_dir: Path, now_dt: datetime) -> list[dict[str, 
                 "strength": 3 if imp >= 9 else (2 if imp >= 7 else 1),
                 "user_pinned": False,
                 "embedding_raw": f.get("embedding"),
+                "scope_key": _entry_subject_scope_key(f),
+                "subject_id": str(f.get("subject_id") or ""),
+                "scope_kind": str(f.get("scope_kind") or ""),
+                "scope_id": str(f.get("scope_id") or ""),
             })
 
     return items
@@ -609,6 +628,9 @@ def find_related_memories(
     text: str,
     top_k: int = 4,
     memory_dir: Path | None = None,
+    subject_id: str | None = None,
+    scope_kind: str | None = None,
+    scope_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Find closely related memories for cascade review after editing/forgetting an entry."""
     base = Path(memory_dir) if memory_dir is not None else Path(get_config_manager().memory_dir)
@@ -618,17 +640,40 @@ def find_related_memories(
     if not all_items:
         return []
 
+    has_explicit_scope = any(
+        v is not None and str(v).strip() != ""
+        for v in (subject_id, scope_kind, scope_id)
+    )
+    requested_scope_key = _entry_subject_scope_key({
+        "subject_id": subject_id,
+        "scope_kind": scope_kind,
+        "scope_id": scope_id,
+    })
+
     target_vec = None
     target_text = str(text or "").strip()
-    candidates: list[dict[str, Any]] = []
+    target_scope_key: tuple[str, str, str] | None = requested_scope_key if has_explicit_scope else None
+    raw_candidates: list[dict[str, Any]] = []
     for item in all_items:
-        if item["kind"] == kind and item["id"] == entry_id:
+        if item["kind"] == kind and item["id"] == entry_id and (
+            not has_explicit_scope or item["scope_key"] == requested_scope_key
+        ):
+            if target_scope_key is None:
+                target_scope_key = item["scope_key"]
             if item.get("embedding_raw"):
                 target_vec = decode_embedding(item["embedding_raw"])
             if not target_text:
                 target_text = item["text"]
             continue
-        candidates.append(item)
+        raw_candidates.append(item)
+
+    if target_scope_key is None:
+        target_scope_key = requested_scope_key
+
+    candidates = [
+        item for item in raw_candidates
+        if item.get("scope_key") == target_scope_key
+    ]
 
     if not candidates:
         return []
@@ -695,6 +740,9 @@ def find_related_memories(
             "created_at": item["created_at"],
             "user_pinned": item["user_pinned"],
             "strength": item["strength"],
+            "subject_id": item.get("subject_id", ""),
+            "scope_kind": item.get("scope_kind", ""),
+            "scope_id": item.get("scope_id", ""),
             "similarity": round(sim, 3),
             "method": method,
         })
@@ -709,6 +757,9 @@ async def afind_related_memories(
     text: str,
     top_k: int = 4,
     memory_dir: Path | None = None,
+    subject_id: str | None = None,
+    scope_kind: str | None = None,
+    scope_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Non-blocking async wrapper around ``find_related_memories``."""
     return await asyncio.to_thread(
@@ -719,4 +770,7 @@ async def afind_related_memories(
         text=text,
         top_k=top_k,
         memory_dir=memory_dir,
+        subject_id=subject_id,
+        scope_kind=scope_kind,
+        scope_id=scope_id,
     )

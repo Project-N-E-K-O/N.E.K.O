@@ -1372,7 +1372,14 @@ class FactsMixin:
             return dict(entry)
 
     async def arestore_persona_version(
-        self, name: str, entity_key: str, entry_id: str, version_index: int,
+        self,
+        name: str,
+        entity_key: str,
+        entry_id: str,
+        version_index: int,
+        *,
+        expected_text: str | None = None,
+        expected_replaced_at: str | None = None,
     ) -> dict | None:
         """Restore a historical text snapshot from version_history."""
         from config import PERSONA_VERSION_HISTORY_MAX
@@ -1401,6 +1408,13 @@ class FactsMixin:
             ).strip()
             if not restored_text:
                 raise ValueError("Target version snapshot is empty")
+            actual_replaced_at = str(
+                target_snap.get('replaced_at') if isinstance(target_snap, dict) else ''
+            )
+            if expected_text is not None and restored_text != str(expected_text).strip():
+                raise LookupError("Version history changed; selected snapshot no longer matches")
+            if expected_replaced_at is not None and actual_replaced_at != str(expected_replaced_at):
+                raise LookupError("Version history changed; selected snapshot timestamp no longer matches")
 
             current_text = str(entry.get('text') or '').strip()
             now_iso = datetime.now().isoformat()
