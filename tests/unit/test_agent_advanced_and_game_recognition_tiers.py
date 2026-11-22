@@ -229,3 +229,21 @@ def test_overseas_free_agent_model_keeps_the_mainland_endpoint(config_manager, m
     advanced = config_manager.get_model_api_config('agent_advanced')
     assert advanced['model'] == 'free-agent-model'
     assert 'lanlan.tech' in advanced['base_url'] and 'lanlan.app' not in advanced['base_url']
+
+
+@pytest.mark.parametrize('model_type, prefix, source, follow', SLOTS)
+def test_a_follow_value_with_spaces_still_clears_the_unused_fields(config_manager, model_type, prefix, source, follow):
+    # CodeRabbit: the runtime strips the provider; the snapshot must too, or complete stale
+    # fields with a free-route URL would stay and make a paid configuration probe the IP.
+    from utils.config_manager import ConfigManager
+
+    own = _own(prefix, Url='https://www.lanlan.tech/text/v1')
+    own[f'{prefix}ModelProvider'] = f' {follow} '
+    _write_core_config(config_manager, {
+        'coreApiKey': 'sk-core', 'coreApi': 'openai', 'assistApi': 'openai', 'assistApiKeyOpenai': 'sk-openai-test',
+        'enableCustomApi': True, **own,
+    })
+    cfg = config_manager.get_core_config()
+    key = model_type.upper() + '_MODEL'
+    assert (cfg[key], cfg[f'{key}_URL'], cfg[f'{key}_API_KEY']) == ('', '', '')
+    assert ConfigManager._config_needs_region(cfg) is False

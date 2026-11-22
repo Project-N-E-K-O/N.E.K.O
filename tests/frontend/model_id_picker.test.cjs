@@ -382,6 +382,18 @@ test('the small familiar slot mirrors the recognition slot by default, the famil
     assert.equal(context.getResolvedCustomModelId('agentSmall', 'custom'), 'typed-small');
 });
 
+test('every follower slot is loaded after the slot it follows', () => {
+    // CodeRabbit: loading a saved config walks MODEL_TYPES and a follower copies its source's
+    // fields when its provider is applied, so a source must already be filled in by then.
+    const order = Function(`${sourceBetween('const MODEL_TYPES = ', '// Model types that support')}; return MODEL_TYPES;`)();
+    const followers = Function(`${sourceBetween('const MODEL_FOLLOWERS_BY_SOURCE', 'function followedModelType(')}; return MODEL_FOLLOWERS_BY_SOURCE;`)();
+    for (const [source, list] of Object.entries(followers)) {
+        for (const follower of list) {
+            assert.ok(order.indexOf(source) < order.indexOf(follower), `${source} must come before ${follower}`);
+        }
+    }
+});
+
 test('the advanced familiar and minigame recognition slots mirror the slot they follow until set up in full', () => {
     const { context, setSlot } = createPickerContext();
     setSlot('agent', 'custom', 'my-agent-model');

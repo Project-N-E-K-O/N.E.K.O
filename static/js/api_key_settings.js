@@ -32,7 +32,9 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'memory', 'recognition', 'omni', 'agentAdvanced', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'gameRecognition', 'decision'];
+// A follower slot comes after the slot it follows: loading a saved config walks this list, and a
+// follower copies its source's fields when its own provider is applied.
+const MODEL_TYPES = ['conversation', 'memory', 'recognition', 'omni', 'agent', 'agentAdvanced', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'gameRecognition', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).

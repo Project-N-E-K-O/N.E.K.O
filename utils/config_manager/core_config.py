@@ -1577,7 +1577,8 @@ class CoreConfigMixin:
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
                 whole_follow = WHOLE_FOLLOW_SLOTS.get(prefix)
-                if whole_follow and (not provider or provider in whole_follow[2]):
+                # Stripped like the runtime dispatch, so " follow_recognition " clears the fields too.
+                if whole_follow and str(provider or '').strip() in ('', *whole_follow[2]):
                     # Followed at runtime: get_model_api_config delegates to the followed tier.
                     # Fields saved before switching must not linger in the snapshot; an old
                     # free-route URL here would wake the region probe for nothing.
