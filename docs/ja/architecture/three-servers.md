@@ -64,9 +64,9 @@ Memory Server はキャラクター別の永続メモリを管理します。liv
 
 ## Agent Server（`app/agent_server/`、ポート 48915 / 48916）
 
-`app/agent_server/__main__.py` は package の Tool Server FastAPI app を `127.0.0.1:48915` で起動します。実装は `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekoclaw_mount.py`、`nekoclaw_builtins.py` に分割されています。タスクを記録して実行する NekoClaw ホストは `nekoclaw/host/` にあります。
+`app/agent_server/__main__.py` は package の Tool Server FastAPI app を `127.0.0.1:48915` で起動します。実装は `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekoclaw_mount.py`、`nekoclaw_builtins.py` に分割されています。タスクを記録して実行する NekoPower ホストは `nekoclaw/host/` にあります。
 
-Agent startup では capability state、Agent 側 ZeroMQ bridge、agent モデルの接続確認を初期化し、NekoClaw ホストを登録します。登録では何も作りません。ホストの台帳、agent runtime、能力ゲートウェイは、最初に必要になった時点で作られます。`plugin_host.py` は isolated thread で embedded user-plugin FastAPI listener を `127.0.0.1:48916` に起動します。Listener が同一 process にあっても、user-plugin execution は feature flag と plugin lifecycle gate の対象です。
+Agent startup では capability state、Agent 側 ZeroMQ bridge、agent モデルの接続確認を初期化し、NekoPower ホストを登録します。登録では何も作りません。ホストの台帳、agent runtime、能力ゲートウェイは、最初に必要になった時点で作られます。`plugin_host.py` は isolated thread で embedded user-plugin FastAPI listener を `127.0.0.1:48916` に起動します。Listener が同一 process にあっても、user-plugin execution は feature flag と plugin lifecycle gate の対象です。
 
 ### HTTP ownership
 

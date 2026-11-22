@@ -114,7 +114,7 @@ Both routes use the plugin manager. Open it from the N.E.K.O main window:
 ![Opening Plugin Manager from the N.E.K.O main window](/images/plugins/onboarding/neko-open-plugin-manager-en.png)
 
 1. Hover over the catgirl and click the round paw button that appears.
-2. In the popup, turn on "NekoClaw Master Switch" and "User Plugin".
+2. In the popup, turn on "NekoPower"; plugins are switched on with it.
 3. Hover over the "User Plugin" row and click the "Management Panel" button that appears — Plugin Manager opens in a new window.
 
 ## 4. Share it with others
