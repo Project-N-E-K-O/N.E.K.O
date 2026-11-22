@@ -1635,7 +1635,7 @@ def test_custom_tts_without_voice_explains_core_voice_fallback(mock_page: Page, 
     expect(hint).to_contain_text("Voice Model's built-in voice")
     # Switching language rebuilds the provider dropdowns asynchronously; wait until
     # the rebuilt options are in English so it cannot race with the edits below.
-    expect(mock_page.locator("#ttsModelProvider option[value='custom']")).to_have_text("Enter manually")
+    expect(mock_page.locator("#ttsModelProvider option[value='custom']")).to_have_text("Custom API")
 
     type_voice("af_heart")
     expect(hint).to_have_css("display", "none")
