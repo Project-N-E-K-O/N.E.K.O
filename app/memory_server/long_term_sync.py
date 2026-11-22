@@ -25,7 +25,7 @@ from utils.config_manager.reserved_schema import get_character_uid
 from utils.file_utils import atomic_write_json, atomic_write_text
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 
-from . import runtime
+from . import review, runtime
 from ._shared import logger, validate_lanlan_name
 from .post_turn import _track_character_post_turn_task
 
@@ -735,6 +735,8 @@ async def _periodic_organizer_loop():
             if getattr(runtime._config_manager, 'app_docs_dir', None):
                 characters = (await runtime._config_manager.aload_characters()).get('猫娘', {})
                 for name in list(characters):
+                    if not await review.ais_character_periodic_write_admitted(name):
+                        continue
                     try:
                         await resume_owed_capture(validate_lanlan_name(name))
                         await tend_organizer(validate_lanlan_name(name))
