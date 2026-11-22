@@ -472,6 +472,9 @@ def plugin_entry(
         raise ValueError("output_schema must be a JSON schema mapping")
     if output_schema is not None:
         check_schema_depth(output_schema, "output_schema")
+        # Snapshot what was checked: the decorator reads it later, and the
+        # caller could change its dict in between.
+        output_schema = cast(Mapping[str, object], detached_copy(output_schema))
     if input_schema is not None and params is not None:
         raise ValueError("input_schema and params are mutually exclusive")
     if sum(

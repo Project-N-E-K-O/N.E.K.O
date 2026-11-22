@@ -338,6 +338,19 @@ def test_too_deep_inferred_output_schema_is_rejected_like_an_explicit_one():
     assert meta.output_schema is None
 
 
+def test_explicit_schema_is_snapshotted_when_checked():
+    schema: dict[str, object] = {"type": "object"}
+    factory = plugin_decorators.plugin_entry(id="snap", output_schema=schema)
+    # Made too deep after the check but before the decorator reads it.
+    schema["properties"] = {"x": _too_deep_schema()}
+
+    @factory
+    async def snap():
+        return {}
+
+    assert _meta_of(snap).output_schema == {"type": "object"}
+
+
 def test_router_cache_accepts_an_unhashable_callable_entry():
     import dataclasses
 
