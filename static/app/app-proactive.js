@@ -2119,7 +2119,15 @@
             var captureSourceId = null;
             var captureVia = null;
             var captureStream = null;
-            var maskSession = beginSelfUiMaskSession({ sourceId: S.selectedScreenSourceId || null, via: 'stream' });
+            var maskHintSourceId = S.selectedScreenSourceId || null;
+            var maskSession = beginSelfUiMaskSession({ sourceId: maskHintSourceId, via: 'stream' });
+            // 截图前那次取区域要和实际截的源对上：acquireOrReuseCachedStream 会改写选中源，
+            // 源变了就按实际的源重开一次（桌面壳下对不上目标的那次会被丢掉）。
+            var retargetMaskSession = function (sourceId) {
+                if ((sourceId || null) === maskHintSourceId) return;
+                maskHintSourceId = sourceId || null;
+                maskSession = beginSelfUiMaskSession({ sourceId: maskHintSourceId, via: 'stream' });
+            };
 
             // 优先前端流（缓存流 → Electron源 → 不弹窗）
             var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
@@ -2127,6 +2135,7 @@
                 // 同上：抓帧是异步的，源 ID 要跟这条流一起钉住，事后再读可能已经换人。
                 // 必须在 acquireOrReuseCachedStream 之后取——它自己就会改写这个字段。
                 var streamSourceId = S.selectedScreenSourceId;
+                retargetMaskSession(streamSourceId);
                 var frame = await captureFrameFromStream(stream, 0.8);
                 if (frame && frame.dataUrl) {
                     dataUrl = frame.dataUrl;
@@ -2160,6 +2169,7 @@
                     // S.selectedScreenSourceId 变掉，事后再读就会拿新源去解释旧帧
                     // （窗口换成屏幕 → 给一张没有 Avatar 的窗口图叠字）。
                     var nativeSourceId = S.selectedScreenSourceId;
+                    retargetMaskSession(nativeSourceId);
                     try {
                         var direct = await window.captureDesktopSourceWithTimeout(
                             desktopProvider,
@@ -2271,7 +2281,9 @@
                 return;
             }
             if (visionMessage && S.socket !== captureSocket) {
-                console.log('[ProactiveVision] 采集期间连接已更换，丢弃这一帧');
+                console.log(S.socket
+                    ? '[ProactiveVision] 采集期间连接已更换，丢弃这一帧'
+                    : '[ProactiveVision] 采集期间连接已关闭，丢弃这一帧');
                 return;
             }
             // 上面已确认 S.socket 仍是采集时那条连接。
@@ -2561,6 +2573,20 @@
         return { dataUrl: null, via: null, captureType: null, declined: true, allowDesktopFallback: false };
     }
 
+    // 截图前那次取区域要和实际截的源对上（#3474）：截图途中选中源可能被改写，
+    // 源变了就按实际的源重开一次，结果记在 captureScope 上由外层使用。
+    // captureScope.maskSession 为 null 表示沿用外层开头开的那次。
+    function retargetScopeMaskSession(captureScope, sourceId) {
+        if (!captureScope) return;
+        var id = sourceId || null;
+        if (captureScope.maskSessionVia === 'stream' && id === captureScope.maskSessionSourceId) return;
+        captureScope.maskSessionSourceId = id;
+        captureScope.maskSessionVia = 'stream';
+        captureScope.maskSession = id === captureScope.maskHintSourceId
+            ? null
+            : beginSelfUiMaskSession({ sourceId: id, via: 'stream' });
+    }
+
     async function captureProactiveChatScreenshotWithSourceInternal(captureScope) {
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
@@ -2598,6 +2624,7 @@
                 var cachedSourceId = S.selectedScreenSourceId;
                 var tracks = cachedStream.getVideoTracks();
                 if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
+                    retargetScopeMaskSession(captureScope, cachedSourceId);
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
                         if (discardSupersededRememberedFrame('缓存流截图')) {
@@ -2626,6 +2653,7 @@
             && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
             // 捕获前钉住源 ID：下面是异步的，事后再读会拿新源解释旧帧。
             var nativeSourceId = S.selectedScreenSourceId;
+            retargetScopeMaskSession(captureScope, nativeSourceId);
             try {
                 var direct = await window.captureDesktopSourceWithTimeout(
                     desktopProvider,
@@ -2663,6 +2691,7 @@
         if (stream) {
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
             var streamSourceId = S.selectedScreenSourceId;
+            retargetScopeMaskSession(captureScope, streamSourceId);
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 if (discardSupersededRememberedFrame('前端流截图')) {
@@ -2694,6 +2723,7 @@
             }
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
+                retargetScopeMaskSession(captureScope, retrySourceId);
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
                     if (discardSupersededRememberedFrame('前端流重试截图')) {
@@ -2734,7 +2764,11 @@
         // 策略2: 后端 pyautogui 兜底
         if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         // 后端整屏图的遮罩区域按 'backend' 口径取（#3474），见外层 captureProactiveChatScreenshotWithSource。
-        if (captureScope) captureScope.backendMaskSession = beginSelfUiMaskSession({ sourceId: null, via: 'backend' });
+        if (captureScope) {
+            captureScope.maskSessionSourceId = null;
+            captureScope.maskSessionVia = 'backend';
+            captureScope.maskSession = beginSelfUiMaskSession({ sourceId: null, via: 'backend' });
+        }
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
@@ -2755,7 +2789,13 @@
         }
         // 截图前先取一次聊天记录 / 选项区的位置，截完再取一次取并集（#3474）。
         var maskSession = beginSelfUiMaskSession({ sourceId: S.selectedScreenSourceId || null, via: 'stream' });
-        var captureScope = {};
+        var maskHintSourceId = S.selectedScreenSourceId || null;
+        var captureScope = {
+            maskHintSourceId: maskHintSourceId,
+            maskSessionSourceId: maskHintSourceId,
+            maskSessionVia: 'stream',
+            maskSession: null
+        };
         var shot = await captureProactiveChatScreenshotWithSourceInternal(captureScope);
         // 遮罩必须在返回（即发送）之前完成：调用方拿到的就是要发的那张图。
         if (shot && shot.dataUrl) {
@@ -2764,10 +2804,9 @@
             shot.avatarPosition = typeof window.getAvatarScreenPosition === 'function'
                 ? (window.getAvatarScreenPosition(shot.captureType || null) || null) : null;
             shot.avatarPositionPinned = true;
-            // 后端整屏兜底图：用截后端图之前按 'backend' 口径取的那次区域。
-            if (shot.via === 'backend' && captureScope.backendMaskSession) {
-                maskSession = captureScope.backendMaskSession;
-            }
+            // 实际截的源和开头的猜测不同（选中源被改写、后端整屏兜底）时，
+            // 用截图前按实际目标取的那次区域。
+            if (captureScope.maskSession) maskSession = captureScope.maskSession;
             var maskedDataUrl = await maskSelfUiInFrame(shot.dataUrl, {
                 captureType: shot.captureType || null,
                 sourceId: shot.sourceId || null,

@@ -150,7 +150,7 @@
      *
      * @returns {{known: boolean, rects: Array}} rects in 0..1 when known
      */
-    function mapViewportRectsToCapture(rects, captureType, geom) {
+    function mapViewportRectsToCapture(rects, captureType, geom, opts) {
         if (!rects || rects.length === 0) return { known: true, rects: [] };
         if (!geom) return { known: false, rects: [] };
         var originX = 0, originY = 0, refW, refH;
@@ -174,17 +174,17 @@
             return { known: false, rects: [] };
         }
         if (!(refW > 0) || !(refH > 0)) return { known: false, rects: [] };
-        return {
-            known: true,
-            rects: clipNormalizedRects(rects.map(function (r) {
-                return {
-                    x: (originX + r.x) / refW,
-                    y: (originY + r.y) / refH,
-                    width: r.width / refW,
-                    height: r.height / refH
-                };
-            }))
-        };
+        var mapped = rects.map(function (r) {
+            return {
+                x: (originX + r.x) / refW,
+                y: (originY + r.y) / refH,
+                width: r.width / refW,
+                height: r.height / refH
+            };
+        });
+        // opts.unclipped: keep off-image parts (the drag sweep clips after
+        // taking the bounding box, so an off-screen endpoint still counts).
+        return { known: true, rects: opts && opts.unclipped ? mapped : clipNormalizedRects(mapped) };
     }
 
     function clipNormalizedRects(rects) {
@@ -323,7 +323,7 @@
         };
     }
 
-    function mapLocalSample(sample, ctx, geom) {
+    function mapLocalSample(sample, ctx, geom, opts) {
         var captureType = ctx && ctx.captureType;
         if (captureType === 'viewport') {
             var tabKind = classifyTabCapture(ctx && ctx.stream);
@@ -334,12 +334,12 @@
             if (tabKind === 'other') return { known: true, rects: [] };
             // This tab is being shared: it keeps producing frames in the
             // background, so its regions are masked even while hidden.
-            if (tabKind === 'own') return mapViewportRectsToCapture(sample.rects, captureType, geom);
+            if (tabKind === 'own') return mapViewportRectsToCapture(sample.rects, captureType, geom, opts);
             // Unknown (no Capture Handle): treat a hidden page as not shown.
         }
         // A background tab is not on any screen or window capture.
         if (sample.hidden) return { known: true, rects: [] };
-        return mapViewportRectsToCapture(sample.rects, captureType, geom);
+        return mapViewportRectsToCapture(sample.rects, captureType, geom, opts);
     }
 
     // ======================== Own-tab detection (Capture Handle) ========================
@@ -455,12 +455,14 @@
         var rects = [];
         (sample.rects || []).forEach(function (r) {
             var one = { rects: [r], hidden: sample.hidden };
-            var a = mapLocalSample(one, ctx, geomA);
-            var b = mapLocalSample(one, ctx, geomB);
+            var a = mapLocalSample(one, ctx, geomA, { unclipped: true });
+            var b = mapLocalSample(one, ctx, geomB, { unclipped: true });
             var parts = [];
             if (a.known) { known = true; parts = parts.concat(a.rects); }
             if (b.known) { known = true; parts = parts.concat(b.rects); }
-            if (parts.length) rects.push(boundingRect(parts));
+            // Bounding box first, then clip: an endpoint off the image still
+            // stretches the sweep over the part of the path that is on it.
+            if (parts.length) rects = rects.concat(clipNormalizedRects([boundingRect(parts)]));
         });
         if (!sample.rects || sample.rects.length === 0) {
             // Nothing to mask in this sample; keep its known / unknown status.

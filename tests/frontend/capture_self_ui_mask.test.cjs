@@ -1229,3 +1229,55 @@ test('screenshot_response is only sent on the connection the request came in on 
     assert.match(handler, /var requestSocket = S\.socket;/);
     assert.match(handler, /S\.socket !== requestSocket/);
 });
+
+// ---------------------------------------------------------------- review round 6
+
+test('browser: window dragged in from off screen mid-capture -> the on-screen part of the sweep is covered', async () => {
+    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
+    const { w } = makeWindow({
+        elements: [history],
+        geom: { innerWidth: 1000, innerHeight: 800, outerWidth: 1000, outerHeight: 800, screenX: -400, screenY: 0, screenWidth: 2000, screenHeight: 1000 },
+        imageSizes: { [RAW_FRAME]: [2000, 1000] },
+    });
+    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    w.screenX = 500;
+    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    const fills = fillsOf(out);
+    // Region at window x = 0 (mid-drag) is [92, 208]; the old endpoint is entirely off screen.
+    assert.ok(coversRect(fills, [92, 92, 116, 116]), 'mid-drag position on screen');
+    assert.ok(coversRect(fills, [592, 92, 116, 116]), 'new position');
+    assert.deepEqual(fills, [[0, 92, 708, 116]], 'clipped to the image after the sweep');
+});
+
+test('voice heartbeat: the pre-capture sample follows the source the stream actually uses', async () => {
+    // acquireOrReuseCachedStream rewrites the selected source (null -> screen:1:0);
+    // options close right after the frame is taken.
+    const state = { optionsOpen: true };
+    const shell = shellStub(async (req) => (req.sourceId === 'screen:1:0' && state.optionsOpen
+        ? { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] } : { ok: true, rects: [] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+    const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.captureFrameFromStream = async () => { await new Promise((r) => setImmediate(r)); state.optionsOpen = false; return { dataUrl: RAW_FRAME }; };
+    vm.runInContext(proactiveSource, env.w);
+    await env.w.appProactive.sendOneProactiveVisionFrame();
+    assert.equal(env.sent.length, 1);
+    assert.deepEqual(fillsOf(env.sent[0].data), [[500, 400, 250, 200]]);
+});
+
+test('single-shot: the pre-capture sample follows the source the stream actually uses', async () => {
+    const state = { optionsOpen: true };
+    const shell = shellStub(async (req) => (req.sourceId === 'screen:1:0' && state.optionsOpen
+        ? { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] } : { ok: true, rects: [] }));
+    const env = bootProactive({ multiWindow: true, shell });
+    env.S.screenCaptureStream = null;
+    const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.captureFrameFromStream = async () => { await new Promise((r) => setImmediate(r)); state.optionsOpen = false; return { dataUrl: RAW_FRAME }; };
+    const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(shot.sourceId, 'screen:1:0');
+    assert.deepEqual(fillsOf(shot.dataUrl), [[500, 400, 250, 200]]);
+});
