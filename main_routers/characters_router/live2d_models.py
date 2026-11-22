@@ -483,7 +483,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         if model_files:
                             model_file = model_files[0]
 
-                            # The saved item_id is reported as metadata only; get it from the earlier logic.
+                            # Get saved_item_id from the earlier logic.
                             saved_item_id = (
                                 get_reserved(
                                     catgirl_data,
@@ -501,9 +501,21 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             model_path = encode_url_path(f'{url_prefix}/{url_dir}/{model_file}')
                             logger.debug(f"按模型目录构建路径: {model_path}")
 
+                            # The frontend loads the model files by item_id
+                            # (/api/live2d/model_files_by_id/<item_id>), so it must name the
+                            # folder that was found: under /workshop that is the item folder,
+                            # the first segment of url_dir. A saved id that does not match
+                            # (stale, or a non-Workshop folder) is dropped, so the frontend
+                            # looks the model up by name instead.
+                            found_item_id = ''
+                            if saved_item_id and url_prefix == '/workshop':
+                                first_segment = url_dir.split('/', 1)[0]
+                                if '/' in url_dir or first_segment == saved_item_id:
+                                    found_item_id = first_segment
+
                             model_info = {
                                 'name': live2d_model_name,
-                                'item_id': saved_item_id,
+                                'item_id': found_item_id,
                                 'path': model_path
                             }
             except Exception as e:

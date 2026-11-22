@@ -25,6 +25,7 @@ import pytest
 
 import utils.config_manager as config_manager_module
 from app import monitor, monitor_auth
+from main_routers import live2d_router
 from utils import frontend_utils
 from utils.config_manager.workshop import WorkshopMixin
 from utils.workshop_utils import (
@@ -111,12 +112,26 @@ def _main_server_client(libs):
     return TestClient(app)
 
 
-async def _fallback_url(config, model_name, item_id=""):
+async def _fallback_info(config, model_name, item_id=""):
     _set_character(config, model_name, item_id)
     body = json.loads((await live2d_models.get_current_live2d_model("Neko")).body)
     assert body["success"] is True, body
     assert body["model_info"].get("is_fallback") is not True, body
-    return body["model_info"]["path"]
+    return body["model_info"]
+
+
+async def _fallback_url(config, model_name, item_id=""):
+    return (await _fallback_info(config, model_name, item_id))["path"]
+
+
+def _model_files_by_id_client(libs, monkeypatch):
+    """Main-server mounts plus the live2d router the model manager asks for files."""
+    monkeypatch.setattr(live2d_router, "get_config_manager", lambda: libs.config)
+    monkeypatch.setattr(live2d_router, "get_workshop_path", lambda: str(libs.a))
+    monkeypatch.setattr(live2d_router, "find_models", lambda: [])
+    client = _main_server_client(libs)
+    client.app.include_router(live2d_router.router)
+    return client
 
 
 @pytest.mark.asyncio
@@ -131,19 +146,27 @@ async def test_character_fallback_url_uses_the_real_workshop_folder(libraries):
     bravo = await _fallback_url(libraries.config, "Bravo", item_id="200")
     assert charlie == "/workshop/300/Charlie/Charlie.model3.json"
     assert bravo == "/workshop/200/Bravo.model3.json"
+    # A saved id that names the folder found is kept; without one nothing is reported.
+    assert (await _fallback_info(libraries.config, "Bravo", item_id="200"))["item_id"] == "200"
+    assert (await _fallback_info(libraries.config, "Charlie"))["item_id"] == ""
     with _main_server_client(libraries) as client:
         assert client.get(charlie).status_code == 200
         assert client.get(bravo).status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_character_fallback_url_ignores_a_saved_item_id_that_is_not_the_folder(libraries):
-    """The folder is found by name; a stale saved item_id must not end up in the URL."""
+async def test_character_fallback_url_ignores_a_saved_item_id_that_is_not_the_folder(libraries, monkeypatch):
+    """The folder is found by name; a stale saved item_id must not end up in the URL or item_id."""
     _write_model(libraries.a / "300" / "Charlie", "Charlie")
-    url = await _fallback_url(libraries.config, "Charlie", item_id="999")
-    assert url == "/workshop/300/Charlie/Charlie.model3.json"
-    with _main_server_client(libraries) as client:
-        assert client.get(url).status_code == 200
+    info = await _fallback_info(libraries.config, "Charlie", item_id="999")
+    assert info["path"] == "/workshop/300/Charlie/Charlie.model3.json"
+    # The model manager loads files by item_id, so it must name the folder found.
+    assert info["item_id"] == "300"
+    with _model_files_by_id_client(libraries, monkeypatch) as client:
+        assert client.get(info["path"]).status_code == 200
+        files = client.get(f"/api/live2d/model_files_by_id/{info['item_id']}").json()
+        assert files["success"] is True, files
+        assert client.get(files["model_config_url"]).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -226,3 +249,12 @@ def test_monitor_user_mods_is_public_like_workshop(libraries, monkeypatch):
 def test_monitor_app_mounts_workshop_with_the_multi_library_app():
     mounts = {getattr(r, "path", None): r for r in monitor.app.routes}
     assert isinstance(mounts["/workshop"].app, WorkshopStaticFiles)
+
+
+@pytest.mark.asyncio
+async def test_character_fallback_drops_a_saved_item_id_outside_the_workshop(libraries):
+    """A user Live2D folder is not a Workshop item; the frontend then looks it up by name."""
+    _write_model(libraries.config.live2d_dir / "Echo", "Echo")
+    info = await _fallback_info(libraries.config, "Echo", item_id="555")
+    assert info["path"] == "/user_live2d/Echo/Echo.model3.json"
+    assert info["item_id"] == ""

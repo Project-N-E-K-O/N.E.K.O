@@ -54,6 +54,7 @@ from utils.frontend_utils import (
     find_models,
     find_workshop_item_by_id,
     find_workshop_item_model_file,
+    model_url_dir,
 )
 from utils.logger_config import get_module_logger
 from utils.url_utils import drop_non_utf8_entries, encode_url_path, is_utf8_text
@@ -1196,26 +1197,19 @@ def get_model_files_by_id(model_id: str):
         model_config_url = None
         if url_prefix:
             # URL path of model_dir under the mount that serves it.
-            if url_prefix == '/workshop':
-                if found_by_item_id:
-                    # By-id lookups return <library root>/<item_id>.
-                    model_url_dir = model_id
-                else:
-                    # By-name fallback: model_id is a model name, so use the folder's real
-                    # path under the library it was found in (e.g. <item_id>/<model_name>).
-                    model_url_dir = _model_dir_relative_to_roots(model_dir, _resolve_workshop_search_dirs()) or model_id
-            elif url_prefix == '/user_mods':
-                # Models can sit two levels deep (<mod folder>/<model_name>); keep every level.
-                model_url_dir = (_model_dir_relative_to_roots(model_dir, [get_workshop_path()])
-                                 or os.path.basename(os.path.normpath(model_dir)))
+            if found_by_item_id and url_prefix == '/workshop':
+                # By-id lookups return <library root>/<item_id>.
+                url_dir = model_id
             else:
-                # Other prefixes serve the folder that holds model_dir.
-                model_url_dir = os.path.basename(os.path.normpath(model_dir))
+                # By-name fallback (or the by-id /static fallback, static/<model_id>):
+                # the same rule as find_model_config_file, e.g. <item_id>/<model_name>
+                # under /workshop or <mod folder>/<model_name> under /user_mods.
+                url_dir = model_url_dir(model_dir, url_prefix, model_id)
             # Keep any subfolder the config file sits in.
             if model_name_subdir:
-                model_config_url = encode_url_path(f"{url_prefix}/{model_url_dir}/{model_name_subdir}/{model_config_file}")
+                model_config_url = encode_url_path(f"{url_prefix}/{url_dir}/{model_name_subdir}/{model_config_file}")
             else:
-                model_config_url = encode_url_path(f"{url_prefix}/{model_url_dir}/{model_config_file}")
+                model_config_url = encode_url_path(f"{url_prefix}/{url_dir}/{model_config_file}")
             logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url} (模型子目录: {model_name_subdir})")
         
         logger.debug(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
