@@ -230,6 +230,27 @@ def _organizer(mp, h):
     return long_term_sync._periodic_organizer_loop
 
 
+def _no_storage_fence(mp):
+    from utils import cloudsave_runtime
+
+    mp.setattr(runtime, '_memory_storage_blocked_after_init', False)
+    mp.setattr(cloudsave_runtime, 'is_write_fence_active', lambda _cm: False)
+
+
+def _habitual_phrases(mp, h):
+    from app.memory_server import habitual_phrase_loop
+
+    _no_storage_fence(mp)
+    mp.setattr(habitual_phrase_loop, '_arefresh_habitual_phrases_one', h.arecord)
+    return habitual_phrase_loop._periodic_habitual_phrase_loop
+
+
+def _event_log_compact(mp, h):
+    _no_storage_fence(mp)
+    mp.setattr(evidence_loops, '_acompact_event_log_one', h.arecord)
+    return evidence_loops._periodic_event_log_compact_loop
+
+
 CASES = [
     ('rebuttal', _rebuttal),
     ('rebuttal_disabled_cursor_advance', _rebuttal_disabled),
@@ -245,6 +266,8 @@ CASES = [
     ('signal_extraction_disabled_cursor_advance', _signal_extraction_disabled),
     ('received_extraction', _received_extraction),
     ('long_term_organizer', _organizer),
+    ('habitual_phrases', _habitual_phrases),
+    ('event_log_compact', _event_log_compact),
 ]
 
 
@@ -274,6 +297,7 @@ async def test_loop_skips_fenced_character_and_resumes_after_release(
 
 
 SERIAL_CASES = [
+    ('rebuttal_disabled_cursor_advance', _rebuttal_disabled),
     ('idle_maintenance', _idle_maintenance),
     ('slow_memory_recheck', _slow_recheck),
     ('persona_refine', _persona_refine),
@@ -282,6 +306,8 @@ SERIAL_CASES = [
     ('reflection_synthesis', _reflection_synthesis),
     ('received_extraction', _received_extraction),
     ('long_term_organizer', _organizer),
+    ('habitual_phrases', _habitual_phrases),
+    ('event_log_compact', _event_log_compact),
 ]
 
 

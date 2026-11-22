@@ -342,7 +342,7 @@ async def _periodic_rebuttal_loop():
                     # A fenced name keeps its cursor. If the rename / delete rolls back
                     # and strong memory is turned on before the next round, the first
                     # round catches up on the whole disabled-period backlog (rare, accepted).
-                    if not review.is_character_periodic_write_admitted(name):
+                    if not await review.ais_character_periodic_write_admitted(name):
                         continue
                     try:
                         await runtime.cursor_store.aset_cursor(
@@ -1377,6 +1377,8 @@ async def _acompact_event_logs_once() -> None:
         logger.debug(f"[EventLogCompact] 加载角色列表失败: {e}")
         return
     for raw_name in raw_names:
+        if not await review.ais_character_periodic_write_admitted(raw_name):
+            continue
         await _acompact_event_log_one(raw_name)
 
 
