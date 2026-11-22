@@ -8,13 +8,13 @@
       v-model="text"
       type="textarea"
       :autosize="{ minRows: 8, maxRows: 24 }"
-      :readonly="readonly"
+      :readonly="readonly || !ready"
       :placeholder="t('power.space.rules.placeholder')"
       :aria-label="t('power.space.tabs.rules')"
       data-testid="rules-text"
     />
     <div v-if="!readonly" class="actions">
-      <el-button type="primary" :loading="saving" :disabled="text === saved" data-testid="rules-save" @click="save">
+      <el-button type="primary" :loading="saving" :disabled="!ready || text === saved" data-testid="rules-save" @click="save">
         {{ t('power.space.rules.save') }}
       </el-button>
       <span v-if="justSaved" class="muted" role="status">{{ t('power.space.rules.saved') }}</span>
@@ -33,6 +33,8 @@ const props = defineProps<{ scope: SpaceScope; readonly?: boolean }>()
 const { t, te } = useI18n()
 const text = ref('')
 const saved = ref('')
+// Whether what is shown was read for the scope that is shown: only then can it be changed and saved.
+const ready = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const justSaved = ref(false)
@@ -44,10 +46,14 @@ async function load() {
   const mine = ++turn
   loading.value = true
   justSaved.value = false
+  // What was shown belongs to the scope the user left, what was typed there included.
+  ready.value = false
+  text.value = saved.value = ''
   try {
     const answer = await readRules(props.scope)
     if (mine !== turn) return
     text.value = saved.value = answer.text
+    ready.value = true
     error.value = ''
   } catch (failure) {
     if (mine === turn) error.value = describeConsoleError(failure, t, te)
@@ -57,15 +63,19 @@ async function load() {
 }
 
 async function save() {
+  if (!ready.value) return
+  const mine = turn
   saving.value = true
   justSaved.value = false
   try {
     const answer = await writeRules(text.value, props.scope)
+    // The user went to another scope meanwhile: what came back is not what is shown.
+    if (mine !== turn) return
     text.value = saved.value = answer.text
     error.value = ''
     justSaved.value = true
   } catch (failure) {
-    error.value = describeConsoleError(failure, t, te)
+    if (mine === turn) error.value = describeConsoleError(failure, t, te)
   } finally {
     saving.value = false
   }

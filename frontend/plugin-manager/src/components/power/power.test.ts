@@ -200,7 +200,8 @@ describe('the context tab', () => {
     expect((byTest('window-save') as HTMLButtonElement).disabled).toBe(true)
     await type('window-compact-at', '90000')
     await click(byTest('window-save'))
-    expect(api.setWindow).toHaveBeenCalledWith({ compact_at: 90000 })
+    // With the model the settings were read for: they are not to be written to another.
+    expect(api.setWindow).toHaveBeenCalledWith({ model: 'agent-model', compact_at: 90000 })
     expect((byTest('window-save') as HTMLButtonElement).disabled).toBe(true)
   })
 
@@ -211,9 +212,22 @@ describe('the context tab', () => {
     await click(byTest('window-idle-on')?.querySelector('input'))
     expect((document.querySelector('[data-testid="window-idle"] input') as HTMLInputElement).disabled).toBe(true)
     await click(byTest('window-save'))
-    expect(api.setWindow).toHaveBeenCalledWith({ idle_compact_on: false })
+    expect(api.setWindow).toHaveBeenCalledWith({ model: 'agent-model', idle_compact_on: false })
     expect((byTest('window-idle-on')?.querySelector('input') as HTMLInputElement).checked).toBe(false)
     expect((byTest('window-save') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('shows the settings of the model configured now when they were typed for another', async () => {
+    api.getWindow.mockResolvedValueOnce({ window: { ...modelWindow } })
+    api.setWindow.mockRejectedValue(refusal('stale'))
+    const page = await mount(WindowTab)
+    await type('window-context', '120000')
+    api.getWindow.mockResolvedValueOnce({ window: { ...modelWindow, model: 'another-model', set: 64000, window: 64000 } })
+    await click(byTest('window-save'))
+    expect(api.getWindow).toHaveBeenCalledTimes(2)
+    expect(page.textContent).toContain(words.errors.stale)
+    expect(page.textContent).toContain('another-model')
+    expect((document.querySelector('[data-testid="window-context"] input') as HTMLInputElement).value).toBe('64000')
   })
 
   it('shows that there is no model to set anything for', async () => {

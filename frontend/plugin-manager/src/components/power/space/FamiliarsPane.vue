@@ -45,7 +45,7 @@
 
         <div v-if="ask" class="ask" data-testid="familiar-ask">
           <strong>{{ t('power.space.familiars.asks') }}</strong>
-          <p class="text">{{ askText }}</p>
+          <p v-for="(line, index) in askLines" :key="index" class="text" data-testid="familiar-asked">{{ line }}</p>
           <div v-if="ask.options?.length" class="choices">
             <el-button
               v-for="option in ask.options"
@@ -152,13 +152,26 @@ const shownTitle = computed(() => {
   const key = `power.home.presets.${card.preset}`
   return card.title || (te(key) ? t(key) : card.label || card.preset)
 })
-/** What it asks, as words: the question it put, or what it wants to be allowed to do. */
-const askText = computed(() => {
+/** One of the questions of an `ask_user_question` call as a line: what it asks, then what it offers. */
+function questionLine(item: unknown): string {
+  if (!item || typeof item !== 'object') return String(item ?? '').trim()
+  const { question, options } = item as { question?: unknown; options?: unknown }
+  const labels = (Array.isArray(options) ? options : [])
+    .map(option => String((option && typeof option === 'object' ? (option as { label?: unknown }).label : option) ?? '').trim())
+    .filter(Boolean)
+  const text = String(question ?? '').trim()
+  return text && labels.length ? `${text} (${labels.join(' / ')})` : text
+}
+
+/** What it asks, as words: the question or questions it put, or what it wants to be allowed to do. */
+const askLines = computed<string[]>(() => {
   const now = ask.value
-  if (!now) return ''
-  if (now.question) return now.question
+  if (!now) return []
+  if (now.question) return [now.question]
+  const lines = (Array.isArray(now.questions) ? now.questions : []).map(questionLine).filter(Boolean)
+  if (lines.length) return lines.length > 1 ? lines.map((line, index) => `${index + 1}. ${line}`) : lines
   const detail = now.detail ?? {}
-  return [now.category, detail.tool, detail.command, detail.path].filter(Boolean).join(' · ')
+  return [[now.category, detail.tool, detail.command, detail.path].filter(Boolean).join(' · ')]
 })
 
 function choiceLabel(option: string): string {

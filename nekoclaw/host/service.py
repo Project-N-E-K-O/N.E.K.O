@@ -107,6 +107,10 @@ class ProjectBusy(RuntimeError):
     """Something is at work in a project, so where it works cannot be changed now. Its text is why (a code)."""
 
 
+class ModelChanged(RuntimeError):
+    """The task agent model is another than the one the settings were read for. Its text is the model now."""
+
+
 class NekoClawHost:
     """The task brain with its ledger, task agents and gateway."""
 
@@ -277,6 +281,8 @@ class NekoClawHost:
         )
         # Set when shutting down starts; the task finishes when it is done.
         self._shut_down = False
+        # Held while a familiar is made for the user: the name is looked for and taken in one go.
+        self._open_session_lock = asyncio.Lock()
         # Set by the first call that does work; see ``_first_use``.
         self._used = False
         self._shutdown_task: asyncio.Future[None] | None = None
@@ -633,8 +639,11 @@ class NekoClawHost:
         switches summing up idle sessions on or off. Raises ``LookupError``
         while no model is configured, ``ValueError`` for a value the store
         refuses (nothing is changed then) and ``TypeError`` for a name that
-        is none of the four.
+        is none of the four. With ``expected_model`` (the name of the
+        model the page read the settings of), raises ``ModelChanged``
+        when the model configured now is another: nothing is written.
         """
+        expected_model = changes.pop("expected_model", None)
         unknown = sorted(set(changes) - {"context_window", "compact_at", "idle_compact_after", "idle_compact_on"})
         if unknown:
             raise TypeError(f"unknown window setting: {', '.join(unknown)}")
@@ -642,6 +651,9 @@ class NekoClawHost:
         if not config or not config.get("model"):
             raise LookupError("no task agent model is configured")
         base_url, model = config.get("base_url"), config.get("model")
+        if expected_model is not None and str(model) != expected_model:
+            # The page shows the settings of one model; they are not written to another.
+            raise ModelChanged(str(model))
         store = self.model_capabilities
         before = await store.describe_window(base_url, model)
         setters = (
@@ -750,19 +762,21 @@ class NekoClawHost:
         if not any(item["valid"] and item["name"] == preset for item in await self.templates(None)):
             raise ValueError("bad_preset")
         wanted = await self._working_directory(workdir) if workdir else None
-        # Among the archived ones as well: commissions are filed by the name, and two of a name would be one.
-        if any(project.name.casefold() == name.casefold() for project in await self.space.list_projects()):
-            raise ValueError("name_taken")
-        project = await self.space.touch_project(name, workdir=str(wanted) if wanted else None, count=False)
-        if description.strip():
-            project = await self.space.describe_project(name, description, by="user") or project
-        if rules.strip():
-            await self.space.write_rules(rules, name)
-        session, _made = await self.ledger.project_session(
-            lanlan_name.strip(), name,
-            workdir=str(wanted) if wanted else None, preset=preset,
-            title=title, title_by="user", duty=duty, duty_by="user",
-        )
+        # One at a time: of two asked for at once under one name, the second finds the name taken.
+        async with self._open_session_lock:
+            # Among the archived ones as well: commissions are filed by the name, and two of a name would be one.
+            if any(project.name.casefold() == name.casefold() for project in await self.space.list_projects()):
+                raise ValueError("name_taken")
+            project = await self.space.touch_project(name, workdir=str(wanted) if wanted else None, count=False)
+            if description.strip():
+                project = await self.space.describe_project(name, description, by="user") or project
+            if rules.strip():
+                await self.space.write_rules(rules, name)
+            session, _made = await self.ledger.project_session(
+                lanlan_name.strip(), name,
+                workdir=str(wanted) if wanted else None, preset=preset,
+                title=title, title_by="user", duty=duty, duty_by="user",
+            )
         return {"project": project.to_json(), "session_id": session.id}
 
     async def set_project_workdir(self, project: str, workdir: str, *, lanlan_name: str | None = None) -> dict[str, Any]:

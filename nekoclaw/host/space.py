@@ -5756,15 +5756,21 @@ class TaskAgentSpace:
 
     # -- for the console: rules and indexes -------------------------------
 
-    async def read_rules(self, project: str | None = None) -> str:
-        return await self._read(lambda: self._read_text(self._paths().rules(project)) or "")
+    async def read_rules(self, project: str | None = None, *, archive_year: str | None = None) -> str:
+        """Return the rules of a project or of every task agent; with ``archive_year``, of an archived project."""
+        return await self._read(
+            lambda: self._read_text(self._scope(project, archive_year) / SpacePaths.RULES_NAME) or ""
+        )
 
     async def write_rules(self, text: str, project: str | None = None) -> None:
         """Write the rules as the user gave them. The host itself never calls this."""
         await self._write(lambda: self._put_text(self._paths().rules(project), text))
 
-    async def read_index(self, project: str | None = None) -> str:
-        return await self._read(lambda: self._read_text(self._paths().index(project)) or "")
+    async def read_index(self, project: str | None = None, *, archive_year: str | None = None) -> str:
+        """Return the index of a project or of every task agent; with ``archive_year``, of an archived project."""
+        return await self._read(
+            lambda: self._read_text(self._scope(project, archive_year) / SpacePaths.INDEX_NAME) or ""
+        )
 
     # -- projects ---------------------------------------------------------
 

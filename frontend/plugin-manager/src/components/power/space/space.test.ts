@@ -102,6 +102,24 @@ describe('the rules', () => {
     expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('- use Decimal\n')
   })
 
+  it('of a scope that could not be read are not shown as those of the one before, and not saved over them', async () => {
+    api.readRules.mockResolvedValueOnce({ text: '- rules of A\n' })
+    const { state } = await mount(RulesPane, { scope: { project: 'A' } })
+    await type('rules-text', '- rules of A, changed\n')
+    expect((byTest('rules-save') as HTMLButtonElement).disabled).toBe(false)
+
+    api.readRules.mockRejectedValueOnce(refusal('agent_unreachable'))
+    state.props = { scope: { project: 'B' } }
+    await flush()
+    expect(document.body.textContent).toContain(words.errors.agent_unreachable)
+    const field = document.querySelector('textarea') as HTMLTextAreaElement
+    expect(field.value).toBe('')
+    expect(field.readOnly).toBe(true)
+    expect((byTest('rules-save') as HTMLButtonElement).disabled).toBe(true)
+    await click(byTest('rules-save'))
+    expect(api.writeRules).not.toHaveBeenCalled()
+  })
+
   it('of an archived project are shown and cannot be saved', async () => {
     api.readRules.mockResolvedValue({ text: '- old rule\n' })
     await mount(RulesPane, { scope: { project: 'moving', archive_year: '2026' }, readonly: true })

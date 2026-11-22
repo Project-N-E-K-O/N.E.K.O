@@ -891,3 +891,64 @@ async def test_the_user_talks_to_a_task_agent_at_work_and_stops_it(tmp_path):
         missing = await client.post("/console/commissions/no-such-commission/stop", headers=HEADERS)
         assert missing.status_code == 404 and missing.json()["detail"]["code"] == "no_commission"
     await host.shutdown()
+
+
+async def test_settings_read_for_one_model_are_not_written_to_another(console):
+    client, _, _ = console
+    same = await client.post("/console/window", headers=HEADERS, json={"model": "agent-model", "compact_at": 80_000})
+    assert same.status_code == 200 and same.json()["window"]["compact_at_set"] == 80_000
+
+    # The page was opened while another model was configured: what it shows is not this model's.
+    other = await client.post(
+        "/console/window", headers=HEADERS,
+        json={"model": "another-model", "compact_at": 70_000, "idle_compact_on": False},
+    )
+    assert other.status_code == 409
+    assert other.json()["detail"]["code"] == "stale" and other.json()["detail"]["model"] == "agent-model"
+    window = (await client.get("/console/window", headers=HEADERS)).json()["window"]
+    assert window["compact_at_set"] == 80_000 and window["idle_compact_on"] is True
+
+    for model in (3, ""):
+        bad = await client.post("/console/window", headers=HEADERS, json={"model": model, "compact_at": 60_000})
+        assert bad.status_code == 400 and bad.json()["detail"]["code"] == "bad_name"
+    assert (await client.get("/console/window", headers=HEADERS)).json()["window"]["compact_at_set"] == 80_000
+
+
+async def test_the_rules_and_the_index_of_an_archived_project_are_read_where_it_was_archived(console):
+    client, host, _ = console
+    await host.space.touch_project("ledger-tool")
+    await client.put("/console/space/rules", headers=HEADERS, json={"text": "- the old rules\n", "project": "ledger-tool"})
+    kept = await client.post("/console/space/entries", headers=HEADERS, json={
+        "title": "Money is kept as Decimal", "content": "Floats lose cents.", "project": "ledger-tool",
+    })
+    assert kept.status_code == 200, kept.text
+    archived = await host.space.archive_project("ledger-tool", summary="done")
+    assert archived is not None and archived.archive_year
+    # A project of the same name was begun after it.
+    await host.space.touch_project("ledger-tool")
+    await client.put("/console/space/rules", headers=HEADERS, json={"text": "- the new rules\n", "project": "ledger-tool"})
+
+    old = {"project": archived.directory or archived.name, "archive_year": archived.archive_year}
+    assert (await client.get("/console/space/rules", headers=HEADERS, params=old)).json()["text"] == "- the old rules\n"
+    assert "Money is kept as Decimal" in (await client.get("/console/space/index", headers=HEADERS, params=old)).json()["text"]
+    new = {"project": "ledger-tool"}
+    assert (await client.get("/console/space/rules", headers=HEADERS, params=new)).json()["text"] == "- the new rules\n"
+    assert "Money is kept as Decimal" not in (await client.get("/console/space/index", headers=HEADERS, params=new)).json()["text"]
+    # A year without a project names nothing.
+    nothing = await client.get("/console/space/rules", headers=HEADERS, params={"archive_year": archived.archive_year})
+    assert nothing.status_code == 400
+
+
+async def test_of_two_task_agents_asked_for_at_once_under_one_name_one_is_made(familiars):
+    client, host = familiars
+
+    def ask(rules: str) -> Any:
+        return client.post("/console/familiars", headers=HEADERS, json={"name": "Ledger tool", "preset": "boss", "rules": rules})
+
+    first, second = await asyncio.gather(ask("- of the first\n"), ask("- of the second\n"))
+    assert sorted([first.status_code, second.status_code]) == [200, 400]
+    made, refused = (first, second) if first.status_code == 200 else (second, first)
+    assert refused.json()["detail"]["code"] == "name_taken"
+    # What the one that was refused sent is nowhere.
+    assert await host.space.read_rules("Ledger tool") == ("- of the first\n" if made is first else "- of the second\n")
+    assert len([project for project in await host.space.list_projects() if project.name == "Ledger tool"]) == 1

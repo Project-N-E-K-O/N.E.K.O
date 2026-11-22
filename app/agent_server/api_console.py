@@ -303,7 +303,9 @@ def build_console_router(
         Each of ``context_window``, ``compact_at`` (tokens) and
         ``idle_compact_after`` (seconds) that is given is set; ``null`` goes
         back to the setting. ``idle_compact_on`` (true or false) switches
-        summing up idle sessions on or off.
+        summing up idle sessions on or off. ``model`` is the model the
+        page shows the settings of; when the model configured now is
+        another, nothing is changed and the answer is 409 ``stale``.
         """
         payload = payload or {}
         changes: dict[str, Any] = {}
@@ -320,11 +322,21 @@ def build_console_router(
             changes[name] = value
         if not changes:
             raise _refuse(400, "nothing_to_change")
+        # The model the page read the settings of: they are not written to another one.
+        expected = payload.get("model")
+        if expected is not None:
+            if not isinstance(expected, str) or not expected:
+                raise _refuse(400, "bad_name", field="model")
+            changes["expected_model"] = expected
         host = await get_host()
         try:
             window = await host.set_model_window(**changes)
         except LookupError:
             raise _refuse(409, "no_model") from None
+        except RuntimeError as exc:
+            if type(exc).__name__ != "ModelChanged":
+                raise
+            raise _refuse(409, "stale", model=str(exc)) from None
         except ValueError as exc:
             raise _refuse(400, "out_of_range", message=str(exc)) from None
         return {"success": True, "window": window}
@@ -457,11 +469,11 @@ def build_console_router(
         return {"success": True, "project": changed}
 
     @router.get("/space/rules")
-    async def read_rules(project: str | None = None) -> dict[str, Any]:
-        """Return the rules the user wrote for a project, or for every task agent."""
+    async def read_rules(project: str | None = None, archive_year: str | None = None) -> dict[str, Any]:
+        """Return the rules the user wrote for a project (an archived one by its year), or for every task agent."""
         host = await get_host()
-        project, _ = scope(project)
-        return {"success": True, "text": await space_call(host.space.read_rules(project))}
+        project, archive_year = scope(project, archive_year)
+        return {"success": True, "text": await space_call(host.space.read_rules(project, archive_year=archive_year))}
 
     @router.put("/space/rules")
     async def write_rules(payload: dict[str, Any]) -> dict[str, Any]:
@@ -474,11 +486,11 @@ def build_console_router(
         return {"success": True, "text": await space_call(host.space.read_rules(project))}
 
     @router.get("/space/index")
-    async def read_index(project: str | None = None) -> dict[str, Any]:
-        """Return the index a task agent is given when it starts."""
+    async def read_index(project: str | None = None, archive_year: str | None = None) -> dict[str, Any]:
+        """Return the index a task agent is given when it starts; an archived project's by its year."""
         host = await get_host()
-        project, _ = scope(project)
-        return {"success": True, "text": await space_call(host.space.read_index(project))}
+        project, archive_year = scope(project, archive_year)
+        return {"success": True, "text": await space_call(host.space.read_index(project, archive_year=archive_year))}
 
     @router.get("/space/entries")
     async def list_entries(project: str | None = None, archive_year: str | None = None) -> dict[str, Any]:

@@ -75,6 +75,8 @@ export interface ModelWindow {
 }
 
 export interface WindowChanges {
+  /** The model the settings were read for; another one being configured now is answered with `stale`. */
+  model?: string
   context_window?: number | null
   compact_at?: number | null
   idle_compact_after?: number | null

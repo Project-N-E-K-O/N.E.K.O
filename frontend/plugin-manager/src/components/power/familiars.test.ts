@@ -224,6 +224,19 @@ describe('a familiar up close', () => {
     expect(api.answerCommission).toHaveBeenCalledWith('c1', { text: 'Friday', question_id: 'q2' })
   })
 
+  it('shows each of the questions it put with what it offers', async () => {
+    const questions = [
+      { id: 'a', question: 'Which day?', options: [{ label: 'Friday' }, { label: 'Saturday' }] },
+      { id: 'b', question: 'Window seat?' },
+    ]
+    const asking = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Book the train', status: 'waiting_user', started_at: 0, ask: { id: 'q3', kind: 'questions', questions } } })
+    const { container } = await show([asking])
+    const lines = [...container.querySelectorAll('[data-testid="familiar-asked"]')].map(line => line.textContent)
+    expect(lines).toEqual(['1. Which day? (Friday / Saturday)', '2. Window seat?'])
+    // Answered in words, like a question that is one.
+    expect(byTest('familiar-reply')).toBeTruthy()
+  })
+
   it('writes only the lines of the card that were changed', async () => {
     await show([card({ summary: 'Set up.' })])
     expect(byTest('familiar-summary')?.textContent).toBe('Set up.')

@@ -63,7 +63,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getWindow, setWindow } from '@/api/console'
+import { consoleErrorCode, getWindow, setWindow } from '@/api/console'
 import type { ModelWindow, WindowChanges } from '@/api/console'
 import { describeConsoleError, joinIdle, splitIdle } from './powerFormat'
 import type { IdleUnit } from './powerFormat'
@@ -123,7 +123,7 @@ async function save() {
   const now = window.value
   if (!now) return
   // Only what changed is sent: the rest stays as it is on the other side.
-  const changes: WindowChanges = {}
+  const changes: WindowChanges = { model: now.model }
   if (form.context !== now.set) changes.context_window = form.context
   if (form.compactAt !== now.compact_at_set) changes.compact_at = form.compactAt
   if (idleSeconds.value !== now.idle_compact_after_set) changes.idle_compact_after = idleSeconds.value
@@ -135,6 +135,8 @@ async function save() {
     error.value = ''
     saved.value = true
   } catch (failure) {
+    // Another model is configured now: its settings are shown in place of what was typed for the other.
+    if (consoleErrorCode(failure) === 'stale') await load()
     error.value = describeConsoleError(failure, t, te)
   } finally {
     saving.value = false
