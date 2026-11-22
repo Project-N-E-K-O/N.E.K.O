@@ -29,19 +29,10 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 剧场交接反馈、猫爪任务悬浮窗的文案，「找不到可用浏览器」的提示和删掉的
-    // OpenClaw、MCP 开关文案，加上 DeepSeek 语音合成的音色示例占位文案和自定义
-    // 语音合成不填音色时的说明（八语言）合在一起，刷新客户端缓存。
-    // 远程配对页新增八种语言的密钥获取说明，刷新客户端缓存。
-    // 补齐八语言 airBasketball 台词并同步 zh-CN 文案，刷新客户端缓存。
-    // Retire the standalone library namespace; management uses the plugin UI.
-    // 新增决策模型槽位（api.decisionModelConfig / api.decisionModelApiKeyPlaceholder）八语言文案，刷新客户端缓存。
-    // Merge main's decision-model copy with the unified knowledge manager.
-    // 新增百炼业务空间 ID（api.bailianWorkspaceId* / connectivity.error.invalid_workspace_id / connectivity.decisionFallback.*）八语言文案，刷新客户端缓存。
-    // 新增「使魔模型·小」（api.agentSmall* / api.customModelProviderFollowEmotion / api.customModelProviderFollowAgent）八语言文案，
-    // 并入记忆浏览器那批文案后的 key 结构，刷新客户端缓存。
-    // Merge chat-model settings with knowledge-manager keys; retire both previous cache versions.
-    const LOCALE_VERSION = '2026-11-22-knowledge-chat-settings-merge';
+    // 删掉 81 个零引用的旧 key（api.* 旧说明/建议/看图卡等、api.realtimeWarning、theater.actorUnavailable、character.freePresetVoices），
+    // 并改名「决策模型（专用接口）」「使魔模型·通用」「使魔模型·小型」，刷新客户端缓存。
+    // Keep upstream key pruning and knowledge-manager copy; retire both prior cache versions.
+    const LOCALE_VERSION = '2026-11-22-knowledge-locale-prune-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
