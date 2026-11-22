@@ -235,6 +235,9 @@ class _Reference:
     bound: bool | None
     function: str
     is_call: bool
+    # The root name is also rebound in this scope by a loop, with, except,
+    # walrus or unpacking target, so the resolved origin is not certain.
+    rebound: bool = False
 
 
 def _resolved_references(tree, walker: _AnalysisWalker):
@@ -250,9 +253,56 @@ def _references(tree, walker: _AnalysisWalker):
         declared, assignments = _collect_declarations(nodes, parameters, walker)
         bindings = _build_bindings(declared, inherited, nodes, walker)
         _propagate_assignments(assignments, bindings, walker)
-        yield from _emit_references(nodes, bindings, scope, walker, function)
+        rebound = _rebound_names(nodes, walker)
+        for reference in _emit_references(nodes, bindings, scope, walker, function):
+            if rebound and _root_name(reference.method) in rebound and not reference.rebound:
+                reference = _Reference(
+                    reference.node, reference.method, reference.external, reference.bound,
+                    reference.function, reference.is_call, True,
+                )
+            yield reference
 
     yield from scope(tree.body, {})
+
+
+def _root_name(method: str) -> str:
+    return re.split(r"[.(]", method, maxsplit=1)[0]
+
+
+def _target_names(target, names: set[str]) -> None:
+    if isinstance(target, ast.Name):
+        names.add(target.id)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for item in target.elts:
+            _target_names(item, names)
+    elif isinstance(target, ast.Starred):
+        _target_names(target.value, names)
+
+
+def _rebound_names(nodes, walker) -> frozenset[str]:
+    """Names (re)bound by targets the alias resolution does not follow.
+
+    Only used to weaken permission evidence; the legacy capability scan keeps
+    resolving these names exactly as before.
+    """
+    names: set[str] = set()
+    for node in nodes:
+        walker.check()
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            _target_names(node.target, names)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    _target_names(item.optional_vars, names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.NamedExpr):
+            _target_names(node.target, names)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, (ast.Tuple, ast.List)):
+                    _target_names(target, names)
+    return frozenset(names)
 
 
 def _collect_declarations(nodes, parameters, walker):
@@ -436,14 +486,21 @@ LEGACY_CAPABILITY_PERMISSIONS = {
 assert set(LEGACY_CAPABILITY_PERMISSIONS) == set(CAPABILITIES)
 
 # How a permission finding was established, strongest first.
+# resolved_call: a call whose target resolves to an SDK / standard-library
+# origin. resolved_reference: reading a resolved data attribute such as
+# os.environ. resolved_name: a resolved callable or type only named (a type
+# check, an alias, a base class), not called here. suffix_match: the name
+# matches but its receiver is not resolved. import_only: only the import.
 BASIS_RESOLVED_CALL = "resolved_call"
 BASIS_RESOLVED_REFERENCE = "resolved_reference"
+BASIS_RESOLVED_NAME = "resolved_name"
 BASIS_SUFFIX_MATCH = "suffix_match"
 BASIS_IMPORT_ONLY = "import_only"
 BASIS_DECLARED_ONLY = "declared_only"
 _BASIS_RANK = {
-    BASIS_RESOLVED_CALL: 4,
-    BASIS_RESOLVED_REFERENCE: 3,
+    BASIS_RESOLVED_CALL: 5,
+    BASIS_RESOLVED_REFERENCE: 4,
+    BASIS_RESOLVED_NAME: 3,
     BASIS_SUFFIX_MATCH: 2,
     BASIS_IMPORT_ONLY: 1,
 }
@@ -463,6 +520,7 @@ BLIND_SPOT_TYPES = (
     "not_analyzed",
 )
 
+_MODELS = "plugin_sdk.models:invoke"
 _NETWORK = "system.network:connect"
 _PROCESS = "system.process:spawn"
 _ENV = "system.env:read"
@@ -579,6 +637,10 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+# Data attributes whose mere read is the use (no call needed).
+_DATA_READS = ("os.environ", "os.environb")
+# SDK access points reported only under a permission id (no legacy name).
+_SDK_PERMISSION_SUFFIXES = ((".models.get_client", _MODELS),)
 # open()-like calls: function -> positional index of the mode argument.
 _OPEN_CALLS = {
     "builtins.open": 1,
@@ -693,18 +755,21 @@ def _open_permissions(reference: _Reference, name: str) -> tuple[tuple[str, ...]
 def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]:
     """(permission, basis, extra evidence fields) for one reference."""
     results: list[tuple[str, str, dict]] = []
-    direct = BASIS_RESOLVED_CALL if reference.is_call else BASIS_RESOLVED_REFERENCE
+    if reference.rebound:
+        direct = named = BASIS_SUFFIX_MATCH
+    else:
+        direct = BASIS_RESOLVED_CALL if reference.is_call else BASIS_RESOLVED_NAME
+        named = BASIS_RESOLVED_NAME
     if not reference.external:
+        sdk_resolved = reference.bound is True and _sdk_module(reference.method)
+        sdk_basis = direct if sdk_resolved else BASIS_SUFFIX_MATCH
         capability = _capability_for(reference.method)
         if capability:
-            sdk_resolved = reference.bound is True and _sdk_module(reference.method)
-            results.append(
-                (
-                    LEGACY_CAPABILITY_PERMISSIONS[capability],
-                    direct if sdk_resolved else BASIS_SUFFIX_MATCH,
-                    {},
-                )
-            )
+            results.append((LEGACY_CAPABILITY_PERMISSIONS[capability], sdk_basis, {}))
+        call_target = reference.method.removesuffix("()")
+        for suffix, permission in _SDK_PERMISSION_SUFFIXES:
+            if call_target.endswith(suffix):
+                results.append((permission, sdk_basis, {}))
     name = _origin_name(reference)
     if name is None:
         return results
@@ -714,7 +779,10 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
         return results
     for permission, patterns in _EXTERNAL_RULES:
         if _matches(name, patterns):
-            results.append((permission, direct, {}))
+            basis = direct
+            if not reference.is_call and _matches(name, _DATA_READS):
+                basis = named if reference.rebound else BASIS_RESOLVED_REFERENCE
+            results.append((permission, basis, {}))
     return results
 
 
@@ -741,7 +809,9 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
                 return "dynamic_import"
             return None
         if reference.is_call and name == "builtins.getattr":
-            # Constant names resolve like attribute access; see _getattr_reference.
+            # A constant name reads like attribute access; see _getattr_reference.
+            if _literal_string(_call_argument(node, 1, "name")) is not None:
+                return None
             return "reflective_access"
         if _matches(name, ("operator.attrgetter",)):
             return "reflective_access"
@@ -855,7 +925,11 @@ class _PermissionCollector:
         previous = rows.get(key)
         if previous is None:
             if len(rows) >= MAX_PERMISSION_EVIDENCE:
-                return
+                # Keep the strongest evidence: replace the weakest row.
+                weakest = min(rows, key=lambda item: _BASIS_RANK[rows[item]["basis"]])
+                if _BASIS_RANK[rows[weakest]["basis"]] >= _BASIS_RANK[basis]:
+                    return
+                del rows[weakest]
             rows[key] = {**row, "basis": basis}
         elif _BASIS_RANK[basis] > _BASIS_RANK[previous["basis"]]:
             rows[key] = {**row, "basis": basis}

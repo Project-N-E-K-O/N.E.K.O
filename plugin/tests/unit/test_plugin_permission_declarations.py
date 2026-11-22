@@ -232,6 +232,59 @@ def test_import_only_is_the_weakest_basis_and_yields_to_calls(tmp_path):
     }
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\ndef f(s):\n    return isinstance(s, socket.socket)",
+        "import httpx\ndef f(client: httpx.AsyncClient):\n    return client",
+        "import subprocess\nrunner = subprocess.run",
+    ],
+)
+def test_naming_a_callable_without_calling_it_is_weak_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"]
+    for item in report["permissions"].values():
+        assert item["basis"] not in capability_analysis.DIRECT_BASES
+    assert not [issue for issue in compare_declarations(report) if issue.severity == "error"]
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        "for os in items:\n    os.system('x')",
+        "with make() as os:\n    os.system('x')",
+        "os, other = make()\nos.system('x')",
+        "try:\n    pass\nexcept Exception as os:\n    os.system('x')",
+        "if (os := make()):\n    os.system('x')",
+        "[os.system('x') for os in items]",
+    ],
+)
+def test_names_rebound_by_other_targets_are_not_direct_evidence(tmp_path, rebinding):
+    report = _scan(tmp_path, "import os\n" + rebinding + "\n")
+    assert report["permissions"]["system.process:spawn"]["basis"] == "suffix_match"
+    assert not [issue for issue in compare_declarations(report) if issue.severity == "error"]
+
+
+def test_rebinding_does_not_change_legacy_capabilities(tmp_path):
+    source = "from .helpers import client\nfor client in clients:\n    client.push_message()\n"
+    assert _scan(tmp_path, source)["capabilities"] == []
+
+
+def test_model_client_access_is_reported_as_models_invoke(tmp_path):
+    report = _scan(tmp_path, "class P:\n    async def go(self):\n        client = self.ctx.models.get_client()\n")
+    assert report["permissions"]["plugin_sdk.models:invoke"]["basis"] == "suffix_match"
+    assert report["capabilities"] == []
+
+
+def test_evidence_cap_keeps_the_strongest_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "MAX_PERMISSION_EVIDENCE", 3)
+    weak = "\n".join("self.ctx.push_message('x')" for _ in range(5))
+    report = _scan(tmp_path, weak + "\nfrom plugin.sdk import create_card\ncreate_card()\n")
+    item = report["permissions"]["plugin_sdk.main_agent.messages:push"]
+    assert len(item["findings"]) == 3
+    assert item["basis"] == "resolved_call"
+
+
 def test_shadowed_or_plugin_owned_names_are_not_reported(tmp_path):
     report = _scan(
         tmp_path,
@@ -292,6 +345,7 @@ def test_blind_spots_are_reported(tmp_path, source, kind):
     [
         "import importlib\nimportlib.import_module('json')",
         "getattr(obj, 'name')",
+        "getattr(obj, 'not-an-identifier', None)",
         "async def f(loop):\n    await loop.run_in_executor(None, g)",
         "import asyncio\nasyncio.to_thread(g)",
         "def eval(x):\n    return x\neval('1')",
