@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增「使魔模型·小」（api.agentSmall* / api.customModelProviderFollowEmotion / api.customModelProviderFollowAgent）八语言文案，
-    // 并入记忆浏览器那批文案后的 key 结构，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-22-chat-model-rename-after-vision';
+    // 删掉 81 个零引用的旧 key（api.* 旧说明/建议/看图卡等、api.realtimeWarning、theater.actorUnavailable、character.freePresetVoices），
+    // 并改名「决策模型（专用接口）」「使魔模型·通用」「使魔模型·小型」，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-22-drop-dead-api-keys';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -1603,7 +1603,7 @@ function populateModelProviderDropdowns() {
                 sel,
                 'follow_agent',
                 'api.customModelProviderFollowAgent',
-                '跟随使魔模型'
+                '跟随使魔模型·通用'
             );
         }
 
@@ -4851,11 +4851,11 @@ function getCustomModelDisplayLabel(modelType) {
         gameMain: ['api.gameMainModelConfig', '小游戏聊天模型'],
         gameSummary: ['api.gameSummaryModelConfig', '小游戏记忆模型'],
         emotion: ['api.emotionModelConfig', '识别模型（小模型）'],
-        decision: ['api.decisionModelConfig', '决策模型（小模型）'],
-        agent: ['api.agentApiConfigTitle', '使魔模型'],
+        decision: ['api.decisionModelConfig', '决策模型（专用接口）'],
+        agent: ['api.agentApiConfigTitle', '使魔模型·通用'],
         omni: ['api.realtimeModelConfig', '实时语音（本地）'],
         tts: ['api.ttsModelConfig', '语音合成'],
-        agentSmall: ['api.agentSmallApiConfigTitle', '使魔模型·小'],
+        agentSmall: ['api.agentSmallApiConfigTitle', '使魔模型·小型'],
     };
     const [key, fallback] = labelMap[modelType] || ['', modelType];
     if (!key || !window.t) return fallback;
