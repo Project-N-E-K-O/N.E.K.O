@@ -515,8 +515,10 @@ failed), `main_server_unavailable` (the request could not reach
 (HTTP status >= 400, e.g. unknown role, or an answer that is not a JSON object), `timeout` (no answer in time, from the host
 within `request_timeout` or from `main_server` after the request was sent;
 the outcome is unknown), `host_unavailable` (the request could
-not reach the host), `not_registered` (unregister: main_server removed nothing
-of this plugin's under that name), `invalid_request`.
+not reach the host), `not_registered` (unregister: the plugin had no local
+record of the name and `main_server` removed nothing of this plugin's under
+it; with a local record the same answer is `ok=True, removed=False` and the
+local handler is dropped), `invalid_request`.
 
 Local state follows `ok`, so the plugin and the host agree:
 
@@ -536,7 +538,10 @@ Local state follows `ok`, so the plugin and the host agree:
   still be processing the register and store the tool after the cleanup
   ran, so `removed=False` does not prove nothing is left; call
   `unregister_llm_tool_async(name)` again a little later when that
-  matters. A cancelled register rolls back locally but sends no cleanup.
+  matters. Likewise, if the cleanup itself timed out it may still be
+  running on `main_server`, and a register of the same name sent right
+  after could be removed by it: wait a little before retrying. A
+  cancelled register rolls back locally but sends no cleanup.
 - `unregister_llm_tool_async` removes the handler only when `ok` is
   true. Otherwise the tool stays registered in the plugin, as it does on
   the host, so the roles that still have it keep working and calling it
@@ -546,8 +551,10 @@ Local state follows `ok`, so the plugin and the host agree:
   another source's tool of the same name.
 - `unregister_llm_tool_async(name)` also works for a name the plugin no
   longer holds locally: it is still sent to the host, for every role, so
-  a leftover on `main_server` is removed. Stopping the plugin clears
-  everything either way.
+  a leftover on `main_server` is removed. Stopping the plugin also tries
+  to clear all of the plugin's tools, but only best effort: if
+  `main_server` is unreachable at that moment, tools can stay there, so
+  check (or clear them) once it is back.
 - Async calls for the same name run one at a time, in call order, each
   waiting for the previous one's answer, also when they come from
   different event loops (e.g. an entry and an interval timer). For example,

@@ -444,8 +444,8 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
 `partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（请求没能送到 `main_server`，什么都没生效）、
 `main_server_error`（HTTP 状态码 >= 400，例如 role 不存在；或回复不是 JSON 对象）、`timeout`（没按时拿到回复：`request_timeout` 内 host 没回复，或请求已发出后
-`main_server` 没回复；结果未知）、`host_unavailable`（请求没送到 host）、`not_registered`（注销：main_server 上没有
-删掉本插件这个名字的任何工具）、`invalid_request`。
+`main_server` 没回复；结果未知）、`host_unavailable`（请求没送到 host）、`not_registered`（注销：插件本地没有这个名字的记录，
+`main_server` 上也没删到本插件的这个名字；本地有记录时同样的答复是 `ok=True, removed=False`，并删掉本地 handler）、`invalid_request`。
 
 本地状态跟着 `ok` 走，插件和 host 两边一致：
 
@@ -457,13 +457,16 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
   结果放在 `cleanup` 里（最多让这次调用多花 15 秒）。其他错误说明什么都没存下，`cleanup` 为 `None`。
   `cleanup["ok"]` 为假时，之后再调 `unregister_llm_tool_async(name)`。`timeout` 之后的清理只能尽力：
   `main_server` 可能还在处理那次注册、在清理之后才存下工具，所以 `removed=False` 不能证明什么都没留下；
-  在意的话过一会儿再调一次 `unregister_llm_tool_async(name)`。被取消的注册只回滚本地，不补发注销。
+  在意的话过一会儿再调一次 `unregister_llm_tool_async(name)`。同样，如果补发的注销本身超时，
+  它可能还在 `main_server` 上执行，紧接着发出的同名注册可能被它删掉：重试前稍等一会儿。
+  被取消的注册只回滚本地，不补发注销。
 - `unregister_llm_tool_async` 只在 `ok` 为真时删掉 handler；否则工具在插件里照旧登记，
   和 host 一致，还挂着它的 role 照常能用，再调一次就是重试。
 - host 注销时总带上 `expected_source=plugin:{plugin_id}`（plugin_id 取自插件连接本身），
   插件不可能删掉其他 source 的同名工具。
 - `unregister_llm_tool_async(name)` 对本地已经没有的名字也有效：照样发给 host、按全部 role 注销，
-  `main_server` 上的残留会被删掉。插件停止时无论如何都会全部清掉。
+  `main_server` 上的残留会被删掉。插件停止时也会尝试清掉本插件的所有工具，但只是尽力而为：
+  那一刻 `main_server` 连不上的话，工具可能还留着，等它恢复后要确认（或手动清掉）。
 - 同一个名字的 async 调用按调用顺序逐个执行，每个都等上一个的答复；来自不同事件循环（例如入口和定时器）的调用也一样。例如
   `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))` 结束后 `t` 在各处都不存在。
   不同名字之间互不等待。`request_timeout` 管整次调用，包括排在同名前面调用后面等待的时间；等待期间就用完时返回 `timeout`，这时什么都没发给 host。

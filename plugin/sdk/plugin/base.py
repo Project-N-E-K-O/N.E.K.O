@@ -220,6 +220,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self._static_ui_config: dict[str, Any] | None = None
         self._list_actions: list[dict[str, Any]] = []
         self._dynamic_entries: dict[str, dict[str, Any]] = {}
+        # Guards the duplicate check + insert of dynamic entries: plugin code
+        # runs on several threads (command loop, timer threads), and readers
+        # iterate over snapshots of the dict instead of the live view.
+        self._dynamic_entries_lock = threading.Lock()
         # plugin_id-scoped registry of LLM tools we've claimed locally.
         # Tracks (name -> LlmToolMeta) so we can re-emit IPC notifications
         # on demand and validate against duplicate registrations.
@@ -570,7 +574,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
         # Build the host message before touching local state: if building it
         # fails, nothing is half-registered and the same id can be retried.
         registration = _dynamic_entry_registration(self.plugin_id, entry_id, meta, enabled=True)
-        self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
+        with self._dynamic_entries_lock:
+            # Checked again under the lock: another thread may have taken the
+            # id since the check above.
+            if entry_id in self._dynamic_entries:
+                raise EntryConflictError(f"duplicate entry id: {entry_id!r}")
+            self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
         self._notify_host_comm(registration)
         return True
 
@@ -633,7 +642,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             ))
             seen.add(entry_id)
         if include_disabled:
-            for entry_id, item in self._dynamic_entries.items():
+            for entry_id, item in list(self._dynamic_entries.items()):
                 if entry_id in seen:
                     continue
                 entries.append(_entry_listing(
@@ -646,7 +655,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
     def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
         entries = super().collect_entries(wrap_with_hooks=wrap_with_hooks)
-        for entry_id, item in self._dynamic_entries.items():
+        # Snapshot: another thread may add or remove an entry meanwhile.
+        for entry_id, item in list(self._dynamic_entries.items()):
             if item.get("enabled", True):
                 meta = item.get("meta")
                 handler = item.get("handler")
@@ -996,16 +1006,21 @@ class NekoPluginBase(_SharedNekoPluginBase):
         register and store it after the cleanup ran, so ``removed=False``
         does not prove nothing is left; call
         :meth:`unregister_llm_tool_async` again a little later when that
-        matters. Stopping the plugin clears everything anyway. A cancelled
-        call rolls back locally but sends no cleanup.
+        matters. Likewise, if the cleanup itself timed out it may still be
+        running on main_server, and a register of the same name sent right
+        after could be removed by it: wait a little before retrying.
+        Stopping the plugin also tries to clear the plugin's tools, but
+        only best effort. A cancelled call rolls back locally but sends no
+        cleanup.
 
         Async calls for the same name run one at a time, in call order
         (each waits for the previous one's answer, also across event
         loops such as timer threads; ``request_timeout`` covers that wait
         plus this call's own request), so for example
         ``gather(register_llm_tool_async("t", ...),
-        unregister_llm_tool_async("t"))`` ends with ``t`` gone everywhere.
-        The sync calls do not take part in that ordering: use one style
+        unregister_llm_tool_async("t"))`` ends with ``t`` gone everywhere
+        (the ordering covers requests that got an answer; after a register
+        ``timeout`` see ``cleanup`` above). The sync calls do not take part in that ordering: use one style
         per tool name.
 
         Raises ``ValueError`` for invalid or dot-only names, a

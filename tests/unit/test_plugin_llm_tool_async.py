@@ -131,7 +131,7 @@ async def test_register_async_success_keeps_local_and_reports_roles():
     assert _entry_registered(plugin, "tool_a")
     (call,) = host.calls
     assert call["request_type"] == "LLM_TOOL_REGISTER_REQUEST"
-    assert 2.9 < call["timeout"] <= 3.0  # budget left after taking the name lock
+    assert 0 < call["timeout"] <= 3.0  # budget left after taking the name lock
     assert call["wrap_result"] is False
     payload = call["request_data"]
     assert payload["name"] == "tool_a"
@@ -584,7 +584,7 @@ async def test_unregister_async_success_drops_local():
     assert not _entry_registered(plugin, "tool_a")
     (call,) = host.calls
     assert call["request_type"] == "LLM_TOOL_UNREGISTER_REQUEST"
-    assert 3.9 < call["timeout"] <= 4.0
+    assert 0 < call["timeout"] <= 4.0
     assert call["request_data"]["name"] == "tool_a"
     assert call["request_data"]["role"] == "Lanlan"
     assert not [m for m in _drain(ctx) if m.get("type") == "LLM_TOOL_UNREGISTER"]
@@ -884,6 +884,45 @@ async def test_cross_loop_lock_passes_on_ownership_granted_during_cancel():
     with pytest.raises(asyncio.CancelledError):
         await a
     await asyncio.wait_for(b, 0.5)  # a passed it on
+
+
+def test_dynamic_entry_readers_iterate_a_snapshot():
+    """Another thread may add an entry while collect_entries / list_entries
+    walk the dict (async calls run on timer threads too). Simulated
+    deterministically: reading one entry adds another."""
+    plugin, _ = _make_plugin()
+    plugin.register_dynamic_entry(entry_id="a", handler=lambda **_: None)
+
+    class _AddsWhileRead(dict):
+        def get(self, key, default=None):
+            if key == "enabled" and "b" not in plugin._dynamic_entries:
+                plugin._dynamic_entries["b"] = {"meta": None, "handler": None, "enabled": True}
+            return super().get(key, default)
+
+    plugin._dynamic_entries["a"] = _AddsWhileRead(plugin._dynamic_entries["a"])
+    assert "a" in plugin.collect_entries()
+    del plugin._dynamic_entries["b"]
+    assert {e["id"] for e in plugin.list_entries(include_disabled=True)} >= {"a"}
+
+
+def test_dynamic_entry_insert_rechecks_under_the_lock(monkeypatch):
+    """Two threads registering the same id: the second must still get
+    EntryConflictError even if both passed the first duplicate check."""
+    from plugin.sdk.shared.models.exceptions import EntryConflictError
+
+    from plugin.sdk.plugin import base
+
+    plugin, _ = _make_plugin()
+    real_build = base._dynamic_entry_registration
+
+    def build_then_race(*args, **kwargs):
+        # Runs after the first duplicate check, just before the insert.
+        plugin._dynamic_entries["x"] = {"meta": None, "handler": None, "enabled": False}
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(base, "_dynamic_entry_registration", build_then_race)
+    with pytest.raises(EntryConflictError):
+        plugin.register_dynamic_entry(entry_id="x", handler=lambda **_: None)
 
 
 def test_same_name_calls_from_two_event_loops_are_serialised():

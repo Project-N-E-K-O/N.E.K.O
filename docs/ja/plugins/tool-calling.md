@@ -489,7 +489,8 @@ result = await self.unregister_llm_tool_async("custom_tool")
 `partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（リクエストが `main_server` に届かず、何も適用されていない）、
 `main_server_error`（HTTP ステータス >= 400。例：存在しない role。または JSON オブジェクトでない応答）、`timeout`（時間内に応答がなかった：`request_timeout` 内にホストが応答しなかった、
 またはリクエスト送信後に `main_server` が応答しなかった。結果は不明）、`host_unavailable`（リクエストがホストに届かなかった）、
-`not_registered`（解除：`main_server` 上でこのプラグインのその名前のツールが何も削除されなかった）、
+`not_registered`（解除：プラグイン側にその名前の記録がなく、`main_server` 上でもこのプラグインのその名前の
+ツールが何も削除されなかった。ローカルに記録がある場合、同じ応答は `ok=True, removed=False` となりローカルのハンドラを外します）、
 `invalid_request`。
 
 ローカル状態は `ok` に従うので、プラグインとホストの状態が一致します：
@@ -505,13 +506,17 @@ result = await self.unregister_llm_tool_async("custom_tool")
   `cleanup["ok"]` が偽なら、後で `unregister_llm_tool_async(name)` を呼んでください。`timeout` 後の解除は
   ベストエフォートです。`main_server` がまだ登録を処理中で、解除の後にツールを保存することがあるため、
   `removed=False` は何も残っていないことの証明になりません。重要なら少し後でもう一度
-  `unregister_llm_tool_async(name)` を呼んでください。キャンセルされた登録はローカルを取り消すだけで、解除は送りません。
+  `unregister_llm_tool_async(name)` を呼んでください。同様に、後片付けの解除自体がタイムアウトした場合は
+  まだ `main_server` 上で実行中のことがあり、直後に送った同じ名前の登録が消されることがあります。再試行の前に
+  少し待ってください。キャンセルされた登録はローカルを取り消すだけで、解除は送りません。
 - `unregister_llm_tool_async` は `ok` が真のときだけハンドラを外します。それ以外ではホスト側と同様に
   プラグイン側でも登録が残り、まだツールを持つ role は動き続け、再度呼べばリトライになります。
 - ホストは解除時に常に `expected_source=plugin:{plugin_id}`（plugin_id はプラグインの接続から取得）
   を付けるため、プラグインが別 source の同名ツールを消すことはできません。
 - `unregister_llm_tool_async(name)` はローカルにない名前にも使えます。ホストへ送られ、全 role を対象に
-  解除されるため、`main_server` 上の残留は削除されます。プラグイン停止時にはいずれにせよ全て消去されます。
+  解除されるため、`main_server` 上の残留は削除されます。プラグイン停止時にもこのプラグインのツールの消去を
+  試みますが、ベストエフォートです。その時点で `main_server` に接続できないとツールが残ることがあるため、
+  復旧後に確認（または手動で消去）してください。
 - 同じ名前の async 呼び出しは呼び出し順に 1 つずつ実行され、それぞれ前の呼び出しの応答を待ちます。
   異なるイベントループ（例：エントリとインターバルタイマー）からの呼び出しも同様です。
   例えば `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))` の後、`t` はどこにも

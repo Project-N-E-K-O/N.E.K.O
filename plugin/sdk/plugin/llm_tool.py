@@ -309,8 +309,9 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #                 the request was sent; the outcome on main_server is unknown).
 #   SDK side   -- "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "not_registered"
-#                 (unregister: nothing local and main_server removed
-#                 nothing of this plugin's under that name).
+#                 (unregister: no local record and main_server removed
+#                 nothing of this plugin's under that name; with a local
+#                 record the same answer is ok=True, removed=False).
 
 
 class LlmToolRoleFailure(TypedDict, total=False):
