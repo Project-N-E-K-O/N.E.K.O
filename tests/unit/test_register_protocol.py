@@ -357,6 +357,7 @@ def test_macos_remove_reports_unregister_failure(
     assert "[OK]" not in out
     # The bundle is kept so a rerun of --remove can still unregister it.
     assert app_dir.exists()
+    assert f"rm -rf '{app_dir}'" in out
 
 
 def test_macos_remove_without_app_skips_lsregister(monkeypatch, tmp_path) -> None:
@@ -425,18 +426,61 @@ def test_linux_remove_covers_desktop_specific_mimeapps(monkeypatch, tmp_path) ->
     assert gnome_list.read_text(encoding="utf-8") == _MIMEAPPS_AFTER
 
 
-def test_linux_remove_reports_undecodable_mimeapps(monkeypatch, tmp_path, capsys) -> None:
+def test_linux_remove_skips_non_utf8_file_without_neko_entry(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_dir = tmp_path / "xdg-config"
+    config_dir.mkdir()
+    kde_list = config_dir / "kde-mimeapps.list"
+    original = b"[Default Applications]\ntext/plain=caf\xe9.desktop\n"
+    kde_list.write_bytes(original)
+    before = kde_list.stat().st_mtime_ns
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert kde_list.read_bytes() == original
+    assert kde_list.stat().st_mtime_ns == before
+
+
+def test_linux_remove_keeps_non_utf8_bytes_when_dropping_entry(monkeypatch, tmp_path) -> None:
     _linux_home(monkeypatch, tmp_path)
     config_list = tmp_path / "xdg-config" / "mimeapps.list"
     config_list.parent.mkdir()
-    original = b"[Default Applications]\nx-scheme-handler/neko=\xff\n"
-    config_list.write_bytes(original)
+    config_list.write_bytes(
+        b"[Default Applications]\n"
+        b"text/plain=caf\xe9.desktop\n"
+        b"x-scheme-handler/neko=\xff.desktop;neko-protocol-handler.desktop\n"
+    )
     _fake_commands(monkeypatch)
 
-    assert register_protocol._remove_linux() is False
+    assert register_protocol._remove_linux() is True
 
-    assert "[FAIL]" in capsys.readouterr().out
-    assert config_list.read_bytes() == original
+    assert config_list.read_bytes() == (
+        b"[Default Applications]\n"
+        b"text/plain=caf\xe9.desktop\n"
+        b"x-scheme-handler/neko=\xff.desktop\n"
+    )
+
+
+def test_linux_remove_crlf_unterminated_last_line_leaves_no_stray_cr(
+    monkeypatch, tmp_path,
+) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_bytes(
+        b"[Default Applications]\r\n"
+        b"text/html=firefox.desktop\r\n"
+        b"x-scheme-handler/neko=neko-protocol-handler.desktop"
+    )
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_bytes() == (
+        b"[Default Applications]\r\n"
+        b"text/html=firefox.desktop"
+    )
 
 
 def test_linux_remove_refreshes_database_when_desktop_file_already_gone(

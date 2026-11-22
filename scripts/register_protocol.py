@@ -285,6 +285,8 @@ def _remove_macos() -> bool:
         if not _run_required([LSREGISTER, "-u", str(app_dir)], "lsregister"):
             print("[FAIL] neko:// protocol was not removed (macOS)")
             print(f"     App bundle left at: {app_dir}")
+            print("     Rerun --remove once lsregister works, or delete it manually:")
+            print(f"     rm -rf {_posix_shell_quote(str(app_dir))}")
             return False
         shutil.rmtree(app_dir)
     print("[OK] Removed neko:// protocol (macOS)")
@@ -362,11 +364,16 @@ def _drop_mimeapps_association(path: Path) -> None:
     path = path.resolve()
     # Work on bytes split at "\n" only, so CRLF endings and any other
     # characters are written back exactly as read.
-    lines = path.read_bytes().decode("utf-8").split("\n")
+    raw = path.read_bytes()
+    # Files without the scheme are never rewritten, whatever their encoding.
+    if LINUX_SCHEME_MIME_TYPE.encode("ascii") not in raw:
+        return
+    # surrogateescape round-trips bytes that are not valid UTF-8 unchanged.
+    lines = raw.decode("utf-8", errors="surrogateescape").split("\n")
     group = None
     changed = False
     kept: list[str] = []
-    for line in lines:
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("["):
             group = stripped
@@ -384,7 +391,11 @@ def _drop_mimeapps_association(path: Path) -> None:
             if len(remaining) != len(entries):
                 changed = True
                 if not any(e.strip() for e in remaining):
-                    # The removed line's "\n" goes with it.
+                    # The removed line's "\n" goes with it. When it was the
+                    # unterminated last line, the previous line's "\r\n"
+                    # becomes the file end, so drop its now-dangling "\r".
+                    if index == len(lines) - 1 and kept and kept[-1].endswith("\r"):
+                        kept[-1] = kept[-1][:-1]
                     continue
                 line = f"{key}={';'.join(remaining)}{ending}"
         kept.append(line)
@@ -400,7 +411,7 @@ def _drop_mimeapps_association(path: Path) -> None:
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write("\n".join(kept).encode("utf-8"))
+            stream.write("\n".join(kept).encode("utf-8", errors="surrogateescape"))
         shutil.copymode(path, tmp)
         os.replace(tmp, path)
     finally:
