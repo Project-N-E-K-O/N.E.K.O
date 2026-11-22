@@ -1346,10 +1346,10 @@
         "coreApiTitle": "음성 모델 제공업체는 음성 채팅을 담당합니다:",
         "freeVersionCore": "무료 버전: 무료, API 키 필요 없음, 사용 한도 있음",
         "aliCore": "Alibaba: 포괄적인 기능, 빠른 속도",
-        "glmCore": "GLM: 분 단위 과금, 음성에 기본으로 워터마크 비프음이 들어갑니다(Zhipu 콘솔에서 끌 수 있음)",
+        "glmCore": "Zhipu: 분 단위 과금, 음성에 기본으로 워터마크 비프음이 들어갑니다(Zhipu 콘솔에서 끌 수 있음)",
         "stepCore": "StepFun: 종량제, 속도 제한이 엄격하여 권장되지 않음",
         "openaiCore": "OpenAI: 가장 높은 지능 수준이지만 비용이 많이 듭니다.",
-        "geminiCore": "Gemini: 지능과 가치가 뛰어남",
+        "geminiCore": "Gemini: 지능과 가치가 뛰어남(단, 중국 본토에서는 사용할 수 없음)",
         "assistApiTitle": "범용 모델 제공업체는 채팅, 기억 정리, 사역마를 담당합니다:",
         "freeVersionAssist": "무료 버전: 무료, API 키 필요 없음. 사역마는 매일 무료 사용 횟수 제공",
         "aliAssist": "Alibaba: 권장 선택, 가장 포괄적인 기능, 사역마 지원",
@@ -4160,7 +4160,7 @@
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 모듈이 로드되지 않았습니다",
             "AGENT_NOT_INITIALIZED": "네코클로 초기화 실패",
             "AGENT_LLM_UNREACHABLE": "네코클로 LLM에 연결할 수 없습니다",
-            "AGENT_MODEL_NOT_CONFIGURED": "네코클로 모델이 구성되지 않았습니다",
+            "AGENT_MODEL_NOT_CONFIGURED": "사역마 모델의 모델 ID가 구성되지 않았습니다",
             "AGENT_URL_NOT_CONFIGURED": "사역마 모델의 URL이 구성되지 않았습니다",
             "AGENT_KEY_NOT_CONFIGURED": "사역마 모델의 API 키가 구성되지 않았거나 사용할 수 없습니다",
             "AGENT_NO_PLUGINS": "사용 가능한 플러그인이 없습니다",
@@ -4757,7 +4757,7 @@
             },
             "step6": {
                 "title": "🔑 범용 모델 API 키",
-                "desc": "선택한 범용 모델 제공업체의 키를 여기에 입력하세요. 비워 두면 음성 모델 제공업체로도 쓸 수 있는 서비스(Alibaba, OpenAI, Zhipu 등)는 음성 모델 제공업체의 키를 대신 사용합니다. 범용 모델만 제공하는 서비스(SiliconFlow, DeepSeek 등)는 대신 사용하지 않으므로 따로 입력해야 합니다."
+                "desc": "선택한 범용 모델 제공업체의 키를 여기에 입력하세요. 범용 모델과 음성 모델에 같은 서비스를 선택한 경우에만 비워 두면 음성 모델 제공업체의 키를 그대로 사용합니다. 다른 서비스(SiliconFlow, DeepSeek 같은 범용 모델 전용 서비스 포함)를 선택했다면 따로 입력해야 합니다."
             },
             "step7": {
                 "title": "🔧 기능별 모델 지정(고급)",

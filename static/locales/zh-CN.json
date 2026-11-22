@@ -4160,7 +4160,7 @@
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模块未加载",
             "AGENT_NOT_INITIALIZED": "猫爪初始化失败",
             "AGENT_LLM_UNREACHABLE": "猫爪 LLM 连接失败",
-            "AGENT_MODEL_NOT_CONFIGURED": "猫爪模型未配置",
+            "AGENT_MODEL_NOT_CONFIGURED": "使魔模型的模型 ID 未配置",
             "AGENT_URL_NOT_CONFIGURED": "使魔模型的 URL 未配置",
             "AGENT_KEY_NOT_CONFIGURED": "使魔模型的 API Key 未配置或不可用",
             "AGENT_NO_PLUGINS": "未发现可用插件",
@@ -4757,7 +4757,7 @@
             },
             "step6": {
                 "title": "🔑 通用模型 API Key",
-                "desc": "请在这里填写所选通用模型供应商的 Key。留空时，也能当语音模型供应商的服务商（如阿里、OpenAI、智谱）会改用语音模型供应商的 Key；只做通用模型的服务商（如硅基流动、DeepSeek）不会改用，必须单独填写。"
+                "desc": "请在这里填写所选通用模型供应商的 Key。只有通用模型和语音模型选的是同一家服务商时，留空才会沿用语音模型供应商的 Key；选了不同的服务商（包括硅基流动、DeepSeek 这类只做通用模型的），必须单独填写。"
             },
             "step7": {
                 "title": "🔧 按功能单独指定模型（进阶）",

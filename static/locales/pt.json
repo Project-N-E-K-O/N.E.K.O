@@ -1346,10 +1346,10 @@
         "coreApiTitle": "O Provedor de modelo de voz é responsável pelo chat de voz:",
         "freeVersionCore": "Versão gratuita: gratuita, sem necessidade de chave de API, com limites de uso",
         "aliCore": "Alibaba: recursos abrangentes e rápido",
-        "glmCore": "GLM: cobrado por minuto; o áudio tem marca d'água por padrão (desative no console da Zhipu)",
+        "glmCore": "Zhipu: cobrado por minuto; o áudio tem marca d'água por padrão (desative no console da Zhipu)",
         "stepCore": "StepFun: pagamento por uso, limites de taxa rígidos, não recomendado",
         "openaiCore": "OpenAI: o mais alto nível de inteligência, mas caro",
-        "geminiCore": "Gemini: Excelente inteligência e valor",
+        "geminiCore": "Gemini: Excelente inteligência e valor, mas não está disponível na China continental",
         "assistApiTitle": "O Provedor de modelo geral é responsável pelo chat, pela organização da memória e pelo familiar:",
         "freeVersionAssist": "Versão gratuita: gratuita, sem necessidade de chave de API; o familiar tem usos gratuitos diários",
         "aliAssist": "Alibaba: escolha recomendada, recursos mais abrangentes, suporta o familiar",
@@ -4160,7 +4160,7 @@
             "AGENT_BU_MODULE_NOT_LOADED": "módulo Browser Use não carregado",
             "AGENT_NOT_INITIALIZED": "Falha na inicialização do NekoClaw",
             "AGENT_LLM_UNREACHABLE": "NekoClaw LLM inacessível",
-            "AGENT_MODEL_NOT_CONFIGURED": "Modelo NekoClaw não configurado",
+            "AGENT_MODEL_NOT_CONFIGURED": "O ID do Modelo do familiar não está configurado",
             "AGENT_URL_NOT_CONFIGURED": "URL do modelo do familiar não configurado",
             "AGENT_KEY_NOT_CONFIGURED": "Chave de API do modelo do familiar não configurada ou indisponível",
             "AGENT_NO_PLUGINS": "Nenhum plug-in disponível encontrado",
@@ -4757,7 +4757,7 @@
             },
             "step6": {
                 "title": "🔑 chave de API do modelo geral",
-                "desc": "Insira aqui a chave do Provedor de modelo geral selecionado. Se ficar vazia, os provedores que também podem ser Provedor de modelo de voz (como Alibaba, OpenAI ou Zhipu) usam a chave do Provedor de modelo de voz no lugar; os que oferecem apenas modelos gerais (como SiliconFlow ou DeepSeek) nunca fazem isso e precisam da própria chave."
+                "desc": "Insira aqui a chave do Provedor de modelo geral selecionado. Deixá-la vazia reutiliza a chave do Provedor de modelo de voz somente quando ambos usam o mesmo provedor; se escolheu outro (incluindo os que oferecem apenas modelos gerais, como SiliconFlow ou DeepSeek), insira a chave dele."
             },
             "step7": {
                 "title": "🔧 Modelos por função (avançado)",

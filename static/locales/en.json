@@ -1346,10 +1346,10 @@
         "coreApiTitle": "The Voice Model Provider handles voice chat:",
         "freeVersionCore": "Free version: free, no API Key needed, with usage limits",
         "aliCore": "Alibaba: full-featured and fast",
-        "glmCore": "GLM: billed per minute; audio is watermarked by default (turn it off in the Zhipu console)",
+        "glmCore": "Zhipu: billed per minute; audio is watermarked by default (turn it off in the Zhipu console)",
         "stepCore": "StepFun: pay-as-you-go with strict rate limits; not recommended",
         "openaiCore": "OpenAI: Highest intelligence level, but expensive",
-        "geminiCore": "Gemini: Excellent intelligence and value",
+        "geminiCore": "Gemini: Excellent intelligence and value, but not available in mainland China",
         "assistApiTitle": "The General Model Provider handles chat, memory, and the Familiar:",
         "freeVersionAssist": "Free version: free, no API Key needed; the Familiar has a daily free allowance",
         "aliAssist": "Alibaba: recommended, most complete features, supports the Familiar",
@@ -4160,7 +4160,7 @@
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use module not loaded",
             "AGENT_NOT_INITIALIZED": "NekoClaw initialization failed",
             "AGENT_LLM_UNREACHABLE": "NekoClaw LLM unreachable",
-            "AGENT_MODEL_NOT_CONFIGURED": "NekoClaw model not configured",
+            "AGENT_MODEL_NOT_CONFIGURED": "Familiar Model ID is not configured",
             "AGENT_URL_NOT_CONFIGURED": "Familiar Model URL is not configured",
             "AGENT_KEY_NOT_CONFIGURED": "Familiar Model API Key is missing or unusable",
             "AGENT_NO_PLUGINS": "No available plugins found",
@@ -4757,7 +4757,7 @@
             },
             "step6": {
                 "title": "🔑 General Model API Key",
-                "desc": "Enter the API Key for the selected General Model Provider here. If left empty, providers that can also be a Voice Model Provider (such as Alibaba, OpenAI, Zhipu) use the Voice Model Provider's Key instead; providers that only offer general models (such as SiliconFlow, DeepSeek) never do and need their own Key."
+                "desc": "Enter the API Key for the selected General Model Provider here. Leaving it empty reuses the Voice Model Provider's Key only when both use the same provider; if you picked a different provider (including general-only ones such as SiliconFlow or DeepSeek), enter its own Key."
             },
             "step7": {
                 "title": "🔧 Per-Feature Models (Advanced)",

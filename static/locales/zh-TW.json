@@ -1349,7 +1349,7 @@
         "glmCore": "智譜：按分鐘計費，語音預設帶浮水印提示音（可在智譜控制台關閉）",
         "stepCore": "階躍星辰：按量計費，速率限制嚴格，不建議使用",
         "openaiCore": "OpenAI：智能水平最高，但價格昂貴",
-        "geminiCore": "Gemini：智能和性價比極高",
+        "geminiCore": "Gemini：智能和性價比極高，但中國大陸無法使用",
         "assistApiTitle": "通用模型供應商負責聊天、記憶整理和使魔：",
         "freeVersionAssist": "免費版：免費，無需 API Key；使魔每天有免費次數",
         "aliAssist": "阿里：推薦選擇，功能最全面，支援使魔",
@@ -4160,7 +4160,7 @@
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模組未載入",
             "AGENT_NOT_INITIALIZED": "貓爪初始化失敗",
             "AGENT_LLM_UNREACHABLE": "貓爪 LLM 連接失敗",
-            "AGENT_MODEL_NOT_CONFIGURED": "貓爪模型未配置",
+            "AGENT_MODEL_NOT_CONFIGURED": "使魔模型的模型 ID 未設定",
             "AGENT_URL_NOT_CONFIGURED": "使魔模型的 URL 未設定",
             "AGENT_KEY_NOT_CONFIGURED": "使魔模型的 API Key 未設定或無法使用",
             "AGENT_NO_PLUGINS": "未發現可用插件",
@@ -4757,7 +4757,7 @@
             },
             "step6": {
                 "title": "🔑 通用模型 API Key",
-                "desc": "請在這裡填寫所選通用模型供應商的 Key。留空時，也能當語音模型供應商的服務商（如阿里、OpenAI、智譜）會改用語音模型供應商的 Key；只做通用模型的服務商（如矽基流動、DeepSeek）不會改用，必須單獨填寫。"
+                "desc": "請在這裡填寫所選通用模型供應商的 Key。只有通用模型和語音模型選的是同一家服務商時，留空才會沿用語音模型供應商的 Key；選了不同的服務商（包括矽基流動、DeepSeek 這類只做通用模型的），必須單獨填寫。"
             },
             "step7": {
                 "title": "🔧 按功能單獨指定模型（進階）",

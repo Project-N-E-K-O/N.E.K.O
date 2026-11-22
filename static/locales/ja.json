@@ -1349,7 +1349,7 @@
         "glmCore": "GLM: 分単位の課金。音声には既定で透かし音が入ります（GLM のコンソールでオフにできます）",
         "stepCore": "StepFun: 従量課金、レート制限が厳しいため非推奨",
         "openaiCore": "OpenAI: 最高知能だが高価",
-        "geminiCore": "Gemini: 知能・コスパ共に極めて優秀",
+        "geminiCore": "Gemini: 知能・コスパ共に極めて優秀。ただし中国本土では利用できません",
         "assistApiTitle": "汎用モデルのプロバイダーはチャット、記憶の整理、使い魔を担当します:",
         "freeVersionAssist": "無料版: 無料、APIキー不要（使い魔は1日の無料回数あり）",
         "aliAssist": "Alibaba: 推奨。機能が最も充実、使い魔に対応",
@@ -4160,7 +4160,7 @@
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use モジュールが読み込まれていません",
             "AGENT_NOT_INITIALIZED": "ネコクローの初期化に失敗",
             "AGENT_LLM_UNREACHABLE": "ネコクロー LLM に接続できません",
-            "AGENT_MODEL_NOT_CONFIGURED": "ネコクローモデルが設定されていません",
+            "AGENT_MODEL_NOT_CONFIGURED": "使い魔モデルのモデル ID が設定されていません",
             "AGENT_URL_NOT_CONFIGURED": "使い魔モデルの URL が設定されていません",
             "AGENT_KEY_NOT_CONFIGURED": "使い魔モデルの APIキーが設定されていないか無効です",
             "AGENT_NO_PLUGINS": "利用可能なプラグインが見つかりません",
@@ -4757,7 +4757,7 @@
             },
             "step6": {
                 "title": "🔑 汎用モデルの APIキー",
-                "desc": "ここで選択した汎用モデルのプロバイダーのキーを入力してください。空欄の場合、音声モデルのプロバイダーにもなれるサービス（Alibaba、OpenAI、GLM など）は音声モデルのプロバイダーのキーを代わりに使います。汎用モデル専用のサービス（SiliconFlow、DeepSeek など）は代わりに使わないため、個別に入力が必要です。"
+                "desc": "ここで選択した汎用モデルのプロバイダーのキーを入力してください。汎用モデルと音声モデルで同じサービスを選んだ場合に限り、空欄なら音声モデルのプロバイダーのキーをそのまま使います。別のサービス（SiliconFlow、DeepSeek など汎用モデル専用のものを含む）を選んだ場合は、個別に入力が必要です。"
             },
             "step7": {
                 "title": "🔧 機能ごとにモデルを指定（上級）",

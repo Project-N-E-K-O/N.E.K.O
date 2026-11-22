@@ -1550,7 +1550,7 @@ function populateModelProviderDropdowns() {
                 sel,
                 'follow_summary',
                 'api.customModelProviderFollowSummary',
-                '跟随摘要模型'
+                '跟随记忆整理模型'
             );
         }
 
