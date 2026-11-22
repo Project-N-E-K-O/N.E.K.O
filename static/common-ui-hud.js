@@ -77,6 +77,9 @@ window.AgentHUD.saveTaskHudPreference = function (visible) {
 };
 
 let agentTaskHudPreferenceHandedIn = false;
+// 后端一直存不上（比如配置目录只读）时，不要每份快照都再发一次。
+const AGENT_TASK_HUD_HAND_IN_TRIES = 3;
+let agentTaskHudPreferenceHandInTries = 0;
 // 本页最后照着做的值。本地存储是同源页面共用的，另一页先写了同一个值，本页的复选框和悬浮窗也还得自己改。
 let agentTaskHudPreferenceApplied = null;
 
@@ -84,9 +87,12 @@ let agentTaskHudPreferenceApplied = null;
 window.AgentHUD.syncTaskHudPreference = function (value) {
     if (typeof value !== 'boolean') {
         // 后端还没记过：本地关过的（以前在小面板里关的）交给后端一次，喵能力界面上才看得到它是关的。
-        // 没交上（请求失败）就等下一份快照再交。
-        if (value === null && !agentTaskHudPreferenceHandedIn && !isAgentTaskHudVisiblePreferenceEnabled()) {
+        // 没交上（请求失败）就等下一份快照再交，最多交 AGENT_TASK_HUD_HAND_IN_TRIES 次。
+        if (value === null && !agentTaskHudPreferenceHandedIn
+            && agentTaskHudPreferenceHandInTries < AGENT_TASK_HUD_HAND_IN_TRIES
+            && !isAgentTaskHudVisiblePreferenceEnabled()) {
             agentTaskHudPreferenceHandedIn = true;
+            agentTaskHudPreferenceHandInTries += 1;
             window.AgentHUD.saveTaskHudPreference(false).then(function (ok) {
                 if (!ok) agentTaskHudPreferenceHandedIn = false;
             });
@@ -503,8 +509,19 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 }
                 taskHudCheckbox.addEventListener('change', (event) => {
                     setAgentTaskHudVisiblePreferenceEnabled(taskHudCheckbox.checked);
-                    // 不交给后端的话，下一份状态快照会把它改回去。
-                    window.AgentHUD.saveTaskHudPreference(taskHudCheckbox.checked);
+                    // 不交给后端的话，下一份状态快照会把它改回去；没存上就当场改回，不让它悄悄变回去。
+                    const wanted = taskHudCheckbox.checked;
+                    window.AgentHUD.saveTaskHudPreference(wanted).then((saved) => {
+                        if (saved || taskHudCheckbox.checked !== wanted) return;
+                        taskHudCheckbox.checked = !wanted;
+                        if (typeof taskHudCheckbox._updateStyle === 'function') {
+                            taskHudCheckbox._updateStyle();
+                        }
+                        setAgentTaskHudVisiblePreferenceEnabled(!wanted);
+                        if (typeof window.checkAndToggleTaskHUD === 'function') {
+                            window.checkAndToggleTaskHUD();
+                        }
+                    });
                     if (typeof window.checkAndToggleTaskHUD === 'function') {
                         window.checkAndToggleTaskHUD(event);
                     } else if (!taskHudCheckbox.checked && typeof this.hideAgentTaskHUD === 'function') {

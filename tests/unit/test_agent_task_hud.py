@@ -196,8 +196,7 @@ async def test_a_setting_that_could_not_be_saved_is_told_as_not_taken(routes, mo
 
 
 @pytest.mark.asyncio
-async def test_the_file_is_written_off_the_event_loop(routes, monkeypatch):
-    import asyncio
+async def test_the_file_is_written_off_the_event_loop(routes, store: Path, monkeypatch):
     import threading
 
     from app import agent_task_hud
@@ -214,7 +213,7 @@ async def test_the_file_is_written_off_the_event_loop(routes, monkeypatch):
     monkeypatch.setattr(agent_task_hud, "set_visible", _record)
     await srv.agent_command({"command": "set_task_hud_visible", "value": False})
     assert seen and seen[0] != loop_thread
-    assert asyncio.get_running_loop() is not None
+    assert json.loads(store.read_text(encoding="utf-8")) == {"visible": False}
 
 
 def test_the_status_snapshot_carries_the_setting(store: Path, monkeypatch: pytest.MonkeyPatch):

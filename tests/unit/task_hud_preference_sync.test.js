@@ -104,6 +104,68 @@ test('a hand-in that did not get through is tried again with the next snapshot, 
     assert.equal(sent.length, 2);
 });
 
+test('a backend that never takes it is not asked again with every snapshot', async () => {
+    const { window, sent } = load({ stored: 'false', saveOk: false });
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    for (let i = 0; i < 6; i += 1) {
+        window.AgentHUD.syncTaskHudPreference(null);
+        await settle();
+    }
+
+    assert.equal(sent.length, 3);
+});
+
+function popupCheckbox(harness) {
+    // _createAgentPopupContent builds the popup; only the task HUD row is looked at here.
+    const listeners = {};
+    const checkbox = {
+        checked: true, styled: 0,
+        _updateStyle() { this.styled += 1; },
+        addEventListener(type, fn) { listeners[type] = fn; }
+    };
+    const manager = {
+        _avatarPrefix: 'live2d',
+        _createToggleItem(toggle) {
+            return {
+                querySelector: (selector) => (selector === '#live2d-agent-taskhud' ? checkbox : null),
+                appendChild() {}
+            };
+        }
+    };
+    const popup = { style: {}, appendChild() {} };
+    harness.window.AgentHUD._createAgentPopupContent.call(manager, popup);
+    return { checkbox, change: () => listeners.change({ target: checkbox }) };
+}
+
+test('the popup box that could not be saved is put back, rather than reverted later by a snapshot', async () => {
+    const harness = load({ saveOk: false });
+    const { checkbox, change } = popupCheckbox(harness);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    checkbox.checked = false;
+    change();
+    assert.equal(harness.storage.get(KEY), 'false');
+    await settle();
+
+    assert.deepEqual(harness.sent.map((item) => item.body), [{ command: 'set_task_hud_visible', value: false }]);
+    assert.equal(checkbox.checked, true);
+    assert.equal(harness.storage.get(KEY), 'true');
+});
+
+test('the popup box that was saved stays as it is', async () => {
+    const harness = load();
+    const { checkbox, change } = popupCheckbox(harness);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    checkbox.checked = false;
+    change();
+    await settle();
+
+    assert.equal(checkbox.checked, false);
+    assert.equal(harness.storage.get(KEY), 'false');
+});
+
 test('two pages share their storage but each puts its own box and HUD right', () => {
     const storage = new Map();
     const first = load({ storage });
