@@ -43,6 +43,7 @@ import os
 import re
 import secrets
 import shutil
+import time
 from contextlib import AsyncExitStack, ExitStack
 from datetime import datetime
 from pathlib import Path
@@ -705,8 +706,15 @@ def _mark_restore_outcome(char_dir: Path, pre_restore_id: str, filename: str) ->
     atomic_write_json(str(path), ids, ensure_ascii=False)
 
 
+_RESTORE_OUTCOME_RETRY_DELAY_SECONDS = 0.2
+
+
 def _record_restore_outcome(char_dir: Path, payload: dict, filename: str) -> bool:
-    """Best-effort mark, tried twice; returns whether it was written."""
+    """Best-effort mark; a failed write is retried once after a short pause.
+
+    The pause gives a brief lock (an antivirus scan, a sync client) a chance
+    to clear. Returns whether the mark was written.
+    """
     pre_id = payload.get("pre_restore_snapshot_id")
     if not isinstance(pre_id, str):
         return False
@@ -717,6 +725,8 @@ def _record_restore_outcome(char_dir: Path, payload: dict, filename: str) -> boo
         except Exception as exc:
             if attempt == 2:
                 logger.warning("[MemorySnapshots] could not record restore outcome %s: %s", filename, exc)
+            else:
+                time.sleep(_RESTORE_OUTCOME_RETRY_DELAY_SECONDS)
     return False
 
 
@@ -791,6 +801,11 @@ def _void_restore_event(
             or (record.get("payload") or {}).get("pre_restore_snapshot_id")
             != payload.get("pre_restore_snapshot_id")
         ):
+            logger.warning(
+                "[MemorySnapshots] %s: could not record the cancellation of failed restore %s; "
+                "its event is left for replay, which may finish it on the next start",
+                character_name, payload.get("snapshot_id"),
+            )
             return
         event_log.apply_and_advance(
             character_name, record.get("event_id"), lambda: False,
@@ -891,10 +906,14 @@ def make_snapshot_restore_in_effect(*, memory_dir_fn: Callable[[], Any] | None =
             return False
         if state == _RESTORE_DONE:
             return True
-        if state == _RESTORE_CHANGED or _is_completed(char_dir, payload):
-            # Changed after the restore, or never restored and changed since:
-            # only a completed swap, written down when it happened, tells.
-            return _is_completed(char_dir, payload)
+        # A completed swap, written down when it happened, is in effect
+        # whatever the files look like now (changed since, or a file put back
+        # to its old version). Without that record, files at neither version
+        # may never have been restored at all, so they do not count.
+        if _is_completed(char_dir, payload):
+            return True
+        if state == _RESTORE_CHANGED:
+            return False
         return _load_matching_snapshot(char_dir, snapshot_id, target) is not None
 
     return _in_effect

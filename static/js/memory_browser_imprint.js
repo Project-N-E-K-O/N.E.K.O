@@ -620,7 +620,9 @@
             const data = await resp.json();
             if (targetChar !== activeCharacter) return;
             if (!resp.ok || !data.success) {
-                showToast(data.error || tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
+                // A machine code (no summary model configured) gets the translated hint.
+                const labelError = data.error === 'summary_model_not_configured' ? '' : data.error;
+                showToast(labelError || tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
             } else {
                 if (data.star_map) {
                     starMapData = Object.assign({ success: true }, data.star_map);
