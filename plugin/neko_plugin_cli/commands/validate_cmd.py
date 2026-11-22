@@ -25,6 +25,7 @@ from plugin._types.plugin_types import (
 from plugin.config.schema import PluginModelRequirementSchema, PluginModelUsageId
 from plugin.core.capability_analysis import (
     analyze_capabilities,
+    read_capability_sources,
     compare_declarations,
     summarize_permissions,
 )
@@ -47,7 +48,7 @@ from plugin.sdk.shared.storage.database import PluginDatabase
 from plugin.sdk.shared.storage.state import PluginStatePersistence
 
 from plugin.utils.source_paths import iter_plugin_python_files
-from ..core.build_rules import reraise_walk_error
+from ..core.build_rules import load_build_rules, reraise_walk_error, should_skip_path
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 from . import _permission_messages as permission_messages
@@ -238,7 +239,7 @@ def validate_plugin_dir(
         issues,
         declared=declarations.ids() if declarations.status != "invalid" else None,
     )
-    _check_permission_usage(plugin_dir, declarations, issues)
+    _check_permission_usage(plugin_dir, declarations, issues, pyproject=source.pyproject_toml)
     _check_symlink_tree(plugin_dir, issues)
 
     return issues
@@ -1270,10 +1271,29 @@ def _check_permission_narrowing(
 
 
 def _check_permission_usage(
-    plugin_dir: Path, declarations: PermissionDeclarations, issues: list[tuple[str, str]]
+    plugin_dir: Path,
+    declarations: PermissionDeclarations,
+    issues: list[tuple[str, str]],
+    *,
+    pyproject: dict[str, object] | None = None,
 ) -> None:
-    """Compare plugin.toml declarations with what the code scan finds."""
-    report = analyze_capabilities(plugin_dir, declarations=declarations)
+    """Compare plugin.toml declarations with what the code scan finds.
+
+    Only files the package build would include are compared: development
+    scripts left out of the package (build/, dist/, [tool.neko.build]
+    excludes) never run in the plugin.
+    """
+    sources = read_capability_sources(plugin_dir)
+    try:
+        rules = load_build_rules(pyproject)
+    except (TypeError, ValueError):
+        rules = load_build_rules(None)
+    sources.files = [
+        (relative, text)
+        for relative, text in sources.files
+        if not should_skip_path(Path(relative), is_dir=False, rules=rules)
+    ]
+    report = analyze_capabilities(plugin_dir, declarations=declarations, sources=sources)
     found = compare_declarations(report)
     issues.extend(_permission_issue(issue) for issue in found)
 

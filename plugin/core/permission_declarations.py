@@ -184,7 +184,10 @@ def _parse_entry(
         else:
             hosts = tuple(item.strip() for item in value)
 
-    if reason is None or (background and background_reason is None):
+    # Any error makes the entry invalid; it is not a usable declaration.
+    if reason is None or (background and background_reason is None) or any(
+        issue.severity == "error" for issue in issues
+    ):
         return None, issues
     return (
         PermissionDeclaration(

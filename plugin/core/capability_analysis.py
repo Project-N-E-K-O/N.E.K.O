@@ -302,6 +302,15 @@ def _references(tree, walker: _AnalysisWalker):
             and value.id in _BUILTINS
             and (value.id in rebound or (value.id in bindings and bindings[value.id][0] is None))
         }
+        # ... and aliases of those aliases (b = a).
+        grown = True
+        while grown:
+            grown = False
+            for key, value in assignments:
+                walker.check()
+                if isinstance(value, ast.Name) and value.id in shadowed_aliases and key not in shadowed_aliases:
+                    shadowed_aliases.add(key)
+                    grown = True
 
         def nested(body, inherited, parameters=(), function="", owner=None):
             # A function or lambda defined inside a comprehension also sees
@@ -347,12 +356,9 @@ def _written_targets(nodes, walker) -> set[int]:
             and id(node) not in augmented
         ):
             written.add(id(node.value))
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in _DATA_WRITE_METHODS
-        ):
-            written.update((id(node.func), id(node.func.value)))
+        elif isinstance(node, ast.Attribute) and node.attr in _DATA_WRITE_METHODS:
+            # x.update(...) or taking x.update: the receiver is changed, not read.
+            written.update((id(node), id(node.value)))
     return written
 
 
@@ -959,7 +965,8 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
         if _matches(name, patterns):
             basis = direct
             if _matches(name, _DATA_READS):
-                if reference.written or (reference.is_call and name.rsplit(".", 1)[-1] in _DATA_WRITE_METHODS):
+                # A mutating method, called or only taken (set_env = os.environ.update).
+                if reference.written or name.rsplit(".", 1)[-1] in _DATA_WRITE_METHODS:
                     # Writing the environment is not reading it; keep it as
                     # a hint rather than definite evidence.
                     basis = named

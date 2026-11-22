@@ -1320,3 +1320,35 @@ def test_aliases_of_local_names_with_builtin_spelling_are_not_builtins(tmp_path,
     report = _scan(tmp_path, source)
     assert report["permissions"] == {}
     assert report["blind_spots"] == []
+
+
+# --- review round 12 -----------------------------------------------------------------------
+
+
+def test_cli_ignores_files_the_package_build_excludes(tmp_path):
+    plugin_dir = _plugin(tmp_path, "x = 1\n", "[permissions]\n")
+    (plugin_dir / "build").mkdir()
+    (plugin_dir / "build" / "helper.py").write_text("import subprocess\nsubprocess.run(['ls'])\n", encoding="utf-8")
+    assert not [message for message in _issues(plugin_dir, "error") if "system.process:spawn" in message]
+
+
+def test_cli_still_checks_packaged_files(tmp_path):
+    plugin_dir = _plugin(tmp_path, "import subprocess\nsubprocess.run(['ls'])\n", "[permissions]\n")
+    assert [message for message in _issues(plugin_dir, "error") if "system.process:spawn" in message]
+
+
+def test_alias_chains_of_shadowed_builtins_are_not_builtins(tmp_path):
+    report = _scan(tmp_path, "def f(eval):\n    a = eval\n    b = a\n    b('1')\n")
+    assert report["blind_spots"] == []
+
+
+def test_taking_a_mutating_environment_method_is_not_a_read(tmp_path):
+    report = _scan(tmp_path, "import os\nset_env = os.environ.update\nset_env(X='1')\n")
+    assert _errors(report) == []
+
+
+def test_an_entry_with_any_error_is_invalid():
+    declarations, issues = _parse('[permissions.ask]\n"system.network:connect" = { reason = "x", hosts = [""] }\n')
+    assert ("error", "hosts_type") in _codes(issues)
+    assert declarations.ids() == frozenset()
+    assert declarations.invalid == {"system.network:connect"}
