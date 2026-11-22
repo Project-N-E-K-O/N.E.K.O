@@ -1284,6 +1284,8 @@ def _log_event_log_compaction(name: str, result) -> None:
             f"[EventLogCompact] {name}: {result.pinned} 条归档事件在分片里找不到"
             f"同一份副本，作为唯一副本留在日志里（event_id: {shown}{more}）",
         )
+    if result.kept_restore:
+        logger.debug(f"[EventLogCompact] {name}: 保留最近一次快照恢复事件（全量重放的起点）")
     if result.pending_tail:
         _event_log_compact_warn_once(
             name, 'pending_tail',

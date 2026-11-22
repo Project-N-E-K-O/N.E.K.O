@@ -451,8 +451,13 @@ def _swap_live_files(
     target_bytes: dict[str, bytes],
     orig_bytes: dict[str, bytes],
     all_targets: list[str],
+    rollback_errors: list | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Write ``target_bytes`` and delete every other target; roll back on failure."""
+    """Write ``target_bytes`` and delete every other target; roll back on failure.
+
+    Rollback failures are logged and, when ``rollback_errors`` is given,
+    appended to it, so the caller can tell a clean rollback from a partial one.
+    """
     touched: list[str] = []
     restored: list[str] = []
     removed: list[str] = []
@@ -484,6 +489,8 @@ def _swap_live_files(
                     os.remove(target_file)
             except OSError as rb_exc:
                 logger.warning("[MemorySnapshots] rollback failed for %s: %s", relpath, rb_exc)
+                if rollback_errors is not None:
+                    rollback_errors.append(rb_exc)
         raise
     return restored, removed
 
@@ -533,6 +540,7 @@ def _restore_snapshot_files_sync(
 
     payload: dict[str, Any] = {}
     plan: dict[str, Any] = {}
+    failure: Exception | None = None
 
     with ExitStack() as lock_stack:
         def _load(_name: str) -> dict[str, Any]:
@@ -575,10 +583,14 @@ def _restore_snapshot_files_sync(
             return plan
 
         def _save(_name: str, view: dict[str, Any]) -> None:
+            # Runs after the event was appended.
+            view["save_started"] = True
             _advance_view_generation(char_dir)
             restored, removed = _swap_live_files(
                 char_dir, view["target_bytes"], view["orig_bytes"], view["all_targets"],
+                rollback_errors=view.setdefault("rollback_errors", []),
             )
+            view["swapped"] = True
             if progress is not None:
                 # The files are replaced from here on, even if the sentinel
                 # write after this callback fails.
@@ -590,14 +602,36 @@ def _restore_snapshot_files_sync(
         if event_log is None:
             _save(character_name, _load(character_name))
         else:
-            event_log.record_and_save(
-                character_name,
-                EVT_MEMORY_SNAPSHOT_RESTORED,
-                payload,
-                sync_load_view=_load,
-                sync_mutate_view=lambda _view: None,
-                sync_save_view=_save,
+            sentinel_before = event_log.read_sentinel(character_name)
+            try:
+                event_log.record_and_save(
+                    character_name,
+                    EVT_MEMORY_SNAPSHOT_RESTORED,
+                    payload,
+                    sync_load_view=_load,
+                    sync_mutate_view=lambda _view: None,
+                    sync_save_view=_save,
+                )
+            except Exception as exc:
+                failure = exc
+
+    if failure is not None:
+        if plan.get("swapped"):
+            # Only the sentinel write after the swap failed. The files are
+            # restored and the event left behind is a no-op on replay (every
+            # file already at the target), so this is a successful restore.
+            logger.warning(
+                "[MemorySnapshots] %s: restored %s, but recording its completion failed: %s",
+                character_name, snapshot_id, failure,
             )
+        else:
+            # Outside the store locks: voiding takes the event-log lock, which
+            # is always taken before them.
+            if plan.get("save_started") and not plan.get("rollback_errors"):
+                # The user is told the restore failed and the files are back
+                # as they were: the event must not finish it later.
+                _void_restore_event(event_log, character_name, sentinel_before, payload)
+            raise failure
 
     return {
         "restored_snapshot_id": snapshot_id,
@@ -607,6 +641,39 @@ def _restore_snapshot_files_sync(
         "removed_files": plan.get("removed_files", []),
         "restored_at": datetime.now().isoformat(),
     }
+
+
+def _void_restore_event(event_log, character_name: str, sentinel_before, payload: dict) -> None:
+    """Advance the sentinel onto a restore event whose swap was rolled back cleanly.
+
+    Only when the sentinel is still where it was before the append (a
+    compare-and-set through apply_and_advance with a no-op step), and only
+    for this very event: the last record of the tail, matched by its
+    pre-restore snapshot id. Never raises; the original error is what the
+    caller reports.
+    """
+    try:
+        tail = event_log.read_since(character_name, sentinel_before)
+        record = tail[-1] if tail else None
+        if (
+            record is None
+            or record.get("type") != EVT_MEMORY_SNAPSHOT_RESTORED
+            or (record.get("payload") or {}).get("pre_restore_snapshot_id")
+            != payload.get("pre_restore_snapshot_id")
+        ):
+            return
+        event_log.apply_and_advance(
+            character_name, record.get("event_id"), lambda: False,
+            expected_sentinel=sentinel_before,
+        )
+        logger.info(
+            "[MemorySnapshots] %s: failed restore of %s rolled back; its event will not replay",
+            character_name, payload.get("snapshot_id"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "[MemorySnapshots] %s: could not void the failed restore event: %s", character_name, exc,
+        )
 
 
 def _rebuild_fact_index_sync(character_name: str, char_dir: Path, fact_store) -> None:

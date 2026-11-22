@@ -30,7 +30,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime
 from typing import Callable
 
 from memory.event_log import (
@@ -113,15 +112,16 @@ def _persona_rewrite_landed(entry: dict, payload: dict) -> bool:
     """Whether the view shows this rewrite's save already landed.
 
     The text alone cannot tell: a later change can bring the replaced text
-    back. What the same save wrote can: the entry's ``text_rewritten_at``
-    stamp at or after the event's ``rewritten_at`` (never trimmed, unlike
-    the version history). Events without the stamp fall back to the
-    version-history row the save added (unique ``replaced_at``), or for a
-    promotion merge its reflection id in ``merged_from_ids``.
+    back. What the same save wrote can: the entry's ``text_revision`` at or
+    above the event's (a counter each event-driven rewrite bumps; never
+    trimmed, unlike the version history, and unaffected by clock changes).
+    Events without it fall back to the version-history row the save added
+    (unique ``replaced_at``), or for a promotion merge its reflection id in
+    ``merged_from_ids``.
     """
-    stamp = payload.get('rewritten_at')
-    if isinstance(stamp, str) and stamp:
-        return _not_before(entry.get('text_rewritten_at'), stamp)
+    revision = _as_revision(payload.get('text_revision'))
+    if revision is not None:
+        return (_as_revision(entry.get('text_revision')) or 0) >= revision
     reason = payload.get('history_reason')
     replaced_at = payload.get('replaced_at')
     if reason and replaced_at:
@@ -137,15 +137,10 @@ def _persona_rewrite_landed(entry: dict, payload: dict) -> bool:
     return False
 
 
-def _not_before(mark, stamp: str) -> bool:
-    """Whether the persisted ``mark`` is at or after ``stamp`` (ISO local times)."""
-    if not isinstance(mark, str) or not mark:
-        return False
-    try:
-        from memory.temporal import to_naive_local
-        return to_naive_local(datetime.fromisoformat(mark)) >= to_naive_local(datetime.fromisoformat(stamp))
-    except (ValueError, TypeError, OverflowError, OSError):
-        return mark == stamp
+def _as_revision(value) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
 
 
 def _status_change_landed(row: dict, payload: dict, to_status: str) -> bool:
@@ -186,8 +181,9 @@ def _replay_persona_rewrite(persona_manager, entry: dict, payload: dict) -> None
         })
         entry['version_history'] = history[-PERSONA_VERSION_HISTORY_MAX:]
     entry['text'] = new_text
-    if payload.get('rewritten_at'):
-        entry['text_rewritten_at'] = payload['rewritten_at']
+    revision = _as_revision(payload.get('text_revision'))
+    if revision is not None:
+        entry['text_revision'] = revision
     for hook, keys in (
         ('_invalidate_token_count_cache',
          ('token_count', 'token_count_text_sha256', 'token_count_tokenizer')),

@@ -497,6 +497,10 @@ def _extract_json_dict(raw: str) -> dict[str, Any] | None:
 _LABEL_FAILED_AT_KEY = "last_failed_at"
 
 
+class StarMapLabelModelNotConfigured(RuntimeError):
+    """The summary model has no model or base URL yet; no call was made."""
+
+
 def _record_label_failure_sync(char_dir: Path, now_dt: datetime) -> None:
     """Stamp the label cache with a failed attempt, keeping any labels already there."""
     if not char_dir.is_dir():
@@ -514,6 +518,10 @@ def _record_label_failure_sync(char_dir: Path, now_dt: datetime) -> None:
 async def _arequest_cluster_labels(cm, prompt: str, clusters: list[dict[str, Any]]) -> dict[str, str]:
     """One summary-tier call; returns cleaned labels or raises."""
     api_config = await cm.aget_model_api_config("summary")
+    if not isinstance(api_config, dict) or not all(
+        api_config.get(key) for key in ("model", "base_url")
+    ):
+        raise StarMapLabelModelNotConfigured("summary model is not configured")
     set_call_type("star_map_cluster_labels")
     llm = await create_chat_llm_async(
         api_config["model"],
@@ -637,6 +645,10 @@ async def alabel_star_map_clusters(
 
     try:
         clean_labels = await _arequest_cluster_labels(cm, prompt, clusters)
+    except StarMapLabelModelNotConfigured:
+        # Nothing was sent; once the user sets the model up, the next
+        # background run may try at once instead of a week later.
+        raise
     except Exception:
         # A failed attempt cools down like a successful one, so the weekly
         # background hook does not retry it every day. The manual button

@@ -102,8 +102,8 @@ EVT_PERSONA_ENTRY_UPDATED = "persona.entry_updated"
 # Retired sync event: recognized only so old journals can drain without applying it.
 EVT_LONG_TERM_MEMORY_REPLACED = "memory.long_term_replaced"
 # Memory Browser snapshot restore: the whole set of managed files was replaced.
-# A full replay starts at the newest one, and so does any tail once that restore
-# is in effect, because every event before it describes files it overwrote.
+# Once it is in effect, a replay tail (a full replay included) starts at the
+# newest one, because every event before it describes files it overwrote.
 EVT_MEMORY_SNAPSHOT_RESTORED = "memory.snapshot_restored"
 
 ALL_EVENT_TYPES: frozenset[str] = frozenset({
@@ -184,6 +184,9 @@ class CompactionResult(NamedTuple):
     pending_tail: int = 0
     pinned: int = 0
     pinned_event_ids: tuple[str, ...] = ()
+    # The newest snapshot-restore record kept in front of the anchor (0 or 1);
+    # not an archive copy, so not counted in ``pinned``.
+    kept_restore: int = 0
 
 
 class _CompactionPlan(NamedTuple):
@@ -327,23 +330,6 @@ def _body_keeps_tail(body: str, sentinel: str, old_tail_ids: list) -> bool:
         elif rec.get('event_id') == sentinel:
             found = True
     return found and ids == old_tail_ids
-
-
-def _from_latest_restore(name: str, records: list[dict]) -> list[dict]:
-    """Drop every record in front of the newest snapshot-restore record.
-
-    The restore record itself stays: its handler finishes a restore that
-    was interrupted and does nothing otherwise.
-    """
-    for i in range(len(records) - 1, -1, -1):
-        if records[i].get('type') == EVT_MEMORY_SNAPSHOT_RESTORED:
-            if i:
-                logger.info(
-                    f"[EventLog] {name}: 全量 replay 从最近一次快照恢复事件开始，"
-                    f"跳过其前 {i} 条"
-                )
-            return records[i:]
-    return records
 
 
 # ── Type aliases for _record_and_save callbacks (RFC §3.4) ───────────────
@@ -597,13 +583,11 @@ class EventLog:
         other reason (hand edits, a restore that brought back only one of
         the two files); every record in the body is then treated as unapplied.
 
-        A full replay starts at the newest ``memory.snapshot_restored``
-        record instead of the first line: that restore replaced every managed
-        file, so the records in front of it describe a state that no longer
-        exists and replaying them would write it back over the restored
-        files. A tail after a found sentinel is returned whole; the
-        Reconciler cuts it at a restore only once that restore is known to
-        be in effect (register_tail_cut).
+        The tail is returned whole. The Reconciler cuts it, a full replay
+        included, at the newest ``memory.snapshot_restored`` record once
+        that restore is known to be in effect (register_tail_cut): it
+        replaced every managed file, so the records in front of it describe
+        a state that no longer exists.
         """
         with self._get_lock(name):
             records = self._read_all_records(self._events_path(name))
@@ -618,7 +602,7 @@ class EventLog:
                 f"[EventLog] {name}: sentinel event_id {after_event_id} 不在当前 body，"
                 f"回退到全量 replay（{len(records)} 条）"
             )
-        return _from_latest_restore(name, records)
+        return records
 
     def read_sentinel(self, name: str) -> str | None:
         """Load last_applied_event_id from sentinel file. Safe defaults per RFC §3.5."""
@@ -829,7 +813,7 @@ class EventLog:
         (_RETAIN_APPLIED_DAYS, capped at _RETAIN_APPLIED_MAX_BYTES, oldest
         evicted first). ``memory.long_term_replaced`` is never retained; the
         newest ``memory.snapshot_restored`` in front of the anchor always is
-        (counted as pinned), older ones never. Everything else in front of the anchor goes, including lines replay
+        (counted in ``kept_restore``), older ones never. Everything else in front of the anchor goes, including lines replay
         would skip anyway.
 
         Skips without touching the body when the journal is not due
@@ -1066,7 +1050,8 @@ class EventLog:
                     continue
                 if rec.get('type') == EVT_MEMORY_SNAPSHOT_RESTORED:
                     # Only the newest one matters: a full replay starts at
-                    # it (read_since), so it must outlive the lines it hides.
+                    # it once it is in effect (Reconciler tail cut), so it
+                    # must outlive the lines it hides.
                     latest_restore = (lineno, raw, str(rec.get('event_id')))
                     continue
                 if needs_journal_copy is not None and needs_journal_copy(rec):
@@ -1084,12 +1069,10 @@ class EventLog:
 
         if not anchor_found:
             return CompactionResult('sentinel_not_found')
-        if latest_restore is not None:
-            pinned.append(latest_restore)
-
         kept_before = sorted(
             [(lineno, raw) for lineno, raw, _ in pinned]
             + [(lineno, raw) for lineno, raw, _ in window]
+            + ([latest_restore[:2]] if latest_restore is not None else [])
         )
         kept_lines = [raw for _, raw in kept_before] + tail
         dropped_lines = total_lines - len(kept_lines)
@@ -1098,6 +1081,7 @@ class EventLog:
             'pending_tail': len(old_tail_ids),
             'pinned': len(pinned),
             'pinned_event_ids': tuple(event_id for _, _, event_id in pinned),
+            'kept_restore': 1 if latest_restore is not None else 0,
         }
         if dropped_lines <= 0:
             return CompactionResult('nothing_to_drop', **stats)

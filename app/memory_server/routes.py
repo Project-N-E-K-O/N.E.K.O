@@ -9174,6 +9174,13 @@ async def browser_restore_snapshot(
     name = validate_lanlan_name(lanlan_name)
     from memory.analytics import arestore_snapshot
     from .long_term_sync import _views_locked
+    if (
+        runtime.persona_manager is None
+        or runtime.fact_store is None
+        or runtime.reflection_engine is None
+        or runtime.event_log is None
+    ):
+        raise HTTPException(status_code=503, detail="Memory managers not ready")
     try:
         result = await arestore_snapshot(
             name,
