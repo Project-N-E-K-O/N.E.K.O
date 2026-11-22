@@ -3745,3 +3745,29 @@ async def test_no_filter_runs_in_a_renormalizing_merge_when_a_path_and_its_rule_
         await manager.merge_back(tree)
     assert raised.value.reason == worktrees.CONTENT_FILTERS
     assert not exists(marker)  # refused before merging, not after
+
+
+async def test_no_merge_driver_runs_at_a_path_a_directory_rename_would_guess(
+    tmp_path: Path, manager: WorktreeManager, base: Path
+) -> None:
+    files = {f"dir/f{n}": f"file {n}\n" for n in range(1, 5)}
+    files["x"] = "one\ntwo\nthree\nfour\nfive\n"
+    repo = make_repo(tmp_path / "renames", files)
+    tree = await manager.create(repo, base / "w1")
+    marker = tmp_path / "driver-ran"
+    script = tmp_path / "driver.py"
+    write(script, f"import pathlib, sys\npathlib.Path({str(marker)!r}).write_text('ran')\nsys.exit(1)\n")
+    git(repo, "config", "merge.evil.driver", f'"{PYTHON}" "{script}" %O %A %B')
+    # The project renames dir/ to new/ and gives new/x2 a rule; the worktree
+    # moves x into dir/ as x2. A guessed directory rename would merge it as
+    # new/x2, a path neither side has.
+    os.rename(repo / "dir", repo / "new")
+    write(repo / "x", "ONE\ntwo\nthree\nfour\nfive\n")
+    write(repo / ".gitattributes", "new/x2 merge=evil\n")
+    os.rename(tree.path / "x", tree.path / "dir" / "x2")
+    write(tree.path / "dir" / "x2", "one\ntwo\nthree\nfour\nFIVE\n")
+    try:
+        await manager.merge_back(tree)
+    except WorktreeUnavailable:
+        pass
+    assert not exists(marker)  # no driver ran, whatever the merge came to

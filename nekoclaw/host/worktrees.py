@@ -1237,6 +1237,11 @@ class WorktreeManager:
                     raise WorktreeUnavailable(*programs)
         merged = await self._git(
             root,
+            # No directory renames guessed: a file one side added to a
+            # directory the other renamed would be merged at a path neither
+            # side has, which the paths asked about above leave out.
+            "-c",
+            "merge.directoryRenames=false",
             "merge-tree",
             "--write-tree",
             "-z",
