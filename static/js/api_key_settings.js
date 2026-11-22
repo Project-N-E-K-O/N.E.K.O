@@ -5111,10 +5111,14 @@ const ConnectivityManager = {
             }
             result.url = urlInput ? urlInput.value.trim() : '';
 
+            // 跟随槽测的就是来源那一格的连接，缓存身份沿用来源算好的（如 MiMo Token Plan），
+            // 不按跟随槽自己的下拉值重算，否则同一连接会被当成两个、检测两次。
+            let followedCacheProviderKey = '';
             if (followedModelType(provider)) {
                 const sourceType = followedModelType(provider);
                 const sourceResult = this.resolveEffectiveKey({ type: 'custom', modelType: sourceType });
                 Object.assign(result, sourceResult);
+                followedCacheProviderKey = sourceResult.cacheProviderKey || '';
                 if (modelIdInput) {
                     const sourceModel = document.getElementById(`${sourceType}ModelId`);
                     result.model = sourceModel ? sourceModel.value.trim() : '';
@@ -5260,9 +5264,10 @@ const ConnectivityManager = {
             omitMaskedSecretFromConnectivity(result);
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
-                    const cacheProviderKey = (provider === 'follow_assist')
+                    const cacheProviderKey = followedCacheProviderKey || ((provider === 'follow_assist')
                         ? getEffectiveAssistProviderKey(result.providerKey)
-                        : result.providerKey;
+                        : result.providerKey);
+                    result.cacheProviderKey = cacheProviderKey;
                     result.cacheId = buildConnectivityCacheId(result.providerScope, cacheProviderKey, result.key, result.url, result.model || '');
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(

@@ -525,6 +525,41 @@ def test_incomplete_small_familiar_custom_tests_the_recognition_connection(mock_
 
 
 @pytest.mark.frontend
+def test_follow_chain_keeps_the_source_cache_identity_under_mimo_token_plan(mock_page: Page, running_server: str):
+    """agentSmall=follow_emotion with emotion=follow_assist on MiMo Token Plan is one connection:
+    the follower must reuse the source cacheId, not re-derive it from its own dropdown value."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+    mock_page.wait_for_selector('#assistApiSelect option[value="mimo"]', state='attached', timeout=30000)
+
+    state = mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set('assistApiSelect', 'mimo');
+        set('assistApiKeyInput', 'sk-mimo-test');
+        const toggle = document.getElementById('useMimoTokenPlan');
+        toggle.checked = true;
+        toggle.dispatchEvent(new Event('change', { bubbles: true }));
+        set('mimoTokenPlanKeyInput', 'tp-mimo-test');
+        set('emotionModelProvider', 'follow_assist');
+        set('agentSmallModelProvider', 'follow_emotion');
+        const resolve = mt => ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: mt });
+        return { emotion: resolve('emotion').cacheId, small: resolve('agentSmall').cacheId };
+    }""")
+
+    assert state["emotion"]
+    assert "mimo_token_plan" in state["emotion"]
+    assert state["small"] == state["emotion"]
+
+
+@pytest.mark.frontend
 def test_incomplete_small_familiar_custom_light_moves_with_the_recognition_slot(mock_page: Page, running_server: str):
     """The incomplete custom small familiar tests the recognition connection, so editing the
     recognition endpoint must move its light too, while its own drafted fields stay put."""
