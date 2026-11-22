@@ -456,8 +456,8 @@ def _find_invalid_file_reference(data, config_dir: str, model_root_real: str) ->
     Check the ``FileReferences`` a ``model_config`` POST would store. Return a short
     reason when the request is not an object, when ``Motions`` / ``Expressions`` are not
     the Cubism shape (``{group: [{"File": str, "Sound": str, ...}]}`` /
-    ``[{"File": str, ...}]``; ``File`` required, ``Sound`` optional and ``null`` meaning
-    absent), or when a path would point outside the model folder; else None.
+    ``[{"File": str, ...}]``; ``File`` required, ``Sound`` optional and ``null`` or ``""``
+    meaning absent), or when a path would point outside the model folder; else None.
     Sections the request does not send are not stored, so they are not checked.
     """
     if not isinstance(data, dict):
@@ -484,8 +484,8 @@ def _find_invalid_file_reference(data, config_dir: str, model_root_real: str) ->
             return "entry is not an object"
         for key in ('File', 'Sound'):
             file_path = item.get(key)
-            if key == 'Sound' and file_path is None:
-                continue  # Sound is optional; File is required
+            if key == 'Sound' and file_path in (None, ''):
+                continue  # Sound is optional (null / "" mean no audio); File is required
             if not isinstance(file_path, str):
                 return f"{key} is not a string"
             if _is_unsafe_model_ref(file_path, config_dir, model_root_real):

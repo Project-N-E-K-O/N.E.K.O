@@ -643,10 +643,12 @@ def test_emotion_mapping_post_refuses_explicit_null_section(model_dir, section):
     assert (model_dir / "m.model3.json").read_bytes() == before
 
 
-def test_model_config_post_treats_null_sound_as_absent(monkeypatch, tmp_path, model_dir):
+@pytest.mark.parametrize("sound", [None, ""])
+def test_model_config_post_treats_null_sound_as_absent(monkeypatch, tmp_path, model_dir, sound):
+    # Some converters export "Sound": "" for a motion without audio.
     _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
     item_dir = _by_id_model(monkeypatch, tmp_path)
-    motions = {"Idle": [{"File": "motions/idle.motion3.json", "Sound": None}]}
+    motions = {"Idle": [{"File": "motions/idle.motion3.json", "Sound": sound}]}
     for call, config in (
         (lambda: live2d_router.update_model_config("m", _FakeRequest({"FileReferences": {"Motions": motions}})),
          model_dir / "m.model3.json"),
