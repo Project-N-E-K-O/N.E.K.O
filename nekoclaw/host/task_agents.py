@@ -2682,13 +2682,14 @@ class TaskAgentManager:
             project = await self._space.assign_project(commission)
             if project is None:
                 return commission
-            values: dict[str, Any] = {"project": project.name}
+            more: dict[str, Any] = {}
             if not commission.workdir and project.workdir:
                 from pathlib import Path
 
                 if await asyncio.to_thread(Path(project.workdir).is_dir):
-                    values["workdir"] = project.workdir
-            return await self._ledger.update(commission.id, **values) or commission
+                    more["workdir"] = project.workdir
+            # The project and the note of it together (``Ledger.file_under_project``).
+            return await self._ledger.file_under_project(commission.id, project.name, **more) or commission
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it is one of the commissions that belong to no project
@@ -8820,7 +8821,9 @@ class TaskAgentManager:
         session.handing_back = (said or "".join(session.findings)).strip()
         try:
             await self._ledger.append_event(
-                session.commission_id, "handed_back", {"tool": session.hand_back, "to": session.carries_on_for}
+                session.commission_id,
+                "handed_back",
+                {"tool": session.hand_back, "to": session.carries_on_for, "copy": session.session_id},
             )
         except Exception:  # noqa: BLE001 - the note is for the record; it is handed back all the same
             logger.warning("noting that a copy handed its commission back failed", exc_info=True)
