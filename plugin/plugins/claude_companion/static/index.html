@@ -978,7 +978,7 @@
         }
 
         // ── 加载状态 ──
-        async function loadStatus(options) {
+        async function loadStatus() {
             console.log('[ClaudeCompanion] Loading status...');
             var result = await callPlugin('get_status');
             console.log('[ClaudeCompanion] Status result:', result);
@@ -995,13 +995,12 @@
             document.getElementById('user-name').textContent = result.user_name || '-';
             document.getElementById('port-num').textContent = result.port || '-';
             document.getElementById('cooldown-val').textContent = result.cooldown || '-';
-            var forceInputs = Boolean(options && options.forceInputs);
             var nameInput = document.getElementById('input-name');
-            if (nameInput && (forceInputs || (!nameDirty && document.activeElement !== nameInput))) {
+            if (nameInput && !nameDirty && document.activeElement !== nameInput) {
                 nameInput.value = result.user_name || '';
             }
             var cooldownInput = document.getElementById('input-cooldown');
-            if (cooldownInput && (forceInputs || (!cooldownDirty && document.activeElement !== cooldownInput))) {
+            if (cooldownInput && !cooldownDirty && document.activeElement !== cooldownInput) {
                 cooldownInput.value = result.cooldown || 60;
             }
         }
@@ -1077,7 +1076,7 @@
                 }
                 var nameMsg = t('ui.toast_username_updated', '用户名已更新为: ');
                 showToast(nameMsg.includes('{name}') ? nameMsg.replace('{name}', () => r.user_name) : nameMsg + r.user_name);
-                loadStatus({ forceInputs: !nameDirty });
+                loadStatus();
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
             }
@@ -1095,7 +1094,7 @@
                 }
                 var cdMsg = t('ui.toast_cooldown_updated', '冷却时间已设为 ');
                 showToast(cdMsg.includes('{sec}') ? cdMsg.replace('{sec}', () => r.cooldown_seconds) : cdMsg + r.cooldown_seconds + ' 秒');
-                loadStatus({ forceInputs: !cooldownDirty });
+                loadStatus();
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
             }

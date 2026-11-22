@@ -299,3 +299,53 @@ async def test_sync_reload_inside_event_loop_closes_coroutine_and_raises() -> No
             chained.reload(ctx)
     leaked = [w for w in caught if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)]
     assert leaked == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("store", ["messages", "events", "lifecycle"])
+def test_sync_lazy_bus_list_consumed_in_asyncio_run_raises_without_leaks(store: str) -> None:
+    """F0028: unmaterialized sync-lazy BusList crossed into asyncio.run() must raise cleanly."""
+    import gc
+    import warnings
+
+    ctx, sync_client, id_field = _bus_client(store)
+    lazy_list = (
+        sync_client.get(max_count=10)
+        .filter(type="a")
+        .sort(by="timestamp", reverse=True)
+        .limit(1)
+    )
+    assert lazy_list._cache_valid is False
+
+    async def _consume() -> None:
+        with pytest.raises(NonReplayableTraceError):
+            len(lazy_list)
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.dump_records()
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.filter(source="s1")
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.sort(by="timestamp")
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.limit(1)
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.where(lambda _r: True)
+
+        reloaded = await lazy_list.reload_with_async(ctx)
+        assert [getattr(r, id_field) for r in reloaded] == ["r3"]
+
+        await lazy_list.reload_with_async(ctx, inplace=True)
+        assert len(lazy_list) == 1
+        assert [getattr(r, id_field) for r in lazy_list.dump_records()] == ["r3"]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(_consume())
+        gc.collect()
+
+    leaked = [
+        w
+        for w in caught
+        if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)
+    ]
+    assert leaked == []

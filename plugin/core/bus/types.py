@@ -326,13 +326,11 @@ class BusList(BusListCore, Generic[TRecord]):
             self._cache_valid = False
 
     def _ensure_materialized(self) -> None:
-        if not self._is_lazy_mode():
-            return
         if self._cache_valid:
             return
         ctx = self._ctx
         plan = self._plan
-        if ctx is None or plan is None:
+        if self._snapshot_chain or ctx is None or plan is None:
             return
         refreshed = self._replay_plan(ctx, plan)
         self._items = list(refreshed.dump_records())
@@ -529,6 +527,7 @@ class BusList(BusListCore, Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
+            self._ensure_materialized()
             items = sorted(self._items, key=sort_key, reverse=reverse)
         trace = self._add_trace(
             "sort",
@@ -688,6 +687,7 @@ class BusList(BusListCore, Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
+            self._ensure_materialized()
             items = [item for item in self._items if _match(item)]
         params: Dict[str, Any] = {}
         try:
@@ -713,6 +713,7 @@ class BusList(BusListCore, Generic[TRecord]):
         """
         if self._is_lazy_mode():
             raise NonReplayableTraceError("lazy list cannot use where(predicate); use filter(...) instead")
+        self._ensure_materialized()
         items = [item for item in self._items if predicate(item)]
         trace = self._add_trace(
             "where",
@@ -744,6 +745,7 @@ class BusList(BusListCore, Generic[TRecord]):
         if self._is_lazy_mode():
             items = list(self._items)
         else:
+            self._ensure_materialized()
             items = self._items[:nn]
         out = self._construct(items, trace, plan)
         out._invalidate_cache()
