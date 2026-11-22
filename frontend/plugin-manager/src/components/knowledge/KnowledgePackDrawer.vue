@@ -84,11 +84,15 @@
     </template>
     <KnowledgeSourceImport v-model="sourceDialog" :file="sourceFile" :pack="pack" :doc-id="replacing?.doc_id" @committed="sourceCommitted" />
     <el-dialog v-model="historyOpen" :title="t('knowledge.sourceHistory')" append-to-body width="min(640px, 94vw)">
+      <template v-if="requiresAcknowledgment">
+        <el-alert :title="t('knowledge.enabledPackDisclosure')" type="warning" :closable="false" show-icon />
+        <el-checkbox v-model="acknowledged" data-testid="source-restore-privacy-confirm">{{ t('knowledge.acknowledgeEnabledPack') }}</el-checkbox>
+      </template>
       <el-table :data="versions" v-loading="versionsLoading">
         <el-table-column prop="version" :label="t('knowledge.sourceVersion')" width="90" />
         <el-table-column prop="name" :label="t('knowledge.sourceName')" min-width="160" />
         <el-table-column :label="t('knowledge.time')" min-width="170"><template #default="scope">{{ formatTime(scope.row.created_at) }}</template></el-table-column>
-        <el-table-column :label="t('knowledge.actions')" width="100"><template #default="scope"><el-button link type="primary" :disabled="scope.row.current || mutating" @click="restore(scope.row)">{{ t('knowledge.restoreSource') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('knowledge.actions')" width="100"><template #default="scope"><el-button link type="primary" :disabled="scope.row.current || mutating || (requiresAcknowledgment && !acknowledged)" @click="restore(scope.row)">{{ t('knowledge.restoreSource') }}</el-button></template></el-table-column>
       </el-table>
     </el-dialog>
     <el-dialog v-model="publicationOpen" :title="t('knowledge.publishMarket')" append-to-body width="min(640px, 94vw)" :close-on-click-modal="!publishing" :close-on-press-escape="!publishing" :show-close="!publishing">
@@ -128,6 +132,8 @@ const sourceDialog = ref(false)
 const replacing = ref<KnowledgeDocument | null>(null)
 const historyOpen = ref(false)
 const historySource = ref<KnowledgeDocument | null>(null)
+const acknowledged = ref(false)
+const requiresAcknowledgment = computed(() => Boolean(props.pack && props.pack.enabled !== false))
 const versions = ref<KnowledgeDocumentVersion[]>([])
 const versionsLoading = ref(false)
 const exporting = ref(false)
@@ -171,9 +177,11 @@ watch([() => props.modelValue, () => props.pack?.pack_id], () => {
   historyGeneration += 1
   documents.value = []
   historyOpen.value = false
+  acknowledged.value = false
   sourceDialog.value = false
   if (props.modelValue && props.pack) void loadDocuments()
 }, { immediate: true })
+watch(requiresAcknowledgment, () => { acknowledged.value = false })
 watch(() => props.jobs.map(job => `${job.job_id}:${job.state}`).join('|'), () => {
   if (props.modelValue && props.pack) void loadDocuments()
 })
@@ -222,6 +230,7 @@ async function showVersions(row: KnowledgeDocument) {
   if (!props.pack) return
   const request = ++historyGeneration
   historySource.value = row
+  acknowledged.value = false
   versions.value = []
   historyOpen.value = true
   versionsLoading.value = true
@@ -253,10 +262,13 @@ async function removeSource(row: KnowledgeDocument) {
 }
 
 async function restore(version: KnowledgeDocumentVersion) {
-  if (!props.pack || !historySource.value || mutating.value) return
+  if (!props.pack || !historySource.value || mutating.value || (requiresAcknowledgment.value && !acknowledged.value)) return
   mutating.value = true
   try {
-    await knowledgeApi.restoreSource({ pack_id: props.pack.pack_id, doc_id: historySource.value.doc_id, version: version.version })
+    // History can include versions rejected on activation. Restoring into an
+    // enabled pack needs the same document consent as appending a source.
+    await knowledgeApi.restoreSource({ pack_id: props.pack.pack_id, doc_id: historySource.value.doc_id, version: version.version,
+      enabled_confirmed: requiresAcknowledgment.value && acknowledged.value })
     historyOpen.value = false
     ElMessage.success(t('knowledge.sourceQueued'))
     sourceCommitted()

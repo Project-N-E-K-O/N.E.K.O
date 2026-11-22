@@ -583,7 +583,7 @@ export const knowledgeApi = {
   commitSource: (data: { preview_id: string; sha256: string; enabled: boolean; enabled_confirmed: boolean }) =>
     post<KnowledgeImportResponse>('sources/commit', data),
   removeSource: (data: { pack_id: string; doc_id: string }) => post<KnowledgeImportResponse>('sources/remove', data),
-  restoreSource: (data: { pack_id: string; doc_id: string; version: number }) =>
+  restoreSource: (data: { pack_id: string; doc_id: string; version: number; enabled_confirmed: boolean }) =>
     post<KnowledgeImportResponse>('sources/restore', data),
   // The server assigns the release version. Whitelist the pack identity so an
   // untyped caller cannot forward editable versions or change the ZIP format.

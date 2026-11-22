@@ -747,9 +747,15 @@ async def knowledge_source_remove(request: Request):
 async def knowledge_source_restore(request: Request):
     payload = await _json_object(request)
     if (payload is None or not _pack_id(payload) or not isinstance(payload.get("doc_id"), str)
-            or type(payload.get("version")) is not int):
+            or type(payload.get("version")) is not int
+            or type(payload.get("enabled_confirmed", False)) is not bool):
         return _failure("invalid_request", 400)
-    return await _call(lambda svc: svc.restore_source(_pack_id(payload), payload["doc_id"], payload["version"]))
+    # Restoration carries the same explicit disclosure acknowledgement as a
+    # source commit; omitted acknowledgement stays false, never truthy-coerced.
+    return await _call(lambda svc: svc.restore_source(
+        _pack_id(payload), payload["doc_id"], payload["version"],
+        enabled_confirmed=payload.get("enabled_confirmed", False),
+    ))
 
 
 @router.post("/packs/export")

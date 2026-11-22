@@ -171,7 +171,8 @@ vectors.f32
 | POST `sources/preview` | raw Blob；文件名/新 pack 名使用 URI 编码的 `X-Knowledge-Filename/Name` 头，避免进 URL 日志 |
 | POST `sources/preview/discard` | preview_id；取消或替换时删除该未提交预览的两份文件，已提交的预览返回 `deleted: false` 并保留 |
 | POST `sources/commit` | preview_id、sha256、enabled、enabled_confirmed；新 pack 默认关闭，返回既有 import_commit job；提交时再次核对实际启用状态，追加到已启用包须独立确认 |
-| POST `sources/remove/restore` | pack_id/doc_id/版本，复用原任务状态和取消；恢复是用户对自己已导入的历史版本的明确操作，本身即视为授权，不另要求披露确认，保留包当前的开关 |
+| POST `sources/remove` | pack_id/doc_id，复用原任务状态和取消，保留包当前的开关 |
+| POST `sources/restore` | pack_id/doc_id/版本、enabled_confirmed（严格 bool，缺省 false）；恢复同样冻结披露确认，激活时按包的实际启用状态校验，保留包当前的开关 |
 | POST `packs/enabled` | pack 级参与检索开关 |
 | POST `packs/export` | pack_id、format_version 固定为 2（默认 2），返回 pack_export job；后端自动生成发布版本，显式请求格式 1 或传入 `version` 会被拒绝 |
 | POST `packs/exports/delete` | 仅 job_id；删除已完成导出记录及未被引用的本地 ZIP，返回 artifact_retained 说明文件是否因引用而保留 |
@@ -179,6 +180,8 @@ vectors.f32
 | POST `packs/jobs/retry` | 原 job_id，重用冻结输入；仅失败或取消任务可重试，busy 不生成重试 |
 
 管理搜索的词和条目标题使用 URI 编码的 `X-Knowledge-Query/Title` 头，两跳代理仅对对应路径转发；不把资料文件名、正文、查询词、命中标题或异常原文写入日志与诊断。包展示名与许可是作者原文，不自动翻译。成品包不含原件，因此 PDF/DOCX 原件元数据不会随导出公开。
+
+历史保留不等于披露授权：因未确认而激活失败的版本也会保留原件和正文，恢复它们不能绕过启用包的确认。历史弹窗复用已有披露提示与勾选；启用包未勾选时不发送恢复请求，确认后传 true，停用包传 false。重开历史、切包或启用状态变化会清除本次勾选。后端把确认随恢复任务冻结，若排队后另一个窗口启用包，未确认的恢复仍须在激活时拒绝；明确确认的恢复可正常激活，历史资料和包开关保持原语义。回归覆盖被拒版本再恢复、排队期间启用、严格布尔校验，以及停用包和明确确认的正常路径。
 
 上传 ZIP 和大资料采用落盘流式接收；代理不解析正文，继续先过 bridge/CSRF/Origin/容量门。Memory 的生产中间件仅对原始知识包导入路径放宽到包传输上限，普通非 multipart 请求维持 16 MiB；订阅 multipart 继续由流式解析器执行 64 MiB ZIP 加有限表单开销的上限。断连或超限关闭 multipart 暂存句柄。临时输入归实际解析和准入 owner 管理，取消请求后也须等真实工作结束才回收。Main 不 import knowledge。
 

@@ -77,7 +77,7 @@ async def test_sources_share_existing_pack_search_and_retain_all_versions(tmp_pa
         assert (await _finished(service, await service.commit_source(updated["preview_id"], updated["sha256"], enabled_confirmed=True)))["state"] == "active"
         versions = (await service.source_versions(pack["pack_id"], value["doc_id"]))["versions"]
         assert [row["version"] for row in versions] == [1, 2]
-        restored = await service.restore_source(pack["pack_id"], value["doc_id"], 1)
+        restored = await service.restore_source(pack["pack_id"], value["doc_id"], 1, enabled_confirmed=True)
         assert (await _finished(service, restored))["state"] == "active"
         assert (await service.query(query="lighthouses"))["result"] == "matched"
         assert len(list((tmp_path / "sources").rglob("original"))) == 2

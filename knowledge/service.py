@@ -1305,7 +1305,9 @@ class KnowledgeService:
             await self._persist_job(job)
         return {"ok": True, **job.to_json()}
 
-    async def restore_source(self, pack_id: str, doc_id: str, version: int) -> dict[str, Any]:
+    async def restore_source(
+        self, pack_id: str, doc_id: str, version: int, *, enabled_confirmed: bool = False,
+    ) -> dict[str, Any]:
         """Select an immutable past version through the same pack import path."""
         # Restoring history must not overtake a later pack removal either.
         arrived_at = self._reserve_arrival()
@@ -1314,8 +1316,10 @@ class KnowledgeService:
             pack = await self._thread(self._source_pack, pack_id)
             documents = await self._thread(self._sources.documents, pack, pack_id)
             documents = [row for row in documents if row["doc_id"] != doc_id] + [value]
+            # Retained history can include never-activated, unconfirmed text.
+            # Freeze consent for the existing activation-time enabled check.
             return await self._project_sources(pack_id, pack.source.name if pack else value["pack_name"], documents,
-                                               arrived_at=arrived_at)
+                                               source_confirmation=enabled_confirmed, arrived_at=arrived_at)
         return await self._locked(run)
 
     async def _import_archive_input(
