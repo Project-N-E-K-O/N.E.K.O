@@ -265,3 +265,64 @@ async def test_empty_actions_still_stamps_cluster_reflections(tmp_path):
     assert by_id['r_a']['last_refine_cluster_hash'] == 'h_noop'
     assert by_id['r_b']['last_refine_cluster_hash'] == 'h_noop'
     assert by_id['r_a']['last_refine_at'] and by_id['r_b']['last_refine_at']
+
+
+@pytest.mark.asyncio
+async def test_split_and_merge_preserve_disputation_sub_zero_days_and_signal_clocks(tmp_path):
+    """Split and merge must preserve disputation, sub_zero_days, and signal/increment clocks."""
+    engine = _install(str(tmp_path))
+    disputed = await _seed_refl(engine, "小天", id='r_disp', text='disputed claim')
+    disputed.update(
+        reinforcement=1.0,
+        disputation=4.0,
+        sub_zero_days=5,
+        rein_last_signal_at='2026-04-01T10:00:00',
+        disp_last_signal_at='2026-04-05T10:00:00',
+        sub_zero_last_increment_date='2026-04-06',
+    )
+    peer = await _seed_refl(engine, "小天", id='r_peer', text='peer claim')
+    peer.update(
+        reinforcement=2.0,
+        disputation=1.0,
+        sub_zero_days=2,
+        rein_last_signal_at='2026-04-03T10:00:00',
+        disp_last_signal_at='2026-04-02T10:00:00',
+        sub_zero_last_increment_date='2026-04-04',
+    )
+    await engine.asave_reflections("小天", [disputed, peer])
+
+    # Split disputed reflection into two pieces.
+    split_cluster = [_annot_refl(disputed)]
+    split_actions = [{
+        'action': 'split',
+        'source_id': 'r_disp',
+        'produce': [{'text': 'split part 1'}, {'text': 'split part 2'}],
+    }]
+    assert await engine.apply_refine_actions("小天", "master", split_cluster, split_actions, 'h_split') == 1
+    refls = await engine.aload_reflections("小天")
+    parts = [r for r in refls if r['text'].startswith('split part')]
+    assert len(parts) == 2
+    for part in parts:
+        assert part['reinforcement'] == pytest.approx(0.5)
+        assert part['disputation'] == pytest.approx(2.0)
+        assert part['sub_zero_days'] == 5
+        assert part['rein_last_signal_at'] == '2026-04-01T10:00:00'
+        assert part['disp_last_signal_at'] == '2026-04-05T10:00:00'
+        assert part['sub_zero_last_increment_date'] == '2026-04-06'
+
+    # Merge split part 1 with peer.
+    p1 = parts[0]
+    merge_cluster = [_annot_refl(p1), _annot_refl(peer)]
+    merge_actions = [{
+        'action': 'merge',
+        'source_ids': [p1['id'], 'r_peer'],
+        'produce': {'text': 'merged disputed'},
+    }]
+    assert await engine.apply_refine_actions("小天", "master", merge_cluster, merge_actions, 'h_merge') == 1
+    merged = next(r for r in await engine.aload_reflections("小天") if r['text'] == 'merged disputed')
+    assert merged['reinforcement'] == pytest.approx(2.0)
+    assert merged['disputation'] == pytest.approx(2.0)
+    assert merged['sub_zero_days'] == 5
+    assert merged['rein_last_signal_at'] == '2026-04-03T10:00:00'
+    assert merged['disp_last_signal_at'] == '2026-04-05T10:00:00'
+    assert merged['sub_zero_last_increment_date'] == '2026-04-06'

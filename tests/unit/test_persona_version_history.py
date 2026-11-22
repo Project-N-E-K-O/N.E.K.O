@@ -209,3 +209,124 @@ async def test_non_replace_actions_do_not_record_version_history(tmp_path):
     master_facts = pm._get_section_facts(persona, "master")
     new_entry = next(e for e in master_facts if e.get("text") == "主人喜欢红茶")
     assert new_entry.get("version_history") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_text", [None, "", "   ", 123, []])
+async def test_merge_with_invalid_or_empty_text_leaves_persona_and_queue_untouched(tmp_path, bad_text):
+    """Invalid or empty merge text must be rejected without corrupting persona or resolving the item."""
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "主人喜欢猫")
+    await pm._aqueue_correction("小天", "主人喜欢猫", "主人喜欢狗", "master")
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge", "text": bad_text}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 0
+    persona = await pm.aensure_persona("小天")
+    master_facts = pm._get_section_facts(persona, "master")
+    assert [e["text"] for e in master_facts] == ["主人喜欢猫"]
+    assert len(await pm.aload_pending_corrections("小天")) == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_with_unchanged_text_does_not_pollute_version_history(tmp_path):
+    """Merging to the identical text must mark resolved and stamp cid without adding a redundant history item."""
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "主人喜欢猫")
+    await pm._aqueue_correction("小天", "主人喜欢猫", "主人喜欢小猫", "master")
+    pending = await pm.aload_pending_corrections("小天")
+    cid = pending[0]["correction_id"]
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge", "text": "  主人喜欢猫  "}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    persona = await pm.aensure_persona("小天")
+    target = pm._get_section_facts(persona, "master")[0]
+    assert target["text"] == "主人喜欢猫"
+    assert target.get("version_history") == []
+    assert target.get("applied_correction_id") == cid
+    assert await pm.aload_pending_corrections("小天") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "with_cid", "extra_result"),
+    [
+        ("keep_new", True, {}),
+        ("keep_new", False, {}),
+        ("merge", True, {"text": "合并后文本"}),
+        ("keep_both", True, {}),
+        ("keep_old", True, {}),
+    ],
+)
+async def test_apply_correction_results_replay_is_idempotent_after_queue_write_failure(
+    tmp_path, monkeypatch, action, with_cid, extra_result,
+):
+    """Replay after asave_persona succeeds and persona_corrections.json save fails must not duplicate entries."""
+    from memory.persona import corrections as corrections_mod
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "旧偏好")
+    await pm._aqueue_correction("小天", "旧偏好", "新偏好", "master")
+    queued = await pm.aload_pending_corrections("小天")
+    if not with_cid:
+        queued[0].pop("correction_id", None)
+        await corrections_mod.atomic_write_json_async(pm._corrections_path("小天"), queued, indent=2, ensure_ascii=False)
+
+    real_write = corrections_mod.atomic_write_json_async
+
+    async def _fail_corrections_write(path, *args, **kwargs):
+        if str(path).endswith("persona_corrections.json"):
+            raise OSError("disk failure after persona save")
+        return await real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", _fail_corrections_write)
+    payload = [{"index": 0, "action": action, **extra_result}]
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        with pytest.raises(OSError, match="disk failure"):
+            await pm.resolve_corrections("小天")
+
+    # Queue item survived on disk; replay now with restored disk write.
+    monkeypatch.setattr(corrections_mod, "atomic_write_json_async", real_write)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock(payload)):
+        resolved = await pm.resolve_corrections("小天")
+
+    assert resolved == 1
+    assert await pm.aload_pending_corrections("小天") == []
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    texts = [e["text"] for e in facts]
+    if action == "keep_new":
+        assert texts == ["新偏好"]
+    elif action == "merge":
+        assert texts == ["合并后文本"]
+    elif action == "keep_both":
+        assert texts == ["旧偏好", "新偏好"]
+    elif action == "keep_old":
+        assert texts == ["旧偏好"]
+
+
+@pytest.mark.asyncio
+async def test_apply_correction_results_checks_corrections_writable_before_saving_persona(tmp_path, monkeypatch):
+    """MaintenanceModeError on persona_corrections.json target must abort before asave_persona."""
+    from memory.persona import corrections as corrections_mod
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    pm, _ = _install(str(tmp_path))
+    await _seed_master_fact(pm, "小天", "旧偏好")
+    await pm._aqueue_correction("小天", "旧偏好", "新偏好", "master")
+
+    def _block_corrections(_cm, *, operation="", target=""):
+        if "persona_corrections.json" in target:
+            raise MaintenanceModeError("read_only", operation=operation, target=target)
+
+    monkeypatch.setattr(corrections_mod, "assert_cloudsave_writable", _block_corrections)
+    with patch("utils.llm_client.create_chat_llm", return_value=_make_llm_mock([{"index": 0, "action": "keep_new"}])):
+        with pytest.raises(MaintenanceModeError):
+            await pm.resolve_corrections("小天")
+
+    facts = pm._get_section_facts(await pm.aensure_persona("小天"), "master")
+    assert [e["text"] for e in facts] == ["旧偏好"]

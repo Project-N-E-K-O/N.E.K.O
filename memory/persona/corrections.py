@@ -56,6 +56,31 @@ _VALID_CORRECTION_ACTIONS = frozenset({
     'merge', 'keep_new', 'keep_old', 'keep_both',
 })
 
+
+def _has_applied_cid(entry_obj: object, target_cid: str) -> bool:
+    if not isinstance(entry_obj, dict) or not target_cid:
+        return False
+    if entry_obj.get("applied_correction_id") == target_cid:
+        return True
+    applied_list = entry_obj.get("applied_correction_ids")
+    return isinstance(applied_list, list) and target_cid in applied_list
+
+
+def _record_applied_cid(entry_obj: dict, target_cid: str) -> None:
+    if not target_cid:
+        return
+    ids = [
+        str(x) for x in (entry_obj.get("applied_correction_ids") or [])
+        if isinstance(x, str) and x
+    ]
+    prev_single = entry_obj.get("applied_correction_id")
+    if isinstance(prev_single, str) and prev_single and prev_single not in ids:
+        ids.append(prev_single)
+    if target_cid not in ids:
+        ids.append(target_cid)
+    entry_obj["applied_correction_ids"] = ids[-32:]
+    entry_obj["applied_correction_id"] = target_cid
+
 _LEGACY_CORRECTION_IDENTITY_FIELDS = (
     'created_at', 'entity', 'old_text', 'new_text',
     'subject_kind', 'subject_id', 'scope',
@@ -859,6 +884,10 @@ class CorrectionsMixin:
                         f"new_speaker={new_speaker_id} action={action!r}->{forced}"
                     )
                 action = forced
+            if action == 'merge':
+                if not isinstance(merged_text, str) or not merged_text.strip():
+                    continue
+                merged_text = merged_text.strip()
 
             def _stamped_new_entry(text_value, _subj=item_subject) -> dict:
                 new_entry = self._normalize_entry_for_section(
@@ -932,15 +961,7 @@ class CorrectionsMixin:
             already_applied = bool(
                 item_cid
                 and any(
-                    isinstance(e, dict)
-                    and _entry_in_scope(e)
-                    and (
-                        e.get('applied_correction_id') == item_cid
-                        or (
-                            isinstance(e.get('applied_correction_ids'), list)
-                            and item_cid in e['applied_correction_ids']
-                        )
-                    )
+                    _entry_in_scope(e) and _has_applied_cid(e, item_cid)
                     for e in section_facts
                 )
             )
@@ -963,6 +984,9 @@ class CorrectionsMixin:
                     et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                     if et == old_text and _entry_in_scope(existing):
                         if isinstance(existing, dict):
+                            if merged_text == old_text:
+                                _record_applied_cid(existing, item_cid)
+                                break
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             prior_history = existing.get('version_history', []) or []
                             from memory.speaker_trust import provenance_of_entries
@@ -1004,13 +1028,6 @@ class CorrectionsMixin:
                             # the older stronger score. Mixed/unknown sources
                             # yield an empty fold and clear single-speaker
                             # provenance entirely.
-                            # ``speaker_entity_id`` must be in this clear set,
-                            # not just the fold's output: a merge between two
-                            # different people folds to mixed-only, and leaving
-                            # the old entity id beside the mixed marker lets
-                            # `same_provenance_source` read that row back as
-                            # "same person" via entity equality — which it
-                            # checks BEFORE anything else.
                             for key in (
                                 'speaker_id', 'speaker_trust', 'speaker_label',
                                 'speaker_entity_id',
@@ -1027,12 +1044,15 @@ class CorrectionsMixin:
                             # stale counts/vectors tied to old_text.
                             self._invalidate_token_count_cache(existing)
                             self._invalidate_embedding_cache(existing)
+                            _record_applied_cid(existing, item_cid)
                             section_facts[j] = self._normalize_entry(existing)
                         else:
                             # Legacy str entry — no metadata to preserve;
                             # migrate to dict form and seed the chain.
                             new_entry = _stamped_new_entry(merged_text)
-                            new_entry['version_history'] = [history_entry]
+                            if merged_text != old_text:
+                                new_entry['version_history'] = [history_entry]
+                            _record_applied_cid(new_entry, item_cid)
                             section_facts[j] = new_entry
                         break
             elif action == 'keep_new':
@@ -1046,33 +1066,46 @@ class CorrectionsMixin:
                     if (e.get('text', '') if isinstance(e, dict) else str(e)) != old_text
                     or not _entry_in_scope(e)
                 ]
-                replacement = _stamped_new_entry(new_text)
-                from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
-                if preference == 'new':
-                    prior_history = (
-                        list(old_entries[0].get('version_history') or [])
-                        if old_entries and isinstance(old_entries[0], dict)
-                        else []
-                    )
-                    replacement['version_history'] = (
-                        prior_history
-                        + list(replacement.get('version_history') or [])
-                        + [
-                            _history_snapshot(
-                                old_text, 'old', 'trust_superseded',
-                            )
-                            for _ in old_entries[:1]
-                        ]
-                    )[-_VH_MAX:]
-                section_facts.append(replacement)
+                already_has_new = any(
+                    (e.get('text', '') if isinstance(e, dict) else str(e)) == new_text
+                    and _entry_in_scope(e)
+                    for e in section_facts
+                )
+                if not already_has_new:
+                    replacement = _stamped_new_entry(new_text)
+                    from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
+                    if preference == 'new':
+                        prior_history = (
+                            list(old_entries[0].get('version_history') or [])
+                            if old_entries and isinstance(old_entries[0], dict)
+                            else []
+                        )
+                        replacement['version_history'] = (
+                            prior_history
+                            + list(replacement.get('version_history') or [])
+                            + [
+                                _history_snapshot(
+                                    old_text, 'old', 'trust_superseded',
+                                )
+                                for _ in old_entries[:1]
+                            ]
+                        )[-_VH_MAX:]
+                    _record_applied_cid(replacement, item_cid)
+                    section_facts.append(replacement)
+                elif item_cid:
+                    for existing in section_facts:
+                        et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
+                        if et == new_text and _entry_in_scope(existing) and isinstance(existing, dict):
+                            _record_applied_cid(existing, item_cid)
+                            break
             elif action == 'keep_old':
                 # When trust arbitration selects the old observation, the new observation must not silently disappear: embed it in the winner's
                 # version_history, preserving full text, speaker, and trust so it can be manually restored.
-                if preference == 'old':
-                    from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
-                    for existing in section_facts:
-                        et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
-                        if et == old_text and _entry_in_scope(existing) and isinstance(existing, dict):
+                for existing in section_facts:
+                    et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
+                    if et == old_text and _entry_in_scope(existing) and isinstance(existing, dict):
+                        if preference == 'old':
+                            from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             history = list(existing.get('version_history') or [])
                             correction_identity = hashlib.sha256('|'.join((
                                 str(item.get('created_at') or ''),
@@ -1102,7 +1135,8 @@ class CorrectionsMixin:
                                 existing['version_history'] = (
                                     history + [rejected]
                                 )[-_VH_MAX:]
-                            break
+                        _record_applied_cid(existing, item_cid)
+                        break
             else:  # keep_both
                 existing_texts = {
                     (e.get('text', '') if isinstance(e, dict) else str(e))
@@ -1110,13 +1144,30 @@ class CorrectionsMixin:
                     if _entry_in_scope(e)
                 }
                 if new_text not in existing_texts:
-                    section_facts.append(_stamped_new_entry(new_text))
+                    new_entry = _stamped_new_entry(new_text)
+                    _record_applied_cid(new_entry, item_cid)
+                    section_facts.append(new_entry)
+                elif item_cid:
+                    for existing in section_facts:
+                        et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
+                        if et == new_text and _entry_in_scope(existing) and isinstance(existing, dict):
+                            _record_applied_cid(existing, item_cid)
+                            break
 
             resolved += 1
             resolved_indices.add(idx)
 
         if resolved:
-            await self.asave_persona(name, persona)
+            try:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/persona_corrections.json",
+                )
+                await self.asave_persona(name, persona)
+            except Exception:
+                self._personas.pop(name, None)
+                raise
             # New rows carry a generated id. Legacy rows use their complete
             # immutable payload, so equal timestamps cannot cross-apply.
             processed_identities = [
@@ -1355,29 +1406,6 @@ class CorrectionsMixin:
                     if item_subject is None:
                         return not (isinstance(entry_obj, dict) and subject_from_entry(entry_obj) is not None)
                     return isinstance(entry_obj, dict) and entry_matches_subject(entry_obj, item_subject)
-
-                def _has_applied_cid(entry_obj: object, target_cid: str) -> bool:
-                    if not isinstance(entry_obj, dict) or not target_cid:
-                        return False
-                    if entry_obj.get("applied_correction_id") == target_cid:
-                        return True
-                    applied_list = entry_obj.get("applied_correction_ids")
-                    return isinstance(applied_list, list) and target_cid in applied_list
-
-                def _record_applied_cid(entry_obj: dict, target_cid: str) -> None:
-                    if not target_cid:
-                        return
-                    ids = [
-                        str(x) for x in (entry_obj.get("applied_correction_ids") or [])
-                        if isinstance(x, str) and x
-                    ]
-                    prev_single = entry_obj.get("applied_correction_id")
-                    if isinstance(prev_single, str) and prev_single and prev_single not in ids:
-                        ids.append(prev_single)
-                    if target_cid not in ids:
-                        ids.append(target_cid)
-                    entry_obj["applied_correction_ids"] = ids[-32:]
-                    entry_obj["applied_correction_id"] = target_cid
 
                 _SPEAKER_PROVENANCE_KEYS = (
                     "speaker_id",

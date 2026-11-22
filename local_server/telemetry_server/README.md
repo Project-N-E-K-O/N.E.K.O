@@ -107,7 +107,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" http://服务器:8099/api/v1/admi
 ### 直接查 SQLite
 
 ```bash
-sqlite3 data/telemetry.db
+# Docker Compose 部署使用命名卷 telemetry-data：
+docker compose exec telemetry sqlite3 /app/data/telemetry.db
+# 直接运行 python server.py 时数据库位于本地 ./data/telemetry.db：
+# sqlite3 data/telemetry.db
 
 -- 今日总量
 SELECT * FROM daily_aggregates WHERE stat_date = date('now') AND model = '_total';

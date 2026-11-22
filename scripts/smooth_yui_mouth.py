@@ -39,6 +39,8 @@ Usage: `uv run python scripts/smooth_yui_mouth.py [--root static/yui-lolita]`
 import argparse
 import json
 import math
+import os
+import tempfile
 from pathlib import Path
 
 from slim_live2d_motions import dump_motion
@@ -188,14 +190,100 @@ def walk_curve(seg):
     return segments, points
 
 
+def is_already_smoothed(
+    seg,
+    neutral,
+    sigma_s=SIGMA_S,
+    out_hz=OUT_HZ,
+    fade_s=FADE_S,
+) -> bool:
+    """Return True if a curve's Segments already match smooth_yui_mouth output."""
+    if not isinstance(seg, list) or len(seg) < 2:
+        return False
+    i = 2
+    while i < len(seg):
+        cmd = int(seg[i])
+        if cmd != 0:
+            return False
+        i += 1 + PAY[cmd]
+        if i > len(seg):
+            return False
+
+    keys = extract_keys(seg)
+    if len(keys) < 2:
+        return False
+    if abs(keys[0][1] - neutral) > 1e-6 or abs(keys[-1][1] - neutral) > 1e-6:
+        return False
+
+    t_start = keys[0][0]
+    t_end = keys[-1][0]
+    duration = t_end - t_start
+    if duration <= 0:
+        return len(keys) == 2
+
+    n_out = max(2, int(round(duration * out_hz)) + 1)
+    if len(keys) != n_out:
+        return False
+    step = duration / (n_out - 1)
+    for idx, (t, _v) in enumerate(keys):
+        if abs(t - (t_start + idx * step)) > 1e-5:
+            return False
+
+    u_vals = []
+    for idx, (t, v) in enumerate(keys):
+        w = fade_weight(t - t_start, duration, fade_s)
+        if w >= 0.05:
+            u_vals.append((idx, neutral + (v - neutral) / w))
+    max_amp = max((abs(u - neutral) for _, u in u_vals), default=0.0)
+    limit = 0.05 * max(1.0, max_amp)
+    for j in range(1, len(u_vals) - 1):
+        i0, u0 = u_vals[j - 1]
+        i1, u1 = u_vals[j]
+        i2, u2 = u_vals[j + 1]
+        if i1 == i0 + 1 and i2 == i1 + 1:
+            if abs(u0 - 2.0 * u1 + u2) > limit:
+                return False
+    return True
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    target_path = path.resolve() if path.is_symlink() else path
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target_path.parent,
+            prefix=f".{target_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, target_path)
+    except BaseException:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+
+
 def process(path: Path):
-    data = json.loads(path.read_text(encoding="utf-8"))
+    original_text = path.read_text(encoding="utf-8")
+    data = json.loads(original_text)
     stats = {}
     for curve in data["Curves"]:
         cid = curve.get("Id")
         if cid not in TARGET_IDS:
             continue
         before = extract_keys(curve["Segments"])
+        if is_already_smoothed(curve["Segments"], NEUTRAL[cid]):
+            stats[cid] = (len(before), len(before))
+            continue
         after = smooth_curve(before, NEUTRAL[cid], SIGMA_S, OUT_HZ, FADE_S)
         curve["Segments"] = keys_to_linear_segments(after)
         stats[cid] = (len(before), len(after))
@@ -210,7 +298,9 @@ def process(path: Path):
     meta["TotalSegmentCount"] = seg_total
     meta["TotalPointCount"] = pts_total
 
-    path.write_text(dump_motion(data), encoding="utf-8")
+    serialized = dump_motion(data)
+    if serialized != original_text:
+        _atomic_write_text(path, serialized)
     return stats
 
 

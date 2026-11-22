@@ -335,19 +335,19 @@ validate_ssl_certificate() {
     echo "   Checking private key format..."
     local key_type="unknown"
     
-    # 尝试确定密钥类型
-    if openssl rsa -in "$key_file" -noout 2>/dev/null; then
+    # 尝试确定密钥类型（非交互式：传入空口令，避免加密私钥在 TTY 下卡死等待输入）
+    if openssl rsa -in "$key_file" -passin pass: -noout </dev/null 2>/dev/null; then
         key_type="rsa"
         echo "   Key type: RSA"
-    elif openssl ec -in "$key_file" -noout 2>/dev/null; then
+    elif openssl ec -in "$key_file" -passin pass: -noout </dev/null 2>/dev/null; then
         key_type="ec"
         echo "   Key type: EC"
-    elif openssl pkey -in "$key_file" -noout 2>/dev/null; then
+    elif openssl pkey -in "$key_file" -passin pass: -noout </dev/null 2>/dev/null; then
         key_type="pkey"
         echo "   Key type: Generic"
     else
         echo "❌ Invalid private key format: $key_file"
-        echo "   The key must be in PEM format (RSA or EC)"
+        echo "   The key must be an unencrypted PEM private key (RSA, EC, or PKCS#8)"
         return 1
     fi
     
@@ -356,8 +356,8 @@ validate_ssl_certificate() {
     
     if [ "$key_type" = "rsa" ]; then
         # RSA密钥验证
-        cert_modulus=$(openssl x509 -in "$cert_file" -noout -modulus 2>/dev/null | openssl md5)
-        key_modulus=$(openssl rsa -in "$key_file" -noout -modulus 2>/dev/null | openssl md5 2>/dev/null)
+        cert_modulus=$(openssl x509 -in "$cert_file" -noout -modulus </dev/null 2>/dev/null | openssl md5)
+        key_modulus=$(openssl rsa -in "$key_file" -passin pass: -noout -modulus </dev/null 2>/dev/null | openssl md5 2>/dev/null)
         
         if [ -z "$cert_modulus" ] || [ -z "$key_modulus" ]; then
             echo "❌ Failed to extract modulus from certificate or key"
@@ -376,8 +376,8 @@ validate_ssl_certificate() {
         
     elif [ "$key_type" = "ec" ] || [ "$key_type" = "pkey" ]; then
         # EC或通用密钥验证
-        cert_pubkey=$(openssl x509 -in "$cert_file" -pubkey -noout 2>/dev/null)
-        key_pubkey=$(openssl pkey -in "$key_file" -pubout 2>/dev/null)
+        cert_pubkey=$(openssl x509 -in "$cert_file" -pubkey -noout </dev/null 2>/dev/null)
+        key_pubkey=$(openssl pkey -in "$key_file" -passin pass: -pubout </dev/null 2>/dev/null)
         
         if [ -z "$cert_pubkey" ] || [ -z "$key_pubkey" ]; then
             echo "❌ Failed to extract public key from certificate or key"
@@ -504,6 +504,109 @@ EOF
     return 0
 }
 
+_archive_invalid_ssl_file() {
+    local target="$1"
+    if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+        return 0
+    fi
+    local ts
+    ts=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo "unknown")
+    local dest="${target}.invalid-${ts}"
+    local n=1
+    while [ -e "$dest" ] || [ -L "$dest" ]; do
+        dest="${target}.invalid-${ts}-${n}"
+        n=$((n + 1))
+    done
+    mv -f "$target" "$dest"
+    echo "📦 Archived invalid/partial SSL file: $target -> $dest"
+}
+
+ensure_ssl_certificates() {
+    local cert_file="$1"
+    local key_file="$2"
+
+    # Fresh install: neither cert nor key exists -> generate self-signed pair.
+    if [ ! -e "$cert_file" ] && [ ! -L "$cert_file" ] && [ ! -e "$key_file" ] && [ ! -L "$key_file" ]; then
+        echo "🔐 SSL certificate and key not found. Generating new certificate..."
+        if ! generate_ssl_certificate "$cert_file" "$key_file" "$SSL_DOMAIN" "$SSL_DAYS"; then
+            echo "❌ Failed to generate SSL certificate"
+            if [ "${DISABLE_SSL:-0}" != "1" ]; then
+                return 1
+            fi
+        fi
+    elif [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
+        echo "❌ Incomplete SSL certificate pair detected (only one of cert/key exists or is non-regular)."
+        echo "   Certificate: $cert_file"
+        echo "   Key: $key_file"
+        if [ "${AUTO_REGENERATE_CERT:-0}" = "1" ]; then
+            echo "🔄 AUTO_REGENERATE_CERT=1: archiving partial files and regenerating self-signed SSL certificate..."
+            _archive_invalid_ssl_file "$cert_file"
+            _archive_invalid_ssl_file "$key_file"
+            if generate_ssl_certificate "$cert_file" "$key_file" "$SSL_DOMAIN" "$SSL_DAYS"; then
+                echo "✅ Successfully regenerated SSL certificate"
+            else
+                echo "❌ Failed to regenerate valid SSL certificate"
+                if [ "${DISABLE_SSL:-0}" != "1" ]; then
+                    return 1
+                fi
+            fi
+        else
+            echo "   Existing SSL files have been preserved untouched."
+            echo "   Please supply both valid files, remove them to generate a fresh self-signed pair,"
+            echo "   set AUTO_REGENERATE_CERT=1 (archives invalid files to *.invalid-<ts> and regenerates),"
+            echo "   or set DISABLE_SSL=1 to skip SSL."
+            if [ "${DISABLE_SSL:-0}" != "1" ]; then
+                return 1
+            else
+                echo "⚠️ SSL disabled, continuing without HTTPS..."
+                return 0
+            fi
+        fi
+    else
+        echo "🔐 Using existing SSL certificate and key"
+    fi
+
+    # Validate SSL certificate and key pair.
+    if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
+        if ! validate_ssl_certificate "$cert_file" "$key_file"; then
+            echo "❌ SSL certificate validation failed."
+            if [ "${AUTO_REGENERATE_CERT:-0}" = "1" ]; then
+                echo "🔄 AUTO_REGENERATE_CERT=1: archiving invalid SSL files and regenerating..."
+                _archive_invalid_ssl_file "$cert_file"
+                _archive_invalid_ssl_file "$key_file"
+                if generate_ssl_certificate "$cert_file" "$key_file" "$SSL_DOMAIN" "$SSL_DAYS"; then
+                    echo "✅ Successfully regenerated SSL certificate"
+                else
+                    echo "❌ Failed to regenerate valid SSL certificate"
+                    if [ "${DISABLE_SSL:-0}" != "1" ]; then
+                        return 1
+                    fi
+                fi
+            else
+                echo "❌ SSL certificate validation failed. Existing files have been preserved untouched."
+                echo "   Certificate: $cert_file"
+                echo "   Key: $key_file"
+                echo "   Note: passphrase-protected private keys are not supported in non-interactive container startup."
+                echo "   You can either:"
+                echo "   1. Fix/decrypt the certificate and key files"
+                echo "   2. Set AUTO_REGENERATE_CERT=1 to archive invalid files (*.invalid-<ts>) and regenerate"
+                echo "   3. Set environment variable DISABLE_SSL=1 to skip SSL"
+                if [ "${DISABLE_SSL:-0}" != "1" ]; then
+                    return 1
+                else
+                    echo "⚠️ SSL disabled, continuing without HTTPS..."
+                fi
+            fi
+        fi
+    else
+        echo "❌ SSL certificate or key file missing"
+        if [ "${DISABLE_SSL:-0}" != "1" ]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
 # setup_nginx_proxy sets up and writes the Nginx main and site configuration for the container, creating proxy rules (including WebSocket support), static file serving, a health endpoint, removes the client request body size limit, and validates the resulting configuration.
 setup_nginx_proxy() {
     echo "🌐 Setting up Nginx reverse proxy..."
@@ -513,68 +616,14 @@ setup_nginx_proxy() {
     
     # 生成SSL证书和密钥（如果不存在）
     echo "🔐 Setting up SSL certificates..."
-    mkdir -p /home/neko/ssl
+    local ssl_dir="${NEKO_SSL_DIR:-/home/neko/ssl}"
+    mkdir -p "$ssl_dir"
     
-    local cert_file="/home/neko/ssl/N.E.K.O.crt"
-    local key_file="/home/neko/ssl/N.E.K.O.key"
+    local cert_file="$ssl_dir/N.E.K.O.crt"
+    local key_file="$ssl_dir/N.E.K.O.key"
     
-    # 如果证书或密钥不存在，直接生成新的
-    if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
-        echo "🔐 SSL certificate or key not found. Generating new certificate..."
-        
-        # 如果存在不完整文件，先删除
-        rm -f "$cert_file" "$key_file"
-        
-        # 生成自签名SSL证书
-        if ! generate_ssl_certificate "$cert_file" "$key_file" "$SSL_DOMAIN" "$SSL_DAYS"; then
-            echo "❌ Failed to generate SSL certificate"
-            if [ "${DISABLE_SSL:-0}" != "1" ]; then
-                exit 1
-            fi
-        fi
-        
-    else
-        echo "🔐 Using existing SSL certificate and key"
-    fi
-    
-    # 验证SSL证书和密钥
-    if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
-        if ! validate_ssl_certificate "$cert_file" "$key_file"; then
-            echo "❌ SSL certificate validation failed."
-            
-            # 如果验证失败，询问是否重新生成证书
-            if [ "${AUTO_REGENERATE_CERT:-1}" = "1" ]; then
-                echo "🔄 Auto-regenerating SSL certificate..."
-                rm -f "$cert_file" "$key_file"
-                
-                if generate_ssl_certificate "$cert_file" "$key_file" "$SSL_DOMAIN" "$SSL_DAYS"; then
-                    echo "✅ Successfully regenerated SSL certificate"
-                else
-                    echo "❌ Failed to regenerate valid SSL certificate"
-                    if [ "${DISABLE_SSL:-0}" != "1" ]; then
-                        exit 1
-                    fi
-                fi
-            else
-                echo "❌ SSL certificate validation failed. Please check your certificate and key files."
-                echo "   Certificate: $cert_file"
-                echo "   Key: $key_file"
-                echo "   You can either:"
-                echo "   1. Fix the certificate/key files"
-                echo "   2. Remove them to let the script generate new ones"
-                echo "   3. Set environment variable DISABLE_SSL=1 to skip SSL"
-                if [ "${DISABLE_SSL:-0}" != "1" ]; then
-                    exit 1
-                else
-                    echo "⚠️ SSL disabled, continuing without HTTPS..."
-                fi
-            fi
-        fi
-    else
-        echo "❌ SSL certificate or key file missing"
-        if [ "${DISABLE_SSL:-0}" != "1" ]; then
-            exit 1
-        fi
+    if ! ensure_ssl_certificates "$cert_file" "$key_file"; then
+        exit 1
     fi
     
     # 输出详细的证书信息（就是为了图一乐！）
@@ -789,7 +838,7 @@ EOF
     echo "   SSL Domain: ${SSL_DOMAIN}"
     echo "   SSL Validity: ${SSL_DAYS} days (~$(($SSL_DAYS/365)) years)"
     echo "   SSL Enabled: $([ "${DISABLE_SSL:-0}" = "1" ] && echo "No" || echo "Yes")"
-    echo "   Auto-regenerate cert: $([ "${AUTO_REGENERATE_CERT:-1}" = "1" ] && echo "Yes" || echo "No")"
+    echo "   Auto-regenerate cert: $([ "${AUTO_REGENERATE_CERT:-0}" = "1" ] && echo "Yes" || echo "No")"
     echo "   Nginx auto-reload: $([ "${NGINX_AUTO_RELOAD:-1}" = "1" ] && echo "Enabled (every 5 min)" || echo "Disabled")"
 }
 
@@ -1262,4 +1311,6 @@ main() {
 }
 
 # 执行主函数
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

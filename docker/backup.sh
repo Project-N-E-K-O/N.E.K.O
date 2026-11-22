@@ -61,6 +61,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$KEEP" in ''|*[!0-9]*) echo "backup: --keep must be a non-negative integer" >&2; exit 2 ;; esac
+[ -n "$CONTAINER" ] || { echo "backup: --container must not be empty" >&2; exit 2; }
+safe_container=$(printf '%s' "$CONTAINER" | tr -c 'A-Za-z0-9._-' '_')
+case "$safe_container" in
+    ''|.|..) echo "backup: invalid container name '$CONTAINER'" >&2; exit 2 ;;
+esac
 
 # 相对路径按 docker/ 解析，与 Compose 对 ./$ 的解析一致
 case "$home_dir" in /*) ;; *) home_dir=$script_dir/$home_dir ;; esac
@@ -92,17 +97,33 @@ state=$home_dir/.local/share/N.E.K.O
 MUST_LIST="
 config
 memory
+chat_sync
 knowledge
+nekoclaw/ledger.db
+nekoclaw/ledger.db-wal
+nekoclaw/permissions.json
+nekoclaw/plugin_short_descriptions.json
+nekoclaw/model_capabilities.json
+nekoclaw/browser.json
+nekoclaw/task_agent_space
 plugins
+plugin_shared
+plugins.lock.json
 live2d
 vrm
 mmd
 pngtuber
 emote_templates
 avatar_tools
+chat_avatars
 workshop
+theater
+jukebox
+watch_together
 character_cards
 card_faces
+runtimes
+embedding_models
 state
 cloudsave
 .cloudsave_staging
@@ -123,6 +144,11 @@ for item in $MUST_LIST; do
         missing="$missing $item"
     fi
 done
+for _scoped_lock in "$state"/plugins.*.lock.json; do
+    [ -e "$_scoped_lock" ] || continue
+    found="$found $(basename "$_scoped_lock")"
+done
+unset _scoped_lock
 
 echo "backup: 数据目录 $home_dir"
 echo "backup: 将打包:$found"
@@ -235,7 +261,7 @@ if command -v flock >/dev/null 2>&1; then
     unset _instance_key
 fi
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
-archive="$out_dir/neko-backup-$stamp-$$.tar.gz"
+archive="$out_dir/neko-backup-${safe_container}-${stamp}-$$.tar.gz"
 
 # ── 冷备：先停容器，退出时恢复原来的运行状态 ────────────────────────────────
 # 冷备的前提是"确认容器已停"。无法确认时不能默默按冷备继续 —— 真实数据容器
@@ -249,6 +275,15 @@ elif ! container_state=$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/
 fi
 
 container_was_running=0
+WATCHDOG_STATE_DIR=${NEKO_WATCHDOG_STATE_DIR:-/opt/neko}
+if [ "$CONTAINER" = "neko" ]; then
+    watchdog_scope=''
+else
+    watchdog_scope="-$(printf '%s' "$CONTAINER" | tr -c 'A-Za-z0-9._-' '_')"
+fi
+watchdog_lock="$WATCHDOG_STATE_DIR/watchdog${watchdog_scope}.lock"
+watchdog_disabled="$WATCHDOG_STATE_DIR/disabled"
+created_watchdog_disabled=0
 
 # 恢复钩子必须在 docker stop **之前**装好：stop 成功但随后的 inspect 失败时
 # 会走 exit，如果那时还没装 trap，容器就永远停在停止状态 ——
@@ -259,16 +294,63 @@ restart_container() {
         docker start "$CONTAINER" >/dev/null || echo "backup: ⚠️ 容器启动失败，请手动检查" >&2
     fi
 }
-trap restart_container EXIT
+cleanup_on_exit() {
+    restart_container
+    if [ "$created_watchdog_disabled" = "1" ]; then
+        if [ -d "$WATCHDOG_STATE_DIR" ] && [ ! -L "$WATCHDOG_STATE_DIR" ] && [ ! -L "$watchdog_lock" ] && [ ! -L "$watchdog_disabled" ]; then
+            (
+                if command -v flock >/dev/null 2>&1 && exec 6>"$watchdog_lock" 2>/dev/null; then
+                    flock 6 2>/dev/null || true
+                fi
+                rm -f "$watchdog_disabled"
+            )
+        fi
+    fi
+}
+trap cleanup_on_exit EXIT
 # INT/TERM 不能直接挂 restart_container：它只把容器拉起来、不退出脚本，
 # 后面的打包会继续 —— 而容器此时正在重新写 SQLite，冷备的一致性就没了。
 # 让信号先退出，再由 EXIT trap 负责恢复运行状态。
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+pause_watchdog_for_cold_backup() {
+    if [ ! -e "$WATCHDOG_STATE_DIR" ] && [ ! -L "$WATCHDOG_STATE_DIR" ]; then
+        if [ -n "${NEKO_WATCHDOG_STATE_DIR:-}" ]; then
+            echo "backup: ❌ 指定的看门狗状态目录不存在: $WATCHDOG_STATE_DIR" >&2
+            exit 1
+        fi
+        return 0
+    fi
+    if [ -L "$WATCHDOG_STATE_DIR" ] || [ ! -d "$WATCHDOG_STATE_DIR" ]; then
+        echo "backup: ❌ 看门狗状态目录不安全（非普通目录）: $WATCHDOG_STATE_DIR" >&2
+        exit 1
+    fi
+    if [ ! -r "$WATCHDOG_STATE_DIR" ] || [ ! -w "$WATCHDOG_STATE_DIR" ] || [ ! -x "$WATCHDOG_STATE_DIR" ]; then
+        echo "backup: ❌ 无权访问看门狗状态目录 $WATCHDOG_STATE_DIR，冷备期间看门狗可能重启容器" >&2
+        echo "backup:    请使用 sudo 执行冷备，或改用 --no-stop" >&2
+        exit 1
+    fi
+    if [ -L "$watchdog_lock" ] || [ -L "$watchdog_disabled" ]; then
+        echo "backup: ❌ 看门狗状态文件不能是符号链接: $WATCHDOG_STATE_DIR" >&2
+        exit 1
+    fi
+    if ! exec 6>"$watchdog_lock"; then
+        echo "backup: ❌ 无法打开看门狗锁 $watchdog_lock" >&2
+        exit 1
+    fi
+    flock 6
+    if [ ! -e "$watchdog_disabled" ]; then
+        : > "$watchdog_disabled"
+        created_watchdog_disabled=1
+    fi
+    exec 6>&-
+}
+
 if [ "$STOP_CONTAINER" = "1" ]; then
     case "$container_state" in
         true)
+            pause_watchdog_for_cold_backup
             container_was_running=1
             echo "backup: 停止容器 $CONTAINER（冷备，保证 SQLite 一致）"
             docker stop "$CONTAINER" >/dev/null
@@ -278,6 +360,7 @@ if [ "$STOP_CONTAINER" = "1" ]; then
             fi
             ;;
         false)
+            pause_watchdog_for_cold_backup
             echo "backup: 容器 $CONTAINER 未在运行，按冷备继续"
             ;;
         no-docker-cli)
@@ -308,12 +391,24 @@ for item in $MUST_LIST; do
     [ -n "$item" ] || continue
     [ -e "$state/$item" ] && pack_list="$pack_list .local/share/N.E.K.O/$item"
 done
+for _scoped_lock in "$state"/plugins.*.lock.json; do
+    [ -e "$_scoped_lock" ] || continue
+    pack_list="$pack_list .local/share/N.E.K.O/$(basename "$_scoped_lock")"
+done
+unset _scoped_lock
 [ -e "$home_dir/ssl" ] && pack_list="$pack_list ssl"
 
 if [ -z "$pack_list" ]; then
     echo "backup: ❌ 清单里一个数据项都不存在，没有任何可备份的内容" >&2
     echo "backup:    确认 --home 指向的是容器挂载的目录（默认 docker/neko-home）" >&2
     exit 1
+fi
+
+if [ "$STOP_CONTAINER" = "1" ]; then
+    if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo unknown)" != "false" ]; then
+        echo "backup: ❌ 打包前容器 $CONTAINER 处于运行状态，中止冷备" >&2
+        exit 1
+    fi
 fi
 
 echo "backup: 写入 $archive"
@@ -325,6 +420,14 @@ if ! tar -czf "$archive" $EXCLUDES -C "$home_dir" $pack_list; then
     echo "backup: ❌ tar 执行失败，本次备份作废（不保留残缺归档）" >&2
     rm -f "$archive" "$archive.manifest.txt"
     exit 1
+fi
+
+if [ "$STOP_CONTAINER" = "1" ]; then
+    if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo unknown)" != "false" ]; then
+        echo "backup: ❌ 打包期间容器 $CONTAINER 被启动，归档可能不一致，已作废" >&2
+        rm -f "$archive" "$archive.manifest.txt"
+        exit 1
+    fi
 fi
 
 # ── 校验：重新读一遍归档，确认可解、条目数非零 ──────────────────────────────
@@ -359,7 +462,24 @@ echo "backup:   5) 实例访问密钥若一并恢复，终端不需要重新配�
 
 # ── 轮转（只在调用方明确要求时执行，且只删本脚本自己命名的文件）─────────────
 if [ "$KEEP" -gt 0 ]; then
-    stale=$(ls -1t "$out_dir"/neko-backup-*.tar.gz 2>/dev/null | tail -n +"$((KEEP + 1))" || true)
+    matched=''
+    for candidate in $(ls -1t "$out_dir"/neko-backup-"$safe_container"-*.tar.gz 2>/dev/null || true); do
+        [ -e "$candidate" ] || continue
+        base=$(basename "$candidate")
+        suffix=${base#"neko-backup-${safe_container}-"}
+        case "$suffix" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9]*.tar.gz)
+                pid_part=${suffix#[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-}
+                pid_part=${pid_part%.tar.gz}
+                case "$pid_part" in
+                    ''|*[!0-9]*) continue ;;
+                esac
+                matched="${matched}${candidate}
+"
+                ;;
+        esac
+    done
+    stale=$(printf '%s' "$matched" | sed '/^$/d' | tail -n +"$((KEEP + 1))" || true)
     [ -n "$stale" ] || stale=''
     if [ -n "$stale" ]; then
         printf '%s\n' "$stale" | while IFS= read -r old; do

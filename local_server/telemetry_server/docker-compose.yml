@@ -6,7 +6,10 @@ services:
     ports:
       - "8099:8099"
     volumes:
-      - ./data:/app/data
+      # Use a Docker-managed named volume so Docker initializes /app/data from
+      # the image's appuser-owned directory instead of mounting a root-owned ./data
+      # host directory that blocks non-root appuser writes and exposes telemetry.db.
+      - telemetry-data:/app/data
     environment:
       # 存储中的业务时间戳固定为 +08:00，容器时区同样固定为 Asia/Shanghai。
       - TZ=Asia/Shanghai
@@ -23,3 +26,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  telemetry-data:

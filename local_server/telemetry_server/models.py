@@ -21,11 +21,68 @@ Compatible with both Pydantic v1 and v2.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+import re
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional
 
 # Pydantic v1/v2 compatibility.
 PYDANTIC_V2 = int(getattr(__import__('pydantic'), 'VERSION', '1.0').split('.')[0]) >= 2
+if PYDANTIC_V2:
+    from pydantic import field_validator as _pydantic_validator
+else:
+    from pydantic import validator as _pydantic_validator
+
+MAX_DAILY_STATS_DAYS = 100
+MAX_DAILY_BUCKETS = 100
+MAX_BUCKET_KEY_LEN = 128
+MAX_DAILY_COUNTER = 10_000_000_000
+DAILY_STATS_PAST_DAYS = 90
+DAILY_STATS_FUTURE_DAYS = 2
+_STAT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _reject_bool_int(v):
+    if isinstance(v, bool):
+        raise ValueError("boolean value is not valid for integer counter")
+    return v
+
+
+def _validate_bucket_map(buckets: dict) -> dict:
+    if len(buckets) > MAX_DAILY_BUCKETS:
+        raise ValueError(f"too many buckets (max {MAX_DAILY_BUCKETS})")
+    for key in buckets:
+        if not isinstance(key, str) or not (1 <= len(key) <= MAX_BUCKET_KEY_LEN):
+            raise ValueError("bucket key must be a string between 1 and 128 characters")
+        if key == "_total" or not key.strip() or _CONTROL_CHAR_RE.search(key):
+            raise ValueError(f"invalid bucket key: {key!r}")
+    return buckets
+
+
+def _validate_daily_stats_map(daily_stats: dict) -> dict:
+    if len(daily_stats) > MAX_DAILY_STATS_DAYS:
+        raise ValueError(f"too many daily_stats days (max {MAX_DAILY_STATS_DAYS})")
+    today = date.today()
+    min_date = today - timedelta(days=DAILY_STATS_PAST_DAYS)
+    max_date = today + timedelta(days=DAILY_STATS_FUTURE_DAYS)
+    for stat_date in daily_stats:
+        if not isinstance(stat_date, str) or not _STAT_DATE_RE.fullmatch(stat_date):
+            raise ValueError(f"invalid stat_date format: {stat_date!r}")
+        try:
+            parsed = date.fromisoformat(stat_date)
+        except ValueError as exc:
+            raise ValueError(f"invalid stat_date value: {stat_date!r}") from exc
+        if parsed < min_date or parsed > max_date:
+            raise ValueError(f"stat_date out of allowed window: {stat_date!r}")
+    return daily_stats
+
+
+def _make_validator(*fields: str, fn, pre: bool = False):
+    if PYDANTIC_V2:
+        mode = "before" if pre else "after"
+        return _pydantic_validator(*fields, mode=mode)(classmethod(lambda cls, v: fn(v)))
+    return _pydantic_validator(*fields, pre=pre, allow_reuse=True)(classmethod(lambda cls, v: fn(v)))
 
 
 def model_to_dict(obj):
@@ -51,23 +108,45 @@ def model_from_json(cls, data: str):
 
 class ModelBucket(BaseModel):
     """Stats bucket aggregated by model/call type."""
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    cached_tokens: int = 0
-    call_count: int = 0
+    prompt_tokens: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    completion_tokens: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    total_tokens: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    cached_tokens: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    call_count: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+
+    _check_non_bool = _make_validator(
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "call_count",
+        fn=_reject_bool_int,
+        pre=True,
+    )
 
 
 class DailyStats(BaseModel):
     """Aggregated stats for one day."""
-    total_prompt_tokens: int = 0
-    total_completion_tokens: int = 0
-    total_tokens: int = 0
-    cached_tokens: int = 0
-    call_count: int = 0
-    error_count: int = 0
+    total_prompt_tokens: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    total_completion_tokens: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    total_tokens: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    cached_tokens: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    call_count: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
+    error_count: int = Field(default=0, ge=0, le=MAX_DAILY_COUNTER)
     by_model: Dict[str, ModelBucket] = Field(default_factory=dict)
     by_call_type: Dict[str, ModelBucket] = Field(default_factory=dict)
+
+    _check_non_bool = _make_validator(
+        "total_prompt_tokens",
+        "total_completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "call_count",
+        "error_count",
+        fn=_reject_bool_int,
+        pre=True,
+    )
+    _check_buckets = _make_validator("by_model", "by_call_type", fn=_validate_bucket_map)
 
 
 class RecentRecord(BaseModel):
@@ -138,6 +217,8 @@ class TelemetryEvent(BaseModel):
     # General counter/histogram accumulation window (utils/instrument). Optional:
     # clients send only nonempty windows; older clients omit this field entirely.
     instruments: Optional[InstrumentSnapshot] = None
+
+    _check_daily_stats = _make_validator("daily_stats", fn=_validate_daily_stats_map)
 
 
 class TelemetrySubmission(BaseModel):

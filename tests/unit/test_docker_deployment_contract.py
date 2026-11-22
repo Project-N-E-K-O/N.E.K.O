@@ -128,22 +128,74 @@ def test_backup_inventory_covers_every_persistent_storage_root():
     wrong assumptions, so everything was green. Comparing the two files
     statically turns that drift into a CI failure.
     """
+    from utils.storage.migration import MIGRATED_RUNTIME_ENTRY_NAMES
+
     roots = (ROOT / "utils" / "config_manager" / "storage_roots.py").read_text(
         encoding="utf-8"
     )
     declared = set(re.findall(r'self\.\w+_dir = self\.app_docs_dir / "([^"]+)"', roots))
     declared |= set(re.findall(r'return self\.anchor_root / "([^"]+)"', roots))
-    assert declared, "没能从 storage_roots.py 解析出持久化目录，解析规则已失效"
+    declared.add("chat_avatars")
+    assert declared, "failed to parse persistent storage dirs from storage_roots.py"
 
     script = (ROOT / "docker" / "backup.sh").read_text(encoding="utf-8")
     block = script.split('MUST_LIST="', 1)[1].split('"', 1)[0]
     listed = {line.strip() for line in block.splitlines() if line.strip()}
 
-    missing = sorted(declared - listed)
-    assert not missing, (
-        f"backup.sh 的 MUST_LIST 漏了这些持久化目录：{missing}。"
-        "漏掉的目录不会进备份，恢复后对应用户资产直接消失，而脚本仍然报成功。"
+    assert "nekoclaw" not in listed, (
+        "bare 'nekoclaw' must NOT be in MUST_LIST (would drag in task_agents venvs and browser_profile locks)"
     )
+
+    missing_roots = sorted(declared - listed)
+    assert not missing_roots, (
+        f"backup.sh MUST_LIST missed persistent dirs: {missing_roots}"
+    )
+
+    missing_migrated = [
+        entry
+        for entry in MIGRATED_RUNTIME_ENTRY_NAMES
+        if entry not in listed and entry.split("/", 1)[0] not in listed
+    ]
+    assert not missing_migrated, (
+        f"backup.sh MUST_LIST missed MIGRATED_RUNTIME_ENTRY_NAMES entries: {missing_migrated}"
+    )
+
+
+def test_entrypoint_ssl_preserves_existing_certs_by_default():
+    """Entrypoint must default AUTO_REGENERATE_CERT to 0 and never rm -f SSL files."""
+    entrypoint = (ROOT / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "AUTO_REGENERATE_CERT:-0" in entrypoint
+    assert "AUTO_REGENERATE_CERT:-1" not in entrypoint
+    assert 'rm -f "$cert_file"' not in entrypoint
+    assert 'rm -f "$key_file"' not in entrypoint
+
+    import shutil
+    import subprocess
+
+    bash_bin = shutil.which("bash")
+    openssl_bin = shutil.which("openssl")
+    if not bash_bin or not openssl_bin:
+        return
+    res = subprocess.run(
+        [bash_bin, str(ROOT / "docker" / "test-entrypoint-ssl.sh")],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, f"test-entrypoint-ssl.sh failed:\n{res.stdout}\n{res.stderr}"
+
+
+def test_telemetry_compose_uses_named_volume():
+    """Telemetry compose must use a named volume instead of host ./data bind mount."""
+    compose = yaml.safe_load(
+        (ROOT / "local_server" / "telemetry_server" / "docker-compose.yml").read_text(encoding="utf-8")
+    )
+    service = compose["services"]["telemetry"]
+    volumes = service["volumes"]
+    assert any(isinstance(v, str) and v.startswith("telemetry-data:/app/data") for v in volumes)
+    assert not any("./data:/app/data" in str(v) for v in volumes)
+    assert "telemetry-data" in (compose.get("volumes") or {})
 
 
 def test_dockerignore_does_not_hide_the_docs_the_runtime_reads():

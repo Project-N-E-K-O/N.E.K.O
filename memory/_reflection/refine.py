@@ -9,6 +9,7 @@ from memory.evidence import (
     counted_fact_ids,
     merge_fact_source_counts,
     merge_observed_days,
+    merged_evidence_state,
     observed_days,
 )
 
@@ -70,6 +71,11 @@ def build_split_reflection(
             "source_fact_ids": list(src.get("source_fact_ids") or []),
             "created_at": now.isoformat(),
             "reinforcement": float(src.get("reinforcement", 0) or 0) / denominator,
+            "disputation": float(src.get("disputation", 0) or 0) / denominator,
+            "sub_zero_days": int(src.get("sub_zero_days", 0) or 0),
+            "rein_last_signal_at": src.get("rein_last_signal_at"),
+            "disp_last_signal_at": src.get("disp_last_signal_at"),
+            "sub_zero_last_increment_date": src.get("sub_zero_last_increment_date"),
             "relation_type": relation_type,
             "temporal_scope": temporal_scope,
             "subject": src.get("subject"),
@@ -119,23 +125,25 @@ def build_merge_reflection(
         default=0.0,
     )
     first = srcs[0] if srcs else {}
+    built = {
+        "id": id_factory(text),
+        "text": text,
+        "entity": entity,
+        "status": best_status,
+        "source_fact_ids": sorted(combined_fact_ids),
+        "created_at": now.isoformat(),
+        "reinforcement": max_reinforcement,
+        "relation_type": relation_type,
+        "temporal_scope": temporal_scope,
+        "subject": first.get("subject"),
+        "event_when_raw": first.get("event_when_raw"),
+        "event_start_at": first.get("event_start_at"),
+        "event_end_at": first.get("event_end_at"),
+        "schema_version": first.get("schema_version", 2),
+    }
+    built.update(merged_evidence_state(srcs))
     return normalizer(_carry_user_backing(
-        {
-            "id": id_factory(text),
-            "text": text,
-            "entity": entity,
-            "status": best_status,
-            "source_fact_ids": sorted(combined_fact_ids),
-            "created_at": now.isoformat(),
-            "reinforcement": max_reinforcement,
-            "relation_type": relation_type,
-            "temporal_scope": temporal_scope,
-            "subject": first.get("subject"),
-            "event_when_raw": first.get("event_when_raw"),
-            "event_start_at": first.get("event_start_at"),
-            "event_end_at": first.get("event_end_at"),
-            "schema_version": first.get("schema_version", 2),
-        },
+        built,
         srcs,
         absorbed_facts,
     ))

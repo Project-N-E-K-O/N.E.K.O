@@ -35,6 +35,7 @@ import io
 import json
 import logging
 import math
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -42,6 +43,49 @@ from datetime import date, timedelta
 from pathlib import Path
 
 _logger = logging.getLogger("telemetry.storage")
+
+MAX_DAILY_STATS_DAYS = 100
+MAX_DAILY_BUCKETS = 100
+MAX_BUCKET_KEY_LEN = 128
+MAX_DAILY_COUNTER = 10_000_000_000
+DAILY_STATS_PAST_DAYS = 90
+DAILY_STATS_FUTURE_DAYS = 2
+_STAT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _is_valid_stat_date(stat_date: object, today_date: date) -> bool:
+    if not isinstance(stat_date, str) or not _STAT_DATE_RE.fullmatch(stat_date):
+        return False
+    try:
+        parsed = date.fromisoformat(stat_date)
+    except ValueError:
+        return False
+    min_date = today_date - timedelta(days=DAILY_STATS_PAST_DAYS)
+    max_date = today_date + timedelta(days=DAILY_STATS_FUTURE_DAYS)
+    return min_date <= parsed <= max_date
+
+
+def _is_valid_bucket_key(key: object) -> bool:
+    if not isinstance(key, str) or not (1 <= len(key) <= MAX_BUCKET_KEY_LEN):
+        return False
+    if key == "_total" or not key.strip() or _CONTROL_CHAR_RE.search(key):
+        return False
+    return True
+
+
+def _extract_valid_counters(bucket: object, keys: tuple[str, ...]) -> list[int] | None:
+    if not isinstance(bucket, dict):
+        return None
+    values: list[int] = []
+    for k in keys:
+        val = bucket.get(k, 0)
+        if isinstance(val, bool) or not isinstance(val, int):
+            return None
+        if val < 0 or val > MAX_DAILY_COUNTER:
+            return None
+        values.append(val)
+    return values
 
 
 def _bucket_quantile(buckets: list, bounds: list, q: float) -> dict:
@@ -389,7 +433,8 @@ class TelemetryStorage:
                     timezone: str = "unknown", distribution: str = "unknown",
                     steam_user_id: str = "", device_hw: str = "",
                     instruments: dict | None = None):
-        today = date.today().isoformat()
+        today_date = date.today()
+        today = today_date.isoformat()
         with self._transaction() as conn:
             # Denylist consolidation: deleted Steam64 IDs must never reenter devices through reports.
             # Check within serialized write transactions so committed denylists are visible, replacing IDs with ''.
@@ -413,30 +458,65 @@ class TelemetryStorage:
                 "INSERT INTO events (device_id, app_version, payload, event_date) VALUES (?, ?, ?, ?)",
                 (device_id, app_version, payload_json, today),
             )
-            for stat_date, day_data in daily_stats.items():
-                self._upsert_aggregate(
-                    conn, device_id, stat_date, "_total", "_total",
-                    day_data.get("total_prompt_tokens", 0),
-                    day_data.get("total_completion_tokens", 0),
-                    day_data.get("total_tokens", 0),
-                    day_data.get("cached_tokens", 0),
-                    day_data.get("call_count", 0),
-                    day_data.get("error_count", 0),
+            if isinstance(daily_stats, dict):
+                day_counter_keys = (
+                    "total_prompt_tokens",
+                    "total_completion_tokens",
+                    "total_tokens",
+                    "cached_tokens",
+                    "call_count",
+                    "error_count",
                 )
-                for model, bucket in day_data.get("by_model", {}).items():
+                bucket_counter_keys = (
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "total_tokens",
+                    "cached_tokens",
+                    "call_count",
+                )
+                for day_idx, (stat_date, day_data) in enumerate(daily_stats.items()):
+                    if day_idx >= MAX_DAILY_STATS_DAYS:
+                        break
+                    if not _is_valid_stat_date(stat_date, today_date):
+                        continue
+                    day_counts = _extract_valid_counters(day_data, day_counter_keys)
+                    if day_counts is None:
+                        continue
                     self._upsert_aggregate(
-                        conn, device_id, stat_date, model, "_total",
-                        bucket.get("prompt_tokens", 0), bucket.get("completion_tokens", 0),
-                        bucket.get("total_tokens", 0), bucket.get("cached_tokens", 0),
-                        bucket.get("call_count", 0), 0,
+                        conn, device_id, stat_date, "_total", "_total",
+                        day_counts[0], day_counts[1], day_counts[2],
+                        day_counts[3], day_counts[4], day_counts[5],
                     )
-                for call_type, bucket in day_data.get("by_call_type", {}).items():
-                    self._upsert_aggregate(
-                        conn, device_id, stat_date, "_total", call_type,
-                        bucket.get("prompt_tokens", 0), bucket.get("completion_tokens", 0),
-                        bucket.get("total_tokens", 0), bucket.get("cached_tokens", 0),
-                        bucket.get("call_count", 0), 0,
-                    )
+                    by_model = day_data.get("by_model")
+                    if isinstance(by_model, dict):
+                        for b_idx, (model, bucket) in enumerate(by_model.items()):
+                            if b_idx >= MAX_DAILY_BUCKETS:
+                                break
+                            if not _is_valid_bucket_key(model):
+                                continue
+                            b_counts = _extract_valid_counters(bucket, bucket_counter_keys)
+                            if b_counts is None:
+                                continue
+                            self._upsert_aggregate(
+                                conn, device_id, stat_date, model, "_total",
+                                b_counts[0], b_counts[1], b_counts[2],
+                                b_counts[3], b_counts[4], 0,
+                            )
+                    by_call_type = day_data.get("by_call_type")
+                    if isinstance(by_call_type, dict):
+                        for b_idx, (call_type, bucket) in enumerate(by_call_type.items()):
+                            if b_idx >= MAX_DAILY_BUCKETS:
+                                break
+                            if not _is_valid_bucket_key(call_type):
+                                continue
+                            b_counts = _extract_valid_counters(bucket, bucket_counter_keys)
+                            if b_counts is None:
+                                continue
+                            self._upsert_aggregate(
+                                conn, device_id, stat_date, "_total", call_type,
+                                b_counts[0], b_counts[1], b_counts[2],
+                                b_counts[3], b_counts[4], 0,
+                            )
             # Clients persist stable branch on first launch; one device normally has only one known
             # value. Known values overwrite, including fresh truth after reset/reassignment.
             # locale/timezone/distribution are current readings, likewise overwriting only when
@@ -826,9 +906,9 @@ class TelemetryStorage:
 
         # -- Daily new devices --
         new_rows = conn.execute("""
-            SELECT DATE(first_seen) as join_date, COUNT(*) as cnt
+            SELECT DATE(first_seen, '+8 hours') as join_date, COUNT(*) as cnt
             FROM devices
-            WHERE DATE(first_seen) >= ?
+            WHERE DATE(first_seen, '+8 hours') >= ?
             GROUP BY join_date ORDER BY join_date DESC
         """, (cutoff,)).fetchall()
         new_trend = {r["join_date"]: r["cnt"] for r in new_rows}
@@ -840,7 +920,7 @@ class TelemetryStorage:
         # Devices added the day before yesterday.
         cohort = conn.execute("""
             SELECT COUNT(*) as cnt FROM devices
-            WHERE DATE(first_seen) = ?
+            WHERE DATE(first_seen, '+8 hours') = ?
         """, (day_before,)).fetchone()["cnt"]
 
         # Those still active yesterday.
@@ -850,7 +930,7 @@ class TelemetryStorage:
                 SELECT COUNT(DISTINCT a.device_id) as cnt
                 FROM daily_aggregates a
                 JOIN devices d ON a.device_id = d.device_id
-                WHERE DATE(d.first_seen) = ?
+                WHERE DATE(d.first_seen, '+8 hours') = ?
                   AND a.stat_date = ?
                   AND a.model = '_total' AND a.call_type = '_total'
             """, (day_before, yesterday)).fetchone()["cnt"]
@@ -862,7 +942,7 @@ class TelemetryStorage:
         d7_check = (today - timedelta(days=1)).isoformat()
         cohort_7 = conn.execute("""
             SELECT COUNT(*) as cnt FROM devices
-            WHERE DATE(first_seen) = ?
+            WHERE DATE(first_seen, '+8 hours') = ?
         """, (d7_anchor,)).fetchone()["cnt"]
         retained_7 = 0
         if cohort_7 > 0:
@@ -870,7 +950,7 @@ class TelemetryStorage:
                 SELECT COUNT(DISTINCT a.device_id) as cnt
                 FROM daily_aggregates a
                 JOIN devices d ON a.device_id = d.device_id
-                WHERE DATE(d.first_seen) = ?
+                WHERE DATE(d.first_seen, '+8 hours') = ?
                   AND a.stat_date = ?
                   AND a.model = '_total' AND a.call_type = '_total'
             """, (d7_anchor, d7_check)).fetchone()["cnt"]
@@ -1274,7 +1354,7 @@ class TelemetryStorage:
             "WITH dc AS ("
             "  SELECT COALESCE(cm.canonical_id, 'd:'||d.device_id) AS canon, d.first_seen "
             "  FROM devices d LEFT JOIN canonical_map cm ON cm.entity_type='device' AND cm.entity_id=d.device_id"
-            "), canon_first AS (SELECT canon, MIN(date(first_seen)) AS join_date FROM dc GROUP BY canon)"
+            "), canon_first AS (SELECT canon, MIN(DATE(first_seen, '+8 hours')) AS join_date FROM dc GROUP BY canon)"
         )
 
         def retention(anchor: str, check: str) -> float:

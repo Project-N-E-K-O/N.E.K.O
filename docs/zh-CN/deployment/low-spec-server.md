@@ -24,7 +24,7 @@ NEKO_TRUSTED_ORIGINS=https://your-domain.example:48912
 
 默认允许通过 `http://<服务器IP>:48911` 配对，页面会提示连接未加密；HTTP 会以明文传输配对 key 和会话 Cookie，不要在不可信网络上这样输入凭证。需要强制 HTTPS/WSS 时设置 `NEKO_REQUIRE_HTTPS=1`。实例凭证的读取方式见 [Docker 部署](./docker)。
 
-已有部署改了 `SSL_DOMAIN` 时，入口脚本会继续复用 `docker/neko-home/ssl/` 下已有的自签名证书，不会按新域名重新签发。需要新证书时，先停容器，把 `N.E.K.O.crt` 和 `N.E.K.O.key` 移出该目录备份，再启动让入口脚本重新生成；使用自有证书时直接替换这两个文件。
+已有部署改了 `SSL_DOMAIN` 时，入口脚本会继续复用 `docker/neko-home/ssl/` 下已有的自签名证书，不会按新域名重新签发。需要新证书时，先停容器，把 `N.E.K.O.crt` 和 `N.E.K.O.key` 移出该目录备份，再启动让入口脚本重新生成；使用自有证书时直接替换这两个文件。默认情况下（`AUTO_REGENERATE_CERT=0`），若只存在半边文件或证书/私钥校验失败（包括无 TTY 容器启动时无法解锁的带口令私钥），入口脚本会原样保留现有文件并报错退出，不会删除或覆盖你的证书；仅在明确希望把无效/残缺文件归档为 `*.invalid-<时间戳>` 并重新签发自签名证书时设置 `AUTO_REGENERATE_CERT=1`。
 
 首次启动前，在仓库根目录执行一次宿主机预检（迁移数据后、或 Docker 曾以 root 建过这两个目录时也执行）：
 

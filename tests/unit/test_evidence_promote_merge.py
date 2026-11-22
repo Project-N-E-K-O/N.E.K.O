@@ -1699,3 +1699,69 @@ async def test_apromote_with_merge_passes_reflection_evidence_not_precomputed_ma
     # (target wins), proving the lock-side compute happened.
     entry = (await pm.aget_persona('小天'))['master']['facts'][0]
     assert entry['reinforcement'] == 4.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_scoped", [False, True])
+async def test_promote_fresh_retry_after_state_change_failure_is_idempotent(tmp_path, use_scoped):
+    """Retry after aadd_fact persisted prom_<rid> and _arecord_state_change failed must promote without self-contradiction."""
+    from memory.scopes import MemorySubject
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    subj = MemorySubject.group_chat("qq", "9001") if use_scoped else None
+    R = _reflection('ref_half_commit', '主人喜欢下棋', rein=2.5)
+    if subj is not None:
+        R.update(subj.as_entry_fields())
+    await re.asave_reflections('小天', [R])
+    await pm.asave_persona('小天', {'master': {'facts': []}})
+
+    llm_reply = {'action': 'promote_fresh', 'reason': 'novel'}
+    with patch.object(re, '_allm_call_promotion_merge', AsyncMock(return_value=llm_reply)):
+        with patch.object(re, '_arecord_state_change', AsyncMock(side_effect=OSError("reflect save failed"))):
+            with pytest.raises(OSError, match="reflect save failed"):
+                await re._apromote_with_merge('小天', dict(R))
+
+    # Persona already holds prom_ref_half_commit while reflection stays confirmed.
+    persona = await pm.aget_persona('小天')
+    section_key = subj.persona_section_key if subj is not None else 'master'
+    assert len(persona[section_key]['facts']) == 1
+    assert persona[section_key]['facts'][0]['id'] == 'prom_ref_half_commit'
+    r_mid = next(r for r in await re._aload_reflections_full('小天') if r['id'] == 'ref_half_commit')
+    assert r_mid['status'] == 'confirmed'
+
+    # Clear throttle so the retry immediately invokes promote_fresh.
+    r_mid.pop('last_promote_attempt_at', None)
+    await re.asave_reflections('小天', [r_mid])
+
+    with patch.object(re, '_allm_call_promotion_merge', AsyncMock(return_value=llm_reply)), \
+         patch.object(pm, '_texts_may_contradict', return_value=True):
+        outcome = await re._apromote_with_merge('小天', dict(r_mid))
+
+    assert outcome == 'promote_fresh'
+    r_after = next(r for r in await re._aload_reflections_full('小天') if r['id'] == 'ref_half_commit')
+    assert r_after['status'] == 'promoted'
+    assert await pm.aload_pending_corrections('小天') == []
+
+
+@pytest.mark.asyncio
+async def test_time_driven_legacy_promotion_retry_is_idempotent(tmp_path):
+    """Legacy (subject=None) time-driven promotion must skip duplicate aadd_fact when prom_<rid> already exists."""
+    from datetime import datetime, timedelta
+
+    _ev, _fs, pm, re, _cm = _install(str(tmp_path))
+    old_ts = (datetime.now() - timedelta(days=30)).isoformat()
+    R = _reflection('ref_td_legacy', '主人常喝乌龙茶', rein=2.5)
+    R['confirmed_at'] = old_ts
+    R['created_at'] = old_ts
+    await re.asave_reflections('小天', [R])
+
+    # Simulate partial commit: prom_<rid> landed in persona while reflection remained confirmed.
+    await pm.aadd_fact('小天', R['text'], entity='master', source='reflection_time_driven', source_id='ref_td_legacy')
+
+    with patch.object(pm, '_texts_may_contradict', return_value=True):
+        transitions = await re.aauto_promote_time_driven('小天', scoped_only=False)
+
+    assert transitions == 1
+    r_after = next(r for r in await re._aload_reflections_full('小天') if r['id'] == 'ref_td_legacy')
+    assert r_after['status'] == 'promoted'
+    assert await pm.aload_pending_corrections('小天') == []

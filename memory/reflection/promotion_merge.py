@@ -790,19 +790,37 @@ class PromotionMergeMixin:
                     )
                 ):
                     return 'no_longer_eligible'
-                counts_kwargs = (
-                    {'fact_source_counts': current3['fact_source_counts']}
-                    if isinstance(current3.get('fact_source_counts'), dict)
-                    else {}
+                rid = current3.get('id')
+                already_applied = bool(
+                    rid
+                    and await self._ascoped_promotion_already_applied(
+                        lanlan_name, rid, promote_subject,
+                    )
                 )
-                result = await self._persona_manager.aadd_fact(
-                    lanlan_name, current3.get('text', ''),
-                    entity=target_entity or 'master',
-                    source='reflection', source_id=current3['id'],
-                    speaker_provenance=current3,
-                    **promote_kwargs,
-                    **counts_kwargs,
-                )
+                if already_applied:
+                    result = self._persona_manager.FACT_ADDED
+                else:
+                    counts_kwargs = (
+                        {'fact_source_counts': current3['fact_source_counts']}
+                        if isinstance(current3.get('fact_source_counts'), dict)
+                        else {}
+                    )
+                    result = await self._persona_manager.aadd_fact(
+                        lanlan_name, current3.get('text', ''),
+                        entity=target_entity or 'master',
+                        source='reflection', source_id=current3['id'],
+                        speaker_provenance=current3,
+                        **promote_kwargs,
+                        **counts_kwargs,
+                    )
+                    if (
+                        result == self._persona_manager.FACT_QUEUED_CORRECTION
+                        and rid
+                        and await self._ascoped_promotion_already_applied(
+                            lanlan_name, rid, promote_subject,
+                        )
+                    ):
+                        result = self._persona_manager.FACT_ADDED
             if result == self._persona_manager.FACT_ADDED:
                 await self._arecord_state_change(
                     lanlan_name, R['id'], 'confirmed', 'promoted',
