@@ -167,6 +167,7 @@ function createHarness({ electron }) {
 
   return {
     parts,
+    bridge,
     shell,
     expandCalls,
     setBoundsCalls,
@@ -233,6 +234,32 @@ test('Electron: falling asleep again after waking keeps the duty to reopen on re
   await h.petState({ tier: 'cat2', reason: 'visual-tier' });
   assert.equal(h.parts.electronIdleDockActive, true);
   assert.equal(h.parts.electronIdleDockTriggeredCollapse, true);
+  assert.deepEqual(h.expandCalls, []);
+
+  await h.petState({ visible: false, tier: 'none', screenRect: null, reason: 'return-ball-hide' });
+  assert.deepEqual(h.expandCalls, [EXPANDED]);
+});
+
+test('Electron: waking again before a re-dock has finished keeps the reopen owed', async () => {
+  const h = await electronDockedAsleep();
+  await h.petState({ tier: 'cat1', reason: 'cat-sleep-wake-demotion' });
+
+  // She falls asleep again; the re-dock waits on the window bounds...
+  let releaseBounds;
+  const realGetBounds = h.bridge.getBounds;
+  h.bridge.getBounds = () => new Promise((resolve) => {
+    releaseBounds = () => realGetBounds().then(resolve);
+  });
+  h.parts.handleElectronIdleReturnBallState({ visible: true, screenRect: CAT_RECT, tier: 'cat2', reason: 'visual-tier' });
+  assert.equal(h.parts.hasElectronIdleDockPendingOrActive(), true);
+  assert.equal(h.parts.electronIdleDockActive, false);
+
+  // ...and wakes up again before it lands.
+  await h.petState({ tier: 'cat1', reason: 'cat-sleep-wake-demotion' });
+  h.bridge.getBounds = realGetBounds;
+  releaseBounds();
+  await h.settle();
+  assert.equal(h.parts.electronIdleDockActive, false, 'the stale re-dock gives up');
   assert.deepEqual(h.expandCalls, []);
 
   await h.petState({ visible: false, tier: 'none', screenRect: null, reason: 'return-ball-hide' });

@@ -875,10 +875,11 @@
         clearElectronIdleDockRetry();
         clearElectronIdleDockPositionFrame();
         I.electronIdleDockPositionSeq += 1;
-        I.electronIdleDockParkedRestoreBounds = null;
-        if (parkRestoreForReturn && wasActive && triggeredCollapse && savedBounds) {
-            I.electronIdleDockParkedRestoreBounds = savedBounds;
-        }
+        // A wake-up only ever hands the reopen on: it takes over this dock's duty,
+        // or keeps the one already owed (e.g. a re-dock that had not finished yet).
+        I.electronIdleDockParkedRestoreBounds = !parkRestoreForReturn
+            ? null
+            : (wasActive && triggeredCollapse && savedBounds) || parkedRestoreBounds || null;
 
         if (!bridge) return;
         if (!wasActive) {
@@ -1051,7 +1052,9 @@
         var shell = I.getShell();
 
         I.clearIdleDockState();
-        I.idleDockParkedRestore = null;
+        // A wake-up only ever hands the reopen on: it keeps the one already owed
+        // here, and takes over an active dock's duty further down.
+        I.idleDockParkedRestore = parkRestoreForReturn && !wasActive ? parkedRestore : null;
 
         if (!wasActive && parkedRestore) {
             // The cat already woke up and left the chat minimized; this is the
@@ -2217,6 +2220,7 @@
         I.pendingChatSurfaceMode = null;
         I.clearIdleDockState();
         I.idleDockParkedRestore = null;
+        I.electronIdleDockParkedRestoreBounds = null;
         I.deactivateAvatarTool();
         I.hideIdleCat1CompactMirror('close-window');
 

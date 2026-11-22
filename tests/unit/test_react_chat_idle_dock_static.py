@@ -720,3 +720,11 @@ def test_idle_dock_exit_clears_cat2_to_cat1_drag_binding():
     assert "wasActive && saved && !preserveCurrentPosition" in source
     assert "wasActive && triggered && minimized && preserveCurrentPosition" in source
     assert "setChatSurfaceMode(coerceChatSurfaceModeForHost(lastRestorableChatSurfaceMode));" in source
+
+
+def test_close_window_drops_both_owed_reopens_after_cat_woke_alone():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    close_block = _between(source, "function closeWindow() {", "neko:main-ui-hidden-by-model-manager-changed")
+    assert "idleDockParkedRestore = null;" in close_block
+    assert "electronIdleDockParkedRestoreBounds = null;" in close_block
