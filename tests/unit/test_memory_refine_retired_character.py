@@ -222,3 +222,46 @@ async def test_cancelled_persona_writer_retires_before_unlock(tmp_path, monkeypa
         await old
     await new
     assert json.loads((tmp_path / "memory" / name / "persona.json").read_text()) == {"value": "new"}
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reflection_writer_retires_before_unlock(tmp_path, monkeypatch):
+    import json
+    import threading
+    from memory.reflection import persistence
+    from utils import file_utils
+
+    _, engine, _ = _memory_stores(_make_cm(tmp_path))
+    name = "writing"
+    started = threading.Event()
+    release = threading.Event()
+    real_write = file_utils.atomic_write_json
+
+    def paused_write(path, payload, **kwargs):
+        if payload and payload[0].get("content") == "old":
+            started.set()
+            assert release.wait(3)
+        real_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(persistence, "assert_cloudsave_writable", lambda *a, **kw: None)
+    monkeypatch.setattr(file_utils, "atomic_write_json", paused_write)
+
+    async def save(content):
+        async with engine._get_alock(name):
+            await engine.asave_reflections(name, [{"id": "r1", "content": content}])
+
+    old = asyncio.create_task(save("old"))
+    try:
+        assert await asyncio.to_thread(started.wait, 3)
+        old.cancel()
+        new = asyncio.create_task(save("new"))
+        await asyncio.sleep(0)
+        assert engine._get_alock(name).locked() and not old.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await old
+    await new
+    assert json.loads((tmp_path / "memory" / name / "reflections.json").read_text(encoding="utf-8")) == [
+        {"id": "r1", "content": "new"}
+    ]

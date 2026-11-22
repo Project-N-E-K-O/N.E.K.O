@@ -94,9 +94,15 @@ async def test_f0210_delete_nested_model_prunes_empty_subdir_without_affecting_s
     assert not sub_a.exists()
     assert model_b.exists()
     assert mapping.read_text() == '{"happy":1}'
+    unrelated_model = mmd_dir / "Unrelated.pmx"
+    unrelated_model.write_bytes(b"u")
+    unrelated_mapping = mmd_dir / "emotion_config" / "Unrelated.json"
+    unrelated_mapping.write_text('{"sad":1}')
     resp = await mmd_router.delete_mmd_model(_DummyRequest({"url": "/user_mmd/NestedPack/SubB/Shared.pmd"}))
     assert resp.status_code == 200
     assert not mapping.exists()
+    assert unrelated_model.exists()
+    assert unrelated_mapping.read_text() == '{"sad":1}'
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,7 @@ from datetime import datetime
 
 
 
+from utils.asyncio_retirement import await_retirement
 from utils.cloudsave_runtime import assert_cloudsave_writable
 
 
@@ -599,7 +600,9 @@ class PersistenceMixin:
                 )
                 merged = merged + to_archive
 
-        await atomic_write_json_async(path, merged, indent=2, ensure_ascii=False)
+        await await_retirement(
+            atomic_write_json_async(path, merged, indent=2, ensure_ascii=False)
+        )
 
     def load_surfaced(self, name: str) -> list[dict]:
         """Load the list of reflections that were surfaced in proactive chat."""
