@@ -193,7 +193,8 @@ def mirror_consent_decision(
     Transitional: remove together with the consent dialog. Called under the
     plugin operation lock before the consent record is written. Returns an
     undo that puts the previous permission record back; call it when the
-    consent write fails, so a failed request leaves both files unchanged.
+    consent write fails, so a failed request leaves this plugin's records in
+    both files unchanged (a first-use import may still be saved).
     """
     previous = permission_store.read(plugin_id) or None
     permission_store.apply_legacy_decision(
@@ -229,6 +230,68 @@ def decide_permission(
 def forget_permissions(plugin_id: str) -> dict | None:
     """Drop all grants of an uninstalled plugin; returns the removed record."""
     return permission_store.forget(plugin_id)
+
+
+class PermissionSnapshot:
+    """A plugin's permission record taken before a transaction changes its
+    source, so a rollback can put it back.
+
+    ``status``: ``"taken"`` (``record`` holds the record, ``None`` = none),
+    ``"unusable"`` (the store is damaged or newer: every write fails too, so
+    the transaction cannot change it and nothing needs restoring) or
+    ``"unavailable"`` (a transient or unexpected failure: the transaction
+    may still change the store, so a rollback cannot be complete).
+    """
+
+    def __init__(self, status: str, record: dict | None = None):
+        self.status = status
+        self.record = record
+
+    def restore(self, plugin_id: str) -> bool:
+        """Put the record back; returns whether the permissions are restored."""
+        if self.status == "unusable":
+            return True
+        if self.status != "taken":
+            logger.error(
+                "plugin permission grants cannot be restored: no snapshot plugin_id={}",
+                plugin_id,
+            )
+            return False
+        try:
+            permission_store.restore(plugin_id, self.record)
+        except Exception as exc:
+            logger.error(
+                "plugin permission grants could not be restored plugin_id={} err_type={}",
+                plugin_id,
+                type(exc).__name__,
+            )
+            return False
+        return True
+
+
+def snapshot_permissions(plugin_id: str) -> PermissionSnapshot:
+    """Snapshot before a source change; also performs a pending first-use
+    import while the current (old) source is still selected. Never raises."""
+    from plugin.server.infrastructure.plugin_permissions import (
+        CORRUPT,
+        UNSUPPORTED_VERSION,
+    )
+
+    try:
+        return PermissionSnapshot("taken", permission_store.read(plugin_id) or None)
+    except ServerDomainError as exc:
+        status = "unusable" if exc.code in (CORRUPT, UNSUPPORTED_VERSION) else "unavailable"
+        logger.warning(
+            "plugin permission snapshot not taken plugin_id={} code={}", plugin_id, exc.code
+        )
+        return PermissionSnapshot(status)
+    except Exception as exc:
+        logger.warning(
+            "plugin permission snapshot not taken plugin_id={} err_type={}",
+            plugin_id,
+            type(exc).__name__,
+        )
+        return PermissionSnapshot("unavailable")
 
 
 def restore_permissions(plugin_id: str, record: dict | None) -> None:

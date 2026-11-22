@@ -653,9 +653,10 @@ class PluginPermissionStore:
     def restore(self, plugin_id: str, record: dict | None) -> None:
         """Put back an earlier record (rollback only); ``None`` removes it."""
         with self._lock:
-            manager = self._load_for_write()
+            self._load()
             if self._document["plugins"].get(plugin_id) == record:
                 return
+            manager = self._load_for_write()
             document = copy.deepcopy(self._document)
             if record is None:
                 document["plugins"].pop(plugin_id, None)

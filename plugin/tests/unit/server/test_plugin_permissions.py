@@ -1243,3 +1243,43 @@ def test_sync_source_with_a_pending_import_only_fails_a_needed_write(manager):
     manager.fail = OSError("disk full")
     with pytest.raises(ServerDomainError):
         store.sync_source("x", MANUAL)
+
+
+@pytest.mark.parametrize(
+    ("content", "status", "restored"),
+    [
+        (None, "taken", True),
+        ("{broken", "unusable", True),
+        ("dir", "unavailable", False),
+    ],
+)
+def test_permission_snapshot_statuses(monkeypatch, manager, content, status, restored):
+    store = PluginPermissionStore(manager)
+    monkeypatch.setattr(permission_service, "permission_store", store)
+    if content == "dir":
+        manager.root.mkdir(parents=True)
+        _new_file(manager).mkdir()  # transient-style read failure (OSError)
+    elif content is not None:
+        manager.root.mkdir(parents=True)
+        _new_file(manager).write_text(content, encoding="utf-8")
+    else:
+        store.decide("x", MEMORY_READ, "granted")
+
+    snapshot = permission_service.snapshot_permissions("x")
+
+    assert snapshot.status == status
+    assert snapshot.restore("x") is restored
+    if status == "taken":
+        assert MEMORY_READ in store.read("x")["permissions"]
+
+
+def test_restore_of_an_unchanged_record_does_not_write(manager):
+    _write_legacy(
+        manager,
+        _legacy({"x": {"decision": "approved", "approved_capabilities": ["memory.read"]}}),
+    )
+    manager.fail = OSError("disk full")
+    store = PluginPermissionStore(manager)
+    record = store.read("x")
+
+    store.restore("x", record)  # import still pending, record unchanged: no write
