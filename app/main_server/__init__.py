@@ -1295,6 +1295,7 @@ async def on_startup():
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
         set_steamworks_initializer(ensure_steamworks_initialized)
+        _register_legacy_vision_notice(role_state)
         try:
             from .voice_identity_runtime import initialize_voice_identity_runtime
 
@@ -1822,3 +1823,24 @@ from .process_utils import (  # noqa: F401
     find_preview_image_in_folder,
     get_folder_size,
 )
+
+
+def _register_legacy_vision_notice(role_state) -> None:
+    """Show the legacy-vision deprecation notice on every connected character page."""
+    from utils.legacy_vision import register_notice_sink
+
+    async def _broadcast(message: str) -> bool:
+        delivered = False
+        for rs in list(role_state.values()):
+            manager = getattr(rs, "session_manager", None)
+            send_status = getattr(manager, "send_status", None)
+            if send_status is None:
+                continue
+            try:
+                # send_status reports whether the page's socket took it.
+                delivered = bool(await send_status(message)) or delivered
+            except Exception as exc:  # noqa: BLE001 - one closed page must not block the rest
+                logger.debug("legacy vision notice not delivered: %s", exc)
+        return delivered
+
+    register_notice_sink(_broadcast)
