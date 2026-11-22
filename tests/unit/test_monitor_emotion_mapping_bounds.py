@@ -50,3 +50,20 @@ def test_regular_and_inside_linked_configs_still_work(model_dir):
     _write(model_dir / "real" / "r.model3.json", {"EmotionMapping": {"motions": {"happy": ["inside"]}}})
     _link(model_dir / "real" / "r.model3.json", model_dir / "m.model3.json")
     assert monitor.get_emotion_mapping("m")["config"] == {"motions": {"happy": ["inside"]}}
+
+
+def test_refused_references_are_left_out_like_the_main_server(model_dir):
+    _write(model_dir / "m.model3.json", {"EmotionMapping": {
+        "motions": {"happy": ["../x.motion3.json", "motions/ok.motion3.json"]},
+        "expressions": {"sad": "e.exp3.json"},
+    }})
+    assert monitor.get_emotion_mapping("m")["config"] == {
+        "motions": {"happy": ["motions/ok.motion3.json"]},
+        "expressions": {"sad": ["e.exp3.json"]},
+    }
+
+
+def test_derived_mapping_skips_non_string_expression_files(model_dir):
+    _write(model_dir / "m.model3.json", {"FileReferences": {"Expressions": [
+        {"Name": "happy_a", "File": 3}, {"Name": "happy_b", "File": "b.exp3.json"}]}})
+    assert monitor.get_emotion_mapping("m")["config"]["expressions"] == {"happy": ["b.exp3.json"]}

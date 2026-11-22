@@ -45,6 +45,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
 from fastapi.templating import Jinja2Templates
 from utils.frontend_utils import _is_within, find_models, find_model_config_file, find_model_directory
+from utils.live2d_model_refs import sanitize_emotion_mapping
 from utils.workshop_utils import get_default_workshop_folder
 from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
@@ -284,7 +285,7 @@ def get_emotion_mapping(model_name: str):
                     continue
                 name = item.get('Name') or ''
                 file_path = item.get('File') or ''
-                if not file_path:
+                if not isinstance(file_path, str) or not file_path:
                     continue
                 file_path = file_path.replace('\\', '/')
                 # Split the group at the first underscore
@@ -296,7 +297,11 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
             emotion_mapping = derived_mapping
-        
+
+        # Same output as the main server's route: references it would refuse are left out.
+        emotion_mapping = sanitize_emotion_mapping(
+            emotion_mapping, os.path.dirname(model_json_path), model_dir_real
+        )
         return {"success": True, "config": emotion_mapping}
     except Exception as e:
         print(f"获取情绪映射配置失败: {e}")

@@ -44,9 +44,9 @@ The configuration `POST` routes accept a JSON object shaped like Cubism configur
 }
 ```
 
-Other submitted `.model3.json` fields are ignored. This is not an endpoint for replacing the full model configuration. `Motions` / `Expressions` must use the Cubism shape, and every submitted `File` / `Sound` reference must be a relative path inside the model folder; otherwise the request returns HTTP `400` and nothing is written.
+Other submitted `.model3.json` fields are ignored. This is not an endpoint for replacing the full model configuration. `Motions` / `Expressions` must use the Cubism shape (each entry needs a string `File`; `Sound` is optional), and every submitted `File` / `Sound` reference must be a relative path inside the model folder, without `:`, `?` or `#`; otherwise the request returns HTTP `400` and nothing is written.
 
-`GET /api/live2d/emotion_mapping/{model_name}` returns the stored `EmotionMapping`, or derives `{ "motions": {...}, "expressions": {...} }` from `FileReferences`. `POST` accepts that latter shape. `motions` / `expressions` must be `{ group: [path, ...] }` and every submitted path must stay inside the model folder, otherwise the request returns HTTP `400` and nothing is written. It normalizes the relative paths, writes both the standard Cubism references and the compatibility `EmotionMapping`, and ignores motions in the reserved `常驻` group.
+`GET /api/live2d/emotion_mapping/{model_name}` returns the stored `EmotionMapping`, or derives `{ "motions": {...}, "expressions": {...} }` from `FileReferences`, leaving out any path the `POST` would refuse, so the result can be posted back unchanged. `POST` accepts that latter shape. `motions` / `expressions`, when sent, must be `{ group: [path, ...] }` (not `null`) and every submitted path must stay inside the model folder, otherwise the request returns HTTP `400` and nothing is written. It normalizes the relative paths, writes both the standard Cubism references and the compatibility `EmotionMapping`, and ignores motions in the reserved `常驻` group.
 
 ## Files and parameters
 

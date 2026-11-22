@@ -44,9 +44,9 @@
 }
 ```
 
-提交的其他 `.model3.json` 字段会被忽略；该接口不能替换完整模型配置。`Motions` / `Expressions` 必须是 Cubism 的结构，提交的每个 `File` / `Sound` 引用都必须是模型目录内的相对路径，否则返回 HTTP `400`，不写入任何内容。
+提交的其他 `.model3.json` 字段会被忽略；该接口不能替换完整模型配置。`Motions` / `Expressions` 必须是 Cubism 的结构（每个条目必须有字符串 `File`，`Sound` 可选），提交的每个 `File` / `Sound` 引用都必须是模型目录内的相对路径，且不含 `:`、`?`、`#`，否则返回 HTTP `400`，不写入任何内容。
 
-`GET /api/live2d/emotion_mapping/{model_name}` 返回已存储的 `EmotionMapping`，不存在时从 `FileReferences` 推导 `{ "motions": {...}, "expressions": {...} }`。`POST` 接受后一种结构。`motions` / `expressions` 必须是 `{ group: [path, ...] }` 结构，提交的每个路径都必须位于模型目录内，否则返回 HTTP `400`，不写入任何内容。接口会标准化相对路径，同时写入标准 Cubism 引用和兼容字段 `EmotionMapping`，并忽略保留组 `常驻` 中的动作。
+`GET /api/live2d/emotion_mapping/{model_name}` 返回已存储的 `EmotionMapping`，不存在时从 `FileReferences` 推导 `{ "motions": {...}, "expressions": {...} }`。`POST` 会拒绝的路径不会出现在返回结果里，因此结果可以原样提交回 `POST`。`POST` 接受后一种结构。`motions` / `expressions` 如果提交，必须是 `{ group: [path, ...] }` 结构（不能是 `null`），提交的每个路径都必须位于模型目录内，否则返回 HTTP `400`，不写入任何内容。接口会标准化相对路径，同时写入标准 Cubism 引用和兼容字段 `EmotionMapping`，并忽略保留组 `常驻` 中的动作。
 
 ## 文件与参数
 

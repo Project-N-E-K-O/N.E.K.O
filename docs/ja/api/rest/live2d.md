@@ -44,9 +44,9 @@
 }
 ```
 
-その他の `.model3.json` フィールドは無視されます。モデル設定全体の置換 API ではありません。`Motions` / `Expressions` は Cubism の形式で、送信する `File` / `Sound` 参照はすべてモデルフォルダー内の相対パスである必要があり、そうでない場合は HTTP `400` を返し、何も書き込みません。
+その他の `.model3.json` フィールドは無視されます。モデル設定全体の置換 API ではありません。`Motions` / `Expressions` は Cubism の形式（各エントリに文字列の `File` が必要、`Sound` は任意）で、送信する `File` / `Sound` 参照はすべて `:`、`?`、`#` を含まないモデルフォルダー内の相対パスである必要があり、そうでない場合は HTTP `400` を返し、何も書き込みません。
 
-`GET /api/live2d/emotion_mapping/{model_name}` は保存済み `EmotionMapping` を返し、なければ `FileReferences` から `{ "motions": {...}, "expressions": {...} }` を導出します。`POST` は後者の形式を受け取ります。`motions` / `expressions` は `{ group: [path, ...] }` の形式で、送信するパスはすべてモデルフォルダー内にある必要があり、そうでない場合は HTTP `400` を返し、何も書き込みません。相対パスを正規化し、標準 Cubism 参照と互換用 `EmotionMapping` の両方を書き込み、予約グループ `常驻` のモーションを無視します。
+`GET /api/live2d/emotion_mapping/{model_name}` は保存済み `EmotionMapping` を返し、なければ `FileReferences` から `{ "motions": {...}, "expressions": {...} }` を導出します。`POST` が拒否するパスは除外されるため、結果をそのまま `POST` に戻せます。`POST` は後者の形式を受け取ります。`motions` / `expressions` を送る場合は `{ group: [path, ...] }` の形式（`null` は不可）で、送信するパスはすべてモデルフォルダー内にある必要があり、そうでない場合は HTTP `400` を返し、何も書き込みません。相対パスを正規化し、標準 Cubism 参照と互換用 `EmotionMapping` の両方を書き込み、予約グループ `常驻` のモーションを無視します。
 
 ## ファイルとパラメーター
 

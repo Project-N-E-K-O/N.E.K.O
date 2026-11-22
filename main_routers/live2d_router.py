@@ -54,6 +54,8 @@ from utils.frontend_utils import (
     find_workshop_item_by_id,
     find_workshop_item_model_file,
 )
+from utils.live2d_model_refs import is_unsafe_model_ref as _is_unsafe_model_ref
+from utils.live2d_model_refs import sanitize_emotion_mapping as _sanitize_emotion_mapping
 from utils.logger_config import get_module_logger
 from utils.url_utils import drop_non_utf8_entries, encode_url_path, is_utf8_text
 from utils.workshop_utils import get_workshop_path
@@ -449,38 +451,18 @@ def _find_model_root_file(model_dir: str, suffix: str) -> tuple[str | None, bool
     return None, escaped
 
 
-def _is_unsafe_model_ref(file_path: str, config_dir: str, model_root_real: str) -> bool:
-    """
-    Whether a file reference, relative to the folder holding the model config
-    (*config_dir*), would point outside the model folder: carrying a colon (URL
-    scheme or drive), absolute, climbing out with ``..``, or resolving outside
-    *model_root_real* through a link. The frontend resolves references as URLs,
-    so the percent-decoded form is checked as well. Links resolving inside the
-    model folder are fine. URL parsing drops tabs / newlines and strips surrounding
-    spaces, so control characters are refused and the space-stripped form is checked too.
-    """
-    decoded = unquote(file_path)
-    for candidate in {file_path, decoded, file_path.strip(' '), decoded.strip(' ')}:
-        if ':' in candidate or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in candidate):
-            return True
-        normalized = candidate.replace('\\', '/')
-        posix = pathlib.PurePosixPath(normalized)
-        if posix.is_absolute() or ".." in posix.parts:
-            return True
-        if not _is_inside_model_dir(model_root_real, os.path.join(config_dir, *posix.parts)):
-            return True
-    return False
-
-
 def _find_invalid_file_reference(data, config_dir: str, model_root_real: str) -> str | None:
     """
     Check the ``FileReferences`` a ``model_config`` POST would store. Return a short
-    reason when ``Motions`` / ``Expressions`` are not the Cubism shape
-    (``{group: [{"File": str, "Sound": str, ...}]}`` / ``[{"File": str, ...}]``), or
-    when a ``File`` / ``Sound`` path would point outside the model folder; else None.
+    reason when the request is not an object, when ``Motions`` / ``Expressions`` are not
+    the Cubism shape (``{group: [{"File": str, "Sound": str, ...}]}`` /
+    ``[{"File": str, ...}]``; ``File`` required, ``Sound`` optional and ``null`` meaning
+    absent), or when a path would point outside the model folder; else None.
     Sections the request does not send are not stored, so they are not checked.
     """
-    if not isinstance(data, dict) or 'FileReferences' not in data:
+    if not isinstance(data, dict):
+        return "request is not an object"
+    if 'FileReferences' not in data:
         return None
     file_refs = data['FileReferences']
     if not isinstance(file_refs, dict):
@@ -501,9 +483,9 @@ def _find_invalid_file_reference(data, config_dir: str, model_root_real: str) ->
         if not isinstance(item, dict):
             return "entry is not an object"
         for key in ('File', 'Sound'):
-            if key not in item:
-                continue
-            file_path = item[key]
+            file_path = item.get(key)
+            if key == 'Sound' and file_path is None:
+                continue  # Sound is optional; File is required
             if not isinstance(file_path, str):
                 return f"{key} is not a string"
             if _is_unsafe_model_ref(file_path, config_dir, model_root_real):
@@ -514,16 +496,17 @@ def _find_invalid_file_reference(data, config_dir: str, model_root_real: str) ->
 def _find_invalid_emotion_mapping_reference(data, config_dir: str, model_root_real: str) -> str | None:
     """
     Check an emotion-mapping request (``{"motions": {group: [path, ...]}, "expressions": {...}}``).
-    Return a short reason when a present section is not ``{group: [str, ...]}`` or a path
-    would point outside the model folder; else None. The whole request is also stored as
-    ``EmotionMapping``, so every value is checked, not only the ones written to FileReferences.
+    Return a short reason when a present section (an explicit ``null`` included) is not
+    ``{group: [str, ...]}`` or a path would point outside the model folder; else None.
+    The whole request is also stored as ``EmotionMapping``, so every value is checked,
+    not only the ones written to FileReferences.
     """
     if not isinstance(data, dict):
         return "request is not an object"
     for section in ('motions', 'expressions'):
-        groups = data.get(section)
-        if groups is None:
+        if section not in data:
             continue
+        groups = data[section]
         if not isinstance(groups, dict):
             return f"{section} is not an object"
         for files in groups.values():
@@ -827,7 +810,7 @@ def get_emotion_mapping(model_name: str):
                     continue
                 name = item.get('Name') or ''
                 file_path = item.get('File') or ''
-                if not file_path:
+                if not isinstance(file_path, str) or not file_path:
                     continue
                 file_path = file_path.replace('\\', '/')
                 # Split groups at first underscore.
@@ -839,7 +822,11 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
             emotion_mapping = derived_mapping
-        
+
+        # Leave out what the POST would refuse, so GET -> edit -> POST always round-trips.
+        emotion_mapping = _sanitize_emotion_mapping(
+            emotion_mapping, os.path.dirname(model_json_path), os.path.realpath(model_dir)
+        )
         return {"success": True, "config": emotion_mapping}
     except Exception as e:
         logger.error(f"获取情绪映射配置失败: {e}")

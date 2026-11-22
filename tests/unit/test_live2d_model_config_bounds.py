@@ -231,7 +231,9 @@ _UNSAFE_REFS = ["../x.motion3.json", "motions/../../x.motion3.json", "/abs/x.mot
                 "//example.invalid/x.motion3.json", "%2e%2e/%2e%2e/other/x.motion3.json",
                 "motions%2f..%2f..%2fx.motion3.json", "%2Fabs/x.motion3.json",
                 ".\t./x.motion3.json", "..\n/x.motion3.json", " ../x.motion3.json", "../x.motion3.json ",
-                ".%09./x.motion3.json", "x\x00.motion3.json"]
+                ".%09./x.motion3.json", "x\x00.motion3.json",
+                "motions/x.motion3.json#y", "motions/x.motion3.json?y=1", "motions/x%23y.motion3.json",
+                "motions/x%3Fy.motion3.json"]
 
 
 def _by_id_model(monkeypatch, tmp_path: Path) -> Path:
@@ -340,7 +342,14 @@ def test_emotion_mapping_post_accepts_missing_sections(model_dir):
 
 
 _BAD_SHAPES = [
+    "FileReferences",
+    ["FileReferences"],
     {"FileReferences": "x"},
+    {"FileReferences": {"Motions": None}},
+    {"FileReferences": {"Expressions": None}},
+    {"FileReferences": {"Motions": {"Idle": [{}]}}},
+    {"FileReferences": {"Expressions": [{}]}},
+    {"FileReferences": {"Expressions": [{"Name": "e", "File": None}]}},
     {"FileReferences": {"Motions": ["../x.motion3.json"]}},
     {"FileReferences": {"Motions": {"Idle": {"File": "../x.motion3.json"}}}},
     {"FileReferences": {"Motions": {"Idle": ["../x.motion3.json"]}}},
@@ -560,7 +569,112 @@ def test_listing_walk_stops_reading_at_entry_limit(monkeypatch, model_dir):
                 yielded += 1
                 yield _Entry(f"f{yielded}.txt")
 
-    monkeypatch.setattr(live2d_router.os, "scandir", lambda _path: _EndlessScan())
+    real_scandir = os.scandir
+    target = str(model_dir)
+    # Only the walked folder is replaced; any other scandir call reaches the real function.
+    monkeypatch.setattr(
+        live2d_router.os, "scandir",
+        lambda path=".": _EndlessScan() if os.fspath(path) == target else real_scandir(path),
+    )
     with pytest.raises(live2d_router._ModelScanLimitExceeded):
         live2d_router._search_model_files(os.path.realpath(model_dir), str(model_dir), ".motion3.json")
     assert yielded == 51
+
+
+# --- GET -> edit -> POST round trip of emotion_mapping -----------------------------
+
+
+def _round_trip(model_dir: Path) -> tuple[dict, object]:
+    got = live2d_router.get_emotion_mapping("m")
+    assert got["success"] is True, got
+    mapping = got["config"]
+    # What the model manager does when adding a resident expression.
+    mapping.setdefault("expressions", {}).setdefault("常驻", []).append("expressions/smile.exp3.json")
+    return mapping, asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(mapping)))
+
+
+def test_derived_mapping_leaves_out_refused_paths_and_round_trips(model_dir):
+    config = {
+        "Version": 3,
+        "FileReferences": {
+            "Motions": {"Idle": [{"File": "../shared/idle.motion3.json"}, {"File": "motions/ok.motion3.json"}]},
+            "Expressions": [{"Name": "happy_a", "File": "a:b.exp3.json"}, {"Name": "happy_b", "File": "b.exp3.json"}],
+        },
+    }
+    _write(model_dir / "m.model3.json", config)
+    got = live2d_router.get_emotion_mapping("m")["config"]
+    assert got == {"motions": {"Idle": ["motions/ok.motion3.json"]}, "expressions": {"happy": ["b.exp3.json"]}}
+
+    mapping, result = _round_trip(model_dir)
+    assert result["success"] is True
+    saved = json.loads((model_dir / "m.model3.json").read_text(encoding="utf-8"))
+    assert saved["EmotionMapping"] == mapping
+
+
+def test_legacy_stored_mapping_is_cleaned_on_read_and_round_trips(model_dir):
+    config = dict(_INSIDE_CONFIG)
+    config["EmotionMapping"] = {
+        "motions": {"happy": "motions/ok.motion3.json", "sad": ["../x.motion3.json", 3, "motions/s.motion3.json"]},
+        "expressions": {"angry": {"x": 1}, "happy": ["C:/x.exp3.json", "e.exp3.json"]},
+        "extra": "kept",
+    }
+    _write(model_dir / "m.model3.json", config)
+    got = live2d_router.get_emotion_mapping("m")["config"]
+    assert got == {
+        "motions": {"happy": ["motions/ok.motion3.json"], "sad": ["motions/s.motion3.json"]},
+        "expressions": {"angry": [], "happy": ["e.exp3.json"]},
+        "extra": "kept",
+    }
+    _mapping, result = _round_trip(model_dir)
+    assert result["success"] is True
+
+
+@pytest.mark.parametrize("section", ["motions", "expressions"])
+def test_emotion_mapping_post_refuses_explicit_null_section(model_dir, section):
+    config = dict(_INSIDE_CONFIG)
+    config["FileReferences"] = {"Motions": {"Idle": [{"File": "motions/idle.motion3.json"}]},
+                                "Expressions": [{"Name": "e", "File": "e.exp3.json"}]}
+    _write(model_dir / "m.model3.json", config)
+    before = (model_dir / "m.model3.json").read_bytes()
+    payload = {"motions": {}, "expressions": {}}
+    payload[section] = None
+    result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert _status(result) == 400
+    assert (model_dir / "m.model3.json").read_bytes() == before
+
+
+def test_model_config_post_treats_null_sound_as_absent(monkeypatch, tmp_path, model_dir):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    item_dir = _by_id_model(monkeypatch, tmp_path)
+    motions = {"Idle": [{"File": "motions/idle.motion3.json", "Sound": None}]}
+    for call, config in (
+        (lambda: live2d_router.update_model_config("m", _FakeRequest({"FileReferences": {"Motions": motions}})),
+         model_dir / "m.model3.json"),
+        (lambda: live2d_router.update_model_config_by_id("123", _FakeRequest({"FileReferences": {"Motions": motions}})),
+         item_dir / "m.model3.json"),
+    ):
+        assert asyncio.run(call())["success"] is True
+        assert json.loads(config.read_text(encoding="utf-8"))["FileReferences"]["Motions"] == motions
+
+
+def test_rejected_reference_does_not_log_the_submitted_path(monkeypatch, model_dir, outside, caplog):
+    # Let the router's records reach caplog even after setup_logging turned propagation off.
+    logger = live2d_router.logger
+    while logger is not None:
+        monkeypatch.setattr(logger, "propagate", True)
+        logger = logger.parent
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    _ref_link_layout(model_dir, outside)
+    payload = {"motions": {"happy": ["out/secret-name.motion3.json"]}, "expressions": {}}
+    with caplog.at_level("INFO", logger=live2d_router.logger.name):
+        result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert _status(result) == 400
+    assert any("情绪映射" in r.getMessage() for r in caplog.records)  # the capture itself works
+    assert not any("secret-name" in r.getMessage() for r in caplog.records)
+
+
+def test_derived_mapping_skips_non_string_expression_files(model_dir):
+    config = {"Version": 3, "FileReferences": {"Motions": {}, "Expressions": [
+        {"Name": "happy_a", "File": 3}, {"Name": "happy_b", "File": "b.exp3.json"}]}}
+    _write(model_dir / "m.model3.json", config)
+    assert live2d_router.get_emotion_mapping("m")["config"]["expressions"] == {"happy": ["b.exp3.json"]}
