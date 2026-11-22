@@ -120,12 +120,10 @@ test('a backend that never takes it is not asked again with every snapshot', asy
 
 function popupCheckbox(harness) {
     // _createAgentPopupContent builds the popup; only the task HUD row is looked at here.
+    // The same box the page finds by id, so a snapshot reaches it as it would on the page.
     const listeners = {};
-    const checkbox = {
-        checked: true, styled: 0,
-        _updateStyle() { this.styled += 1; },
-        addEventListener(type, fn) { listeners[type] = fn; }
-    };
+    const checkbox = harness.box;
+    checkbox.addEventListener = (type, fn) => { listeners[type] = fn; };
     const manager = {
         _avatarPrefix: 'live2d',
         _createToggleItem(toggle) {
@@ -140,102 +138,31 @@ function popupCheckbox(harness) {
     return { checkbox, change: () => listeners.change({ target: checkbox }) };
 }
 
-test('the popup box that could not be saved is put back, rather than reverted later by a snapshot', async () => {
-    const harness = load({ saveOk: false });
+test('a click on the popup box only asks the agent process; the page follows the snapshot that comes back', async () => {
+    const harness = load({ stored: 'true' });
+    harness.window.AgentHUD.syncTaskHudPreference(true);
     const { checkbox, change } = popupCheckbox(harness);
     const settle = () => new Promise((resolve) => setImmediate(resolve));
+    const redone = harness.toggled.length;
 
     checkbox.checked = false;
     change();
-    assert.equal(harness.storage.get(KEY), 'false');
     await settle();
 
     assert.deepEqual(harness.sent.map((item) => item.body), [{ command: 'set_task_hud_visible', value: false }]);
-    assert.equal(checkbox.checked, true);
+    // The reply changes nothing here: storage and HUD wait for the snapshot.
     assert.equal(harness.storage.get(KEY), 'true');
-});
-
-test('a late failure of an earlier click does not undo the last one', async () => {
-    const held = [];
-    const harness = load({ held });
-    const { checkbox, change } = popupCheckbox(harness);
-    const settle = () => new Promise((resolve) => setImmediate(resolve));
-
-    checkbox.checked = false; change(); // 1st: off
-    checkbox.checked = true; change();  // 2nd: on
-    checkbox.checked = false; change(); // 3rd: off, as the 1st
-    held[2](true);  // the last one is saved
-    held[1](true);
-    await settle();
-    held[0](false); // the first one's failure comes back last
-    await settle();
-
+    assert.equal(harness.toggled.length, redone);
     assert.equal(checkbox.checked, false);
+
+    harness.window.AgentHUD.syncTaskHudPreference(false);
     assert.equal(harness.storage.get(KEY), 'false');
+    assert.equal(harness.toggled.length, redone + 1);
 });
 
-test('when the last of several clicks fails too, the box goes back to what is known to be kept', async () => {
-    const harness = load({ saveOk: false });
-    harness.window.AgentHUD.syncTaskHudPreference(true); // the agent process keeps "shown"
-    const { checkbox, change } = popupCheckbox(harness);
-    const settle = () => new Promise((resolve) => setImmediate(resolve));
-
-    checkbox.checked = false; change();
-    checkbox.checked = true; change();
-    checkbox.checked = false; change();
-    checkbox.checked = true; change();
-    // Now the last click asked for "shown" but could not be kept either; "shown" is still what is kept.
-    await settle();
-    assert.equal(checkbox.checked, true);
-    assert.equal(harness.storage.get(KEY), 'true');
-
-    checkbox.checked = false; change();
-    checkbox.checked = true; change();
-    checkbox.checked = false; change();
-    await settle();
-    // The last of these asked for "hidden" and failed: back to "shown", not to the opposite of an earlier click.
-    assert.equal(checkbox.checked, true);
-    assert.equal(harness.storage.get(KEY), 'true');
-});
-
-test('a click that was kept, answered only after the next one, is what a failure goes back to', async () => {
-    const held = [];
-    const harness = load({ held });
+test('a click that was not kept puts the box back to what is in effect', async () => {
+    const harness = load({ stored: 'true', saveOk: false });
     harness.window.AgentHUD.syncTaskHudPreference(true);
-    const { checkbox, change } = popupCheckbox(harness);
-    const settle = () => new Promise((resolve) => setImmediate(resolve));
-
-    checkbox.checked = false; change(); // kept, but its answer comes late
-    checkbox.checked = true; change();  // not kept
-    held[0](true);
-    await settle();
-    held[1](false);
-    await settle();
-
-    // The agent process keeps "hidden" now: so does the page.
-    assert.equal(checkbox.checked, false);
-    assert.equal(harness.storage.get(KEY), 'false');
-});
-
-test('an early failure while later clicks are still on their way leaves the last choice alone', async () => {
-    const held = [];
-    const harness = load({ held });
-    harness.window.AgentHUD.syncTaskHudPreference(true);
-    const { checkbox, change } = popupCheckbox(harness);
-    const settle = () => new Promise((resolve) => setImmediate(resolve));
-
-    checkbox.checked = false; change();
-    checkbox.checked = true; change();
-    checkbox.checked = false; change(); // the last choice, as the first
-    held[0](false);                      // the first fails before the others answer
-    await settle();
-
-    assert.equal(checkbox.checked, false);
-    assert.equal(harness.storage.get(KEY), 'false');
-});
-
-test('the popup box that was saved stays as it is', async () => {
-    const harness = load();
     const { checkbox, change } = popupCheckbox(harness);
     const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -243,8 +170,43 @@ test('the popup box that was saved stays as it is', async () => {
     change();
     await settle();
 
+    assert.equal(checkbox.checked, true);
+    assert.equal(harness.storage.get(KEY), 'true');
+});
+
+test('replies coming back in any order change nothing; the last snapshot decides', async () => {
+    const held = [];
+    const harness = load({ stored: 'true', held });
+    harness.window.AgentHUD.syncTaskHudPreference(true);
+    const { checkbox, change } = popupCheckbox(harness);
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    checkbox.checked = false; change();
+    checkbox.checked = true; change();
+    checkbox.checked = false; change();
+    held[2](true);
+    await settle();
+    held[0](false); // an early failure, coming back last
+    await settle();
+    held[1](true);
+    await settle();
+    // Nothing local was changed by any reply.
+    assert.equal(harness.storage.get(KEY), 'true');
+
+    // The agent process tells what it keeps now; box, storage and HUD follow.
+    harness.window.AgentHUD.syncTaskHudPreference(false);
     assert.equal(checkbox.checked, false);
     assert.equal(harness.storage.get(KEY), 'false');
+});
+
+test('a snapshot with the value already in effect still puts the box right', () => {
+    const harness = load({ stored: 'true' });
+    harness.window.AgentHUD.syncTaskHudPreference(true);
+    const { checkbox } = popupCheckbox(harness);
+
+    checkbox.checked = false; // clicked, and the agent process kept "shown" all the same
+    assert.equal(harness.window.AgentHUD.syncTaskHudPreference(true), false);
+    assert.equal(checkbox.checked, true);
 });
 
 test('two pages share their storage but each puts its own box and HUD right', () => {
