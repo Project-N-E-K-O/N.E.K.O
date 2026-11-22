@@ -190,27 +190,23 @@ def test_too_deep_dynamic_schema_is_rejected_without_registering_anything():
 
 
 def test_failed_registration_message_leaves_no_half_registered_entry(monkeypatch):
-    import plugin.sdk.plugin.base as base_module
-
     ctx = _Ctx(Path(tempfile.mkdtemp()) / "plugin.toml")
     plugin = _Plugin(ctx)
 
     async def handler():
         return {"n": 1}
 
-    real = base_module._dynamic_entry_registration
-
     def failing(*args, **kwargs):
         raise RecursionError("maximum recursion depth exceeded")
 
-    monkeypatch.setattr(base_module, "_dynamic_entry_registration", failing)
+    monkeypatch.setattr("plugin.sdk.plugin.base._dynamic_entry_registration", failing)
     with pytest.raises(RecursionError):
         plugin.register_dynamic_entry("dyn", handler, output_schema=SCHEMA)
     assert "dyn" not in plugin._dynamic_entries
     assert ctx.message_queue.items == []
     plugin.list_entries(include_disabled=True)
 
-    monkeypatch.setattr(base_module, "_dynamic_entry_registration", real)
+    monkeypatch.undo()
     assert plugin.register_dynamic_entry("dyn", handler, output_schema=SCHEMA) is True
     assert _register_payload(ctx, "dyn")["output_schema"] == SCHEMA
     assert any(item["id"] == "dyn" for item in plugin.list_entries())
