@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -45,7 +46,9 @@ from typing import Any, Iterator
 
 from filelock import FileLock, Timeout as FileLockTimeout
 
-from utils.file_utils import atomic_write_json
+from utils.file_utils import PublishedFileSyncError, atomic_write_json
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "RECENT_IDEMPOTENCY_META_KEY",
@@ -740,10 +743,8 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
     ``atomic_write_json`` creates the parent directory itself, so callers do not
     need a separate ``makedirs`` step.
 
-    A raised exception means the target was NOT replaced: ``_replace_with_busy_retry``
-    is the last statement in ``atomic_write_text`` and everything after it only
-    cleans up the temp file. Callers rely on that to retry a failed batch without
-    any deduplication.
+    Callers replay their batch on a write failure. Once the history file is
+    replaced, report publication to callers even if directory sync failed.
 
     Every rewrite of a recent file goes through here, so this is also where
     keyed entries leaving the file are recorded: before the replace, the keys
@@ -767,7 +768,10 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
                          "after": hashlib.sha256(text.encode("utf-8")).hexdigest(), "applied": None}
         write_recent_sidecar_unlocked(path, _write_receipts_filename(path), receipts)
     retire_removed_keyed_entries(path, None, payload)
-    atomic_write_json(path, payload, indent=2, ensure_ascii=False)
+    try:
+        atomic_write_json(path, payload, indent=2, ensure_ascii=False)
+    except PublishedFileSyncError as exc:
+        logger.warning("Recent history is visible but directory sync failed: %s", exc)
     with _LOCKS_GUARD:
         key = _resolve_key_unlocked(_lock_key(path))
         _CONTENT_VERSIONS[key] = _CONTENT_VERSIONS.get(key, 0) + 1
