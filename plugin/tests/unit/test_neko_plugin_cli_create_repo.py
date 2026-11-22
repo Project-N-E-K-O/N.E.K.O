@@ -79,6 +79,16 @@ def test_printed_branch_and_remote_for_windows_shells(monkeypatch):
         assert init_cmd._branch_argument(Path("C:/work")) == expected
     url = "https://github.com/octocat/demo.git"
     assert init_cmd._existing_repository_remote_message(Path("C:/work"), url).endswith(f"remote add origin {url}")
+    # Quoted, the trailing backslash would escape the closing quote: "C:\repo\" reaches git as C:\repo".
+    local_remote = "C:\\repo\\"
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), local_remote).endswith(
+        f'remote add origin "<repository-url>" (repository URL: {local_remote})'
+    )
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), "C:\\repo").endswith(
+        'remote add origin "C:\\repo"'
+    )
+    # The same rule covers the plugin directory (a drive root keeps its backslash).
+    assert release_cmd._plugin_dir_argument(Path("D:\\"), "") == '"<plugin directory>"'
     token_url = "https://user:p%40ss@github.com/octocat/demo.git"
     assert init_cmd._existing_repository_remote_message(Path("C:/work"), token_url).endswith(
         f'remote add origin "<repository-url>" (repository URL: {token_url})'

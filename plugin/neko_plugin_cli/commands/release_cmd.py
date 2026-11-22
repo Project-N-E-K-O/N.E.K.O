@@ -696,12 +696,15 @@ def _shell_quote(value: str) -> str | None:
 
     None when no quoting keeps it literal for every Windows shell (see
     _WINDOWS_EXPANDING_CHARS), which could point the command at another
-    directory.
+    directory. A trailing backslash counts too: programs parse ``\\"`` at the
+    end of ``"C:\\repo\\"`` as a literal quote and receive ``C:\\repo"``.
     """
     if not _WINDOWS_SHELL:
         # POSIX shells expand $ and ` inside double quotes.
         return shlex.quote(value)
-    return None if any(char in value for char in _WINDOWS_EXPANDING_CHARS) else f'"{value}"'
+    if value.endswith("\\") or any(char in value for char in _WINDOWS_EXPANDING_CHARS):
+        return None
+    return f'"{value}"'
 
 
 def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
