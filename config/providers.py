@@ -120,14 +120,6 @@ EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 # Documentation: https://platform.stepfun.ai/docs/en/api-reference/chat/chat-completion-create
 EXTRA_BODY_STEP_LOW = {"reasoning_effort": "low"}
 
-# Kimi K3 series always thinks and takes no thinking field (docs: drop thinking, set the top-level
-# reasoning_effort instead; values low / high / max, default max). Sending thinking.disabled
-# would leave the default max effort, so regular and focused turns both pin low. Switching the
-# effort mid-session also breaks prefix-cache hits, another reason not to flip it on focus.
-# Omit from _THINKING_ENABLE_FORM (no focused-cognition switch).
-# Documentation: https://platform.kimi.com/docs/guide/use-reasoning-effort
-EXTRA_BODY_KIMI_K3 = {"reasoning_effort": "low"}
-
 # Unified agent-call switch: whether to load extra_body.
 # Enabled by default; with MODELS_EXTRA_BODY_MAP, disables thinking by default.
 AGENT_USE_EXTRA_BODY = True
@@ -173,9 +165,11 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
     "kimi-k2.6": EXTRA_BODY_CLAUDE,
-    "kimi-k3": EXTRA_BODY_KIMI_K3,
-    "kimi-k3.1-pro": EXTRA_BODY_KIMI_K3,
-    "kimi-k3.1-pro-highspeed": EXTRA_BODY_KIMI_K3,
+    # K3 docs say thinking cannot be turned off and ask for top-level reasoning_effort
+    # instead, but the live API still honours thinking.disabled (observed 2026-11-22:
+    # 0 reasoning tokens, 12-14 completion tokens vs 34-36 at reasoning_effort=low).
+    # Owner chose the cheaper, undocumented form; recheck if Kimi starts rejecting it.
+    "kimi-k3": EXTRA_BODY_CLAUDE,
     # MiniMax family.
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
@@ -584,6 +578,11 @@ def rewrite_router_reasoning(
 EXTRA_BODY_DEEPSEEK_MEMORY_THINKING = {"reasoning_effort": "low"}
 EXTRA_BODY_DASHSCOPE_MEMORY_THINKING = {"thinking_budget": 4096}
 EXTRA_BODY_SILICON_MEMORY_THINKING = {"enable_thinking": True, "thinking_budget": 4096}
+# Kimi (api.moonshot.cn): K3 always thinks and defaults to reasoning_effort=max, so native
+# thinking on memory calls runs at max. The documented low effort bounds it; kimi-k2.6
+# accepts the field without error (observed 2026-11-22).
+# Documentation: https://platform.kimi.com/docs/guide/use-reasoning-effort
+EXTRA_BODY_KIMI_MEMORY_THINKING = {"reasoning_effort": "low"}
 
 
 def memory_thinking_extra_body(base_url: str | None, output_cap: int) -> dict | None:
@@ -832,6 +831,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="prompt_cache_hit_tokens",
+        memory_thinking_extra_body=EXTRA_BODY_KIMI_MEMORY_THINKING,
     ),
     "grok": CacheProviderConfig(
         provider_id="grok",
