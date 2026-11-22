@@ -296,16 +296,47 @@ def test_emotion_mapping_post_refuses_references_leaving_model_dir(model_dir, re
     assert (model_dir / "m.model3.json").read_bytes() == before
 
 
+_BAD_EMOTION_SECTIONS = [
+    {"happy": "%2e%2e%2foutside.motion3.json"},
+    {"happy": ".."},
+    {"happy": "/"},
+    {"happy": {"%2e%2e%2foutside.motion3.json": 1}},
+    {"happy": [1]},
+    {"happy": [{"File": "../x.motion3.json"}]},
+    ["../x.motion3.json"],
+    "../x.motion3.json",
+]
+
+
+@pytest.mark.parametrize("value", _BAD_EMOTION_SECTIONS)
 @pytest.mark.parametrize("section", ["motions", "expressions"])
-def test_emotion_mapping_post_refuses_bare_string_group_value(model_dir, section):
-    # The handler iterates a bare string value; its characters are checked too.
+def test_emotion_mapping_post_refuses_unexpected_shapes(model_dir, section, value):
+    # The raw request is stored as EmotionMapping, so a section that is not
+    # {group: [str, ...]} is refused as a whole instead of being stored unchecked.
     _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
     before = (model_dir / "m.model3.json").read_bytes()
     payload = {"motions": {}, "expressions": {}}
-    payload[section] = {"happy": "/"}
+    payload[section] = value
     result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
     assert _status(result) == 400
     assert (model_dir / "m.model3.json").read_bytes() == before
+
+
+def test_emotion_mapping_post_refuses_non_object_request(model_dir):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    before = (model_dir / "m.model3.json").read_bytes()
+    result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(["../x.motion3.json"])))
+    assert _status(result) == 400
+    assert (model_dir / "m.model3.json").read_bytes() == before
+
+
+def test_emotion_mapping_post_accepts_missing_sections(model_dir):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    payload = {"expressions": {"happy": ["expressions/smile.exp3.json"]}}
+    result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert result["success"] is True
+    saved = json.loads((model_dir / "m.model3.json").read_text(encoding="utf-8"))
+    assert saved["EmotionMapping"] == payload
 
 
 _BAD_SHAPES = [

@@ -46,7 +46,7 @@ The configuration `POST` routes accept a JSON object shaped like Cubism configur
 
 Other submitted `.model3.json` fields are ignored. This is not an endpoint for replacing the full model configuration. `Motions` / `Expressions` must use the Cubism shape, and every submitted `File` / `Sound` reference must be a relative path inside the model folder; otherwise the request returns HTTP `400` and nothing is written.
 
-`GET /api/live2d/emotion_mapping/{model_name}` returns the stored `EmotionMapping`, or derives `{ "motions": {...}, "expressions": {...} }` from `FileReferences`. `POST` accepts that latter shape. Every submitted path must stay inside the model folder, otherwise the request returns HTTP `400` and nothing is written. It normalizes the relative paths, writes both the standard Cubism references and the compatibility `EmotionMapping`, and ignores motions in the reserved `常驻` group.
+`GET /api/live2d/emotion_mapping/{model_name}` returns the stored `EmotionMapping`, or derives `{ "motions": {...}, "expressions": {...} }` from `FileReferences`. `POST` accepts that latter shape. `motions` / `expressions` must be `{ group: [path, ...] }` and every submitted path must stay inside the model folder, otherwise the request returns HTTP `400` and nothing is written. It normalizes the relative paths, writes both the standard Cubism references and the compatibility `EmotionMapping`, and ignores motions in the reserved `常驻` group.
 
 ## Files and parameters
 

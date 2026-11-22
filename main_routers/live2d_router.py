@@ -511,25 +511,29 @@ def _find_invalid_file_reference(data, config_dir: str, model_root_real: str) ->
     return None
 
 
-def _find_unsafe_emotion_mapping_reference(data, config_dir: str, model_root_real: str) -> str | None:
+def _find_invalid_emotion_mapping_reference(data, config_dir: str, model_root_real: str) -> str | None:
     """
-    Return the first path under an emotion-mapping request's ``motions`` / ``expressions``
-    (``{group: [path, ...]}``) that would point outside the model folder, or None.
-    The whole request is also stored as ``EmotionMapping``, so every string path is checked.
+    Check an emotion-mapping request (``{"motions": {group: [path, ...]}, "expressions": {...}}``).
+    Return a short reason when a present section is not ``{group: [str, ...]}`` or a path
+    would point outside the model folder; else None. The whole request is also stored as
+    ``EmotionMapping``, so every value is checked, not only the ones written to FileReferences.
     """
     if not isinstance(data, dict):
-        return None
+        return "request is not an object"
     for section in ('motions', 'expressions'):
         groups = data.get(section)
-        if not isinstance(groups, dict):
+        if groups is None:
             continue
+        if not isinstance(groups, dict):
+            return f"{section} is not an object"
         for files in groups.values():
-            # Mirror the handler's ``for file_path in files``: a bare string is iterated too.
-            if not isinstance(files, (list, str, dict)):
-                continue
+            if not isinstance(files, list):
+                return f"{section} group is not a list"
             for file_path in files:
-                if isinstance(file_path, str) and _is_unsafe_model_ref(file_path, config_dir, model_root_real):
-                    return file_path
+                if not isinstance(file_path, str):
+                    return f"{section} entry is not a string"
+                if _is_unsafe_model_ref(file_path, config_dir, model_root_real):
+                    return f"{section} entry points outside the model folder"
     return None
 
 
@@ -868,10 +872,12 @@ async def update_emotion_mapping(model_name: str, request: Request):
 
         # Every submitted path must stay inside the model folder; refuse the whole request
         # before any read or write (the request is also stored verbatim as EmotionMapping).
-        if _find_unsafe_emotion_mapping_reference(
+        invalid_ref = _find_invalid_emotion_mapping_reference(
             data, os.path.dirname(model_json_path), os.path.realpath(model_dir)
-        ) is not None:
-            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用超出模型目录"})
+        )
+        if invalid_ref is not None:
+            logger.info("拒绝无效的情绪映射引用: %s", invalid_ref)
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用无效或超出模型目录"})
 
         # Lock entire read/modify/write as update_model_config. Cubism transformation below is pure CPU
         # with no await; enclosing it changes no logic (git diff -w shows indentation-only changes).
