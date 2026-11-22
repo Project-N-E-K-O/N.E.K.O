@@ -621,6 +621,84 @@ def _rebuild_fact_index_sync(character_name: str, char_dir: Path, fact_store) ->
     )
 
 
+_RESTORE_DONE = "done"              # every file at the target version
+_RESTORE_INTERRUPTED = "interrupted"  # each file at target or pre, not all target
+_RESTORE_CHANGED = "changed"        # some file at neither: changed after the restore
+
+
+def _restore_payload_parts(payload: dict) -> tuple[str, dict, dict] | None:
+    snapshot_id = payload.get("snapshot_id")
+    target = payload.get("target_files")
+    pre = payload.get("pre_restore_files")
+    if (
+        not isinstance(snapshot_id, str)
+        or not isinstance(target, dict)
+        or not isinstance(pre, dict)
+        or not all(_is_allowed_snapshot_relpath(rel) for rel in (*target, *pre))
+    ):
+        return None
+    return snapshot_id, target, pre
+
+
+def _compare_with_restore(char_dir: Path, target: dict, pre: dict):
+    """``(state, live bytes, current fingerprints, relpaths)`` of the managed files."""
+    live = {rel: (char_dir / rel).read_bytes() for rel in _collect_managed_relpaths(char_dir)}
+    relpaths = set(live) | set(target) | set(pre)
+    current = {rel: content_fingerprint(live[rel]) if rel in live else None for rel in relpaths}
+    if any(current[rel] not in (target.get(rel), pre.get(rel)) for rel in relpaths):
+        state = _RESTORE_CHANGED
+    elif all(current[rel] == target.get(rel) for rel in relpaths):
+        state = _RESTORE_DONE
+    else:
+        state = _RESTORE_INTERRUPTED
+    return state, live, current, relpaths
+
+
+def _load_matching_snapshot(char_dir: Path, snapshot_id: str, target: dict):
+    """``(files, stored bytes)`` when the snapshot can still produce ``target``, else None."""
+    try:
+        _meta, recorded_files, staged = _load_snapshot_source(char_dir, snapshot_id)
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    expected = {rel for rel, fp in target.items() if fp is not None}
+    if set(recorded_files) != expected or any(
+        content_fingerprint(staged[rel]) != target[rel] for rel in recorded_files
+    ):
+        return None
+    return recorded_files, staged
+
+
+def make_snapshot_restore_in_effect(*, memory_dir_fn: Callable[[], Any] | None = None):
+    """Build the Reconciler tail-cut check for ``memory.snapshot_restored``.
+
+    True when the restore is in effect or replay will finish it: every file
+    at the target, some file changed after it, or an interrupted swap whose
+    snapshot can still produce the target. Only then are the unapplied
+    events in front of it obsolete. A restore that never got going and
+    cannot be finished (its snapshot gone) leaves the files as they were,
+    so those events must still be replayed. Read-only.
+    """
+
+    def _in_effect(name: str, payload: dict) -> bool:
+        parts = _restore_payload_parts(payload)
+        if parts is None:
+            return False
+        snapshot_id, target, pre = parts
+        memory_dir = Path(memory_dir_fn() if memory_dir_fn is not None else get_config_manager().memory_dir)
+        char_dir = memory_dir / name
+        if not char_dir.is_dir():
+            return False
+        try:
+            state, _live, _current, _relpaths = _compare_with_restore(char_dir, target, pre)
+        except OSError:
+            return False
+        if state != _RESTORE_INTERRUPTED:
+            return True
+        return _load_matching_snapshot(char_dir, snapshot_id, target) is not None
+
+    return _in_effect
+
+
 def make_snapshot_restore_handler(
     *,
     persona_manager=None,
@@ -655,17 +733,11 @@ def make_snapshot_restore_handler(
             return None
 
     def _apply(name: str, payload: dict) -> bool:
-        snapshot_id = payload.get("snapshot_id")
-        target = payload.get("target_files")
-        pre = payload.get("pre_restore_files")
-        if (
-            not isinstance(snapshot_id, str)
-            or not isinstance(target, dict)
-            or not isinstance(pre, dict)
-            or not all(_is_allowed_snapshot_relpath(rel) for rel in (*target, *pre))
-        ):
+        parts = _restore_payload_parts(payload)
+        if parts is None:
             logger.warning("[MemorySnapshots] %s: malformed snapshot-restore event skipped", name)
             return False
+        snapshot_id, target, pre = parts
         memory_dir = Path(memory_dir_fn() if memory_dir_fn is not None else get_config_manager().memory_dir)
         char_dir = memory_dir / name
         if not char_dir.is_dir():
@@ -674,36 +746,25 @@ def make_snapshot_restore_handler(
 
         with ExitStack() as lock_stack:
             _enter_thread_locks(lock_stack, name, fact_store, dm)
-            live = {rel: (char_dir / rel).read_bytes() for rel in _collect_managed_relpaths(char_dir)}
-            relpaths = set(live) | set(target) | set(pre)
-            current = {rel: content_fingerprint(live[rel]) if rel in live else None for rel in relpaths}
-            for rel in relpaths:
-                if current[rel] not in (target.get(rel), pre.get(rel)):
-                    logger.info(
-                        "[MemorySnapshots] %s: memory changed after restore %s; replay leaves it",
-                        name, snapshot_id,
-                    )
-                    return False
-            if all(current[rel] == target.get(rel) for rel in relpaths):
-                return False
-
-            try:
-                _meta, recorded_files, staged = _load_snapshot_source(char_dir, snapshot_id)
-            except (FileNotFoundError, ValueError, OSError) as exc:
-                logger.warning(
-                    "[MemorySnapshots] %s: interrupted restore of %s cannot be finished: %s",
-                    name, snapshot_id, exc,
-                )
-                return False
-            expected = {rel for rel, fp in target.items() if fp is not None}
-            if set(recorded_files) != expected or any(
-                content_fingerprint(staged[rel]) != target[rel] for rel in recorded_files
-            ):
-                logger.warning(
-                    "[MemorySnapshots] %s: snapshot %s no longer matches its restore event; skipped",
+            state, live, current, relpaths = _compare_with_restore(char_dir, target, pre)
+            if state == _RESTORE_CHANGED:
+                logger.info(
+                    "[MemorySnapshots] %s: memory changed after restore %s; replay leaves it",
                     name, snapshot_id,
                 )
                 return False
+            if state == _RESTORE_DONE:
+                return False
+
+            source = _load_matching_snapshot(char_dir, snapshot_id, target)
+            if source is None:
+                logger.warning(
+                    "[MemorySnapshots] %s: interrupted restore of %s cannot be finished "
+                    "(snapshot gone, unreadable or changed); skipped",
+                    name, snapshot_id,
+                )
+                return False
+            recorded_files, staged = source
 
             donors = _vector_donors(live.values())
             pending = {
@@ -743,7 +804,11 @@ def register_snapshot_restore_replay(
     directives_manager_fn: Callable[[], Any] | None = None,
     memory_dir_fn: Callable[[], Any] | None = None,
 ) -> None:
-    """Register the snapshot-restore handler; an unregistered type would pause replay."""
+    """Register the snapshot-restore handler and tail cut.
+
+    An unregistered type would pause replay. The tail cut lets replay skip
+    unapplied events written before a restore that is in effect.
+    """
     reconciler.register(
         EVT_MEMORY_SNAPSHOT_RESTORED,
         make_snapshot_restore_handler(
@@ -753,6 +818,10 @@ def register_snapshot_restore_replay(
             directives_manager_fn=directives_manager_fn,
             memory_dir_fn=memory_dir_fn,
         ),
+    )
+    reconciler.register_tail_cut(
+        EVT_MEMORY_SNAPSHOT_RESTORED,
+        make_snapshot_restore_in_effect(memory_dir_fn=memory_dir_fn),
     )
 
 

@@ -102,8 +102,8 @@ EVT_PERSONA_ENTRY_UPDATED = "persona.entry_updated"
 # Retired sync event: recognized only so old journals can drain without applying it.
 EVT_LONG_TERM_MEMORY_REPLACED = "memory.long_term_replaced"
 # Memory Browser snapshot restore: the whole set of managed files was replaced.
-# Every replay tail (read_since) starts at the newest one, because every event
-# before it describes files the restore overwrote.
+# A full replay starts at the newest one, and so does any tail once that restore
+# is in effect, because every event before it describes files it overwrote.
 EVT_MEMORY_SNAPSHOT_RESTORED = "memory.snapshot_restored"
 
 ALL_EVENT_TYPES: frozenset[str] = frozenset({
@@ -597,18 +597,20 @@ class EventLog:
         other reason (hand edits, a restore that brought back only one of
         the two files); every record in the body is then treated as unapplied.
 
-        Whatever the tail, it starts at its newest ``memory.snapshot_restored``
-        record: that restore replaced every managed file, so unapplied records
-        in front of it (a full replay, or a crash during the restore itself)
-        describe a state that no longer exists, and replaying them would
-        write it back over the restored files.
+        A full replay starts at the newest ``memory.snapshot_restored``
+        record instead of the first line: that restore replaced every managed
+        file, so the records in front of it describe a state that no longer
+        exists and replaying them would write it back over the restored
+        files. A tail after a found sentinel is returned whole; the
+        Reconciler cuts it at a restore only once that restore is known to
+        be in effect (register_tail_cut).
         """
         with self._get_lock(name):
             records = self._read_all_records(self._events_path(name))
         if after_event_id is not None:
             for i, rec in enumerate(records):
                 if rec.get('event_id') == after_event_id:
-                    return _from_latest_restore(name, records[i + 1:])
+                    return records[i + 1:]
             # The sentinel names an event that is not in the body. Compaction
             # always keeps that line, so this is not its doing.
             # Safe default: replay everything currently in the body.
@@ -1261,6 +1263,9 @@ class Reconciler:
     def __init__(self, event_log: EventLog):
         self._event_log = event_log
         self._handlers: dict[str, ApplyHandler] = {}
+        # event_type -> (name, payload) -> bool: whether that event is in
+        # effect, so unapplied events in front of it in a tail are obsolete.
+        self._tail_cuts: dict[str, Callable[[str, dict], bool]] = {}
 
     def register(self, event_type: str, handler: ApplyHandler) -> None:
         if event_type not in ALL_EVENT_TYPES:
@@ -1268,6 +1273,30 @@ class Reconciler:
                 f"[Reconciler] 注册未登记事件类型 {event_type!r}（handler 仍生效，但请检查 typo）"
             )
         self._handlers[event_type] = handler
+
+    def register_tail_cut(self, event_type: str, in_effect: Callable[[str, dict], bool]) -> None:
+        """Let a tail start at the newest ``event_type`` record once it is in effect.
+
+        ``in_effect(name, payload)`` is synchronous and read-only; it runs on
+        a worker thread. While it says False the tail stays whole, so the
+        unapplied events in front of that record are still replayed.
+        """
+        self._tail_cuts[event_type] = in_effect
+
+    async def _cut_tail(self, name: str, tail: list[dict]) -> list[dict]:
+        for k in range(len(tail) - 1, 0, -1):
+            in_effect = self._tail_cuts.get(tail[k].get('type'))
+            if in_effect is None:
+                continue
+            payload = tail[k].get('payload') or {}
+            if await asyncio.to_thread(in_effect, name, payload):
+                logger.info(
+                    f"[Reconciler] {name}: 尾巴从已生效的 {tail[k].get('type')} 开始，"
+                    f"跳过其前 {k} 条未应用事件"
+                )
+                return tail[k:]
+            return tail
+        return tail
 
     async def arun_pending_ahead(self, name: str, event_type: str) -> bool:
         """Run the handler of the newest unapplied ``event_type`` record now.
@@ -1390,7 +1419,7 @@ class Reconciler:
         journal. Every early return leaves unapplied events on disk.
         """
         last_applied = await self._event_log.aread_sentinel(name)
-        tail = await self._event_log.aread_since(name, last_applied)
+        tail = await self._cut_tail(name, await self._event_log.aread_since(name, last_applied))
         applied_count = 0
         # CAS every event, and do it **before** running its handler: expected is where this replay believes the on-disk
         # sentinel should be — initially the last_applied read at startup,
@@ -1412,7 +1441,9 @@ class Reconciler:
             if i >= len(tail):
                 if not sentinel_frozen:
                     return applied_count, True
-                extra = await self._event_log.aread_since(name, expected_sentinel)
+                extra = await self._cut_tail(
+                    name, await self._event_log.aread_since(name, expected_sentinel),
+                )
                 if not extra:
                     return applied_count, True
                 if rescans_left <= 0:
@@ -1489,7 +1520,9 @@ class Reconciler:
                     f"推进，手上的尾巴已陈旧；改为从本轮已应用位置重扫到日志末尾并"
                     f"按日志顺序重放，此后不再推进哨兵: {e}"
                 )
-                tail = await self._event_log.aread_since(name, expected_sentinel)
+                tail = await self._cut_tail(
+                    name, await self._event_log.aread_since(name, expected_sentinel),
+                )
                 i = 0
             except SentinelAdvanceError as e:
                 # Handler succeeded but sentinel write failed. Attribute this separately from handler failure: on disk,

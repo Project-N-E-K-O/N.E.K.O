@@ -1252,22 +1252,29 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
                 # no-op and advances the sentinel.
                 from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED
 
-                async def _finish_pending_restore(n: str):
+                async def _finish_pending_restore(n: str) -> bool:
                     try:
                         if await reconciler.arun_pending_ahead(n, EVT_MEMORY_SNAPSHOT_RESTORED):
                             logger.info(f"[Memory] {n}: 已补完上次被打断的快照恢复")
+                        return True
                     except Exception as e:
-                        logger.warning(f"[Memory] {n}: 补完被打断的快照恢复失败: {e}")
+                        logger.warning(
+                            f"[Memory] {n}: 补完被打断的快照恢复失败，本次启动不做 persona 检查，"
+                            f"留待下次启动续做: {e}"
+                        )
+                        return False
 
-                await asyncio.gather(
+                finished = await asyncio.gather(
                     *(_finish_pending_restore(n) for n in catgirl_names),
-                    return_exceptions=True,
                 )
+                # A character whose restore could not be finished keeps its
+                # files untouched here, so the next start can still finish it.
+                checked = [n for n, ok in zip(catgirl_names, finished) if ok]
                 results = await asyncio.gather(
-                    *(persona_manager.aensure_persona(n) for n in catgirl_names),
+                    *(persona_manager.aensure_persona(n) for n in checked),
                     return_exceptions=True,
                 )
-                for name, result in zip(catgirl_names, results):
+                for name, result in zip(checked, results):
                     if isinstance(result, Exception):
                         logger.warning(
                             f"[Memory] Persona 迁移检查失败: {name}: {result}",

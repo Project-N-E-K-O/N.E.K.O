@@ -384,14 +384,17 @@ def test_reflection_merge_archive_replay_three_states(tmp_path):
     assert handler(NAME, payload) is False
     assert path.read_bytes() == before
 
-    # Merge never landed and the user then edited either row: skipped whole.
+    # Merge never landed and the user then changed either row: skipped whole.
     for rows in (
         [{"id": "r_keep", "text": "edited afterwards"}, {"id": "r_drop", "text": "drop"}],
+        [{"id": "r_keep", "text": "merged"}, {"id": "r_drop", "text": "drop"}],
         [{"id": "r_keep", "text": "keep before"}, {"id": "r_drop", "text": "drop, edited"}],
+        [{"id": "r_keep", "text": "keep before"}, {"id": "r_drop", "text": "drop", "status": "confirmed"}],
     ):
         path = _seed_reflections(tmp_path, rows)
         before = path.read_bytes()
-        assert handler(NAME, {**payload, "entry_snapshot": {"id": "r_drop", "text": "drop"}}) is False
+        full = {**payload, "from": "pending", "entry_snapshot": {"id": "r_drop", "text": "drop"}}
+        assert handler(NAME, full) is False
         assert path.read_bytes() == before
 
     # Older event without the merged text: skipped whole, nothing archived.
@@ -749,7 +752,8 @@ async def test_pending_restore_is_finished_ahead_of_startup_rewrites(tmp_path):
     _write_json(char_dir / "events_applied.json", {"last_applied_event_id": anchor})
     (char_dir / "facts.json").write_bytes(pre["facts.json"])
 
-    assert [r["event_id"] for r in log.read_since(NAME, anchor)] == [events[0]["event_id"]]
+    # read_since hands back the whole tail; the Reconciler cuts it once the restore is in effect.
+    assert [r["event_id"] for r in log.read_since(NAME, anchor)] == [stale, events[0]["event_id"]]
 
     reconciler = Reconciler(log)
     seen = []
@@ -769,3 +773,34 @@ async def test_pending_restore_is_finished_ahead_of_startup_rewrites(tmp_path):
     assert await reconciler.areconcile(NAME) == 0
     assert seen == [] and stale not in seen
     assert log.read_sentinel(NAME) == events[0]["event_id"]
+
+
+@pytest.mark.asyncio
+async def test_restore_that_never_took_effect_keeps_earlier_events_replayable(tmp_path):
+    import shutil
+    from memory.analytics.snapshots import register_snapshot_restore_replay
+    from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED, Reconciler
+
+    log, char_dir, meta, pre, _target, _payload = await _restored_with_event(tmp_path)
+    restore_line = (char_dir / "events.ndjson").read_text(encoding="utf-8").strip()
+    anchor = log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "anchor"})
+    stale = log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "stale"})
+    lines = (char_dir / "events.ndjson").read_text(encoding="utf-8").splitlines()
+    body = [lines[1], lines[2], restore_line]
+    (char_dir / "events.ndjson").write_bytes("".join(line + chr(10) for line in body).encode("utf-8"))
+    _write_json(char_dir / "events_applied.json", {"last_applied_event_id": anchor})
+    # Crash before the swap, and the snapshot is gone by the next start.
+    for rel, raw in pre.items():
+        (char_dir / rel).write_bytes(raw)
+    shutil.rmtree(char_dir / "browser_snapshots" / meta["snapshot_id"])
+
+    reconciler = Reconciler(log)
+    seen = []
+    reconciler.register(EVT_REFLECTION_EVIDENCE_UPDATED, lambda n, p: seen.append(p["reflection_id"]) or False)
+    register_snapshot_restore_replay(
+        reconciler, fact_store=_Facts(), persona_manager=_Persona(),
+        directives_manager_fn=lambda: None, memory_dir_fn=lambda: tmp_path,
+    )
+    await reconciler.areconcile(NAME)
+    assert seen == ["stale"]
+    assert {rel: (char_dir / rel).read_bytes() for rel in pre} == pre

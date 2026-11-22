@@ -543,9 +543,10 @@ def make_reflection_archive_handler(reflection_engine):
         # than the merge, and only the shard self-heal below is left.
         # ``drop`` still there means it did not land. It is completed only
         # when both rows are exactly as the merge left them (survivor still at
-        # the replaced text, ``drop`` still at its snapshot); after any edit
-        # to either the user has moved on from the failed merge and the event
-        # is skipped whole, as is an older event without the merged text.
+        # the replaced text, ``drop`` still at its snapshot text and its
+        # status before the merge); after any change to either the user has
+        # moved on from the failed merge and the event is skipped whole, as
+        # is an older event without the merged text.
         merged_keep_id = payload.get('merged_keep_id')
         merged_keep_sha = payload.get('merged_keep_text_sha256')
         path = reflection_engine._reflections_path(name)
@@ -572,17 +573,20 @@ def make_reflection_archive_handler(reflection_engine):
                     text_key='merged_keep_text',
                     previous_key='merged_keep_previous_text_sha256',
                 )
-                if survivor is None or keep_state in (_REWRITE_SUPERSEDED, _REWRITE_UNVERIFIABLE):
+                if survivor is None or keep_state != _REWRITE_PENDING:
                     _log_skipped_rewrite(
                         name, 'reflection.merge', merged_keep_id,
-                        _REWRITE_SUPERSEDED if survivor is None else keep_state,
+                        keep_state if keep_state == _REWRITE_UNVERIFIABLE else _REWRITE_SUPERSEDED,
                     )
                     return False
-                if snapshot_text is not None and drop.get('text') != snapshot_text:
+                drop_status = str(drop.get('status') or 'pending')
+                if (
+                    (snapshot_text is not None and drop.get('text') != snapshot_text)
+                    or ('from' in payload and drop_status != payload['from'])
+                ):
                     _log_skipped_rewrite(name, 'reflection.merge', rid, _REWRITE_SUPERSEDED)
                     return False
-                if keep_state == _REWRITE_PENDING:
-                    survivor_rewrite = payload['merged_keep_text']
+                survivor_rewrite = payload['merged_keep_text']
 
         # Step 1+2: shard self-heal (write entry into the named shard
         # if missing). Skipped if the event lacks the snapshot fields
