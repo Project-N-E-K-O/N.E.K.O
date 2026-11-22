@@ -869,6 +869,38 @@ _HARNESS = textwrap.dedent(
         'both windows converge on the newer values and D\\'s edit');
     }
 
+    // The late-412 check must not lock a window out when the server's
+    // revision really went back (its data was replaced by an older copy):
+    // a 412 below the revision known when the request was sent cannot be a
+    // late response, so the window adopts it and its retry succeeds.
+    async function serverRevisionRollback() {
+      const key = 'mergeMessagesEnabled';
+      const d = makeWindow('D');
+      await settle();
+      d.S.focusModeEnabled = !d.S.focusModeEnabled;
+      d.mod.saveSettings();
+      await settle();
+      d.S.focusModeEnabled = !d.S.focusModeEnabled;
+      d.mod.saveSettings();
+      await settle();
+      assert(serverRevision === 2, 'precondition: D saved twice: ' + serverRevision);
+      serverRevision = 0;
+      serverSettings = Object.assign({}, serverSettings, { [key]: true });
+      d.postIfMatch.length = 0;
+      d.S.focusModeEnabled = !d.S.focusModeEnabled;
+      const focusWanted = d.S.focusModeEnabled;
+      d.mod.saveSettings();
+      await settle();
+      assert(d.postIfMatch.length === 2
+        && d.postIfMatch[0] === '"conversation-settings-2"'
+        && d.postIfMatch[1] === '"conversation-settings-0"',
+        'D adopts the rolled-back revision and retries with it: '
+          + JSON.stringify(d.postIfMatch));
+      assert(serverSettings.focusModeEnabled === focusWanted && serverRevision === 1,
+        'D\\'s edit is saved after the rollback');
+      assert(d.S[key] === true, 'D takes the server\\'s values');
+    }
+
     // The other side of staleCopyBelowServerFloor: a sender that merged a
     // newer server value than this window has seen carries it under the same
     // old token (a server merge does not replace the per-key token). That
@@ -989,6 +1021,12 @@ _HARNESS = textwrap.dedent(
       }
       if (typeof __MODE__ === 'string' && __MODE__.indexOf('sender-newer:') === 0) {
         await senderNewerServerValue(__MODE__.slice('sender-newer:'.length));
+        console.log('HARNESS_OK');
+        process.exitCode = 0;
+        return;
+      }
+      if (__MODE__ === 'rollback-412') {
+        await serverRevisionRollback();
         console.log('HARNESS_OK');
         process.exitCode = 0;
         return;
@@ -1400,6 +1438,16 @@ def test_late_older_conflict_snapshot_does_not_roll_back_harness():
     result = _run("stale-412")
     assert result.returncode == 0, (
         "late older 412 snapshot harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_conflict_after_server_revision_rollback_is_adopted_harness():
+    result = _run("rollback-412")
+    assert result.returncode == 0, (
+        "server revision rollback 412 harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )

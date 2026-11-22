@@ -1605,6 +1605,7 @@
                     ? Object.assign({}, _lastOptimizationDecision)
                     : null;
                 const headers = { 'Content-Type': 'application/json' };
+                const revisionAtSend = _conversationSettingsRevision;
                 if (_conversationSettingsEtag) {
                     headers['If-Match'] = _conversationSettingsEtag;
                 }
@@ -1629,11 +1630,16 @@
                     // A 412 that arrives late can carry a snapshot older than
                     // the revision this window has since taken from a server
                     // merge in another window. Keep the newer ETag, revision
-                    // and values, and just retry with them.
+                    // and values, and just retry with them. A snapshot older
+                    // than the revision known when the request was sent is not
+                    // late (the server had reached that revision already): the
+                    // server's revision went back, so adopt it as before.
                     if (response.status === 412
                         && Number.isInteger(data.revision)
                         && Number.isInteger(_conversationSettingsRevision)
-                        && data.revision < _conversationSettingsRevision) {
+                        && data.revision < _conversationSettingsRevision
+                        && !(Number.isInteger(revisionAtSend)
+                            && data.revision < revisionAtSend)) {
                         if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
                             continue;
                         }
