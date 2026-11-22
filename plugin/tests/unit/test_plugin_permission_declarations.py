@@ -1589,3 +1589,20 @@ def test_type_checking_imports_do_not_bind_decorators(tmp_path):
         encoding="utf-8",
     )
     assert [message for message in _issues(plugin_dir, "error") if "does not accept permissions=" in message]
+
+
+@pytest.mark.parametrize("excluded,shipped", [("ui", "ui/panel.js"), ("vendor", "vendor")])
+def test_path_excludes_do_not_hide_the_subtree_they_do_not_exclude(tmp_path, excluded, shipped):
+    # "exclude" matches the path itself; files below it still ship.
+    plugin_dir = _plugin(tmp_path, "x = 1\n", "[permissions.require]\n")
+    (plugin_dir / "pyproject.toml").write_text(
+        f'[tool.neko.build]\nexclude = ["{excluded}"]\n', encoding="utf-8"
+    )
+    (plugin_dir / "ui").mkdir()
+    (plugin_dir / "ui" / "panel.js").write_text("1\n", encoding="utf-8")
+    (plugin_dir / "vendor").mkdir()
+    (plugin_dir / "vendor" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    info = _issues(plugin_dir, "info")
+    blind = " ".join(message.splitlines()[0] for message in info if "(not scanned" in message.splitlines()[0])
+    assert shipped in blind
+    assert not any(message.startswith("the code scan found no use beyond") for message in info)

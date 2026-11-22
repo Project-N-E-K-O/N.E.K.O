@@ -1300,9 +1300,16 @@ def _check_permission_usage(
     excludes) never run in the plugin.
     """
     rules = _build_rules_or_defaults(pyproject)
+    # "exclude" matches a path, not its subtree, so directories are judged
+    # without it (as in _check_symlink_tree); files still use every rule.
+    tree_rules = rules.model_copy(update={"exclude": []})
+
+    def include(relative: Path, is_dir: bool) -> bool:
+        return not should_skip_path(relative, is_dir=is_dir, rules=tree_rules if is_dir else rules)
+
     # Filter before reading so excluded files do not use up the scan budget.
     sources = read_capability_sources(
-        plugin_dir, include=lambda relative, is_dir: not should_skip_path(relative, is_dir=is_dir, rules=rules)
+        plugin_dir, include=include
     )
     report = analyze_capabilities(plugin_dir, declarations=declarations, sources=sources)
     found = compare_declarations(report)
