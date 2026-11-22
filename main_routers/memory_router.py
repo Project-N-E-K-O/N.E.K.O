@@ -2880,6 +2880,8 @@ async def label_memory_star_map_clusters(catgirl_name: str, request: Request):
     cooldown_err = _check_manual_llm_cooldown("star_map_labels", catgirl_name)
     if cooldown_err is not None:
         return cooldown_err
+    cooldown_key = ("star_map_labels", catgirl_name)
+    cooldown_stamp = _manual_llm_last_trigger.get(cooldown_key)
     from urllib.parse import quote
     resp = await _proxy_memory_browser(
         "POST",
@@ -2887,10 +2889,11 @@ async def label_memory_star_map_clusters(catgirl_name: str, request: Request):
         json_body={"language": payload.get("language") if isinstance(payload, dict) else None},
         timeout=60.0,
     )
-    if getattr(resp, "status_code", None) == 409:
+    if getattr(resp, "status_code", None) == 409 and _manual_llm_last_trigger.get(cooldown_key) == cooldown_stamp:
         # No summary model configured: nothing was sent, so the user may retry
-        # right after setting one up.
-        _manual_llm_last_trigger.pop(("star_map_labels", catgirl_name), None)
+        # right after setting one up. Only this request's own mark is dropped;
+        # a newer request's cooldown stays.
+        _manual_llm_last_trigger.pop(cooldown_key, None)
     return resp
 
 

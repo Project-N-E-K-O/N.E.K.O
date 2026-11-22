@@ -641,7 +641,8 @@
             }
         } catch (err) {
             if (targetChar !== activeCharacter) return;
-            showToast(err && err.message ? err.message : tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
+            console.warn('[MemoryBrowser] star map labeling failed:', err);
+            showToast(tr('memory.starMapLabelFailed', '刷新星云主题失败'), true);
         } finally {
             if (targetChar === activeCharacter) {
                 clusterLabeling = false;

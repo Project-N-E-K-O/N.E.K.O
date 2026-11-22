@@ -1247,3 +1247,26 @@ async def test_restore_failing_before_its_event_logs_no_replay_warning(tmp_path)
     assert not (tmp_path / NAME / "events.ndjson").exists() or not _journal(tmp_path)
     warnings = [str(call.args[0]) for call in fake_logger.warning.call_args_list]
     assert not any("left for replay" in text for text in warnings), warnings
+
+
+@pytest.mark.asyncio
+async def test_refused_star_map_request_keeps_a_newer_requests_cooldown(monkeypatch):
+    from fastapi.responses import JSONResponse
+    from main_routers import memory_router
+
+    key = ("star_map_labels", NAME)
+
+    async def _slow_refusal(*_args, **_kwargs):
+        # Another request passed the cooldown while this one was in flight.
+        memory_router._manual_llm_last_trigger[key] = 123456.0
+        return JSONResponse({"success": False}, status_code=409)
+
+    monkeypatch.setattr(memory_router, "_validate_browser_character_or_400", lambda _name: None)
+    monkeypatch.setattr(memory_router, "_parse_and_validate_browser_post", AsyncMock(return_value=({}, None)))
+    monkeypatch.setattr(memory_router, "_proxy_memory_browser", _slow_refusal)
+    memory_router._manual_llm_last_trigger.pop(key, None)
+    try:
+        await memory_router.label_memory_star_map_clusters(NAME, MagicMock())
+        assert memory_router._manual_llm_last_trigger.get(key) == 123456.0
+    finally:
+        memory_router._manual_llm_last_trigger.pop(key, None)
