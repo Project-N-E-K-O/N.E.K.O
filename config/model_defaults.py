@@ -54,10 +54,10 @@ MAX_MULTIMODAL_TURN_IMAGES = 3
 # Default Provider/URL/API_KEY for custom-model configuration; empty strings use global configuration
 DEFAULT_CONVERSATION_MODEL_URL = ""
 DEFAULT_CONVERSATION_MODEL_API_KEY = ""
-DEFAULT_SUMMARY_MODEL_URL = ""
-DEFAULT_SUMMARY_MODEL_API_KEY = ""
-DEFAULT_EMOTION_MODEL_URL = ""
-DEFAULT_EMOTION_MODEL_API_KEY = ""
+DEFAULT_MEMORY_MODEL_URL = ""
+DEFAULT_MEMORY_MODEL_API_KEY = ""
+DEFAULT_RECOGNITION_MODEL_URL = ""
+DEFAULT_RECOGNITION_MODEL_API_KEY = ""
 DEFAULT_DECISION_MODEL_URL = ""
 DEFAULT_DECISION_MODEL_API_KEY = ""
 DEFAULT_VISION_MODEL_URL = ""
@@ -80,14 +80,14 @@ DEFAULT_AGENT_MODEL_API_KEY = ""
 #     ONNX (EmbeddingService in memory/embeddings.py), with model IDs derived from
 #     profile_id+dim+quantization.
 #   * RERANKER_MODEL: memory LLM reranking (memory/recall.py::MemoryRecallReranker)
-#     reads api_config['model'] with tier="summary", without hardcoded 'qwen-plus'.
+#     reads api_config['model'] with tier="memory", without hardcoded 'qwen-plus'.
 # Every LLM-using memory submodule reads api_config['model'] by tier, with no hardcoded
 # fallback; add tiers for new requirements rather than more global default-model literals.
 
 # Other model configuration, retrieved dynamically only through config_manager
 DEFAULT_CONVERSATION_MODEL = 'qwen-max'
-DEFAULT_SUMMARY_MODEL = "qwen-plus"
-DEFAULT_EMOTION_MODEL = 'qwen3.6-flash-2026-04-16'
+DEFAULT_MEMORY_MODEL = "qwen-plus"
+DEFAULT_RECOGNITION_MODEL = 'qwen3.6-flash-2026-04-16'
 DEFAULT_DECISION_MODEL = 'decision-model-preview'
 DEFAULT_DECISION_PROTOCOL = 'systemone'
 DEFAULT_VISION_MODEL = "qwen3-vl-plus-2025-09-23"

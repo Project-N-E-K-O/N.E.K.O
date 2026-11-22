@@ -461,7 +461,7 @@ async def _invoke_emotion_tier(prompt: str, *, timeout: float, label: str) -> st
 
     try:
         cfg_mgr = get_config_manager()
-        cfg = await cfg_mgr.aget_model_api_config('emotion')
+        cfg = await cfg_mgr.aget_model_api_config('recognition')
     except Exception as e:
         _report_failure(label, 'emotion_config_unavailable', _failure_detail(e))
         return None
@@ -514,7 +514,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     try:
         cfg_mgr = get_config_manager()
-        cfg = await cfg_mgr.aget_model_api_config('summary')
+        cfg = await cfg_mgr.aget_model_api_config('memory')
     except Exception as e:
         _report_failure(label, 'summary_config_unavailable', _failure_detail(e))
         return None

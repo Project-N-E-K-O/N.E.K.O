@@ -83,10 +83,10 @@ def _custom_config(**overrides):
         'coreApiKey': 'sk-core',
         'assistApi': 'qwen',
         'enableCustomApi': True,
-        'summaryModelProvider': 'custom',
-        'summaryModelUrl': 'http://127.0.0.1:8000/v1',
-        'summaryModelId': 'kept-summary-model',
-        'summaryModelApiKey': 'sk-summary',
+        'memoryModelProvider': 'custom',
+        'memoryModelUrl': 'http://127.0.0.1:8000/v1',
+        'memoryModelId': 'kept-summary-model',
+        'memoryModelApiKey': 'sk-summary',
     }
     config.update(_OLD_CORRECTION_SLOT)
     config.update(overrides)
@@ -107,7 +107,7 @@ def test_old_correction_slot_is_ignored_and_summary_slot_wins(config_manager):
     assert not any(key.startswith('CORRECTION_MODEL') for key in snapshot)
     assert not any(key.startswith('correctionModel') for key in snapshot)
 
-    summary = config_manager.get_model_api_config('summary')
+    summary = config_manager.get_model_api_config('memory')
     assert summary['model'] == 'kept-summary-model'
     assert summary['base_url'] == 'http://127.0.0.1:8000/v1'
     assert summary['api_key'] == 'sk-summary'
@@ -124,7 +124,7 @@ def test_only_correction_was_customised_summary_keeps_its_default(config_manager
         **_OLD_CORRECTION_SLOT,
     })
 
-    summary = config_manager.get_model_api_config('summary')
+    summary = config_manager.get_model_api_config('memory')
     assert summary['model'] == 'qwen3.8-flash'
     assert summary['api_key'] != 'sk-old-correction-key'
 
@@ -136,8 +136,8 @@ def test_profiles_have_no_correction_model_and_keep_the_cheaper_summary_model():
     profiles = get_assist_api_profiles(force_reload=True)
     assert not any('CORRECTION_MODEL' in profile for profile in profiles.values())
     # The two providers whose old correction model differed keep the summary one.
-    assert profiles['gemini']['SUMMARY_MODEL'] == 'gemini-3.1-flash-lite'
-    assert profiles['doubao']['SUMMARY_MODEL'] == 'doubao-seed-2-0-lite-260428'
+    assert profiles['gemini']['MEMORY_MODEL'] == 'gemini-3.1-flash-lite'
+    assert profiles['doubao']['MEMORY_MODEL'] == 'doubao-seed-2-0-lite-260428'
 
     raw = json.loads((PROJECT_ROOT / 'config' / 'api_providers.json').read_text(encoding='utf-8'))
     assert 'correction_model' not in json.dumps(raw)
@@ -170,7 +170,7 @@ def test_save_drops_old_correction_fields(config_manager, core_config_router):
     assert response['success'] is True
     saved = config_manager.load_json_config('core_config.json', {})
     assert not any(key.startswith('correctionModel') for key in saved)
-    assert saved['summaryModelId'] == 'kept-summary-model'
+    assert saved['memoryModelId'] == 'kept-summary-model'
 
 
 @pytest.mark.unit
@@ -208,15 +208,15 @@ def _tier_calls(relative_path):
 def test_former_correction_callers_use_the_summary_tier(relative_path):
     calls = _tier_calls(relative_path)
     assert calls, relative_path
-    assert set(calls) == {'summary'}
+    assert set(calls) == {'memory'}
 
 
 @pytest.mark.unit
 def test_memory_setting_tiers_name_existing_tiers():
     from config import memory_settings
 
-    assert memory_settings.PINNED_FACT_RESOLVE_MODEL_TIER == 'summary'
-    assert memory_settings.EVIDENCE_PROMOTION_MERGE_MODEL_TIER == 'summary'
+    assert memory_settings.PINNED_FACT_RESOLVE_MODEL_TIER == 'memory'
+    assert memory_settings.EVIDENCE_PROMOTION_MERGE_MODEL_TIER == 'memory'
     tiers = {
         value for name, value in vars(memory_settings).items()
         if name.endswith('_MODEL_TIER')
@@ -226,10 +226,10 @@ def test_memory_setting_tiers_name_existing_tiers():
 
 @pytest.mark.unit
 @pytest.mark.parametrize('relative_path, tiers', [
-    # recall tries the native decision rerank first; its chat-LLM fallback is emotion.
-    ('memory/recall.py', ['decision', 'emotion']),
-    ('main_routers/galgame_router.py', ['emotion']),
-    ('utils/web_scraper/window_context.py', ['emotion']),
+    # recall tries the native decision rerank first; its chat-LLM fallback is recognition.
+    ('memory/recall.py', ['decision', 'recognition']),
+    ('main_routers/galgame_router.py', ['recognition']),
+    ('utils/web_scraper/window_context.py', ['recognition']),
     ('main_logic/proactive_chat/break_reminders.py', ['conversation']),
 ])
 def test_moved_light_jobs_use_their_new_tier(relative_path, tiers):
@@ -287,8 +287,8 @@ def test_nothing_to_drop_logs_nothing(monkeypatch, core_config_router):
     recorder = _RecordingLogger(core_config_router.logger)
     monkeypatch.setattr(core_config_router, 'logger', recorder)
 
-    stored = {'summaryModelId': 'kept', 'correctionModelProvider': ''}
+    stored = {'memoryModelId': 'kept', 'correctionModelProvider': ''}
     core_config_router._drop_retired_model_fields(stored)
 
-    assert stored == {'summaryModelId': 'kept'}
+    assert stored == {'memoryModelId': 'kept'}
     assert recorder.infos == []

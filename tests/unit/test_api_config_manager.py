@@ -610,10 +610,10 @@ class TestCustomApiToggle:
         """enableCustomApi=true → all custom model types can be overridden."""
         model_types = [
             ('conversation', 'CONVERSATION_MODEL'),
-            ('summary', 'SUMMARY_MODEL'),
+            ('summary', 'MEMORY_MODEL'),
             ('gameMain', 'GAME_MAIN_MODEL'),
             ('gameSummary', 'GAME_SUMMARY_MODEL'),
-            ('emotion', 'EMOTION_MODEL'),
+            ('emotion', 'RECOGNITION_MODEL'),
             ('decision', 'DECISION_MODEL'),
             ('vision', 'VISION_MODEL'),
             ('agent', 'AGENT_MODEL'),
@@ -659,12 +659,12 @@ class TestCustomApiToggle:
             'conversationModelUrl': 'https://conversation.custom.test/v1',
             'conversationModelId': 'conversation-custom-model',
             'conversationModelApiKey': 'sk-conversation-custom',
-            'summaryModelProvider': 'custom',
-            'summaryModelUrl': 'https://summary.custom.test/v1',
-            'summaryModelId': 'summary-custom-model',
-            'summaryModelApiKey': 'sk-summary-custom',
+            'memoryModelProvider': 'custom',
+            'memoryModelUrl': 'https://summary.custom.test/v1',
+            'memoryModelId': 'summary-custom-model',
+            'memoryModelApiKey': 'sk-summary-custom',
             'gameMainModelProvider': 'follow_conversation',
-            'gameSummaryModelProvider': 'follow_summary',
+            'gameSummaryModelProvider': 'follow_memory',
         })
 
         game_main = config_manager.get_model_api_config('game_main')
@@ -732,12 +732,12 @@ class TestCustomApiToggle:
             'conversationModelUrl': 'http://localhost:8080/v1',
             'conversationModelId': 'local-conversation-model',
             'conversationModelApiKey': '',
-            'summaryModelProvider': 'custom',
-            'summaryModelUrl': 'http://localhost:8081/v1',
-            'summaryModelId': 'local-summary-model',
-            'summaryModelApiKey': '',
+            'memoryModelProvider': 'custom',
+            'memoryModelUrl': 'http://localhost:8081/v1',
+            'memoryModelId': 'local-summary-model',
+            'memoryModelApiKey': '',
             'gameMainModelProvider': 'follow_conversation',
-            'gameSummaryModelProvider': 'follow_summary',
+            'gameSummaryModelProvider': 'follow_memory',
         })
 
         cfg = config_manager.get_core_config()
@@ -771,7 +771,7 @@ class TestCustomApiToggle:
         assert game_main['model'] == core_config['CONVERSATION_MODEL']
         assert game_main['base_url'] == core_config['OPENROUTER_URL']
         assert game_main['api_key'] == 'sk-gemini'
-        assert game_summary['model'] == core_config['SUMMARY_MODEL']
+        assert game_summary['model'] == core_config['MEMORY_MODEL']
         assert game_summary['base_url'] == core_config['OPENROUTER_URL']
         assert game_summary['api_key'] == 'sk-gemini'
 
@@ -797,7 +797,7 @@ class TestCustomApiToggle:
         assert game_main['model'] == openai_profile['CONVERSATION_MODEL']
         assert game_main['base_url'] == openai_profile['OPENROUTER_URL']
         assert game_main['api_key'] == 'sk-core-openai'
-        assert game_summary['model'] == openai_profile['SUMMARY_MODEL']
+        assert game_summary['model'] == openai_profile['MEMORY_MODEL']
         assert game_summary['base_url'] == openai_profile['OPENROUTER_URL']
         assert game_summary['api_key'] == 'sk-core-openai'
 
@@ -1184,7 +1184,7 @@ class TestGetModelApiConfig:
 
     @pytest.mark.unit
     def test_custom_off_returns_assist_fallback(self, config_manager):
-        """enableCustomApi=false → get_model_api_config('summary') returns assist profile."""
+        """enableCustomApi=false → get_model_api_config('memory') returns assist profile."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
             'coreApi': 'qwen',
@@ -1192,7 +1192,7 @@ class TestGetModelApiConfig:
             'assistApiKeyQwen': 'sk-qwen-test',
             'enableCustomApi': False,
         })
-        result = config_manager.get_model_api_config('summary')
+        result = config_manager.get_model_api_config('memory')
 
         assert result['is_custom'] is False
         assert result['api_key'] == 'sk-qwen-test'
@@ -1206,11 +1206,11 @@ class TestGetModelApiConfig:
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'enableCustomApi': True,
-            'summaryModelUrl': 'https://custom-summary.test/v1',
-            'summaryModelId': 'custom-summary-v2',
-            'summaryModelApiKey': 'sk-custom-summary',
+            'memoryModelUrl': 'https://custom-summary.test/v1',
+            'memoryModelId': 'custom-summary-v2',
+            'memoryModelApiKey': 'sk-custom-summary',
         })
-        result = config_manager.get_model_api_config('summary')
+        result = config_manager.get_model_api_config('memory')
 
         assert result['is_custom'] is True
         assert result['model'] == 'custom-summary-v2'
@@ -2521,11 +2521,11 @@ class TestGptsovitsEnabledSaveMigration:
             'assistApi': 'kimi_code',
             'assistApiKeyKimiCode': 'sk-kimi-code-test',
             'enableCustomApi': True,
-            'conversationModelProvider': 'follow_summary',
-            'summaryModelProvider': 'follow_conversation',
+            'conversationModelProvider': 'follow_memory',
+            'memoryModelProvider': 'follow_conversation',
         })
 
-        summary_config = config_manager.get_model_api_config('summary')
+        summary_config = config_manager.get_model_api_config('memory')
         conversation_config = config_manager.get_model_api_config('conversation')
 
         assert summary_config['provider_type'] == 'anthropic'

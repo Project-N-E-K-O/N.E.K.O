@@ -16,7 +16,7 @@
 """Manual on-demand warm relationship note generator for the Imprint view.
 
 LLM discipline:
-- Uses ``summary`` tier from ``config_manager.aget_model_api_config('summary')``.
+- Uses ``summary`` tier from ``config_manager.aget_model_api_config('memory')``.
 - Never passes ``temperature``.
 - Enforces both input token budget (``IMPRINT_NOTE_INPUT_MAX_TOKENS``) and
   output budget + timeout (``IMPRINT_NOTE_MAX_TOKENS``, ``IMPRINT_NOTE_TIMEOUT_SECONDS``).
@@ -140,7 +140,7 @@ async def agenerate_imprint_note(
     )
     prompt = truncate_to_tokens(prompt, IMPRINT_NOTE_INPUT_MAX_TOKENS)
 
-    api_config = await cm.aget_model_api_config("summary")
+    api_config = await cm.aget_model_api_config("memory")
     set_call_type("imprint_warm_note")
     llm = await create_chat_llm_async(
         api_config["model"],

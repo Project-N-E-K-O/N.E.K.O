@@ -1169,7 +1169,7 @@ class CompressedRecentHistoryManager:
         max_retries=0 disables the OpenAI SDK's default 2 automatic retries,
         avoiding a 3× blow-up stacked on the business-level retry.
         """
-        api_config = self._config_manager.get_model_api_config('summary')
+        api_config = self._config_manager.get_model_api_config('memory')
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
@@ -1196,7 +1196,7 @@ class CompressedRecentHistoryManager:
         the safety net.
         """
         from config.providers import memory_thinking_extra_body
-        api_config = self._config_manager.get_model_api_config('summary')
+        api_config = self._config_manager.get_model_api_config('memory')
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,

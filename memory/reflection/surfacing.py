@@ -403,7 +403,7 @@ class SurfacingMixin:
 
         try:
             set_call_type("memory_feedback_check")
-            api_config = await self._config_manager.aget_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('memory')
             # timeout=60: called within a background task; binary-classification prompts and output are small.
             # max_retries=0: disable SDK automatic retries.
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
@@ -477,7 +477,7 @@ class SurfacingMixin:
 
         try:
             set_call_type("memory_rebuttal_check")
-            api_config = await self._config_manager.aget_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('memory')
             # timeout=90: thinking determines which confirmed reflection the user's recent messages contradict;
             # drain mode handles up to 20 user messages per batch against multiple
             # confirmed reflections. Thinking reduces false negatives from sarcasm /

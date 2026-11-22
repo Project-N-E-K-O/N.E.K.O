@@ -1127,7 +1127,7 @@ async def _ainvoke(config_manager, prompt: str, *, name: str):
     set_call_type("memory_behavior_review")
     # The same tier as introspection, thinking on: what comes out is read at
     # every session start, so a wrong note costs more than the call does.
-    api_config = await config_manager.aget_model_api_config('summary')
+    api_config = await config_manager.aget_model_api_config('memory')
     resp, cap = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # build_review_prompt and build_review_sample bound every block by token budget.
         api_config, prompt,
         timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,

@@ -29,6 +29,7 @@ from ..shared_state import get_session_manager, get_initialize_character_data
 from utils.file_utils import read_json_async
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
+from utils.config_manager.tier_renames import migrate_renamed_tier_fields
 from utils.decision_client.workspace import (
     InvalidWorkspaceIdError,
     normalize_workspace_id,
@@ -40,12 +41,12 @@ from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
 CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 
 CORE_CONFIG_MODEL_TYPES = (
-    'conversation', 'summary', 'gameMain', 'gameSummary', 'emotion',
+    'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
     'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts', 'image',
 )
 
 # Model types merged away; their saved fields are dropped on the next save.
-# 'correction' was merged into 'summary' (the summary slot wins, so nothing is
+# 'correction' was merged into 'memory' (the summary slot wins, so nothing is
 # carried over). Not listed in CORE_CONFIG_MODEL_TYPES, so GET never returns
 # these fields and a stale key stays unreadable.
 CORE_CONFIG_RETIRED_MODEL_TYPES = ('correction',)
@@ -217,6 +218,8 @@ async def get_core_config_api():
             config_manager = get_config_manager()
             core_config_path = str(config_manager.get_runtime_config_path('core_config.json'))
             core_cfg = await read_json_async(core_config_path)
+            # Old tier names (emotion / summary) are shown under the new ones.
+            migrate_renamed_tier_fields(core_cfg)
             api_key = core_cfg.get('coreApiKey', '')
             runtime_core_config = await config_manager.aget_core_config()
         except FileNotFoundError:
@@ -410,6 +413,8 @@ async def update_core_config(request: Request):
         data = await request.json()
         if not data:
             return {"success": False, "error": "无效的数据"}
+        # A settings page opened before the upgrade still posts the old tier names.
+        migrate_renamed_tier_fields(data)
         
         enable_custom_api = data.get('enableCustomApi', False)
 
@@ -795,6 +800,8 @@ async def update_core_config(request: Request):
 
         def _apply_core_config_changes(fresh_cfg):
             # Even without changed fields, update_json_config checks the write fence and rejects maintenance-mode writes.
+            # Drop the old tier field names, whatever is saved under the new ones below.
+            migrate_renamed_tier_fields(fresh_cfg)
             for key in removed_fields:
                 fresh_cfg.pop(key, None)
             fresh_cfg.update(deepcopy(changed_fields))
@@ -945,8 +952,8 @@ async def get_api_providers_config():
             "assist_api_providers_full": full_config.get("assist_api_providers", {}),
             "assist_model_defaults": {
                 key: {field: profile.get(field, '') for field in (
-                    'CONVERSATION_MODEL', 'VISION_MODEL', 'SUMMARY_MODEL',
-                    'EMOTION_MODEL', 'AGENT_MODEL',
+                    'CONVERSATION_MODEL', 'VISION_MODEL', 'MEMORY_MODEL',
+                    'RECOGNITION_MODEL', 'AGENT_MODEL',
                 )}
                 for key, profile in get_assist_api_profiles().items()
             },

@@ -631,7 +631,7 @@ async def _organizer_rank():
     from . import gates
 
     try:
-        model = await runtime._config_manager.aget_model_api_config('summary')
+        model = await runtime._config_manager.aget_model_api_config('memory')
     except Exception:
         return None
     if not isinstance(model, dict) or not model.get('model') or not model.get('base_url'):

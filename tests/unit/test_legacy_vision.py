@@ -238,7 +238,7 @@ def test_notice_sink_may_return_a_task():
 
 @pytest.mark.parametrize("provider, separate", [
     ("follow_assist", False), ("follow_core", False), ("follow_conversation", False),
-    ("follow_summary", False), ("openai", True), ("custom", True), ("", True), (None, True),
+    ("follow_memory", False), ("openai", True), ("custom", True), ("", True), (None, True),
 ])
 def test_only_an_explicitly_configured_vision_slot_is_a_legacy_route(provider, separate):
     # A slot following another provider was never configured separately; ''

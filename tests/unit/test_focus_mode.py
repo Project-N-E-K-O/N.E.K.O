@@ -624,7 +624,7 @@ def test_silicon_preset_slots_all_send_enable_thinking_false():
     shipped = json.loads((root / "config" / "api_providers.json").read_text(encoding="utf-8"))
     json_slots = {k: v for k, v in shipped["assist_api_providers"]["silicon"].items() if k.endswith("_model")}
     py_slots = {k: v for k, v in DEFAULT_ASSIST_API_PROFILES["silicon"].items() if k.endswith("_MODEL")}
-    assert json_slots["emotion_model"] == py_slots["EMOTION_MODEL"] == "Qwen/Qwen3.5-35B-A3B"
+    assert json_slots["recognition_model"] == py_slots["RECOGNITION_MODEL"] == "Qwen/Qwen3.5-35B-A3B"
     base_url = shipped["assist_api_providers"]["silicon"]["openrouter_url"]
     for model in set(json_slots.values()) | set(py_slots.values()):
         assert MODELS_EXTRA_BODY_MAP.get(model) is EXTRA_BODY_OPENAI, model

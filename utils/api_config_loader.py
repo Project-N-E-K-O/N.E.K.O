@@ -141,8 +141,8 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'token_plan_openrouter_url': 'MIMO_TOKEN_PLAN_OPENROUTER_URL',
         'token_plan_openrouter_urls': 'MIMO_TOKEN_PLAN_OPENROUTER_URLS',
         'conversation_model': 'CONVERSATION_MODEL',
-        'summary_model': 'SUMMARY_MODEL',
-        'emotion_model': 'EMOTION_MODEL',
+        'memory_model': 'MEMORY_MODEL',
+        'recognition_model': 'RECOGNITION_MODEL',
         'decision_model': 'DECISION_MODEL',
         'decision_protocol': 'DECISION_PROTOCOL',
         'decision_url': 'DECISION_URL',
@@ -153,11 +153,15 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'openrouter_api_key': 'OPENROUTER_API_KEY',
         'provider_type': 'PROVIDER_TYPE',
     }
-    
+
     for json_key, python_key in field_mapping.items():
         if json_key in json_profile:
             result[python_key] = json_profile[json_key]
-    
+    # Field names before the tier rename (emotion -> recognition, summary -> memory).
+    for old_key, python_key in (('summary_model', 'MEMORY_MODEL'), ('emotion_model', 'RECOGNITION_MODEL')):
+        if python_key not in result and old_key in json_profile:
+            result[python_key] = json_profile[old_key]
+
     return result
 
 

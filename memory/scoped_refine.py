@@ -655,7 +655,7 @@ class ScopedLiteRefineEngine:
         #   unlike the full engine's explicit None enabling thinking;
         #   short 60s timeout instead of 110s.
         set_call_type("memory_scoped_refine")
-        api_config = await self._cm.aget_model_api_config('summary')
+        api_config = await self._cm.aget_model_api_config('memory')
         llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'],
