@@ -1660,6 +1660,7 @@ class LifecycleMixin:
         *,
         conversation_config: dict,
         vision_config: dict,
+        vision_provider: str | None = None,
         tool_definitions: list,
         max_response_length: int,
         external_tts_enabled: bool,
@@ -1672,7 +1673,7 @@ class LifecycleMixin:
         """
         from utils.legacy_vision import choose_image_model
 
-        image_choice = choose_image_model(conversation_config, vision_config)
+        image_choice = choose_image_model(conversation_config, vision_config, vision_provider)
         legacy_vision = image_choice.legacy or {}
         session = OmniOfflineClient(
             base_url=conversation_config['base_url'],
@@ -1749,6 +1750,7 @@ class LifecycleMixin:
         candidate = self._create_offline_vlm_client(
             conversation_config=conversation_config,
             vision_config=vision_config,
+            vision_provider=core_config.get('visionModelProvider'),
             tool_definitions=self.tool_registry.all(),
             max_response_length=self._get_text_guard_max_length(),
             external_tts_enabled=not core_config.get('DISABLE_TTS', False),
@@ -2400,6 +2402,7 @@ class LifecycleMixin:
             new_session = self._create_offline_vlm_client(
                 conversation_config=conversation_config,
                 vision_config=vision_config,
+                vision_provider=_fresh_core_config.get('visionModelProvider'),
                 tool_definitions=_initial_tool_defs,
                 max_response_length=guard_max_length,
                 external_tts_enabled=(
@@ -2741,6 +2744,7 @@ class LifecycleMixin:
                 self.pending_session = self._create_offline_vlm_client(
                     conversation_config=conversation_config,
                     vision_config=vision_config,
+                    vision_provider=_fresh_core_config.get('visionModelProvider'),
                     tool_definitions=_pending_tool_defs,
                     max_response_length=guard_max_length,
                     external_tts_enabled=(

@@ -772,7 +772,6 @@ class _ToolingMixin(_TurnContextMixin):
                 "genai" if on_genai else "openai-compat",
             )
             return False
-        _note_legacy_vision(self, "offline tool image")
         try:
             await self.switch_model(vision_model, use_vision_config=True)
         except asyncio.CancelledError:
@@ -787,6 +786,7 @@ class _ToolingMixin(_TurnContextMixin):
                 vision_model, type(e).__name__, e,
             )
             return False
+        _note_legacy_vision(self, "offline tool image")
         return True
 
     def _tool_image_locale(self) -> str:

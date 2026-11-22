@@ -234,3 +234,99 @@ def test_notice_sink_may_return_a_task():
 
     _run(main())
     assert seen == [lv.LEGACY_VISION_DEPRECATED_CODE]
+
+
+@pytest.mark.parametrize("provider, separate", [
+    ("follow_assist", False), ("follow_core", False), ("follow_conversation", False),
+    ("follow_summary", False), ("openai", True), ("custom", True), ("", True), (None, True),
+])
+def test_only_an_explicitly_configured_vision_slot_is_a_legacy_route(provider, separate):
+    # A slot following another provider was never configured separately; ''
+    # is a config saved before the dropdown existed (filled in by hand).
+    assert (lv.choose_image_model(CHAT, VISION, provider).legacy is not None) is separate
+
+
+def test_resolvers_read_the_vision_dropdown_from_core_config():
+    from types import SimpleNamespace
+
+    def manager(provider):
+        core = {"visionModelProvider": provider}
+
+        async def aget(slot, **_kw):
+            return CHAT if slot == "conversation" else VISION
+
+        async def acore():
+            return core
+
+        return SimpleNamespace(
+            aget_model_api_config=aget, aget_core_config=acore,
+            get_model_api_config=lambda slot, **_kw: CHAT if slot == "conversation" else VISION,
+            get_core_config=lambda: core,
+        )
+
+    assert not _run(lv.aresolve_image_model(manager("follow_assist"))).using_legacy
+    assert _run(lv.aresolve_image_model(manager("openai"))).using_legacy
+    assert not lv.resolve_image_model(manager("follow_assist")).using_legacy
+    assert lv.resolve_image_model(manager("openai")).using_legacy
+    # An explicit snapshot wins over the manager's own.
+    assert not _run(lv.aresolve_image_model(manager("openai"), core_config={"visionModelProvider": "follow_core"})).using_legacy
+
+
+def test_undelivered_notice_is_sent_again_on_a_later_use():
+    sent = []
+    delivered = [False]
+
+    def sink(message):
+        sent.append(message)
+        return delivered[0]
+
+    lv.register_notice_sink(sink)
+    choice = lv.choose_image_model(CHAT, VISION)
+    lv.note_legacy_vision_use(choice, "a")   # no page connected
+    lv.note_legacy_vision_use(choice, "b")   # tried again
+    delivered[0] = True
+    lv.note_legacy_vision_use(choice, "c")
+    lv.note_legacy_vision_use(choice, "d")   # shown: not again
+    assert len(sent) == 3
+
+
+@pytest.mark.parametrize("delivered, expected_sends", [(False, 2), (True, 1)])
+def test_async_sink_result_decides_whether_the_notice_was_shown(delivered, expected_sends):
+    sent = []
+
+    async def sink(message):
+        sent.append(message)
+        return delivered
+
+    lv.register_notice_sink(sink)
+    choice = lv.choose_image_model(CHAT, VISION)
+
+    async def main():
+        for _ in range(2):
+            lv.note_legacy_vision_use(choice, "t")
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+    _run(main())
+    assert len(sent) == expected_sends
+
+
+def test_failing_sink_leaves_the_notice_pending():
+    calls = []
+
+    def sink(message):
+        calls.append(message)
+        raise RuntimeError("socket closed")
+
+    lv.register_notice_sink(sink)
+    choice = lv.choose_image_model(CHAT, VISION)
+    lv.note_legacy_vision_use(choice, "t")
+    lv.note_legacy_vision_use(choice, "t")
+    assert len(calls) == 2
+
+
+def test_vision_config_outside_custom_api_is_never_a_legacy_route():
+    # Without the custom API, the vision slot is the provider preset, never
+    # something the user configured separately.
+    preset_vision = {**VISION, "api_key": "preset-key", "is_custom": False}
+    assert lv.choose_image_model(CHAT, preset_vision, "openai").legacy is None

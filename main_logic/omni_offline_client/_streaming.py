@@ -943,10 +943,10 @@ class _StreamingMixin:
             if self.vision_model:
                 # Only a retired, separately configured vision model is set
                 # here; images otherwise stay on the chat model.
-                _note_legacy_vision(self, "offline chat")
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 try:
                     await self.switch_model(self.vision_model, use_vision_config=True)
+                    _note_legacy_vision(self, "offline chat")
                 except BaseException:
                     # Attachments were atomically dequeued above. This is the sole await between dequeue
                     # and message assembly: vision switching creates an LLM client, so network faults /

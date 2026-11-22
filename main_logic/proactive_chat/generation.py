@@ -324,6 +324,8 @@ class ProactiveModelConfig:
     vision_api_key: str = ""
     vision_provider_type: str | None = None
     vision_is_custom: bool = False
+    # utils.legacy_vision.ImageModelChoice behind the vision_* fields, if any.
+    image_choice: Any = None
 
     @property
     def has_vision_model(self) -> bool:
@@ -467,6 +469,11 @@ async def _make_proactive_llm(
         await _check_proactive_vision_consent(live_consent_check)
     require_current_round()
     if use_vision and model_config.has_vision_model:
+        if model_config.image_choice is not None:
+            # The screenshot is about to be sent: only now is a retired,
+            # separately configured vision route actually used.
+            from utils.legacy_vision import note_legacy_vision_use
+            note_legacy_vision_use(model_config.image_choice, "proactive screenshot")
         model = model_config.vision_model
         base_url = model_config.vision_base_url
         api_key = model_config.vision_api_key

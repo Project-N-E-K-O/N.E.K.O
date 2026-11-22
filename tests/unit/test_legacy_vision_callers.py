@@ -283,3 +283,55 @@ async def test_proactive_phase2_refusal_marks_the_chat_model(monkeypatch):
     assert not lv.chat_refuses_images(CHAT)
     await run(chat_config, use_vision=True)
     assert lv.chat_refuses_images(CHAT)
+
+
+def test_offline_session_ignores_a_vision_slot_that_follows_the_assist_provider():
+    from unittest.mock import MagicMock
+    from main_logic.core.lifecycle import LifecycleMixin
+
+    session = LifecycleMixin._create_offline_vlm_client(
+        MagicMock(),
+        conversation_config=CHAT, vision_config=VISION, vision_provider="follow_assist",
+        tool_definitions=[], max_response_length=300, external_tts_enabled=False,
+    )
+    assert session.vision_model == ""
+
+
+@pytest.mark.parametrize("provider, expected", [("follow_assist", "chat-x"), ("openai", "llava")])
+def test_proactive_honours_the_vision_dropdown(provider, expected):
+    from main_logic.proactive_chat.service import _proactive_model_config
+
+    _choice, config = _proactive_model_config(CHAT, VISION, provider)
+    assert config.vision_model == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_vision, told", [(False, 0), (True, 1)])
+async def test_proactive_notes_legacy_use_only_when_the_screenshot_is_sent(monkeypatch, use_vision, told):
+    from main_logic.proactive_chat import generation
+    from main_logic.proactive_chat.service import _proactive_model_config
+
+    notices = []
+    lv.register_notice_sink(notices.append)
+    monkeypatch.setattr(generation, "create_chat_llm_async", AsyncMock(return_value=SimpleNamespace()))
+    _choice, config = _proactive_model_config(CHAT, VISION)
+    await generation._make_proactive_llm(config, use_vision=use_vision)
+    assert len(notices) == told
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("taken, delivered", [((False, False), False), ((False, True), True)])
+async def test_main_server_broadcast_reports_delivery(taken, delivered):
+    from app.main_server import _register_legacy_vision_notice
+
+    pages = {str(i): SimpleNamespace(session_manager=SimpleNamespace(send_status=AsyncMock(return_value=ok)))
+             for i, ok in enumerate(taken)}
+    captured = {}
+    original = lv.register_notice_sink
+    try:
+        lv.register_notice_sink = lambda sink: captured.setdefault("sink", sink)
+        _register_legacy_vision_notice(pages)
+    finally:
+        lv.register_notice_sink = original
+    assert await captured["sink"]("{}") is delivered

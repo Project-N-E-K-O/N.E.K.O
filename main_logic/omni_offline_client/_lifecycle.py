@@ -742,7 +742,6 @@ class _LifecycleMixin:
                 # another client.
                 if self._declines_over_another_reply(completion_mode):
                     return False
-                _note_legacy_vision(self, "offline proactive media")
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
@@ -756,6 +755,7 @@ class _LifecycleMixin:
                         completion_mode,
                     )
                     return False
+                _note_legacy_vision(self, "offline proactive media")
             # Use stream_text's budget ladder: normalize to model tier -> sample -> recompress ->
             # discard last. Previously the **only** image-bearing model call without any budget gate:
             # every image became an unchanged data URL and was sent.

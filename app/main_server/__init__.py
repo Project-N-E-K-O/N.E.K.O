@@ -1824,15 +1824,18 @@ def _register_legacy_vision_notice(role_state) -> None:
     """Show the legacy-vision deprecation notice on every connected character page."""
     from utils.legacy_vision import register_notice_sink
 
-    async def _broadcast(message: str) -> None:
+    async def _broadcast(message: str) -> bool:
+        delivered = False
         for rs in list(role_state.values()):
             manager = getattr(rs, "session_manager", None)
             send_status = getattr(manager, "send_status", None)
             if send_status is None:
                 continue
             try:
-                await send_status(message)
+                # send_status reports whether the page's socket took it.
+                delivered = bool(await send_status(message)) or delivered
             except Exception as exc:  # noqa: BLE001 - one closed page must not block the rest
                 logger.debug("legacy vision notice not delivered: %s", exc)
+        return delivered
 
     register_notice_sink(_broadcast)

@@ -104,9 +104,24 @@ def _usable(cfg: dict | None) -> bool:
     return bool(cfg.get("api_key")) or bool(cfg.get("is_custom"))
 
 
-def legacy_vision_differs(conversation: dict | None, vision: dict | None) -> bool:
-    """Whether the stored vision config is a separate route from the chat model."""
-    if not _usable(vision):
+# Vision-slot dropdown values meaning "not configured here, follow another slot".
+_FOLLOW_PROVIDERS = frozenset({"follow_assist", "follow_core", "follow_conversation", "follow_summary"})
+
+
+def legacy_vision_differs(
+    conversation: dict | None,
+    vision: dict | None,
+    vision_provider: str | None = None,
+) -> bool:
+    """Whether the stored vision config is a separate route the user configured.
+
+    Only a custom-API vision slot set to its own provider (or, for configs
+    saved before the dropdown existed, filled in by hand) counts: a slot that
+    follows the assist/core provider was never configured separately.
+    """
+    if not _usable(vision) or not vision.get("is_custom"):
+        return False
+    if str(vision_provider or "").strip() in _FOLLOW_PROVIDERS:
         return False
     if not isinstance(conversation, dict):
         return True
@@ -144,7 +159,8 @@ class ChatModelImageUnsupported(Exception):
 _lock = threading.Lock()
 _refusing_routes: set[tuple] = set()
 _last_warned: dict[str, float] = {}
-_frontend_told = False
+# Once-per-start frontend notice: "idle" (not shown), "sending", "told".
+_frontend_state = "idle"
 _notice_sink: Optional[Callable[[str], Any]] = None
 
 
@@ -153,20 +169,31 @@ def register_notice_sink(sink: Optional[Callable[[str], Any]]) -> None:
 
     ``sink`` receives the JSON status string (``{"code": ..., "details": ...}``)
     and may return an awaitable; it is scheduled, never awaited by callers.
+    Its result (or the awaitable's) says whether any page received it:
+    ``False`` leaves the notice to be sent again on a later use; anything
+    else counts as shown.
     """
     global _notice_sink
     _notice_sink = sink
 
 
+def _settle_notice(delivered: bool) -> None:
+    global _frontend_state
+    with _lock:
+        _frontend_state = "told" if delivered else "idle"
+
+
 def _notify_frontend(details: dict) -> None:
     sink = _notice_sink
     if sink is None:
+        _settle_notice(False)
         return
     message = json.dumps({"code": LEGACY_VISION_DEPRECATED_CODE, "details": details}, ensure_ascii=False)
     try:
         result = sink(message)
     except Exception as exc:  # noqa: BLE001 - a notice must never break the image call
         logger.debug("legacy vision notice sink failed: %s", exc)
+        _settle_notice(False)
         return
     if result is not None and hasattr(result, "__await__"):
         import asyncio
@@ -178,28 +205,40 @@ def _notify_frontend(details: dict) -> None:
             close = getattr(result, "close", None)
             if callable(close):
                 close()
+            _settle_notice(False)
             return
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
+        def _done(t) -> None:
+            if t.cancelled() or t.exception() is not None:
+                _settle_notice(False)
+            else:
+                _settle_notice(t.result() is not False)
+
+        task.add_done_callback(_done)
+        return
+    _settle_notice(result is not False)
 
 
 def note_legacy_vision_use(choice: ImageModelChoice, where: str) -> None:
     """Record that an image call goes to the retired vision config.
 
     Logs a deprecation warning (per call site, at most every ten minutes) and
-    tells the frontend once per app start.
+    tells the frontend once per app start (again on a later use if no page
+    received it).
     """
     legacy = choice.legacy
     if legacy is None:
         return
-    global _frontend_told
+    global _frontend_state
     now = time.monotonic()
     with _lock:
         last = _last_warned.get(where)
         warn = last is None or now - last >= _WARN_INTERVAL_SECONDS
         if warn:
             _last_warned[where] = now
-        tell = not _frontend_told
-        _frontend_told = True
+        tell = _frontend_state == "idle"
+        if tell:
+            _frontend_state = "sending"
     if warn:
         logger.warning(
             "[DEPRECATED] %s: images go to the separately configured vision model %s. "
@@ -246,26 +285,40 @@ def mark_chat_image_refused(conversation: dict | None, where: str) -> None:
         )
 
 
-def choose_image_model(conversation: dict, vision: dict | None) -> ImageModelChoice:
-    """Build the choice from already-loaded chat and vision configs."""
-    legacy = vision if legacy_vision_differs(conversation, vision) else None
+def choose_image_model(
+    conversation: dict,
+    vision: dict | None,
+    vision_provider: str | None = None,
+) -> ImageModelChoice:
+    """Build the choice from already-loaded chat and vision configs.
+
+    ``vision_provider`` is the vision slot's dropdown value
+    (``core_config["visionModelProvider"]``) when the caller has it.
+    """
+    legacy = vision if legacy_vision_differs(conversation, vision, vision_provider) else None
     return ImageModelChoice(conversation=conversation if conversation is not None else {}, legacy=legacy)
 
 
 async def aresolve_image_model(config_manager, *, core_config: dict | None = None) -> ImageModelChoice:
     """Load the chat config and the retired vision config as one choice."""
+    if core_config is None:
+        aget_core = getattr(config_manager, "aget_core_config", None)
+        core_config = await aget_core() if aget_core is not None else None
     kwargs = {"core_config": core_config} if core_config is not None else {}
     conversation = await config_manager.aget_model_api_config("conversation", **kwargs)
     vision = await config_manager.aget_model_api_config("vision", **kwargs)
-    return choose_image_model(conversation, vision)
+    return choose_image_model(conversation, vision, (core_config or {}).get("visionModelProvider"))
 
 
 def resolve_image_model(config_manager, *, core_config: dict | None = None) -> ImageModelChoice:
     """Synchronous twin of :func:`aresolve_image_model`."""
+    if core_config is None:
+        get_core = getattr(config_manager, "get_core_config", None)
+        core_config = get_core() if get_core is not None else None
     kwargs = {"_core_config": core_config} if core_config is not None else {}
     conversation = config_manager.get_model_api_config("conversation", **kwargs)
     vision = config_manager.get_model_api_config("vision", **kwargs)
-    return choose_image_model(conversation, vision)
+    return choose_image_model(conversation, vision, (core_config or {}).get("visionModelProvider"))
 
 
 async def run_image_call(
@@ -295,9 +348,9 @@ async def run_image_call(
 
 def _reset_for_tests() -> None:
     """Forget warning timestamps and the frontend notice (tests only)."""
-    global _notice_sink, _frontend_told
+    global _notice_sink, _frontend_state
     with _lock:
         _last_warned.clear()
         _refusing_routes.clear()
-        _frontend_told = False
+        _frontend_state = "idle"
     _notice_sink = None

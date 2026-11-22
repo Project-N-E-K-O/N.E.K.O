@@ -197,7 +197,11 @@ _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
 _PROACTIVE_VISION_SOURCE_MODES = frozenset({"vision", "window"})
 
 
-def _proactive_model_config(conversation_config: dict, vision_config: dict | None):
+def _proactive_model_config(
+    conversation_config: dict,
+    vision_config: dict | None,
+    vision_provider: str | None = None,
+):
     """Model settings for one proactive turn, and the image choice behind them.
 
     Screenshots go to the chat model, or to a retired, separately configured
@@ -206,7 +210,7 @@ def _proactive_model_config(conversation_config: dict, vision_config: dict | Non
     """
     from utils.legacy_vision import chat_refuses_images, choose_image_model
 
-    image_choice = choose_image_model(conversation_config, vision_config)
+    image_choice = choose_image_model(conversation_config, vision_config, vision_provider)
     image_config = image_choice.config
     if not image_choice.using_legacy and chat_refuses_images(conversation_config):
         # The chat model rejected a screenshot earlier: talk without one, as
@@ -222,6 +226,7 @@ def _proactive_model_config(conversation_config: dict, vision_config: dict | Non
         vision_api_key=image_config.get("api_key", ""),
         vision_provider_type=image_config.get("provider_type"),
         vision_is_custom=bool(image_config.get("is_custom")),
+        image_choice=image_choice,
     )
     return image_choice, model_config
 
@@ -1788,6 +1793,7 @@ async def handle_proactive_chat(
                 await _config_manager.aget_model_api_config(
                     "vision", core_config=_fresh_core_config
                 ),
+                _fresh_core_config.get("visionModelProvider"),
             )
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
@@ -2405,10 +2411,6 @@ async def handle_proactive_chat(
         # Build screen-content section (vision).
         screen_section = ""
         if screenshot_b64_for_phase2:
-            # Only a screenshot that is actually sent counts as a use of a
-            # retired vision config (a declined or failed capture does not).
-            from utils.legacy_vision import note_legacy_vision_use
-            note_legacy_vision_use(image_choice, "proactive screenshot")
             sl = get_screen_section_header(master_name_current, proactive_lang)
             sf = get_screen_section_footer(master_name_current, proactive_lang)
             vision_window = (

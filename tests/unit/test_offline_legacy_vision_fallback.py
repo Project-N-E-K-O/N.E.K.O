@@ -171,3 +171,31 @@ async def test_refusal_on_the_separate_vision_config_is_not_blamed_on_the_chat_m
     codes = [s.get("code") for s in _statuses(client)]
     assert "CHAT_MODEL_IMAGE_UNSUPPORTED" not in codes
     assert "TEXT_GEN_ERROR" in codes
+
+
+async def test_failed_switch_does_not_spend_the_notice():
+    notices = []
+    lv.register_notice_sink(notices.append)
+    client = _session(vision=VISION)
+    client.switch_model = AsyncMock(side_effect=RuntimeError("vision endpoint down"))
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [[_text("不该出现"), _text("", "stop")]]
+
+    with pytest.raises(RuntimeError):
+        await client.stream_text("看看这个")
+    assert notices == []
+
+    # Tool images: a failed switch degrades to "could not see it", no notice.
+    assert await client.prepare_for_tool_images() is False
+    assert notices == []
+
+
+async def test_dropped_proactive_switch_does_not_spend_the_notice():
+    notices = []
+    lv.register_notice_sink(notices.append)
+    client = _session(vision=VISION)
+    client.switch_model = AsyncMock(return_value=False)  # a reply began meanwhile
+    client.script = [[_text("不该出现"), _text("", "stop")]]
+
+    await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
+    assert notices == []
