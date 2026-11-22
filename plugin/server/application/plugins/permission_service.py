@@ -109,8 +109,11 @@ permission_store = PluginPermissionStore(source_resolver=current_source)
 def permission_record(plugin_id: str) -> dict:
     """The plugin's grants as they apply to its current source.
 
-    Read-only: nothing is saved, so a concurrent install or uninstall that
-    briefly exposes another source cannot change the stored grants.
+    Source rules are applied to the returned copy only, so a concurrent
+    install or uninstall that briefly exposes another source cannot change
+    the stored grants. The only possible write is the store's one-time
+    first-use import of the legacy consent file (kept in memory if that
+    save fails).
     """
     source = current_source(plugin_id)
     view = permission_store.view(plugin_id, source)

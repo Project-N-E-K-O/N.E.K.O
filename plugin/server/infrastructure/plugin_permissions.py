@@ -611,8 +611,12 @@ class PluginPermissionStore:
                 if permission_id not in approved:
                     del permissions[permission_id]
             for permission_id in sorted(approved & asked):
-                if permission_id in permissions:
-                    continue  # already mirrored, or decided in the permission flow
+                existing = permissions.get(permission_id)
+                # Keep grants already mirrored and grants / denials decided in
+                # the permission flow; an explicit "undecided" (from clear())
+                # is no decision, so this approval replaces it.
+                if existing is not None and existing.get("state") != STATE_UNDECIDED:
+                    continue
                 permissions[permission_id] = {
                     "state": STATE_GRANTED,
                     "condition": CONDITION_ANYTIME,

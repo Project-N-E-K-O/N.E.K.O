@@ -1186,3 +1186,20 @@ def test_writes_persist_an_import_held_in_memory_or_fail(manager):
     assert store.forget("demo") is None
     on_disk = json.loads(_new_file(manager).read_text(encoding="utf-8"))
     assert set(on_disk["plugins"]) == {"other"}
+
+
+def test_consent_approval_replaces_an_explicit_undecided_entry(manager):
+    _write_legacy(manager, _legacy({"x": {"decision": "denied"}}))
+    store = PluginPermissionStore(manager)
+    store.clear("x", MEMORY_READ)  # legacy_denied record: explicit undecided
+    store.decide("x", CONVERSATIONS_READ, "denied")
+
+    record = store.apply_legacy_decision(
+        "x", "approved", ["memory.read", "conversations.read"],
+        newly_approved=["memory.read", "conversations.read"],
+    )
+
+    assert record["permissions"][MEMORY_READ]["state"] == "granted"
+    assert record["permissions"][MEMORY_READ]["legacy_any"] is True
+    # A real decision from the permission flow is still kept.
+    assert record["permissions"][CONVERSATIONS_READ]["state"] == "denied"
