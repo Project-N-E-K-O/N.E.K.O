@@ -41,6 +41,7 @@ _RELEASE_RUFF_TIMEOUT_SECONDS = 120
 # Unauthenticated callers get 60 GitHub API requests per hour per IP.
 _RELEASE_POLL_SECONDS = 15.0
 _DIRTY_PATHS_SHOWN = 5
+_REFSPEC_PLACEHOLDER = '"<branch>:<remote-branch>"'
 # The Market answers these while its verification job is queued or running.
 _MARKET_RETRY_STATUSES = frozenset({429, 503})
 _MARKET_DEFAULT_RETRY_SECONDS = 5.0
@@ -570,7 +571,10 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
                 "HEAD がデタッチ状態です。公開するブランチをチェックアウトしてください",
             )
         )
-    set_upstream = f"git push -u origin {branch}"
+    # Quoted like init's push step; the messages name the branch itself.
+    set_upstream = (
+        f"git push -u origin {release_cmd._shell_argument(branch, release_cmd._BRANCH_PLACEHOLDER)}"
+    )
     upstream = git_output(
         plugin_dir,
         "rev-parse",
@@ -598,16 +602,26 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
     output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{remote_branch}")
     remote_head = output.split(maxsplit=1)[0] if output else None
     if remote_head != head:
-        push = (
-            f"git push origin {branch}"
-            if remote_branch == branch
-            else f"git push origin {branch}:{remote_branch}"
-        )
+        if remote_branch == branch:
+            refspec, placeholder = branch, release_cmd._BRANCH_PLACEHOLDER
+            notes = (f" (branch: {branch})", f"（分支：{branch}）", f"（ブランチ：{branch}）")
+        else:
+            refspec, placeholder = f"{branch}:{remote_branch}", _REFSPEC_PLACEHOLDER
+            notes = (
+                f" (branch: {branch}, remote branch: {remote_branch})",
+                f"（分支：{branch}，远程分支：{remote_branch}）",
+                f"（ブランチ：{branch}、リモートブランチ：{remote_branch}）",
+            )
+        # One argument even as <branch>:<remote-branch>, so PowerShell keeps it whole.
+        argument = release_cmd._shell_argument(refspec, placeholder)
+        push = f"git push origin {argument}"
+        # Name what the placeholder stands for, as init does.
+        en, zh, ja = notes if argument == placeholder else ("", "", "")
         raise RuntimeError(
             _tri(
-                f"HEAD is not pushed to origin/{remote_branch}; run {push}",
-                f"HEAD 尚未推送到 origin/{remote_branch}；请运行 {push}",
-                f"HEAD が origin/{remote_branch} に push されていません。{push} を実行してください",
+                f"HEAD is not pushed to origin/{remote_branch}; run {push}{en}",
+                f"HEAD 尚未推送到 origin/{remote_branch}；请运行 {push}{zh}",
+                f"HEAD が origin/{remote_branch} に push されていません。{push}{ja} を実行してください",
             )
         )
 

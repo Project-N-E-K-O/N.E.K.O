@@ -523,13 +523,17 @@ def _git_command(plugin_dir: Path, arguments: str) -> str:
     return f"git -C {release_cmd._plugin_dir_argument(plugin_dir, '')} {arguments}"
 
 
-# Branch names may hold $ ; ( & and the like; quote them like the directory.
-_BRANCH_PLACEHOLDER = '"<branch>"'
-_REMOTE_PLACEHOLDER = '"<repository-url>"'
+def _branch_argument(branch: str) -> str:
+    # Branch names may hold $ ; ( & and the like; quote them like the directory.
+    return release_cmd._shell_argument(branch, release_cmd._BRANCH_PLACEHOLDER)
 
 
-def _branch_argument(plugin_dir: Path) -> str:
-    return release_cmd._shell_argument(_current_branch(plugin_dir), _BRANCH_PLACEHOLDER)
+def _push_step(plugin_dir: Path) -> tuple[str, str | None]:
+    """The push command, and the branch when the command shows its placeholder."""
+    branch = _current_branch(plugin_dir)
+    argument = _branch_argument(branch)
+    hidden = branch if argument == release_cmd._BRANCH_PLACEHOLDER else None
+    return _git_command(plugin_dir, f"push -u origin {argument}"), hidden
 
 
 def _current_branch(plugin_dir: Path) -> str:
@@ -576,16 +580,17 @@ def _print_push_next_step(plugin_dir: Path) -> None:
             "ブランチを push して上流ブランチを設定します：",
         )
     )
+    push, hidden_branch = _push_step(plugin_dir)
     _print_git_commands(
         plugin_dir,
-        [
-            *_first_commit_steps(plugin_dir),
-            _git_command(plugin_dir, f"push -u origin {_branch_argument(plugin_dir)}"),
-        ],
+        [*_first_commit_steps(plugin_dir), push],
+        hidden_branch=hidden_branch,
     )
 
 
-def _print_git_commands(plugin_dir: Path, commands: list[str]) -> None:
+def _print_git_commands(
+    plugin_dir: Path, commands: list[str], *, hidden_branch: str | None = None
+) -> None:
     for command in commands:
         print(f"       {command}")
     fill_in = release_cmd._placeholder_path(plugin_dir)
@@ -599,15 +604,14 @@ def _print_git_commands(plugin_dir: Path, commands: list[str]) -> None:
                 f"（プラグインディレクトリ：{fill_in}）",
             )
         )
-    if any(_BRANCH_PLACEHOLDER in command for command in commands):
+    if hidden_branch is not None:
         # Likewise for a branch name no Windows quoting keeps literal.
-        branch = _current_branch(plugin_dir)
         print(
             "       "
             + _tri(
-                f"(branch: {branch})",
-                f"（分支：{branch}）",
-                f"（ブランチ：{branch}）",
+                f"(branch: {hidden_branch})",
+                f"（分支：{hidden_branch}）",
+                f"（ブランチ：{hidden_branch}）",
             )
         )
 
@@ -744,13 +748,15 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
             "その URL をコピーして origin に設定し、push します：",
         )
     )
+    push, hidden_branch = _push_step(plugin_dir)
     _print_git_commands(
         plugin_dir,
         [
             *_first_commit_steps(plugin_dir),
-            _git_command(plugin_dir, "remote add origin <repository-url>"),
-            _git_command(plugin_dir, f"push -u origin {_branch_argument(plugin_dir)}"),
+            _git_command(plugin_dir, f"remote add origin {release_cmd._REMOTE_PLACEHOLDER}"),
+            push,
         ],
+        hidden_branch=hidden_branch,
     )
 
 
@@ -798,9 +804,9 @@ def _preflight_git_request(target_dir: Path, *, initialize_git: bool, remote: st
 
 
 def _existing_repository_remote_message(target_dir: Path, remote: str) -> str:
-    remote_argument = release_cmd._shell_argument(remote, _REMOTE_PLACEHOLDER)
+    remote_argument = release_cmd._shell_argument(remote, release_cmd._REMOTE_PLACEHOLDER)
     # Name what a placeholder stands for, as for the directory.
-    remote_note = f" (repository URL: {remote})" if remote_argument == _REMOTE_PLACEHOLDER else ""
+    remote_note = f" (repository URL: {remote})" if remote_argument == release_cmd._REMOTE_PLACEHOLDER else ""
     return (
         "--remote can only be used when initializing a new git repository; "
         "to add origin to the existing one run: "

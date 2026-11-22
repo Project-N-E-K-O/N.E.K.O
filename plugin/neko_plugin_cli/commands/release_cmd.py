@@ -689,6 +689,10 @@ _WINDOWS_SHELL = os.name == "nt"
 _WINDOWS_EXPANDING_CHARS = "%!$`\u201c\u201d\u201e"
 # Shown instead of a path no quoting keeps literal; the user fills it in.
 _PLUGIN_DIR_PLACEHOLDER = '"<plugin directory>"'
+# Likewise for the values of printed git commands; quoted so that pasting one
+# unreplaced passes a literal word rather than a < redirection.
+_BRANCH_PLACEHOLDER = '"<branch>"'
+_REMOTE_PLACEHOLDER = '"<repository-url>"'
 
 
 def _shell_quote(value: str) -> str | None:
@@ -697,12 +701,17 @@ def _shell_quote(value: str) -> str | None:
     None when no quoting keeps it literal for every Windows shell (see
     _WINDOWS_EXPANDING_CHARS), which could point the command at another
     directory. A trailing backslash counts too: programs parse ``\\"`` at the
-    end of ``"C:\\repo\\"`` as a literal quote and receive ``C:\\repo"``.
+    end of ``"C:\\repo\\"`` as a literal quote and receive ``C:\\repo"``. So does
+    a control character: cmd ends the command at a line break.
     """
     if not _WINDOWS_SHELL:
         # POSIX shells expand $ and ` inside double quotes.
         return shlex.quote(value)
-    if value.endswith("\\") or any(char in value for char in _WINDOWS_EXPANDING_CHARS):
+    if (
+        value.endswith("\\")
+        or any(char in value for char in _WINDOWS_EXPANDING_CHARS)
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+    ):
         return None
     return f'"{value}"'
 
@@ -796,7 +805,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
         # Windows PowerShell 5).
         return f"git -C {_plugin_dir_argument(plugin_dir, '')} init"
     if message == "git remote 'origin' is not configured":
-        return "git remote add origin <repo-url>"
+        return f"git remote add origin {_REMOTE_PLACEHOLDER}"
     if message.startswith(_WORKTREE_NOT_COMMITTED):
         return _tri(
             "commit these files or add them to .gitignore; CI checks the pushed commit, not the working tree",

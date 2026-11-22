@@ -45,16 +45,14 @@ def test_git_command_quotes_the_directory_for_windows_shells(monkeypatch: pytest
 def test_printed_branch_and_remote_stay_one_literal_argument_in_a_posix_shell(tmp_path, monkeypatch):
     # Branch names may hold $ ; ( &: pasting the hint must not run anything else.
     branch = "feat;$(touch pwned)&x"
-    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: branch)
-    argument = init_cmd._branch_argument(tmp_path)
+    argument = init_cmd._branch_argument(branch)
     assert argument == "'feat;$(touch pwned)&x'"
     echoed = subprocess.run(["sh", "-c", f"printf %s {argument}"], cwd=tmp_path, capture_output=True, text=True, check=True)
     assert echoed.stdout == branch
     assert not (tmp_path / "pwned").exists()
 
     # shlex.quote leaves "=git" bare, and zsh expands a leading = to a path.
-    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "=git")
-    assert init_cmd._branch_argument(tmp_path) == "'=git'"
+    assert init_cmd._branch_argument("=git") == "'=git'"
 
     remote = "https://user:t$ken@github.com/octocat/demo.git"
     message = init_cmd._existing_repository_remote_message(Path("/work/demo"), remote)
@@ -75,8 +73,7 @@ def test_printed_branch_and_remote_for_windows_shells(monkeypatch):
         ("a!b!", '"<branch>"'),
         ('a"&calc&"', '"<branch>"'),
     ]:
-        monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir, branch=branch: branch)
-        assert init_cmd._branch_argument(Path("C:/work")) == expected
+        assert init_cmd._branch_argument(branch) == expected
     url = "https://github.com/octocat/demo.git"
     assert init_cmd._existing_repository_remote_message(Path("C:/work"), url).endswith(f"remote add origin {url}")
     # Quoted, the trailing backslash would escape the closing quote: "C:\repo\" reaches git as C:\repo".
@@ -86,6 +83,10 @@ def test_printed_branch_and_remote_for_windows_shells(monkeypatch):
     )
     assert init_cmd._existing_repository_remote_message(Path("C:/work"), "C:\\repo").endswith(
         'remote add origin "C:\\repo"'
+    )
+    # cmd ends the command at a line break inside the quotes.
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), "C:\\repo\nx").endswith(
+        'remote add origin "<repository-url>" (repository URL: C:\\repo\nx)'
     )
     # The same rule covers the plugin directory (a drive root keeps its backslash).
     assert release_cmd._plugin_dir_argument(Path("D:\\"), "") == '"<plugin directory>"'
@@ -170,7 +171,7 @@ def test_manual_steps_when_gh_is_unavailable(tmp_path, monkeypatch, capsys):
     # work on the plugin's own repository.
     assert "n.e.k.o_plugin_demo_repo" in out
     assert f'git -C {_quoted(plugin_dir)} init -b main' in out
-    assert f'git -C {_quoted(plugin_dir)} remote add origin <repository-url>' in out
+    assert f'git -C {_quoted(plugin_dir)} remote add origin "<repository-url>"' in out
     assert f'git -C {_quoted(plugin_dir)} push -u origin main' in out
     assert "setup-repo" not in out
 
@@ -184,7 +185,7 @@ def test_manual_steps_name_the_directory_behind_a_placeholder(tmp_path, monkeypa
 
     assert init_cmd.handle_create_repo(_args(plugin_dir)) == MANUAL
     out = capsys.readouterr().out
-    assert 'git -C "<plugin directory>" remote add origin <repository-url>' in out
+    assert 'git -C "<plugin directory>" remote add origin "<repository-url>"' in out
     assert out.count(f"(plugin directory: {plugin_dir})") == 1
 
 
@@ -227,7 +228,7 @@ def test_manual_steps_for_a_committed_repo_only_wire_and_push(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "init -b main" not in out
     assert "commit -m" not in out
-    assert f'git -C {_quoted(plugin_dir)} remote add origin <repository-url>' in out
+    assert f'git -C {_quoted(plugin_dir)} remote add origin "<repository-url>"' in out
     assert f'git -C {_quoted(plugin_dir)} push -u origin trunk' in out
 
 
