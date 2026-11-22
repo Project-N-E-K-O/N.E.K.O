@@ -26,6 +26,9 @@ def editor(page, running_server, emote_template_library_dir):
         restoreStageImages,
         switchTemplate, downloadPng, refreshTemplateArchiveSizes,
         pickedAnimations: () => [...pickedAnimations],
+        syncWardrobePlacements, wardrobeSnapshot,
+        templateRemovalPending: key => pendingTemplateRemovals.has(key),
+        queuedCaptureKinds: () => stageQueue.map(job => job.kind),
         stageImages: () => [...stageUserImages].map(([id,image])=>({id,name:image.name})),
         renderer: () => spineRenderer,
         generation: () => spineRendererGeneration,
@@ -618,6 +621,187 @@ def test_state_look_transform_is_baked_even_when_editor_adjustment_override_is_d
     }''')
     assert result == {'count':2,'moved':True,'normal':True,'distinct':True,'overwrite':False,'x':0}
 
+
+
+@pytest.mark.parametrize('speed', [.5, 2])
+def test_stage_trim_uses_source_seconds_and_exports_the_selected_pose_at_nonunit_speed(editor, speed):
+    _import(editor, spine_zip())
+    source_step = editor.evaluate('''async speed => {
+        const q=reviewEditor;
+        Object.assign(q.state,{animationSpeed:speed,packFormat:'layered',packMode:'graph',
+            exportResolution:64,exportFps:30,nodeGraph:NekoEmoteNodeGraph.normalizeGraph({
+                schemaVersion:1,nodes:[
+                    {id:'root',type:'source.default',params:{}},
+                    {id:'idle',type:'output.state',params:{stateKey:'idle_image'}},
+                    {id:'talk',type:'output.state',params:{stateKey:'talking_image'}},
+                ],links:['idle','talk'].map(to=>({from:'root',to,fromSocket:'look',toSocket:'look'}))})});
+        const frames=await q.captureStageSource('root:idle_image','full');
+        q.openStateStage();
+        return frames[0].sourceDelayMs/1000;
+    }''', speed)
+    editor.wait_for_function("document.querySelector('.st-span')?.textContent.includes('1.00s')")
+    box = editor.locator('.st-strip-canvas').bounding_box()
+    for start, end in ((.99, .8), (.001, .4)):
+        editor.mouse.move(box['x'] + box['width'] * start, box['y'] + box['height'] / 2)
+        editor.mouse.down()
+        editor.mouse.move(box['x'] + box['width'] * end, box['y'] + box['height'] / 2, steps=4)
+        editor.mouse.up()
+    params = editor.evaluate("reviewEditor.state.nodeGraph.nodes.find(n=>n.params.stateKey==='idle_image').params")
+    assert params['startAt'] == pytest.approx(.4, abs=source_step)
+    assert params['seconds'] == pytest.approx(.4, abs=source_step)
+    editor.locator('.st-close').click()
+    result = editor.evaluate('''async () => {
+        const q=reviewEditor;
+        await q.queueStageCapture('review-drain',100,'export',()=>null);
+        const poses=[];window.reviewCaptureHook=()=>poses.push(q.state.animationProgress);
+        const built=await q.buildPngtuberPackage();
+        const metadata=JSON.parse(new TextDecoder().decode(
+            built.files.find(f=>f.path.split('/').pop()==='metadata.json').data));
+        const idle=metadata.layers.find(l=>l.name==='idle_image').states.find(s=>s.visible);
+        return {first:poses[0],seconds:idle.frames/(idle.animation_speed*4)};
+    }''')
+    assert result['first'] == pytest.approx(params['startAt'] * 100)
+    assert result['seconds'] == pytest.approx(params['seconds'] / speed)
+
+
+@pytest.mark.parametrize('failure', ['http', 'decode'])
+def test_failed_accessory_restore_keeps_placement_when_another_accessory_is_edited_and_retries(
+        editor, running_server, builtin_emote_template_dir, failure):
+    from PIL import Image
+    from urllib.parse import parse_qs, urlparse
+
+    key = 'builtin:yui-0.2'
+    sprites = [
+        {'id':f'sprite-{index:016x}','x':.15 + index * .12,'y':.15,'size':.16,'behind':False,
+         'basis':[1,0,0,1],'bindingMode':'manual','anchor':{'name':'root','matrix':[1,0,0,1,0,0]}}
+        for index in (1, 2)
+    ]
+    encoded = io.BytesIO()
+    Image.new('RGBA', (32, 32), (23, 180, 210, 255)).save(encoded, 'PNG')
+    for sprite in sprites:
+        response = editor.request.post(running_server + '/api/emote-maker/library/textures',
+            headers={'x-neko-emote-library':'1'}, params={'key':key}, multipart={
+                'textures':{'name':sprite['id']+'.png','mimeType':'image/png','buffer':encoded.getvalue()},
+                'texture_paths':f"WardrobeSprites/{sprite['id']}.png"})
+        assert response.ok, response.text()
+    editor.evaluate('''([key,sprites])=>localStorage.setItem(
+        'neko.emote.wardrobeSprites.'+key,JSON.stringify(sprites))''', [key, sprites])
+    reads = []
+
+    def texture(route):
+        path = parse_qs(urlparse(route.request.url).query).get('path', [''])[0]
+        if path.endswith(sprites[0]['id'] + '.png'):
+            reads.append(path)
+            if len(reads) == 1:
+                route.fulfill(status=503 if failure == 'http' else 200,
+                              content_type='image/png', body=b'invalid-png')
+                return
+        route.continue_()
+
+    editor.route('**/api/emote-maker/library/texture?**', texture)
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    good = editor.locator(f'.wardrobe-placement:has(img[src*="{sprites[1]["id"]}"])')
+    good.wait_for(state='visible')
+    editor.wait_for_function('''id => {
+        const image=[...document.querySelectorAll('.wardrobe-placement img')].find(i=>i.src.includes(id));
+        return image?.complete && image.naturalWidth===32;
+    }''', arg=sprites[1]['id'])
+    editor.wait_for_function('''id => {
+        const image=[...document.querySelectorAll('.wardrobe-placement img')].find(i=>i.src.includes(id));
+        return image?.complete && !image.naturalWidth;
+    }''', arg=sprites[0]['id'])
+    good.press('ArrowRight')
+    saved = editor.evaluate("key=>JSON.parse(localStorage.getItem('neko.emote.wardrobeSprites.'+key))", key)
+    assert len(saved) == 2
+    assert next(sprite for sprite in saved if sprite['id'] == sprites[0]['id']) == sprites[0]
+    assert len(reads) == 1
+    editor.wait_for_timeout(1100)
+    editor.evaluate('reviewEditor.syncWardrobePlacements()')
+    editor.wait_for_function('''id => {
+        const image=[...document.querySelectorAll('.wardrobe-placement img')].find(i=>i.src.includes(id));
+        return image?.complete && image.naturalWidth===32;
+    }''', arg=sprites[0]['id'])
+    assert len(reads) == 2
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot().map(s=>s.id)') == [s['id'] for s in sprites]
+    assert editor.evaluate('''id=>JSON.parse(JSON.stringify(
+        reviewEditor.wardrobeSnapshot().find(s=>s.id===id)))''', sprites[0]['id']) == sprites[0]
+
+
+def test_stopping_a_queued_batch_does_not_wait_for_the_preceding_capture_or_write_later(editor):
+    _import(editor, spine_zip())
+    editor.evaluate("document.querySelector('#inspector-tab-export').click()")
+    editor.evaluate('''() => {
+        window.reviewBlockedCapture=reviewEditor.queueStageCapture('queued-stop-block',100,'frames',
+            ()=>new Promise(resolve=>{window.reviewReleaseQueuedBlock=resolve;}));
+    }''')
+    editor.wait_for_function("typeof reviewReleaseQueuedBlock==='function'")
+    _start_waiting_batch(editor, 'native-folder')
+    editor.evaluate('reviewReleasePreparation()')
+    editor.wait_for_function("reviewEditor.queuedCaptureKinds().includes('export')")
+    try:
+        editor.locator('#export-group-open-btn').click(force=True)
+        editor.wait_for_function('window.reviewBatchDone===true', timeout=2000)
+        assert editor.evaluate('reviewEditor.queuedCaptureKinds()') == []
+        assert editor.locator('#export-group-open-btn').is_enabled()
+        assert editor.evaluate('({writes:reviewBatchWrites,frames:reviewBatchReadbacks})') == {'writes':0,'frames':0}
+    finally:
+        editor.evaluate('reviewReleaseQueuedBlock()')
+    editor.evaluate('reviewBlockedCapture')
+    assert editor.evaluate('({writes:reviewBatchWrites,frames:reviewBatchReadbacks})') == {'writes':0,'frames':0}
+
+
+def _archive_only_template(editor):
+    _import(editor, spine_zip())
+    key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    editor.wait_for_function('''async key=>(await (await fetch('/api/emote-maker/library')).json())
+        .entries.some(entry=>entry.key===key)''', arg=key)
+    editor.add_init_script('''for(const key of ['neko-emote-maker-template-library',
+        'neko-emote-maker-last-template','neko-emote-maker-node-graph']) localStorage.removeItem(key);''')
+    editor.reload(wait_until='networkidle')
+    editor.locator(f'.template-lib-card[data-template-key="{key}"]').wait_for()
+    return key
+
+
+def test_missing_archive_only_template_opens_the_relocation_picker(editor):
+    key = _archive_only_template(editor)
+    editor.route('**/api/emote-maker/library/archive?**', lambda route: route.fulfill(status=404))
+    with editor.expect_file_chooser(timeout=5000):
+        editor.locator(f'.template-lib-card[data-template-key="{key}"] .template-lib-open').click()
+
+
+def test_failed_registry_renderer_does_not_reimport_the_already_committed_template(editor):
+    _import(editor, spine_zip(), 'A.zip')
+    key = editor.evaluate('reviewEditor.currentTemplateKey()')
+    _import(editor, spine_zip('other'), 'B.zip')
+    archives = []
+    editor.route('**/api/emote-maker/library/archive?**', lambda route: (archives.append(route.request.url),
+                 route.fulfill(status=404)))
+    editor.evaluate('''() => {
+        NekoEmoteSpineRenderer.SpineRenderer.create=async()=>{throw new Error('test-context-lost');};
+    }''')
+    editor.evaluate('key=>reviewEditor.switchTemplate(key)', key)
+    assert editor.evaluate('reviewEditor.currentTemplateKey()') == key
+    assert editor.evaluate('Boolean(reviewEditor.renderer()?.loaded)') is False
+    assert archives == []
+
+
+def test_archive_only_card_returns_after_failed_delete_even_when_byte_totals_are_unchanged(editor):
+    key = _archive_only_template(editor)
+    pending = []
+    editor.route('**/api/emote-maker/library?**', lambda route: pending.append(route)
+                 if route.request.method == 'DELETE' else route.continue_())
+    card = editor.locator(f'.template-lib-card[data-template-key="{key}"]')
+    card.locator('.template-lib-remove').click()
+    with editor.expect_request(lambda request: request.method == 'DELETE'
+                               and '/api/emote-maker/library?' in request.url):
+        editor.locator('#emote-confirm-ok').click()
+    assert len(pending) == 1
+    editor.evaluate('reviewEditor.refreshTemplateArchiveSizes()')
+    card.wait_for(state='hidden')
+    pending[0].fulfill(status=500, json={'success':False,'error':'test-delete-failed'})
+    editor.wait_for_function('key=>!reviewEditor.templateRemovalPending(key)', arg=key)
+    editor.evaluate('reviewEditor.refreshTemplateArchiveSizes()')
+    card.wait_for(state='visible', timeout=5000)
 
 def test_switching_loaded_templates_survives_an_oversized_library_without_discarding_sessions(editor):
     _import(editor, spine_zip(), 'A.zip')

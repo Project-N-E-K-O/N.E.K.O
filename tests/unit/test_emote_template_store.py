@@ -423,6 +423,42 @@ def test_concurrent_texture_batches_check_the_latest_published_inventory(store, 
     assert not list(store.root.glob('.uploading-*'))
 
 
+def test_texture_removal_waits_for_the_current_publication_and_cannot_be_resurrected(store, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    store.save('shared', _zip(), [('StageImages/old.png', b'old')])
+    copied, release, deleting, deleted = Event(), Event(), Event(), Event()
+    original_copy = store_module.shutil.copytree
+
+    def hold_snapshot(source, target, *args, **kwargs):
+        result = original_copy(source, target, *args, **kwargs)
+        if Path(target).name.startswith('.uploading-'):
+            copied.set()
+            assert release.wait(5), 'test did not release the publication'
+        return result
+
+    def remove():
+        deleting.set()
+        store.remove_texture('shared', 'StageImages/old.png')
+        deleted.set()
+
+    monkeypatch.setattr(store_module.shutil, 'copytree', hold_snapshot)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        publication = executor.submit(store.save_textures, 'shared', [('StageImages/new.png', b'new')])
+        try:
+            assert copied.wait(2)
+            removal = executor.submit(remove)
+            assert deleting.wait(2)
+            assert not deleted.wait(.05)
+        finally:
+            release.set()
+        publication.result(timeout=2)
+        removal.result(timeout=2)
+    assert store.texture_paths('shared') == ['StageImages/new.png']
+    assert store.archive_path('shared').read_bytes() == _zip()
+
+
 def test_discarding_staging_does_not_block_recovery_of_other_templates(store, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event

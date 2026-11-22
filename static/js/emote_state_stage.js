@@ -531,7 +531,8 @@
          * 所以手柄显示的就是会被烘进包里的东西。
          */
         function rangeOf(frames, node) {
-            const rate = rateOf(node);
+            const sourceDelay = Number(frames[0]?.sourceDelayMs);
+            const rate = sourceDelay > 0 ? 1000 / sourceDelay : rateOf(node);
             const previewing = Boolean(previewScene);
             const total = frames.length;
             const params = node?.params || {};

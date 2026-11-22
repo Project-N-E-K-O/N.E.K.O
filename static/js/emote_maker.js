@@ -2269,7 +2269,13 @@
         for (const sprite of saved) {
             if (!sprite || !/^sprite-[0-9a-f]{16}$/.test(sprite.id)
                     || ![sprite.x, sprite.y, sprite.size].every(Number.isFinite)
-                    || sprite.size < .05 || sprite.size > 1.5 || wardrobeSprites.has(sprite.id)) continue;
+                    || sprite.size < .05 || sprite.size > 1.5) continue;
+            const previous = wardrobeSprites.get(sprite.id);
+            if (previous && !previous.restoreFailed) continue;
+            if (previous && Date.now() < previous.retryAt) {
+                wardrobeSpritesLoaded = false;
+                continue;
+            }
             const validMatrix = (value, length) => Array.isArray(value) && value.length === length && value.every(Number.isFinite);
             if (!validMatrix(sprite.basis, 4)) delete sprite.basis;
             if (typeof sprite.anchor?.name !== 'string' || !validMatrix(sprite.anchor.matrix, 6)) delete sprite.anchor;
@@ -2278,7 +2284,9 @@
             if (typeof sprite.aboveSlot !== 'string') delete sprite.aboveSlot;
             const path = `${WARDROBE_SPRITE_PREFIX}${sprite.id}.png`;
             const image = new Image();
+            previous?.button.remove();
             mountWardrobeSprite(sprite, image);
+            if (previous) setWardrobeOrder([...wardrobeSprites.values()]);
             image.addEventListener('load', () => {
                 const current = wardrobeSprites.get(sprite.id);
                 if (current?.image !== image) return;
@@ -2288,8 +2296,10 @@
             image.addEventListener('error', () => {
                 const current = wardrobeSprites.get(sprite.id);
                 if (current?.image !== image) return;
-                current.button.remove();
-                wardrobeSprites.delete(sprite.id);
+                current.restoreFailed = true;
+                current.retryAt = Date.now() + 1000;
+                current.button.hidden = true;
+                wardrobeSpritesLoaded = false;
                 if (selectedWardrobeSprite === sprite.id) selectWardrobeSprite(null);
                 renderWardrobeArtwork();
             }, { once: true });
@@ -4370,8 +4380,17 @@
         }
         if (generation !== spineRendererGeneration || groupExportAbort) return;
         let result = null;
+        const captureKey = Symbol();
+        const cancelQueuedCapture = () => {
+            const index = stageQueue.findIndex((job) => job.key === captureKey);
+            if (index < 0) return; // An active capture must restore its editor snapshot first.
+            const [job] = stageQueue.splice(index, 1);
+            stagePending.delete(captureKey);
+            job.reject(new DOMException('Export cancelled', 'AbortError'));
+        };
+        signal.addEventListener('abort', cancelQueuedCapture, { once: true });
         try {
-            result = await queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'export', async () => {
+            result = await queueStageCapture(captureKey, STAGE_CAPTURE_INTERACTIVE + 10, 'export', async () => {
                 if (signal.aborted || groupExportAbort || generation !== spineRendererGeneration) return null;
                 const previousSceneId = state.selectedSceneId;
                 const previousAnimationId = state.animationId;
@@ -4423,8 +4442,11 @@
                 }
             });
         } catch (error) {
+            if (signal.aborted) throw error;
             console.warn('[emote-maker] 整组导出失败', error);
             showToast(t(folder ? 'emoteMaker.groupExportZipFailed' : 'emoteMaker.exportGifFailed'));
+        } finally {
+            signal.removeEventListener('abort', cancelQueuedCapture);
         }
         if (!result) return;
         if (result.blob) {
@@ -6648,11 +6670,14 @@
             const same = nextTotal === templateArchiveTotalBytes
                 && next.size === templateArchiveBytes.size
                 && [...next].every(([key, bytes]) => templateArchiveBytes.get(key) === bytes);
-            templateArchiveEntries = new Map((templateLibraryModule?.archiveEntries(
+            const entries = new Map((templateLibraryModule?.archiveEntries(
                 payload.entries.filter((entry) => !pendingTemplateRemovals.has(entry.key)))
                 || [])
                 .map((entry) => [entry.key, entry]));
-            if (same) return;
+            const sameEntries = entries.size === templateArchiveEntries.size
+                && [...entries.keys()].every((key) => templateArchiveEntries.has(key));
+            templateArchiveEntries = entries;
+            if (same && sameEntries) return;
             templateArchiveBytes = next;
             templateArchiveTotalBytes = nextTotal;
             renderTemplateLibraryGrid();
@@ -6814,7 +6839,8 @@
         }
         renderAll();
         await activateNativeSpineRenderer();
-        return hasSpineRenderer();
+        // The template switch is committed even if WebGL activation failed.
+        return true;
     }
 
     /**
@@ -6842,7 +6868,7 @@
                 reportImportFailure(new Error('builtin-template-load-failed'));
                 return;
             }
-            if (!pendingTemplateRemovals.has(key) && templateLibraryModule.find(templateLibraryState, key)) {
+            if (!pendingTemplateRemovals.has(key) && findTemplateLibraryEntry(key)) {
                 return true;
             }
         });
@@ -7968,7 +7994,7 @@
                 }
                 if (generation !== spineRendererGeneration) return [];
                 const frame = captureCurrentEditorFrame(options.maxDimension);
-                frames.push({ ...frame, delayMs });
+                frames.push({ ...frame, delayMs, sourceDelayMs: (span * 1000) / frameCount });
                 // Let the browser paint between readbacks. This keeps the
                 // editor responsive for 60–90 frame exports.
                 if (index % 2 === 1) await yieldToBrowser();
