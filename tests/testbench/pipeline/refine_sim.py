@@ -6,7 +6,7 @@ Re-exposes the **semantic-contract** half of ``memory.refine`` — the
 deterministic cluster-bookkeeping pure helpers (annotate / strip / hash /
 freshness / starvation ordering / render) — without the **runtime-mechanism**
 half (cosine clustering needs the ONNX ``EmbeddingService``; ``refine_pass`` /
-``_resolve_cluster`` need the correction-tier LLM call). Both runtime layers are
+``_resolve_cluster`` need the summary-tier LLM call). Both runtime layers are
 out-of-scope per Phase 3.0.
 
 Wraps production pure helpers:
