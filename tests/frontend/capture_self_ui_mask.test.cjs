@@ -1613,6 +1613,55 @@ test('switch: wired through settings sync, the server allow-list, the popup and 
     }
 });
 
+test('settings popup re-sync: re-syncing mouse tracking also updates its switch state and the tracking-mode row', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup.js'), 'utf8');
+    const start = src.indexOf('function createAnimationSettingsSidePanel(manager, prefix)');
+    const fnSrc = '(' + src.slice(start, src.indexOf('\n}\n', start) + 2) + ')';
+    const created = [];
+    const el = (tag) => {
+        const node = {
+            tagName: tag, id: '', style: {}, attrs: {}, children: [],
+            setAttribute(k, v) { this.attrs[k] = String(v); },
+            getAttribute(k) { return this.attrs[k]; },
+            appendChild(c) { this.children.push(c); return c; },
+            addEventListener() {}, matches() { return false; },
+            querySelector() { return null; }, querySelectorAll() { return []; },
+            classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+        };
+        created.push(node);
+        return node;
+    };
+    const ctx = vm.createContext({
+        document: { createElement: el, body: el('body'), querySelector: () => null, getElementById: () => null },
+        window: { mouseTrackingEnabled: true },
+        requestAnimationFrame() {}, setTimeout() {}, clearTimeout() {}, console,
+    });
+    const manager = {
+        _createSidePanelContainer: () => el('div'),
+        _createCheckIndicator: () => ({ indicator: el('div'), updateStyle() {} }),
+        _getMouseTrackingState: () => true,
+    };
+    vm.runInContext(fnSrc, ctx)(manager, 'live2d');
+    const cb = created.find((n) => n.id === 'live2d-mouse-tracking-toggle');
+    const trackingSwitch = created.find((n) => n.attrs.role === 'switch' && n.children.includes(cb));
+    const modeSwitch = created.find((n) => n.attrs.role === 'switch'
+        && n.children.some((c) => c.attrs['data-i18n'] === 'settings.toggles.fullscreenTracking'));
+    assert.ok(cb && trackingSwitch && modeSwitch);
+    assert.equal(trackingSwitch.attrs['aria-checked'], 'true');
+    assert.equal(modeSwitch.style.pointerEvents, 'auto');
+    // Turned off in another window, then re-synced as the popup show does.
+    cb.checked = false;
+    cb.updateStyle();
+    assert.equal(trackingSwitch.attrs['aria-checked'], 'false');
+    assert.equal(modeSwitch.style.pointerEvents, 'none');
+    assert.equal(modeSwitch.tabIndex, -1);
+    cb.checked = true;
+    cb.updateStyle();
+    assert.equal(trackingSwitch.attrs['aria-checked'], 'true');
+    assert.equal(modeSwitch.style.pointerEvents, 'auto');
+    assert.equal(modeSwitch.tabIndex, 0);
+});
+
 test('switch turned on while a frame is being captured: that frame is sent as captured, the next one is masked', async () => {
     const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
     const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
@@ -1743,6 +1792,47 @@ test('getDisplayMedia: a cancelled newer request also supersedes the older strea
     // A stream opened by source id names that id: the shell does not use its hand-out record.
     await mask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: 'screen:2:0', via: 'stream', stream: A });
     assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:2:0']);
+});
+
+test('getDisplayMedia: requests are ordered by when they finish; while one is open no stream without a source is queried', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const mask = env.w.appCaptureMask;
+    const frame = (stream) => mask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: null, via: 'stream', stream },
+        mask.beginMaskSession({ sourceId: null, via: 'stream', stream }));
+    const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+    const A = displayStream('A');
+    const B = displayStream('B');
+    const a = deferred();
+    const b = deferred();
+    // A is started first (picker open), B is started next and finishes first.
+    const reqA = mask.requestDisplayMedia({ getDisplayMedia: () => a.promise }, {});
+    const reqB = mask.requestDisplayMedia({ getDisplayMedia: () => b.promise }, {});
+    b.resolve(B);
+    assert.equal(await reqB, B);
+    assert.equal(await frame(B), RAW_FRAME, 'A still open: B goes out as captured');
+    assert.equal(shell.calls.length, 0, 'A still open: no shell query');
+    // A finishes last: the shell record is now A's source, so B is superseded.
+    a.resolve(A);
+    assert.equal(await reqA, A);
+    assert.equal(await frame(B), RAW_FRAME, 'B finished before A: sent as captured');
+    assert.equal(shell.calls.length, 0, 'B finished before A: no shell query');
+    assert.deepEqual([...env.w.__reasons], ['position_unknown', 'position_unknown']);
+    // A, the last to finish, is masked as usual.
+    assert.deepEqual(fillsOf(await frame(A)), [[800, 225, 400, 450]]);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
+});
+
+test('getDisplayMedia: a request that throws synchronously does not stay open', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    const mask = env.w.appCaptureMask;
+    assert.throws(() => mask.requestDisplayMedia({ getDisplayMedia: () => { throw new Error('NotSupportedError'); } }, {}));
+    const A = displayStream('A');
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(A) }, {});
+    const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream: A };
+    assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(ctx))), [[800, 225, 400, 450]]);
 });
 
 test('voice heartbeat: a superseded getDisplayMedia stream is not queried before or after capture', async () => {

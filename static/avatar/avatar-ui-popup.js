@@ -1609,6 +1609,15 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     // 初始化跟踪模式按钮状态
     updateTrackingModeToggleState();
 
+    // Popup re-sync (createSettingsPopupShowSync) sets checkbox.checked and
+    // calls updateStyle: keep the switch's aria-checked and the mode row's
+    // enabled state in step with it, as handleTrackingChange does.
+    checkbox.updateStyle = () => {
+        updateRowStyle();
+        trackingClickArea.setAttribute('aria-checked', String(checkbox.checked));
+        updateTrackingModeToggleState();
+    };
+
     const handleModeChange = () => {
         if (checkbox.checked !== true) return;
         const enabled = !modeCheckbox.checked;

@@ -319,13 +319,17 @@
 
     // For a stream without a recorded source the shell query names no source,
     // and the shell answers with the source its display-media handler last
-    // handed this window. That record follows the latest request, not the
-    // stream: once a newer getDisplayMedia request was made here, an older
-    // stream still in use would be masked at the newer source's position.
-    // Every request is numbered (before the call: even a cancelled or failed
-    // one may change the shell's record), its stream remembers the number, and
-    // frames of a superseded stream are position unknown without asking.
+    // handed this window. That record follows the latest request to finish
+    // (the handler answers when the source is picked), not the stream: once a
+    // newer getDisplayMedia request finished here, an older stream still in
+    // use would be masked at the newer source's position, and while a request
+    // is still open the record may already have changed under any stream.
+    // So every request is numbered when it finishes (a cancelled or failed
+    // one too: it may have changed the record), its stream remembers the
+    // number, and frames of a superseded stream, or of any such stream while
+    // a request is open, are position unknown without asking.
     var displayMediaRequestSeq = 0;
+    var displayMediaRequestsOpen = 0;
     var displayMediaStreamSeqs = typeof WeakMap === 'function' ? new WeakMap() : null;
 
     /**
@@ -334,20 +338,40 @@
      * activation is kept) and resolves to the same stream.
      */
     function requestDisplayMedia(mediaDevices, constraints) {
-        var seq = ++displayMediaRequestSeq;
-        var request = mediaDevices.getDisplayMedia(constraints);
+        displayMediaRequestsOpen += 1;
+        var finished = false;
+        function finish() {
+            if (!finished) {
+                finished = true;
+                displayMediaRequestsOpen -= 1;
+            }
+            return ++displayMediaRequestSeq;
+        }
+        var request;
+        try {
+            request = mediaDevices.getDisplayMedia(constraints);
+        } catch (e) {
+            finish();
+            throw e;
+        }
         return Promise.resolve(request).then(function (stream) {
+            var seq = finish();
             if (stream && displayMediaStreamSeqs) displayMediaStreamSeqs.set(stream, seq);
             return stream;
+        }, function (err) {
+            finish();
+            throw err;
         });
     }
 
-    // A query that would name no source for a display-media stream that is
-    // no longer this window's latest request.
-    function isSupersededDisplayMediaStream(ctx) {
-        if (!ctx || ctx.sourceId || ctx.via === 'backend' || !ctx.stream || !displayMediaStreamSeqs) return false;
+    // Why a query that would name no source for a display-media stream must
+    // not be made, or null when it may: the stream is no longer this
+    // window's latest finished request, or a request is still open.
+    function displayMediaStreamUnknownReason(ctx) {
+        if (!ctx || ctx.sourceId || ctx.via === 'backend' || !ctx.stream || !displayMediaStreamSeqs) return null;
+        if (displayMediaRequestsOpen > 0) return 'display_media_request_open';
         var seq = displayMediaStreamSeqs.get(ctx.stream);
-        return typeof seq === 'number' && seq !== displayMediaRequestSeq;
+        return typeof seq === 'number' && seq !== displayMediaRequestSeq ? 'superseded_stream' : null;
     }
 
     // ======================== Geometry resolution ========================
@@ -378,8 +402,9 @@
         // pre-capture sample to intersect with: when unsure, mask less).
         if (!isMaskEnabled(win)) return { hint: hint, switchedOff: true };
         if (isDesktopMultiWindow(win)) {
-            if (isSupersededDisplayMediaStream(hint)) {
-                return { hint: hint, pending: Promise.resolve({ known: false, rects: [], reason: 'superseded_stream' }) };
+            var preUnknown = displayMediaStreamUnknownReason(hint);
+            if (preUnknown) {
+                return { hint: hint, pending: Promise.resolve({ known: false, rects: [], reason: preUnknown }) };
             }
             return { hint: hint, pending: queryShellMask(win, hint) };
         }
@@ -514,7 +539,8 @@
     async function resolveGeometry(session, ctx) {
         var win = window;
         if (isDesktopMultiWindow(win)) {
-            if (isSupersededDisplayMediaStream(ctx)) return { known: false, rects: [], reason: 'superseded_stream' };
+            var postUnknown = displayMediaStreamUnknownReason(ctx);
+            if (postUnknown) return { known: false, rects: [], reason: postUnknown };
             var post = await queryShellMask(win, ctx);
             var pre = null;
             // A snapshot taken for a different capture target describes a
