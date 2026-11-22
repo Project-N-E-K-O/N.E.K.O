@@ -678,6 +678,27 @@ class MaintenanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not the configured"):
                     maintain.official_required(self.repo)
 
+    def test_missing_origin_is_reported_readably(self):
+        import io
+        from contextlib import redirect_stdout
+
+        self.git("remote", "remove", "origin")
+        with self.assertRaisesRegex(ValueError, "origin is not configured") as ctx:
+            maintain.official_required(self.repo)
+        self.assertIn(
+            f"git remote add origin {maintain.OFFICIAL_URL}", str(ctx.exception)
+        )
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            maintain.status(self.repo)
+        self.assertIsNone(json.loads(stream.getvalue())["origin"])
+
+    def test_origin_urls_surfaces_git_config_errors(self):
+        # Exit codes other than "key not set" must not read as a missing origin.
+        (self.repo / ".git" / "config").write_text("[broken\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            maintain.origin_urls(self.repo)
+
     def test_official_identity_rejects_multiple_origin_urls(self):
         self.git(
             "config",

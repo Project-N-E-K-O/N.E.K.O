@@ -150,7 +150,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 - `CONVERSATION_MODEL` - 文本对话模型
 - `SUMMARY_MODEL` - 记忆整理模型（原来的摘要、纠错两档 2026-11 合并成这一档；老配置里的纠错字段在下次保存时丢弃）
 - `EMOTION_MODEL` - 情感模型
-- `VISION_MODEL` - 视觉模型
+- `VISION_MODEL` - 视觉模型（已弃用：图片交给聊天模型；单独配置过的看图模型在正式版前继续优先使用并提示弃用）
 - `AGENT_MODEL` - Agent 模型（键鼠控制、浏览器控制等，见第 6 节）
 - `AGENT_SMALL_MODEL` - 使魔模型·小（`get_model_api_config("agent_small")`）：默认就是识别模型（`emotion`）；开启自定义 API 后，`agentSmallModelProvider` 可选 `follow_emotion`（默认）、`follow_agent`（改用 Agent 模型）、`follow_core` / `follow_assist`（地址和 Key 跟随该提供商；模型名留空时取该提供商的识别模型，填了 `agentSmallModelId` 且该提供商不是固定模型时用填的模型名）、具体提供商或 `custom`。选 `custom` 或具体提供商时，地址和模型名都有才单独生效（具体提供商留空模型名时，只有地址属于该提供商才补上它的识别模型；地址改成别家又留空模型名，就算没填全）：具体提供商的 Key 依次取：API 账本里该提供商保存的 Key、这一格自己填的 Key、由核心 API Key 推出的该提供商 Key（`coreApi` / `assistApi` 就是这家时）；账本和推出的 Key 都只在地址属于该提供商时才用，`custom` 只用 `agentSmallModelApiKey`（留空即不带 Key）；地址或模型名缺一项，整格跟随识别模型（地址、模型名、Key、协议都用识别模型实际生效的那一套）
 
@@ -184,7 +184,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | openai | gpt-5.6-terra | https://api.openai.com/v1 |
 | glm | glm-5v-turbo | https://open.bigmodel.cn/api/paas/v4 |
 | step | step-5-preview | https://api.stepfun.com/v1 |
-| silicon | Qwen/Qwen3.5-122B-A10B | https://api.siliconflow.cn/v1 |
+| silicon | deepseek-ai/DeepSeek-V4.1-Flash | https://api.siliconflow.cn/v1 |
 | gemini | gemini-3.8-flash | https://generativelanguage.googleapis.com/v1beta/openai/ |
 | kimi | kimi-k3 | https://api.moonshot.cn/v1 |
 | kimi_code | kimi-for-coding | https://api.kimi.com/coding |
@@ -260,7 +260,7 @@ Agent API Key 的取法：
 | 游戏主模型 | `gameMain` | `GAME_MAIN_MODEL` | `game_main` | 对话槽 |
 | 游戏摘要 | `gameSummary` | `GAME_SUMMARY_MODEL` | `game_summary` | 摘要槽 |
 | 情感 | `emotion` | `EMOTION_MODEL` | `emotion` | 辅助 API |
-| 视觉 | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
+| 视觉（已弃用） | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
 | Agent | `agent` | `AGENT_MODEL` | `agent` | 辅助 API |
 | 使魔模型·小 | `agentSmall` | `AGENT_SMALL_MODEL` | `agent_small` | 识别槽（整格，含地址、Key、协议） |
 | 实时语音 | `omni` | `REALTIME_MODEL` | `realtime` | 核心 API |

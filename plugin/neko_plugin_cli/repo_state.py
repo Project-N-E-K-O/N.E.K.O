@@ -19,6 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 from plugin.utils.source_paths import VENDOR_SYNC_GLOBS
 
 from .commands._resolve import parse_github_repository_remote
+from .git_env import git_env
 
 _GIT_TIMEOUT_SECONDS = 15
 # Enough paths to tell the user what to commit without flooding the panel.
@@ -58,6 +59,7 @@ def git_output(plugin_dir: Path, *args: str, strip: bool = True) -> str | None:
         completed = subprocess.run(
             ["git", *args],
             cwd=plugin_dir,
+            env=git_env(),
             capture_output=True,
             encoding="utf-8",
             errors="replace",
@@ -146,6 +148,31 @@ def _dirty_paths(status: _BranchStatus | None, untracked: list[str] | None) -> l
     paths = list(status.tracked_paths)
     paths.extend(path for path in untracked if path not in paths)
     return paths
+
+
+def ignored_untracked_paths(plugin_dir: Path) -> list[str] | None:
+    """Untracked paths under ``plugin_dir`` that git ignores, or None when git fails.
+
+    Relative to ``plugin_dir`` with ``/`` separators; an ignored directory is
+    listed once, with a trailing ``/``, instead of file by file. Tracked files
+    are never listed, even when they match an ignore rule. Submodules are not
+    entered: their ignored content is not listed.
+    """
+    output = git_output(
+        plugin_dir,
+        "ls-files",
+        "-z",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "--",
+        ".",
+        strip=False,
+    )
+    if output is None:
+        return None
+    return [path for path in output.split("\0") if path]
 
 
 def worktree_dirty_paths(plugin_dir: Path) -> list[str] | None:
