@@ -14,17 +14,18 @@ from plugin.server.application.install_source.models import (
 )
 from plugin.server.application.plugins import permission_service
 from plugin.server.domain.errors import ServerDomainError
+from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES
 from plugin.server.infrastructure.plugin_permissions import (
-    CONVERSATIONS_READ,
     LEGACY_DENIED,
-    MEMORY_READ,
-    MESSAGES_PUSH,
     PluginPermissionStore,
     PluginSource,
-    normalize_permission,
 )
 
 pytestmark = pytest.mark.plugin_unit
+
+MEMORY_READ = LEGACY_PERMISSION_NAMES["memory.read"]
+CONVERSATIONS_READ = LEGACY_PERMISSION_NAMES["conversations.read"]
+MESSAGES_PUSH = LEGACY_PERMISSION_NAMES["messages.push"]
 
 MARKET = PluginSource("market", "m-1")
 MANUAL = PluginSource("manual")
@@ -491,10 +492,19 @@ def test_clear_returns_a_permission_to_undecided(manager):
     assert store.clear("x", MEMORY_READ)["permissions"] == {}
 
 
-def test_normalize_permission_maps_legacy_names_only():
-    assert normalize_permission("memory.read") == MEMORY_READ
-    assert normalize_permission(MEMORY_READ) == MEMORY_READ
-    assert normalize_permission("system.fs:read") == "system.fs:read"
+def test_decide_and_clear_reject_ids_outside_the_vocabulary(manager):
+    store = PluginPermissionStore(manager)
+
+    for permission_id in ("system.unknown:read", "", None):
+        with pytest.raises(ValueError):
+            store.decide("x", permission_id, "granted")
+        with pytest.raises(ValueError):
+            store.clear("x", permission_id)
+    assert store.read("x") == {}
+
+    # Ids from the vocabulary pass through unchanged.
+    record = store.decide("x", "system.fs:read", "granted")
+    assert list(record["permissions"]) == ["system.fs:read"]
 
 
 # ---------------------------------------------------------------------------
