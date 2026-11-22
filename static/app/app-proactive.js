@@ -2749,6 +2749,8 @@
                 // 浏览器标签页共享时用来判断截的是不是本页（#3474）。
                 stream: shot.stream || null,
                 // 按这张图抓取时的质量重编码：后端整屏图是 JPEG 80，前端流截图是 0.85。
+                // 桌面壳直接截图（via 'native'）通常是 PNG，遮完仍按 PNG 无损输出，质量参数不起作用；
+                // 壳给的是 JPEG 时质量未知，按前端单张截图同一档 0.85。
                 jpegQuality: shot.via === 'backend' ? 0.8 : 0.85
             }, maskSession);
             if (!maskedDataUrl) {

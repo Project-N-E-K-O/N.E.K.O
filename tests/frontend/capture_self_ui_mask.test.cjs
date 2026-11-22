@@ -977,6 +977,25 @@ test('browser tab share of ANOTHER tab: nothing of this page is in the frame, no
     }
 });
 
+test('browser tab share of ANOTHER N.E.K.O page: its chat UI is in the frame at unknown positions -> fallback policy', async () => {
+    const otherNeko = tabStream('neko-self-ui-mask:another-page');
+    const env = makeWindow({ captureHandle: true, elements: chatElements({ galOpen: true }) });
+    assert.equal(env.w.appCaptureMask.isOwnTabCapture(otherNeko), false);
+    // Same result as today's policy (send unmasked), but it goes through the fallback decision...
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: otherNeko }), RAW_FRAME);
+    // ...so switching the policy to "drop" drops it, unlike a share of a non-N.E.K.O tab.
+    vm.runInContext(maskSource.replace("return 'send-unmasked';", "return 'drop';"), env.w);
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: otherNeko }), null);
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: tabStream('someone-else') }), RAW_FRAME);
+});
+
+test('own-tab check uses only the stream the frame came from, never the cached one', () => {
+    const env = makeWindow({ captureHandle: true });
+    env.w.appState = { screenCaptureStream: tabStream(env.w.appCaptureMask.OWN_CAPTURE_HANDLE) };
+    assert.equal(env.w.appCaptureMask.isOwnTabCapture(undefined), null);
+    assert.equal(env.w.appCaptureMask.isOwnTabCapture(null), null);
+});
+
 test('no Capture Handle API: tab share keeps the old rule (visible page masked, hidden page not)', async () => {
     const env = makeWindow({ elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
     const stream = tabStream(undefined);

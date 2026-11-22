@@ -326,12 +326,15 @@
     function mapLocalSample(sample, ctx, geom) {
         var captureType = ctx && ctx.captureType;
         if (captureType === 'viewport') {
-            var ownTab = isOwnTabCapture(ctx && ctx.stream);
+            var tabKind = classifyTabCapture(ctx && ctx.stream);
+            // Another N.E.K.O page is being shared: its chat UI is in the
+            // frame, but at positions only that page knows.
+            if (tabKind === 'other-neko') return { known: false, rects: [] };
             // Another tab is being shared: none of this page is in the frame.
-            if (ownTab === false) return { known: true, rects: [] };
+            if (tabKind === 'other') return { known: true, rects: [] };
             // This tab is being shared: it keeps producing frames in the
             // background, so its regions are masked even while hidden.
-            if (ownTab === true) return mapViewportRectsToCapture(sample.rects, captureType, geom);
+            if (tabKind === 'own') return mapViewportRectsToCapture(sample.rects, captureType, geom);
             // Unknown (no Capture Handle): treat a hidden page as not shown.
         }
         // A background tab is not on any screen or window capture.
@@ -343,7 +346,8 @@
     // A browser-tab share only reports displaySurface 'browser'; it does not
     // say which tab. This page publishes a random capture handle, and a tab
     // share whose track reports that handle is this page.
-    var OWN_CAPTURE_HANDLE = 'neko-self-ui-mask:' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    var OWN_CAPTURE_HANDLE_PREFIX = 'neko-self-ui-mask:';
+    var OWN_CAPTURE_HANDLE = OWN_CAPTURE_HANDLE_PREFIX + Math.random().toString(36).slice(2) + Date.now().toString(36);
     var ownCaptureHandleConfigured = false;
 
     function configureOwnCaptureHandle(win) {
@@ -364,15 +368,20 @@
     }
 
     /**
-     * @returns {boolean|null} true: the stream captures this tab; false: it
-     *          captures another tab; null: cannot tell.
+     * What a browser-tab share captures.
+     * @returns {'own'|'other-neko'|'other'|null} 'own': this tab; 'other-neko':
+     *          another N.E.K.O page (its chat UI is in the frame, at positions
+     *          this page cannot know); 'other': some other tab; null: cannot tell
+     *          (no Capture Handle support, or no stream passed).
      */
-    function isOwnTabCapture(stream) {
+    function classifyTabCapture(stream) {
         if (!ownCaptureHandleConfigured) return null;
-        var candidate = stream || (window.appState && window.appState.screenCaptureStream);
+        // Only the stream the frame came from can answer; the cached stream
+        // may have been swapped while the frame was being captured.
+        if (!stream) return null;
         var track = null;
         try {
-            var tracks = candidate && typeof candidate.getVideoTracks === 'function' ? candidate.getVideoTracks() : [];
+            var tracks = typeof stream.getVideoTracks === 'function' ? stream.getVideoTracks() : [];
             track = tracks && tracks[0];
         } catch (e) { track = null; }
         if (!track || typeof track.getCaptureHandle !== 'function') return null;
@@ -381,11 +390,27 @@
         // Our handle is set and readable by our own origin, so any other
         // answer (another handle, or none) is a different tab.
         // Coupling: setCaptureHandleConfig is per document and the last call
-        // wins. static/game/sdk/neko-minigame-vision-host.js sets and clears
-        // its own handle; it is not loaded on the pages that load this module
-        // (index.html, chat.html). If it ever is, own-tab shares would read
-        // as "another tab" here and stop being masked.
-        return !!(captureHandle && captureHandle.handle === OWN_CAPTURE_HANDLE);
+        // wins. Two other scripts in this repo call it with their own handle:
+        //   - static/game/sdk/neko-minigame-vision-host.js (sets and clears it)
+        //   - static/libs/trtc.js (sets it on load, permittedOrigins ['*'];
+        //     only loaded by visit_transport.html today)
+        // Neither is loaded on the pages that load this module (index.html,
+        // chat.html). If one ever is, own-tab shares would read as "another
+        // tab" here and stop being masked. The browser offers no way to read
+        // back the current config, so this cannot be detected at runtime.
+        var handle = captureHandle && captureHandle.handle;
+        if (handle === OWN_CAPTURE_HANDLE) return 'own';
+        if (typeof handle === 'string' && handle.indexOf(OWN_CAPTURE_HANDLE_PREFIX) === 0) return 'other-neko';
+        return 'other';
+    }
+
+    /**
+     * @returns {boolean|null} true: the stream captures this tab; false: it
+     *          captures another tab; null: cannot tell.
+     */
+    function isOwnTabCapture(stream) {
+        var kind = classifyTabCapture(stream);
+        return kind === null ? null : kind === 'own';
     }
 
     async function resolveGeometry(session, ctx) {
