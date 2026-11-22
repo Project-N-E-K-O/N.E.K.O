@@ -1333,26 +1333,41 @@ def _check_permission_usage(
         )
 
 
-def _sdk_imported_names(tree: ast.Module) -> set[str]:
-    """Local names bound by imports from the plugin SDK (``plugin.*``)."""
-    names: set[str] = set()
+def _is_sdk_module(module: str) -> bool:
+    return module == "plugin.sdk" or module.startswith("plugin.sdk.")
+
+
+def _sdk_imported_names(tree: ast.Module) -> dict[str, str]:
+    """Local name -> qualified symbol for imports from the plugin SDK."""
+    names: dict[str, str] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and not node.level and node.module and (
-            node.module == "plugin" or node.module.startswith("plugin.")
-        ):
-            names.update(item.asname or item.name for item in node.names)
+        if isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            for item in node.names:
+                qualified = f"{node.module}.{item.name}"
+                if _is_sdk_module(qualified):
+                    names[item.asname or item.name] = qualified
         elif isinstance(node, ast.Import):
             for item in node.names:
-                if item.name == "plugin" or item.name.startswith("plugin."):
-                    names.add(item.asname or item.name.split(".")[0])
+                if item.asname and _is_sdk_module(item.name):
+                    names[item.asname] = item.name
+                elif not item.asname and item.name.split(".")[0] == "plugin" and _is_sdk_module(item.name):
+                    names["plugin"] = "plugin"
     return names
 
 
-def _decorator_root(decorator: ast.expr) -> str:
+def _sdk_decorator_name(decorator: ast.expr, sdk_names: dict[str, str]) -> str | None:
+    """The SDK symbol name a decorator refers to, following import aliases."""
     target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    parts: list[str] = []
     while isinstance(target, ast.Attribute):
+        parts.append(target.attr)
         target = target.value
-    return target.id if isinstance(target, ast.Name) else ""
+    if not isinstance(target, ast.Name) or target.id not in sdk_names:
+        return None
+    qualified = ".".join([sdk_names[target.id], *reversed(parts)])
+    if not _is_sdk_module(qualified):
+        return None
+    return qualified.rsplit(".", 1)[-1]
 
 
 def _check_python_decorators(
@@ -1374,9 +1389,10 @@ def _check_python_decorators(
                 continue
             for decorator in node.decorator_list:
                 name = _decorator_name(decorator)
-                if name in _PERMISSION_NARROWING_DECORATORS and _decorator_root(decorator) in sdk_names:
+                sdk_name = _sdk_decorator_name(decorator, sdk_names)
+                if sdk_name in _PERMISSION_NARROWING_DECORATORS:
                     _check_permission_narrowing(
-                        decorator, f"@{name} in {relative}:{node.lineno}", declared, issues
+                        decorator, f"@{sdk_name} in {relative}:{node.lineno}", declared, issues
                     )
                 if name == "plugin_entry":
                     entry_id = _decorator_keyword_string(decorator, "id") or node.name

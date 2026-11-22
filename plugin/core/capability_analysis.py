@@ -276,8 +276,11 @@ def _references(tree, walker: _AnalysisWalker):
         written = _written_targets(nodes, walker)
         comprehension_locals = _comprehension_locals(nodes, walker)
 
-        def nested(body, inherited, parameters=(), function=""):
-            return scope(body, inherited, parameters, function, rebound)
+        def nested(body, inherited, parameters=(), function="", owner=None):
+            # A function or lambda defined inside a comprehension also sees
+            # the comprehension's own names.
+            extra = comprehension_locals.get(id(owner), frozenset()) if owner is not None else frozenset()
+            return scope(body, inherited, parameters, function, rebound | extra)
 
         for reference in _emit_references(nodes, bindings, nested, walker, function):
             # Nested scopes already applied their own view of rebinding.
@@ -388,9 +391,12 @@ def _comprehension_locals(nodes, walker) -> dict[int, frozenset[str]]:
             names: set[str] = set()
             for generator in node.generators:
                 _target_names(generator.target, names)
+            # The first iterable is evaluated in the enclosing scope.
+            outer = {id(child) for child in ast.walk(node.generators[0].iter)}
             for child in ast.walk(node):
                 walker.check()
-                local.setdefault(id(child), set()).update(names)
+                if id(child) not in outer:
+                    local.setdefault(id(child), set()).update(names)
     return {key: frozenset(value) for key, value in local.items()}
 
 
@@ -530,6 +536,7 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
                 node.body,
                 _propagate_self_attributes(node, bindings, walker),
                 function=_qualified(function, node.name),
+                owner=node,
             )
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             args = node.args
@@ -541,7 +548,7 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
             ]
             body = [node.body] if isinstance(node, ast.Lambda) else node.body
             name = function if isinstance(node, ast.Lambda) else _qualified(function, node.name)
-            yield from scope(body, bindings, parameters, function=name)
+            yield from scope(body, bindings, parameters, function=name, owner=node)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             yield _Reference(node, "", False, None, function, False)
         elif isinstance(node, (ast.Attribute, ast.Call)):

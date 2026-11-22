@@ -995,3 +995,50 @@ def test_cli_permissions_keyword_on_sdk_decorators_is_an_error(tmp_path):
 def test_methods_on_stored_objects_still_count(tmp_path, source, permission):
     report = _scan(tmp_path, source)
     assert 3 in [row["line"] for row in report["permissions"][permission]["findings"]]
+
+
+# --- review round 4 ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import subprocess\ncallbacks = [lambda: subprocess.run('x') for subprocess in handlers]\n",
+        "import os\ncallbacks = [lambda: os.environ for os in handlers]\n",
+    ],
+)
+def test_lambdas_inside_a_comprehension_see_its_names(tmp_path, source):
+    assert _errors(_scan(tmp_path, source)) == []
+
+
+def test_the_first_comprehension_iterable_is_evaluated_outside(tmp_path):
+    assert _errors(_scan(tmp_path, "import os\nkeys = [os for os in os.environ]\n")) == ["system.env:read"]
+
+
+@pytest.mark.parametrize(
+    "imports,decorator",
+    [
+        ("from plugin.sdk.plugin import plugin_entry as entry\n", "entry"),
+        ("import plugin.sdk.plugin as sdk\n", "sdk.plugin_entry"),
+        ("from plugin.sdk import plugin as sdk\n", "sdk.plugin_entry"),
+    ],
+)
+def test_cli_follows_sdk_import_aliases_for_decorators(tmp_path, imports, decorator):
+    plugin_dir = _plugin(
+        tmp_path,
+        imports + f"class P:\n    @{decorator}(id='a', permissions=['system.env:read'])\n    async def a(self): ...\n",
+        "[permissions]\n",
+    )
+    errors = _issues(plugin_dir, "error")
+    assert any(message.startswith("@plugin_entry in worker.py:4: permissions= lists") for message in errors)
+    assert any("does not accept permissions=" in message for message in errors)
+
+
+def test_cli_ignores_plugin_owned_helpers_with_sdk_names(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "from plugin.plugins.perm_demo.helpers import hook\n"
+        "class P:\n    @hook(permissions=['local-cache'])\n    def a(self): ...\n",
+        "[permissions]\n",
+    )
+    assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
