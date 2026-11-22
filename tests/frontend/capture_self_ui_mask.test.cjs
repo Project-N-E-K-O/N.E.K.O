@@ -1315,3 +1315,70 @@ test('single-shot: the pre-capture sample is taken after the stream is ready, ri
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.deepEqual(fillsOf(shot.dataUrl), [[392, 392, 66, 66]]);
 });
+
+// ---------------------------------------------------------------- review round 8
+
+test('map: whole-screen share with page zoom other than 100% -> position unknown (80% / 125%), 100% unchanged', () => {
+    const { w } = makeWindow();
+    const base = { innerHeight: 760, outerWidth: 1016, outerHeight: 800, screenX: 0, screenY: 0, screenWidth: 2000, screenHeight: 1000, multiDisplay: false };
+    const rect = [{ x: 600, y: 100, width: 50, height: 50 }];
+    // 100%: viewport 1000 CSS px in a 1016 px window.
+    assert.equal(w.appCaptureMask.mapViewportRectsToCapture(rect, 'screen', Object.assign({}, base, { innerWidth: 1000 })).known, true);
+    // 80%: the same 1000 px viewport is 1250 CSS px wide (and taller).
+    assert.equal(w.appCaptureMask.mapViewportRectsToCapture(rect, 'screen', Object.assign({}, base, { innerWidth: 1250, innerHeight: 950 })).known, false);
+    // 125%: 800 CSS px.
+    assert.equal(w.appCaptureMask.mapViewportRectsToCapture(rect, 'screen', Object.assign({}, base, { innerWidth: 800, innerHeight: 608 })).known, false);
+    // Width looks normal but the viewport is taller than the window: not 100% either.
+    assert.equal(w.appCaptureMask.mapViewportRectsToCapture(rect, 'screen', Object.assign({}, base, { innerWidth: 1000, innerHeight: 900 })).known, false);
+    // Tab shares are in CSS px of the page itself: zoom does not matter there.
+    assert.equal(w.appCaptureMask.mapViewportRectsToCapture(rect, 'viewport', Object.assign({}, base, { innerWidth: 1250, innerHeight: 950 })).known, true);
+});
+
+test('mask queries use the source the stream actually captures when the selection was cleared (fallback to screen:1:0)', async () => {
+    const answer = async () => ({ ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] });
+    const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+    const makeStream = () => ({ active: true, getVideoTracks: () => [track], getTracks: () => [track] });
+
+    // Voice heartbeat.
+    const hbShell = shellStub(answer);
+    const hb = bootScreen({ multiWindow: true, shell: hbShell, defaultImageSize: [1000, 800] });
+    Object.assign(hb.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+    const hbStream = makeStream();
+    hb.w.appScreen.acquireOrReuseCachedStream = async () => { hb.S.selectedScreenSourceId = null; return hbStream; };
+    hb.w.appScreen.getStreamCaptureSourceId = (s) => (s === hbStream ? 'screen:1:0' : null);
+    hb.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
+    vm.runInContext(proactiveSource, hb.w);
+    await hb.w.appProactive.sendOneProactiveVisionFrame();
+    assert.equal(hb.sent.length, 1);
+    assert.deepEqual(hbShell.calls.map((c) => c.sourceId), ['screen:1:0', 'screen:1:0']);
+
+    // Single shot (new stream, and the cached stream on the next call).
+    const ssShell = shellStub(answer);
+    const ss = bootProactive({ multiWindow: true, shell: ssShell });
+    const ssStream = makeStream();
+    ss.S.screenCaptureStream = null;
+    ss.w.appScreen.acquireOrReuseCachedStream = async () => { ss.S.selectedScreenSourceId = null; ss.S.screenCaptureStream = ssStream; return ssStream; };
+    ss.w.appScreen.getStreamCaptureSourceId = (s) => (s === ssStream ? 'screen:1:0' : null);
+    const first = await ss.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(first.sourceId, 'screen:1:0');
+    const second = await ss.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(second.sourceId, 'screen:1:0');
+    assert.deepEqual(ssShell.calls.map((c) => c.sourceId), ['screen:1:0', 'screen:1:0', 'screen:1:0', 'screen:1:0']);
+});
+
+test('acquireOrReuseCachedStream: a stale selection falls back to the first screen and the stream remembers it', async () => {
+    const env = bootScreen({ defaultImageSize: [1000, 800] });
+    const track = { readyState: 'live', kind: 'video', addEventListener() {}, getSettings: () => ({ displaySurface: 'monitor' }), stop() {} };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    const requested = [];
+    env.S.selectedScreenSourceId = 'screen:9:0';
+    env.w.getDesktopCaptureProvider = () => ({ getSources() {} });
+    env.w.desktopSourceEnumerationMayPrompt = () => false;
+    env.w.invokeDesktopCaptureWithTimeout = async () => [{ id: 'window:5:0' }, { id: 'screen:1:0' }];
+    env.w.navigator.mediaDevices.getUserMedia = async (c) => { requested.push(c.video.mandatory.chromeMediaSourceId); return stream; };
+    const got = await env.w.appScreen.acquireOrReuseCachedStream({ allowPrompt: false });
+    assert.equal(got, stream);
+    assert.deepEqual(requested, ['screen:1:0']);
+    assert.equal(env.S.selectedScreenSourceId, null, 'the stale selection is cleared');
+    assert.equal(env.w.appScreen.getStreamCaptureSourceId(stream), 'screen:1:0');
+});

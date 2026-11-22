@@ -150,6 +150,12 @@
      *
      * @returns {{known: boolean, rects: Array}} rects in 0..1 when known
      */
+    // Left + right window border at 100% page zoom is a few px (0 when
+    // maximized, ~16 on Windows); the smallest Chromium zoom step (90% / 110%)
+    // changes innerWidth by far more than this on any usable window width
+    // (best effort: a very narrow window at 110% can stay under it).
+    var MAX_SIDE_CHROME_CSS_PX = 40;
+
     function mapViewportRectsToCapture(rects, captureType, geom) {
         if (!rects || rects.length === 0) return { known: true, rects: [] };
         if (!geom) return { known: false, rects: [] };
@@ -165,6 +171,15 @@
             var outerH = Number(geom.outerHeight) || 0;
             var innerW = Number(geom.innerWidth) || 0;
             var innerH = Number(geom.innerHeight) || 0;
+            // Page zoom other than 100% scales innerWidth / DOM rects (CSS px)
+            // but not outerWidth / screen size, so the two cannot be mixed. It
+            // shows as inner > outer (zoomed out) or a side gap far wider than
+            // a window border (zoomed in; also a docked side panel). Either
+            // way the position is unknown: when unsure, mask less.
+            var sideChrome = outerW - innerW;
+            if (sideChrome < 0 || sideChrome > MAX_SIDE_CHROME_CSS_PX || outerH - innerH < 0) {
+                return { known: false, rects: [] };
+            }
             var chromeLeft = Math.max(0, Math.round((outerW - innerW) / 2));
             var chromeTop = Math.max(0, outerH - innerH - chromeLeft);
             originX = (Number(geom.screenX) || 0) + chromeLeft;

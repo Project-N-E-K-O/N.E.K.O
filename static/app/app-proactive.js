@@ -2128,12 +2128,13 @@
                 // 同上：抓帧是异步的，源 ID 要跟这条流一起钉住，事后再读可能已经换人。
                 // 必须在 acquireOrReuseCachedStream 之后取——它自己就会改写这个字段。
                 var streamSourceId = S.selectedScreenSourceId;
-                retargetScopeMaskSession(maskScope, streamSourceId);
+                var streamMaskSourceId = streamCaptureSourceId(stream, streamSourceId);
+                retargetScopeMaskSession(maskScope, streamMaskSourceId);
                 var frame = await captureFrameFromStream(stream, 0.8);
                 if (frame && frame.dataUrl) {
                     dataUrl = frame.dataUrl;
                     captureType = window.detectScreenshotCaptureType(stream, streamSourceId);
-                    captureSourceId = streamSourceId || null;
+                    captureSourceId = streamMaskSourceId;
                     captureVia = 'stream';
                     captureStream = stream;
                 } else if (S.screenCaptureStream === stream) {
@@ -2578,6 +2579,17 @@
         });
     }
 
+    // 流实际截的源（#3474 遮罩查询用）：选中源失效、回退到第一个 screen: 源时，
+    // S.selectedScreenSourceId 已被清空，只有流自己记得。拿不到时用调用方钉住的选中源。
+    // 只用于遮罩查询的 sourceId；captureType（Avatar 标注口径）仍按钉住的选中源算，
+    // 回退场景下两者可能不一致（captureType 偏保守地判为 null），这是有意的。
+    function streamCaptureSourceId(stream, selectedSourceId) {
+        var screenMod = window.appScreen;
+        var id = screenMod && typeof screenMod.getStreamCaptureSourceId === 'function'
+            ? screenMod.getStreamCaptureSourceId(stream) : null;
+        return id || selectedSourceId || null;
+    }
+
     async function captureProactiveChatScreenshotWithSourceInternal(captureScope) {
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
@@ -2615,7 +2627,8 @@
                 var cachedSourceId = S.selectedScreenSourceId;
                 var tracks = cachedStream.getVideoTracks();
                 if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                    retargetScopeMaskSession(captureScope, cachedSourceId);
+                    var cachedMaskSourceId = streamCaptureSourceId(cachedStream, cachedSourceId);
+                    retargetScopeMaskSession(captureScope, cachedMaskSourceId);
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
                         if (discardSupersededRememberedFrame('缓存流截图')) {
@@ -2627,7 +2640,7 @@
                         return {
                             dataUrl: cachedFrame.dataUrl,
                             via: 'stream',
-                            sourceId: cachedSourceId || null,
+                            sourceId: cachedMaskSourceId,
                             stream: cachedStream,
                             allowDesktopFallback: allowDesktopFallback,
                             captureType: resolveCaptureTypeFor('stream', cachedStream, cachedSourceId)
@@ -2682,7 +2695,8 @@
         if (stream) {
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
             var streamSourceId = S.selectedScreenSourceId;
-            retargetScopeMaskSession(captureScope, streamSourceId);
+            var streamMaskSourceId = streamCaptureSourceId(stream, streamSourceId);
+            retargetScopeMaskSession(captureScope, streamMaskSourceId);
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 if (discardSupersededRememberedFrame('前端流截图')) {
@@ -2692,7 +2706,7 @@
                 return {
                     dataUrl: frame.dataUrl,
                     via: 'stream',
-                    sourceId: streamSourceId || null,
+                    sourceId: streamMaskSourceId,
                     stream: stream,
                     allowDesktopFallback: allowDesktopFallback,
                     captureType: resolveCaptureTypeFor('stream', stream, streamSourceId)
@@ -2714,7 +2728,8 @@
             }
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
-                retargetScopeMaskSession(captureScope, retrySourceId);
+                var retryMaskSourceId = streamCaptureSourceId(stream, retrySourceId);
+                retargetScopeMaskSession(captureScope, retryMaskSourceId);
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
                     if (discardSupersededRememberedFrame('前端流重试截图')) {
@@ -2723,7 +2738,7 @@
                     return {
                         dataUrl: frame.dataUrl,
                         via: 'stream',
-                        sourceId: retrySourceId || null,
+                        sourceId: retryMaskSourceId,
                         stream: stream,
                         allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('stream', stream, retrySourceId)

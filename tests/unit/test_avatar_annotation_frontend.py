@@ -374,6 +374,7 @@ def _helper_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> 
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
             + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
             + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
             + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
@@ -496,6 +497,7 @@ captureProactiveChatScreenshotWithSource().then((shot) => {
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
             + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
             + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
             + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
@@ -1306,6 +1308,7 @@ def _proactive_remembered_script(
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
             + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
             + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
             + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
@@ -1459,7 +1462,8 @@ def _frame_script(
             + "\n" + _fn(screen_src, "buildStreamDataMessage")
             + "\n" + _fn(screen_src, "buildMaskedStreamDataMessage")
             + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
-            + "\n" + _fn(proactive_src, "retargetScopeMaskSession"),
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId"),
         )
         .replace("__FRAME__", _fn(proactive_src, "sendOneProactiveVisionFrame"))
     )
