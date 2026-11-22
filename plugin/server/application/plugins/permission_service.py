@@ -323,9 +323,9 @@ def bind_current_permission_source(plugin_id: str) -> None:
 
 def forget_permissions(plugin_id: str) -> dict | None:
     """Drop all grants of an uninstalled plugin; returns the removed record."""
-    removed = permission_store.forget(plugin_id)
-    _forget_last_record(plugin_id)
-    return removed
+    # The store's change notification drops the remembered record (see
+    # _on_store_change), in order with any later write.
+    return permission_store.forget(plugin_id)
 
 
 class PermissionSnapshot:
@@ -400,8 +400,6 @@ def snapshot_permissions(plugin_id: str) -> PermissionSnapshot:
 def restore_permissions(plugin_id: str, record: dict | None) -> None:
     """Put back an earlier record; ``None`` removes the plugin's record."""
     permission_store.restore(plugin_id, record)
-    if record is None:
-        _forget_last_record(plugin_id)
 
 
 # ----------------------------------------------------------------------
@@ -437,11 +435,6 @@ def _invalidate_last_records(plugin_ids: frozenset[str] | None) -> None:
         for plugin_id in plugin_ids:
             _last_records.pop(plugin_id, None)
             _removals[plugin_id] = _removals.get(plugin_id, 0) + 1
-
-
-def _forget_last_record(plugin_id: str) -> None:
-    """A plugin whose grants changed must not fall back to the old ones."""
-    _invalidate_last_records(frozenset({plugin_id}))
 
 
 def _on_store_change(plugin_ids: frozenset[str] | None) -> None:

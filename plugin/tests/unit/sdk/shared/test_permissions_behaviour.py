@@ -132,6 +132,39 @@ def test_cancel_stops_notifications_and_is_idempotent(make):
     assert seen == ["granted"]
 
 
+def test_cancel_removes_only_its_own_registration(make):
+    class Recorder:
+        """Callables that compare equal although they are distinct."""
+
+        def __init__(self, name, seen):
+            self.name, self.seen = name, seen
+
+        def __eq__(self, other):
+            return isinstance(other, Recorder)
+
+        __hash__ = object.__hash__
+
+        def __call__(self, permission, state):
+            self.seen.append(self.name)
+
+    driver = make({})
+    seen = []
+    first, second = Recorder("first", seen), Recorder("second", seen)
+    driver.perms.on_change(first)
+    handle = driver.perms.on_change(second)
+    handle.cancel()
+    driver.change(MEMORY, "granted")
+    assert seen == ["first"]
+
+    seen.clear()
+    twice = Recorder("twice", seen)
+    one = driver.perms.on_change(twice)
+    driver.perms.on_change(twice)
+    one.cancel()
+    driver.change(MEMORY, "denied")
+    assert sorted(seen) == ["first", "twice"]
+
+
 def test_async_callbacks_are_rejected(make):
     driver = make({})
 

@@ -115,6 +115,15 @@ def test_source_reconciliation_reports_only_real_changes(store, changes):
     assert changes == [frozenset({"demo"})]
 
 
+def test_binding_an_unbound_source_reports_the_plugin(store, changes):
+    store.decide("demo", MEMORY_READ, "granted")
+    changes.clear()
+    assert store.bind_unbound_source("demo", PluginSource("market", "m-1"))
+    assert not store.bind_unbound_source("demo", PluginSource("market", "m-2"))
+    assert not store.bind_unbound_source("missing", PluginSource("market", "m-1"))
+    assert changes == [frozenset({"demo"})]
+
+
 def test_writes_that_change_nothing_report_nothing(store, changes):
     store.read("demo")
     changes.clear()
@@ -719,12 +728,15 @@ async def test_a_fallback_launch_push_is_retried_by_the_service(monkeypatch, sto
     monkeypatch.setattr(plugin_permissions, "_change_listeners", [])
     monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 0.05)
     monkeypatch.setattr(permission_service, "logger", Log())
+    # Grants and the launch snapshot are in place before the service listens,
+    # so only the direct push below can hand anything over to it.
+    store.decide("demo", MEMORY_READ, "granted")
+    host = hosts["demo"] = Host()
+    host.set_initial_permissions(permission_service.permission_snapshot("demo"))
     service = permission_push.permission_push_service
     service.start()
     try:
-        store.decide("demo", MEMORY_READ, "granted")
-        host = hosts["demo"] = Host()
-        host.set_initial_permissions(permission_service.permission_snapshot("demo"))
+        assert not service._timers and _idle(service)
         real_record = permission_service.permission_record
         broken = {"on": True}
 
@@ -797,12 +809,16 @@ async def test_a_failed_direct_push_is_handed_to_the_service(monkeypatch, store,
     monkeypatch.setattr(plugin_permissions, "_change_listeners", [])
     monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 0.05)
     monkeypatch.setattr(permission_push, "logger", Log())
+    # The grant is stored before the service listens, so only the direct
+    # push below can hand a retry over to it.
+    store.decide("demo", MEMORY_READ, "granted")
+    host = hosts["demo"] = Host(fail=RuntimeError("downlink stuck"))
     service = permission_push.permission_push_service
     service.start()
     try:
-        store.decide("demo", MEMORY_READ, "granted")
-        host = hosts["demo"] = Host(fail=RuntimeError("downlink stuck"))
+        assert not service._timers and _idle(service) and host.attempts == 0
         assert await permission_push.push_permissions("demo", host) is False
+        assert host.attempts == 1
         await _until(lambda: "demo" in service._timers)
         host.fail = None
         await _until(lambda: host.permissions.get(MEMORY_READ).status == "granted")

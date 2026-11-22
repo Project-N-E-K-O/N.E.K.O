@@ -61,9 +61,14 @@ class PermissionSubscription:
             return
         self._cancelled = True
         with self._lock if self._lock is not None else contextlib.nullcontext():
-            # The registration may already be gone if the owner dropped its callbacks.
-            with contextlib.suppress(ValueError):
-                self._callbacks.remove(self._callback)
+            # Match by identity, not ==: a distinct but equal callable must
+            # stay subscribed. (Two registrations of the very same object are
+            # interchangeable, so removing either one is the same.) The
+            # registration may already be gone if the owner dropped its callbacks.
+            for index, registered in enumerate(self._callbacks):
+                if registered is self._callback:
+                    del self._callbacks[index]
+                    break
 
     unsubscribe = cancel
 
