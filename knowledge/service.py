@@ -1858,16 +1858,13 @@ class KnowledgeService:
     ) -> dict[str, Any]:
         # Staged files are counted from their jobs, or from the reservation of
         # an admission that has not written one yet; taken together with the
-        # set of active imports the disk scan leaves out. Exports have no
-        # staged bytes, so their installed source must remain in the disk sum.
-        # They still occupy a task slot through _admission_count.
-        active_imports = [job for job in self._jobs.values()
-                          if job.state in ACTIVE_JOB_STATES and job.kind != "pack_export"]
-        staged_bytes = sum(job.staged_bytes for job in active_imports) + sum(
+        # set of active jobs the disk scan leaves out.
+        active = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
+        staged_bytes = sum(job.staged_bytes for job in active) + sum(
             size for pack_id, size in self._admitting.items() if pack_id != pack.pack_id
         )
         installed_bytes = await self._thread(
-            self._installed_pack_bytes, pack.pack_id, _job_files(active_imports, installing=self._registry)
+            self._installed_pack_bytes, pack.pack_id, _job_files(active, installing=self._registry)
         )
         if installed_bytes + staged_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
             return {"ok": False, "reason": "capacity_bytes"}
@@ -2866,56 +2863,7 @@ class KnowledgeService:
                 async def write():
                     if self._registry.packs.get(pack_id) != record:
                         return None  # Retry the same archive against the new policy record.
-                    if not checked["seed_vectors"]:
-                        return 0  # Cache incompatibility without changing the local text plan.
-                    rebuilt = False
-
-                    def restore():
-                        nonlocal rebuilt
-                        # A verified archive may have a different plan from a
-                        # tokenizer-free install, even when every old input fits.
-                        pack = parse_pack(checked["pack"])
-                        if pack.pack_id != pack_id or pack_sha256(canonical_pack_bytes(pack)) != record.pack_sha256:
-                            return None  # This archive cannot restore the active canonical revision.
-                        self._reconcile_chunk_counts_blocking()
-                        current = self._registry.packs[pack_id]
-                        fit = self._chunk_fit()
-                        try:
-                            chunks = count_pack_chunks(pack, fit=fit, seed_vectors=checked["seed_vectors"])
-                        except ValueError as exc:
-                            if fit is None or str(exc) != "embedding_input_too_large":
-                                raise
-                            # Keep the existing per-pack header refusal path;
-                            # a failed plan must not abort other packs' backfill.
-                            return self._store.seed_pack_vectors(pack_id, checked["seed_vectors"])
-                        others = sum(item.chunks for other, item in self._registry.packs.items() if other != pack_id)
-                        if chunks > MAX_CHUNKS_PER_PACK or others + chunks > MAX_TOTAL_CHUNKS:
-                            return None  # Capacity can change; this is not a cached verdict on the ZIP.
-                        rebuilt = True
-                        actual = self._store.replace_pack(
-                            pack, pack_sha256=current.pack_sha256, disabled_keys=current.disabled_titles,
-                            fit=fit, seed_vectors=checked["seed_vectors"],
-                        )
-                        self._pending_chunk_reconcile = True
-                        if actual != chunks:
-                            raise KnowledgeUnavailable("knowledge_error")
-                        registry = self._registry.with_pack(replace(current, chunks=actual))
-                        save_registry(self.root, registry)
-                        self._publish_registry(registry)
-                        self._pending_chunk_reconcile = False
-                        return actual
-
-                    try:
-                        return await self._thread(restore)
-                    finally:
-                        if rebuilt:
-                            # SQLite may commit new row IDs before a registry
-                            # flush fails. Retire snapshots and retry this seed.
-                            self._vectors = None
-                            self._vectors_built_for = None
-                            self._vector_generation += 1
-                            self._seeded_artifacts.discard(key)
-                            self._seed_failures.pop(key, None)
+                    return await self._thread(self._store.seed_pack_vectors, pack_id, checked["seed_vectors"])
                 stored = await self._locked(write, wait=True)
                 if stored is None:
                     continue
