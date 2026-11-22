@@ -248,3 +248,70 @@ async def test_update_master_allows_unchanged_legacy_reserved_route_name_only(
     unchanged_unsafe_res = await crud.update_master(_DummyJsonRequest({"昵称": "小名"}))
     assert isinstance(unchanged_unsafe_res, JSONResponse)
     assert unchanged_unsafe_res.status_code == 400
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_name", ["focus", "market"])
+async def test_save_character_card_allows_overwriting_existing_reserved_catgirl_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_name: str
+):
+    """Overwriting an existing catgirl card named after a reserved route succeeds, while saving a new one returns 400."""
+    import copy
+    import json
+    from fastapi.responses import JSONResponse
+    from main_routers.characters_router import cards
+
+    characters_file = tmp_path / "characters.json"
+
+    class _LocalConfigManager:
+        def load_characters(self):
+            return json.loads(characters_file.read_text(encoding="utf-8"))
+
+        async def aload_characters(self):
+            return self.load_characters()
+
+        async def asave_characters(self, data):
+            characters_file.write_text(
+                json.dumps(copy.deepcopy(data), ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        def get_character_data(self):
+            return ("主人", {}, {}, {}, {}, {}, {}, {}, {})
+
+    cm = _LocalConfigManager()
+    monkeypatch.setattr(cards, "get_config_manager", lambda: cm)
+
+    async def _noop_refresh(*_args, **_kwargs):
+        return {"context_refreshed": False}
+
+    async def _noop_greeting(*_args, **_kwargs):
+        return (True, "")
+
+    monkeypatch.setattr(cards, "_refresh_catgirl_context_after_profile_change", _noop_refresh)
+    monkeypatch.setattr(cards, "_mark_new_character_greeting_pending_safe", _noop_greeting)
+
+    # 1. Existing legacy catgirl card can be overwritten via /character-card/save.
+    characters_file.write_text(
+        json.dumps({"主人": {}, "猫娘": {legacy_name: {"档案名": legacy_name, "昵称": "old"}}, "当前猫娘": legacy_name}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    ok_res = await cards._save_character_card_serialized({
+        "character_card_name": legacy_name,
+        "charaData": {"档案名": legacy_name, "昵称": "updated"},
+    })
+    assert isinstance(ok_res, dict) and ok_res.get("success") is True
+    assert cm.load_characters()["猫娘"][legacy_name]["昵称"] == "updated"
+
+    # 2. Saving a brand-new catgirl card named after a reserved route still returns 400.
+    characters_file.write_text(
+        json.dumps({"主人": {}, "猫娘": {}, "当前猫娘": "小猫"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    bad_res = await cards._save_character_card_serialized({
+        "character_card_name": legacy_name,
+        "charaData": {"档案名": legacy_name, "昵称": "new"},
+    })
+    assert isinstance(bad_res, JSONResponse)
+    assert bad_res.status_code == 400

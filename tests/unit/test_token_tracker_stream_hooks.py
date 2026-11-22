@@ -601,3 +601,33 @@ def test_save_drains_deferred_iterator_records_even_when_dirty_was_false(tmp_pat
     day = persisted["daily_stats"][date.today().isoformat()]
     assert day["call_count"] == 1
     assert day["total_tokens"] == 14
+
+
+def test_drain_pending_locked_skips_malformed_entry_and_persists_valid_tail(tmp_path, monkeypatch, caplog):
+    """Dropping one malformed queued entry in _pending_records logs a warning without breaking save or later entries."""
+    import atexit
+    from datetime import date
+    import json
+
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(tt, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = tt.TokenTracker()
+    atexit.unregister(tracker._atexit_save)
+
+    today = date.today().isoformat()
+    # Non-numeric prompt_tokens raises TypeError in +=; second entry must still apply cleanly.
+    tracker._pending_records.append((today, "bad-model", "not-an-int", 0, 0, 0, "chat", True, {}, 0))
+    tracker._pending_records.append((today, "good-model", 3, 4, 7, 0, "chat", True, {"ts": 1.0, "tt": 7}, 0))
+
+    with caplog.at_level("WARNING"):
+        tracker.save()
+
+    assert len(tracker._pending_records) == 0
+    assert any("failed to apply deferred record" in rec.message for rec in caplog.records)
+    persisted = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    day = persisted["daily_stats"][today]
+    assert day["call_count"] == 1
+    assert day["total_tokens"] == 7
+    assert "good-model" in day["by_model"]

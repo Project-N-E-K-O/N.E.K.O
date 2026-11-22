@@ -18,7 +18,7 @@ import time
 from collections import deque
 from datetime import date, timedelta
 
-from ._shared import _deep_copy_day, _merge_day_stats
+from ._shared import _deep_copy_day, _merge_day_stats, logger
 from .reporting import record_avatar_state, record_settings_state
 
 class RecordingMixin:
@@ -87,7 +87,10 @@ class RecordingMixin:
                 entry = pending.popleft()
             except IndexError:
                 break
-            self._apply_record_locked(*entry)
+            try:
+                self._apply_record_locked(*entry)
+            except Exception as exc:
+                logger.warning("Token tracker: failed to apply deferred record (dropping entry): %s", exc)
 
     def _record_impl(
         self,
