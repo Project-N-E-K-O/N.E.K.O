@@ -19,11 +19,10 @@ Result shapes and error codes are defined once, next to the SDK API, in
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from plugin.core.rpc import RpcContext
-from plugin.sdk.plugin.llm_tool import (
-    build_register_result as _register_result,
-    build_unregister_result as _unregister_result,
-)
 from plugin.server.messaging.llm_tool_registry import (
     RemoteToolError,
     parse_register_request,
@@ -32,6 +31,27 @@ from plugin.server.messaging.llm_tool_registry import (
     unregister_remote_tool,
 )
 from plugin.utils.http_imports import ensure_httpx
+
+
+# ``plugin.sdk.plugin.llm_tool`` is imported on first use, not at module
+# import: importing it runs ``plugin/sdk/plugin/__init__.py``, which loads the
+# whole plugin SDK, and this module is imported whenever the plugin server
+# starts (``request_router`` builds its handlers then). The server keeps the
+# plugin execution capabilities unloaded until a plugin actually needs them.
+def _register_result(
+    body: Mapping[str, Any], *, ok: bool, error: str | None = None, message: str | None = None,
+) -> object:
+    from plugin.sdk.plugin.llm_tool import build_register_result
+
+    return build_register_result(body, ok=ok, error=error, message=message)
+
+
+def _unregister_result(
+    body: Mapping[str, Any], *, ok: bool, error: str | None = None, message: str | None = None,
+) -> object:
+    from plugin.sdk.plugin.llm_tool import build_unregister_result
+
+    return build_unregister_result(body, ok=ok, error=error, message=message)
 
 
 def _invalid_name(fields: dict[str, object] | None) -> bool:
