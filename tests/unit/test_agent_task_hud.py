@@ -54,6 +54,32 @@ def test_never_set_reads_as_none_and_a_setting_is_kept(store: Path):
     assert agent_task_hud.get_visible() is True
 
 
+def test_a_write_that_fails_changes_nothing_and_the_same_value_is_tried_again(store: Path, monkeypatch):
+    from app import agent_task_hud
+
+    agent_task_hud.set_visible(True)
+    import utils.config_manager as cm_module
+
+    working = cm_module.get_config_manager()
+
+    class _Broken:
+        def load_json_config(self, *args, **kwargs):
+            return working.load_json_config(*args, **kwargs)
+
+        def save_json_config(self, *args, **kwargs):
+            raise OSError("disk full")
+
+    monkeypatch.setattr("utils.config_manager.get_config_manager", lambda: _Broken())
+    with pytest.raises(OSError):
+        agent_task_hud.set_visible(False)
+    assert agent_task_hud.get_visible() is True
+    assert json.loads(store.read_text(encoding="utf-8")) == {"visible": True}
+
+    monkeypatch.setattr("utils.config_manager.get_config_manager", lambda: working)
+    assert agent_task_hud.set_visible(False) is True  # not skipped as "the same again"
+    assert json.loads(store.read_text(encoding="utf-8")) == {"visible": False}
+
+
 @pytest.mark.parametrize("written", [{"visible": "false"}, {"visible": 0}, ["visible"], {}])
 def test_a_file_that_says_nothing_clear_reads_as_never_set(store: Path, written):
     from app import agent_task_hud
@@ -112,6 +138,44 @@ async def test_the_command_takes_only_true_or_false(routes, payload):
         await srv.agent_command({"command": "set_task_hud_visible", **payload})
     assert refused.value.status_code == 400
     assert agent_task_hud.get_visible() is None and told == []
+
+
+@pytest.mark.asyncio
+async def test_a_setting_that_could_not_be_saved_is_told_as_not_taken(routes, monkeypatch):
+    from app import agent_task_hud
+
+    srv, told, bumped = routes
+
+    def _fails(value):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(agent_task_hud, "set_visible", _fails)
+    with pytest.raises(HTTPException) as refused:
+        await srv.agent_command({"command": "set_task_hud_visible", "value": False})
+    assert refused.value.status_code == 500
+    assert told == [] and bumped == []
+
+
+@pytest.mark.asyncio
+async def test_the_file_is_written_off_the_event_loop(routes, monkeypatch):
+    import asyncio
+    import threading
+
+    from app import agent_task_hud
+
+    srv, _, _ = routes
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    real = agent_task_hud.set_visible
+
+    def _record(value):
+        seen.append(threading.get_ident())
+        return real(value)
+
+    monkeypatch.setattr(agent_task_hud, "set_visible", _record)
+    await srv.agent_command({"command": "set_task_hud_visible", "value": False})
+    assert seen and seen[0] != loop_thread
+    assert asyncio.get_running_loop() is not None
 
 
 def test_the_status_snapshot_carries_the_setting(store: Path, monkeypatch: pytest.MonkeyPatch):

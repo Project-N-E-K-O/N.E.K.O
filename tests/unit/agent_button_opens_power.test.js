@@ -54,8 +54,9 @@ class FakeElement {
     }
 }
 
-function load({ popupOpen = false, withHud = true, tutorial = {} } = {}) {
+function load({ popupOpen = false, withHud = true, tutorial = {}, needsStream = false, windowBlocked = false } = {}) {
     const opened = [];
+    const closedPopups = [];
     const popup = new FakeElement('div');
     popup.style.display = popupOpen ? 'flex' : 'none';
     popup.style.opacity = popupOpen ? '1' : '0';
@@ -70,8 +71,9 @@ function load({ popupOpen = false, withHud = true, tutorial = {} } = {}) {
         dispatchEvent() { return true; }
     };
     if (withHud) {
-        window.AgentHUD = { openPowerWindow() { opened.push('power'); return {}; } };
+        window.AgentHUD = { openPowerWindow() { opened.push('power'); return windowBlocked ? null : {}; } };
     }
+    if (needsStream) window.computerUseNeedsCaptureStream = () => true;
     if (tutorial.isInTutorial) window.isInTutorial = true;
     if (tutorial.managerRunning) window.universalTutorialManager = { isTutorialRunning: true };
     if (tutorial.shortcutBlocked) window.isNekoShortcutBlockedByTutorial = () => true;
@@ -87,6 +89,7 @@ function load({ popupOpen = false, withHud = true, tutorial = {} } = {}) {
     const manager = Object.create(Proto);
     manager._avatarPrefix = 'live2d';
     manager._avatarButtonOptions = { buttonClassPrefix: 'live2d-floating-btn' };
+    manager.closePopupById = (id) => { closedPopups.push(id); return true; };
 
     function makeButton(id) {
         const config = Proto.getDefaultButtonConfigs().find((item) => item.id === id);
@@ -97,11 +100,11 @@ function load({ popupOpen = false, withHud = true, tutorial = {} } = {}) {
         return { btn, popupShown };
     }
 
-    return { window, opened, popup, makeButton, configs: Proto.getDefaultButtonConfigs() };
+    return { window, opened, closedPopups, popup, makeButton, configs: Proto.getDefaultButtonConfigs() };
 }
 
 test('a plain click on the hammer opens NekoPower instead of the popup', () => {
-    const { opened, makeButton } = load();
+    const { opened, closedPopups, makeButton } = load();
     const { btn, popupShown } = makeButton('agent');
 
     const event = btn.click();
@@ -110,6 +113,32 @@ test('a plain click on the hammer opens NekoPower instead of the popup', () => {
     assert.deepEqual(popupShown, []);
     assert.equal(event.defaultPrevented, true);
     assert.equal(event.immediateStopped, true);
+    // As the hammer did before: the settings panel, its exclusive partner, is put away.
+    assert.deepEqual(closedPopups, ['settings']);
+});
+
+test('where keyboard control needs a shared screen stream the hammer still opens the popup', () => {
+    // Its keyboard switch asks for the stream within the click; the NekoPower page cannot.
+    const { opened, makeButton } = load({ needsStream: true });
+    const { btn, popupShown } = makeButton('agent');
+
+    const event = btn.click();
+
+    assert.deepEqual(opened, []);
+    assert.deepEqual(popupShown, ['agent']);
+    assert.equal(event.defaultPrevented, false);
+});
+
+test('a window that could not be opened leaves the click to the popup', () => {
+    const { opened, closedPopups, makeButton } = load({ windowBlocked: true });
+    const { btn, popupShown } = makeButton('agent');
+
+    const event = btn.click();
+
+    assert.deepEqual(opened, ['power']);
+    assert.deepEqual(popupShown, ['agent']);
+    assert.equal(event.immediateStopped, false);
+    assert.deepEqual(closedPopups, []);
 });
 
 for (const [name, tutorial] of [

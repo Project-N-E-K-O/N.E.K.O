@@ -58,7 +58,11 @@ def _load_from_disk() -> Optional[bool]:
 
 
 def get_visible() -> Optional[bool]:
-    """Whether the user wants the task HUD shown, or ``None`` if never set here."""
+    """Whether the user wants the task HUD shown, or ``None`` if never set here.
+
+    The first call reads the file; the agent process makes it off the event
+    loop at start (``api_runtime``), after which this only reads memory.
+    """
     global _loaded, _visible
     with _lock:
         if not _loaded:
@@ -68,7 +72,12 @@ def get_visible() -> Optional[bool]:
 
 
 def set_visible(value: bool) -> bool:
-    """Keep ``value``; return whether it changed. Written while the lock is held."""
+    """Keep ``value``; return whether it changed. Written while the lock is held.
+
+    The file is written first and what is held only changes once it is: a
+    write that fails raises, leaves the setting as it was, and the same value
+    asked for again is tried again. Blocking: call it off the event loop.
+    """
     global _loaded, _visible
     with _lock:
         if not _loaded:
@@ -76,13 +85,9 @@ def set_visible(value: bool) -> bool:
             _loaded = True
         if _visible is value:
             return False
-        try:
-            from utils.config_manager import get_config_manager
+        from utils.config_manager import get_config_manager
 
-            get_config_manager().save_json_config(FILENAME, {"visible": value})
-        except Exception as exc:
-            # Kept for this run all the same: the page shows what was asked for.
-            logger.warning("Failed to save the task HUD setting to %s: %s", FILENAME, exc)
+        get_config_manager().save_json_config(FILENAME, {"visible": value})
         _visible = value
         return True
 

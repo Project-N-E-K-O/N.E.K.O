@@ -15,8 +15,7 @@ const HUD_SOURCE = fs.readFileSync(path.join(PROJECT_ROOT, 'static/common-ui-hud
 const UI_V2_SOURCE = fs.readFileSync(path.join(PROJECT_ROOT, 'static/js/agent_ui_v2.js'), 'utf8');
 const KEY = 'neko-agent-taskhud-visible';
 
-function load({ stored, checkbox = true } = {}) {
-    const storage = new Map();
+function load({ stored, checkbox = true, storage = new Map(), saveOk = true } = {}) {
     if (stored !== undefined) storage.set(KEY, stored);
     const localStorage = {
         getItem(key) { return storage.has(key) ? storage.get(key) : null; },
@@ -24,7 +23,7 @@ function load({ stored, checkbox = true } = {}) {
     };
     const sent = [];
     const toggled = [];
-    const box = checkbox ? { id: 'live2d-agent-taskhud', checked: stored !== 'false', styled: 0, _updateStyle() { this.styled += 1; } } : null;
+    const box = checkbox ? { id: 'live2d-agent-taskhud', checked: storage.get(KEY) !== 'false', styled: 0, _updateStyle() { this.styled += 1; } } : null;
     const document = {
         baseURI: 'http://127.0.0.1:48911/',
         body: null,
@@ -45,7 +44,9 @@ function load({ stored, checkbox = true } = {}) {
     };
     const fetch = (url, init) => {
         sent.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) });
+        return saveOk.length === undefined
+            ? Promise.resolve({ ok: !!saveOk, json: () => Promise.resolve({ success: !!saveOk }) })
+            : Promise.resolve({ ok: !!saveOk[sent.length - 1], json: () => Promise.resolve({}) });
     };
     window.fetch = fetch;
     const context = vm.createContext({
@@ -87,6 +88,38 @@ test('never set there: a HUD switched off here before is handed in once', () => 
     assert.deepEqual(sent[0].body, { command: 'set_task_hud_visible', value: false });
     assert.equal(storage.get(KEY), 'false');
     assert.equal(toggled.length, 0);
+});
+
+test('a hand-in that did not get through is tried again with the next snapshot, and only until it does', async () => {
+    const { window, sent } = load({ stored: 'false', saveOk: [false, true] });
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    window.AgentHUD.syncTaskHudPreference(null);
+    await settle();
+    window.AgentHUD.syncTaskHudPreference(null);
+    await settle();
+    window.AgentHUD.syncTaskHudPreference(null);
+    await settle();
+
+    assert.equal(sent.length, 2);
+});
+
+test('two pages share their storage but each puts its own box and HUD right', () => {
+    const storage = new Map();
+    const first = load({ storage });
+    const second = load({ storage });
+
+    assert.equal(first.window.AgentHUD.syncTaskHudPreference(false), true);
+    // The storage says "off" already; the second page has not followed it yet.
+    assert.equal(storage.get(KEY), 'false');
+    assert.equal(second.box.checked, true);
+
+    assert.equal(second.window.AgentHUD.syncTaskHudPreference(false), true);
+    assert.equal(second.box.checked, false);
+    assert.equal(second.toggled.length, 1);
+    // And the same again is nothing on either page.
+    assert.equal(second.window.AgentHUD.syncTaskHudPreference(false), false);
+    assert.equal(first.window.AgentHUD.syncTaskHudPreference(false), false);
 });
 
 test('never set there and shown here: nothing is sent', () => {

@@ -311,6 +311,8 @@
 // 小面板照常建在页面里，只留给新手教程：教程平时自己调 showPopup 打开它，
 // 退路里还会模拟点一下锤子再等面板出现，所以教程运行时这里不拦，照旧弹面板。
 // 面板已经开着（比如教程留下的）时也不拦，让原来的点击把它收起。
+// 要靠屏幕共享流截图的平台（个别 Linux Wayland）也不拦：小面板的键鼠开关会在这次点击里先拿屏幕共享，
+// 喵能力界面在另一个窗口、另一个端口，做不了这一步。
 (function () {
     function isReservedForTutorial() {
         try {
@@ -330,21 +332,44 @@
         return !!(popup && popup.style.display === 'flex' && popup.style.opacity === '1');
     }
 
+    function needsCaptureStream() {
+        try {
+            return typeof window.computerUseNeedsCaptureStream === 'function'
+                && window.computerUseNeedsCaptureStream() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     // 返回 true 表示已经打开了喵能力界面、这次点击到此为止。
-    function handleClick(event, prefix) {
-        if (isReservedForTutorial() || isPopupOpen(prefix)) return false;
+    function handleClick(event, prefix, manager) {
+        if (isReservedForTutorial() || isPopupOpen(prefix) || needsCaptureStream()) return false;
         const hud = window.AgentHUD;
         if (!hud || typeof hud.openPowerWindow !== 'function') return false;
+        let opened = null;
+        try {
+            opened = hud.openPowerWindow();
+        } catch (_) {
+            opened = null;
+        }
+        // 窗口没开出来（被拦截、壳拒绝打开）：照旧弹小面板，这次点击不白点。
+        if (!opened) return false;
         if (event) {
             event.preventDefault();
             event.stopImmediatePropagation();
         }
-        hud.openPowerWindow();
+        // 原来点锤子会收起互斥的「设置」面板（渲染器监听里的 config.exclusive），这里照做。
+        if (manager && typeof manager.closePopupById === 'function') {
+            try {
+                manager.closePopupById('settings');
+            } catch (_) {}
+        }
         return true;
     }
 
     window.nekoAgentButton = window.nekoAgentButton || {
         isReservedForTutorial,
+        needsCaptureStream,
         handleClick
     };
 })();
@@ -553,7 +578,7 @@ Object.assign(AvatarButtonMixin.methods, {
             if (config.id === 'agent' && window.nekoAgentButton) {
                 // 捕获阶段先处理：打开了喵能力界面就不再走各渲染器弹小面板的监听器。
                 btn.addEventListener('click', (e) => {
-                    window.nekoAgentButton.handleClick(e, prefix);
+                    window.nekoAgentButton.handleClick(e, prefix, this);
                 }, true);
             }
 

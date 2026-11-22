@@ -77,19 +77,25 @@ window.AgentHUD.saveTaskHudPreference = function (visible) {
 };
 
 let agentTaskHudPreferenceHandedIn = false;
+// 本页最后照着做的值。本地存储是同源页面共用的，另一页先写了同一个值，本页的复选框和悬浮窗也还得自己改。
+let agentTaskHudPreferenceApplied = null;
 
-// 返回 true 表示本地的设置被改了。
+// 返回 true 表示本页照着新值改了。
 window.AgentHUD.syncTaskHudPreference = function (value) {
     if (typeof value !== 'boolean') {
         // 后端还没记过：本地关过的（以前在小面板里关的）交给后端一次，喵能力界面上才看得到它是关的。
+        // 没交上（请求失败）就等下一份快照再交。
         if (value === null && !agentTaskHudPreferenceHandedIn && !isAgentTaskHudVisiblePreferenceEnabled()) {
             agentTaskHudPreferenceHandedIn = true;
-            window.AgentHUD.saveTaskHudPreference(false);
+            window.AgentHUD.saveTaskHudPreference(false).then(function (ok) {
+                if (!ok) agentTaskHudPreferenceHandedIn = false;
+            });
         }
         return false;
     }
-    if (isAgentTaskHudVisiblePreferenceEnabled() === value) return false;
-    setAgentTaskHudVisiblePreferenceEnabled(value);
+    if (agentTaskHudPreferenceApplied === value && isAgentTaskHudVisiblePreferenceEnabled() === value) return false;
+    agentTaskHudPreferenceApplied = value;
+    if (isAgentTaskHudVisiblePreferenceEnabled() !== value) setAgentTaskHudVisiblePreferenceEnabled(value);
     ['live2d', 'vrm', 'mmd', 'pngtuber'].forEach(function (prefix) {
         const checkbox = document.getElementById(`${prefix}-agent-taskhud`);
         if (checkbox && checkbox.checked !== value) {

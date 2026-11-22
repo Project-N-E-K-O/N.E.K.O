@@ -589,7 +589,13 @@ async def agent_command(payload: Dict[str, Any]):
             raise HTTPException(400, "invalid task hud value")
         from app.agent_task_hud import set_visible as _set_task_hud_visible
 
-        if _set_task_hud_visible(value):
+        # The file is written off the event loop (it is shared with the main and memory servers).
+        try:
+            changed = await asyncio.to_thread(_set_task_hud_visible, value)
+        except Exception as exc:  # noqa: BLE001 - told as not taken; the setting is left as it was
+            logger.warning("[Agent] saving the task HUD setting failed (exc_type=%s)", type(exc).__name__)
+            raise HTTPException(500, "task hud setting not saved") from None
+        if changed:
             _bump_state_revision()
             await _emit_agent_status_update()
         return {"success": True, "request_id": request_id, "task_hud_visible": value}
