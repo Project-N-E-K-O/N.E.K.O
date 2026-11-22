@@ -598,10 +598,14 @@ async def delete_vrm_model(request: Request):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
         if not _is_vrm_basename(filename):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
-        target = (vrm_dir / filename).resolve()
+        entry = vrm_dir / filename
+        target = entry.resolve()
         if not target.is_relative_to(vrm_dir.resolve()):
             return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
-        if not target.is_file():
+        if _is_unverifiable_vrm_link(entry):
+            # Remove the link itself, never its target.
+            target = entry
+        elif not _file_check(target):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
         target.unlink()
@@ -833,6 +837,24 @@ def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
     return None
 
 
+def _is_unverifiable_vrm_link(path: Path) -> bool:
+    """A link whose target type cannot be checked (e.g. it points into an unreadable folder).
+
+    The upload's "already exists" check counts such an entry while the model
+    lookup skips it, so deletion removes the link itself: ``Path.unlink`` does
+    not follow links, so nothing the link points to is touched.
+    """
+    try:
+        return path.is_symlink() and _file_check(path) is None
+    except OSError:
+        return False
+
+
+def _find_unverifiable_vrm_link(vrm_dir: Path, model_name: str) -> Path | None:
+    return next((path for path in _iter_vrm_model_files(vrm_dir)
+                 if path.stem == model_name and _is_unverifiable_vrm_link(path)), None)
+
+
 def _is_vrm_basename(filename: str) -> bool:
     # Legacy files can violate the upload policy. Keep the directory boundary
     # check in both deletion routes and reject path syntax here.
@@ -913,6 +935,9 @@ async def delete_vrm_model(model_name: str):
             vrm_path = _find_vrm_model_file(vrm_dir, model_name)
         except ValueError as e:
             return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
+        if vrm_path is None:
+            # Only when no checkable model matches; this is the link, not its target.
+            vrm_path = _find_unverifiable_vrm_link(vrm_dir, model_name)
         if vrm_path is None:
             return JSONResponse(status_code=404, content={"success": False, "error": f"未在用户目录中找到模型 {model_name}，可能是内置模型，无法删除"})
 

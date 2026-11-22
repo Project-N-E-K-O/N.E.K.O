@@ -11,6 +11,7 @@ listed URL is served, and that the MMD animation can be deleted.
 """
 
 import io
+import os
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -554,3 +555,73 @@ def test_mmd_zip_import_into_a_linked_or_relative_mmd_dir(mmd_app, monkeypatch, 
     assert response.json()["model_url"] == "/user_mmd/Miku/Miku.pmx"
     assert response.json()["file_count"] == 2
     assert (mmd_app.mmd_dir / "Miku" / "Miku.pmx").read_bytes() == b"pmx"
+
+
+@pytest.fixture
+def locked_vrm_link(vrm_app, tmp_path):
+    """``vrm_dir/Foo.vrm`` links into a folder without permissions, so its type
+    cannot be checked (``is_file()`` raises PermissionError on Python 3.11)."""
+    def make(inside: bool):
+        locked = (vrm_app.vrm_dir if inside else tmp_path) / "locked"
+        locked.mkdir()
+        target = locked / "Foo.vrm"
+        target.write_bytes(b"glTF-target")
+        link = vrm_app.vrm_dir / "Foo.vrm"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available")
+        os.chmod(locked, 0)
+        cleanups.append(locked)
+        if vrm_router._file_check(link) is not None:
+            pytest.skip("permissions do not block the type check here (e.g. running as root)")
+        return link, target
+
+    cleanups = []
+    yield make
+    for locked in cleanups:
+        os.chmod(locked, 0o755)
+
+
+def _upload_vrm(client, name):
+    return client.post("/api/model/vrm/upload", files={"file": (name, b"glTF-new", "application/octet-stream")})
+
+
+@pytest.mark.parametrize("route", ["name", "url"])
+def test_vrm_delete_removes_an_uncheckable_link_that_blocks_upload(vrm_app, locked_vrm_link, route):
+    # Upload counts the uncheckable Foo.vrm as existing ("delete it first"),
+    # but deletion skipped it with 404 / failed with 500: it could not be cleared.
+    link, target = locked_vrm_link(inside=True)
+
+    with TestClient(vrm_app.app) as client:
+        blocked = _upload_vrm(client, "Foo.vrm")
+        assert blocked.status_code == 400 and "已存在" in blocked.json()["error"], blocked.text
+        if route == "name":
+            response = client.delete("/api/model/vrm/model/Foo")
+        else:
+            response = client.request("DELETE", "/api/model/vrm/model", json={"url": "/user_vrm/Foo.vrm"})
+        assert response.status_code == 200, response.text
+        assert not link.is_symlink()
+        uploaded = _upload_vrm(client, "Foo.vrm")
+
+    assert uploaded.status_code == 200, uploaded.text
+    # Only the link was removed; the file it pointed to is untouched.
+    os.chmod(target.parent, 0o755)
+    assert target.read_bytes() == b"glTF-target"
+    assert (vrm_app.vrm_dir / "Foo.vrm").read_bytes() == b"glTF-new"
+
+
+@pytest.mark.parametrize("route", ["name", "url"])
+def test_vrm_delete_still_refuses_an_uncheckable_link_out_of_the_folder(vrm_app, locked_vrm_link, route):
+    link, target = locked_vrm_link(inside=False)
+
+    with TestClient(vrm_app.app) as client:
+        if route == "name":
+            response = client.delete("/api/model/vrm/model/Foo")
+        else:
+            response = client.request("DELETE", "/api/model/vrm/model", json={"url": "/user_vrm/Foo.vrm"})
+
+    assert response.status_code == 400 and response.json()["error"] == "路径越界", response.text
+    assert link.is_symlink()
+    os.chmod(target.parent, 0o755)
+    assert target.read_bytes() == b"glTF-target"
