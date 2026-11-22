@@ -28,6 +28,42 @@ class _EntryRecord:
     handler: RouteHandler
 
 
+def _entry_owner(fn: object, router_cls: type) -> type:
+    """The class in ``router_cls``'s MRO whose body defines ``fn``.
+
+    Forward references resolve against the namespace the entry was written
+    in; an entry inherited by a router subclass still names its base's models.
+    """
+    for cls in router_cls.__mro__:
+        for value in vars(cls).values():
+            target = value.__func__ if isinstance(value, (staticmethod, classmethod)) else value
+            if target is fn:
+                return cls
+    return router_cls
+
+
+def router_entry_inference(fn: object, router_cls: type) -> dict[str, object]:
+    """llm_result_* / output_schema ``@plugin_entry`` could not infer, resolved against the router class.
+
+    A return annotation naming a model defined later in the router class body
+    is a forward reference the decorator cannot resolve while the class body
+    runs; ``@neko_plugin`` finishes that for plugin classes, and this does the
+    same for routers (runtime entries and the host's static preview). Only
+    pending inferences run, so explicit contracts are never replaced. Params
+    inference stays with the decorator: switching a router entry to model
+    validation of its inputs would change which calls it accepts.
+    """
+    if not callable(fn):
+        return {}
+    return _deferred_entry_inference(fn, _entry_owner(fn, router_cls), include_params=False)
+
+
+def router_entry_meta(meta: EventMeta, fn: object, router_cls: type) -> EventMeta:
+    """``meta`` with the router-class inference applied, as a copy; the shared metadata is untouched."""
+    inferred = router_entry_inference(fn, router_cls)
+    return dataclasses.replace(meta, **inferred) if inferred else meta
+
+
 class PluginRouter:
     """Async-first router with light plugin-bound convenience accessors."""
 
@@ -42,7 +78,8 @@ class PluginRouter:
         # Instead resolve lazily in collect_entries() using the current prefix.
         self._decorated_entries: list[tuple[str, EventMeta, RouteHandler]] = []
         # Contract fields inferred against this router class, per decorated entry
-        # (keyed by the handler's function). Kept apart from the shared metadata.
+        # (keyed by the handler's function). Kept apart from the shared metadata;
+        # computed once, when entries are first resolved (after import).
         self._deferred_inference: dict[object, dict[str, object]] = {}
         self._main_plugin: object | None = None
         self._collect_decorated_entries()
@@ -212,25 +249,13 @@ class PluginRouter:
         return resolved
 
     def _inferred_contract_fields(self, handler: RouteHandler) -> dict[str, object]:
-        """llm_result_* / output_schema the decorator could not infer, resolved against this router class.
-
-        A return annotation naming a model defined later in the router class
-        body is a forward reference ``@plugin_entry`` cannot resolve while the
-        class body runs; ``@neko_plugin`` finishes that for plugin classes, and
-        this does the same for routers. Explicit contracts are not pending, so
-        they are never replaced. The shared metadata is left untouched.
-        """
+        """Contract fields the decorator left pending, resolved against this router (cached per entry)."""
         fn = getattr(handler, "__func__", handler)
         cached = self._deferred_inference.get(fn)
-        if cached is not None:
-            return cached
-        # Params inference stays with the decorator: switching a router entry to
-        # model validation of its inputs would change which calls it accepts.
-        inferred = _deferred_entry_inference(fn, type(self), include_params=False)
-        if inferred:
-            # Unresolved hints are retried: a model may be defined after the router.
-            self._deferred_inference[fn] = inferred
-        return inferred
+        if cached is None:
+            cached = router_entry_inference(fn, type(self))
+            self._deferred_inference[fn] = cached
+        return cached
 
     def on_mount(self) -> None:
         return None

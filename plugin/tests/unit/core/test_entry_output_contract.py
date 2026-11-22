@@ -255,6 +255,28 @@ def test_router_forward_reference_is_resolved_against_the_router_class():
     assert (shared.output_schema, shared.output_model, shared.llm_result_schema) == (None, None, None)
 
 
+def test_inherited_router_entry_resolves_in_the_class_that_defines_it():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class BaseRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="forward")
+        async def forward(self) -> "Later":
+            return None
+
+        class Later(BaseModel):
+            ok: bool
+
+    class ChildRouter(BaseRouter):
+        # A namesake in the subclass must not replace the model the entry names.
+        class Later(BaseModel):
+            other: int
+
+    for router in (BaseRouter(), ChildRouter()):
+        meta = router.collect_entries()["forward"].meta
+        assert meta.output_model is BaseRouter.Later
+        assert meta.llm_result_fields == ["ok"]
+
+
 def test_deferred_inference_never_replaces_explicit_contracts():
     from plugin.sdk.shared.core.router import PluginRouter
 

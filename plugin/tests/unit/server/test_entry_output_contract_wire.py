@@ -333,6 +333,28 @@ def test_previews_carry_the_output_contract_only_when_declared():
     assert "strict_output" not in previews["plain_main"]
 
 
+class _ForwardRouter(PluginRouter):
+    @plugin_entry(id="forward")
+    async def forward(self) -> "Later":
+        return self.Later(n=1)
+
+    class Later(BaseModel):
+        n: int
+
+
+class _ForwardPreviewPlugin:
+    __routers__ = [_ForwardRouter]
+
+
+def test_router_class_preview_resolves_forward_references_like_runtime():
+    from plugin.core.registry import _extract_entries_preview
+
+    previews = {item["id"]: item for item in _extract_entries_preview("demo", _ForwardPreviewPlugin, {}, {})}
+    runtime = _ForwardRouter().collect_entries()["forward"].meta
+    assert previews["forward"]["output_schema"] == _ForwardRouter.Later.model_json_schema() == runtime.output_schema
+    assert getattr(_ForwardRouter.forward, EVENT_META_ATTR).output_schema is None
+
+
 def test_packaged_handler_metadata_carries_the_output_contract():
     from plugin.server.application.plugins.metadata_scanner import _event_meta_payload
 
