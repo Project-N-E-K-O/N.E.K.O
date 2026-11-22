@@ -3647,7 +3647,8 @@ def test_release_check_still_rejects_a_link_in_an_ignored_path(
     # A regular file there still builds normally (the build does not honour
     # .gitignore), and nothing from outside the repository gets in.
     (plugin_dir / "local_cache" / "config.txt").unlink()
-    (plugin_dir / "local_cache" / "config.txt").write_text("local content\n", encoding="utf-8")
+    # Bytes, not text: text mode would write \r\n on Windows.
+    (plugin_dir / "local_cache" / "config.txt").write_bytes(b"local content\n")
     assert _release_check(plugin_dir, target) == 0
     with zipfile.ZipFile(target / "release_links.neko-plugin") as archive:
         assert archive.read("payload/plugins/release_links/local_cache/config.txt") == b"local content\n"
