@@ -6134,15 +6134,46 @@ async def test_a_change_of_where_a_project_works_is_settled_before_the_host_shut
 
 
 async def test_no_change_of_where_a_project_works_begins_in_a_host_that_is_shutting_down(hosts, tmp_path):
+    from nekoclaw.host.service import HostShuttingDown
+
     host = _host(hosts, tmp_path, ScriptedLLM())
     await host.space.touch_project("Budget app")
     lan, _ = await host.ledger.project_session("Lan", "Budget app")
     new = tmp_path / "new"
     new.mkdir()
-    was = (await host.ledger.get_session(lan.id)).workdir
+    moved: list[str] = []
+    move = host.ledger.move_project
+
+    async def noted(project: str, workdir: str) -> Any:
+        moved.append(workdir)
+        return await move(project, workdir)
+
+    host.ledger.move_project = noted
     await host.shutdown()
-    with pytest.raises(RuntimeError, match="shutting down"):
+    with pytest.raises(HostShuttingDown, match="shutting down"):
         await host.set_project_workdir("Budget app", str(new))
-    assert not host._changes
+    # Nothing of it was begun: no change is under way, the sessions were not written, nor the record.
+    assert not host._changes and moved == []
     assert (await host.space.get_project("Budget app")).workdir != str(new)
-    assert was != str(new)
+
+
+async def test_a_record_that_cannot_be_read_after_its_write_failed_leaves_the_sessions_where_they_were_put(hosts, tmp_path):
+    """Not known whether it was written: the sessions are not put back under a record that may say the new place."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    old = tmp_path / "old"
+    old.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(old))
+    lan, _ = await host.ledger.project_session("Lan", "Budget app", workdir=str(old))
+    new = tmp_path / "new"
+    new.mkdir()
+
+    async def fails_and_leaves_it_unreadable(name: str, workdir: str) -> Any:
+        record = host.paths.space().project_dir(name) / "project.json"
+        record.write_text("{ not json", encoding="utf-8")
+        raise OSError("the record cannot be written")
+
+    host.space.set_project_workdir = fails_and_leaves_it_unreadable
+    with pytest.raises(OSError):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.read_project("Budget app"))[1] is False
+    assert (await host.ledger.get_session(lan.id)).workdir == str(new)

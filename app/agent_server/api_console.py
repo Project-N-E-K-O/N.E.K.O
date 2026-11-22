@@ -482,6 +482,9 @@ def build_console_router(
                 code = "bad_name"
             raise _refuse(400, code) from None
         except RuntimeError as exc:
+            if type(exc).__name__ == "HostShuttingDown":
+                # Asked for while the service is going down: as if it were not there to answer.
+                raise _refuse(503, "agent_unreachable") from None
             if type(exc).__name__ != "ProjectBusy":
                 raise
             raise _refuse(409, "project_busy", reason=str(exc)) from None

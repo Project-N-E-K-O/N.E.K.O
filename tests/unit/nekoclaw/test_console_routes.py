@@ -1090,3 +1090,16 @@ async def test_what_the_user_left_empty_of_a_new_task_agent_is_filled_in_by_its_
     assert written == ("title",)
     session = await host.ledger.get_session(session_id)
     assert (session.title, session.title_by, session.duty, session.duty_by) == ("Keeper of the books", "review", "Keeps the books", "user")
+
+
+async def test_where_a_project_works_is_not_changed_by_a_service_that_is_going_down(console, tmp_path):
+    client, host, _ = console
+    await host.space.touch_project("ledger-tool")
+    elsewhere = tmp_path.parent / f"{tmp_path.name}-elsewhere"
+    elsewhere.mkdir()
+    await host.shutdown()
+    refused = await client.post(
+        "/console/space/projects/workdir", headers=HEADERS, json={"project": "ledger-tool", "workdir": str(elsewhere)},
+    )
+    # Told as a service that is not there to answer, not as an error of the server.
+    assert refused.status_code == 503 and refused.json()["detail"]["code"] == "agent_unreachable"

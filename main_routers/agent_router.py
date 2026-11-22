@@ -131,12 +131,15 @@ class _Unconfirmed:
     def written_elsewhere(self, mgr, flags: dict) -> None:
         """Note switches that were written by another way than a command (the flags route, a character switch).
 
-        It is a write that stands, later than every write so far.
+        It is a write that stands, later than every write so far. Only
+        what the session takes for a switch (``update_agent_flags``
+        leaves out whatever is not true or false): what it did not
+        write is not noted as written.
         """
         for key, value in flags.items():
             entry = self._switches.get((id(mgr), key))
-            if entry is not None:
-                entry[0] = (self._number(), bool(value))
+            if entry is not None and isinstance(value, bool):
+                entry[0] = (self._number(), value)
 
     def settle(self, mgr, command: object, *, taken: bool) -> None:
         """A command is over: ``taken`` unless it is known that the agent process did not take it.

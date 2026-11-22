@@ -107,6 +107,10 @@ async def configured_task_agent_model() -> dict[str, Any] | None:
 _SESSION_AT_WORK = ("running", "waiting", "compacting")
 
 
+class HostShuttingDown(RuntimeError):
+    """The host is being shut down: what was asked for is not begun."""
+
+
 class ProjectBusy(RuntimeError):
     """Something is at work in a project, so where it works cannot be changed now. Its text is why (a code)."""
 
@@ -854,7 +858,7 @@ class NekoClawHost:
         # None begins once the host is shutting down: those under way are waited for before the
         # ledger is closed (``_settle_changes``), and one begun after that look would not be.
         if self._shut_down:
-            raise RuntimeError("the host is shutting down")
+            raise HostShuttingDown("the host is shutting down")
         change = asyncio.ensure_future(self._change_project_workdir(project, wanted))
         self._changes.add(change)
         change.add_done_callback(self._changes.discard)
@@ -897,14 +901,18 @@ class NekoClawHost:
         something began meanwhile is left where it is (``Ledger.restore_project``).
         """
         try:
-            kept = await self.space.get_project(project)
+            # ``read_project`` and not ``get_project``: the latter shows a project whose file
+            # cannot be read by its name alone, with no working directory, as if nothing were written.
+            kept, readable = await self.space.read_project(project)
         except Exception as exc:  # noqa: BLE001 - whatever keeps the record from being read
+            kept, readable = None, False
+            logger.debug("the record of a project could not be read (exc_type=%s)", type(exc).__name__)
+        if not readable:
             # Not known whether it was written: the sessions are left where they were put
             # sooner than put back under a record that may say the new directory.
             logger.warning(
                 "where a project works could not be recorded, and its record cannot be read to tell "
-                "whether it was: its sessions stay in the directory asked for (exc_type=%s)",
-                type(exc).__name__,
+                "whether it was: its sessions stay in the directory asked for"
             )
             return
         if kept is not None and kept.workdir == wanted:

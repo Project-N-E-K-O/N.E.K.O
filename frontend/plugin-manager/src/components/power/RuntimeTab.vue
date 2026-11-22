@@ -1,6 +1,8 @@
 <template>
   <div v-loading="loading && !view" class="runtime-tab">
-    <el-alert v-if="changeError || error" :title="changeError || error" type="error" :closable="false" show-icon class="block" />
+    <!-- Why a change was not taken, and why the page cannot be read: either may be so, or both. -->
+    <el-alert v-if="changeError" :title="changeError" type="error" :closable="false" show-icon class="block" data-testid="runtime-change-error" />
+    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" data-testid="runtime-error" />
 
     <template v-if="view">
       <section class="panel">
