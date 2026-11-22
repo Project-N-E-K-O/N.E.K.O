@@ -890,6 +890,11 @@ async def test_failed_restore_is_not_finished_later_after_a_clean_rollback(tmp_p
         assert await reconciler.arun_pending_ahead(NAME, "memory.snapshot_restored") is False
         await reconciler.areconcile(NAME)
         assert {rel: (char_dir / rel).read_bytes() for rel in pre} == pre
+        # Even a full replay after the sentinel file is lost leaves it cancelled.
+        (char_dir / "events_applied.json").unlink()
+        assert await reconciler.arun_pending_ahead(NAME, "memory.snapshot_restored") is False
+        await reconciler.areconcile(NAME)
+        assert {rel: (char_dir / rel).read_bytes() for rel in pre} == pre
 
 
 @pytest.mark.asyncio

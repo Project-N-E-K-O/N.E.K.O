@@ -630,7 +630,7 @@ def _restore_snapshot_files_sync(
             if plan.get("save_started") and not plan.get("rollback_errors"):
                 # The user is told the restore failed and the files are back
                 # as they were: the event must not finish it later.
-                _void_restore_event(event_log, character_name, sentinel_before, payload)
+                _void_restore_event(event_log, character_name, sentinel_before, payload, char_dir)
             raise failure
 
     return {
@@ -643,16 +643,48 @@ def _restore_snapshot_files_sync(
     }
 
 
-def _void_restore_event(event_log, character_name: str, sentinel_before, payload: dict) -> None:
+_VOIDED_RESTORES_FILENAME = "voided_restores.json"
+_VOIDED_RESTORES_KEEP = 50
+
+
+def _voided_restores(char_dir: Path) -> set[str]:
+    """Pre-restore snapshot ids of restores that failed and were rolled back."""
+    data = _read_json_safe(_snapshots_root(char_dir) / _VOIDED_RESTORES_FILENAME, [])
+    return {item for item in data if isinstance(item, str)} if isinstance(data, list) else set()
+
+
+def _mark_restore_voided(char_dir: Path, pre_restore_id: str) -> None:
+    path = _snapshots_root(char_dir) / _VOIDED_RESTORES_FILENAME
+    data = _read_json_safe(path, [])
+    ids = [item for item in data if isinstance(item, str)] if isinstance(data, list) else []
+    if pre_restore_id not in ids:
+        ids.append(pre_restore_id)
+    atomic_write_json(str(path), ids[-_VOIDED_RESTORES_KEEP:], ensure_ascii=False)
+
+
+def _is_voided(char_dir: Path, payload: dict) -> bool:
+    pre_id = payload.get("pre_restore_snapshot_id")
+    return isinstance(pre_id, str) and pre_id in _voided_restores(char_dir)
+
+
+def _void_restore_event(
+    event_log, character_name: str, sentinel_before, payload: dict, char_dir: Path,
+) -> None:
     """Advance the sentinel onto a restore event whose swap was rolled back cleanly.
 
     Only when the sentinel is still where it was before the append (a
     compare-and-set through apply_and_advance with a no-op step), and only
     for this very event: the last record of the tail, matched by its
-    pre-restore snapshot id. Never raises; the original error is what the
-    caller reports.
+    pre-restore snapshot id. The cancellation is also written down
+    (voided_restores.json in the snapshots folder) before the sentinel
+    moves, so a later full replay, after the sentinel file is lost, still
+    leaves this restore alone. Never raises; the original error is what
+    the caller reports.
     """
     try:
+        pre_id = payload.get("pre_restore_snapshot_id")
+        if isinstance(pre_id, str):
+            _mark_restore_voided(char_dir, pre_id)
         tail = event_log.read_since(character_name, sentinel_before)
         record = tail[-1] if tail else None
         if (
@@ -753,7 +785,7 @@ def make_snapshot_restore_in_effect(*, memory_dir_fn: Callable[[], Any] | None =
         snapshot_id, target, pre = parts
         memory_dir = Path(memory_dir_fn() if memory_dir_fn is not None else get_config_manager().memory_dir)
         char_dir = memory_dir / name
-        if not char_dir.is_dir():
+        if not char_dir.is_dir() or _is_voided(char_dir, payload):
             return False
         try:
             state, _live, _current, _relpaths = _compare_with_restore(char_dir, target, pre)
@@ -808,6 +840,12 @@ def make_snapshot_restore_handler(
         memory_dir = Path(memory_dir_fn() if memory_dir_fn is not None else get_config_manager().memory_dir)
         char_dir = memory_dir / name
         if not char_dir.is_dir():
+            return False
+        if _is_voided(char_dir, payload):
+            logger.info(
+                "[MemorySnapshots] %s: restore of %s failed and was rolled back; replay leaves it",
+                name, snapshot_id,
+            )
             return False
         dm = _directives()
 
