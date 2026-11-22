@@ -328,8 +328,9 @@ class PersistenceMixin:
 
     async def aload_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
         from memory.long_term_sync import require_consistent_views, consistent_view_read
-        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
-        path = self._reflections_path(name)
+        directory = os.path.join(self._config_manager.memory_dir, name)
+        require_consistent_views(directory)
+        path = os.path.join(directory, "reflections.json")
         if not await asyncio.to_thread(os.path.exists, path):
             return []
         try:

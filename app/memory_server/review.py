@@ -60,7 +60,9 @@ introspection_tasks: dict[str, asyncio.Task] = {}
 pinned_review_tasks: dict[str, asyncio.Task] = {}
 # Periodic persona/reflection/scoped refine runs (refine_loops), registered under
 # the review spawn lock so character rename/delete cancels and drains in-flight passes.
-refine_tasks: dict[str, asyncio.Task] = {}
+persona_refine_tasks: dict[str, asyncio.Task] = {}
+reflection_refine_tasks: dict[str, asyncio.Task] = {}
+scoped_refine_tasks: dict[str, asyncio.Task] = {}
 
 
 # Phase C: prevent spawn races; /process /renew /settle / IdleMaint share maybe_spawn_review,
@@ -135,13 +137,16 @@ async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
         cancel_event.set()
 
     candidates = []
-    for registry in (
+    registries = (
         correction_tasks,
         compress_backup_tasks,
         introspection_tasks,
         pinned_review_tasks,
-        refine_tasks,
-    ):
+        persona_refine_tasks,
+        reflection_refine_tasks,
+        scoped_refine_tasks,
+    )
+    for registry in registries:
         task = registry.get(lanlan_name)
         if task is not None and not task.done() and task not in candidates:
             candidates.append(task)
@@ -159,13 +164,7 @@ async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
                 exc,
             )
 
-    for registry in (
-        correction_tasks,
-        compress_backup_tasks,
-        introspection_tasks,
-        pinned_review_tasks,
-        refine_tasks,
-    ):
+    for registry in registries:
         task = registry.get(lanlan_name)
         if task is None or task.done():
             registry.pop(lanlan_name, None)

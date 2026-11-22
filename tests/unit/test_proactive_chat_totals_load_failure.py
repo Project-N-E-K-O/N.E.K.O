@@ -150,6 +150,8 @@ async def test_f0173_failed_reload_preserves_previous_root_and_hides_stale_total
     assert await state._ensure_proactive_chat_totals_loaded(memory_dir=root_a) is True
     assert state._get_proactive_chat_total("A") == 9
     assert state._was_invite_ever_delivered("A") is True
+    assert state._get_proactive_chat_total("A", memory_dir=root_b) == 0
+    assert not state._was_invite_ever_delivered("A", memory_dir=root_b)
 
 
 @pytest.mark.asyncio
@@ -194,7 +196,7 @@ async def test_f0173_cancelled_load_and_root_swap_between_load_and_write(monkeyp
         return ok
 
     monkeypatch.setattr(state, "_ensure_proactive_chat_totals_loaded", _swap_after_load)
-    await state._increment_proactive_chat_total("C", memory_dir=root_a)
+    assert await state._increment_proactive_chat_total("B", memory_dir=root_a) == 0
     assert json.loads(_totals_path(root_a).read_text(encoding="utf-8"))["totals"] == {"A": 2}
 
 

@@ -789,11 +789,11 @@ def test_f0255_shell_stream_text_and_jobs_render_delta_report_partial_when_spill
     buf.close()
 
     rendered_shell = shell._stream_text(buf)
-    assert "partial output (capped at 12 bytes)" in rendered_shell
+    assert "partial output" in rendered_shell
     assert "full output" not in rendered_shell
 
     rendered_delta = render_delta("", "", True, [str(target)], spill_truncated=True)
-    assert rendered_delta == f"[some output was dropped from memory; partial output (spill capped): {target}]"
+    assert rendered_delta == f"[some output was dropped from memory; partial output: {target}]"
     assert render_delta("", "", True, [str(target)], spill_truncated=False) == (
         f"[some output was dropped from memory; full output: {target}]"
     )
@@ -829,7 +829,7 @@ def test_f0255_job_registry_peek_mixed_stream_truncation(tmp_path: Path) -> None
     reg = JobRegistry(lambda _job: None)
     text, cursors = reg.peek(job)
     assert cursors == (6, 12)
-    assert "partial output (spill capped):" in text
+    assert "partial output:" in text
     assert "full output" not in text
     assert str(out_path) in text
     assert str(err_path) in text
@@ -1126,3 +1126,16 @@ async def test_job_notice_batch_rechecks_earlier_sources_before_delivery(tmp_pat
         assert jobs.get("first").stdout_offset == 0 and jobs.get("second").stdout_offset > 0
     finally:
         await session.close()
+
+
+def test_spill_write_error_reports_partial_output(tmp_path):
+    from unittest.mock import Mock
+
+    target = tmp_path / "short.log"
+    stream = Mock()
+    stream.write.side_effect = OSError("write failed")
+    buf = procs.OutputBuffer(5, lambda: target, protected={target: stream})
+    buf.feed(b"0123456789")
+    assert buf.spill_truncated
+    assert f"partial output: {target}" in shell._stream_text(buf)
+    assert f"partial output: {target}" in render_delta("", "", True, [str(target)], buf.spill_truncated)

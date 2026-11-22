@@ -21,6 +21,9 @@ def _setup_mmd_env(monkeypatch, tmp_path):
     mmd_dir.mkdir(parents=True, exist_ok=True)
     cm = SimpleNamespace(
         app_docs_dir=app_docs,
+        project_root=tmp_path,
+        get_steam_workshop_path=lambda: None,
+        get_workshop_path=lambda: None,
         mmd_dir=mmd_dir,
         mmd_animation_dir=mmd_animation_dir,
     )
@@ -72,13 +75,17 @@ async def test_f0210_delete_nested_model_prunes_empty_subdir_without_affecting_s
     sub_b = pack_dir / "SubB"
     sub_a.mkdir(parents=True)
     sub_b.mkdir(parents=True)
-    model_a = sub_a / "A.pmx"
-    model_b = sub_b / "B.pmx"
+    model_a = sub_a / "Shared.pmx"
+    model_b = sub_b / "Shared.pmd"
     model_a.write_bytes(b"a")
     model_b.write_bytes(b"b")
 
+    mapping = mmd_dir / "emotion_config" / "Shared.json"
+    mapping.parent.mkdir()
+    mapping.write_text('{"happy":1}')
+
     resp = await mmd_router.delete_mmd_model(
-        _DummyRequest({"url": "/user_mmd/NestedPack/SubA/A.pmx"})
+        _DummyRequest({"url": "/user_mmd/NestedPack/SubA/Shared.pmx"})
     )
     body = json.loads(resp.body)
     assert resp.status_code == 200
@@ -86,6 +93,10 @@ async def test_f0210_delete_nested_model_prunes_empty_subdir_without_affecting_s
     assert not model_a.exists()
     assert not sub_a.exists()
     assert model_b.exists()
+    assert mapping.read_text() == '{"happy":1}'
+    resp = await mmd_router.delete_mmd_model(_DummyRequest({"url": "/user_mmd/NestedPack/SubB/Shared.pmd"}))
+    assert resp.status_code == 200
+    assert not mapping.exists()
 
 
 @pytest.mark.asyncio

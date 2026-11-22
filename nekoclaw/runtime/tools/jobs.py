@@ -135,7 +135,7 @@ def render_delta(
         return body
     where = ", ".join(spill_paths) if spill_paths else "(unavailable)"
     if spill_paths and spill_truncated:
-        notice = f"[some output was dropped from memory; partial output (spill capped): {where}]"
+        notice = f"[some output was dropped from memory; partial output: {where}]"
     else:
         notice = f"[some output was dropped from memory; full output: {where}]"
     gap = "\n" if body and not body.endswith("\n") else ""

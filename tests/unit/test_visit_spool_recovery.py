@@ -2416,12 +2416,15 @@ async def test_sealed_upload_of_another_character_is_not_uploaded(tmp_path):
 
 
 @pytest.mark.parametrize("change", [{"v": 2}, {"transport": "webrtc"}], ids=["newer_version", "new_transport"])
-async def test_sealed_upload_of_another_version_is_kept_not_deleted(tmp_path, change):
+@pytest.mark.parametrize("corrupt_stream", [False, True])
+async def test_sealed_upload_of_another_version_is_kept_not_deleted(tmp_path, change, corrupt_stream):
     v = vid(120)
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True)
     sealed = d / f"{v}.upload.json"
     sealed.write_text(json.dumps({**_sealed(v), **change}), encoding="utf-8")
+    if corrupt_stream:
+        (d / f"{v}.upload.jsonl").write_text("{broken")
     report_path = _queue_report(tmp_path, v, include_transcript=True)
     uploads, reports = Uploads(), Reports()
     await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
@@ -3101,7 +3104,7 @@ async def test_f0184_sealed_upload_with_stamp_end_extra_rows_and_metadata_is_pre
     assert not stream.exists()
 
 
-async def test_f0184_valid_sealed_upload_kept_when_reseal_fails_with_envelope_incomplete(tmp_path):
+async def test_mismatched_sealed_upload_deferred_when_reseal_lacks_identity(tmp_path):
     from main_logic.visit.recovery import build_upload_doc
 
     v = vid(131)
@@ -3123,9 +3126,9 @@ async def test_f0184_valid_sealed_upload_kept_when_reseal_fails_with_envelope_in
 
     uploads = Uploads(ok=False)
     await _recover(tmp_path, upload_transcript=uploads)
-    assert len(uploads.calls) == 1
-    assert uploads.calls[0][0] == v
-    assert uploads.calls[0][1] == doc
+    assert uploads.calls == []
+    assert json.loads(sealed_path.read_text()) == doc
+    assert (_spool_dir(tmp_path) / f"{v}.upload.jsonl").exists()
 
 
 async def test_f0184_truncated_sealed_upload_is_still_resealed_from_stream(tmp_path):
@@ -3144,3 +3147,28 @@ async def test_f0184_truncated_sealed_upload_is_still_resealed_from_stream(tmp_p
     expected = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
     assert uploaded["request"]["ended_at"] == expected["request"]["ended_at"]
 
+
+
+async def test_failed_reseal_defers_upload_and_report_until_full_transcript_is_available(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(133)
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    path = _spool_dir(tmp_path) / f"{v}.upload.json"
+    stale = recovery.build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    stale["request"]["lines"].pop()
+    path.write_text(json.dumps(stale), encoding="utf-8")
+    queued = _queue_report(tmp_path, v, include_transcript=True)
+    uploads, reports = Uploads(), Reports()
+    with monkeypatch.context() as patch:
+        def locked(*args):
+            raise PermissionError("locked")
+        patch.setattr(recovery, "_write_private_json", locked)
+        await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    assert not uploads.calls and not reports.calls
+    assert stream.exists() and queued.exists() and json.loads(path.read_text()) == stale
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    (_, uploaded), = uploads.calls
+    assert len(uploaded["request"]["lines"]) == len(stale["request"]["lines"]) + 1
+    assert reports.calls and not queued.exists()

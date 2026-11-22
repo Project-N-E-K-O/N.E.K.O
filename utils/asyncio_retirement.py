@@ -1,6 +1,7 @@
 """Finish physical retirement before propagating caller cancellation."""
 
 import asyncio
+from contextlib import suppress
 
 
 async def await_retirement(awaitable):
@@ -23,3 +24,15 @@ async def await_retirement(awaitable):
     if cancellation is not None:
         raise cancellation
     return result
+
+
+async def await_completion_with_cancel(coro):
+    """Finish an async transaction despite cancellation and report that cancellation."""
+    operation = asyncio.create_task(coro)
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        return operation.result(), True

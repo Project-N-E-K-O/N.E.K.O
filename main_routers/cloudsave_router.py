@@ -27,7 +27,6 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 
 import asyncio
 import logging
-from contextlib import suppress
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -40,6 +39,7 @@ from .characters_router import (
     send_reload_page_notice,
 )
 from .workshop_router import get_subscribed_workshop_items, get_workshop_item_details
+from utils.asyncio_retirement import await_completion_with_cancel
 from utils.cloudsave_autocloud import (
     STEAM_AUTO_CLOUD_SYNC_BACKEND,
     build_steam_autocloud_status,
@@ -64,30 +64,34 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cloudsave", tags=["cloudsave"])
 _character_download_apply_lock = asyncio.Lock()
+_claim_recovery_tasks: set[asyncio.Task] = set()
 
 
 async def _await_thread_call_to_completion(func, *args, **kwargs):
     """Return a worker result and whether cancellation arrived while it ran."""
-    operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
-    try:
-        return await asyncio.shield(operation), False
-    except asyncio.CancelledError:
-        while not operation.done():
-            with suppress(asyncio.CancelledError):
-                await asyncio.wait({operation})
-        return operation.result(), True
+    return await await_completion_with_cancel(asyncio.to_thread(func, *args, **kwargs))
 
 
-async def _await_coroutine_to_completion(coro):
-    """Finish an async transaction despite cancellation and report that cancellation."""
-    operation = asyncio.create_task(coro)
-    try:
-        return await asyncio.shield(operation), False
-    except asyncio.CancelledError:
-        while not operation.done():
-            with suppress(asyncio.CancelledError):
-                await asyncio.wait({operation})
-        return operation.result(), True
+async def _withdraw_download_claim(name: str, token: str, reason: str) -> None:
+    async def withdraw() -> bool:
+        return await notify_memory_server_reload(
+            reason=reason, release_derived_task_claims={name: (token,)},
+        )
+
+    if await withdraw():
+        return
+
+    async def retry_until_acknowledged() -> None:
+        delay = 1
+        while True:
+            await asyncio.sleep(delay)
+            if await withdraw():
+                return
+            delay = min(60, delay * 2)
+
+    task = asyncio.create_task(retry_until_acknowledged())
+    _claim_recovery_tasks.add(task)
+    task.add_done_callback(_claim_recovery_tasks.discard)
 
 
 CLOUDSAVE_ERROR_I18N_KEYS = {
@@ -657,7 +661,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
         # arrives while HTTP is in flight, wait for its terminal result and
         # withdraw this exact claim before propagating cancellation.
         release_needs_resume = True
-        released, release_cancelled = await _await_coroutine_to_completion(
+        released, release_cancelled = await await_completion_with_cancel(
             release_memory_server_character(
                 name,
                 reason=reason,
@@ -666,13 +670,8 @@ async def post_cloudsave_character_download(name: str, request: Request):
         )
         if released and not release_cancelled:
             return True
-        _, resume_cancelled = await _await_coroutine_to_completion(
-            notify_memory_server_reload(
-                reason=f"{reason}（release 失败或取消补偿）",
-                release_derived_task_claims={
-                    name: (release_claim_token,),
-                },
-            )
+        _, resume_cancelled = await await_completion_with_cancel(
+            _withdraw_download_claim(name, release_claim_token, f"{reason}（release 失败或取消补偿）")
         )
         release_needs_resume = False
         if release_cancelled or resume_cancelled:
@@ -771,7 +770,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 if visit_refusal is not None:
                     return visit_refusal
                 reload_error_response, completion_cancelled = (
-                    await _await_coroutine_to_completion(
+                    await await_completion_with_cancel(
                         _complete_cloudsave_character_download(
                             config_manager,
                             name,
@@ -801,13 +800,8 @@ async def post_cloudsave_character_download(name: str, request: Request):
         )
     finally:
         if release_needs_resume:
-            _, resume_cancelled = await _await_coroutine_to_completion(
-                notify_memory_server_reload(
-                    reason=f"云存档下载中止，恢复角色派生任务: {name}",
-                    release_derived_task_claims={
-                        name: (release_claim_token,),
-                    },
-                )
+            _, resume_cancelled = await await_completion_with_cancel(
+                _withdraw_download_claim(name, release_claim_token, f"云存档下载中止，恢复角色派生任务: {name}")
             )
             if resume_cancelled:
                 raise asyncio.CancelledError

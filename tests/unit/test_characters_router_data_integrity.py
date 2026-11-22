@@ -509,3 +509,63 @@ async def test_b11_004_save_character_card_preserves_reserved_fields_and_ignores
     assert saved_new["_reserved"]["character_id"] != "forged"
     assert "system_prompt" not in saved_new["_reserved"]
     assert saved_new["_reserved"].get("character_uid")
+
+
+@pytest.mark.asyncio
+async def test_voice_change_refreshes_runtime_after_cancellation_during_save(monkeypatch):
+    name = "测试猫娘"
+    cm = DummyConfigManager(_base_characters())
+    cm.allow_save_finish.clear()
+    mgr = DummySessionMgr(is_active=True)
+    mgr.voice_id = "v1"
+    lock = asyncio.Lock()
+
+    async def refresh(name, *, is_new):
+        assert not lock.locked()
+        mgr.voice_id = get_reserved(cm.characters["猫娘"][name], "voice_id")["ref"]
+
+    monkeypatch.setattr(voice_registry_module, "character_config_mutation_lock", lock)
+    monkeypatch.setattr(voice_registry_module, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(voice_registry_module, "get_session_manager", lambda: {name: mgr})
+    monkeypatch.setattr(voice_registry_module, "get_init_one_catgirl", lambda: refresh)
+    operation = asyncio.create_task(voice_registry_module.update_catgirl_voice_id(name, DummyRequest({"voice_id": "v2"})))
+    await asyncio.wait_for(cm.save_started.wait(), 2)
+    operation.cancel()
+    cm.allow_save_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+    retry = await voice_registry_module.update_catgirl_voice_id(name, DummyRequest({"voice_id": "v2"}))
+    assert retry["voice_id_changed"] is False
+    assert mgr.ended and mgr.voice_id == "v2"
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_voice_deletion_still_cleans_references(monkeypatch):
+    name = "测试猫娘"
+    cm = DummyConfigManager(_base_characters())
+    deleted = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    lock = asyncio.Lock()
+    original_delete = cm.delete_voice_for_current_api
+
+    def delete(voice_id):
+        result = original_delete(voice_id)
+        loop.call_soon_threadsafe(deleted.set)
+        return result
+
+    monkeypatch.setattr(cm, "delete_voice_for_current_api", delete)
+    monkeypatch.setattr(voice_registry_module, "character_config_mutation_lock", lock)
+    monkeypatch.setattr(voice_registry_module, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(voice_registry_module, "get_session_manager", lambda: {})
+    async def refresh():
+        assert not lock.locked()
+
+    monkeypatch.setattr(voice_registry_module, "get_initialize_character_data", lambda: refresh)
+    async with lock:
+        operation = asyncio.create_task(voice_registry_module.delete_voice("v1"))
+        await asyncio.wait_for(deleted.wait(), 2)
+        operation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+    assert cm.deleted_voices == ["v1"]
+    assert get_reserved(cm.characters["猫娘"][name], "voice_id") == ""

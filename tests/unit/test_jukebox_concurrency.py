@@ -68,7 +68,7 @@ async def test_f0020_upload_songs_concurrent_delete_and_visibility_not_lost(monk
     upload_task = asyncio.create_task(
         jukebox_router.upload_songs(files=[_upload_file("fresh.mp3", b"fresh-audio-bytes")], metadata="[]")
     )
-    await asyncio.to_thread(meta_started.wait, 3)
+    assert await asyncio.to_thread(meta_started.wait, 3)
 
     # While upload_songs is paused in metadata extraction, delete old_song & hide other_song
     del_res = await jukebox_router.delete_song("old_song")
@@ -79,6 +79,7 @@ async def test_f0020_upload_songs_concurrent_delete_and_visibility_not_lost(monk
     meta_release.set()
     up_res = await upload_task
     assert up_res["success"] is True
+    assert up_res["song"]["name"] == "Uploaded Track"
 
     reloaded = jukebox_router.JukeboxConfig(cm)
     assert "old_song" not in reloaded.data["songs"]
@@ -110,6 +111,10 @@ async def test_f0020_concurrent_duplicate_md5_and_same_filename_uploads(monkeypa
     assert outcomes.count(True) == 1
     assert outcomes.count(False) == 1
     cfg = jukebox_router.JukeboxConfig(cm)
+    winner, duplicate = (r1, r2) if r1["success"] else (r2, r1)
+    winner_id = winner["song"]["id"]
+    assert duplicate["error"] == f"歌曲已存在: {winner_id}"
+    assert cfg.data["md5Index"]["songs"][hashlib.md5(b"same-content").hexdigest()] == winner_id
     assert not list(cfg.songs_dir.glob(".tmp_upload_*"))
 
     # 2. Two concurrent action uploads with same filename but different bytes -> distinct IDs and files
@@ -177,26 +182,26 @@ async def test_f0020_import_config_does_not_clobber_concurrent_delete(monkeypatc
         )
     buf.seek(0)
 
-    md5_started = threading.Event()
-    md5_release = threading.Event()
-    orig_md5 = jukebox_router.calculate_md5
+    copy_started = threading.Event()
+    copy_release = threading.Event()
+    orig_copy = shutil.copy2
 
-    def _paused_md5(path):
-        md5_started.set()
-        assert md5_release.wait(3)
-        return orig_md5(path)
+    def _paused_copy(src, dst):
+        copy_started.set()
+        assert copy_release.wait(3)
+        return orig_copy(src, dst)
 
-    monkeypatch.setattr(jukebox_router, "calculate_md5", _paused_md5)
+    monkeypatch.setattr(shutil, "copy2", _paused_copy)
 
     import_task = asyncio.create_task(
         jukebox_router.import_config(UploadFile(filename="pack.zip", file=buf))
     )
-    await asyncio.to_thread(md5_started.wait, 3)
+    assert await asyncio.to_thread(copy_started.wait, 3)
 
     await jukebox_router.delete_song("drop_song")
     await jukebox_router.update_song_visibility("keep_song", visible=False)
 
-    md5_release.set()
+    copy_release.set()
     res = await import_task
     assert res["success"] is True
 
@@ -396,6 +401,18 @@ async def test_f0020_cancelled_error_mid_os_replace_after_partial_batch_move(
 
     monkeypatch.setattr(jukebox_router.os, "replace", _paused_second_replace)
 
+    original_unlink = Path.unlink
+    locked_once = False
+
+    def transient_lock(path, *args, **kwargs):
+        nonlocal locked_once
+        if path == target_dir / f"part2{ext}" and not locked_once:
+            locked_once = True
+            raise PermissionError("file temporarily locked")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", transient_lock)
+
     files = [
         _upload_file(f"part1{ext}", b"part1-bytes"),
         _upload_file(f"part2{ext}", b"part2-bytes"),
@@ -417,6 +434,7 @@ async def test_f0020_cancelled_error_mid_os_replace_after_partial_batch_move(
     with pytest.raises(asyncio.CancelledError):
         await upload_task
 
+    assert locked_once
     assert second_finished.is_set()
     assert second_error is None
     assert list(target_dir.glob(".tmp_upload_*")) == []
@@ -798,3 +816,37 @@ async def test_f0020_pack_folder_cancelled_error_retires_copyfileobj_and_cleans_
     assert len(created_temp_dirs) == 1
     assert not created_temp_dirs[0].exists()
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,ext", [("songs", "mp3"), ("actions", "vmd")])
+async def test_upload_rolls_back_every_new_file_on_config_save_failure(monkeypatch, tmp_path, kind, ext):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(jukebox_router, "extract_audio_metadata", lambda _path: {})
+    cfg = jukebox_router.JukeboxConfig(cm)
+    folder = getattr(cfg, f"{kind}_dir")
+    existing = folder / f"original.{ext}"
+    existing.write_bytes(b"keep")
+
+    async def fail_save(self):
+        assert (folder / f"first.{ext}").is_file()
+        assert (folder / f"second.{ext}").is_file()
+        raise OSError("config save failed")
+
+    monkeypatch.setattr(jukebox_router.JukeboxConfig, "asave", fail_save)
+    upload = jukebox_router.upload_songs if kind == "songs" else jukebox_router.upload_actions
+    with pytest.raises(OSError, match="config save failed"):
+        await upload(files=[_upload_file(f"{name}.{ext}", name.encode()) for name in ("first", "second")], metadata="[]")
+    assert list(folder.iterdir()) == [existing]
+
+
+def test_failed_staging_frees_partial_file_before_return(monkeypatch, tmp_path):
+    def fail_copy(src, dst):
+        dst.write(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copyfileobj", fail_copy)
+    with pytest.raises(OSError, match="disk full"):
+        jukebox_router._stage_upload_to_temp(io.BytesIO(), tmp_path, ".mp3", [])
+    assert not list(tmp_path.iterdir())

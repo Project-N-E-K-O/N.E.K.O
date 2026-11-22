@@ -760,16 +760,22 @@ async def _ensure_proactive_chat_totals_loaded(
         return True
 
 
-def _get_proactive_chat_total(lanlan_name: str) -> int:
+def _cached_totals_available(memory_dir: str | Path | None) -> bool:
+    return _proactive_chat_totals_authoritative and (
+        memory_dir is None or _proactive_chat_totals_loaded_path == _proactive_chat_totals_path(memory_dir=memory_dir)
+    )
+
+
+def _get_proactive_chat_total(lanlan_name: str, *, memory_dir: str | Path | None = None) -> int:
     """Synchronous read of cached counter. 0 if loaded-but-unset or non-authoritative."""
-    if not _proactive_chat_totals_authoritative:
+    if not _cached_totals_available(memory_dir):
         return 0
     return int(_proactive_chat_totals.get(lanlan_name, 0))
 
 
-def _was_invite_ever_delivered(lanlan_name: str) -> bool:
+def _was_invite_ever_delivered(lanlan_name: str, *, memory_dir: str | Path | None = None) -> bool:
     """Synchronous read of ever-delivered flag."""
-    if not _proactive_chat_totals_authoritative:
+    if not _cached_totals_available(memory_dir):
         return False
     return bool(_invite_ever_delivered.get(lanlan_name, False))
 
@@ -819,7 +825,7 @@ async def _increment_proactive_chat_total(
                 _PROACTIVE_CHAT_TOTALS_FILENAME,
                 _proactive_chat_totals_skipped_records,
             )
-        return _get_proactive_chat_total(lanlan_name)
+        return 0
     _proactive_chat_totals_skipped_records = 0
     async with _proactive_chat_totals_lock:
         if not (
@@ -831,7 +837,7 @@ async def _increment_proactive_chat_total(
                 "%s 在加载与写入之间被换成了别的根，跳过本次 total 写入",
                 _PROACTIVE_CHAT_TOTALS_FILENAME,
             )
-            return _get_proactive_chat_total(lanlan_name)
+            return 0
         new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
         _proactive_chat_totals[lanlan_name] = new_value
         await _shield_persist_totals_unlocked(memory_dir=memory_dir)
@@ -883,7 +889,7 @@ async def _record_invite_delivery_persistent(
                 _PROACTIVE_CHAT_TOTALS_FILENAME,
                 _proactive_chat_totals_skipped_records,
             )
-        return _get_proactive_chat_total(lanlan_name)
+        return 0
     _proactive_chat_totals_skipped_records = 0
     async with _proactive_chat_totals_lock:
         if not (
@@ -895,7 +901,7 @@ async def _record_invite_delivery_persistent(
                 "%s 在加载与写入之间被换成了别的根，跳过本次 invite 写入",
                 _PROACTIVE_CHAT_TOTALS_FILENAME,
             )
-            return _get_proactive_chat_total(lanlan_name)
+            return 0
         new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
         _proactive_chat_totals[lanlan_name] = new_value
         _invite_ever_delivered[lanlan_name] = True

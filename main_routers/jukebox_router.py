@@ -35,9 +35,9 @@ import hashlib
 import os
 import re
 import shutil
-import weakref
 import zipfile
 import tempfile
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -50,23 +50,20 @@ from starlette.background import BackgroundTask
 
 from .shared_state import get_config_manager
 from utils.asyncio_retirement import await_retirement
-from utils.file_utils import atomic_write_json, read_json_async
+from utils.file_utils import atomic_write_json, read_json_async, unlink_tolerating_replace
 from utils.logger_config import get_module_logger
 
 router = APIRouter(prefix="/api/jukebox", tags=["jukebox"])
 logger = get_module_logger(__name__, "Main")
 BUILTIN_JUKEBOX_DIR = Path(__file__).parent.parent / "static" / "jukebox"
 
-_jukebox_config_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
-
-
 def _get_jukebox_config_lock() -> asyncio.Lock:
     """Return a per-event-loop lock serializing jukebox config read-modify-save transactions."""
     loop = asyncio.get_running_loop()
-    lock = _jukebox_config_locks.get(loop)
+    lock = getattr(loop, "_neko_jukebox_config_lock", None)
     if lock is None:
         lock = asyncio.Lock()
-        _jukebox_config_locks[loop] = lock
+        loop._neko_jukebox_config_lock = lock
     return lock
 
 
@@ -78,52 +75,63 @@ def _stage_upload_to_temp(
 ) -> Path:
     """Copy an uploaded stream into a temporary file inside target_dir off the event loop."""
     target_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        dir=target_dir,
-        prefix=".tmp_upload_",
-        suffix=suffix,
-        delete=False,
-    ) as buffer:
-        temp_path = Path(buffer.name)
-        if created_paths is not None:
-            created_paths.append(temp_path)
-        shutil.copyfileobj(src_file, buffer)
-        return temp_path
-
-
-def _cleanup_temp_paths(paths: List[Path]) -> None:
-    """Remove any unmoved temporary upload files."""
-    for path in paths:
-        path.unlink(missing_ok=True)
-
-
-def _collect_unmoved_temp_paths(created_paths: List[Path], staged_items: List[dict]) -> List[Path]:
-    """Collect all temporary upload paths that were never moved into final targets."""
-    moved_paths = {item["tmp_path"] for item in staged_items if item["moved"]}
-    return list(
-        dict.fromkeys(
-            [path for path in created_paths if path not in moved_paths]
-            + [item["tmp_path"] for item in staged_items if not item["moved"]]
-        )
-    )
-
-
-def _replace_file_tracking(src_path: Path, dst_path: Path, state: dict) -> None:
-    """Move src_path onto dst_path and record completion before returning."""
-    os.replace(src_path, dst_path)
-    state["moved"] = True
-
-
-async def _replace_or_rollback(item: dict, tmp_path: Path, target_path: Path) -> None:
-    """Move tmp_path to target_path with retirement protection and rollback on cancellation."""
-    move_state = {"moved": False}
+    temp_path = None
     try:
-        await await_retirement(asyncio.to_thread(_replace_file_tracking, tmp_path, target_path, move_state))
-    except asyncio.CancelledError:
-        if move_state["moved"]:
-            await await_retirement(asyncio.to_thread(target_path.unlink, missing_ok=True))
-            item["moved"] = True
+        with tempfile.NamedTemporaryFile(
+            dir=target_dir,
+            prefix=".tmp_upload_",
+            suffix=suffix,
+            delete=False,
+        ) as buffer:
+            temp_path = Path(buffer.name)
+            if created_paths is not None:
+                created_paths.append(temp_path)
+            shutil.copyfileobj(src_file, buffer)
+            return temp_path
+    except BaseException:
+        if temp_path is not None:
+            _cleanup_temp_paths([temp_path])
         raise
+
+
+def _cleanup_temp_paths(paths: List[Path]) -> list[Path]:
+    """Attempt each removal, preserving the error that triggered cleanup."""
+    remaining = []
+    for path in paths:
+        try:
+            unlink_tolerating_replace(path, missing_ok=True)
+        except OSError as exc:
+            remaining.append(path)
+            logger.warning("Failed to remove jukebox file %s: %s", path, exc)
+    return remaining
+
+
+def _publish_media(src: Path, dst: Path, rollback: list[Path]) -> None:
+    os.replace(src, dst)
+    rollback.append(dst)
+
+
+def _rollback_media(paths: list[Path]) -> None:
+    remaining = _cleanup_temp_paths(paths)
+    if remaining:
+        _cleanup_temp_paths(remaining)
+
+
+async def _save_published_media(config, published: list[Path]) -> None:
+    """Only a successful config save transfers ownership of the accepted files."""
+    await config.asave()
+    published.clear()
+
+
+async def _finish_media_upload(config, accepted: list[Path], uncommitted: list[Path]) -> None:
+    try:
+        if accepted:
+            await _save_published_media(config, accepted)
+    finally:
+        rollback = uncommitted + accepted
+        if rollback:
+            await asyncio.to_thread(_rollback_media, rollback)
+
 
 # Upload constants.
 MAX_FILE_SIZE = 1 * 1024 * 1024 * 1024  # 1 GB per song/animation file.
@@ -769,12 +777,11 @@ async def upload_songs(
                     "file_md5": file_md5,
                     "audio_metadata": audio_metadata,
                     "meta": meta,
-                    "moved": False,
                 })
                 tmp_path = None
             except Exception as e:
                 if tmp_path is not None:
-                    await await_retirement(asyncio.to_thread(tmp_path.unlink, missing_ok=True))
+                    await await_retirement(asyncio.to_thread(_cleanup_temp_paths, [tmp_path]))
                 logger.error(f"上传第 {i+1} 首歌曲失败: {e}")
                 results[i] = {"success": False, "error": str(e)}
             finally:
@@ -782,7 +789,8 @@ async def upload_songs(
 
         async with _get_jukebox_config_lock():
             jukebox_config = JukeboxConfig(config_mgr)
-            any_added = False
+            accepted: list[Path] = []
+            uncommitted: list[Path] = []
 
             try:
                 for item in staged_items:
@@ -793,7 +801,6 @@ async def upload_songs(
                         existing_song_id = jukebox_config.data["md5Index"]["songs"].get(file_md5)
                         if existing_song_id:
                             await await_retirement(asyncio.to_thread(tmp_path.unlink, missing_ok=True))
-                            item["moved"] = True
                             results[idx] = {"success": False, "error": f"歌曲已存在: {existing_song_id}"}
                             continue
 
@@ -832,23 +839,21 @@ async def upload_songs(
                         )
                         song_dict = asdict(song)
 
-                        await _replace_or_rollback(item, tmp_path, target_path)
-                        item["moved"] = True
+                        await await_retirement(asyncio.to_thread(
+                            _publish_media, tmp_path, target_path, uncommitted,
+                        ))
 
                         jukebox_config.data["songs"][song_id] = song_dict
                         jukebox_config.data["md5Index"]["songs"][file_md5] = song_id
-                        any_added = True
+                        accepted.append(uncommitted.pop())
                         results[idx] = {"success": True, "song": song_dict}
                     except Exception as e:
                         logger.error(f"上传第 {idx+1} 首歌曲失败: {e}")
                         results[idx] = {"success": False, "error": str(e)}
             finally:
-                if any_added:
-                    await await_retirement(jukebox_config.asave())
+                await await_retirement(_finish_media_upload(jukebox_config, accepted, uncommitted))
     finally:
-        unmoved = _collect_unmoved_temp_paths(created_paths, staged_items)
-        if unmoved:
-            await await_retirement(asyncio.to_thread(_cleanup_temp_paths, unmoved))
+        await await_retirement(asyncio.to_thread(_cleanup_temp_paths, created_paths))
 
     final_results = [r for r in results if r is not None]
     # Return one result directly for single-song uploads, otherwise a list.
@@ -1131,12 +1136,11 @@ async def upload_actions(
                     "file_ext": file_ext,
                     "file_md5": file_md5,
                     "meta": meta if isinstance(meta, dict) else {},
-                    "moved": False,
                 })
                 tmp_path = None
             except Exception as e:
                 if tmp_path is not None:
-                    await await_retirement(asyncio.to_thread(tmp_path.unlink, missing_ok=True))
+                    await await_retirement(asyncio.to_thread(_cleanup_temp_paths, [tmp_path]))
                 logger.error(f"上传第 {i+1} 个动画失败: {e}")
                 results[i] = {"success": False, "error": str(e)}
             finally:
@@ -1144,7 +1148,8 @@ async def upload_actions(
 
         async with _get_jukebox_config_lock():
             jukebox_config = JukeboxConfig(config_mgr)
-            any_added = False
+            accepted: list[Path] = []
+            uncommitted: list[Path] = []
 
             try:
                 for item in staged_items:
@@ -1155,7 +1160,6 @@ async def upload_actions(
                         existing_action_id = jukebox_config.data["md5Index"]["actions"].get(file_md5)
                         if existing_action_id:
                             await await_retirement(asyncio.to_thread(tmp_path.unlink, missing_ok=True))
-                            item["moved"] = True
                             results[idx] = {"success": False, "error": f"动画已存在: {existing_action_id}"}
                             continue
 
@@ -1182,23 +1186,21 @@ async def upload_actions(
                         )
                         action_dict = asdict(action)
 
-                        await _replace_or_rollback(item, tmp_path, target_path)
-                        item["moved"] = True
+                        await await_retirement(asyncio.to_thread(
+                            _publish_media, tmp_path, target_path, uncommitted,
+                        ))
 
                         jukebox_config.data["actions"][action_id] = action_dict
                         jukebox_config.data["md5Index"]["actions"][file_md5] = action_id
-                        any_added = True
+                        accepted.append(uncommitted.pop())
                         results[idx] = {"success": True, "action": action_dict}
                     except Exception as e:
                         logger.error(f"上传第 {idx+1} 个动画失败: {e}")
                         results[idx] = {"success": False, "error": str(e)}
             finally:
-                if any_added:
-                    await await_retirement(jukebox_config.asave())
+                await await_retirement(_finish_media_upload(jukebox_config, accepted, uncommitted))
     finally:
-        unmoved = _collect_unmoved_temp_paths(created_paths, staged_items)
-        if unmoved:
-            await await_retirement(asyncio.to_thread(_cleanup_temp_paths, unmoved))
+        await await_retirement(asyncio.to_thread(_cleanup_temp_paths, created_paths))
 
     final_results = [r for r in results if r is not None]
     # Return single-animation upload results directly, otherwise a list.
@@ -1658,7 +1660,7 @@ async def import_config(file: UploadFile = File(...)):
     # Check archive sizes against 10 GB limits.
     check_file_size(file, MAX_ZIP_SIZE)
 
-    with tempfile.TemporaryDirectory() as temp_dir:
+    with tempfile.TemporaryDirectory() as temp_dir, ExitStack() as staging:
         temp_path = Path(temp_dir)
         zip_path = temp_path / "import.zip"
 
@@ -1707,6 +1709,18 @@ async def import_config(file: UploadFile = File(...)):
             raise HTTPException(400, "config.json 不是有效的 JSON") from err
 
         # Validate extracted paths and compute file MD5s BEFORE acquiring the config lock.
+        stage_dirs: dict[str, Path] = {}
+
+        def stage_media(src: Path, collection: str, digest: str) -> Path:
+            if collection not in stage_dirs:
+                target_dir = config_mgr.app_docs_dir / "jukebox" / collection
+                target_dir.mkdir(parents=True, exist_ok=True)
+                stage_dirs[collection] = Path(staging.enter_context(tempfile.TemporaryDirectory(dir=target_dir)))
+            staged = stage_dirs[collection] / digest
+            if not staged.exists():
+                shutil.copy2(src, staged)
+            return staged
+
         prepared_songs = []
         for song_id, song in import_data.get("songs", {}).items():
             try:
@@ -1717,6 +1731,7 @@ async def import_config(file: UploadFile = File(...)):
 
             if src_audio.exists():
                 file_md5 = await await_retirement(asyncio.to_thread(calculate_md5, src_audio))
+                src_audio = await await_retirement(asyncio.to_thread(stage_media, src_audio, "songs", file_md5))
                 song["audioMd5"] = file_md5
             else:
                 file_md5 = song.get("audioMd5", "")
@@ -1736,6 +1751,7 @@ async def import_config(file: UploadFile = File(...)):
 
             if src_file.exists():
                 file_md5 = await await_retirement(asyncio.to_thread(calculate_md5, src_file))
+                src_file = await await_retirement(asyncio.to_thread(stage_media, src_file, "actions", file_md5))
                 action["fileMd5"] = file_md5
             else:
                 file_md5 = action.get("fileMd5", "")
@@ -1757,8 +1773,7 @@ async def import_config(file: UploadFile = File(...)):
 
         async with _get_jukebox_config_lock():
             jukebox_config = JukeboxConfig(config_mgr)
-            copied_targets: List[Path] = []
-            save_completed = False
+            published: list[Path] = []
 
             try:
                 # Step 1: import songs against fresh config snapshot.
@@ -1773,8 +1788,7 @@ async def import_config(file: UploadFile = File(...)):
                         target_filename = get_unique_filename(jukebox_config.songs_dir, original_filename)
                         dst_audio = jukebox_config.songs_dir / target_filename
                         dst_audio.parent.mkdir(parents=True, exist_ok=True)
-                        copied_targets.append(dst_audio)
-                        await await_retirement(asyncio.to_thread(shutil.copy2, src_audio, dst_audio))
+                        await await_retirement(asyncio.to_thread(_publish_media, src_audio, dst_audio, published))
 
                         new_id = sanitize_filename(target_filename)
                         base_id = new_id
@@ -1819,8 +1833,7 @@ async def import_config(file: UploadFile = File(...)):
                         target_filename = get_unique_filename(jukebox_config.actions_dir, original_filename)
                         dst_file = jukebox_config.actions_dir / target_filename
                         dst_file.parent.mkdir(parents=True, exist_ok=True)
-                        copied_targets.append(dst_file)
-                        await await_retirement(asyncio.to_thread(shutil.copy2, src_file, dst_file))
+                        await await_retirement(asyncio.to_thread(_publish_media, src_file, dst_file, published))
 
                         new_id = sanitize_filename(target_filename)
                         base_id = new_id
@@ -1895,16 +1908,10 @@ async def import_config(file: UploadFile = File(...)):
                         local_song["defaultAction"] = local_action_id
                         logger.info(f"导入映射默认动画: {local_song_id} -> {local_action_id}")
 
-                async def _save_imported_config() -> None:
-                    nonlocal save_completed
-                    await jukebox_config.asave()
-                    save_completed = True
-
-                await await_retirement(_save_imported_config())
-            except BaseException:
-                if not save_completed and copied_targets:
-                    await await_retirement(asyncio.to_thread(_cleanup_temp_paths, copied_targets))
-                raise
+                await await_retirement(_save_published_media(jukebox_config, published))
+            finally:
+                if published:
+                    await await_retirement(asyncio.to_thread(_rollback_media, published))
 
         logger.info(f"导入完成: {stats}")
         return {"success": True, "stats": stats}

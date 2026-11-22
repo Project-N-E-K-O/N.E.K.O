@@ -36,7 +36,7 @@ from main_logic.tts_client import (
     get_custom_tts_voices,
     CustomTTSVoiceFetchError,
 )
-from utils.asyncio_retirement import await_retirement
+from utils.asyncio_retirement import await_completion_with_cancel, await_retirement
 from utils.character_memory import character_config_mutation_lock
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import (
@@ -83,9 +83,9 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if 'voice_id' not in data:
         logger.debug("猫娘 %s 的 voice_id 更新请求缺少字段，按无变更处理", name)
         return {"success": True, "session_restarted": False, "voice_id_changed": False}
+    voice_id = str(data.get('voice_id') or '').strip()
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
-    voice_id = str(data.get('voice_id') or '').strip()
     async with character_config_mutation_lock:
         characters = await _config_manager.aload_characters()
         if name not in characters.get('猫娘', {}):
@@ -117,10 +117,20 @@ async def update_catgirl_voice_id(name: str, request: Request):
 
         # User-selected voice: lazily migrate this entry to the structured object (migrate each entry only when used; see voice_id_to_storage_value).
         set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
-        await await_retirement(_config_manager.asave_characters(characters))
+        _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
 
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
+    try:
+        return await await_retirement(
+            _refresh_character_voice(name, session_manager, is_current_catgirl, old_voice_id, voice_id)
+        )
+    finally:
+        if cancelled:
+            raise asyncio.CancelledError
+
+
+async def _refresh_character_voice(name, session_manager, is_current_catgirl, old_voice_id, voice_id):
     # If this is the currently active neko, notify the frontend first, then close the session.
     session_ended = False
 
@@ -421,6 +431,10 @@ async def register_voice(request: Request):
 @router.delete('/voices/{voice_id}')
 async def delete_voice(voice_id: str):
     """Delete the specified voice."""
+    return await await_retirement(_delete_voice_and_references(voice_id))
+
+
+async def _delete_voice_and_references(voice_id: str):
     try:
         _config_manager = get_config_manager()
         try:

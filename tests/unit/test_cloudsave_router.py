@@ -1563,7 +1563,8 @@ async def test_download_reload_explicitly_resumes_a_reused_character_name():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_download_cancellation_during_release_withdraws_exact_claim():
+@pytest.mark.parametrize("retry", [False, True])
+async def test_download_cancellation_during_release_withdraws_exact_claim(retry):
     """Cancellation during release waits for its result, compensates, then propagates."""
     with TemporaryDirectory() as td:
         cm = _setup_force_test_env(Path(td))
@@ -1580,7 +1581,7 @@ async def test_download_cancellation_during_release_withdraws_exact_claim():
             cloudsave_router_module = importlib.import_module(
                 "main_routers.cloudsave_router"
             )
-            reload_memory = AsyncMock(return_value=True)
+            reload_memory = AsyncMock(side_effect=[False, True] if retry else [True])
             with patch.object(
                 cloudsave_router_module,
                 "release_memory_server_character",
@@ -1601,11 +1602,17 @@ async def test_download_cancellation_during_release_withdraws_exact_claim():
                 finish_release.set()
                 with pytest.raises(asyncio.CancelledError):
                     await operation
+                if retry:
+                    task, = cloudsave_router_module._claim_recovery_tasks
+                    await asyncio.wait_for(task, 3)
+                    assert not cloudsave_router_module._claim_recovery_tasks
 
         claim_token = release_memory.await_args.kwargs[
             "derived_task_claim_token"
         ]
-        reload_memory.assert_awaited_once_with(
+        assert reload_memory.await_count == (2 if retry else 1)
+        assert all(call == reload_memory.await_args for call in reload_memory.await_args_list)
+        reload_memory.assert_awaited_with(
             reason=(
                 "云存档下载前释放 SQLite 句柄: 小满"
                 "（release 失败或取消补偿）"

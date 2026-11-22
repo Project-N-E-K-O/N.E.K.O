@@ -1008,19 +1008,20 @@ class PluginRunner:
                     seen_cursors.add(next_after)
                     after = next_after
 
-                chosen_raw = trigger_raw if trigger_raw is not None else fallback_raw
-                if chosen_raw is not None:
-                    result["data"] = chosen_raw.get("data")
-                    result["meta"] = chosen_raw.get("meta")
-                    if chosen_raw.get("error"):
-                        error = chosen_raw["error"]
-                        if isinstance(error, dict):
-                            result["error"] = error.get("message") or str(error)
-                        elif isinstance(error, str):
-                            result["error"] = error
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the run's status still stands
                 _reraise_swallowed_cancellation()
                 logger.debug("export of run %s could not be read: %s", run_id, type(exc).__name__)
+
+            chosen_raw = trigger_raw if trigger_raw is not None else fallback_raw
+            if chosen_raw is not None:
+                result["data"] = chosen_raw.get("data")
+                result["meta"] = chosen_raw.get("meta")
+                if chosen_raw.get("error"):
+                    error = chosen_raw["error"]
+                    if isinstance(error, dict):
+                        result["error"] = error.get("message") or str(error)
+                    elif isinstance(error, str):
+                        result["error"] = error
             return result

@@ -32,6 +32,7 @@ import os
 
 
 
+from utils.asyncio_retirement import await_retirement
 from utils.cloudsave_runtime import assert_cloudsave_writable
 
 
@@ -726,10 +727,10 @@ class PersistenceMixin:
                 operation="save",
                 target=f"memory/{name}/persona.json",
             )
-            await atomic_write_json_async(
+            await await_retirement(atomic_write_json_async(
                 self._persona_path(name), persona, indent=2, ensure_ascii=False,
-            )
-        except Exception:
+            ))
+        except (Exception, asyncio.CancelledError):
             self._personas.pop(name, None)
             raise
 

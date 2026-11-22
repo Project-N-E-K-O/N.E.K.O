@@ -862,7 +862,7 @@ async def _upload_pending(
         owner = state["own_uid"] if state else None
         char_uid = _owner_or_none(state.get("own_char_uid")) if state else None
         reseal_reason = reason
-        sealed_valid = False
+        sealed_doc = None
         if visit_id in sealed:
             # Crash after writing .upload.json but before deleting log: upload file is the visit's actual sealed copy;
             # retaining log causes resealing and duplicate upload after success. Verify upload readability before deleting log;
@@ -871,7 +871,12 @@ async def _upload_pending(
                 sealed_doc = await asyncio.to_thread(
                     _load_json, visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX),
                 )
-            except (OSError, ValueError):
+            except OSError as exc:
+                logger.warning("visit recovery: cannot inspect sealed upload %s: %s", visit_id, exc)
+                sealed.discard(visit_id)
+                pending.add(visit_id)
+                continue
+            except ValueError:
                 sealed_doc = None
             sealed_valid = _sealed_doc_belongs(sealed_doc, visit_id)
             belongs = sealed_valid
@@ -907,9 +912,7 @@ async def _upload_pending(
                     # prevent this visit's transcript and queued report from ever being submitted.
                     logger.warning("visit recovery: cannot delete stale stream %s: %s", stream.name, exc)
                 continue
-            if not sealed_valid:
-                # Remove invalid/corrupt sealed doc before resealing so failed reseal never uploads it.
-                sealed.discard(visit_id)
+            sealed.discard(visit_id)
             logger.warning("visit recovery: sealed upload of %s unreadable or not this visit's, resealing from its stream",
                            visit_id)
         # Transcript recovery uploads do not depend on finalized: if log exists and upload file was not written, build from log.
@@ -920,9 +923,6 @@ async def _upload_pending(
         except (OSError, ValueError, TypeError, OverflowError) as exc:
             # Skip only an unreadable/unwritable log, without blocking other visits' uploads and reports.
             logger.warning("visit recovery: cannot seal %s: %s", stream.name, exc)
-            if sealed_valid:
-                # Valid sealed .upload.json still exists on disk; leave visit_id in sealed so this pass uploads it.
-                continue
             pending.add(visit_id)
             if (retry_later is not None and isinstance(exc, OSError)
                     and not await asyncio.to_thread(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX).exists)):
@@ -935,6 +935,9 @@ async def _upload_pending(
             stream_checked.add(visit_id)
         else:
             sealed.discard(visit_id)
+            if _sealed_doc_unrecognized(sealed_doc, visit_id):
+                pending.add(visit_id)
+                continue
             if not await _drop_corrupt_sealed(spool_dir, visit_id):
                 # Corrupt log and no valid upload file for this visit: block report if that file cannot be deleted yet.
                 pending.add(visit_id)

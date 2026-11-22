@@ -20,13 +20,20 @@ def _make_cm(tmp_path: Path, catgirls=None):
     )
 
 
+def _memory_stores(cm):
+    pm = PersonaManager()
+    fs = FactStore()
+    engine = ReflectionEngine(fs, pm)
+    pm._config_manager = fs._config_manager = engine._config_manager = cm
+    return pm, engine, fs
+
+
 @pytest.mark.asyncio
 async def test_f0082_introspection_tick_skips_retired_or_deleted_character_before_peek(
     tmp_path, monkeypatch,
 ):
     cm = _make_cm(tmp_path, {"已删除角色": {"性格": "开朗"}})
-    pm = PersonaManager(cm)
-    engine = ReflectionEngine(cm, pm)
+    pm, engine, _ = _memory_stores(cm)
     monkeypatch.setattr(runtime, "_config_manager", cm, raising=False)
     monkeypatch.setattr(runtime, "persona_manager", pm, raising=False)
     monkeypatch.setattr(runtime, "reflection_engine", engine, raising=False)
@@ -66,8 +73,7 @@ async def test_f0082_introspection_tick_skips_retired_or_deleted_character_befor
 @pytest.mark.asyncio
 async def test_f0082_read_only_scans_never_recreate_missing_character_dir(tmp_path, monkeypatch):
     cm = _make_cm(tmp_path, {})
-    pm = PersonaManager(cm)
-    engine = ReflectionEngine(cm, pm)
+    pm, engine, _ = _memory_stores(cm)
     monkeypatch.setattr(runtime, "_config_manager", cm, raising=False)
     monkeypatch.setattr(runtime, "persona_manager", pm, raising=False)
     monkeypatch.setattr(runtime, "reflection_engine", engine, raising=False)
@@ -93,9 +99,7 @@ async def test_f0082_reflection_refine_never_recreates_missing_character_dir(
     tmp_path, monkeypatch,
 ):
     cm = _make_cm(tmp_path, {})
-    pm = PersonaManager(cm)
-    engine = ReflectionEngine(cm, pm)
-    fs = FactStore()
+    pm, engine, fs = _memory_stores(cm)
     monkeypatch.setattr(runtime, "_config_manager", cm, raising=False)
     monkeypatch.setattr(runtime, "persona_manager", pm, raising=False)
     monkeypatch.setattr(runtime, "reflection_engine", engine, raising=False)
@@ -118,14 +122,13 @@ async def test_f0082_reflection_refine_never_recreates_missing_character_dir(
 async def test_f0082_release_cancels_and_drains_in_flight_refine_task(tmp_path, monkeypatch):
     name = "正在精炼角色"
     cm = _make_cm(tmp_path, {name: {"性格": "认真"}})
-    pm = PersonaManager(cm)
-    engine = ReflectionEngine(cm, pm)
+    pm, engine, _ = _memory_stores(cm)
     monkeypatch.setattr(runtime, "_config_manager", cm, raising=False)
     monkeypatch.setattr(runtime, "persona_manager", pm, raising=False)
     monkeypatch.setattr(runtime, "reflection_engine", engine, raising=False)
     monkeypatch.setattr(review, "_review_spawn_locks", {})
     monkeypatch.setattr(review, "_retired_derived_task_names", set())
-    monkeypatch.setattr(review, "refine_tasks", {})
+    monkeypatch.setattr(review, "persona_refine_tasks", {})
 
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -144,9 +147,16 @@ async def test_f0082_release_cancels_and_drains_in_flight_refine_task(tmp_path, 
     monkeypatch.setattr(refine_loops, "run_with_character_prompt_locale", _passthru_locale)
 
     run_task = asyncio.create_task(
-        refine_loops._run_tracked_refine_character(name, _slow_refine, verify_roster=True)
+        refine_loops._run_tracked_refine_character(name, _slow_refine, registry=review.persona_refine_tasks)
     )
     await started.wait()
+
+    # A reflection pass must still run while the persona pass is waiting on the model.
+    reflection_pass = AsyncMock(return_value=7)
+    assert await refine_loops._run_tracked_refine_character(
+        name, reflection_pass, registry=review.reflection_refine_tasks,
+    ) == (True, 7)
+    reflection_pass.assert_awaited_once_with(name)
 
     async with review._get_review_spawn_lock(name):
         drained = await review._cancel_character_derived_tasks_unlocked(name)
@@ -155,5 +165,60 @@ async def test_f0082_release_cancels_and_drains_in_flight_refine_task(tmp_path, 
     assert cancelled.is_set()
     ran, result = await run_task
     assert ran is False and result is None
-    assert name not in review.refine_tasks
+    assert name not in review.persona_refine_tasks
     assert not (tmp_path / "memory" / name).exists()
+
+
+@pytest.mark.asyncio
+async def test_missing_reflections_respect_open_recovery_journal(tmp_path):
+    from memory.long_term_sync import JOURNAL, LongTermMemoryRecoveryRequired
+
+    cm = _make_cm(tmp_path)
+    _, engine, _ = _memory_stores(cm)
+    directory = Path(cm.memory_dir) / "recovering"
+    directory.mkdir()
+    (directory / JOURNAL).write_text('{"phase":"applying"}')
+    with pytest.raises(LongTermMemoryRecoveryRequired):
+        await engine.aload_reflections("recovering")
+    assert not (directory / "reflections.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_persona_writer_retires_before_unlock(tmp_path, monkeypatch):
+    import json
+    import threading
+    from memory.persona import persistence
+    from utils import file_utils
+
+    pm, _, _ = _memory_stores(_make_cm(tmp_path))
+    name = "writing"
+    started = threading.Event()
+    release = threading.Event()
+    real_write = file_utils.atomic_write_json
+
+    def paused_write(path, payload, **kwargs):
+        if payload["value"] == "old":
+            started.set()
+            assert release.wait(3)
+        real_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(persistence, "assert_cloudsave_writable", lambda *a, **kw: None)
+    monkeypatch.setattr(file_utils, "atomic_write_json", paused_write)
+
+    async def save(value):
+        async with pm._get_alock(name):
+            await pm.asave_persona(name, {"value": value})
+
+    old = asyncio.create_task(save("old"))
+    try:
+        assert await asyncio.to_thread(started.wait, 3)
+        old.cancel()
+        new = asyncio.create_task(save("new"))
+        await asyncio.sleep(0)
+        assert pm._get_alock(name).locked() and not old.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await old
+    await new
+    assert json.loads((tmp_path / "memory" / name / "persona.json").read_text()) == {"value": "new"}

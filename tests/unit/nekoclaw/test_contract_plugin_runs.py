@@ -541,7 +541,8 @@ async def test_f0094_trigger_response_beyond_first_export_page_is_found(server, 
     assert outcome["run_data"] == {"page2": True}
 
 
-async def test_f0094_export_falls_back_to_first_json_dict_when_trigger_response_absent(monkeypatch):
+@pytest.mark.parametrize("next_page", [None, "timeout", "bad-json"])
+async def test_f0094_export_falls_back_to_first_json_dict_when_trigger_response_absent(next_page):
     import httpx
     from nekoclaw.host.plugin_runs import PluginCatalog, PluginRunner
 
@@ -556,6 +557,10 @@ async def test_f0094_export_falls_back_to_first_json_dict_when_trigger_response_
         if request.method == "GET" and request.url.path == "/runs/run-fb":
             return httpx.Response(200, json={"run_id": "run-fb", "status": "succeeded"})
         if request.method == "GET" and request.url.path == "/runs/run-fb/export":
+            if request.url.params.get("after") == "timeout":
+                raise httpx.ReadTimeout("page timed out")
+            if request.url.params.get("after") == "bad-json":
+                return httpx.Response(200, content=b"{")
             return httpx.Response(
                 200,
                 json={
@@ -567,7 +572,7 @@ async def test_f0094_export_falls_back_to_first_json_dict_when_trigger_response_
                             "json": {"data": {"fallback": 42}, "meta": {"source": "fallback"}},
                         }
                     ],
-                    "next_after": None,
+                    "next_after": next_page,
                 },
             )
         raise AssertionError(f"unexpected request {request.method} {request.url}")

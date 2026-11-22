@@ -22,8 +22,6 @@ import asyncio
 import functools
 import hashlib
 import json
-import os
-import types
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -68,31 +66,14 @@ async def _apeek_persona(pm, name: str) -> dict:
     return await pm.aensure_persona(name)
 
 
-async def _apeek_reflections(engine_ref, name: str, *, include_archived: bool = False) -> list[dict]:
-    """Read reflections without creating memory/{name}/ if reflections.json is absent."""
-    from memory.reflection import ReflectionEngine
-
-    load_fn = getattr(engine_ref, "aload_reflections", None)
-    cm = getattr(engine_ref, "_config_manager", None)
-    mem_dir = getattr(cm, "memory_dir", None)
-    if (
-        isinstance(load_fn, types.MethodType)
-        and load_fn.__func__ is ReflectionEngine.aload_reflections
-        and isinstance(mem_dir, (str, os.PathLike))
-    ):
-        refl_path = os.path.join(os.fspath(mem_dir), name, "reflections.json")
-        if not await asyncio.to_thread(os.path.exists, refl_path):
-            return []
-    return await engine_ref.aload_reflections(name, include_archived=include_archived)
-
-
 async def _run_tracked_refine_character(
     name: str,
     fn,
     *,
+    registry: dict[str, asyncio.Task],
     verify_roster: bool = True,
 ):
-    """Run one character refine pass registered in review.refine_tasks under spawn lock."""
+    """Run one character refine pass registered by kind under spawn lock."""
     async with review._get_review_spawn_lock(name):
         if name in review._retired_derived_task_names:
             return False, None
@@ -104,20 +85,20 @@ async def _run_tracked_refine_character(
                 return False, None
             if name not in (current_data.get('猫娘') or {}):
                 return False, None
-        existing = review.refine_tasks.get(name)
+        existing = registry.get(name)
         if existing is not None and not existing.done():
             return False, None
         run = run_with_character_prompt_locale(name, fn, name)
         task = runtime._spawn_background_task(run)
-        review.refine_tasks[name] = task
+        registry[name] = task
     await asyncio.wait({task})
-    if review.refine_tasks.get(name) is task:
-        review.refine_tasks.pop(name, None)
+    if registry.get(name) is task:
+        registry.pop(name, None)
     if task.cancelled():
         return False, None
-    exc = task.exception()
-    if exc is not None:
-        raise exc
+    if task.exception() is not None:
+        # The background task completion callback already logged the failure.
+        return False, None
     return True, task.result()
 
 
@@ -238,6 +219,7 @@ async def _periodic_persona_refine_loop():
                 ran, _ = await _run_tracked_refine_character(
                     name,
                     _run_persona_refine_for_character,
+                    registry=review.persona_refine_tasks,
                     verify_roster=True,
                 )
                 if ran and name not in review._retired_derived_task_names:
@@ -281,7 +263,7 @@ async def _run_reflection_refine_for_character(
     if engine_ref is None or fs is None:
         return 0
 
-    refls = await _apeek_reflections(engine_ref, character, include_archived=False)
+    refls = await engine_ref.aload_reflections(character, include_archived=False)
     if not refls:
         return 0
     facts = await fs.aload_facts(character)
@@ -360,8 +342,7 @@ async def _run_reflection_refine_with_subject_locales(character: str) -> None:
     engine_ref = runtime.reflection_engine
     if engine_ref is None:
         return
-    reflections = await _apeek_reflections(
-        engine_ref,
+    reflections = await engine_ref.aload_reflections(
         character,
         include_archived=False,
     )
@@ -466,6 +447,7 @@ async def _periodic_reflection_refine_loop():
                 ran, _ = await _run_tracked_refine_character(
                     name,
                     _run_reflection_refine_with_subject_locales,
+                    registry=review.reflection_refine_tasks,
                     verify_roster=True,
                 )
                 if ran and name not in review._retired_derived_task_names:
@@ -505,7 +487,7 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
     if pm is None or engine_ref is None:
         return False
     persona = await _apeek_persona(pm, character)
-    refls = await _apeek_reflections(engine_ref, character, include_archived=False)
+    refls = await engine_ref.aload_reflections(character, include_archived=False)
     buckets = gather_scoped_refine_buckets(persona, refls)
     if not buckets:
         return False
@@ -578,6 +560,7 @@ async def _run_scoped_refine_round(
             ran, served = await _run_tracked_refine_character(
                 name,
                 _run_scoped_refine_for_character,
+                registry=review.scoped_refine_tasks,
                 verify_roster=verify_roster,
             )
         except Exception as e:
@@ -942,7 +925,7 @@ async def _scoped_introspection_contents(name: str) -> list[tuple]:
     if pm is None or engine_ref is None:
         return []
     persona = await _apeek_persona(pm, name)
-    reflections = await _apeek_reflections(engine_ref, name, include_archived=True)
+    reflections = await engine_ref.aload_reflections(name, include_archived=True)
     content: dict = {}
 
     def _add(entry: dict, kind: str) -> None:
