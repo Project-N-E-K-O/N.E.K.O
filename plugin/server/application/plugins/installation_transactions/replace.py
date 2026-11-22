@@ -76,6 +76,31 @@ def _revoke_hot_reload_recovery(plugin_id: str) -> None:
     revoke_hot_reload_recovery(plugin_id)
 
 
+def _snapshot_permissions(plugin_id: str) -> tuple[bool, dict | None]:
+    """The stored permission record before the replacement (taken, record)."""
+    from plugin.server.application.plugins.permission_service import permission_store
+
+    if not plugin_id:
+        return False, None
+    try:
+        return True, permission_store.read(plugin_id) or None
+    except ServerDomainError as exc:
+        # Unreadable store: nothing can be written to it either, so the
+        # replacement cannot change it and there is nothing to restore.
+        logger.warning(
+            "plugin permission snapshot unavailable plugin_id={} code={}",
+            plugin_id,
+            exc.code,
+        )
+        return False, None
+
+
+def _restore_permissions(plugin_id: str, record: dict | None) -> None:
+    from plugin.server.application.plugins.permission_service import permission_store
+
+    permission_store.restore(plugin_id, record)
+
+
 async def _start_plugin(plugin_id: str) -> None:
     if not plugin_id:
         return
@@ -375,6 +400,11 @@ async def replace_plugin(
     was_running = await _plugin_is_running(plugin_id)
     if was_running:
         await _stop_plugin(plugin_id)
+    # A restart below reconciles the stored grants with the new source; if
+    # the replacement then rolls back, the old source's grants come back too.
+    permissions_taken, permissions_before = await asyncio.to_thread(
+        _snapshot_permissions, plugin_id
+    )
 
     preexisting_targets = frozenset(target for target in targets if target.exists())
     backups: dict[Path, Path] = {}
@@ -490,6 +520,18 @@ async def replace_plugin(
                     "plugin rollback restart failed plugin_id={} err_type={}",
                     plugin_id,
                     type(restart_exc).__name__,
+                )
+        if permissions_taken and code_restored:
+            try:
+                await asyncio.to_thread(
+                    _restore_permissions, plugin_id, permissions_before
+                )
+            except Exception as permission_exc:
+                restored = False
+                logger.error(
+                    "plugin rollback could not restore permission grants plugin_id={} err_type={}",
+                    plugin_id,
+                    type(permission_exc).__name__,
                 )
         if not code_restored:
             # Old source was not restored exactly: the failed new package may remain, so old grants cannot authorize autostart.

@@ -326,6 +326,15 @@ def notify_install_committed(result: dict) -> dict:
         except (KeyError, TypeError, ValueError):
             logger.warning("Host model auto-bind skipped: install entry lacks target_plugin_id")
             continue
+        # The install source is recorded by now: persist it into the stored
+        # permission grants, so a source change is not missed while the
+        # plugin stays stopped. At most one small write, only when the source
+        # changed; never raises.
+        from plugin.server.application.plugins.permission_service import (
+            reconcile_permission_source,
+        )
+
+        reconcile_permission_source(plugin_id)
         threading.Thread(
             target=_auto_bind_host_models_safe,
             args=(plugin_id, str(installed.get("target_dir") or "")),
