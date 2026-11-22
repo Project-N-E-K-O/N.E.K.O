@@ -1508,7 +1508,9 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     };
     checkbox.updateStyle = updateRowStyle;
     updateRowStyle();
-    checkbox.addEventListener('change', updateRowStyle);
+    // Looked up at call time: updateStyle is replaced below once the switch
+    // and the mode row exist.
+    checkbox.addEventListener('change', () => checkbox.updateStyle());
 
     const label = document.createElement('span');
     label.textContent = window.t ? window.t('settings.toggles.mouseTracking') : '跟踪鼠标';
@@ -1527,9 +1529,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     const handleTrackingChange = () => {
         const enabled = !checkbox.checked;
         checkbox.checked = enabled;
-        updateRowStyle();
-        updateTrackingModeToggleState();
-        trackingClickArea.setAttribute('aria-checked', String(enabled));
+        checkbox.updateStyle();
         // 必须先跑回调写 window.mouseTrackingEnabled，再 save——saveSettings 是从该
         // 全局变量读值落盘的，顺序反了会把切换前的旧值持久化（刷新后看着像被重置）
         if (typeof manager._onMouseTrackingToggle === 'function') {

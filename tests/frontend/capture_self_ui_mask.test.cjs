@@ -1624,7 +1624,9 @@ test('settings popup re-sync: re-syncing mouse tracking also updates its switch 
             setAttribute(k, v) { this.attrs[k] = String(v); },
             getAttribute(k) { return this.attrs[k]; },
             appendChild(c) { this.children.push(c); return c; },
-            addEventListener() {}, matches() { return false; },
+            listeners: {},
+            addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+            matches() { return false; },
             querySelector() { return null; }, querySelectorAll() { return []; },
             classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
         };
@@ -1660,6 +1662,11 @@ test('settings popup re-sync: re-syncing mouse tracking also updates its switch 
     assert.equal(trackingSwitch.attrs['aria-checked'], 'true');
     assert.equal(modeSwitch.style.pointerEvents, 'auto');
     assert.equal(modeSwitch.tabIndex, 0);
+    // A change event on the checkbox goes through the same path.
+    cb.checked = false;
+    cb.listeners.change.forEach((fn) => fn());
+    assert.equal(trackingSwitch.attrs['aria-checked'], 'false');
+    assert.equal(modeSwitch.style.pointerEvents, 'none');
 });
 
 test('switch turned on while a frame is being captured: that frame is sent as captured, the next one is masked', async () => {
@@ -1824,15 +1831,37 @@ test('getDisplayMedia: requests are ordered by when they finish; while one is op
     assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
 });
 
-test('getDisplayMedia: a request that throws synchronously does not stay open', async () => {
+test('getDisplayMedia: a request that throws synchronously neither stays open nor supersedes the current stream', async () => {
     const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
     const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
     const mask = env.w.appCaptureMask;
-    assert.throws(() => mask.requestDisplayMedia({ getDisplayMedia: () => { throw new Error('NotSupportedError'); } }, {}));
+    const A = displayStream('A');
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(A) }, {});
+    // Thrown before reaching the shell: its hand-out record is unchanged.
+    assert.throws(() => mask.requestDisplayMedia({ getDisplayMedia: () => { throw new TypeError('bad constraints'); } }, {}));
+    const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream: A };
+    assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(ctx))), [[800, 225, 400, 450]]);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
+});
+
+test('getDisplayMedia: a request that opens and finishes while the shell query is in flight voids that answer', async () => {
+    const answer = { ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] };
+    let during = null;
+    const shell = shellStub(async () => { if (during) await during(); return answer; });
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const mask = env.w.appCaptureMask;
     const A = displayStream('A');
     await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(A) }, {});
     const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream: A };
+    // Nothing happens during the queries: masked.
     assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(ctx))), [[800, 225, 400, 450]]);
+    // The shell picks a source for a new request while answering the post-capture query.
+    const session = mask.beginMaskSession(ctx);
+    during = async () => { during = null; await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(displayStream('B')) }, {}); };
+    assert.equal(await mask.maskFrameForModel(RAW_FRAME, ctx, session), RAW_FRAME);
+    assert.equal(shell.calls.length, 4, 'both queries were made before the new request');
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
 });
 
 test('voice heartbeat: a superseded getDisplayMedia stream is not queried before or after capture', async () => {

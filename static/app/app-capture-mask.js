@@ -351,7 +351,9 @@
         try {
             request = mediaDevices.getDisplayMedia(constraints);
         } catch (e) {
-            finish();
+            // Thrown before any request was made (bad constraints, not
+            // supported): the shell handler never ran, its record is unchanged.
+            displayMediaRequestsOpen -= 1;
             throw e;
         }
         return Promise.resolve(request).then(function (stream) {
@@ -548,6 +550,11 @@
             if (session && session.pending && sameMaskTarget(session.hint, ctx)) {
                 pre = await session.pending;
             }
+            // Another request may have opened, or opened and finished, while
+            // the queries were in flight: the shell may have answered for
+            // that request's source.
+            var lateUnknown = displayMediaStreamUnknownReason(ctx);
+            if (lateUnknown) return { known: false, rects: [], reason: lateUnknown };
             return intersectGeometry(pre, post);
         }
         var geom = readBrowserGeometry(win);
