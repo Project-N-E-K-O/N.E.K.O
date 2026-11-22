@@ -36,7 +36,9 @@ which is worse than the bug being fixed):
   headless box, or in a disconnected remote session never sees both and never
   suppresses.
 * A session disconnect (console or remote) forgets everything and returns to
-  the unarmed state; a reconnect re-queries the lock state from scratch.
+  the unarmed state; a reconnect re-queries the lock state from scratch (and
+  the Windows watcher re-registers the display notification so the current
+  display state is reported again).
 * Watcher failures (registration, message loop, ctypes errors) mark the
   watcher as failed, which also allows.
 """

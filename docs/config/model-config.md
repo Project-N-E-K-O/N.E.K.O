@@ -8,7 +8,7 @@ N.E.K.O. resolves models by **role**, not through one global model string. The s
 | Conversation | `CONVERSATION_MODEL` |
 | Memory upkeep (formerly summary and correction) | `SUMMARY_MODEL` |
 | Emotion | `EMOTION_MODEL` |
-| Vision | `VISION_MODEL` |
+| Vision (deprecated: images go to the chat model; a vision model configured separately before the slot was retired keeps taking images until the release, with a deprecation warning and a once-per-start notice) | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |
 | Agent (small) | `AGENT_SMALL_MODEL` |
 | Realtime | `REALTIME_MODEL` |
