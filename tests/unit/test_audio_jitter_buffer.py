@@ -223,7 +223,7 @@ def test_realtime_workers_flush_tail_before_normal_receiver_cancel():
         source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
         branch_marker = (
             "is_new_speech = current_speech_id != sid"
-            if provider in {"step", "free"}
+            if provider in {"step", "free", "qwen"}
             else "if current_speech_id != sid:"
         )
         start = source.index(branch_marker)
