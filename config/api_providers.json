@@ -164,7 +164,7 @@
       "decision_model": "deepseek-ai/DeepSeek-V4-Flash",
       "decision_protocol": "chat_fallback",
       "vision_model": "deepseek-ai/DeepSeek-V4.1-Flash",
-      "agent_model": "Qwen/Qwen3.5-122B-A10B"
+      "agent_model": "deepseek-ai/DeepSeek-V4.1-Flash"
     },
     "gemini": {
       "key": "gemini",

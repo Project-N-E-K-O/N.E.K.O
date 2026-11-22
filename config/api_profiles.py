@@ -186,7 +186,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'DECISION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
         'DECISION_PROTOCOL': "chat_fallback",
         'VISION_MODEL': "deepseek-ai/DeepSeek-V4.1-Flash",
-        'AGENT_MODEL': "Qwen/Qwen3.5-122B-A10B",
+        'AGENT_MODEL': "deepseek-ai/DeepSeek-V4.1-Flash",
     },
     'gemini': {
         'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
