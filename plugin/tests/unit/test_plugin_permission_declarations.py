@@ -1246,3 +1246,39 @@ def test_cli_decorator_targets_and_class_snapshots(tmp_path, source, reported):
     plugin_dir = _plugin(tmp_path, source, "[permissions]\n")
     messages = [message for message in _issues(plugin_dir) if "permissions=" in message]
     assert bool(messages) is reported
+
+
+# --- review round 9 ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nfrom builtins import getattr\ngetattr(os, 'system')('echo hi')\n",
+        "import os, builtins\ngetattr = builtins.getattr\ngetattr(os, 'system')('echo hi')\n",
+    ],
+)
+def test_rebound_getattr_name_stays_a_blind_spot(tmp_path, source):
+    spots = _scan(tmp_path, source)["blind_spots"]
+    assert any(spot["type"] == "reflective_access" for spot in spots)
+
+
+def test_cli_plain_plugin_imports_keep_the_sdk_path(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "import plugin.sdk.plugin\nimport plugin.plugins.perm_demo.helpers\n"
+        "class P:\n    @plugin.sdk.plugin.hook(permissions=[])\n    def a(self): ...\n",
+        "[permissions]\n",
+    )
+    assert any("does not accept permissions=" in message for message in _issues(plugin_dir, "error"))
+
+
+def test_cli_nested_class_body_uses_the_definition_time_snapshot(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "def hook(**k):\n    return lambda f: f\n"
+        "class Outer:\n    class Inner:\n        @hook(permissions=['x'])\n        def a(self): ...\n"
+        "from plugin.sdk.plugin import hook\n",
+        "[permissions]\n",
+    )
+    assert not [message for message in _issues(plugin_dir) if "permissions=" in message]

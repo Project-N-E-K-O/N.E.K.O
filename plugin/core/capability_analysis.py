@@ -973,7 +973,11 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
             # A constant name on the bare builtin reads like attribute access
             # (see _getattr_reference); qualified or aliased spellings are not
             # followed, so they stay a blind spot.
-            bare = isinstance(node.func, ast.Name) and node.func.id == "getattr"
+            bare = (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and reference.bound is None  # not rebound, e.g. by from builtins import getattr
+            )
             if bare and _literal_string(_call_argument(node, 1, "name")) is not None:
                 return None
             return "reflective_access"

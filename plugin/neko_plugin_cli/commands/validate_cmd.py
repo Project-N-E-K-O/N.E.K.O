@@ -1390,8 +1390,10 @@ def _scope_bindings(body, parameters=()) -> list[tuple[tuple[int, int], str, str
                 if item.asname:
                     bind(node, item.asname, item.name if _is_sdk_module(item.name) else None)
                 else:
+                    # import plugin.x binds the top-level plugin package whatever
+                    # x is; the attribute path decides whether it is the SDK.
                     root = item.name.split(".")[0]
-                    bind(node, root, "plugin" if root == "plugin" and _is_sdk_module(item.name) else None)
+                    bind(node, root, "plugin" if root == "plugin" else None)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bind(node, node.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
@@ -1450,7 +1452,8 @@ def _sdk_decorators(tree: ast.Module) -> dict[int, str]:
                 # A class body runs at definition time: it sees what is bound
                 # before the class statement, not later imports.
                 position = (node.lineno, node.col_offset)
-                snapshot = outer if is_class else [
+                # A class nested in a class body runs during that body.
+                snapshot = chain if is_class else [
                     {name: value for at, name, value in local if at < position},
                     *chain,
                 ]
