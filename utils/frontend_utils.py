@@ -1026,6 +1026,21 @@ def _is_within(base: str, target: str) -> bool:
         return False
 
 
+def _model_dir_relative_to_roots(model_dir: str, roots) -> str | None:
+    """
+    Path of *model_dir* relative to the first of *roots* that contains it,
+    with forward slashes; None when no root contains it.
+    """
+    model_dir_real = os.path.realpath(model_dir)
+    for root in roots:
+        if not root:
+            continue
+        root_real = os.path.realpath(root)
+        if model_dir_real != root_real and _is_within(root_real, model_dir_real):
+            return os.path.relpath(model_dir_real, root_real).replace(os.sep, '/')
+    return None
+
+
 def is_user_imported_model(model_path: str, config_manager=None) -> bool:
     """
     Check whether a model path is under the user-imported model directory.
@@ -1423,16 +1438,14 @@ def find_model_config_file(model_name: str) -> str:
         # If no model directory is found, return None or an empty string rather than a default path.
         return None
     
-    # Workshop models are served relative to the library root they were found in
-    # (/workshop/<item_id>/...), not under the model name.
+    # Workshop and user mod models are served relative to the root they were found in
+    # (/workshop/<item_id>/..., /user_mods/<mod folder>/...), not under the model name.
     url_dir = model_name
     if url_prefix == '/workshop':
-        model_dir_real = os.path.realpath(model_dir)
-        for root in _resolve_workshop_search_dirs():
-            root_real = os.path.realpath(root)
-            if _is_within(root_real, model_dir_real) and model_dir_real != root_real:
-                url_dir = os.path.relpath(model_dir_real, root_real).replace(os.sep, '/')
-                break
+        url_dir = _model_dir_relative_to_roots(model_dir, _resolve_workshop_search_dirs()) or model_name
+    elif url_prefix == '/user_mods':
+        from utils.config_manager import get_workshop_path
+        url_dir = _model_dir_relative_to_roots(model_dir, [get_workshop_path()]) or model_name
     
     # Find the .model3.json file
     for file in os.listdir(model_dir):

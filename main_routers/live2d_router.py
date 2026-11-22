@@ -48,6 +48,7 @@ from contextlib import suppress
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import (
     _is_within,
+    _model_dir_relative_to_roots,
     _resolve_workshop_search_dirs,
     find_model_directory,
     find_models,
@@ -1194,22 +1195,27 @@ def get_model_files_by_id(model_id: str):
         # Build model-config URL.
         model_config_url = None
         if url_prefix:
-            # Workshop model URLs follow actual directory structure.
+            # URL path of model_dir under the mount that serves it.
             if url_prefix == '/workshop':
-                if model_name_subdir:
-                    # Model in subdirectory: workshop/{item_id}/{model_name}/{model_name}.model3.json.
-                    model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_name_subdir}/{model_config_file}")
+                if found_by_item_id:
+                    # By-id lookups return <library root>/<item_id>.
+                    model_url_dir = model_id
                 else:
-                    # Model directly in item directory: workshop/{item_id}/{model_name}.model3.json.
-                    model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_config_file}")
+                    # By-name fallback: model_id is a model name, so use the folder's real
+                    # path under the library it was found in (e.g. <item_id>/<model_name>).
+                    model_url_dir = _model_dir_relative_to_roots(model_dir, _resolve_workshop_search_dirs()) or model_id
+            elif url_prefix == '/user_mods':
+                # Models can sit two levels deep (<mod folder>/<model_name>); keep every level.
+                model_url_dir = (_model_dir_relative_to_roots(model_dir, [get_workshop_path()])
+                                 or os.path.basename(os.path.normpath(model_dir)))
             else:
-                # Other prefixes serve the folder that holds model_dir, so the URL keeps
-                # the model folder name and any subfolder the config file sits in.
-                model_folder = os.path.basename(os.path.normpath(model_dir))
-                if model_name_subdir:
-                    model_config_url = encode_url_path(f"{url_prefix}/{model_folder}/{model_name_subdir}/{model_config_file}")
-                else:
-                    model_config_url = encode_url_path(f"{url_prefix}/{model_folder}/{model_config_file}")
+                # Other prefixes serve the folder that holds model_dir.
+                model_url_dir = os.path.basename(os.path.normpath(model_dir))
+            # Keep any subfolder the config file sits in.
+            if model_name_subdir:
+                model_config_url = encode_url_path(f"{url_prefix}/{model_url_dir}/{model_name_subdir}/{model_config_file}")
+            else:
+                model_config_url = encode_url_path(f"{url_prefix}/{model_url_dir}/{model_config_file}")
             logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url} (模型子目录: {model_name_subdir})")
         
         logger.debug(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
