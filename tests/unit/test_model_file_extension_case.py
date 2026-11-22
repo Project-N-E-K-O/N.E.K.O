@@ -625,3 +625,31 @@ def test_vrm_delete_still_refuses_an_uncheckable_link_out_of_the_folder(vrm_app,
     assert link.is_symlink()
     os.chmod(target.parent, 0o755)
     assert target.read_bytes() == b"glTF-target"
+
+
+@pytest.mark.parametrize("route", ["name", "url"])
+def test_vrm_delete_removes_an_uncheckable_link_under_any_user(vrm_app, monkeypatch, route):
+    # Same case as above without chmod (which root ignores): the type check of
+    # the link and its target is made to report "cannot check".
+    target = vrm_app.vrm_dir / "real" / "target.vrm"
+    target.parent.mkdir()
+    target.write_bytes(b"glTF-target")
+    link = vrm_app.vrm_dir / "Foo.vrm"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+    real_check = vrm_router._file_check
+    monkeypatch.setattr(vrm_router, "_file_check",
+                        lambda path: None if path.name in {"Foo.vrm", "target.vrm"} else real_check(path))
+
+    with TestClient(vrm_app.app) as client:
+        assert "已存在" in _upload_vrm(client, "Foo.vrm").json()["error"]
+        if route == "name":
+            response = client.delete("/api/model/vrm/model/Foo")
+        else:
+            response = client.request("DELETE", "/api/model/vrm/model", json={"url": "/user_vrm/Foo.vrm"})
+
+    assert response.status_code == 200, response.text
+    assert not link.is_symlink()
+    assert target.read_bytes() == b"glTF-target"
