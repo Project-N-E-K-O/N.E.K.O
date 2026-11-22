@@ -9,6 +9,7 @@ Nothing here talks to a host.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -32,10 +33,9 @@ class _Subscription:
         if self._cancelled:
             return
         self._cancelled = True
-        try:
+        # The registration may already be gone if the owner dropped its callbacks.
+        with contextlib.suppress(ValueError):
             self._owner._callbacks.remove(self._callback)
-        except ValueError:
-            pass
 
     unsubscribe = cancel
 
