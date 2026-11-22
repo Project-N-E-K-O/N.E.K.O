@@ -220,3 +220,125 @@ def test_window_proc_exception_fails_open(win):
     # Must not raise into the OS callback; falls through to DefWindowProcW.
     watcher._window_proc(None, module.WM_WTSSESSION_CHANGE, sp.WTS_CONSOLE_CONNECT, 0)
     assert state._failed is True
+
+
+# ── session reconnect re-registers the display notification ──
+
+
+class _PowerRegistrations:
+    """Fake Register/UnregisterPowerSettingNotification that tracks live handles.
+
+    Like Windows, a new registration immediately reports the current display
+    status to the window.
+    """
+
+    def __init__(self, module, watcher, display_value=1):
+        self.module, self.watcher, self.display_value = module, watcher, display_value
+        self.live: set[int] = set()
+        self.registered: list[int] = []
+        self.unregistered: list[int] = []
+        self._next = 0x5000
+        self._buffers = []
+
+    def register(self, hwnd, _guid, _flags):
+        self._next += 1
+        self.live.add(self._next)
+        self.registered.append(self._next)
+        report = _display_setting(self.module, self.display_value)
+        self._buffers.append(report)
+        self.watcher._window_proc(
+            hwnd, self.module.WM_POWERBROADCAST, sp.PBT_POWERSETTINGCHANGE, ctypes.addressof(report),
+        )
+        return self._next
+
+    def unregister(self, handle):
+        self.unregistered.append(handle)
+        self.live.discard(handle)
+        return 1
+
+
+def _reconnect_watcher(win, *, locked=False):
+    """A watcher as left by a successful start: one live display registration."""
+    module, _calls, impl = win
+    state = sp.SystemPresenceState()
+    watcher = module._Watcher(state)
+    watcher._apis = module._bind_apis()
+    watcher._hwnd = 0x1234
+    watcher._session_registered = True
+    watcher._query_lock_state = lambda: locked
+    regs = _PowerRegistrations(module, watcher)
+    impl["RegisterPowerSettingNotification"] = regs.register
+    impl["UnregisterPowerSettingNotification"] = regs.unregister
+    state.on_session_lock_state(locked)
+    watcher._power_notify = regs.register(watcher._hwnd, None, 0)
+    return module, state, watcher, regs
+
+
+@pytest.mark.parametrize("event", [sp.WTS_CONSOLE_CONNECT, sp.WTS_REMOTE_CONNECT])
+def test_reconnect_reregisters_display_notification_once(win, event):
+    module, state, watcher, regs = _reconnect_watcher(win)
+    first = watcher._power_notify
+    off = _display_setting(module, 0)
+
+    watcher._window_proc(watcher._hwnd, module.WM_WTSSESSION_CHANGE, sp.WTS_REMOTE_DISCONNECT, 0)
+    assert regs.registered == [first]  # disconnect does not touch the registration
+
+    assert watcher._window_proc(watcher._hwnd, module.WM_WTSSESSION_CHANGE, event, 0) == 0
+    # Old handle released first, exactly one new registration, and that is the one held.
+    assert regs.unregistered == [first]
+    assert len(regs.registered) == 2
+    assert regs.live == {watcher._power_notify} == {regs.registered[-1]}
+    # The re-sent display report re-armed the gate without waiting for an off/on cycle.
+    assert state.inactive_reason() is None
+    watcher._window_proc(watcher._hwnd, module.WM_POWERBROADCAST, sp.PBT_POWERSETTINGCHANGE, ctypes.addressof(off))
+    assert state.inactive_reason() == sp.REASON_DISPLAY_OFF
+    assert state._failed is False
+
+
+def test_repeated_reconnects_never_stack_registrations(win):
+    module, _state, watcher, regs = _reconnect_watcher(win)
+    for event in (sp.WTS_REMOTE_CONNECT, sp.WTS_CONSOLE_CONNECT, sp.WTS_REMOTE_CONNECT):
+        watcher._window_proc(watcher._hwnd, module.WM_WTSSESSION_CHANGE, event, 0)
+        assert len(regs.live) == 1
+    assert len(regs.registered) == 4
+    assert regs.unregistered == regs.registered[:3]
+
+    # Teardown releases the current handle: nothing is left registered.
+    watcher._unregister()
+    assert regs.live == set()
+    assert watcher._power_notify is None
+
+
+@pytest.mark.parametrize("event", [sp.WTS_SESSION_LOCK, sp.WTS_SESSION_UNLOCK, sp.WTS_CONSOLE_DISCONNECT])
+def test_other_session_events_do_not_reregister(win, event):
+    module, _state, watcher, regs = _reconnect_watcher(win)
+    watcher._window_proc(watcher._hwnd, module.WM_WTSSESSION_CHANGE, event, 0)
+    assert len(regs.registered) == 1
+    assert regs.unregistered == []
+
+
+def test_reconnect_keeps_old_registration_when_release_fails(win):
+    module, state, watcher, regs = _reconnect_watcher(win)
+    first = watcher._power_notify
+    win[2]["UnregisterPowerSettingNotification"] = lambda handle: 0
+    watcher._window_proc(watcher._hwnd, module.WM_WTSSESSION_CHANGE, sp.WTS_REMOTE_CONNECT, 0)
+    # No second registration on top of one that could not be released.
+    assert regs.registered == [first]
+    assert watcher._power_notify == first
+    # Display unknown after the reset: unarmed, so proactive chat is allowed.
+    assert state._failed is False
+    assert state.inactive_reason() is None
+
+
+def test_reconnect_registration_failure_fails_open(win, caplog):
+    module, state, watcher, regs = _reconnect_watcher(win)
+    win[2]["RegisterPowerSettingNotification"] = lambda *a: 0
+    with caplog.at_level("WARNING", logger=module.__name__):
+        watcher._window_proc(watcher._hwnd, module.WM_WTSSESSION_CHANGE, sp.WTS_REMOTE_CONNECT, 0)
+    assert regs.live == set()
+    assert watcher._power_notify is None
+    assert state._failed is True
+    state.on_display_state(True)
+    state.on_display_state(False)
+    assert state.inactive_reason() is None
+    assert len([r for r in caplog.records if "watcher stopped" in r.getMessage()]) == 1

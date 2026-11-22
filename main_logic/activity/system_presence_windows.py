@@ -22,7 +22,9 @@ subscribes to three notifications for *this* session only:
 
 * display on/off: ``RegisterPowerSettingNotification`` with
   ``GUID_SESSION_DISPLAY_STATUS`` (per-session; Windows sends the current
-  value right after registration);
+  value right after registration). A session reconnect clears the state, so
+  the watcher then unregisters and registers again to get the current value
+  re-sent instead of waiting for the next display transition;
 * lock/unlock and connect/disconnect: ``WTSRegisterSessionNotification``
   with ``NOTIFY_FOR_THIS_SESSION``; the initial lock state comes from
   ``WTSQuerySessionInformationW(WTSSessionInfoEx)``;
@@ -45,6 +47,8 @@ from ctypes import wintypes
 
 from main_logic.activity.system_presence import (
     PBT_POWERSETTINGCHANGE,
+    WTS_CONSOLE_CONNECT,
+    WTS_REMOTE_CONNECT,
     SystemPresenceState,
     apply_power_broadcast,
     apply_session_change,
@@ -272,6 +276,9 @@ class _Watcher:
                 return 1  # TRUE
             if msg == WM_WTSSESSION_CHANGE:
                 apply_session_change(self._state, wparam, self._query_lock_state)
+                if wparam in (WTS_CONSOLE_CONNECT, WTS_REMOTE_CONNECT):
+                    # After the lock state is re-read, like the startup order.
+                    self._reregister_display_notification()
                 return 0
             if msg == WM_CLOSE:
                 user32.DestroyWindow(hwnd)
@@ -283,6 +290,35 @@ class _Watcher:
         except Exception as exc:  # noqa: BLE001 - never raise into the OS callback
             self._fail('notification handling failed', exc)
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _reregister_display_notification(self) -> None:
+        """Re-subscribe to display status after a session reconnect.
+
+        The reconnect reset the state, so the display state is unknown and the
+        gate stays unarmed (allows) until the next display transition. A fresh
+        registration makes Windows report the current value right away. If the
+        display is off at that moment the gate still waits for it to come on
+        (it arms only after the display was seen on), same as at startup.
+        At most one registration is held: if the old one cannot be released,
+        it is kept and no new one is added (the state just stays unarmed until
+        the next transition, as before). A failed new registration fails open.
+        """
+        if not self._apis or not self._hwnd:
+            return
+        user32 = self._apis[0]
+        if self._power_notify:
+            if not user32.UnregisterPowerSettingNotification(self._power_notify):
+                logger.debug('UnregisterPowerSettingNotification error %s, keeping the old registration',
+                             ctypes.get_last_error())
+                return
+            self._power_notify = None
+        handle = user32.RegisterPowerSettingNotification(
+            self._hwnd, ctypes.byref(GUID_SESSION_DISPLAY_STATUS), DEVICE_NOTIFY_WINDOW_HANDLE,
+        )
+        if not handle:
+            self._fail(f'RegisterPowerSettingNotification error {ctypes.get_last_error()} after session reconnect')
+            return
+        self._power_notify = handle
 
     def _unregister(self) -> None:
         if not self._apis:
