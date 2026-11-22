@@ -70,7 +70,9 @@ def _plain_alias(text: str) -> str:
     equivalence parametrization and allowing regressions through green tests (Greptile P2). Strip syntax, not samples.
     """  # noqa: DOCSTRING_CJK
     return (
-        text.replace(r'(?<![a-z0-9])', '')
+        text.replace(r'(?<![a-z0-9_])', '')
+        .replace(r'(?![a-z0-9_])', '')
+        .replace(r'(?<![a-z0-9])', '')
         .replace(r'(?![a-z0-9])', '')
         .replace(r'\b', '')
         .replace('\\', '')
@@ -257,6 +259,32 @@ def test_compound_aliases_not_shadowed_by_short_prefixes(title, expected):
 def test_disjoint_category_priority_and_delimiter_padding_preserved(title, expected):
     """Disjoint matches and delimiter-padded aliases must preserve table category priority."""
     res = ak.classify_window_title(title)
+    assert (res.category, res.subcategory, res.canonical) == expected
+
+
+@pytest.mark.parametrize('title, expected', [
+    ('rust_analyzer.rs - Visual Studio Code', ('work', 'ide', 'VS Code')),
+    ('cod_utils.py - Visual Studio Code', ('work', 'ide', 'VS Code')),
+    ('my_lol_notes.xlsx - Excel', ('work', 'office', 'Microsoft Excel')),
+    ('lol_stats - Notepad', ('unknown', None, None)),
+    ('B站视频', ('entertainment', 'video', 'Bilibili')),
+    ('崩坏3攻略', ('gaming', 'game', 'Honkai Impact 3rd')),
+])
+def test_snake_case_titles_do_not_false_match_short_game_aliases(title, expected):
+    """Underscore-connected identifiers must not match short ASCII game aliases while mixed CJK titles still match."""
+    res = ak.classify_window_title(title)
+    assert (res.category, res.subcategory, res.canonical) == expected
+
+
+@pytest.mark.parametrize('proc, expected', [
+    ('helper_Code.exe', ('unknown', None, None)),
+    ('test_et.exe', ('unknown', None, None)),
+    ('Code.exe', ('work', 'ide', 'Code.exe')),
+    ('et.exe', ('work', 'office', 'et.exe')),
+])
+def test_snake_case_process_names_respect_underscore_boundaries(proc, expected):
+    """Snake_case process names must not match short exe entries while standalone exes still match."""
+    res = ak.classify_process_name(proc)
     assert (res.category, res.subcategory, res.canonical) == expected
 
 

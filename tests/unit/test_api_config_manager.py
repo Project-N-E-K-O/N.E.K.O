@@ -2554,19 +2554,22 @@ class TestGptsovitsEnabledSaveMigration:
     @pytest.mark.unit
     @pytest.mark.parametrize('raw_flag', ['false', '0', 'no', 'off'])
     def test_string_false_enable_custom_api_normalizes_to_false(self, config_manager, raw_flag):
-        _write_core_config(config_manager, {
+        base_payload = {
             'coreApi': 'qwen',
             'coreApiKey': 'sk-core-qwen',
             'assistApi': 'qwen',
             'assistApiKeyQwen': 'sk-assist-qwen',
-            'enableCustomApi': raw_flag,
             'summaryModelUrl': 'https://custom.invalid/v1',
             'summaryModelId': 'custom-summary',
-            'imageGenerationProvider': 'custom',
-            'imageGenerationBaseUrl': 'https://custom.invalid/v1',
-            'imageGenerationModel': 'custom-img',
-            'imageGenerationApiKey': 'sk-img',
-        })
+            'imageModelProvider': 'custom',
+            'imageModelUrl': 'https://custom.invalid/v1',
+            'imageModelId': 'custom-img',
+            'imageModelApiKey': 'sk-img',
+        }
+        _write_core_config(config_manager, {**base_payload, 'enableCustomApi': True})
+        assert config_manager.get_model_api_config('image')['enabled'] is True
+
+        _write_core_config(config_manager, {**base_payload, 'enableCustomApi': raw_flag})
 
         cfg = config_manager.get_core_config()
         assert cfg['ENABLE_CUSTOM_API'] is False

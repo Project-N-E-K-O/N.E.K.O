@@ -441,9 +441,14 @@ def test_topic_switch_anchored_at_start():
 
 def test_korean_topic_switch_ignores_adverb_and_prefixes():
     # "참" is a common Korean degree adverb / word prefix, not a topic-switch marker.
-    for non_pivot in ("참 힘들어", "참을 수가 없어", "참 슬프다", "참치 먹고 싶다"):
+    for non_pivot in ("참 힘들어", "참을 수가 없어", "참 슬프다", "참치 먹고 싶다", "참치, 맛있어"):
         assert detect_topic_switch(non_pivot) is False, non_pivot
-    for real_pivot in ("그건 그렇고 오늘 뭐 했어?", "아 맞다, 이거 깜빡했네", "그나저나 밥 먹었어?"):
+    for real_pivot in (
+        "그건 그렇고 오늘 뭐 했어?",
+        "아 맞다, 이거 깜빡했네",
+        "그나저나 밥 먹었어?",
+        "참, 내일 약속은 몇 시야?",
+    ):
         assert detect_topic_switch(real_pivot) is True, real_pivot
 
 

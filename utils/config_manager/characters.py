@@ -464,6 +464,9 @@ class CharactersMixin:
         character_data = self.load_characters()
         defaults = self.get_default_characters()
 
+        raw_catgirls = character_data.get('猫娘')
+        has_valid_catgirls = isinstance(raw_catgirls, dict) and bool(raw_catgirls)
+
         character_data.setdefault('主人', deepcopy(defaults['主人']))
         character_data.setdefault('猫娘', deepcopy(defaults['猫娘']))
 
@@ -472,15 +475,14 @@ class CharactersMixin:
         )
         master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
 
-        raw_catgirls = character_data.get('猫娘')
-        catgirls_is_valid_dict = isinstance(raw_catgirls, dict)
-        if not catgirls_is_valid_dict:
+        effective_catgirls = character_data.get('猫娘')
+        if not isinstance(effective_catgirls, dict):
             logger.warning("角色配置 '猫娘' 字段非 dict，将回退到默认角色列表。")
             raw_character_data = deepcopy(defaults['猫娘'])
-        elif not raw_catgirls:
+        elif not effective_catgirls:
             raw_character_data = deepcopy(defaults['猫娘'])
         else:
-            raw_character_data = raw_catgirls
+            raw_character_data = effective_catgirls
         catgirl_names = list(raw_character_data.keys())
 
         current_catgirl = character_data.get('当前猫娘', '')
@@ -497,7 +499,7 @@ class CharactersMixin:
                 character_data['当前猫娘'] = her_name
                 # Rare path (corrupt configuration / deleted neko only): persist synchronously so the fix survives restart.
                 # save_characters refreshes the cache internally; no manual synchronization is needed here.
-                if catgirls_is_valid_dict and bool(raw_catgirls):
+                if has_valid_catgirls:
                     try:
                         self.save_characters(character_data)
                     except Exception as persist_err:

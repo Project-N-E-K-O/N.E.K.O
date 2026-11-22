@@ -1189,3 +1189,4 @@ def test_icebreaker_free_text_system_prompts_enforce_50_char_cap_and_watermark(l
     )
     assert "50" in sys_prompt
     assert ICEBREAKER_FREE_TEXT_WATERMARK in sys_prompt
+    assert sys_prompt == f"{prompt}\n{ICEBREAKER_FREE_TEXT_WATERMARK}"

@@ -398,7 +398,7 @@ def audit_cloudsave_character_names(
             allow_dots=True,
             max_units=PROFILE_NAME_MAX_UNITS,
         )
-        if not validation.ok:
+        if validation.code not in {None, "reserved_route_name"}:
             errors.append({
                 "type": "invalid_name",
                 "source": source,

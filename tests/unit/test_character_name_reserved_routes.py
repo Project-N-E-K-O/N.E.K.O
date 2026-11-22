@@ -126,3 +126,39 @@ def test_newly_reserved_route_names_rejected_by_validator(name):
     res = validate_character_name(name)
     assert not res.ok
     assert res.code == "reserved_route_name"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["focus", "market", "theater", "templates"])
+def test_existing_characters_with_reserved_route_names_allowed_on_data_paths(name):
+    """Existing characters named after routes remain accessible for memory, cloudsave, migration, and import."""
+    import memory as memory_pkg
+    from fastapi import HTTPException
+    from main_routers.memory_router import ExternalMemoryImportError, _prepare_external_import
+    from app.memory_server._shared import validate_lanlan_name
+    from utils.cloudsave_runtime._shared import audit_cloudsave_character_names
+
+    assert validate_lanlan_name(name) == name
+    with pytest.raises(HTTPException):
+        validate_lanlan_name(f"../{name}")
+    with pytest.raises(HTTPException):
+        validate_lanlan_name("CON")
+
+    audit = audit_cloudsave_character_names([name])
+    assert audit["errors"] == []
+    assert audit_cloudsave_character_names([f"../{name}"])["errors"][0]["type"] == "invalid_name"
+    assert audit_cloudsave_character_names(["CON"])["errors"][0]["type"] == "invalid_name"
+
+    assert memory_pkg._decoded_owner_is_safe(name) is True
+    assert memory_pkg._decoded_owner_is_safe(f"../{name}") is False
+    assert memory_pkg._decoded_owner_is_safe("CON") is False
+
+    normalized, _analysis = _prepare_external_import({
+        "character_name": name,
+        "files": [{"path": "MEMORY.md", "content": "- tea lover"}],
+    })
+    assert normalized == name
+    with pytest.raises(ExternalMemoryImportError, match="Invalid target character name"):
+        _prepare_external_import({"character_name": f"../{name}", "files": []})
+    with pytest.raises(ExternalMemoryImportError, match="Invalid target character name"):
+        _prepare_external_import({"character_name": "CON", "files": []})

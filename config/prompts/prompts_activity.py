@@ -1539,7 +1539,16 @@ def get_proactive_intent_leak_label_patterns() -> tuple[re.Pattern[str], ...]:
         if not template or '{due}' not in template:
             continue
         before, after = template.split('{due}', 1)
-        regex = f"^{re.escape(before)}[^\n]*?{re.escape(after)}$"
+        # Keep {due} matching bounded to its enclosing parentheses (allowing at most one
+        # level of nested parentheses inside {due}, e.g. "Promise (due Nov 3 (Mon))") so a
+        # trailing parenthetical in message prose cannot extend the label across the line.
+        if '(' in before and after.startswith(')'):
+            due_pattern = r'(?:[^()\r\n]+|\([^()\r\n]*\))*'
+        elif '（' in before and after.startswith('）'):
+            due_pattern = r'(?:[^（）\r\n]+|（[^（）\r\n]*）)*'
+        else:
+            due_pattern = r'[^\r\n]*?'
+        regex = f"^{re.escape(before)}{due_pattern}{re.escape(after)}$"
         if regex not in seen:
             seen.add(regex)
             patterns.append(re.compile(regex, re.IGNORECASE))

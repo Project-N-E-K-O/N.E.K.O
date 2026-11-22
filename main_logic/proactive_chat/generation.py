@@ -16,7 +16,7 @@
 """Parsers and output guards for proactive Phase 1/2 generation."""
 
 import asyncio
-from contextlib import suppress
+from contextlib import aclosing, suppress
 import logging
 import unicodedata
 import re
@@ -1065,93 +1065,94 @@ async def _generate_phase2_stream(
                 use_vision=phase2_use_vision,
                 disable_thinking=phase2_disable_thinking,
             ) as llm:
-                async for chunk in llm.astream(messages):
-                    if on_model_reply is not None:
-                        on_model_reply()
-                        on_model_reply = None
-                    if mgr.state.is_proactive_preempted(proactive_sid):
-                        print(
-                            f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort"
-                        )
-                        _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
-                        break
-                    content = chunk.content if hasattr(chunk, "content") else ""
-                    if thinking_stripper is not None and content:
-                        content = thinking_stripper.feed(content)
-                    if not content:
-                        continue
-
-                    if not tag_parsed:
-                        buffer += content
-                        if "[PASS]" in buffer.upper():
-                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                async with aclosing(llm.astream(messages)) as stream:
+                    async for chunk in stream:
+                        if on_model_reply is not None:
+                            on_model_reply()
+                            on_model_reply = None
+                        if mgr.state.is_proactive_preempted(proactive_sid):
+                            print(
+                                f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort"
+                            )
+                            _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
                             break
-                        parsed = _parse_proactive_phase2_prefix(buffer)
-                        if parsed is None:
-                            # Recovery needs the complete output: a chunk may
-                            # end inside a label, separator, or ordinary path.
-                            # Bound pending data by the provider's generation
-                            # budget; the cleaned body keeps its stricter limit.
-                            if (
-                                sum(buffer.count(mark) for mark in ("|", "｜")) >= 2
-                                or count_tokens(buffer)
-                                > PROACTIVE_PHASE2_GENERATE_MAX_TOKENS
-                            ):
-                                _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
-                                break
+                        content = chunk.content if hasattr(chunk, "content") else ""
+                        if thinking_stripper is not None and content:
+                            content = thinking_stripper.feed(content)
+                        if not content:
                             continue
-                        cleaned, source_tag = parsed
-                        tag_parsed = True
-                        buffer = ""
 
-                        if (
-                            source_tag == "PASS"
-                            or "[PASS]" in cleaned.upper()
-                            or _text_is_pass_sentinel(cleaned)
-                        ):
-                            print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
-                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-                            break
-
-                        if cleaned.strip():
-                            combined = pass_probe + cleaned
-                            if "[PASS]" in combined.upper():
-                                print(
-                                    f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort"
-                                )
+                        if not tag_parsed:
+                            buffer += content
+                            if "[PASS]" in buffer.upper():
                                 _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
                                 break
-                            safe_text = (
-                                combined[:-pass_probe_len]
-                                if len(combined) > pass_probe_len
-                                else ""
-                            )
-                            pass_probe = (
-                                combined[-pass_probe_len:]
-                                if len(combined) >= pass_probe_len
-                                else combined
-                            )
-                            if await _emit_safe(safe_text):
-                                break
-                        continue
+                            parsed = _parse_proactive_phase2_prefix(buffer)
+                            if parsed is None:
+                                # Recovery needs the complete output: a chunk may
+                                # end inside a label, separator, or ordinary path.
+                                # Bound pending data by the provider's generation
+                                # budget; the cleaned body keeps its stricter limit.
+                                if (
+                                    sum(buffer.count(mark) for mark in ("|", "｜")) >= 2
+                                    or count_tokens(buffer)
+                                    > PROACTIVE_PHASE2_GENERATE_MAX_TOKENS
+                                ):
+                                    _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
+                                    break
+                                continue
+                            cleaned, source_tag = parsed
+                            tag_parsed = True
+                            buffer = ""
 
-                    combined = pass_probe + content
-                    if "[PASS]" in combined.upper():
-                        print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
-                        _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-                        break
-                    safe_text = (
-                        combined[:-pass_probe_len]
-                        if len(combined) > pass_probe_len
-                        else ""
-                    )
-                    pass_probe = (
-                        combined[-pass_probe_len:]
-                        if len(combined) >= pass_probe_len
-                        else combined
-                    )
-                    if safe_text and await _emit_safe(safe_text):
-                        break
+                            if (
+                                source_tag == "PASS"
+                                or "[PASS]" in cleaned.upper()
+                                or _text_is_pass_sentinel(cleaned)
+                            ):
+                                print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
+                                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                                break
+
+                            if cleaned.strip():
+                                combined = pass_probe + cleaned
+                                if "[PASS]" in combined.upper():
+                                    print(
+                                        f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort"
+                                    )
+                                    _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                                    break
+                                safe_text = (
+                                    combined[:-pass_probe_len]
+                                    if len(combined) > pass_probe_len
+                                    else ""
+                                )
+                                pass_probe = (
+                                    combined[-pass_probe_len:]
+                                    if len(combined) >= pass_probe_len
+                                    else combined
+                                )
+                                if await _emit_safe(safe_text):
+                                    break
+                            continue
+
+                        combined = pass_probe + content
+                        if "[PASS]" in combined.upper():
+                            print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
+                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                            break
+                        safe_text = (
+                            combined[:-pass_probe_len]
+                            if len(combined) > pass_probe_len
+                            else ""
+                        )
+                        pass_probe = (
+                            combined[-pass_probe_len:]
+                            if len(combined) >= pass_probe_len
+                            else combined
+                        )
+                        if safe_text and await _emit_safe(safe_text):
+                            break
     except (asyncio.TimeoutError, Exception) as exc:
         active_logger.warning(
             "[%s] Phase 2 流式调用异常: %s: %s",
@@ -2472,6 +2473,11 @@ def _match_label_pattern_prefix(text: str, pattern: re.Pattern[str]) -> str | No
     return candidate
 
 
+def _matches_label_pattern_exact(text: str, pattern: re.Pattern[str]) -> bool:
+    """Match a compiled full-line label pattern only across the exact segment with balanced parens."""
+    return _match_label_pattern_prefix(text, pattern) == text
+
+
 def _strip_proactive_label_slash_prefix(
     body: str,
     labels: frozenset[str],
@@ -2702,7 +2708,7 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
             )
             if newline and (
                 stripped_first.casefold() in context_labels
-                or any(p.match(stripped_first) for p in label_patterns)
+                or any(_matches_label_pattern_exact(stripped_first, p) for p in label_patterns)
             ):
                 cleaned = rest
         if cleaned is None:
@@ -2843,7 +2849,9 @@ def _matches_intent_leak_label(
         return True
     if label_patterns:
         norm_patterned = _strip_outer_intent_decor(segment)
-        if norm_patterned and any(p.match(norm_patterned) for p in label_patterns):
+        if norm_patterned and any(
+            _matches_label_pattern_exact(norm_patterned, p) for p in label_patterns
+        ):
             return True
     return False
 

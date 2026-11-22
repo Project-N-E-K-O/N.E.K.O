@@ -141,7 +141,8 @@ def test_sync_stream_break_after_usage_chunk_records_once():
     )
 
 
-def test_sync_stream_break_before_usage_chunk_records_failed_call_once():
+def test_sync_stream_break_before_usage_chunk_records_non_error_call_once():
+    """Caller-initiated early break before usage chunk increments call_count without marking an API error."""
     rec = MagicMock()
     stream = _FakeSyncStream([_chunk(None), _chunk(10, 5)])
     with patch.object(tt.TokenTracker, "get_instance", return_value=SimpleNamespace(record=rec)):
@@ -158,7 +159,7 @@ def test_sync_stream_break_before_usage_chunk_records_failed_call_once():
         completion_tokens=0,
         total_tokens=0,
         call_type="summary",
-        success=False,
+        success=True,
     )
 
 
@@ -233,7 +234,8 @@ async def test_async_stream_normal_exhaustion_and_close_records_once():
 
 
 @pytest.mark.asyncio
-async def test_async_stream_aclosing_break_before_usage_records_failed_once():
+async def test_async_stream_aclosing_break_before_usage_records_non_error_once():
+    """Closing an async stream wrapper early via aclosing records success=True without inflating error_count."""
     rec = MagicMock()
     stream = _FakeAsyncStream([_chunk(None), _chunk(20, 9)])
 
@@ -255,7 +257,7 @@ async def test_async_stream_aclosing_break_before_usage_records_failed_once():
         completion_tokens=0,
         total_tokens=0,
         call_type="conversation",
-        success=False,
+        success=True,
     )
 
 
@@ -291,10 +293,10 @@ async def test_async_stream_aenter_break_after_usage_and_gc_records_once():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("exc_cls", [RuntimeError, asyncio.CancelledError])
-async def test_async_stream_error_or_cancel_records_failed_once(exc_cls):
+async def test_async_stream_error_records_failed_once():
+    """Mid-stream Exception marks the recorded call as failed."""
     rec = MagicMock()
-    stream = _FakeAsyncStream([_chunk(None)], error=exc_cls("aborted"))
+    stream = _FakeAsyncStream([_chunk(None)], error=RuntimeError("aborted"))
 
     async def fake_create(*_a, **_kw):
         return stream
@@ -303,7 +305,7 @@ async def test_async_stream_error_or_cancel_records_failed_once(exc_cls):
         wrapper = await _handle_async_stream(
             SimpleNamespace(), fake_create, (), {"model": "gpt-async-err"}, "emotion"
         )
-        with pytest.raises(exc_cls):
+        with pytest.raises(RuntimeError):
             async for _ in wrapper:
                 pass
         await wrapper.aclose()
@@ -316,6 +318,52 @@ async def test_async_stream_error_or_cancel_records_failed_once(exc_cls):
         call_type="emotion",
         success=False,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("items", "expected_pt", "expected_ct", "expected_tt"),
+    [
+        ([_chunk(None)], 0, 0, 0),
+        ([_chunk(7, 3), _chunk(None)], 7, 3, 10),
+    ],
+)
+async def test_async_stream_cancelled_records_non_error_once(items, expected_pt, expected_ct, expected_tt):
+    """Cancellation via CancelledError does not mark the call as an API error."""
+    rec = MagicMock()
+    stream = _FakeAsyncStream(items, error=asyncio.CancelledError("cancelled"))
+
+    async def fake_create(*_a, **_kw):
+        return stream
+
+    with patch.object(tt.TokenTracker, "get_instance", return_value=SimpleNamespace(record=rec)):
+        wrapper = await _handle_async_stream(
+            SimpleNamespace(), fake_create, (), {"model": "gpt-async-cancel"}, "emotion"
+        )
+        with pytest.raises(asyncio.CancelledError):
+            async for _ in wrapper:
+                pass
+        await wrapper.aclose()
+
+    if expected_tt:
+        rec.assert_called_once_with(
+            model="gpt-test",
+            prompt_tokens=expected_pt,
+            completion_tokens=expected_ct,
+            total_tokens=expected_tt,
+            cached_tokens=0,
+            call_type="emotion",
+            success=True,
+        )
+    else:
+        rec.assert_called_once_with(
+            model="gpt-async-cancel",
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            call_type="emotion",
+            success=True,
+        )
 
 
 @pytest.mark.asyncio
@@ -339,3 +387,112 @@ async def test_async_stream_create_failure_records_once():
         call_type="conversation",
         success=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_async_stream_plain_break_records_without_gc():
+    """Plain async break through ChatOpenAI.astream records before cyclic GC runs."""
+    from utils.llm_client.openai_client import ChatOpenAI
+
+    rec = MagicMock()
+
+    class _FakeChoiceChunk:
+        def __init__(self, text: str, usage=None):
+            self.choices = [SimpleNamespace(delta=SimpleNamespace(content=text, tool_calls=None), finish_reason=None)]
+            self.usage = usage
+
+    async def _create_wrapped_stream(**_kwargs):
+        raw_stream = _FakeAsyncStream([_FakeChoiceChunk("[PASS]"), _FakeChoiceChunk("tail")])
+        return await _handle_async_stream(
+            SimpleNamespace(), lambda *_a, **_kw: asyncio.sleep(0, result=raw_stream), (), {"model": "gpt-proactive"}, "conversation"
+        )
+
+    client = ChatOpenAI(
+        model="gpt-proactive",
+        api_key="sk-test",
+        base_url="https://example.com/v1",
+        max_completion_tokens=256,
+        timeout=10.0,
+    )
+
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        with patch.object(
+            client._aclient.chat.completions, "create", side_effect=_create_wrapped_stream
+        ), patch.object(
+            tt.TokenTracker, "get_instance", return_value=SimpleNamespace(record=rec)
+        ):
+            # 1. Explicit aclosing around ChatOpenAI.astream() records immediately on exit.
+            async with aclosing(client.astream([{"role": "user", "content": "hi"}])) as stream:
+                async for _ in stream:
+                    break
+            assert rec.call_count == 1
+
+            # 2. Plain `async for ... in client.astream(...): break` (real caller pattern)
+            # breaks no-GC cycle once Python finishes async-gen teardown on loop turns.
+            rec.reset_mock()
+            async with client:
+                async for _ in client.astream([{"role": "user", "content": "hi"}]):
+                    break
+            for _ in range(3):
+                if rec.call_count:
+                    break
+                await asyncio.sleep(0)
+            assert rec.call_count == 1
+            rec.assert_called_once_with(
+                model="gpt-proactive",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                call_type="conversation",
+                success=True,
+            )
+    finally:
+        if was_enabled:
+            gc.enable()
+        await client.aclose()
+
+
+def test_dropped_stream_wrapper_gc_under_tracker_lock_does_not_deadlock():
+    """Dropping sync and async stream wrappers while holding TokenTracker._lock never deadlocks during GC."""
+    import threading
+
+    tracker = tt.TokenTracker.get_instance()
+    error: list[BaseException] = []
+
+    def _worker():
+        try:
+            sync_wrap = _handle_sync_stream(
+                SimpleNamespace(),
+                lambda *_a, **_kw: _FakeSyncStream([_chunk(None)]),
+                (),
+                {"model": "gpt-gc"},
+                "conversation",
+            )
+
+            async def _build_async():
+                return await _handle_async_stream(
+                    SimpleNamespace(),
+                    lambda *_a, **_kw: asyncio.sleep(0, result=_FakeAsyncStream([_chunk(None)])),
+                    (),
+                    {"model": "gpt-gc-async"},
+                    "conversation",
+                )
+
+            async_wrap = asyncio.run(_build_async())
+            async_gen = async_wrap.__aiter__()
+
+            with tracker._lock:
+                del sync_wrap
+                del async_gen
+                del async_wrap
+                gc.collect()
+        except BaseException as exc:  # pragma: no cover - surfaced by assertion below
+            error.append(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive(), "Deadlock detected during GC while TokenTracker._lock was held"
+    assert error == []

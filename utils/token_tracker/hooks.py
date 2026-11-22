@@ -18,6 +18,7 @@ import functools
 import inspect
 import logging
 import threading
+import weakref
 from urllib.parse import urlsplit
 
 from utils.token_tracker import TokenTracker
@@ -509,7 +510,7 @@ class _BaseStreamWrapper:
                     completion_tokens=0,
                     total_tokens=0,
                     call_type=self._call_type,
-                    success=False,
+                    success=not self._failed,
                 )
         except Exception:
             pass
@@ -517,16 +518,13 @@ class _BaseStreamWrapper:
     def __getattr__(self, name):
         return getattr(self._stream, name)
 
-    def __del__(self):
-        self._finalize_tracking()
-
 
 class _SyncStreamWrapper(_BaseStreamWrapper):
     """Wrap a sync Stream, extracting usage after iteration completes or exits early.
 
-    Key point: record at most once when the stream finishes or aborts (taking the
-    last chunk carrying usage when available, or recording a failed call when
-    aborted before any usage chunk is seen).
+    Key point: record at most once when the stream finishes, aborts, or errors
+    (taking the last chunk carrying usage when available, or recording a
+    zero-token entry with ``success=not self._failed`` before any usage chunk).
     """
 
     def __iter__(self):
@@ -535,9 +533,8 @@ class _SyncStreamWrapper(_BaseStreamWrapper):
                 self._observe_chunk(chunk)
                 yield chunk
             self._completed = True
-        except BaseException as exc:
-            if not isinstance(exc, GeneratorExit):
-                self._failed = True
+        except Exception:
+            self._failed = True
             raise
         finally:
             self._finalize_tracking()
@@ -568,16 +565,18 @@ class _SyncStreamWrapper(_BaseStreamWrapper):
 class _AsyncStreamWrapper(_BaseStreamWrapper):
     """Wrap an async AsyncStream, extracting usage after iteration completes or exits early.
 
-    Same as _SyncStreamWrapper: record at most once when the stream ends or aborts.
+    Same as _SyncStreamWrapper: record at most once when the stream ends,
+    aborts, or errors (with ``success=not self._failed``).
     """
 
     def __init__(self, stream, call_type: str, model: str = "unknown"):
         super().__init__(stream, call_type, model=model)
-        self._aiter_gen = None
+        self._aiter_gen_ref: weakref.ReferenceType | None = None
 
     def __aiter__(self):
-        self._aiter_gen = self._aiter_and_track()
-        return self._aiter_gen
+        gen = self._aiter_and_track()
+        self._aiter_gen_ref = weakref.ref(gen)
+        return gen
 
     async def _aiter_and_track(self):
         try:
@@ -585,9 +584,8 @@ class _AsyncStreamWrapper(_BaseStreamWrapper):
                 self._observe_chunk(chunk)
                 yield chunk
             self._completed = True
-        except BaseException as exc:
-            if not isinstance(exc, GeneratorExit):
-                self._failed = True
+        except Exception:
+            self._failed = True
             raise
         finally:
             self._finalize_tracking()
@@ -603,9 +601,10 @@ class _AsyncStreamWrapper(_BaseStreamWrapper):
 
     async def aclose(self):
         try:
-            if self._aiter_gen is not None:
-                gen = self._aiter_gen
-                self._aiter_gen = None
+            gen_ref = self._aiter_gen_ref
+            self._aiter_gen_ref = None
+            gen = gen_ref() if gen_ref is not None else None
+            if gen is not None:
                 try:
                     await gen.aclose()
                 except RuntimeError:

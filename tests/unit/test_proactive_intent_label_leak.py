@@ -258,3 +258,38 @@ def test_strip_slash_prefix_templated_commitment_labels_all_locales() -> None:
     assert _strip_proactive_intent_label_leak("Promise (due Nov 3 (Mon)) / Hello there") == "Hello there"
     assert _strip_proactive_intent_label_leak("/Promise (due Nov 3 (Mon)) Hello there") == "Hello there"
     assert _strip_proactive_intent_label_leak("/答应过的事（期限 11月3日（周一））你好") == "你好"
+
+
+def test_strip_commitment_label_does_not_cross_paren_boundary_into_prose() -> None:
+    assert (
+        _strip_proactive_intent_label_leak(
+            "Promise (due 2026-11-03): I bought the cake (finally)\nWant some?"
+        )
+        == "I bought the cake (finally)\nWant some?"
+    )
+    assert (
+        _strip_proactive_intent_label_leak(
+            "Promise (due Nov 3 (Mon)): I bought the cake (finally)\nWant some?"
+        )
+        == "I bought the cake (finally)\nWant some?"
+    )
+    assert (
+        _strip_proactive_intent_label_leak(
+            "答应过的事（期限 2026-11-03）：我买到蛋糕了（终于）\n要不要尝尝？"
+        )
+        == "我买到蛋糕了（终于）\n要不要尝尝？"
+    )
+    assert (
+        _strip_proactive_intent_label_leak("Promise (due Nov 3 (Mon))\nWant some?")
+        == "Want some?"
+    )
+    assert (
+        _strip_proactive_intent_label_leak(
+            "Promise (due 2026-11-03) I bought the cake (finally)\nWant some?"
+        )
+        == "Promise (due 2026-11-03) I bought the cake (finally)\nWant some?"
+    )
+    assert (
+        _strip_proactive_intent_label_leak("Promise (due 2026-11-03) is something (aside): keep me")
+        == "Promise (due 2026-11-03) is something (aside): keep me"
+    )
