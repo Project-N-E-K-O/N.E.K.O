@@ -247,9 +247,16 @@ class PermissionSnapshot:
         self.status = status
         self.record = record
 
-    def restore(self, plugin_id: str) -> bool:
-        """Put the record back; returns whether the permissions are restored."""
+    def restore(self, plugin_id: str, *, store_may_have_changed: bool = True) -> bool:
+        """Put the record back; returns whether the permissions are restored.
+
+        ``store_may_have_changed`` is False when nothing in the transaction
+        could have written the plugin's grants (no plugin start, which is
+        what reconciles them); a missing snapshot then loses nothing.
+        """
         if self.status == "unusable":
+            return True
+        if self.status == "unavailable" and not store_may_have_changed:
             return True
         if self.status != "taken":
             logger.error(

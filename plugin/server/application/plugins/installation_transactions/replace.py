@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -506,8 +507,14 @@ async def replace_plugin(
                     plugin_id,
                     type(restart_exc).__name__,
                 )
+        # Only a plugin start reconciles grants, so without one (the plugin
+        # was not running) a missing snapshot does not make this incomplete.
         if code_restored and not await asyncio.to_thread(
-            permissions_before.restore, plugin_id
+            functools.partial(
+                permissions_before.restore,
+                plugin_id,
+                store_may_have_changed=was_running,
+            )
         ):
             restored = False
         if not code_restored:

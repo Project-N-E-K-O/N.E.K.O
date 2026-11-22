@@ -1283,3 +1283,10 @@ def test_restore_of_an_unchanged_record_does_not_write(manager):
     record = store.read("x")
 
     store.restore("x", record)  # import still pending, record unchanged: no write
+
+
+def test_unavailable_snapshot_only_matters_when_the_store_may_have_changed():
+    snapshot = permission_service.PermissionSnapshot("unavailable")
+
+    assert snapshot.restore("x", store_may_have_changed=False) is True
+    assert snapshot.restore("x") is False

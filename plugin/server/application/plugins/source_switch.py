@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -432,7 +433,14 @@ async def switch_builtin_source(
         if not plugin_promoted or not await asyncio.to_thread(
             request.target_plugin_dir.exists
         ):
-            if not await asyncio.to_thread(permissions_before.restore, request.plugin_id):
+            # Only a plugin start reconciles grants (see replace_plugin).
+            if not await asyncio.to_thread(
+                functools.partial(
+                    permissions_before.restore,
+                    request.plugin_id,
+                    store_may_have_changed=was_running,
+                )
+            ):
                 rollback_code = "override_rollback_incomplete"
         else:
             rollback_code = "override_rollback_incomplete"
