@@ -55,7 +55,13 @@ def _csrf_header_accepted(request: Request) -> bool:
 
     token = request.headers.get(system_shared._AUTOSTART_CSRF_HEADER, "")
     expected = system_shared.AUTOSTART_CSRF_TOKEN
-    if not (token and expected and secrets.compare_digest(token, expected)):
+    # compare_digest raises TypeError on non-ASCII str; such a token is invalid.
+    if not (
+        token
+        and expected
+        and token.isascii()
+        and secrets.compare_digest(token, expected)
+    ):
         return False
     # Without Origin/Referer the original check always fails; skip it so a
     # token holder's request does not leave a spurious rejection warning.
@@ -65,16 +71,24 @@ def _csrf_header_accepted(request: Request) -> bool:
 
 
 def _request_origin_allowed(request: Request) -> bool:
+    from main_routers.system_router._shared import _normalize_origin_value
     from utils.instance_access import _same_origin
 
     # Same-origin, loopback-to-loopback, or a configured trusted origin;
     # requests without Origin/Referer (native clients) pass here.
     if is_http_browser_origin_allowed(request.scope):
         return True
-    # An explicit Origin naming this deployment's own entry, as the instance
-    # access layer defines it: the pinned public origin, or an https page on
-    # this Host behind a TLS-terminating proxy.
-    return bool(request.headers.get("origin")) and _same_origin(request)
+    # A page origin (Origin, else Referer: windows that omit Origin still send
+    # it) naming this deployment's own entry, as the instance access layer
+    # defines it: the pinned public origin, or an https page on this Host
+    # behind a TLS-terminating proxy.
+    # Referer is consulted only when Origin is absent; an Origin that is
+    # present but opaque or malformed ("null") is never replaced by Referer.
+    if "origin" in request.headers:
+        page_origin = request.headers.get("origin", "").strip()
+    else:
+        page_origin = _normalize_origin_value(request.headers.get("referer"))
+    return bool(page_origin) and _same_origin(request, page_origin)
 
 
 def _rejection(status_code: int, error_code: str, error: str) -> JSONResponse:

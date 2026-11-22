@@ -287,22 +287,11 @@ async def test_desktop_shell_ui_language_put_passes_guard(app, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_remote_instance_session_uses_instance_same_origin(app, save_recorder, monkeypatch):
-    """Authorized remote sessions compare Origin with the instance's own origin."""
+async def test_non_loopback_host_accepts_its_own_origin_only(app, save_recorder, monkeypatch):
+    """On a non-loopback Host, Origin must equal the Host-derived origin."""
     monkeypatch.delenv("NEKO_INSTANCE_PUBLIC_ORIGIN", raising=False)
-
-    class _MarkInstance:
-        def __init__(self, inner):
-            self.inner = inner
-
-        async def __call__(self, scope, receive, send):
-            if scope["type"] == "http":
-                scope["neko.instance_identity"] = "test-identity"
-            await self.inner(scope, receive, send)
-
-    wrapped = _MarkInstance(app)
     base = "http://neko.example"
-    async with _client(wrapped, base_url=base) as client:
+    async with _client(app, base_url=base) as client:
         ok = await client.post(
             SETTINGS_PATH,
             content=_BODY,
@@ -325,27 +314,37 @@ async def test_remote_instance_session_uses_instance_same_origin(app, save_recor
 
 
 @pytest.mark.asyncio
-async def test_remote_instance_session_accepts_pinned_public_origin(app, save_recorder, monkeypatch):
+async def test_pinned_public_origin_is_same_origin(app, save_recorder, monkeypatch):
     """Behind a gateway the page origin is the pinned public origin, not the Host."""
     monkeypatch.setenv("NEKO_INSTANCE_PUBLIC_ORIGIN", "https://public.example")
-
-    class _MarkInstance:
-        def __init__(self, inner):
-            self.inner = inner
-
-        async def __call__(self, scope, receive, send):
-            if scope["type"] == "http":
-                scope["neko.instance_identity"] = "test-identity"
-            await self.inner(scope, receive, send)
-
-    async with _client(_MarkInstance(app), base_url="http://neko.internal") as client:
+    async with _client(app, base_url="http://neko.internal") as client:
         response = await client.post(
             SETTINGS_PATH,
             content=_BODY,
             headers={**_JSON, "Origin": "https://public.example", "Sec-Fetch-Site": "same-origin"},
         )
+        # Windows that omit Origin still send Referer from the same page.
+        referer_only = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "Referer": "https://public.example/chat", "Sec-Fetch-Site": "same-origin"},
+        )
+        foreign_referer = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "Referer": "https://evil.example/page"},
+        )
+        # An opaque Origin is never replaced by a same-origin Referer.
+        null_origin = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "Origin": "null", "Referer": "https://public.example/chat"},
+        )
     assert response.status_code == 200, response.text
-    assert len(save_recorder.calls) == 1
+    assert referer_only.status_code == 200, referer_only.text
+    assert foreign_referer.status_code == 403
+    assert null_origin.status_code == 403
+    assert len(save_recorder.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -364,9 +363,16 @@ async def test_https_page_behind_tls_proxy_is_same_origin(app, save_recorder, mo
             content=_BODY,
             headers={**_JSON, "Origin": "https://other.example"},
         )
+        # Electron windows with webSecurity disabled send Referer, not Origin.
+        referer_only = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "Referer": "https://neko.example/chat", "Sec-Fetch-Site": "same-origin"},
+        )
     assert ok.status_code == 200, ok.text
     assert foreign.status_code == 403
-    assert len(save_recorder.calls) == 1
+    assert referer_only.status_code == 200, referer_only.text
+    assert len(save_recorder.calls) == 2
 
 
 @pytest.fixture
@@ -442,6 +448,23 @@ async def test_valid_csrf_without_origin_logs_no_rejection(app, save_recorder, c
     assert no_origin_cross_site.status_code == 403
     assert warnings == []
     assert len(save_recorder.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_non_ascii_csrf_token_is_rejected_not_500(app, save_recorder, csrf_token):
+    async with _client(app, base_url="http://neko.lan:48911") as client:
+        response = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers=[
+                ("Content-Type", "application/json"),
+                ("Origin", "http://neko.lan:1081"),
+                ("X-CSRF-Token", "tok\u00e9n".encode("latin-1")),
+            ],
+        )
+    assert response.status_code == 403
+    assert response.json()["success"] is False
+    assert save_recorder.calls == []
 
 
 @pytest.mark.asyncio
