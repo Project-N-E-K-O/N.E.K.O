@@ -41,6 +41,41 @@ def test_git_command_quotes_the_directory_for_windows_shells(monkeypatch: pytest
     )
 
 
+@pytest.mark.skipif(release_cmd._WINDOWS_SHELL, reason="POSIX shell quoting")
+def test_printed_branch_and_remote_stay_one_literal_argument_in_a_posix_shell(tmp_path, monkeypatch):
+    # Branch names may hold $ ; ( &: pasting the hint must not run anything else.
+    branch = "feat;$(touch pwned)&x"
+    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: branch)
+    argument = init_cmd._branch_argument(tmp_path)
+    assert argument == "'feat;$(touch pwned)&x'"
+    echoed = subprocess.run(["sh", "-c", f"printf %s {argument}"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert echoed.stdout == branch
+    assert not (tmp_path / "pwned").exists()
+
+    remote = "https://user:t$ken@github.com/octocat/demo.git"
+    message = init_cmd._existing_repository_remote_message(Path("/work/demo"), remote)
+    assert message.endswith("git -C /work/demo remote add origin 'https://user:t$ken@github.com/octocat/demo.git'")
+
+
+def test_printed_branch_and_remote_for_windows_shells(monkeypatch):
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    for branch, expected in [
+        ("main", "main"),
+        ("feature/x-1.2", "feature/x-1.2"),
+        ("a&b", '"a&b"'),
+        # No quoting keeps %VAR% or !VAR! literal in cmd.
+        ("a%PATH%b", '"<branch>"'),
+        ("a!b!", '"<branch>"'),
+    ]:
+        monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir, branch=branch: branch)
+        assert init_cmd._branch_argument(Path("C:/work")) == expected
+    url = "https://github.com/octocat/demo.git"
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), url).endswith(f"remote add origin {url}")
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), "git@github.com:o/r$x.git").endswith(
+        'remote add origin "<repository-url>"'
+    )
+
+
 def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args],

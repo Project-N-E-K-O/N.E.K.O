@@ -522,6 +522,15 @@ def _git_command(plugin_dir: Path, arguments: str) -> str:
     return f"git -C {release_cmd._plugin_dir_argument(plugin_dir, '')} {arguments}"
 
 
+# Branch names may hold $ ; ( & and the like; quote them like the directory.
+_BRANCH_PLACEHOLDER = '"<branch>"'
+_REMOTE_PLACEHOLDER = '"<repository-url>"'
+
+
+def _branch_argument(plugin_dir: Path) -> str:
+    return release_cmd._shell_argument(_current_branch(plugin_dir), _BRANCH_PLACEHOLDER)
+
+
 def _current_branch(plugin_dir: Path) -> str:
     branch = (
         git_output(plugin_dir, "symbolic-ref", "--short", "-q", "HEAD")
@@ -570,7 +579,7 @@ def _print_push_next_step(plugin_dir: Path) -> None:
         plugin_dir,
         [
             *_first_commit_steps(plugin_dir),
-            _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+            _git_command(plugin_dir, f"push -u origin {_branch_argument(plugin_dir)}"),
         ],
     )
 
@@ -726,7 +735,7 @@ def _print_manual_repo_steps(plugin_dir: Path, *, repo_name: str) -> None:
         [
             *_first_commit_steps(plugin_dir),
             _git_command(plugin_dir, "remote add origin <repository-url>"),
-            _git_command(plugin_dir, f"push -u origin {_current_branch(plugin_dir)}"),
+            _git_command(plugin_dir, f"push -u origin {_branch_argument(plugin_dir)}"),
         ],
     )
 
@@ -777,7 +786,8 @@ def _preflight_git_request(target_dir: Path, *, initialize_git: bool, remote: st
 def _existing_repository_remote_message(target_dir: Path, remote: str) -> str:
     return (
         "--remote can only be used when initializing a new git repository; "
-        f"to add origin to the existing one run: {_git_command(target_dir, f'remote add origin {remote}')}"
+        "to add origin to the existing one run: "
+        f"{_git_command(target_dir, f'remote add origin {release_cmd._shell_argument(remote, _REMOTE_PLACEHOLDER)}')}"
         f"{release_cmd._placeholder_note(target_dir)}"
     )
 

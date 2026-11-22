@@ -693,6 +693,23 @@ def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
     return _PLUGIN_DIR_PLACEHOLDER if target is None else target
 
 
+# Nothing any supported shell expands or splits (shlex's safe set without %).
+_SHELL_PLAIN = re.compile(r"[\w@+=:,./-]+")
+
+
+def _shell_argument(value: str, placeholder: str) -> str:
+    """``value`` as one argument of a printed command, or ``placeholder``.
+
+    Plain values (``main``, a GitHub URL) stay bare. The placeholder (already
+    quoted) stands in when no Windows quoting keeps ``value`` literal; see
+    _shell_quote.
+    """
+    if _SHELL_PLAIN.fullmatch(value):
+        return value
+    quoted = _shell_quote(value)
+    return placeholder if quoted is None else quoted
+
+
 def _placeholder_path(plugin_dir: Path) -> str | None:
     """The path to fill in when _plugin_dir_argument printed the placeholder."""
     return str(plugin_dir) if _shell_quote(str(plugin_dir)) is None else None
