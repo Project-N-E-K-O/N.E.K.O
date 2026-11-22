@@ -85,6 +85,9 @@
         </el-dialog>
 
         <el-tabs v-model="tab">
+          <el-tab-pane v-if="!isArchived" :label="t('power.space.familiars.tab')" name="familiars" lazy>
+            <FamiliarsPane :project="selected ? selected.name : null" :selected-id="familiarId" @select="chooseFamiliar" />
+          </el-tab-pane>
           <el-tab-pane :label="t('power.space.tabs.rules')" name="rules">
             <RulesPane :scope="scope" :readonly="isArchived" />
           </el-tab-pane>
@@ -109,6 +112,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { listProjects, pickDirectory, setProjectWorkdir } from '@/api/console'
 import type { SpaceProject, SpaceScope } from '@/api/console'
+import FamiliarsPane from '@/components/power/space/FamiliarsPane.vue'
 import NotesPane from '@/components/power/space/NotesPane.vue'
 import PreferencesPane from '@/components/power/space/PreferencesPane.vue'
 import ReviewsPane from '@/components/power/space/ReviewsPane.vue'
@@ -147,14 +151,21 @@ const scope = computed<SpaceScope>(() => {
     ? { project: project.directory || project.name, archive_year: project.archive_year }
     : { project: project.name }
 })
+/** The familiar the address names (`?familiar=`, a session's id), shown up close among the familiars. */
+const familiarId = computed(() => (typeof route.query.familiar === 'string' ? route.query.familiar : ''))
 const tab = computed({
   get: () => {
-    const wanted = String(route.query.tab || 'rules')
-    const offered = ['rules', 'notes', selected.value ? 'reviews' : 'preferences']
+    const offered = [...(isArchived.value ? [] : ['familiars']), 'rules', 'notes', selected.value ? 'reviews' : 'preferences']
+    // A link to a familiar opens on the familiars; one to a project or to everything on the rules.
+    const wanted = String(route.query.tab || (familiarId.value ? 'familiars' : 'rules'))
     return offered.includes(wanted) ? wanted : 'rules'
   },
   set: (name: string) => void router.replace({ query: { ...route.query, tab: name === 'rules' ? undefined : name } }),
 })
+
+function chooseFamiliar(id: string) {
+  void router.replace({ query: { ...route.query, tab: 'familiars', familiar: id } })
+}
 
 function isSelected(project: SpaceProject): boolean {
   const now = selected.value

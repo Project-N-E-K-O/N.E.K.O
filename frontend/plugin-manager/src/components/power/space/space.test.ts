@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   listEntries: vi.fn(), readEntry: vi.fn(), fileEntry: vi.fn(), editEntry: vi.fn(), deleteEntry: vi.fn(), listRemoved: vi.fn(),
   listReviews: vi.fn(), readReview: vi.fn(), deleteReview: vi.fn(),
   listPreferences: vi.fn(), editPreference: vi.fn(), removePreference: vi.fn(),
+  getProjectBoard: vi.fn(), writeCard: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(), stopCommission: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
 }))
 vi.mock('@/api/console', () => api)
@@ -229,6 +230,7 @@ describe('the familiar space page', () => {
     api.listEntries.mockResolvedValue({ entries: [] })
     api.listReviews.mockResolvedValue({ reviews: [] })
     api.listPreferences.mockResolvedValue({ preferences: [] })
+    api.getProjectBoard.mockResolvedValue({ revision: 'r1', projects: [], loose: [] })
   })
 
   it('opens on what all familiars share, with the task preferences and no reviews', async () => {
@@ -236,7 +238,10 @@ describe('the familiar space page', () => {
     expect(byTest('space-project')).toBeNull()
     expect(api.readRules).toHaveBeenCalledWith({})
     const tabs = [...container.querySelectorAll('.el-tabs__item')].map(tab => tab.textContent?.trim())
-    expect(tabs).toEqual([words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.preferences])
+    expect(tabs).toEqual([words.space.familiars.tab, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.preferences])
+    // Opened on the rules: the familiars are read when their tab is.
+    expect(container.querySelector('.el-tabs__item.is-active')?.textContent?.trim()).toBe(words.space.tabs.rules)
+    expect(api.getProjectBoard).not.toHaveBeenCalled()
   })
 
   it('shows a project with where it works, its own rules and its reviews', async () => {
@@ -246,7 +251,7 @@ describe('the familiar space page', () => {
     expect(byTest('space-project')?.textContent).toContain('D:/code/ledger-tool')
     expect(api.readRules).toHaveBeenLastCalledWith({ project: 'Ledger tool' })
     const tabs = [...container.querySelectorAll('.el-tabs__item')].map(tab => tab.textContent?.trim())
-    expect(tabs).toEqual([words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.reviews])
+    expect(tabs).toEqual([words.space.familiars.tab, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.reviews])
   })
 
   it('names an archived project by its directory and year, and shows it read-only', async () => {
@@ -256,6 +261,9 @@ describe('the familiar space page', () => {
     expect(api.readRules).toHaveBeenLastCalledWith({ project: 'moving-list', archive_year: '2026' })
     expect(byTest('space-project')?.textContent).toContain(words.space.workdirDefault)
     expect(byTest('rules-save')).toBeNull()
+    // Nothing works in an archived project: no familiars to show.
+    const tabs = [...container.querySelectorAll('.el-tabs__item')].map(tab => tab.textContent?.trim())
+    expect(tabs).toEqual([words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.reviews])
   })
 
   it('changes where a project works with a folder that was chosen or typed, and says why when it cannot', async () => {

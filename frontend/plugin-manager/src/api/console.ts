@@ -278,6 +278,49 @@ export interface Board {
 export const getBoard = (knownRevision?: string) =>
   get<Board>('/console/board', knownRevision ? { known_revision: knownRevision } : undefined)
 
+/** A kind of familiar to choose from: a built-in preset, or a template the user wrote. */
+export interface FamiliarTemplate {
+  name: string
+  label: string
+  description: string
+  avatar: string
+  source: string
+  valid: boolean
+  error: string
+}
+
+/** The form of a new familiar, as the user fills it in or as the model drafted it. */
+export interface FamiliarForm {
+  name: string
+  title: string
+  preset: string
+  duty: string
+  description: string
+  rules: string
+}
+
+export const getProjectBoard = (project: string | null, knownRevision?: string) => {
+  const params: Record<string, string> = {}
+  if (project) params.project = project
+  if (knownRevision) params.known_revision = knownRevision
+  return get<Board>('/console/board', params)
+}
+export const getTemplates = () => get<{ templates: FamiliarTemplate[] }>('/console/templates')
+export const draftFamiliar = (text: string, workdir?: string) =>
+  send<{ draft: FamiliarForm }>('post', '/console/familiars/draft', { text, workdir: workdir || undefined })
+export const makeFamiliar = (form: FamiliarForm & { workdir?: string }) =>
+  send<{ project: SpaceProject; session_id: string }>('post', '/console/familiars', { ...form, workdir: form.workdir || undefined })
+export const writeCard = (sessionId: string, lines: { title?: string; duty?: string; summary?: string }) =>
+  send<{ written: string[] }>('patch', `/console/familiars/${encodeURIComponent(sessionId)}/card`, lines)
+export const describeProject = (project: string, description: string) =>
+  send<{ project: SpaceProject }>('post', '/console/space/projects/description', { project, description })
+export const tellCommission = (commissionId: string, text: string) =>
+  send<{ success: boolean }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/tell`, { text })
+export const answerCommission = (commissionId: string, answer: { text?: string; choice?: string; question_id?: string }) =>
+  send<{ success: boolean }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/answer`, answer)
+export const stopCommission = (commissionId: string) =>
+  send<{ status: string }>('post', `/console/commissions/${encodeURIComponent(commissionId)}/stop`)
+
 // -- the runtime --------------------------------------------------------------
 
 export const getRuntime = () => get<RuntimeView>('/console/runtime')
