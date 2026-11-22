@@ -2838,6 +2838,7 @@
         "starMapLabeling": "Nombrando temas...",
         "starMapLabelSuccess": "Temas del mapa actualizados",
         "starMapLabelFailed": "No se pudieron actualizar los temas — revisa el modelo summary",
+        "starMapLabelCooldown": "Espera {{seconds}} s antes de volver a actualizar los temas",
         "starMapResetView": "Restablecer vista",
         "starMapClickHint": "Haz clic en cualquier estrella para ver el recuerdo y sus conexiones",
         "starMapRelatedStars": "Recuerdos conectados",
@@ -7046,8 +7047,8 @@
             "body": "Elige una pantalla o ventana. El interruptor derecho inicia o detiene la sesión. Compartir es opcional."
         },
         "agent": {
-            "title": "Agent",
-            "body": "La patita abre Agent para ayudarte con el ordenador, el navegador y los plugins. El panel de tareas muestra el progreso y permite detenerlas."
+            "title": "NekoPower",
+            "body": "Este botón abre NekoPower. Con NekoPower activado puedo ayudarte con el ordenador, el navegador y los plugins; su interruptor, los familiares y los plugins se gestionan allí. El panel de tareas muestra el progreso y permite detenerlas."
         },
         "agentMaster": {
             "title": "Interruptor de Agent",

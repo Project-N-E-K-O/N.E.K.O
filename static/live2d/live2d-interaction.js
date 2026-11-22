@@ -4688,7 +4688,7 @@ Live2DManager.prototype._playTouchSetAnimation = async function(hitAreaId, optio
 
                 try {
                     let motionPath = motion.File;
-                    if (!motionPath.startsWith('http') && !motionPath.startsWith('/')) {
+                    if (!/^https?:\/\//i.test(motionPath) && !motionPath.startsWith('/')) {
                         motionPath = `${this.modelRootPath}/${motionPath}`;
                     }
                     const response = await fetch(motionPath);

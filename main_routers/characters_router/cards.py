@@ -269,7 +269,12 @@ async def _save_character_card_serialized(data: dict):
         # Get the character-card name (profile name)
         # Support Chinese and English field names
         chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
-        name_error = _validate_profile_name(chara_name)
+        existing_catgirls = characters.get('猫娘') if isinstance(characters.get('猫娘'), dict) else {}
+        normalized_chara_name = chara_name.strip() if isinstance(chara_name, str) else ""
+        name_error = _validate_profile_name(
+            chara_name,
+            allow_reserved_route=bool(normalized_chara_name and normalized_chara_name in existing_catgirls),
+        )
         if name_error:
             return JSONResponse({"success": False, "error": f"角色名称无效: {name_error}"}, status_code=400)
         chara_name = str(chara_name).strip()

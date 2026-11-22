@@ -5,6 +5,7 @@ This script evaluates MCP servers by running test questions against them using C
 
 import argparse
 import asyncio
+import inspect
 import json
 import re
 import sys
@@ -83,6 +84,56 @@ def extract_xml_content(text: str, tag: str) -> str | None:
     return matches[-1].strip() if matches else None
 
 
+def _safe_str(value: Any) -> str:
+    """Convert a value to str without letting broken __str__/__repr__ escape."""
+    try:
+        return str(value)
+    except Exception:
+        return f"<unserializable {type(value).__name__}>"
+
+
+def _serialize_tool_item(item: Any) -> Any:
+    """Dump Pydantic/MCP content models while remaining compatible with zero-arg stubs."""
+    model_dump = getattr(item, "model_dump", None)
+    if not callable(model_dump):
+        return item
+    params = inspect.signature(model_dump).parameters
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+    kwargs: dict[str, Any] = {}
+    if "mode" in params or accepts_kwargs:
+        kwargs["mode"] = "json"
+    if "exclude_none" in params or accepts_kwargs:
+        kwargs["exclude_none"] = True
+    try:
+        return model_dump(**kwargs)
+    except Exception:
+        if "mode" in kwargs:
+            fallback_kwargs = {k: v for k, v in kwargs.items() if k != "mode"}
+            return model_dump(**fallback_kwargs)
+        raise
+
+
+def _format_tool_result(tool_result: Any) -> str:
+    """Format a tool result into text, isolating serialization failures per list item."""
+    try:
+        if isinstance(tool_result, list):
+            serialized_items = []
+            for item in tool_result:
+                try:
+                    dumped = _serialize_tool_item(item)
+                    json.dumps(dumped, ensure_ascii=False, default=str)
+                    serialized_items.append(dumped)
+                except Exception:
+                    serialized_items.append(_safe_str(item))
+            return json.dumps(serialized_items, ensure_ascii=False, default=str)
+        serialized = _serialize_tool_item(tool_result)
+        if isinstance(serialized, (dict, list)):
+            return json.dumps(serialized, ensure_ascii=False, default=str)
+        return _safe_str(serialized)
+    except Exception:
+        return _safe_str(tool_result)
+
+
 async def agent_loop(
     client: Anthropic,
     model: str,
@@ -107,31 +158,46 @@ async def agent_loop(
     tool_metrics = {}
 
     while response.stop_reason == "tool_use":
-        tool_use = next(block for block in response.content if block.type == "tool_use")
-        tool_name = tool_use.name
-        tool_input = tool_use.input
+        tool_use_blocks = [
+            block for block in response.content if getattr(block, "type", None) == "tool_use"
+        ]
+        if not tool_use_blocks:
+            break
 
-        tool_start_ts = time.time()
-        try:
-            tool_result = await connection.call_tool(tool_name, tool_input)
-            tool_response = json.dumps(tool_result) if isinstance(tool_result, (dict, list)) else str(tool_result)
-        except Exception as e:
-            tool_response = f"Error executing tool {tool_name}: {str(e)}\n"
-            tool_response += traceback.format_exc()
-        tool_duration = time.time() - tool_start_ts
+        tool_results = []
+        for tool_use in tool_use_blocks:
+            tool_name = tool_use.name
+            tool_input = tool_use.input
 
-        if tool_name not in tool_metrics:
-            tool_metrics[tool_name] = {"count": 0, "durations": []}
-        tool_metrics[tool_name]["count"] += 1
-        tool_metrics[tool_name]["durations"].append(tool_duration)
+            tool_is_error = False
+            tool_start_ts = time.time()
+            try:
+                tool_result = await connection.call_tool(tool_name, tool_input)
+            except Exception as e:
+                tool_is_error = True
+                tool_response = f"Error executing tool {tool_name}: {str(e)}\n"
+                tool_response += traceback.format_exc()
+            else:
+                tool_response = _format_tool_result(tool_result)
+            tool_duration = time.time() - tool_start_ts
 
-        messages.append({
-            "role": "user",
-            "content": [{
+            if tool_name not in tool_metrics:
+                tool_metrics[tool_name] = {"count": 0, "durations": []}
+            tool_metrics[tool_name]["count"] += 1
+            tool_metrics[tool_name]["durations"].append(tool_duration)
+
+            entry = {
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
                 "content": tool_response,
-            }]
+            }
+            if tool_is_error:
+                entry["is_error"] = True
+            tool_results.append(entry)
+
+        messages.append({
+            "role": "user",
+            "content": tool_results,
         })
 
         response = await asyncio.to_thread(
@@ -144,10 +210,12 @@ async def agent_loop(
         )
         messages.append({"role": "assistant", "content": response.content})
 
-    response_text = next(
-        (block.text for block in response.content if hasattr(block, "text")),
-        None,
-    )
+    text_blocks = [
+        block.text
+        for block in response.content
+        if isinstance(getattr(block, "text", None), str)
+    ]
+    response_text = "\n".join(text_blocks) if text_blocks else "<response>NOT_FOUND</response>"
     return response_text, tool_metrics
 
 

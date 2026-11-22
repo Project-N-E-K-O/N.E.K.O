@@ -174,6 +174,9 @@ const messages = {
       headless: 'Without a window',
       headlessHint: 'Works in the background; you do not see what it clicks.',
       changeNote: 'A change closes the browser familiars have open, so the next task starts with the new setting.',
+      taskHud: 'Task panel',
+      taskHudSwitch: 'Show the task panel on the main window',
+      taskHudHint: 'What she and the familiars are working on shows in a floating panel next to the character, where you can follow it and stop it. Switched off, the work still goes on; it is just not shown.',
     },
     plugins: {
       title: 'dsh plugins',

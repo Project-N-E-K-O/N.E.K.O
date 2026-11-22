@@ -22,11 +22,13 @@ from ._shared import _get_app_root, _is_path_within_base, _validate_local_mutati
 import os
 import asyncio
 import re
+import threading
 from typing import Any
 from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from ..shared_state import ensure_steamworks as get_steamworks
+from ..shared_state import get_steamworks as get_cached_steamworks
 from utils.workshop_utils import get_workshop_path_async
 
 
@@ -39,6 +41,38 @@ _PLAYTIME_PROGRESS_ACHIEVEMENTS: tuple[str, ...] = (
     "ACH_TIME_1HR",
     "ACH_TIME_100HR",
 )
+
+
+# Held while a background Steamworks reconnect runs, so concurrent playtime
+# reports start at most one.
+_steam_reconnect_guard = threading.Lock()
+
+
+def _run_steam_reconnect() -> None:
+    try:
+        # get_steamworks is ensure_steamworks here: it may run the initializer
+        # and keeps its own min-retry interval.
+        get_steamworks()
+    except Exception as e:
+        logger.warning("后台重连 Steamworks 失败: %s", e)
+    finally:
+        _steam_reconnect_guard.release()
+
+
+def _kick_steam_reconnect() -> None:
+    """Retry Steamworks init off the request path, at most one at a time.
+
+    Supports "start N.E.K.O first, open Steam later" without running
+    SteamAPI_Init on the event loop. The thread is a daemon so a hung SDK call
+    cannot block process exit.
+    """
+    if not _steam_reconnect_guard.acquire(blocking=False):
+        return
+    try:
+        threading.Thread(target=_run_steam_reconnect, name="steam-reconnect", daemon=True).start()
+    except Exception as e:
+        _steam_reconnect_guard.release()
+        logger.warning("启动 Steamworks 后台重连线程失败: %s", e)
 
 
 async def _prepare_steam_user_stats(steamworks: Any) -> None:
@@ -144,8 +178,9 @@ async def update_playtime(request: Request):
     if validation_error is not None:
         return validation_error
 
-    steamworks = get_steamworks()
+    steamworks = get_cached_steamworks()
     if steamworks is None:
+        _kick_steam_reconnect()
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
 
     try:

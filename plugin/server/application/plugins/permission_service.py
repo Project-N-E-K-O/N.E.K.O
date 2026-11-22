@@ -22,11 +22,20 @@ from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_IN_USE,
+    CORRUPT,
+    UNSUPPORTED_VERSION,
     PluginPermissionStore,
     PluginSource,
 )
 
 logger = get_logger("server.plugins.permissions")
+
+# A damaged or newer-version store: every read and write fails, so it holds
+# no grant that could apply and there is nothing to bind or drop. The records
+# are still on disk, though; if the file becomes readable again (e.g. after
+# upgrading back to the version that wrote it) they apply as stored, and the
+# usual source rules reconcile them on the next plugin start.
+_UNUSABLE_STORE_CODES = (CORRUPT, UNSUPPORTED_VERSION)
 
 
 class _SourceUnknown(Exception):
@@ -158,27 +167,77 @@ def _manifest_plugin_id(target_dir: str) -> str | None:
     return plugin_id if isinstance(plugin_id, str) and plugin_id else None
 
 
-def reconcile_installed_plugins(result: dict) -> None:
-    """Reconcile every plugin of a committed install result.
+def _installed_plugin_ids(result: dict) -> list[str | None]:
+    """Manifest ``plugin.id`` of each plugin of an install result, ``None``
+    where it cannot be read.
 
-    Grants are keyed by the manifest ``plugin.id``, which may differ from the
-    install directory name, so the id is read from each installed manifest.
-    Never raises.
+    Grants are keyed by the manifest id, which may differ from the install
+    directory name, so the id is read from each installed manifest.
     """
     try:
         unpacked = result.get("unpack", result.get("install", result))
-        installed = list(unpacked.get("installed_plugins", []))
-    except AttributeError:
-        return
+        installed = list(unpacked.get("installed_plugins") or [])
+    except (AttributeError, TypeError):
+        return []
+    plugin_ids: list[str | None] = []
     for entry in installed:
         target_dir = entry.get("target_dir") if isinstance(entry, dict) else None
-        plugin_id = _manifest_plugin_id(str(target_dir)) if target_dir else None
+        plugin_ids.append(_manifest_plugin_id(str(target_dir)) if target_dir else None)
+    return plugin_ids
+
+
+def reconcile_installed_plugins(result: dict) -> None:
+    """Reconcile every plugin of a committed install result. Never raises."""
+    for plugin_id in _installed_plugin_ids(result):
         if plugin_id is None:
             logger.warning(
                 "plugin permission source not reconciled: installed manifest id unavailable"
             )
             continue
         reconcile_permission_source(plugin_id)
+
+
+def forget_installed_plugins(result: dict, *, plugin_ids: tuple[str, ...] = ()) -> bool:
+    """Drop all grants of every plugin of an install result, plus ``plugin_ids``.
+
+    Used when a replacement committed new code but its install source could
+    not be recorded: the grants stay bound to the previous source, so they
+    are dropped and the plugin is asked again. Call under the plugin
+    operation lock. Never raises; returns whether every grant was dropped.
+    A damaged or newer-version store counts as dropped (see
+    ``_UNUSABLE_STORE_CODES``), although its records stay on disk.
+    """
+    targets = set(plugin_ids)
+    complete = True
+    for plugin_id in _installed_plugin_ids(result):
+        if plugin_id is None:
+            logger.warning(
+                "plugin permission grants not dropped: installed manifest id unavailable"
+            )
+            complete = False
+            continue
+        targets.add(plugin_id)
+    for plugin_id in sorted(targets):
+        try:
+            forget_permissions(plugin_id)
+        except ServerDomainError as exc:
+            if exc.code in _UNUSABLE_STORE_CODES:
+                # Holds no usable grant, same as bind_permission_source.
+                continue
+            logger.error(
+                "plugin permission grants could not be dropped plugin_id={} code={}",
+                plugin_id,
+                exc.code,
+            )
+            complete = False
+        except Exception as exc:
+            logger.error(
+                "plugin permission grants could not be dropped plugin_id={} err_type={}",
+                plugin_id,
+                type(exc).__name__,
+            )
+            complete = False
+    return complete
 
 
 def mirror_consent_decision(
@@ -225,6 +284,34 @@ def decide_permission(
         condition=condition,
         source=current_source(plugin_id),
     )
+
+
+def bind_permission_source(plugin_id: str, source: PluginSource) -> None:
+    """Bind a record still without a source to ``source``, which the caller
+    has confirmed, so a later different source counts as a source change.
+
+    Raises ``ServerDomainError`` when the store cannot be read or saved. A
+    damaged or newer store holds no usable grant and is skipped.
+    """
+    try:
+        permission_store.bind_unbound_source(plugin_id, source)
+    except ServerDomainError as exc:
+        if exc.code not in _UNUSABLE_STORE_CODES:
+            raise
+        logger.warning(
+            "plugin permission source not bound plugin_id={} code={}", plugin_id, exc.code
+        )
+
+
+def bind_current_permission_source(plugin_id: str) -> None:
+    """Before a replacement: bind a record still without a source to the
+    plugin's current source, so the replacement's source counts as a source
+    change rather than a first binding. Nothing happens when the current
+    source is unknown. Raises like :func:`bind_permission_source`.
+    """
+    source = current_source(plugin_id)
+    if source is not None:
+        bind_permission_source(plugin_id, source)
 
 
 def forget_permissions(plugin_id: str) -> dict | None:

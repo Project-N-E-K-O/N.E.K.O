@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES
 from plugin.server.application import install_source as install_source_module
 from plugin.server.application.install_source.models import (
     LockEntry,
@@ -15,16 +16,16 @@ from plugin.server.application.install_source.models import (
 from plugin.server.application.plugins import permission_service
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import (
-    CONVERSATIONS_READ,
     LEGACY_DENIED,
-    MEMORY_READ,
-    MESSAGES_PUSH,
     PluginPermissionStore,
     PluginSource,
-    normalize_permission,
 )
 
 pytestmark = pytest.mark.plugin_unit
+
+MEMORY_READ = LEGACY_PERMISSION_NAMES["memory.read"]
+CONVERSATIONS_READ = LEGACY_PERMISSION_NAMES["conversations.read"]
+MESSAGES_PUSH = LEGACY_PERMISSION_NAMES["messages.push"]
 
 MARKET = PluginSource("market", "m-1")
 MANUAL = PluginSource("manual")
@@ -491,10 +492,48 @@ def test_clear_returns_a_permission_to_undecided(manager):
     assert store.clear("x", MEMORY_READ)["permissions"] == {}
 
 
-def test_normalize_permission_maps_legacy_names_only():
-    assert normalize_permission("memory.read") == MEMORY_READ
-    assert normalize_permission(MEMORY_READ) == MEMORY_READ
-    assert normalize_permission("system.fs:read") == "system.fs:read"
+def test_decide_and_clear_reject_ids_outside_the_vocabulary(manager):
+    store = PluginPermissionStore(manager)
+
+    for permission_id in ("system.unknown:read", "", None):
+        with pytest.raises(ValueError):
+            store.decide("x", permission_id, "granted")
+        with pytest.raises(ValueError):
+            store.clear("x", permission_id)
+    assert store.read("x") == {}
+
+    # Ids from the vocabulary pass through unchanged.
+    record = store.decide("x", "system.fs:read", "granted")
+    assert list(record["permissions"]) == ["system.fs:read"]
+
+
+def test_legacy_names_resolve_to_permission_ids_in_decide_and_clear(manager):
+    store = PluginPermissionStore(manager)
+
+    record = store.decide("x", "memory.read", "granted")
+    assert list(record["permissions"]) == [MEMORY_READ]
+
+    assert store.clear("x", "memory.read")["permissions"] == {}
+
+
+def test_clear_removes_a_stored_id_the_vocabulary_no_longer_has(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted")
+    document = json.loads(_new_file(manager).read_text(encoding="utf-8"))
+    document["plugins"]["x"]["permissions"]["system.retired:read"] = {
+        "state": "granted",
+        "condition": "in_use",
+        "scope": "all",
+        "decided_at": "2026-01-01T00:00:00Z",
+    }
+    _new_file(manager).write_text(json.dumps(document), encoding="utf-8")
+    store = PluginPermissionStore(manager)
+
+    record = store.clear("x", "system.retired:read")
+
+    assert list(record["permissions"]) == [MEMORY_READ]
+    with pytest.raises(ValueError):
+        store.clear("y", "system.retired:read")
 
 
 # ---------------------------------------------------------------------------
@@ -1290,3 +1329,83 @@ def test_unavailable_snapshot_only_matters_when_the_store_may_have_changed():
 
     assert snapshot.restore("x", store_may_have_changed=False) is True
     assert snapshot.restore("x") is False
+
+# ---------------------------------------------------------------------------
+# Binding a record to a source the caller has confirmed
+# ---------------------------------------------------------------------------
+
+
+def test_bind_unbound_source_binds_only_records_without_a_source(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("unbound", MEMORY_READ, "granted", source=None)
+    store.decide("bound", MEMORY_READ, "granted", source=MARKET)
+
+    assert store.bind_unbound_source("unbound", PluginSource("builtin")) is True
+    assert store.bind_unbound_source("bound", PluginSource("builtin")) is False
+    assert store.bind_unbound_source("absent", PluginSource("builtin")) is False
+
+    reloaded = PluginPermissionStore(manager)
+    assert reloaded.read("unbound")["source"] == {"channel": "builtin", "fingerprint": None}
+    assert MEMORY_READ in reloaded.read("unbound")["permissions"]
+    assert reloaded.read("bound")["source"] == MARKET.to_dict()
+    assert reloaded.read("absent") == {}
+    # A later different source is now a source change, not a first binding.
+    assert reloaded.sync_source("unbound", MARKET)["permissions"] == {}
+
+
+def test_bind_unbound_source_raises_when_it_cannot_save(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted", source=None)
+    manager.fail = OSError("disk full")
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        store.bind_unbound_source("x", PluginSource("builtin"))
+
+    assert exc_info.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+    assert store.read("x")["source"] is None
+
+
+def test_bind_unbound_source_binds_a_legacy_record_imported_without_a_source(manager):
+    _write_legacy(
+        manager,
+        {
+            "schema_version": 2,
+            "plugins": {"x": {"decision": "approved", "approved_capabilities": ["memory.read"]}},
+        },
+    )
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: None)
+
+    assert store.bind_unbound_source("x", PluginSource("builtin")) is True
+
+    record = PluginPermissionStore(manager).read("x")
+    assert record["source"] == {"channel": "builtin", "fingerprint": None}
+    assert record["permissions"][MEMORY_READ]["legacy_any"] is True
+
+
+def test_bind_unbound_source_saves_a_pending_import_of_a_bound_record(manager):
+    """The first-use import bound the record but its save failed: binding
+    must not return as if the record were on disk."""
+    _write_legacy(
+        manager,
+        {
+            "schema_version": 2,
+            "plugins": {"x": {"decision": "approved", "approved_capabilities": ["memory.read"]}},
+        },
+    )
+    manager.fail = OSError("disk full")
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: PluginSource("builtin"))
+    assert store.read("x")["source"] == {"channel": "builtin", "fingerprint": None}
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        store.bind_unbound_source("x", PluginSource("builtin"))
+    assert exc_info.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+
+    manager.fail = None
+    assert store.bind_unbound_source("x", PluginSource("builtin")) is False
+    on_disk = json.loads((manager.root / "plugin_permissions.json").read_text(encoding="utf-8"))
+    assert on_disk["plugins"]["x"]["source"] == {"channel": "builtin", "fingerprint": None}
+
+
+@pytest.mark.parametrize("installed", [None, 3])
+def test_forget_installed_plugins_tolerates_a_malformed_install_result(installed):
+    assert permission_service.forget_installed_plugins({"installed_plugins": installed}) is True

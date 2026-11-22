@@ -2838,6 +2838,7 @@
         "starMapLabeling": "正在命名星云...",
         "starMapLabelSuccess": "星云主题已更新",
         "starMapLabelFailed": "刷新星云主题失败，请检查总结模型配置",
+        "starMapLabelCooldown": "操作太频繁，请 {{seconds}} 秒后再刷新星云主题",
         "starMapResetView": "重置视角",
         "starMapClickHint": "点击任意一颗星，查看背后的记忆与相连片段",
         "starMapRelatedStars": "与之相连的记忆",
@@ -7046,8 +7047,8 @@
             "body": "在这里选择要分享的屏幕或窗口，右侧按钮控制开始和停止共享。不需要开启也能继续。"
         },
         "agent": {
-            "title": "Agent 功能",
-            "body": "猫爪按钮里是 Agent 功能，可以让我帮你处理电脑、浏览器或插件里的任务。任务面板能查看进度，也能随时停止。"
+            "title": "喵能力",
+            "body": "点这个按钮会打开喵能力界面。开着喵能力，我就能帮你处理电脑、浏览器或插件里的任务；开关、使魔和插件都在那里管。任务面板能查看进度，也能随时停止。"
         },
         "agentMaster": {
             "title": "Agent 总开关",

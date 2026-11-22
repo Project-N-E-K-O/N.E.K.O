@@ -29,10 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 删掉 81 个零引用的旧 key（api.* 旧说明/建议/看图卡等、api.realtimeWarning、theater.actorUnavailable、character.freePresetVoices），
-    // 并改名「决策模型（专用接口）」「使魔模型·通用」「使魔模型·小型」，刷新客户端缓存。
-    // Keep upstream key pruning and knowledge-manager copy; retire both prior cache versions.
-    const LOCALE_VERSION = '2026-11-22-knowledge-locale-prune-merge';
+    // Keep main's key pruning and star-map cooldown hint with knowledge-manager
+    // copy; retire both prior cache versions for the merged locale structure.
+    const LOCALE_VERSION = '2026-11-22-knowledge-star-map-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

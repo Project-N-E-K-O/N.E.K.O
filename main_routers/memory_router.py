@@ -2060,7 +2060,7 @@ def _prepare_external_import(payload: object) -> tuple[str, dict]:
     validation = validate_character_name(
         payload.get("character_name"), allow_dots=True, max_length=50,
     )
-    if not validation.ok:
+    if validation.code not in {None, "reserved_route_name"}:
         raise ExternalMemoryImportError("Invalid target character name")
     requested_format = str(payload.get("source_format") or "auto").strip().lower()
     # Image attachments dominate Molili archives (~8.6 MB of a ~9 MB sample is attachments/), so the decode
@@ -2291,7 +2291,7 @@ async def get_external_import_progress(request: Request):
     validation = validate_character_name(
         character_name, allow_dots=True, max_length=50,
     )
-    if not validation.ok:
+    if validation.code not in {None, "reserved_route_name"}:
         return _external_import_error('Invalid target character name')
     from config import MEMORY_SERVER_PORT
     from utils.internal_http_client import get_internal_http_client
@@ -2880,13 +2880,21 @@ async def label_memory_star_map_clusters(catgirl_name: str, request: Request):
     cooldown_err = _check_manual_llm_cooldown("star_map_labels", catgirl_name)
     if cooldown_err is not None:
         return cooldown_err
+    cooldown_key = ("star_map_labels", catgirl_name)
+    cooldown_stamp = _manual_llm_last_trigger.get(cooldown_key)
     from urllib.parse import quote
-    return await _proxy_memory_browser(
+    resp = await _proxy_memory_browser(
         "POST",
         f"/internal/memory/browser/star_map/label_clusters/{quote(catgirl_name, safe='')}",
         json_body={"language": payload.get("language") if isinstance(payload, dict) else None},
         timeout=60.0,
     )
+    if getattr(resp, "status_code", None) == 409 and _manual_llm_last_trigger.get(cooldown_key) == cooldown_stamp:
+        # No summary model configured: nothing was sent, so the user may retry
+        # right after setting one up. Only this request's own mark is dropped;
+        # a newer request's cooldown stays.
+        _manual_llm_last_trigger.pop(cooldown_key, None)
+    return resp
 
 
 @router.get('/lineage/{catgirl_name}')

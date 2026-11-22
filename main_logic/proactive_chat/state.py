@@ -126,6 +126,11 @@ def _get_source_history_entry(url_hash: str) -> dict[str, Any] | None:
     return _source_history.get(url_hash)
 
 
+def _source_in_hard_skip_window(url_hash: str) -> bool:
+    entry = _get_source_history_entry(url_hash)
+    return bool(entry and time.time() - entry.get("ts", 0.0) <= PROACTIVE_SOURCE_HARD_SKIP_SECONDS)
+
+
 async def _ensure_source_history_loaded(
     *, memory_dir: str | Path | None = None
 ) -> bool:

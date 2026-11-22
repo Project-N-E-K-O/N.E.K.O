@@ -1213,7 +1213,7 @@ class TtsRuntimeMixin:
                 int(getattr(self, "_game_speech_preload_pending_batches", 1)) - 1,
             )
 
-    async def _clear_tts_pipeline(self):
+    async def _clear_tts_pipeline(self, *, still_owned=None):
         """Clear the TTS request/response queues and pending caches, stopping the current synthesis.
 
         Gate is on worker liveness, not ``self.use_tts``: mirror channel
@@ -1230,10 +1230,16 @@ class TtsRuntimeMixin:
         notice): ``_interrupt_tts_now`` (synchronous),
         ``_let_tts_interrupt_land`` (audio a handler already held goes out,
         what leaked meanwhile is dropped) and ``_finish_tts_clear``.
+        ``still_owned``, when given, is rechecked before draining leaked
+        responses and again under ``tts_cache_lock`` before clearing pending
+        caches, so an overtaken caller leaves successor speech untouched.
         """
         interrupt = self._interrupt_tts_now()
-        await self._let_tts_interrupt_land(interrupt)
-        await self._finish_tts_clear(interrupt)
+        await self._let_tts_interrupt_land(interrupt, still_owned=still_owned)
+        if still_owned is None:
+            await self._finish_tts_clear(interrupt)
+        else:
+            await self._finish_tts_clear(interrupt, still_owned=still_owned)
 
     @staticmethod
     def _drain_tts_responses(response_queue) -> None:
@@ -1323,7 +1329,7 @@ class TtsRuntimeMixin:
         if still_owned is None or still_owned():
             self._drain_tts_responses(interrupt[1])
 
-    async def _finish_tts_clear(self, interrupt) -> None:
+    async def _finish_tts_clear(self, interrupt, *, still_owned=None) -> None:
         """The last step of ``_clear_tts_pipeline``, given what
         ``_interrupt_tts_now`` returned: the pending caches."""
         if interrupt is None:
@@ -1343,6 +1349,15 @@ class TtsRuntimeMixin:
             # replay list; a replacement cache still belongs to its new owner.
             if (not (owns_queues or owns_transferred_replay)
                     or not self._tts_output_is_current()):
+                return
+            if still_owned is not None and not still_owned():
+                # Successor speech already took over: prune only chunks belonging
+                # to the interrupted speech_id and preserve successor state.
+                if speech_id is not None:
+                    self.tts_pending_chunks[:] = [
+                        chunk for chunk in self.tts_pending_chunks
+                        if chunk[0] != speech_id
+                    ]
                 return
             self.tts_pending_chunks.clear()
             # Clear queued again: during the 20ms above, concurrent paths (finish_proactive_delivery,

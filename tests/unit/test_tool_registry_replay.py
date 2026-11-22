@@ -31,11 +31,11 @@ class _Mgr:
         self.lanlan_name = name
         self.tool_registry = ToolRegistry()
 
-    async def register_tool_and_sync(self, tool, *, replace=True):
-        self.tool_registry.register(tool, replace=replace)
+    async def register_tool_and_sync(self, tool, *, replace=True, owner_check=None):
+        self.tool_registry.register(tool, replace=replace, owner_check=owner_check)
 
-    async def unregister_tool_and_sync(self, name):
-        return self.tool_registry.unregister(name)
+    async def unregister_tool_and_sync(self, name, *, owner_check=None):
+        return self.tool_registry.unregister(name, owner_check=owner_check)
 
     async def clear_tools_and_sync(self, *, source=None):
         return self.tool_registry.clear(source=source)
@@ -311,9 +311,9 @@ async def test_registration_with_no_manager_is_not_ledgered(monkeypatch):
 @pytest.mark.asyncio
 async def test_registration_that_fails_to_sync_is_still_ledgered(monkeypatch):
     class _SyncFails(_Mgr):
-        async def register_tool_and_sync(self, tool, *, replace=True):
+        async def register_tool_and_sync(self, tool, *, replace=True, owner_check=None):
             # The real mixin writes the registry before the wire sync raises.
-            self.tool_registry.register(tool, replace=replace)
+            self.tool_registry.register(tool, replace=replace, owner_check=owner_check)
             raise RuntimeError("session.update failed")
 
     broken = _SyncFails("Alpha")
@@ -558,8 +558,8 @@ async def test_concurrent_foreign_registration_cannot_replace_reserved_owner(mon
     resume = asyncio.Event()
 
     class _Slow(_Mgr):
-        async def register_tool_and_sync(self, tool, *, replace=True):
-            self.tool_registry.register(tool, replace=replace)
+        async def register_tool_and_sync(self, tool, *, replace=True, owner_check=None):
+            self.tool_registry.register(tool, replace=replace, owner_check=owner_check)
             entered.set()
             await resume.wait()
 

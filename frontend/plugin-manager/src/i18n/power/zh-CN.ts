@@ -167,6 +167,9 @@ const messages: PowerMessages = {
       headless: '不开窗口',
       headlessHint: '在后台操作，你看不到它在点什么。',
       changeNote: '改了设置会关掉使魔正开着的浏览器，下一件任务用新设置开始。',
+      taskHud: '任务悬浮窗',
+      taskHudSwitch: '在主界面显示任务悬浮窗',
+      taskHudHint: '她和使魔在办的事显示在角色旁边的悬浮窗里，能看进度、随时叫停。关掉以后事情照样办，只是不显示。',
     },
     plugins: {
       title: 'dsh 插件',

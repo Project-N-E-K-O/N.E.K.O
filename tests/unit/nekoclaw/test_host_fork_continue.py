@@ -1788,6 +1788,133 @@ async def test_what_came_of_it_in_the_copy_is_told_when_its_first_taking_up_was_
     assert head in said and "\n    tables.py is not there\n" in said
 
 
+async def test_what_came_of_it_in_the_copy_is_told_while_the_old_copy_is_still_closing(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        FILES: ScriptedLLM(
+            [
+                [call("report", {"status": "blocked", "summary": "tables.py is not there"}, "call-b"), finish("tool_calls")],
+                _report("found it in data/tables.py", "call-r"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    manager = host.task_agents
+    close_session = manager._close_session
+    close_copy = asyncio.Event()
+    copy_deferred: list[Any] = []
+
+    async def hold_copy_close(session: Any) -> None:
+        if session.carries_on_for is not None and not copy_deferred:
+            copy_deferred.append(session)
+
+            async def later() -> None:
+                await close_copy.wait()
+                await close_session(session)
+
+            manager._spawn(later())
+            return
+        await close_session(session)
+
+    monkeypatch.setattr(manager, "_close_session", hold_copy_close)
+    try:
+        first = await _export_at_work(host, scripts)
+        second = await _dispatch(host, FILES)
+        stuck = await wait_status(host, second.id, "blocked")
+        await wait_until(lambda: bool(copy_deferred), what="the copy session reaching close")
+        release.set()
+        await wait_status(host, first.id, "done")
+
+        asked: list[bool] = []
+
+        def wanted() -> bool:
+            asked.append(True)
+            return len(asked) < 2
+
+        # First taking up moves the commission to the main session while its old copy is still in _sessions.
+        assert not await manager.tell(second.id, "look under data/", still_wanted=wanted)
+        assert (await host.ledger.get(second.id)).session_id == first.session_id
+        assert second.id in manager._sessions and manager._sessions[second.id].session_id == stuck.session_id
+
+        # Second taking up queues behind the still-closing copy and still carries what came of it in the copy.
+        assert await manager.tell(second.id, "look under data/")
+        close_copy.set()
+        done = await wait_status(host, second.id, "done")
+        assert done.session_id == first.session_id
+        said = "\n".join(_said(scripts[FILES].requests[1]))
+        head = brain_texts.TASK_AGENT_TAKEN_UP_FROM_COPY.split("{nonce}")[0].format(
+            status="blocked", session=stuck.session_id[:8]
+        )
+        assert head in said and "\n    tables.py is not there\n" in said
+        await wait_until(lambda: not manager._held_by, what="all session holds settled")
+        assert (await host.ledger.get_session(stuck.session_id)).status == "closed"
+    finally:
+        close_copy.set()
+
+
+async def test_what_came_of_it_in_the_copy_survives_the_old_copy_releasing_during_take_up(hosts, tmp_path, monkeypatch):
+    release, wait = _gate()
+    scripts = {
+        EXPORT: ScriptedLLM([[wait, *_report("export added")]]),
+        FILES: ScriptedLLM(
+            [
+                [call("report", {"status": "blocked", "summary": "tables.py is not there"}, "call-b"), finish("tool_calls")],
+                _report("found it in data/tables.py", "call-r"),
+            ]
+        ),
+    }
+    host = _host(hosts, tmp_path, scripts)
+    manager = host.task_agents
+    close_session = manager._close_session
+    know_session = manager._know_session
+    close_copy = asyncio.Event()
+    copy_deferred: list[Any] = []
+
+    async def hold_copy_close(session: Any) -> None:
+        if session.carries_on_for is not None and not copy_deferred:
+            copy_deferred.append(session)
+
+            async def later() -> None:
+                await close_copy.wait()
+                await close_session(session)
+
+            manager._spawn(later())
+            return
+        await close_session(session)
+
+    async def release_copy_during_know_session(commission_id: str) -> bool:
+        if copy_deferred and commission_id == copy_deferred[0].commission_id and not close_copy.is_set():
+            close_copy.set()
+            await wait_until(lambda: commission_id not in manager._sessions, what="the old copy session releasing")
+        return await know_session(commission_id)
+
+    monkeypatch.setattr(manager, "_close_session", hold_copy_close)
+    monkeypatch.setattr(manager, "_know_session", release_copy_during_know_session)
+    try:
+        first = await _export_at_work(host, scripts)
+        second = await _dispatch(host, FILES)
+        stuck = await wait_status(host, second.id, "blocked")
+        await wait_until(lambda: bool(copy_deferred), what="the copy session reaching close")
+        release.set()
+        await wait_status(host, first.id, "done")
+
+        # Even if the old copy releases while _take_up_again is awaiting _know_session,
+        # from_copy is not dropped from _notes before the new round claims it.
+        assert await manager.tell(second.id, "look under data/")
+        done = await wait_status(host, second.id, "done")
+        assert done.session_id == first.session_id
+        said = "\n".join(_said(scripts[FILES].requests[1]))
+        head = brain_texts.TASK_AGENT_TAKEN_UP_FROM_COPY.split("{nonce}")[0].format(
+            status="blocked", session=stuck.session_id[:8]
+        )
+        assert head in said and "\n    tables.py is not there\n" in said
+        await wait_until(lambda: not manager._held_by, what="all session holds settled")
+        assert (await host.ledger.get_session(stuck.session_id)).status == "closed"
+    finally:
+        close_copy.set()
+
+
 async def test_what_copies_did_beyond_the_most_one_text_tells_is_told_in_the_next(hosts, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "TASK_AGENT_FORKED_WORK_MAX_ITEMS", 1)
     scripts = {

@@ -16,7 +16,7 @@ Agent Server は ZeroMQ を介して、非同期のセッション・タスク�
 | `GET` | `/agent/flags` | 現在のマスター/サブ機能フラグ |
 | `POST` | `/agent/flags` | `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled` を部分更新 |
 | `GET` | `/agent/state` | 正式な revision、flags、capabilities、notification、進行中のタスク |
-| `POST` | `/agent/command` | `set_agent_enabled`、`set_flag`、`refresh_state` コマンド |
+| `POST` | `/agent/command` | `set_agent_enabled`、`set_flag`、`set_task_hud_visible`、`refresh_state` コマンド |
 | `GET` | `/computer_use/availability` | キーボード・マウスの準備状態と理由 |
 | `GET` | `/browser_use/availability` | ブラウザーの準備状態と理由 |
 | `GET` | `/builtin/activity` | いま、どの依頼がキーボード・マウスを、どの依頼がブラウザーを占有しているか |

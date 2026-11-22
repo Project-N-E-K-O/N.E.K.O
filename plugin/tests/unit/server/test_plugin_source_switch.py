@@ -553,11 +553,15 @@ async def _async_value(value):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", ["running_start_fails", "cleanup_fails", "stopped_succeeds"])
+@pytest.mark.parametrize("builtin_resolvable", [True, False], ids=["resolved", "unresolved"])
 async def test_switch_keeps_builtin_grants_with_the_builtin_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str, builtin_resolvable: bool
 ) -> None:
     """Legacy grants are bound to the builtin before the switch; a failed
-    switch restores them, a committed one discards them for the new source."""
+    switch restores them, a committed one discards them for the new source.
+
+    ``unresolved``: the builtin's source cannot be looked up when the legacy
+    record is imported, so the switch binds it from its confirmed plan."""
     import json
 
     from plugin.server.application.plugins import permission_service
@@ -593,11 +597,11 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
     )
     lock_value: object = {"source": "builtin"}
     sources = {
-        "builtin": PluginSource("builtin"),
+        "builtin": PluginSource("builtin") if builtin_resolvable else None,
         "market": PluginSource("market", "mk-study"),
     }
 
-    def _current(_plugin_id: str) -> PluginSource:
+    def _current(_plugin_id: str) -> PluginSource | None:
         return sources[lock_value["source"]]  # type: ignore[index]
 
     monkeypatch.setattr(permission_service, "current_source", _current)
@@ -740,6 +744,80 @@ async def test_switch_rollback_without_a_snapshot_is_incomplete_even_when_stoppe
                 start=lambda _plugin_id: _async_value(None),
             )
         assert exc_info.value.rollback_code == "override_rollback_incomplete"
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "proceeds"),
+    [
+        ("PLUGIN_PERMISSIONS_WRITE_FAILED", False),
+        ("PLUGIN_PERMISSIONS_READ_FAILED", False),
+        ("PLUGIN_PERMISSIONS_CORRUPT", True),
+        ("PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION", True),
+    ],
+)
+async def test_switch_stops_unchanged_when_the_builtin_binding_cannot_be_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str, proceeds: bool
+) -> None:
+    """Binding grants to the builtin happens before anything changes; when it
+    cannot be saved the switch stops there. A damaged or newer store holds no
+    usable grant, so it does not stop the switch."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.domain.errors import ServerDomainError
+
+    def cannot_bind(_plugin_id, _source):
+        raise ServerDomainError(code, "permission store unavailable", 503)
+
+    monkeypatch.setattr(permission_service.permission_store, "bind_unbound_source", cannot_bind)
+    exec_root = tmp_path / "exec"
+    staging = exec_root / ".study_companion.staging-test"
+    target = exec_root / "study_companion"
+    staging.mkdir(parents=True)
+    (staging / "plugin.toml").write_text("new", encoding="utf-8")
+    calls: list[str] = []
+    plugins_backup = copy.deepcopy(state.plugins)
+
+    async def refresh() -> None:
+        with state.acquire_plugins_write_lock():
+            state.plugins["study_companion"] = {"config_path": str(target / "plugin.toml")}
+
+    async def record(name: str) -> None:
+        calls.append(name)
+
+    request = SourceSwitchRequest(
+        plugin_id="study_companion",
+        staged_plugin_dir=staging,
+        target_plugin_dir=target,
+        confirmation_token="token",
+    )
+    callbacks = dict(
+        rebuild_plan=lambda: _async_value(_plan("token")),
+        read_lock_snapshot=lambda: _async_value({"source": "builtin"}),
+        commit_lock=lambda: record("commit_lock"),
+        restore_lock=lambda _snapshot: record("restore_lock"),
+        clear_user_source=lambda: record("clear_user_source"),
+        refresh_registry=refresh,
+        validate_promoted_source=lambda: _async_value(None),
+        is_running=lambda _plugin_id: _async_value(True),
+        stop=lambda _plugin_id: record("stop"),
+        start=lambda _plugin_id: record("start"),
+    )
+    try:
+        if proceeds:
+            result = await switch_builtin_source(request, **callbacks)
+            assert result.code == "override_completed"
+            assert calls == ["stop", "commit_lock", "start"]
+        else:
+            with pytest.raises(ServerDomainError) as exc_info:
+                await switch_builtin_source(request, **callbacks)
+            assert exc_info.value.code == code
+            assert calls == []
+            assert staging.is_dir()
+            assert not target.exists()
     finally:
         with state.acquire_plugins_write_lock():
             state.plugins.clear()
