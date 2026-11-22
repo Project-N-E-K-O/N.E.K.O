@@ -1043,23 +1043,61 @@ _CJK_PREFIX_RE = re.compile(
 )
 _CJK_SUFFIX_RE = re.compile(
     r"^(?:吧|呀|啊|呢|啦|哦|嘛|呗|唄|咯|喔|哈|呵|了|的|儿|兒|玩|说|說|再说|再說|"
-    r"再玩|再聊|再看|一会|一會|一下|~|等下|等会|等會|一起玩|よ|ね|な|わ|さ|ぞ|ぜ|"
+    r"再玩|再聊|再看|一会|一會|一下|~|等下|等会|等會|一起玩|谢谢|謝謝|よ|ね|な|わ|さ|ぞ|ぜ|"
     r"だ|です|ます|かな|かも|か|する|요|네|지|야|만|에|은|는|다|가)*+$"
 )
 
 
 _KEYWORD_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
+_ZH_ALL_KEYWORDS = frozenset(
+    kw
+    for locale in ("zh", "zh-TW")
+    for bucket in MINI_GAME_INVITE_KEYWORDS.get(locale, {}).values()
+    for kw in bucket
+)
+_ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS = frozenset({"好啊", "行啊", "来吧", "來吧", "一起玩"})
+_ZH_MODAL_CLAUSE_BREAK_RE = re.compile(r"^(?:[儿兒])?[吧呀啊呢啦哦嘛呗唄咯喔哈呵]")
+_ZH_LE_CLAUSE_BREAK_KEYWORDS = frozenset(
+    {"不玩", "不想", "不要", "没空", "沒空", "算了", "拒绝", "拒絕"}
+)
+_ZH_HAODE_CONTINUATION_RE = re.compile(r"^(?:我|咱|来|來|一起)")
+_ZH_DECLINE_OBJECT_RE = re.compile(
+    r"^(?:玩(?:这个|這個|那个|那個)?(?:小游戏|小遊戲|游戏|遊戲)?"
+    r"|(?:这个|這個|那个|那個)(?:小游戏|小遊戲|游戏|遊戲)?"
+    r"|(?:小游戏|小遊戲|游戏|遊戲))"
+)
 
 
 def _cjk_affixes_match(keyword: str, prefix: str, suffix: str) -> bool:
-    # Refusals and deferrals can name the game or propose looking again later.
+    if not _CJK_PREFIX_RE.fullmatch(prefix):
+        return False
+    # Allow emphatic keyword reduplication (e.g. "不要不要", "不行不行", "算了算了").
+    if len(keyword) >= 2:
+        while suffix.startswith(keyword):
+            suffix = suffix[len(keyword):]
+    # Clause-initial Chinese accept phrases ending in a particle or verb phrase
+    # (never noun modifiers like "好的衣服") accept any trailing continuation;
+    # decline/later priority still wins when another clause declines or defers.
+    if keyword in _ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS:
+        return True
+    if keyword == "好的" and _ZH_HAODE_CONTINUATION_RE.match(suffix):
+        return True
+    # Refusals and deferrals can name the game or object before trailing particles.
     if keyword == "算了":
         suffix = suffix.removeprefix("不玩")
     if keyword in {"算了", "不玩", "不想", "没空", "沒空", "不要"}:
-        suffix = re.sub(r"^(?:玩(?:这个|這個)?)?(?:小游戏|小遊戲|游戏|遊戲)", "", suffix)
+        suffix = _ZH_DECLINE_OBJECT_RE.sub("", suffix)
     elif keyword in {"等下", "等会", "等會", "回头", "回頭", "稍后", "稍後", "晚点", "晚點"}:
         suffix = suffix.removeprefix("再看看")
-    if not (_CJK_PREFIX_RE.fullmatch(prefix) and _CJK_SUFFIX_RE.fullmatch(suffix)):
+    # A Chinese clause-closing modal particle after the keyword starts a fresh clause
+    # (e.g. "好的呀我来", "算了吧我不玩", "等下吧我在忙").
+    if keyword in _ZH_ALL_KEYWORDS and _ZH_MODAL_CLAUSE_BREAK_RE.match(suffix):
+        return True
+    # Unambiguous Chinese decline keywords closed by "了" can be followed by any
+    # continuation (e.g. "不玩了谢谢", "不要了我在忙").
+    if keyword in _ZH_LE_CLAUSE_BREAK_KEYWORDS and suffix.startswith("了"):
+        return True
+    if not _CJK_SUFFIX_RE.fullmatch(suffix):
         return False
     # Korean "그래" only takes polite "요" ("그래요") as an affirmative reply;
     # other Hangul suffixes form distinct discourse connectors or predicates

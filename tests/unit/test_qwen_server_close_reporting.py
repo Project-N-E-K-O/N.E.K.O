@@ -866,3 +866,133 @@ def test_qwen_interrupt_during_final_reconnect_failure_skips_failure_and_audio_d
         if p.get("type") == "input_text_buffer.append"
     ] == ["中断后的新句子。"]
     assert emitted.count(("__audio_done__", "speech-2")) == 1
+
+
+@pytest.mark.parametrize("err_msg", ["request timeout", "session_expired"])
+def test_qwen_idle_timeout_after_audio_started_reconnects_for_remaining_chunks(
+    monkeypatch, err_msg,
+):
+    """Idle timeout after partial audio must reconnect for later chunks without error."""
+    audio_received = threading.Event()
+    resp_q = queue.Queue()
+
+    class _IdleTimeoutAfterAudioSocket(_FakeQwenSocket):
+        async def send(self, payload):
+            await super().send(payload)
+            if json.loads(payload)["type"] == "input_text_buffer.append":
+                self._events.put(json.dumps({"type": "response.audio.delta", "delta": "AAAAAA=="}))
+                self._events.put(json.dumps({"type": "error", "error": {"message": err_msg}}))
+
+    def resample(*_args):
+        audio_received.set()
+        return b""
+
+    initial = _FakeQwenSocket()
+    first = _IdleTimeoutAfterAudioSocket()
+    recovered = _FakeQwenSocket()
+    recovered._on_send = {
+        "session.update": [{"type": "session.updated"}],
+        "input_text_buffer.commit": [{"type": "response.done"}],
+    }
+    sockets = iter([initial, first, recovered])
+    connect_count = 0
+
+    async def fake_connect(*_args, **_kwargs):
+        nonlocal connect_count
+        connect_count += 1
+        return next(sockets)
+
+    def wait_idle_closed():
+        assert audio_received.wait(2.0)
+        assert first.closed.wait(2.0)
+
+    def wait_done():
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with resp_q.mutex:
+                if ("__audio_done__", _SID) in resp_q.queue:
+                    return
+            time.sleep(0.005)
+
+    monkeypatch.setattr(qwen_mod, "_resample_audio", resample)
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect)
+
+    req_q = _Requests(
+        (_SID, "第一句已经出声。"),
+        wait_idle_closed,
+        (_SID, "超时后的第二句。"),
+        (None, None),
+        wait_done,
+    )
+    qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
+
+    emitted = list(resp_q.queue)
+    assert connect_count == 3
+    assert [
+        p["text"]
+        for p in recovered.sent
+        if p.get("type") == "input_text_buffer.append"
+    ] == ["超时后的第二句。"]
+    assert ("__tts_sentence_failed__", _SID, "") not in emitted
+    assert not any(isinstance(item, tuple) and item[0] == "__error__" for item in emitted)
+    assert emitted.count(("__audio_done__", _SID)) == 1
+
+
+def test_qwen_idle_timeout_after_audio_started_with_terminal_finish_emits_audio_done(
+    monkeypatch,
+):
+    """Idle timeout after partial audio followed by terminal finish emits audio_done cleanly."""
+    audio_received = threading.Event()
+    resp_q = queue.Queue()
+
+    class _IdleTimeoutAfterAudioSocket(_FakeQwenSocket):
+        async def send(self, payload):
+            await super().send(payload)
+            if json.loads(payload)["type"] == "input_text_buffer.append":
+                self._events.put(json.dumps({"type": "response.audio.delta", "delta": "AAAAAA=="}))
+                self._events.put(
+                    json.dumps({"type": "error", "error": {"message": "request timeout"}})
+                )
+
+    def resample(*_args):
+        audio_received.set()
+        return b""
+
+    initial = _FakeQwenSocket()
+    first = _IdleTimeoutAfterAudioSocket()
+    sockets = iter([initial, first])
+    connect_count = 0
+
+    async def fake_connect(*_args, **_kwargs):
+        nonlocal connect_count
+        connect_count += 1
+        return next(sockets)
+
+    def wait_idle_closed():
+        assert audio_received.wait(2.0)
+        assert first.closed.wait(2.0)
+
+    def wait_done():
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with resp_q.mutex:
+                if ("__audio_done__", _SID) in resp_q.queue:
+                    return
+            time.sleep(0.005)
+
+    monkeypatch.setattr(qwen_mod, "_resample_audio", resample)
+    monkeypatch.setattr(qwen_mod.websockets, "connect", fake_connect)
+
+    req_q = _Requests(
+        (_SID, "第一句已经出声。"),
+        wait_idle_closed,
+        (None, None),
+        wait_done,
+    )
+    qwen_realtime_tts_worker(req_q, resp_q, "sk-test-key", "")
+
+    emitted = list(resp_q.queue)
+    assert connect_count == 2
+    assert ("__tts_sentence_failed__", _SID, "") not in emitted
+    assert not any(isinstance(item, tuple) and item[0] == "__error__" for item in emitted)
+    assert emitted.count(("__audio_done__", _SID)) == 1

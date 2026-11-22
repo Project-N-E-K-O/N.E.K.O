@@ -492,8 +492,10 @@ class UserActivityTracker:
 
         All fields are optional — pass whatever the frontend can read.
         Missing fields fall through to neutral defaults; ``window_title``
-        and ``process_name`` being None means "no foreground window
-        right now" (legitimate — e.g., desktop visible).
+        and ``process_name`` being None alongside a known ``idle_seconds``
+        means "no foreground window right now" (legitimate — e.g., desktop
+        visible), whereas a push with neither window info nor ``idle_seconds``
+        marks ``os_signals_available=False``.
         """
         ts = now if now is not None else time.time()
         has_window = bool(

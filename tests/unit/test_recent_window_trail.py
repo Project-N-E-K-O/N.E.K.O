@@ -172,3 +172,24 @@ def test_same_window_after_signal_loss_resets_dwell_without_counting_a_switch():
     assert snap.state != "focused_work"
     sm.update_window(_win('Chrome', 'entertainment', 'browser'), now=1180)
     assert sm.get_snapshot(now=1180).window_switch_rate_5min == 2
+
+
+def test_recent_window_trail_merges_same_app_after_signal_loss_gap():
+    """Recovery to the same canonical app after >15s signal loss merges dwell without repeating."""
+    sm = _sm()
+    fake = SimpleNamespace(_sm=sm)
+    work = _win('VS Code', 'work', 'ide')
+
+    sm.update_window(work, now=1000.0)
+    sm.update_window(None, now=1060.0)
+    sm.update_window(work, now=1120.0)
+
+    # Gap [1060, 1120] is excluded; active dwell is (1060-1000) + (1150-1120) = 90s.
+    assert sm.recent_window_trail(now=1150.0, limit=5) == [('VS Code', 90.0)]
+    assert UserActivityTracker._format_window_trail(fake, now=1150.0) is None
+
+    sm.update_window(_win('Chrome', 'entertainment', 'browser'), now=1150.0)
+    assert sm.recent_window_trail(now=1210.0, limit=5) == [
+        ('VS Code', 90.0),
+        ('Chrome', 60.0),
+    ]

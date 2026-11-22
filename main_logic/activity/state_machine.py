@@ -654,7 +654,11 @@ class ActivityStateMachine:
             end = raw_entries[i + 1].timestamp if i + 1 < len(raw_entries) else now
             obs = entry.observation
             if obs is not None and obs.canonical and obs.category != 'private':
-                trail.append((obs.canonical, max(0.0, end - entry.timestamp)))
+                dwell = max(0.0, end - entry.timestamp)
+                if not entry.counts_as_switch and trail and trail[-1][0] == obs.canonical:
+                    trail[-1] = (obs.canonical, trail[-1][1] + dwell)
+                else:
+                    trail.append((obs.canonical, dwell))
         return trail[-limit:]
 
     def update_system(self, sys_snap: SystemSnapshot) -> None:

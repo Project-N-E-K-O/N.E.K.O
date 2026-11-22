@@ -2082,3 +2082,33 @@ def test_korean_space_keywords_and_suffix_boundaries(text, expected):
 def test_chinese_danshi_conjunction_preserves_decline_priority(text, expected):
     """F0170: Chinese conjunction prefix preserves decline > later > accept without substring leaks."""
     assert sr._match_mini_game_invite_keyword(text) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('好啊我们玩吧', 'accept'),
+    ('好啊我們玩吧', 'accept'),
+    ('好啊我想玩', 'accept'),
+    ('好的呀我来', 'accept'),
+    ('好的我们玩吧', 'accept'),
+    ('不想玩这个', 'decline'),
+    ('不想玩這個', 'decline'),
+    ('不玩了谢谢', 'decline'),
+    ('不玩了謝謝', 'decline'),
+    ('算了吧我不玩', 'decline'),
+    ('不要不要', 'decline'),
+    ('不行不行', 'decline'),
+    ('等下吧我在忙', 'later'),
+    ('等会儿吧我在忙', 'later'),
+    ('好啊但是我不想玩', 'decline'),
+    ('好啊但是等下吧我在忙', 'later'),
+    ('好的我不想玩', 'decline'),
+    ('好的开始', None),
+    ('好的玩具', None),
+    ('不好了出事了', None),
+    ('今天晚点了要迟到了', None),
+])
+def test_chinese_natural_continuations_and_reduplication_match_without_false_positives(
+    text, expected,
+):
+    """F0170: natural Chinese replies with trailing content or reduplication still match safely."""
+    assert sr._match_mini_game_invite_keyword(text) == expected

@@ -129,9 +129,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         # lost socket's text only while no audio from it reached this worker.
         appended_text = []
         audio_started = False
+        idle_closed = False
 
         def _fail_incomplete_speech(sid, error):
-            nonlocal rejected_speech_id, pending_text_buffer, pending, reconnect_attempts
+            nonlocal rejected_speech_id, pending_text_buffer, pending, reconnect_attempts, idle_closed
             rejected_speech_id = str(sid)
             response_queue.put(("__tts_sentence_failed__", str(sid), ""))
             _enqueue_error(response_queue, json.dumps({"code": "TTS_CONNECTION_FAILED", "msg": str(error)}))
@@ -139,6 +140,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             pending_text_buffer = ""
             pending = None
             appended_text.clear()
+            idle_closed = False
             reconnect_attempts = 0
 
         async def _record_transient_retry_or_exhaust(
@@ -166,7 +168,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
         async def _invalidate_current_socket(reason: str) -> None:
             """Retire the active socket while preserving speech identity and buffered text."""
-            nonlocal ws, receive_task, session_configured, buffer_committed
+            nonlocal ws, receive_task, session_configured, buffer_committed, idle_closed
             if receive_task and not receive_task.done():
                 qwen_audio_jitter.flush()
                 receive_task.cancel()
@@ -181,6 +183,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 except Exception as close_exc:
                     logger.debug("%s WebSocket 关闭失败: %s", reason, close_exc)
             ws = None
+            idle_closed = False
             session_ready.clear()
             session_configured = False
             buffer_committed = False
@@ -459,6 +462,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         reconnect_attempts = 0
                         rejected_speech_id = None
                         audio_started = False
+                        idle_closed = False
                         appended_text.clear()
                         last_flush_error = None
                         qwen_audio_jitter.reset()
@@ -494,12 +498,23 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         pending_text_buffer = ""
                         reconnect_attempts = 0
                         audio_started = False
+                        idle_closed = False
                         appended_text.clear()
                         last_flush_error = None
                     elif audio_started:
-                        _fail_incomplete_speech(sid, "Connection lost after partial audio delivery")
-                        continue
+                        if not idle_closed:
+                            _fail_incomplete_speech(sid, "Connection lost after partial audio delivery")
+                            continue
+                        idle_closed = False
+                        if finish_requested and not pending_text_buffer.strip() and not appended_text:
+                            qwen_audio_jitter.flush()
+                            buffer_committed = True
+                            audio_done.emit(str(sid))
+                            continue
+                        audio_started = False
+                        appended_text.clear()
                     else:
+                        idle_closed = False
                         pending_text_buffer = "".join(appended_text) + pending_text_buffer
                         appended_text.clear()
                     buffer_committed = False
@@ -545,7 +560,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
                         # Start a new receive task that also observes session.updated
                         async def receive_messages(bound_speech_id, bound_ws):
-                            nonlocal ws, audio_started
+                            nonlocal ws, audio_started, idle_closed
                             cancelled = False
                             try:
                                 async for message in bound_ws:
@@ -559,6 +574,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         err_msg = event.get("error", {}).get("message", "")
                                         if "request timeout" in err_msg or "session_expired" in err_msg:
                                             logger.debug(f"Qwen TTS 空闲超时，标记连接已断开: {err_msg}")
+                                            if ws is bound_ws:
+                                                idle_closed = True
                                             break
                                         _enqueue_error(response_queue, event)
                                     elif event_type == "response.audio.delta":
@@ -593,12 +610,12 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     qwen_audio_jitter.flush()
                                 # Receive loop exited on timeout/disconnection; clear connection state for on-demand main-loop reconnection
                                 if ws is bound_ws:
+                                    ws = None
+                                    session_ready.clear()
                                     try:
                                         await bound_ws.close()
                                     except Exception:
                                         pass
-                                    ws = None
-                                    session_ready.clear()
 
                         receive_task = asyncio.create_task(receive_messages(current_speech_id, ws))
 
