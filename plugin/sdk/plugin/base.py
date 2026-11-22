@@ -1150,7 +1150,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 "role": meta.role,
                 **({"reply_tail": True} if meta.reply_tail else {}),
             }
-            for meta in self._llm_tools.values()
+            # Snapshot: async calls on other threads may add or remove tools.
+            for meta in list(self._llm_tools.values())
         ]
 
     def _register_decorated_llm_tools(self) -> int:

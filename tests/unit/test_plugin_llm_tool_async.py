@@ -905,6 +905,23 @@ def test_dynamic_entry_readers_iterate_a_snapshot():
     assert {e["id"] for e in plugin.list_entries(include_disabled=True)} >= {"a"}
 
 
+def test_list_llm_tools_iterates_a_snapshot():
+    """Another thread may register a tool while list_llm_tools walks the
+    dict. Simulated deterministically: reading one tool adds another."""
+    plugin, _ = _make_plugin()
+    plugin.register_llm_tool(**_register_kwargs("a"))
+    real = plugin._llm_tools["a"]
+
+    class _AddsWhileRead:
+        def __getattr__(self, attr):
+            if "b" not in plugin._llm_tools:
+                plugin._llm_tools["b"] = real
+            return getattr(real, attr)
+
+    plugin._llm_tools["a"] = _AddsWhileRead()
+    assert "a" in {t["name"] for t in plugin.list_llm_tools()}
+
+
 def test_dynamic_entry_insert_rechecks_under_the_lock(monkeypatch):
     """Two threads registering the same id: the second must still get
     EntryConflictError even if both passed the first duplicate check."""
