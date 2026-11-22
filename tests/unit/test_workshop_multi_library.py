@@ -1005,3 +1005,57 @@ def test_vrm_workshop_roots_skip_a_library_that_raises_on_stat(libraries, monkey
     roots = vrm_router._workshop_roots()
     assert locked not in roots
     assert libraries.a.resolve() in roots
+
+
+def _model_files_url(client, model_id):
+    files = client.get(f"/api/live2d/model_files_by_id/{model_id}").json()
+    assert files["success"] is True, files
+    return files["model_config_url"]
+
+
+def test_model_files_by_name_fallback_uses_the_item_folder_in_workshop_urls(libraries):
+    """A model name that is not an item id falls back to a by-name lookup under /workshop."""
+    # Item folder whose config file carries the model name.
+    _write_model(libraries.b / "200", "live2d", "Bravo")
+    # Model folder one level inside an item folder.
+    _write_model(libraries.a / "300" / "Charlie", "live2d", "Charlie")
+    register_workshop_roots_from_items([{"installedFolder": str(libraries.b / "200")}])
+    with _client(libraries, []) as client:
+        bravo = _model_files_url(client, "Bravo")
+        charlie = _model_files_url(client, "Charlie")
+        assert bravo == "/workshop/200/Bravo.model3.json"
+        assert charlie == "/workshop/300/Charlie/Charlie.model3.json"
+        assert client.get(bravo).status_code == 200
+        assert client.get(charlie).status_code == 200
+
+
+def test_model_files_by_name_fallback_keeps_both_levels_of_user_mods_urls(libraries, monkeypatch):
+    """A /user_mods model two levels deep keeps its mod folder in the URL."""
+    # Skip the Workshop pass so the lookup reaches the /user_mods branch.
+    monkeypatch.setattr(frontend_utils, "_resolve_workshop_search_dirs", lambda: [])
+    _write_model(libraries.a / "mods" / "Delta", "live2d", "Delta")
+    _write_model(libraries.a / "Foxtrot", "live2d", "Foxtrot")
+    with _client(libraries, []) as client:
+        client.app.mount("/user_mods", StaticFiles(directory=str(libraries.a)), name="user_mods")
+        delta = _model_files_url(client, "Delta")
+        foxtrot = _model_files_url(client, "Foxtrot")
+        assert delta == "/user_mods/mods/Delta/Delta.model3.json"
+        # A model folder directly in the mod root keeps its old URL.
+        assert foxtrot == "/user_mods/Foxtrot/Foxtrot.model3.json"
+        assert client.get(delta).status_code == 200
+        assert client.get(foxtrot).status_code == 200
+
+
+def test_model_files_urls_for_ordinary_layouts_are_unchanged(libraries):
+    # By item id, flat and nested.
+    _write_model(libraries.a / "100", "live2d", "Alpha")
+    _write_model(libraries.a / "400" / "Hotel", "live2d", "Hotel")
+    # By name, a model folder directly in the Workshop root.
+    _write_model(libraries.a / "Gamma", "live2d", "Gamma")
+    # By name, a user Live2D model with its config in a subfolder.
+    _write_model(libraries.config.live2d_dir / "Echo" / "runtime", "live2d", "Echo")
+    with _client(libraries, []) as client:
+        assert _model_files_url(client, "100") == "/workshop/100/Alpha.model3.json"
+        assert _model_files_url(client, "400") == "/workshop/400/Hotel/Hotel.model3.json"
+        assert _model_files_url(client, "Gamma") == "/workshop/Gamma/Gamma.model3.json"
+        assert _model_files_url(client, "Echo") == "/user_live2d/Echo/runtime/Echo.model3.json"
