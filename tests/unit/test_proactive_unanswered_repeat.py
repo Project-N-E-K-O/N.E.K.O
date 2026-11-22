@@ -1834,3 +1834,90 @@ async def test_regen_bm25_block_records_its_own_reason_and_fragment(monkeypatch)
     assert decision.signature is not None
     # The REWRITE's phrase, not the initial draft's.
     assert decision.signature.normalized_phrase == "改写后的新梗"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("regen_reply", "expected_text", "expected_reason"),
+    [
+        ("[CHAT]\n屏幕观察：换个话题聊聊呀", "换个话题聊聊呀", None),
+        ("[CHAT]\n[Screen]\n换个话题聊聊呀", "换个话题聊聊呀", None),
+        ("[CHAT][Screen][PASS]换个话题聊聊呀", None, "PASS_DUPLICATE"),
+        ("[CHAT]\n[Screen]\n", None, "PASS_DUPLICATE"),
+    ],
+)
+async def test_guard_phase2_bm25_regen_strips_screen_tag_leaks(
+    monkeypatch,
+    regen_reply,
+    expected_text,
+    expected_reason,
+):
+    """F0169: BM25/repeat regen path in _guard_phase2_output must strip screen tag leaks."""
+    monkeypatch.setattr(
+        generation_module,
+        "record_anti_repeat_decision",
+        lambda *_a, **_kw: None,
+    )
+
+    corpus = MagicMock()
+    corpus.apreload = AsyncMock()
+    corpus.score_unanswered_proactive_draft.return_value = (
+        anti_repeat_module.UnansweredProactiveRepeatSignal(triggered=False)
+    )
+    corpus.score_draft.side_effect = [(25.0, {"老梗": 25.0}), (0.0, {})]
+    monkeypatch.setattr(
+        anti_repeat_module, "get_anti_repeat_corpus", lambda: corpus
+    )
+    monkeypatch.setattr(
+        "main_logic.proactive_chat.generation._find_similar_recent_proactive_chat",
+        lambda _name, _message: generation_module.ProactiveSimilarityMatch(),
+    )
+
+    regen_llm = MagicMock()
+    regen_llm.ainvoke = AsyncMock(
+        return_value=SimpleNamespace(content=regen_reply)
+    )
+    regen_llm.__aenter__ = AsyncMock(return_value=regen_llm)
+    regen_llm.__aexit__ = AsyncMock(return_value=False)
+
+    mgr = SimpleNamespace(
+        state=_NeverPreemptedState(),
+        current_speech_id="sid",
+        last_user_message_time=None,
+        last_user_engagement_time=None,
+        proactive_engagement_observation_started_at=100.0,
+        handle_new_message=AsyncMock(),
+    )
+
+    outcome = await _guard_phase2_output(
+        mgr=mgr,
+        proactive_sid="sid",
+        lanlan_name="regen-screen-leak-test",
+        response_text="又是老梗的初稿。",
+        full_text="又是老梗的初稿。",
+        source_tag="CHAT",
+        active_channels=["chat"],
+        selected_music_link=None,
+        selected_meme_link=None,
+        music_content=None,
+        meme_content=None,
+        is_playing_music=False,
+        music_cooldown=False,
+        expects_source_tag=True,
+        make_llm=AsyncMock(return_value=regen_llm),
+        messages=[SystemMessage(content="system"), HumanMessage(content="begin")],
+        human_text="begin",
+        screenshot_b64=None,
+        phase2_use_vision=False,
+        phase2_disable_thinking=True,
+        proactive_lang="zh",
+        master_name="博士",
+    )
+
+    if expected_text is not None:
+        assert outcome.result is None
+        assert outcome.response_text == expected_text
+        assert outcome.source_tag == "CHAT"
+    else:
+        assert outcome.result is not None
+        assert outcome.result.body.get("reason_code") == expected_reason

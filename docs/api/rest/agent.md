@@ -26,6 +26,7 @@ Preferred mutation entry point. The current commands are:
 |---|---|---|
 | `set_agent_enabled` | `enabled`, optional `profile` | Toggle the master switch. Turning it off stops every task under way |
 | `set_flag` | `key`, `value` | Toggle one of `computer_use_enabled`, `browser_use_enabled`, `user_plugin_enabled` |
+| `set_task_hud_visible` | `value` (boolean), optional `if_unset` (`true`: kept only while nothing is set yet; a main page handing in its old local setting) | Whether the main page shows the task HUD; kept by the agent process (`agent_task_hud.json`) and sent as `task_hud_visible` in the state snapshot (`null` when never set) |
 | `refresh_state` | none | Return and broadcast a fresh state snapshot |
 
 `request_id` and `lanlan_name` are optional. Unknown commands or flag keys are rejected by the Agent Server; upstream/proxy failure is reported as `502`.

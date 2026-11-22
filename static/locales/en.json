@@ -7047,8 +7047,8 @@
             "body": "Choose a screen or window here. The switch beside it starts or stops sharing. Sharing is optional."
         },
         "agent": {
-            "title": "Agent",
-            "body": "The paw opens Agent tools for help with your computer, browser, and plugins. You can view task progress and stop tasks in the task panel."
+            "title": "NekoPower",
+            "body": "This button opens NekoPower. With NekoPower on, I can help with tasks on your computer, in the browser, or with plugins; its switch, familiars and plugins are all managed there. The task panel shows progress and lets you stop tasks at any time."
         },
         "agentMaster": {
             "title": "Agent switch",

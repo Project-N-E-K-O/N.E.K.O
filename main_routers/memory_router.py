@@ -2060,7 +2060,7 @@ def _prepare_external_import(payload: object) -> tuple[str, dict]:
     validation = validate_character_name(
         payload.get("character_name"), allow_dots=True, max_length=50,
     )
-    if not validation.ok:
+    if validation.code not in {None, "reserved_route_name"}:
         raise ExternalMemoryImportError("Invalid target character name")
     requested_format = str(payload.get("source_format") or "auto").strip().lower()
     # Image attachments dominate Molili archives (~8.6 MB of a ~9 MB sample is attachments/), so the decode
@@ -2291,7 +2291,7 @@ async def get_external_import_progress(request: Request):
     validation = validate_character_name(
         character_name, allow_dots=True, max_length=50,
     )
-    if not validation.ok:
+    if validation.code not in {None, "reserved_route_name"}:
         return _external_import_error('Invalid target character name')
     from config import MEMORY_SERVER_PORT
     from utils.internal_http_client import get_internal_http_client

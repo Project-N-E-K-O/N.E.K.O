@@ -27,7 +27,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
 from main_logic.core._shared import _reply_observation_owner
-from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+from main_logic.tool_calling import ToolCall, ToolDefinition, ToolOwnerCheck, ToolResult
 from config.prompts.prompts_sys import _loc
 from config.turn_context_settings import (
     RECALL_MEMORY_TOOL_BUDGET_MS,
@@ -78,7 +78,13 @@ class ToolCallingMixin:
     # Tool calling — public API for agent_server / plugins
     # ------------------------------------------------------------------
 
-    def register_tool(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    def register_tool(
+        self,
+        tool: ToolDefinition,
+        *,
+        replace: bool = True,
+        owner_check: ToolOwnerCheck | None = None,
+    ) -> None:
         """Register a tool with the unified registry.
 
         - ``tool.handler`` is an in-process callable (recommended) — same-process
@@ -93,11 +99,21 @@ class ToolCallingMixin:
         to wait until "the tool is genuinely live on the wire" before returning,
         use ``await register_tool_and_sync(...)`` instead (the HTTP
         /api/tools/register endpoint already uses that path automatically).
+
+        ``owner_check`` makes the write conditional on who holds the name; see
+        ``ToolRegistry.register`` (raises ``ToolOwnershipError`` on refusal,
+        nothing is synced then).
         """
-        self.tool_registry.register(tool, replace=replace)
+        self.tool_registry.register(tool, replace=replace, owner_check=owner_check)
         self._fire_task(self._sync_tools_to_active_session())
 
-    async def register_tool_and_sync(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    async def register_tool_and_sync(
+        self,
+        tool: ToolDefinition,
+        *,
+        replace: bool = True,
+        owner_check: ToolOwnerCheck | None = None,
+    ) -> None:
         """The awaitable version of ``register_tool``: registers, then waits for the session sync push to finish.
 
         For remote entries like HTTP `/api/tools/register` — by the time the
@@ -110,21 +126,25 @@ class ToolCallingMixin:
         ⚠️ ``raise_on_failure=True``: if the session.update genuinely fails on the
         wire, propagate the exception upward, so HTTP /api/tools doesn't return a
         false ok=true.
+
+        ``owner_check``: as in ``register_tool``.
         """
-        self.tool_registry.register(tool, replace=replace)
+        self.tool_registry.register(tool, replace=replace, owner_check=owner_check)
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
-    def unregister_tool(self, name: str) -> bool:
+    def unregister_tool(self, name: str, *, owner_check: ToolOwnerCheck | None = None) -> bool:
+        """Remove a tool; ``owner_check`` makes it conditional, see ``ToolRegistry.unregister``."""
         holders = self._yielding_builtin_holders()
-        existed = self.tool_registry.unregister(name)
+        existed = self.tool_registry.unregister(name, owner_check=owner_check)
         if existed:
             self._refill_vacated_builtins(holders)
             self._fire_task(self._sync_tools_to_active_session())
         return existed
 
-    async def unregister_tool_and_sync(self, name: str) -> bool:
+    async def unregister_tool_and_sync(self, name: str, *, owner_check: ToolOwnerCheck | None = None) -> bool:
+        """The awaitable version of ``unregister_tool``."""
         holders = self._yielding_builtin_holders()
-        existed = self.tool_registry.unregister(name)
+        existed = self.tool_registry.unregister(name, owner_check=owner_check)
         if existed:
             self._refill_vacated_builtins(holders)
             await self._sync_tools_to_active_session(raise_on_failure=True)

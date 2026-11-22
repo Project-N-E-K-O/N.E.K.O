@@ -109,7 +109,7 @@ class SystemSnapshot:
     truncated versions).
     """
     timestamp: float
-    idle_seconds: float                # OS-wide keyboard/mouse idle
+    idle_seconds: float | None         # OS-wide keyboard/mouse idle (None when unknown)
     cpu_avg_30s: float                 # rolling avg of last six 5s samples
     cpu_instant: float                 # latest poll
     window_title: str | None           # raw title (None if no foreground window)
@@ -166,7 +166,7 @@ class SystemSignalCollector:
         # defer the right value until then via __post_init__-like update.
         self._latest = SystemSnapshot(
             timestamp=0.0,
-            idle_seconds=0.0,
+            idle_seconds=None,
             cpu_avg_30s=0.0,
             cpu_instant=0.0,
             window_title=None,
@@ -344,7 +344,7 @@ class SystemSignalCollector:
         if not self._os_signals_available:
             self._latest = SystemSnapshot(
                 timestamp=time.time(),
-                idle_seconds=0.0,
+                idle_seconds=None,
                 cpu_avg_30s=0.0,
                 cpu_instant=0.0,
                 window_title=None,
@@ -381,7 +381,7 @@ class SystemSignalCollector:
 
         self._latest = SystemSnapshot(
             timestamp=time.time(),
-            idle_seconds=idle if idle is not None else 0.0,
+            idle_seconds=idle,
             cpu_avg_30s=cpu_avg,
             cpu_instant=cpu_now if cpu_now is not None else 0.0,
             window_title=title,

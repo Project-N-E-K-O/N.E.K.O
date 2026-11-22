@@ -131,14 +131,17 @@ def _main_base() -> str:
 # The keys of the switches a console page may set besides the one for all of
 # it. The plugins' switch is not among them: it follows the one for all.
 _SWITCH_KEYS = frozenset({"computer_use_enabled", "browser_use_enabled"})
+# Not a capability: whether the main page shows the task HUD (``app.agent_task_hud``).
+_TASK_HUD_KEY = "task_hud_visible"
 
 
 @router.post("/switch", dependencies=[Depends(require_plugin_mutation_access)])
 async def set_switch(request: Request) -> JSONResponse:
-    """Switch NekoClaw on or off, or one of the two device switches.
+    """Switch NekoClaw on or off, one of the two device switches, or the task HUD.
 
     ``{"enabled": bool}`` for all of it; ``{"key": ..., "value": bool}``
-    for the keyboard and mouse or the browser. Passed to the main server's
+    for the keyboard and mouse, the browser, or whether the main page shows
+    the task HUD (``task_hud_visible``). Passed to the main server's
     command route, which keeps its sessions in step and passes it on to the
     agent process; nothing else of that route is reachable from here.
     """
@@ -156,10 +159,13 @@ async def set_switch(request: Request) -> JSONResponse:
     elif (
         set(payload) == {"key", "value"}
         and isinstance(payload["key"], str)
-        and payload["key"] in _SWITCH_KEYS
+        and payload["key"] in _SWITCH_KEYS | {_TASK_HUD_KEY}
         and isinstance(payload["value"], bool)
     ):
-        command = {"command": "set_flag", "key": payload["key"], "value": payload["value"]}
+        if payload["key"] == _TASK_HUD_KEY:
+            command = {"command": "set_task_hud_visible", "value": payload["value"]}
+        else:
+            command = {"command": "set_flag", "key": payload["key"], "value": payload["value"]}
     else:
         raise HTTPException(400, {"code": "bad_switch"})
     try:

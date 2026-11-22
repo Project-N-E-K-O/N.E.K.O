@@ -145,7 +145,11 @@ def parse_video_url(value):
     match = re.search(r"/video/(BV[0-9A-Za-z]{10})(?:/|$)", parsed.path)
     if not match:
         raise ValueError("目前支持普通 BV 视频链接")
-    page = int(parse_qs(parsed.query).get("p", ["1"])[0])
+    raw_page = parse_qs(parsed.query).get("p", ["1"])[0]
+    try:
+        page = int(raw_page)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("分 P 序号无效") from exc
     if page < 1:
         raise ValueError("分 P 序号无效")
     return match.group(1), page - 1

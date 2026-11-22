@@ -1,5 +1,7 @@
 """Unit tests for the structured voice config model + unambiguous-prefix normalizer."""
 
+import pytest
+
 from config import GSV_VOICE_PREFIX
 from utils.elevenlabs_tts_voices import ELEVENLABS_TTS_VOICE_PREFIX
 from utils.gptsovits_config import GSV_DISABLED_VOICE_PREFIX
@@ -232,3 +234,20 @@ def test_read_legacy_object_str_roundtrip_equivalence():
     for legacy in ("eleven:abc", "gsv:myv", "voice-tone-X", "Puck", ""):
         vc = parse_legacy_voice_id(legacy) or VoiceConfig(ref=legacy)
         assert read_legacy_voice_id(vc.to_dict()) == legacy
+
+
+@pytest.mark.parametrize("bad_config", ["oops", 123, ["a", "b"], True, None])
+def test_from_any_and_read_legacy_tolerate_non_dict_config(bad_config):
+    vc = VoiceConfig.from_any({
+        "source": "clone",
+        "provider": "elevenlabs",
+        "ref": "abc",
+        "config": bad_config,
+    })
+    assert vc == VoiceConfig(source="clone", provider="elevenlabs", ref="abc", config={})
+    assert read_legacy_voice_id({
+        "source": "clone",
+        "provider": "elevenlabs",
+        "ref": "abc",
+        "config": bad_config,
+    }) == "eleven:abc"

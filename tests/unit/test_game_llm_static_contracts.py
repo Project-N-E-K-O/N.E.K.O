@@ -977,6 +977,32 @@ def test_build_game_prompt_uses_requested_language():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("locale", ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"))
+def test_soccer_system_prompts_all_locales_format_and_include_control_contract(locale):
+    from config.prompts.prompts_soccer import SOCCER_SYSTEM_PROMPTS
+
+    assert locale in SOCCER_SYSTEM_PROMPTS
+    formatted = get_soccer_system_prompt(locale).format(name="Lan", personality="likes soccer")
+    assert "Lan" in formatted
+    assert "likes soccer" in formatted
+    for token in (
+        '"mood"',
+        '"difficulty"',
+        "max",
+        "lv2",
+        "lv3",
+        "lv4",
+        "requestControlReason",
+        "score.ai",
+        "score.player",
+        "scoreDiff",
+        "balanceHint",
+        "angerPressureCap",
+    ):
+        assert token in formatted, f"{locale} soccer system prompt missing {token!r}"
+
+
+@pytest.mark.unit
 def test_game_voice_stt_gate_freezes_route_session_and_restores_mic():
     capture_js = (ROOT / "static" / "app" / "app-audio-capture.js").read_text(encoding="utf-8")
 

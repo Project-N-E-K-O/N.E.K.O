@@ -210,7 +210,7 @@ def _decoded_owner_is_safe(owner: str) -> bool:
     from utils.character_name import validate_character_name
 
     result = validate_character_name(owner, allow_dots=True)
-    return result.ok and result.normalized == owner
+    return result.code in {None, "reserved_route_name"} and result.normalized == owner
 
 
 def _legacy_root_file_owners(memory_dir: str, known: set) -> list:

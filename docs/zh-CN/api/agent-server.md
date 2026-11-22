@@ -16,7 +16,7 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 | `GET` | `/agent/flags` | 当前总开关和子功能开关 |
 | `POST` | `/agent/flags` | 部分更新 `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled` |
 | `GET` | `/agent/state` | 权威 revision、flags、capabilities、notification 和在办的任务 |
-| `POST` | `/agent/command` | `set_agent_enabled`、`set_flag` 或 `refresh_state` 命令 |
+| `POST` | `/agent/command` | `set_agent_enabled`、`set_flag`、`set_task_hud_visible` 或 `refresh_state` 命令 |
 | `GET` | `/computer_use/availability` | 键鼠的就绪状态及原因 |
 | `GET` | `/browser_use/availability` | 浏览器的就绪状态及原因 |
 | `GET` | `/builtin/activity` | 现在是哪件委托占着键鼠、哪件占着浏览器 |

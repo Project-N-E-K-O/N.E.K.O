@@ -282,7 +282,8 @@ def run_step_protocol_tts_worker(
             their completion waiters resolve as failed instead of timing out.
             """
             logger.warning("%s TTS 被服务端永久拒绝，worker 退出", provider_label)
-            audio_done.emit(rejected_speech_id)
+            if not (deferred_requests and deferred_requests[0][0] in {TTS_SHUTDOWN_SENTINEL, "__interrupt__"}):
+                audio_done.emit(rejected_speech_id)
             dropped_speech_ids = []
             pending_requests = list(deferred_requests)
             deferred_requests.clear()
@@ -599,7 +600,7 @@ def run_step_protocol_tts_worker(
             return True
 
         async def _finish_current_speech() -> bool:
-            nonlocal text_done_sent
+            nonlocal text_done_sent, rejected_speech_id
             if not ws or not session_id or current_speech_id is None or text_done_sent:
                 return False
             # Force-flush buffered text below MIN_CHARS too so short sentences can synthesize.
@@ -614,7 +615,12 @@ def run_step_protocol_tts_worker(
                 text_done_sent = True
             except Exception as e:
                 logger.warning(f"发送TTS完成信号失败: {e}")
-                _reject_on_server_close(e)
+                if not _reject_on_server_close(e):
+                    # Text already reached this socket. A new socket cannot
+                    # finish it or safely replay audio already delivered.
+                    rejected_speech_id = current_speech_id
+                    response_queue.put(("__tts_sentence_failed__", current_speech_id, ""))
+                    _enqueue_error(response_queue, json.dumps({"code": "TTS_CONNECTION_FAILED"}))
                 await _invalidate_current_socket("发送 tts.text.done 失败后的")
                 return False
             return True
@@ -822,20 +828,12 @@ def run_step_protocol_tts_worker(
                     # Audio continues through receive_task into response_queue. lanlan.app's receive_task closes
                     # after tts.response.done; other upstream connections close on
                     # the next speech_id change / __interrupt__.
-                    if ws and session_id and current_speech_id is not None and not text_done_sent:
-                        if not await _finish_current_speech() and pending_text_buffer.strip():
-                            await _queue_finish_retry(current_speech_id)
+                    if current_speech_id is None or text_done_sent:
                         continue
-                    if (
-                        current_speech_id is None
-                        or text_done_sent
-                        or not pending_text_buffer.strip()
-                    ):
+                    if not (ws and session_id) and not pending_text_buffer.strip():
                         continue
-                    # A failed create/replay deliberately retains the original
-                    # prefix while invalidating the socket. Reconnect the same
-                    # speech for this terminal queue entry instead of waiting
-                    # for another text chunk that may never arrive.
+                    # A failed create retains its prefix. The terminal queue
+                    # item reconnects and flushes it even without another chunk.
                     finish_requested = True
                     sid = current_speech_id
 
@@ -946,15 +944,17 @@ def run_step_protocol_tts_worker(
                                 retired_candidate_ws,
                                 "关闭缺少 session_id 的 TTS socket 失败",
                             )
+                            if not control_preempted:
+                                control_preempted = _defer_queued_work_until_control()
                             if candidate_rejected:
                                 # Retrying this speech per chunk (or its finish
                                 # every second) only piles rejected connects on
                                 # the server. The next speech tries again.
                                 rejected_speech_id = current_speech_id
                                 pending_text_buffer = ""
+                                if finish_requested and not control_preempted:
+                                    audio_done.emit(rejected_speech_id)
                                 continue
-                            if not control_preempted:
-                                control_preempted = _defer_queued_work_until_control()
                             if control_preempted:
                                 continue
                             if finish_requested:
@@ -1073,8 +1073,14 @@ def run_step_protocol_tts_worker(
                         continue
 
                 if finish_requested:
-                    if not await _finish_current_speech() and pending_text_buffer.strip():
-                        await _queue_finish_retry(current_speech_id)
+                    if not await _finish_current_speech():
+                        if (
+                            rejected_speech_id is not None
+                            and current_speech_id == rejected_speech_id
+                        ):
+                            audio_done.emit(rejected_speech_id)
+                        elif pending_text_buffer.strip():
+                            await _queue_finish_retry(current_speech_id)
                     continue
 
                 # Validate text.
@@ -1114,16 +1120,11 @@ def run_step_protocol_tts_worker(
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     rejected_now = _reject_on_server_close(e)
-                    # Connection closed: mark invalid for reconnection next time.
-                    ws = None
-                    session_id = None
                     if not rejected_now:
-                        # Clear ID to force reconnection; retain rejected-round IDs so finalization can match them.
-                        current_speech_id = None
-                    session_created = False
-                    pending_text_buffer = ""
-                    if receive_task and not receive_task.done():
-                        receive_task.cancel()
+                        # Retain the unsent chunk for the next same-speech reconnect/finalization.
+                        pending_text_buffer += tts_text
+                    await _invalidate_current_socket("发送 tts.text.delta 失败后的")
+                    session_ready.clear()
 
         except Exception as e:
             logger.error(
