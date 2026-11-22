@@ -68,18 +68,24 @@ const reason = computed(() => {
   return (now.gate.reasons ?? [])[0] ?? ''
 })
 
-// Counts the reads of the switch: an answer to an earlier one is not shown over a later one's.
+// Counts the reads of the switch: an answer is not shown over one that was asked for after it.
+// One that is only slow is shown all the same: left out because a later read was sent meanwhile,
+// a service that takes longer than the time between reads would never be shown at all.
 let asked = 0
+let shown = 0
 
 async function load() {
   const mine = ++asked
   try {
     const answer = (await getSwitches()).switches ?? null
-    if (mine !== asked) return
+    if (mine < shown) return
+    shown = mine
     switches.value = answer
     error.value = switches.value ? '' : t('power.errors.agent_unreachable')
   } catch (failure) {
-    if (mine === asked) error.value = describeConsoleError(failure, t, te)
+    if (mine < shown) return
+    shown = mine
+    error.value = describeConsoleError(failure, t, te)
   }
 }
 

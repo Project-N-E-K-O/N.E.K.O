@@ -216,6 +216,27 @@ describe('the switch for all of it', () => {
     expect(api.setPower).toHaveBeenCalledWith(true)
   })
 
+  it('shows an answer that took longer than the time between two reads, and not an older one over a newer', async () => {
+    vi.useFakeTimers()
+    const answers: Array<(value: unknown) => void> = []
+    api.getSwitches.mockImplementation(() => new Promise(resolve => { answers.push(resolve) }))
+    await mount(PowerBar)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(answers.length).toBe(2)
+    // The first read is answered only now, with the second one on its way: it is shown.
+    answers[0](switches(true))
+    await flush()
+    expect(byTest('power-switch')?.getAttribute('aria-checked')).toBe('true')
+    expect((byTest('power-switch') as HTMLButtonElement).disabled).toBe(false)
+    // The third read is answered before the second: the second one's answer is older by then.
+    await vi.advanceTimersByTimeAsync(5000)
+    answers[2](switches(false))
+    await flush()
+    answers[1](switches(true))
+    await flush()
+    expect(byTest('power-switch')?.getAttribute('aria-checked')).toBe('false')
+  })
+
   it('keeps saying that a switch did not take, with the switch where the service has it', async () => {
     vi.useFakeTimers()
     api.getSwitches.mockResolvedValue(switches(false))
