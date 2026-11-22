@@ -451,6 +451,9 @@ class EvidenceFlowMixin:
                         "from": prev_status,
                         "to": "confirmed",
                         "source": EVIDENCE_SOURCE_USER_CONFIRM,
+                        # Same value the save writes to confirmed_at; replay
+                        # uses it to tell a lost save from a later edit.
+                        "ts": now_iso,
                     }
                     if text_changed and cleaned is not None:
                         import hashlib

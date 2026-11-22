@@ -108,6 +108,37 @@ def _rewrite_state(
     return _REWRITE_SUPERSEDED
 
 
+def _persona_rewrite_landed(entry: dict, payload: dict) -> bool:
+    """Whether the view shows this rewrite's save already landed.
+
+    The text alone cannot tell: a later change can bring the replaced text
+    back. The row the same save wrote can: the version-history row it added
+    (unique ``replaced_at``), or for a promotion merge its reflection id in
+    ``merged_from_ids``.
+    """
+    reason = payload.get('history_reason')
+    replaced_at = payload.get('replaced_at')
+    if reason and replaced_at:
+        return any(
+            isinstance(row, dict)
+            and row.get('replaced_at') == replaced_at
+            and row.get('reason') == reason
+            for row in entry.get('version_history') or []
+        )
+    merged = payload.get('merged_from_ids')
+    if isinstance(merged, list) and merged:
+        return set(merged) <= set(entry.get('merged_from_ids') or [])
+    return False
+
+
+def _status_change_landed(row: dict, payload: dict, to_status: str) -> bool:
+    """Whether the save of a status change (and its rewrite) already landed."""
+    ts = payload.get('ts')
+    if ts:
+        return row.get(f'{to_status}_at') == ts
+    return row.get('status') == to_status
+
+
 def _log_skipped_rewrite(name: str, event: str, entry_id, state: str) -> None:
     if state == _REWRITE_UNVERIFIABLE:
         logger.warning(
@@ -241,6 +272,8 @@ def make_reflection_state_changed_handler(reflection_engine):
             text_state = _rewrite_state(
                 r.get('text'), payload, payload.get('rewrite_text_sha256'),
             )
+            if text_state == _REWRITE_PENDING and _status_change_landed(r, payload, to_status):
+                text_state = _REWRITE_SUPERSEDED
             if text_state in (_REWRITE_SUPERSEDED, _REWRITE_UNVERIFIABLE):
                 _log_skipped_rewrite(name, 'reflection.state_changed', rid, text_state)
                 return False
@@ -383,7 +416,8 @@ def make_persona_entry_handler(persona_manager):
     (``previous_text_sha256``), so the handler has three outcomes:
 
       - view already holds the new text: apply the snapshot fields only;
-      - view still holds the replaced text: the save was lost in a crash,
+      - view still holds the replaced text and lacks the row the same save
+        wrote (see _persona_rewrite_landed): the save was lost in a crash,
         so write the new text (and the version-history row the writer
         added) back along with the snapshot fields;
       - anything else: the entry was rewritten again afterwards; log and
@@ -424,6 +458,10 @@ def make_persona_entry_handler(persona_manager):
             if not isinstance(e, dict) or e.get('id') != entry_id:
                 continue
             state = _rewrite_state(e.get('text'), payload, expected_sha)
+            if state == _REWRITE_PENDING and _persona_rewrite_landed(e, payload):
+                # Back at the replaced text after this rewrite landed
+                # (A -> B -> A): a later change, not a lost save.
+                state = _REWRITE_SUPERSEDED
             if state in (_REWRITE_SUPERSEDED, _REWRITE_UNVERIFIABLE):
                 _log_skipped_rewrite(name, 'persona.entry_updated', entry_id, state)
                 return False
@@ -498,13 +536,16 @@ def make_reflection_archive_handler(reflection_engine):
             # this handler; PR-3 may add handlers for promoted/denied.
             return False
 
-        # Step 0: if this archive is part of a reflection duplicate merge, check
-        # the surviving reflection's wording (RFC §3.3.6). Still the replaced
-        # text: the merge's save was lost, so its merged text is written back
-        # in step 3. A later text, or a survivor archived since: the merge
-        # landed and only the shard self-heal below is left. An older event
-        # without the merged text cannot tell those apart, so it is skipped
-        # whole rather than archive ``drop`` without its merge.
+        # Step 0: if this archive is part of a reflection duplicate merge, decide
+        # whether the merge's save landed (RFC §3.3.6). One atomic save both
+        # rewrote the survivor and removed ``drop``, so ``drop`` gone from the
+        # active view means it landed: whatever the survivor says now is later
+        # than the merge, and only the shard self-heal below is left.
+        # ``drop`` still there means it did not land. It is completed only
+        # when both rows are exactly as the merge left them (survivor still at
+        # the replaced text, ``drop`` still at its snapshot); after any edit
+        # to either the user has moved on from the failed merge and the event
+        # is skipped whole, as is an older event without the merged text.
         merged_keep_id = payload.get('merged_keep_id')
         merged_keep_sha = payload.get('merged_keep_text_sha256')
         path = reflection_engine._reflections_path(name)
@@ -517,27 +558,30 @@ def make_reflection_archive_handler(reflection_engine):
                     f"[ArchiveHandler] {path}: 期望 list，实际 "
                     f"{type(pre_data).__name__}；view 结构异常，暂停 replay"
                 )
-            survivor = next(
-                (r for r in pre_data if isinstance(r, dict) and r.get('id') == merged_keep_id),
-                None,
-            )
-            if survivor is None:
-                logger.info(
-                    f"[ArchiveHandler] {name}/reflection.merge: 保留条 {merged_keep_id} "
-                    f"已不在活跃视图，按合并已落盘处理"
+            by_id = {r.get('id'): r for r in pre_data if isinstance(r, dict)}
+            drop = by_id.get(rid)
+            if drop is not None:
+                survivor = by_id.get(merged_keep_id)
+                entry_snapshot = payload.get('entry_snapshot')
+                snapshot_text = (
+                    entry_snapshot.get('text') if isinstance(entry_snapshot, dict) else None
                 )
-            else:
                 keep_state = _rewrite_state(
-                    survivor.get('text'), payload, merged_keep_sha,
+                    survivor.get('text') if survivor is not None else None,
+                    payload, merged_keep_sha,
                     text_key='merged_keep_text',
                     previous_key='merged_keep_previous_text_sha256',
                 )
-                if keep_state == _REWRITE_UNVERIFIABLE:
-                    _log_skipped_rewrite(name, 'reflection.merge', merged_keep_id, keep_state)
+                if survivor is None or keep_state in (_REWRITE_SUPERSEDED, _REWRITE_UNVERIFIABLE):
+                    _log_skipped_rewrite(
+                        name, 'reflection.merge', merged_keep_id,
+                        _REWRITE_SUPERSEDED if survivor is None else keep_state,
+                    )
                     return False
-                if keep_state == _REWRITE_SUPERSEDED:
-                    _log_skipped_rewrite(name, 'reflection.merge', merged_keep_id, keep_state)
-                elif keep_state == _REWRITE_PENDING:
+                if snapshot_text is not None and drop.get('text') != snapshot_text:
+                    _log_skipped_rewrite(name, 'reflection.merge', rid, _REWRITE_SUPERSEDED)
+                    return False
+                if keep_state == _REWRITE_PENDING:
                     survivor_rewrite = payload['merged_keep_text']
 
         # Step 1+2: shard self-heal (write entry into the named shard

@@ -247,6 +247,30 @@ def test_persona_rewrite_replay_skips_a_later_rewrite(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_persona_rewrite_chain_back_to_old_text_is_not_replayed(tmp_path):
+    """A -> B -> A: both rewrites landed; replaying either adds no history row."""
+    from memory.evidence_handlers import make_persona_entry_handler
+
+    history = [
+        {"text": "A", "replaced_at": "t1", "reason": "manual_edit"},
+        {"text": "B", "replaced_at": "t2", "reason": "manual_edit"},
+    ]
+    path = _seed_persona(tmp_path, "A", version_history=history)
+    before = path.read_bytes()
+    handler = make_persona_entry_handler(_persona_manager(tmp_path))
+    first = _rewrite_payload("A", "B", history_reason="manual_edit", replaced_at="t1")
+    second = _rewrite_payload("B", "A", history_reason="manual_edit", replaced_at="t2")
+    assert handler(NAME, first) is False
+    assert handler(NAME, second) is False
+    assert path.read_bytes() == before
+
+    # Promotion merge: its reflection id already in merged_from_ids means it landed.
+    path = _seed_persona(tmp_path, "A", merged_from_ids=["ref_1"])
+    before = path.read_bytes()
+    assert handler(NAME, _rewrite_payload("A", "merged", merged_from_ids=["ref_1"])) is False
+    assert path.read_bytes() == before
+
+
 def test_persona_rewrite_replay_skips_an_old_event_without_text(tmp_path):
     from memory.evidence_handlers import make_persona_entry_handler
 
@@ -319,6 +343,16 @@ def test_reflection_confirm_replay_writes_back_lost_edit_and_skips_later_one(tmp
     assert handler(NAME, payload) is False
     assert path.read_bytes() == before
 
+    # Confirmed with the edit, then edited straight back (no event): the save
+    # landed (confirmed_at matches), so the old text is a later change.
+    landed = {**payload, "ts": "2026-11-22T10:00:00"}
+    path = _seed_reflections(tmp_path, [{
+        "id": "r1", "text": "draft", "status": "confirmed", "confirmed_at": "2026-11-22T10:00:00",
+    }])
+    before = path.read_bytes()
+    assert handler(NAME, landed) is False
+    assert path.read_bytes() == before
+
 
 def test_reflection_merge_archive_replay_three_states(tmp_path):
     from memory.evidence_handlers import make_reflection_archive_handler
@@ -344,14 +378,21 @@ def test_reflection_merge_archive_replay_three_states(tmp_path):
     assert [r["id"] for r in rows] == ["r_keep"]
     assert rows[0]["text"] == "merged" and rows[0]["embedding"] is None
 
-    # Later rewrite of the survivor: the merge landed; archive proceeds, survivor untouched.
-    path = _seed_reflections(tmp_path, [
-        {"id": "r_keep", "text": "edited afterwards"},
-        {"id": "r_drop", "text": "drop"},
-    ])
-    assert handler(NAME, payload) is True
-    rows = _read_json(path)
-    assert rows == [{"id": "r_keep", "text": "edited afterwards"}]
+    # Merge landed (drop gone) and the survivor was edited afterwards: survivor untouched.
+    path = _seed_reflections(tmp_path, [{"id": "r_keep", "text": "edited afterwards"}])
+    before = path.read_bytes()
+    assert handler(NAME, payload) is False
+    assert path.read_bytes() == before
+
+    # Merge never landed and the user then edited either row: skipped whole.
+    for rows in (
+        [{"id": "r_keep", "text": "edited afterwards"}, {"id": "r_drop", "text": "drop"}],
+        [{"id": "r_keep", "text": "keep before"}, {"id": "r_drop", "text": "drop, edited"}],
+    ):
+        path = _seed_reflections(tmp_path, rows)
+        before = path.read_bytes()
+        assert handler(NAME, {**payload, "entry_snapshot": {"id": "r_drop", "text": "drop"}}) is False
+        assert path.read_bytes() == before
 
     # Older event without the merged text: skipped whole, nothing archived.
     old_payload = {k: v for k, v in payload.items() if k in (

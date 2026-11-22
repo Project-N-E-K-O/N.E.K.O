@@ -263,4 +263,6 @@ async def test_reconciler_replays_lost_merge_text_and_skips_later_rewrite(tmp_pa
     assert entry['text'] == 'user typed something else'
     assert 'ref_crash' not in (entry.get('merged_from_ids') or [])
     with open(sentinel_path, encoding='utf-8') as f:
-        assert json.load(f)['last_applied_event_id'] is not None
+        last = json.load(f)['last_applied_event_id']
+    with open(os.path.join(str(tmp_path), '小天', 'events.ndjson'), encoding='utf-8') as f:
+        assert last == json.loads(f.read().splitlines()[-1])['event_id']
