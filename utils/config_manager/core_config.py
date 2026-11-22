@@ -81,6 +81,12 @@ from .tier_renames import canonical_model_type, migrate_renamed_tier_fields
 # that tier at runtime (URL, model, key and protocol alike); nothing is patched
 # field by field. prefix -> (model_type, default followed tier, follow value ->
 # followed tier, snapshot model key).
+# Familiar-tier URLs keep the fixed CN text endpoint: free-agent-model is served only there
+# (see _normalize_agent_url), so they are never region-rewritten nor make a config need the
+# region probe. The advanced slot can resolve to free-agent-model too (follow_assist / follow_core
+# on the free provider), so it gets the same treatment.
+AGENT_TIER_URL_KEYS = ('AGENT_MODEL_URL', 'AGENT_ADVANCED_MODEL_URL')
+
 WHOLE_FOLLOW_SLOTS = {
     'agentSmall': (
         'agent_small', 'recognition',
@@ -361,7 +367,7 @@ class CoreConfigMixin:
             # see _normalize_agent_url and the rewrite-loop exemption), so region selection has no effect on it.
             # Including it as needing region would start probing an unrewritten URL when neither core nor assist is free,
             # exposing IP pointlessly (invariant #2).
-            if key == 'AGENT_MODEL_URL':
+            if key in AGENT_TIER_URL_KEYS:
                 continue
             try:
                 parsed = urlparse(value)
@@ -1840,12 +1846,13 @@ class CoreConfigMixin:
                     # non_mainland=False rather than skipping the call entirely: livestream-prefix derivation
                     # precedes region rewriting in _adjust_free_api_url. Exempt region selection,
                     # not local forwarding.
-                    non_mainland=False if key == 'AGENT_MODEL_URL' else snapshot_non_mainland,
+                    non_mainland=False if key in AGENT_TIER_URL_KEYS else snapshot_non_mainland,
                 )
 
         # Agent model always uses international API regardless of region
-        if isinstance(config.get('AGENT_MODEL_URL'), str):
-            config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
+        for agent_url_key in AGENT_TIER_URL_KEYS:
+            if isinstance(config.get(agent_url_key), str):
+                config[agent_url_key] = self._normalize_agent_url(config[agent_url_key])
 
         # Keep a raw, independent image slot: no chat fallback or implicit generation.
         config["IMAGE_GENERATION_CONFIG"] = {

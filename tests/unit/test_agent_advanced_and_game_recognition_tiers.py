@@ -212,3 +212,20 @@ def test_the_soccer_passive_guard_uses_the_minigame_recognition_tier(monkeypatch
     assert char_info._get_game_route_recognition_llm_info('Lan')['model'] == 'm'
     assert char_info._get_game_route_summary_llm_info('Lan')['model'] == 'm'
     assert asked == ['game_recognition', 'game_summary']
+
+
+@pytest.mark.parametrize('provider, free_side', [('follow_assist', 'assistApi'), ('follow_core', 'coreApi')])
+def test_overseas_free_agent_model_keeps_the_mainland_endpoint(config_manager, monkeypatch, provider, free_side):
+    # Codex P2: free-agent-model is served only on the CN text endpoint; the advanced slot can
+    # resolve to it and must be exempt from the overseas rewrite like the general familiar slot.
+    from utils.config_manager import ConfigManager
+
+    data = {'coreApi': 'qwen', 'coreApiKey': 'sk-core', 'assistApi': 'qwen', 'assistApiKeyQwen': 'sk-qwen-test',
+            'enableCustomApi': True, 'agentAdvancedModelProvider': provider}
+    data[free_side] = 'free'
+    _write_core_config(config_manager, data)
+    monkeypatch.setattr(ConfigManager, '_region_cache', True)
+    monkeypatch.setattr(ConfigManager, '_ip_check_cache', True)
+    advanced = config_manager.get_model_api_config('agent_advanced')
+    assert advanced['model'] == 'free-agent-model'
+    assert 'lanlan.tech' in advanced['base_url'] and 'lanlan.app' not in advanced['base_url']
