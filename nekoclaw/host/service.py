@@ -53,6 +53,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
+from nekoclaw.host.board import Board
 from nekoclaw.host.capabilities import BuiltinCapabilities, CapabilityRegistry
 from nekoclaw.host.decision import ConfiguredDecisionLLM, DecisionLLM, DecisionModel, LexicalDecisionModel
 from nekoclaw.host.task_agents import (
@@ -240,12 +241,27 @@ class NekoClawHost:
             forget_dsh_session=self.dsh.forget_session,
         )
         self.ledger.subscribe(self.space_keeper.watch)
+        # The presets sessions are opened by, and the board of sessions a
+        # page shows: both read when they are asked for.
+        self.templates_store = self.task_agents.templates
+        self._board = Board(
+            ledger=self.ledger,
+            space=self.space,
+            templates=self.templates_store,
+            paths=self.paths.space,
+            model=self._task_agent_model_name,
+        )
         # A plugin's request for confirmation is put to the user by the
         # gateway, through the same waiting the task agents' own questions use.
         self.gateway.set_ask_user(self.task_agents.ask_user)
         if decision is None:
             decision = LexicalDecisionModel(self._decision_llm)
         self.decision = decision
+        # Whether a later commission of a busy project session is a side
+        # question, which is answered in a copy of the session meanwhile.
+        judge = getattr(decision, "side_question", None)
+        if judge is not None:
+            self.task_agents.set_side_question_judge(judge)
         self.brain = TaskBrain(
             ledger=self.ledger,
             preferences=self.preferences,
@@ -474,6 +490,59 @@ class NekoClawHost:
         if session is None or session.kind != "fork":
             return False
         return await self.space_keeper.clear_session(session_id)
+
+    # -- the board of sessions --------------------------------------------
+    #
+    # For a page that shows the task agents by project and one that sets a
+    # new one up. No route leads here yet; whoever adds one calls these.
+
+    async def _task_agent_model_name(self) -> str | None:
+        """Return the name of the model task agents use, and nothing else of it."""
+        config = await self._task_agent_model()
+        name = config.get("model") if config else None
+        return str(name) if name else None
+
+    async def board(
+        self, project: str | None = None, lanlan_name: str | None = None, known_revision: str | None = None
+    ) -> dict[str, Any]:
+        """Return the sessions by project, one card each; see ``nekoclaw/host/board.py``.
+
+        ``project`` leaves one project's, ``lanlan_name`` one character's.
+        With ``known_revision``, the revision a board had that the caller
+        still holds, ``{"revision", "unchanged": True}`` comes back while
+        nothing on it changed. Reads only: no model and no runtime is
+        asked, and nothing is started.
+        """
+        return await self._board.view(project, lanlan_name, known_revision)
+
+    async def templates(self, project: str | None = None) -> list[dict[str, Any]]:
+        """Return the presets a session can have, for a project or for none; see ``nekoclaw/host/templates.py``.
+
+        One ``{"name", "label", "description", "avatar", "source",
+        "read_only", "writes", "memory", "model", "valid", "error"}``
+        each, the built-in ones first. A template file that is wrong is
+        listed with ``valid`` False and what is wrong with it.
+        """
+        listed = await asyncio.to_thread(self.templates_store.listing, project)
+        return [item.to_json() for item in listed]
+
+    async def draft_session(
+        self, text: str, workdir: str | None = None, lanlan_name: str | None = None
+    ) -> dict[str, str]:
+        """Fill in the form of a new session from what the user wrote of it; see ``nekoclaw/host/drafts.py``.
+
+        Returns ``{name, title, preset, duty, description, rules}``, or
+        raises ``drafts.DraftError`` with a reason. One call of the
+        summary model; nothing is made or written. ``workdir`` is the
+        folder chosen for the session, of which names and sizes are read.
+        ``lanlan_name`` is whose task agent it is to be: the form is the
+        same for every character, and it is taken so that a caller need
+        not know that.
+        """
+        from nekoclaw.host.drafts import draft_session
+
+        del lanlan_name
+        return await draft_session(self._decision_llm, self.templates_store, text, workdir)
 
     # -- dsh --------------------------------------------------------------
     #

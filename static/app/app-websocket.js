@@ -5443,10 +5443,19 @@
                         function replySuppressedScreenshot() {
                             var tutorialBlocked = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                                 && window.isNekoHomeTutorialProactiveSuppressed();
-                            var privacyBlocked = window.appProactive
-                                && typeof window.appProactive.isProactiveVisionEnabledNow === 'function'
-                                ? !window.appProactive.isProactiveVisionEnabledNow()
-                                : S.proactiveVisionEnabled === false;
+                            // Screen consent from both this window's value and the
+                            // latest saved setting (appProactive.isVisionConsentHeldNow):
+                            // a revocation on either side declines.
+                            var proactiveApi = window.appProactive;
+                            var privacyBlocked;
+                            if (proactiveApi && typeof proactiveApi.isVisionConsentHeldNow === 'function') {
+                                privacyBlocked = !proactiveApi.isVisionConsentHeldNow();
+                            } else {
+                                privacyBlocked = S.proactiveVisionEnabled === false
+                                    || (!!proactiveApi
+                                        && typeof proactiveApi.isProactiveVisionEnabledNow === 'function'
+                                        && !proactiveApi.isProactiveVisionEnabledNow());
+                            }
                             if (!tutorialBlocked && !privacyBlocked) return false;
                             sendScreenshotReply({ action: 'screenshot_response', data: '', declined: true });
                             return true;

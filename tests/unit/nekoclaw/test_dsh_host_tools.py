@@ -81,10 +81,20 @@ async def test_the_tools_are_the_built_in_runtimes_by_name_and_definition(tmp_pa
         "web_search",
     ]
     assert [tool["name"] for tool in listed] == names == tools.names("s1")
+    from config.prompts.prompts_nekoclaw_tools import REPORT_DUTY_PARAMETER
+
     schemas = tool_schemas()
+    # As in the built-in runtime: a session of its own says what it takes with its report.
+    plain = schemas["report"]["parameters"]
+    with_duty = {**plain, "properties": {**plain["properties"], "duty": REPORT_DUTY_PARAMETER}}
     for tool in listed:
         assert tool["description"] == schemas[tool["name"]]["description"]
-        assert tool["inputSchema"] == schemas[tool["name"]]["parameters"]
+        assert tool["inputSchema"] == (with_duty if tool["name"] == "report" else schemas[tool["name"]]["parameters"])
+    assert "duty" not in plain["properties"]
+    # A task agent another one started is offered report as the catalog has it.
+    _open(tools, tmp_path, "s2", top_level=False)
+    theirs = {tool["name"]: tool for tool in (await tools.handle("s2", _request("tools/list")))["result"]["tools"]}
+    assert theirs["report"]["inputSchema"] == schemas["report"]["parameters"]
 
 
 async def test_only_what_the_host_can_carry_out_is_offered(tmp_path: Path) -> None:
