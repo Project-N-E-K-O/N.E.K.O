@@ -171,6 +171,8 @@ async def _periodic_persona_refine_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not review.is_character_periodic_write_admitted(name):
+                continue
             try:
                 await run_with_character_prompt_locale(
                     name,
@@ -397,6 +399,8 @@ async def _periodic_reflection_refine_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not review.is_character_periodic_write_admitted(name):
+                continue
             try:
                 await run_with_character_prompt_locale(
                     name,
@@ -504,6 +508,8 @@ async def _run_scoped_refine_round(catgirl_names: list[str]) -> None:
         start = (names.index(_scoped_refine_character_cursor) + 1) % len(names)
     rotation = names[start:] + names[:start]
     for name in rotation:
+        if not review.is_character_periodic_write_admitted(name):
+            continue
         try:
             served = await run_with_character_prompt_locale(
                 name,
@@ -1235,6 +1241,8 @@ async def _periodic_reflection_synthesis_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not review.is_character_periodic_write_admitted(name):
+                continue
             try:
                 results = []
                 try:

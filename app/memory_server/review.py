@@ -80,6 +80,22 @@ def is_character_publication_held(lanlan_name: str) -> bool:
     return lanlan_name in _publication_held_derived_task_names
 
 
+def is_character_periodic_write_admitted(lanlan_name: str) -> bool:
+    """Return whether a periodic memory loop may work on this identity now.
+
+    A rename / delete retires the old name (and holds it until publication)
+    before its directory is moved or removed. A periodic loop that read the
+    roster before that point must skip the name, or its JSON writes recreate
+    the released directory. Every per-character unit of the periodic loops
+    checks this right before it starts; a skipped character's cursors are left
+    untouched, so nothing is advanced past work that never ran.
+    """
+    return (
+        lanlan_name not in _retired_derived_task_names
+        and not is_character_publication_held(lanlan_name)
+    )
+
+
 def is_character_derived_task_claim_active(
     lanlan_name: str, claim_token: str,
 ) -> bool:

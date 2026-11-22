@@ -339,6 +339,8 @@ async def _periodic_rebuttal_loop():
                 catgirl_names = list(character_data.get('猫娘', {}).keys())
                 cursor_now = datetime.now()
                 for name in catgirl_names:
+                    if not review.is_character_periodic_write_admitted(name):
+                        continue
                     try:
                         await runtime.cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, cursor_now,
@@ -374,6 +376,8 @@ async def _periodic_rebuttal_loop():
             multiple ticks with bounded LLM prompt size per tick; no messages are lost
             (the cursor advances strictly by processed position).
             """
+            if not review.is_character_periodic_write_admitted(name):
+                return
             try:
                 confirmed = await runtime.reflection_engine.aget_confirmed_reflections(name)
                 if not confirmed:
@@ -552,6 +556,8 @@ async def _periodic_auto_promote_loop():
         powerful = await gates._ais_powerful_memory_enabled()
 
         async def _promote_one(name: str):
+            if not review.is_character_periodic_write_admitted(name):
+                return
             try:
                 transitions = await _auto_promote_character(name, powerful)
                 if transitions:
@@ -615,6 +621,8 @@ async def _periodic_idle_maintenance_loop():
                 if not gates._is_idle():
                     logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
                     break
+                if not review.is_character_periodic_write_admitted(name):
+                    continue
 
                 try:
                     history = await runtime.recent_history_manager.aget_recent_history(name)
@@ -972,6 +980,8 @@ async def _periodic_slow_memory_recheck_loop():
         # Touch only one entry per outer loop to prevent one character's reflections monopolizing work.
         did_one = False
         for name in ordered:
+            if not review.is_character_periodic_write_admitted(name):
+                continue
             try:
                 if await runtime.reflection_engine.arecheck_one_legacy_reflection(name):
                     did_one = True
@@ -980,6 +990,8 @@ async def _periodic_slow_memory_recheck_loop():
                 logger.debug(f"[MemoryRecheck] {name} reflection recheck 异常: {e}")
         if not did_one:
             for name in ordered:
+                if not review.is_character_periodic_write_admitted(name):
+                    continue
                 try:
                     if await runtime.fact_store.arecheck_one_legacy_fact(name):
                         did_one = True
@@ -1133,6 +1145,8 @@ async def _periodic_archive_sweep_loop():
             writes) re-read the view under the per-char lock, so this
             outer scan can use a stale snapshot safely.
             """
+            if not review.is_character_periodic_write_admitted(name):
+                return
             try:
                 # ── reflections ──
                 refls = await runtime.reflection_engine._aload_reflections_full(name)

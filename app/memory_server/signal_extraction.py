@@ -47,7 +47,7 @@ from memory.event_log import (
 from memory.facts import FactExtractionFailed
 from memory.long_term_sync import FactEvidenceUnavailable
 
-from . import gates, runtime
+from . import gates, review, runtime
 from ._shared import logger
 from .gates import _INITIAL_DELAY_SIGNAL
 from .rows import (
@@ -683,6 +683,8 @@ async def _periodic_signal_extraction_loop():
                 catgirl_names = list(character_data.get('猫娘', {}).keys())
                 cursor_now = datetime.now()
                 for name in catgirl_names:
+                    if not review.is_character_periodic_write_admitted(name):
+                        continue
                     try:
                         _signal_check_mark_done(name, cursor_now)
                     except Exception as cursor_e:
@@ -716,6 +718,8 @@ async def _periodic_signal_extraction_loop():
         }
 
         async def _signal_check_one(name: str):
+            if not review.is_character_periodic_write_admitted(name):
+                return None
             return await _run_signal_check_with_character_locale(
                 name,
                 _signal_check_one_with_locale,
