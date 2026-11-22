@@ -602,8 +602,15 @@ def make_reflection_archive_handler(reflection_engine):
                     return False
                 drop_status = str(drop.get('status') or 'pending')
                 keep_status = str(survivor.get('status') or 'pending')
+                # Evidence signals that landed on drop after the failed merge
+                # would be archived away with the old snapshot.
+                evidence_changed = isinstance(entry_snapshot, dict) and any(
+                    key in entry_snapshot and drop.get(key) != entry_snapshot[key]
+                    for key in _REFLECTION_EVIDENCE_SNAPSHOT_KEYS
+                )
                 if (
                     (snapshot_text is not None and drop.get('text') != snapshot_text)
+                    or evidence_changed
                     or ('from' in payload and drop_status != payload['from'])
                     or ('merged_keep_status' in payload and keep_status != payload['merged_keep_status'])
                 ):

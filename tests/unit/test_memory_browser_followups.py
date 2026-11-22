@@ -422,12 +422,13 @@ def test_reflection_merge_archive_replay_three_states(tmp_path):
         [{"id": "r_keep", "text": "keep before"}, {"id": "r_drop", "text": "drop, edited"}],
         [{"id": "r_keep", "text": "keep before"}, {"id": "r_drop", "text": "drop", "status": "confirmed"}],
         [{"id": "r_keep", "text": "keep before", "status": "confirmed"}, {"id": "r_drop", "text": "drop"}],
+        [{"id": "r_keep", "text": "keep before"}, {"id": "r_drop", "text": "drop", "reinforcement": 2.0}],
     ):
         path = _seed_reflections(tmp_path, rows)
         before = path.read_bytes()
         full = {
             **payload, "from": "pending", "merged_keep_status": "pending",
-            "entry_snapshot": {"id": "r_drop", "text": "drop"},
+            "entry_snapshot": {"id": "r_drop", "text": "drop", "reinforcement": 1.0},
         }
         assert handler(NAME, full) is False
         assert path.read_bytes() == before
@@ -645,6 +646,7 @@ async def test_restore_replay_finishes_an_interrupted_swap(tmp_path):
     _log, char_dir, _meta, pre, target, payload = await _restored_with_event(tmp_path)
     # Crash after the first file: facts.json still holds the pre-restore version.
     (char_dir / "facts.json").write_bytes(pre["facts.json"])
+    (char_dir / "browser_snapshots" / "completed_restores.json").unlink()  # never got that far
     handler = _restore_handler(tmp_path)
     assert handler(NAME, payload) is True
     assert content_fingerprint((char_dir / "facts.json").read_bytes()) == content_fingerprint(target["facts.json"])
@@ -696,6 +698,7 @@ async def test_registered_restore_replay_drains_and_full_replay_starts_at_restor
     assert [r["event_id"] for r in log.read_since(NAME, restore_id)] == [after_id]
 
     (char_dir / "facts.json").write_bytes(pre["facts.json"])
+    (char_dir / "browser_snapshots" / "completed_restores.json").unlink()  # never got that far
     (char_dir / "events_applied.json").unlink()
     reconciler = Reconciler(log)
     seen = []
@@ -790,6 +793,7 @@ async def test_pending_restore_is_finished_ahead_of_startup_rewrites(tmp_path):
     (char_dir / "events.ndjson").write_bytes(("\n".join(body) + "\n").encode("utf-8"))
     _write_json(char_dir / "events_applied.json", {"last_applied_event_id": anchor})
     (char_dir / "facts.json").write_bytes(pre["facts.json"])
+    (char_dir / "browser_snapshots" / "completed_restores.json").unlink()  # never got that far
 
     # read_since hands back the whole tail; the Reconciler cuts it once the restore is in effect.
     assert [r["event_id"] for r in log.read_since(NAME, anchor)] == [stale, events[0]["event_id"]]
@@ -1128,3 +1132,40 @@ def test_compaction_always_keeps_the_newest_completed_restore(tmp_path):
     assert [e["event_id"] for e in _journal(tmp_path)] == [
         "r_done", "r_never0", "r_never1", "r_never2", "anchor",
     ]
+
+
+
+@pytest.mark.asyncio
+async def test_completed_restore_is_not_finished_again_when_a_file_goes_back(tmp_path):
+    _log, char_dir, _meta, pre, target, payload = await _restored_with_event(tmp_path)
+    # Finished and marked; later the user puts facts.json back to its old version.
+    (char_dir / "facts.json").write_bytes(pre["facts.json"])
+    handler = _restore_handler(tmp_path)
+    assert handler(NAME, payload) is False
+    assert (char_dir / "facts.json").read_bytes() == pre["facts.json"]
+
+
+@pytest.mark.asyncio
+async def test_startup_pre_run_skips_a_cancelled_newer_restore(tmp_path):
+    from memory.analytics import snapshots
+    from memory.analytics.snapshots import register_snapshot_restore_replay
+    from memory.event_log import Reconciler
+
+    log, char_dir, meta, pre, _target, older = await _restored_with_event(tmp_path)
+    # The older restore was interrupted: facts.json still pre-restore, no completion mark.
+    (char_dir / "facts.json").write_bytes(pre["facts.json"])
+    (char_dir / "browser_snapshots" / "completed_restores.json").unlink()
+    (char_dir / "events_applied.json").unlink()
+    # A newer restore record that was cancelled.
+    log.append(NAME, "memory.snapshot_restored", {
+        **older, "pre_restore_snapshot_id": "cancelled_one",
+    })
+    snapshots._mark_restore_outcome(char_dir, "cancelled_one", "voided_restores.json")
+
+    reconciler = Reconciler(log)
+    register_snapshot_restore_replay(
+        reconciler, fact_store=_Facts(), persona_manager=_Persona(),
+        directives_manager_fn=lambda: None, memory_dir_fn=lambda: tmp_path,
+    )
+    assert await reconciler.arun_pending_ahead(NAME, "memory.snapshot_restored") is True
+    assert _read_json(char_dir / "facts.json")[0]["id"] == "f1"

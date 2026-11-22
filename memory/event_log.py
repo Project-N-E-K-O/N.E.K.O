@@ -1323,28 +1323,34 @@ class Reconciler:
         return tail
 
     async def arun_pending_ahead(self, name: str, event_type: str) -> bool:
-        """Run the handler of the newest unapplied ``event_type`` record now.
+        """Run the handler of the newest unapplied ``event_type`` record in effect now.
 
         For startup steps that rewrite views before areconcile runs: they
         would otherwise change files a pending event still needs to find in
-        the state it left them. Runs under the character lock and leaves the
-        sentinel alone, so areconcile replays the record again in order
-        (handlers are idempotent). Returns what the handler returned; False
-        when there is no such record or no handler.
+        the state it left them. Records the type's tail-cut check says are
+        not in effect (a cancelled restore, say) are passed over for the
+        next older one, as the tail cut does. Runs under the character lock
+        and leaves the sentinel alone, so areconcile replays the record
+        again in order (handlers are idempotent). Returns what the handler
+        returned; False when there is no such record or no handler.
         """
         handler = self._handlers.get(event_type)
         if handler is None:
             return False
+        in_effect = self._tail_cuts.get(event_type)
         sentinel = await self._event_log.aread_sentinel(name)
         tail = await self._event_log.aread_since(name, sentinel)
-        record = next((r for r in reversed(tail) if r.get('type') == event_type), None)
-        if record is None:
-            return False
-        payload = record.get('payload') or {}
-        return await self._event_log.aapply_and_advance(
-            name, record.get('event_id'), lambda: handler(name, payload),
-            expected_sentinel=sentinel, advance=False,
-        )
+        for record in reversed(tail):
+            if record.get('type') != event_type:
+                continue
+            payload = record.get('payload') or {}
+            if in_effect is not None and not await asyncio.to_thread(in_effect, name, payload):
+                continue
+            return await self._event_log.aapply_and_advance(
+                name, record.get('event_id'), lambda: handler(name, payload),
+                expected_sentinel=sentinel, advance=False,
+            )
+        return False
 
     async def areconcile(self, name: str) -> int:
         """P2.a.1 scaffold: dispatch tail events to registered handlers,

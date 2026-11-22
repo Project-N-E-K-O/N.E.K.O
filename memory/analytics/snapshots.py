@@ -891,7 +891,7 @@ def make_snapshot_restore_in_effect(*, memory_dir_fn: Callable[[], Any] | None =
             return False
         if state == _RESTORE_DONE:
             return True
-        if state == _RESTORE_CHANGED:
+        if state == _RESTORE_CHANGED or _is_completed(char_dir, payload):
             # Changed after the restore, or never restored and changed since:
             # only a completed swap, written down when it happened, tells.
             return _is_completed(char_dir, payload)
@@ -966,6 +966,10 @@ def make_snapshot_restore_handler(
                 # startup step can change a file and hide that it finished.
                 if not _is_completed(char_dir, payload):
                     _record_restore_outcome(char_dir, payload, _COMPLETED_RESTORES_FILENAME)
+                return False
+            if _is_completed(char_dir, payload):
+                # Finished earlier; a file back at its pre-restore version is
+                # a later change, not an unfinished swap.
                 return False
 
             source = _load_matching_snapshot(char_dir, snapshot_id, target)
