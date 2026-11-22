@@ -485,6 +485,9 @@ def build_console_router(
             if type(exc).__name__ == "HostShuttingDown":
                 # Asked for while the service is going down: as if it were not there to answer.
                 raise _refuse(503, "agent_unreachable") from None
+            if type(exc).__name__ == "ProjectUnreadable":
+                # Its record cannot be read: nothing of it was changed.
+                raise _refuse(409, "space_refused") from None
             if type(exc).__name__ != "ProjectBusy":
                 raise
             raise _refuse(409, "project_busy", reason=str(exc)) from None

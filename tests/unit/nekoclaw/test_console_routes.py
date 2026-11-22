@@ -1103,3 +1103,23 @@ async def test_where_a_project_works_is_not_changed_by_a_service_that_is_going_d
     )
     # Told as a service that is not there to answer, not as an error of the server.
     assert refused.status_code == 503 and refused.json()["detail"]["code"] == "agent_unreachable"
+
+
+async def test_where_a_project_works_is_not_changed_while_its_record_cannot_be_read(console, tmp_path):
+    """Nothing is moved for a change that cannot be recorded: its sessions stay where they were."""
+    client, host, _ = console
+    old = tmp_path.parent / f"{tmp_path.name}-old"
+    new = tmp_path.parent / f"{tmp_path.name}-new"
+    old.mkdir()
+    new.mkdir()
+    await host.space.touch_project("ledger-tool", workdir=str(old))
+    session, _ = await host.ledger.project_session("Lan", "ledger-tool", workdir=str(old))
+    # Changed by hand, and no longer what the host writes.
+    (host.paths.space().project_dir("ledger-tool") / "project.json").write_text("{ not json", encoding="utf-8")
+
+    refused = await client.post(
+        "/console/space/projects/workdir", headers=HEADERS, json={"project": "ledger-tool", "workdir": str(new)},
+    )
+    assert refused.status_code == 409 and refused.json()["detail"]["code"] == "space_refused"
+    assert (await host.ledger.get_session(session.id)).workdir == str(old)
+    assert (host.paths.space().project_dir("ledger-tool") / "project.json").read_text(encoding="utf-8") == "{ not json"

@@ -111,6 +111,10 @@ class HostShuttingDown(RuntimeError):
     """The host is being shut down: what was asked for is not begun."""
 
 
+class ProjectUnreadable(RuntimeError):
+    """The record of a project cannot be read, so it cannot be changed: it is left as it is."""
+
+
 class ProjectBusy(RuntimeError):
     """Something is at work in a project, so where it works cannot be changed now. Its text is why (a code)."""
 
@@ -849,8 +853,9 @@ class NekoClawHost:
 
         Raises ``LookupError`` for a project that is not there (or is
         archived), ``ValueError`` with a code for a directory that will not
-        do (``not_absolute``, ``not_a_directory``, ``host_directory``), and
-        ``ProjectBusy`` while something is at work in the project.
+        do (``not_absolute``, ``not_a_directory``, ``host_directory``),
+        ``ProjectUnreadable`` for a project whose record cannot be read,
+        and ``ProjectBusy`` while something is at work in the project.
         """
         wanted = await self._working_directory(workdir)
         # Carried through once begun, also when whoever asked for it goes away meanwhile: its two
@@ -869,8 +874,13 @@ class NekoClawHost:
         # One change at a time, and none while a task agent is being made for the user: the
         # sessions and the project's record end up saying the same directory.
         async with self._project_lock:
-            if await self.space.get_project(project) is None:
+            # Before anything is moved: a record that cannot be read cannot be written either
+            # (``_project_to_change`` refuses), and the sessions would be moved for nothing.
+            kept, readable = await self.space.read_project(project)
+            if kept is None:
                 raise LookupError(project)
+            if not readable:
+                raise ProjectUnreadable(project)
             busy = await self._project_busy(project)
             if busy is not None:
                 raise ProjectBusy(busy)
