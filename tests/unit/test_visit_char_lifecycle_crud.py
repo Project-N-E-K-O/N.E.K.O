@@ -114,6 +114,47 @@ async def test_rename_without_visit_data_is_unchanged(env):
     assert not (config_dir / "visit_peers.json").exists()
 
 
+@pytest.mark.parametrize("existing,requested", [("Neko", "neko"), ("Cafe\u0301", "Café")])
+async def test_profile_name_collisions_are_handled_before_memory_mutation(tmp_path, existing, requested):
+    occupied_suffix = f"{existing}(1)"
+    cm, path = _backfilled_manager(tmp_path, {
+        "Old": {}, existing: {}, occupied_suffix: {},
+    })
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, reload) = _crud(cm)
+        before = path.read_bytes()
+        with release as release_memory, reload as reload_memory:
+            status, body = _result(await crud.rename_catgirl("Old", _DummyRequest({"new_name": requested})))
+            assert status == 400 and body["error"] == "新档案名已存在"
+            release_memory.assert_not_awaited()
+            reload_memory.assert_not_awaited()
+            assert path.read_bytes() == before
+
+        status, body = await _add(cm, requested)
+        assert status == 200 and body["character_name"] == f"{requested}(2)"
+        assert _uid(cm, body["character_name"]) != _uid(cm, existing)
+
+
+async def test_create_refuses_collision_suffix_exceeding_name_limit(tmp_path):
+    from utils.character_name import PROFILE_NAME_MAX_UNITS
+
+    name = "A" * PROFILE_NAME_MAX_UNITS
+    cm, path = _backfilled_manager(tmp_path, {name: {}})
+    before = path.read_bytes()
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _add(cm, name.lower())
+    assert status == 400 and "档案名长度" in body["error"]
+    assert path.read_bytes() == before
+
+
+async def test_case_only_rename_keeps_character_identity(env):
+    cm, _, _ = env
+    uid = _uid(cm, "Old")
+    status, body = await _rename(cm, "Old", "OLD")
+    assert status == 200 and body["success"]
+    assert _uid(cm, "OLD") == uid
+
+
 async def test_rename_migrates_roster_and_spools(env):
     cm, _path, config_dir = env
     roster, uid, persona_path = await _seed(cm, config_dir)

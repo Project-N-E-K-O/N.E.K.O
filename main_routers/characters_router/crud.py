@@ -70,6 +70,7 @@ from utils.character_memory import (
     unfence_character_runtime_writes,
     finalize_character_recent_delete,
     finalize_character_recent_rename,
+    find_character_name_collision,
     list_character_memory_paths,
     rename_character_memory_storage,
     release_character_recent_transaction,
@@ -1089,7 +1090,10 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
     characters = await _config_manager.aload_characters()
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
-    if new_name in characters['猫娘']:
+    if old_name == new_name or await asyncio.to_thread(
+        find_character_name_collision, _config_manager, new_name,
+        exclude_names=(old_name,), existing_names=characters['猫娘'],
+    ):
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
 
     # If renaming the active neko, cache its WebSocket first;
@@ -1815,7 +1819,13 @@ async def add_catgirl(request: Request):
     _config_manager = get_config_manager()
     async with character_config_mutation_lock:
         characters = await _config_manager.aload_characters()
-        key = _available_character_name(characters, requested_name)
+        key = await asyncio.to_thread(
+            _available_character_name, _config_manager, characters, requested_name,
+        )
+        if key != requested_name:
+            err = _validate_profile_name(key)
+            if err:
+                return JSONResponse({'success': False, 'error': err}, status_code=400)
         refusal = await _visit_name_refusal(_config_manager, key, "档案名")
         if refusal is not None:
             return refusal
@@ -1871,16 +1881,18 @@ async def add_catgirl(request: Request):
         return response
 
 
-def _available_character_name(characters: dict, requested_name: str) -> str:
+def _available_character_name(config_manager, characters: dict, requested_name: str) -> str:
     """Select the existing Windows-style collision suffix for a new profile."""
     catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
     catgirls = catgirls if isinstance(catgirls, dict) else {}
-    if requested_name not in catgirls:
-        return requested_name
-    counter = 1
-    while f"{requested_name}({counter})" in catgirls:
+    candidate = requested_name
+    counter = 0
+    while candidate in catgirls or find_character_name_collision(
+        config_manager, candidate, existing_names=catgirls,
+    ):
         counter += 1
-    return f"{requested_name}({counter})"
+        candidate = f"{requested_name}({counter})"
+    return candidate
 
 
 @router.put('/catgirl/{name}')
