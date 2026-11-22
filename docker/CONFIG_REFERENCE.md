@@ -262,6 +262,7 @@ Agent API Key 的取法：
 | 情感 | `emotion` | `EMOTION_MODEL` | `emotion` | 辅助 API |
 | 视觉 | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
 | Agent | `agent` | `AGENT_MODEL` | `agent` | 辅助 API |
+| 使魔模型·小 | `agentSmall` | `AGENT_SMALL_MODEL` | `agent_small` | 识别槽（整格，含地址、Key、协议） |
 | 实时语音 | `omni` | `REALTIME_MODEL` | `realtime` | 核心 API |
 | TTS | `tts` | `TTS_MODEL` | `tts_default` / `tts_custom` | 核心 API / 辅助 API |
 | 图像生成 | `image` | `IMAGE_GENERATION_CONFIG`（单个字典，无 `_URL` / `_API_KEY`） | `image` | 不回退，视为关闭 |
@@ -276,7 +277,7 @@ Agent API Key 的取法：
 - `<前缀>ModelProvider` 的取值：
   - `follow_core` / `follow_assist`：跟随核心 / 辅助 API 提供商的地址与 Key。实时语音和 TTS 两个槽例外：选 `follow_*` 时不写入地址，槽位保持未配置，直接按上表回退（`tts_default` 走核心 API，`tts_custom` 先试已保存的 Qwen Key、再走辅助 API），与选的是 `follow_core` 还是 `follow_assist` 无关（启用 GPT-SoVITS 时除外）；
   - `follow_conversation` / `follow_summary`：照搬对话 / 摘要槽，是两个游戏槽的默认值；
-  - `custom`：使用本槽填写的地址、模型和 Key。地址或模型 ID 留空时不会置空，而是沿用快照里原有的值：模型名照旧（对话、摘要等用途来自辅助 profile），地址除 Agent 槽外原本为空，于是整个槽回退。所以两项都要填；
+  - `custom`：使用本槽填写的地址、模型和 Key。地址或模型 ID 留空时不会置空，而是沿用快照里原有的值：模型名照旧（对话、摘要等用途来自辅助 profile），地址除 Agent 槽外原本为空，于是整个槽回退。所以两项都要填。使魔模型·小例外：地址或模型名缺一项时，这一格自己的模型名、地址、Key 一起清空，不沿用快照原值，整格交给识别槽；
   - 具名提供商（如 `qwen`、`openai`）：本槽 URL 属于该提供商时，优先用 API 管理簿里该提供商的 Key（`assistApiKey*`），否则用本槽的 `<前缀>ModelApiKey`。TTS 槽始终用本槽的 Key。
 - 实时语音槽只能跟随核心 API，或选 `custom` 自填端点。选具名提供商或 `follow_assist`，都会按 `follow_core` 处理。
 - 图像生成槽同样要求 `enableCustomApi` 为 `true`，且 `imageModelProvider` 不能为空，也不能是 `disabled`（可选 `openai`、`qwen`、`qwen_intl`、`custom`）。具名提供商用 API 管理簿里该提供商的 Key，`custom` 用 `imageModelApiKey`；不会借用对话模型或其他槽的配置。
