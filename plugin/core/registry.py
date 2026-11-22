@@ -46,6 +46,8 @@ from plugin._types.entry_metadata import (
     unhandled_entry_contract_fields,
 )
 from plugin._types.version import SDK_VERSION
+from plugin.sdk.shared.core.events import EventMeta as SdkEventMeta
+from plugin.sdk.shared.core.router import router_entry_meta
 from plugin.server.infrastructure.config_resolver import read_plugin_config_from_path, resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
     get_runtime_auto_start_override,
@@ -604,6 +606,13 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
                 continue
             if (getattr(event_meta, "event_type", None) or "plugin_entry") != "plugin_entry":
                 continue
+            if isinstance(event_meta, SdkEventMeta):
+                # Same router-class inference as the runtime collect_entries(),
+                # so a preview carries the contract the running entry will have.
+                try:
+                    event_meta = router_entry_meta(event_meta, getattr(member, "__func__", member), router_cls)
+                except Exception as e:
+                    logger.warning("Failed to infer router entry contract {}.{}: {}", router_cls, name, e)
             eid = str(getattr(event_meta, "id", None) or name)
             if eid:
                 router_entries[eid] = (event_meta, member)
