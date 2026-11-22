@@ -199,13 +199,24 @@ def test_save_from_a_page_opened_before_the_upgrade(config_manager, core_config_
 
 
 @pytest.mark.unit
-def test_provider_profiles_with_old_field_names_still_load():
-    from utils.api_config_loader import _convert_assist_api_profile
+def test_a_provider_file_with_old_field_names_is_read_under_the_new_ones(tmp_path, monkeypatch):
+    # Greptile: the connectivity probe and the settings page read the raw profile, not
+    # the converted one, so the old names must be normalized where the file is loaded.
+    import utils.api_config_loader as loader
 
-    converted = _convert_assist_api_profile({'summary_model': 'm-big', 'emotion_model': 'm-small'})
+    path = tmp_path / 'api_providers.json'
+    path.write_text(json.dumps({'assist_api_providers': {
+        'old': {'summary_model': 'm-big', 'emotion_model': 'm-small'},
+        'both': {'memory_model': 'new', 'summary_model': 'old'},
+    }}), encoding='utf-8')
+    monkeypatch.setattr(loader, '_get_config_file_path', lambda: path)
+
+    raw = loader._load_json_config()['assist_api_providers']
+
+    assert raw['old'] == {'memory_model': 'm-big', 'recognition_model': 'm-small'}
+    assert raw['both'] == {'memory_model': 'new'}
+    converted = loader._convert_assist_api_profile(raw['old'])
     assert (converted['MEMORY_MODEL'], converted['RECOGNITION_MODEL']) == ('m-big', 'm-small')
-    newer = _convert_assist_api_profile({'memory_model': 'new', 'summary_model': 'old'})
-    assert newer['MEMORY_MODEL'] == 'new'
 
 
 @pytest.mark.unit
