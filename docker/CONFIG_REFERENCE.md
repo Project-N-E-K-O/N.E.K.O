@@ -162,11 +162,11 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 ### 6. 键鼠控制与浏览器控制（Agent 模型）配置
 
-键鼠控制和浏览器控制是猫爪（NekoClaw）的两组内置工具，代码在 `nekoclaw/builtin/`。使魔（代码里叫 task agent）在自己的循环里一步一步调用它们；工具本身不带循环，也不另外调用模型。键鼠是一个 `computer` 工具：每次做一个动作并返回动作之后的截图，坐标的横纵两个方向都是 0 到 999 的整数。浏览器是 15 个 `browser_*` 工具：把页面读成文字快照（页面的无障碍树，每个元素带一个 uid），再按 uid 操作元素。
+键鼠控制和浏览器控制是喵能力（NekoPower）的两组内置工具，代码在 `nekopower/builtin/`。使魔（代码里叫 task agent）在自己的循环里一步一步调用它们；工具本身不带循环，也不另外调用模型。键鼠是一个 `computer` 工具：每次做一个动作并返回动作之后的截图，坐标的横纵两个方向都是 0 到 999 的整数。浏览器是 15 个 `browser_*` 工具：把页面读成文字快照（页面的无障碍树，每个元素带一个 uid），再按 uid 操作元素。
 
 使魔用的是 **Agent 模型**槽位，通过 `get_model_api_config("agent")` 取模型、URL 和 API Key。键鼠工具和浏览器的截图工具要求模型能接收图片输入；模型不能看图时不提供这两个工具，浏览器的其余工具照常可用。
 
-浏览器控制操控的是机器上已经安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Chromium），走浏览器的调试协议。应用不随包附带浏览器，启动时也不下载；Playwright 只是测试依赖，`browser-use` 不在依赖里。找不到浏览器时，浏览器控制的可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。浏览器装在不常见的位置时，用环境变量 `NEKO_BROWSER_PATH` 指定可执行文件，或者写进 `<数据根>/nekoclaw/browser.json` 的 `executable`。
+浏览器控制操控的是机器上已经安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Chromium），走浏览器的调试协议。应用不随包附带浏览器，启动时也不下载；Playwright 只是测试依赖，`browser-use` 不在依赖里。找不到浏览器时，浏览器控制的可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。浏览器装在不常见的位置时，用环境变量 `NEKO_BROWSER_PATH` 指定可执行文件，或者写进 `<数据根>/nekopower/browser.json` 的 `executable`。
 
 > 旧版文档里的 `computerUseModel` / `computerUseModelUrl` / `computerUseModelApiKey` / `computerUseGroundModel` / `computerUseGroundUrl` / `computerUseGroundApiKey` 已没有任何代码读取，写进 `core_config.json` 不会生效。
 

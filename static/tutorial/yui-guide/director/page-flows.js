@@ -2040,7 +2040,7 @@
             });
 
             try {
-                // 1-3. 高亮猫爪 -> 平滑移动 -> 点击并打开猫爪面板
+                // 1-3. 高亮喵能力按钮 -> 平滑移动 -> 点击并打开喵能力面板
                 shouldCleanupPreviewState = true;
                 this.addRetainedExtraSpotlight(catPawButton);
                 this.overlay.clearActionSpotlight();
@@ -2065,7 +2065,7 @@
                     return null;
                 }
 
-                // 4-6. 高亮猫爪总开关 -> 平滑移动 -> 点击并同步打开
+                // 4-6. 高亮喵能力总开关 -> 平滑移动 -> 点击并同步打开
                 this.addRetainedExtraSpotlight(agentMasterToggle);
                 const movedToAgentMaster = await this.moveCursorToElement(agentMasterToggle, scaleSceneMs(1200, 760, 2200));
                 if (!movedToAgentMaster || guardFailed()) {

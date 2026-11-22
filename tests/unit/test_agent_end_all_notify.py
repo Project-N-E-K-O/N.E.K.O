@@ -2,11 +2,11 @@
 """``admin_control(end_all)`` must stop every task and leave nothing behind.
 
 The task HUD is purely event-driven (no HTTP polling). Tasks are commissions
-on the NekoClaw host's ledger now: end_all stops them through
+on the NekoPower host's ledger now: end_all stops them through
 ``stop_everything``, which writes each status first and tells the HUD from
 that, so a card never stays "running" while something slow is torn down. How
 a stopped commission reaches the HUD is covered in
-``tests/unit/nekoclaw/test_agent_wiring.py``; this file covers what end_all
+``tests/unit/nekopower/test_agent_wiring.py``; this file covers what end_all
 itself does around that call: background work that belongs to no commission
 is cancelled, the browser the browser tools started is closed unless it has
 a window that is to stay open for the user, and keys a stopped
@@ -23,7 +23,7 @@ import pytest
 
 
 class _Desktop:
-    """Stands in for ``nekoclaw.builtin.desktop.Desktop``: only what end_all touches."""
+    """Stands in for ``nekopower.builtin.desktop.Desktop``: only what end_all touches."""
 
     def __init__(self, fails: bool = False) -> None:
         self.released = 0
@@ -215,7 +215,7 @@ def test_the_last_browser_close_comes_after_the_tracked_teardown_was_cancelled(s
 def test_end_all_kills_a_browser_that_does_not_close_in_the_time_it_has(srv, monkeypatch: pytest.MonkeyPatch):
     import threading
 
-    import config.nekoclaw_settings as settings
+    import config.nekopower_settings as settings
 
     # Shorter than the page waits for this request (5 seconds).
     assert settings.BROWSER_CLOSE_AT_END_ALL_SECONDS == 4.0
@@ -259,7 +259,7 @@ def test_end_all_does_not_kill_a_browser_that_closes_in_time(srv, browser_closes
 
 
 def test_end_all_finishes_when_the_browser_can_be_neither_closed_nor_killed(srv, monkeypatch: pytest.MonkeyPatch):
-    import config.nekoclaw_settings as settings
+    import config.nekopower_settings as settings
 
     monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_END_ALL_SECONDS", 0.05)
 
@@ -280,7 +280,7 @@ def test_end_all_finishes_when_the_browser_can_be_neither_closed_nor_killed(srv,
 def test_end_all_answers_without_waiting_for_the_browser_to_be_killed(srv, monkeypatch: pytest.MonkeyPatch):
     import threading
 
-    import config.nekoclaw_settings as settings
+    import config.nekopower_settings as settings
 
     monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_END_ALL_SECONDS", 0.05)
     desktop = _Desktop()
@@ -323,7 +323,7 @@ def test_a_task_started_after_end_all_does_not_reach_the_browser_before_the_kill
 ):
     import threading
 
-    import config.nekoclaw_settings as settings
+    import config.nekopower_settings as settings
 
     monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_END_ALL_SECONDS", 0.05)
     let_it_finish = threading.Event()
@@ -372,7 +372,7 @@ def test_a_browser_call_that_waited_behind_the_closing_is_refused_when_end_all_g
     """A call of a new task that queued behind the closing gets its turn before end_all has asked for the kill."""
     import threading
 
-    from config import nekoclaw_settings as settings
+    from config import nekopower_settings as settings
 
     let_kill_finish = threading.Event()
     done: list[str] = []

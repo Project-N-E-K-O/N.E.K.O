@@ -1916,10 +1916,10 @@
             // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
             _disposeDeferredMmd();
             clearGoodbyeStateForCharacterSwitch();
-            // 角色卡切换后猫爪必须重新归零并拉取新快照，防止工具服务的旧全局状态污染新角色。
+            // 角色卡切换后喵能力必须重新归零并拉取新快照，防止工具服务的旧全局状态污染新角色。
             if (typeof window.resetAgentUiForCharacterSwitch === 'function') {
                 Promise.resolve(window.resetAgentUiForCharacterSwitch(newCatgirl))
-                    .catch(err => console.warn('[猫娘切换] 刷新猫爪状态失败:', err));
+                    .catch(err => console.warn('[猫娘切换] 刷新喵能力状态失败:', err));
             }
             rehideMainUIIfModelManagerOwnsVisibility('character-switch-commit');
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);

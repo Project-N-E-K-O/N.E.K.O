@@ -64,7 +64,7 @@
 
 ## Agent 服务器（`app/agent_server/`，端口 48915 和 48916）
 
-`app/agent_server/__main__.py` 在 `127.0.0.1:48915` 启动 package 的 Tool Server FastAPI app。实现拆分在 `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekoclaw_mount.py` 和 `nekoclaw_builtins.py`。负责记录和执行任务的喵能力（NekoPower）宿主在 `nekoclaw/host/`。
+`app/agent_server/__main__.py` 在 `127.0.0.1:48915` 启动 package 的 Tool Server FastAPI app。实现拆分在 `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekopower_mount.py` 和 `nekopower_builtins.py`。负责记录和执行任务的喵能力（NekoPower）宿主在 `nekopower/host/`。
 
 Agent 启动时，进程会初始化 capability state、Agent 侧 ZeroMQ bridge 和 agent 模型的连通性检查，并登记喵能力宿主。登记不创建任何东西：宿主的台账、agent runtime 和能力网关都等到第一次用到时才创建。`plugin_host.py` 在独立线程中启动 `127.0.0.1:48916` 的内嵌 user-plugin FastAPI listener。即使 listener 与 Agent 同进程，user-plugin 执行仍受 feature flag 与 plugin lifecycle gate 控制。
 
@@ -87,10 +87,10 @@ Agent 连接对应的 SUB/PULL/PUSH 镜像 socket。Bridge 使用后台接收线
 
 ### 任务执行路径
 
-1. 主对话模型调用 `dispatch_task` 工具。`main_logic/core/tool_calling.py` 把这句话 POST 到 `:48915` 的 `/nekoclaw/dispatch`，再把回执交还给模型。
-2. 任务大脑（`nekoclaw/host/task_brain.py`）在台账里登记一件委托。第一轮在本地完成，大约一秒内给出回执；第二轮在后台进行。
+1. 主对话模型调用 `dispatch_task` 工具。`main_logic/core/tool_calling.py` 把这句话 POST 到 `:48915` 的 `/nekopower/dispatch`，再把回执交还给模型。
+2. 任务大脑（`nekopower/host/task_brain.py`）在台账里登记一件委托。第一轮在本地完成，大约一秒内给出回执；第二轮在后台进行。
 3. 决策模型选出插件入口，经插件服务的 `/runs` 协议直达调用。选不中，或者要分多步，就把委托交给 task agent（界面上叫「使魔」）。
-4. task agent 跑在 agent runtime（`nekoclaw/runtime/`）里，经能力网关使用插件入口、MCP 工具、键鼠和浏览器。
+4. task agent 跑在 agent runtime（`nekopower/runtime/`）里，经能力网关使用插件入口、MCP 工具、键鼠和浏览器。
 5. 每次状态变化都作为 `task_update` 发出。结果、提问和更正先写进 outbox，再通过 `:48962` 发送；Main bridge 更新浏览器，并把模型可见的汇报排入匹配的 `LLMSessionManager`。
 6. 用户发起的一轮结束、而这一轮没有调用会动手的工具时，`main_logic/cross_server.py` 通过 `:48963` 发出 `turn_check_request`；主 bridge 等待 ACK，超时后重试一次。
 

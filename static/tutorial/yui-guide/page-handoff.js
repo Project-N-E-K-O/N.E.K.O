@@ -966,7 +966,7 @@
     }
 
     /**
-     * 打开 Agent / 猫爪弹层。
+     * 打开 Agent / 喵能力弹层。
      * 用于每日 round 中需要展示真实 Agent 能力面板的 scene。
      *
      * @returns {Promise<boolean>} 弹层是否成功打开
