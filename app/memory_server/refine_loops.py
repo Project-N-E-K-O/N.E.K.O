@@ -281,7 +281,7 @@ async def _run_reflection_refine_for_character(
     if engine_ref is None or fs is None:
         return 0
 
-    refls = await engine_ref.aload_reflections(character, include_archived=False)
+    refls = await _apeek_reflections(engine_ref, character, include_archived=False)
     if not refls:
         return 0
     facts = await fs.aload_facts(character)
@@ -360,7 +360,8 @@ async def _run_reflection_refine_with_subject_locales(character: str) -> None:
     engine_ref = runtime.reflection_engine
     if engine_ref is None:
         return
-    reflections = await engine_ref.aload_reflections(
+    reflections = await _apeek_reflections(
+        engine_ref,
         character,
         include_archived=False,
     )

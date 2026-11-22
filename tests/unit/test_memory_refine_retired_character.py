@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.memory_server import gates, refine_loops, review, runtime
-from memory.persona import PersonaManager
-from memory.reflection import ReflectionEngine
+from memory import FactStore, PersonaManager, ReflectionEngine
 
 
 def _make_cm(tmp_path: Path, catgirls=None):
@@ -86,6 +85,32 @@ async def test_f0082_read_only_scans_never_recreate_missing_character_dir(tmp_pa
 
     served = await refine_loops._run_scoped_refine_for_character(name)
     assert served is False
+    assert not char_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_f0082_reflection_refine_never_recreates_missing_character_dir(
+    tmp_path, monkeypatch,
+):
+    cm = _make_cm(tmp_path, {})
+    pm = PersonaManager(cm)
+    engine = ReflectionEngine(cm, pm)
+    fs = FactStore()
+    monkeypatch.setattr(runtime, "_config_manager", cm, raising=False)
+    monkeypatch.setattr(runtime, "persona_manager", pm, raising=False)
+    monkeypatch.setattr(runtime, "reflection_engine", engine, raising=False)
+    monkeypatch.setattr(runtime, "fact_store", fs, raising=False)
+    monkeypatch.setattr("memory.organizer._gate", None)
+
+    name = "缺失反思目录角色"
+    char_dir = tmp_path / "memory" / name
+    assert not char_dir.exists()
+
+    resolved = await refine_loops._run_reflection_refine_for_character(name)
+    assert resolved == 0
+    assert not char_dir.exists()
+
+    await refine_loops._run_reflection_refine_with_subject_locales(name)
     assert not char_dir.exists()
 
 

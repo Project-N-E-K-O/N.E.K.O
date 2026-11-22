@@ -276,9 +276,9 @@ class JobRegistry:
             for path in (job.process.stdout.spill_path, job.process.stderr.spill_path)
             if path is not None
         ]
-        spill_truncated = (
-            (out_lossy and job.process.stdout.spill_truncated)
-            or (err_lossy and job.process.stderr.spill_truncated)
+        spill_truncated = any(
+            buf.spill_path is not None and buf.spill_truncated
+            for buf in (job.process.stdout, job.process.stderr)
         )
         return render_delta(
             out,
