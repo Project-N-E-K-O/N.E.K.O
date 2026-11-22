@@ -1075,3 +1075,18 @@ async def test_rules_are_not_written_for_an_archived_project_nor_beside_one(cons
     projects = await host.space.list_projects()
     assert [(project.name, project.archive_year) for project in projects] == [("ledger-tool", None)]
     assert await host.space.read_rules("ledger-tool") == "- written a moment later\n"
+
+
+async def test_what_the_user_left_empty_of_a_new_task_agent_is_filled_in_by_its_first_review(familiars):
+    """A line the form left empty was not emptied by the user: it is nobody's until something writes it."""
+    client, host = familiars
+    made = await client.post("/console/familiars", headers=HEADERS, json={"name": "Ledger tool", "duty": "Keeps the books"})
+    assert made.status_code == 200, made.text
+    session_id = made.json()["session_id"]
+    session = await host.ledger.get_session(session_id)
+    assert (session.title, session.title_by, session.duty, session.duty_by) == ("", "", "Keeps the books", "user")
+
+    _, written = await host.ledger.write_card(session_id, by="review", title="Keeper of the books", duty="Something else")
+    assert written == ("title",)
+    session = await host.ledger.get_session(session_id)
+    assert (session.title, session.title_by, session.duty, session.duty_by) == ("Keeper of the books", "review", "Keeps the books", "user")

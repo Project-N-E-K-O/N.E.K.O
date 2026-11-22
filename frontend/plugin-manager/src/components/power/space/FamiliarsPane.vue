@@ -262,7 +262,8 @@ async function saveCard() {
   if (draft.duty !== opened.duty) lines.duty = draft.duty
   if (draft.summary !== opened.summary) lines.summary = draft.summary
   const id = opened.id
-  if (Object.keys(lines).length) await act('card', () => writeCard(id, lines))
+  // Not taken: the editor stays open with what was typed, and why is said.
+  if (Object.keys(lines).length && !(await act('card', () => writeCard(id, lines)))) return
   editing.value = false
 }
 

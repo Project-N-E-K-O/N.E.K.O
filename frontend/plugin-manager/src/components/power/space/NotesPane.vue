@@ -213,8 +213,12 @@ async function remove() {
 }
 
 async function showIndex() {
+  const mine = scopeTurn
   try {
-    readingText.value = (await readIndex(props.scope)).text
+    const text = (await readIndex(props.scope)).text
+    // Asked for in a scope the user has left.
+    if (mine !== scopeTurn) return
+    readingText.value = text
     readingTitle.value = t('power.space.notes.index')
     readingHint.value = t('power.space.notes.indexHint')
     reading.value = true
@@ -224,8 +228,10 @@ async function showIndex() {
 }
 
 async function showRemoved() {
+  const mine = scopeTurn
   try {
     const removed = (await listRemoved(props.scope)).removed
+    if (mine !== scopeTurn) return
     const titles = removed.map(item => String((item as { title?: unknown })?.title ?? '')).filter(Boolean)
     readingText.value = titles.length ? titles.join('\n') : t('power.space.notes.removedEmpty')
     readingTitle.value = t('power.space.notes.removed')
@@ -240,6 +246,7 @@ watch(() => [props.scope.project, props.scope.archive_year], () => {
   scopeTurn++
   // What was open, and what was listed, belongs to the scope the user left.
   entries.value = []
+  reading.value = false
   editing.value = false
   removing.value = false
   target.value = null

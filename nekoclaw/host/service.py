@@ -820,7 +820,10 @@ class NekoClawHost:
             session, _made = await self.ledger.project_session(
                 lanlan_name.strip(), name,
                 workdir=str(wanted) if wanted else None, preset=preset,
-                title=title, title_by="user", duty=duty, duty_by="user",
+                # The user's where the user wrote something. A line left empty in the form was not
+                # emptied by the user: it is nobody's, and the first review fills it in.
+                title=title, title_by="user" if title.strip() else None,
+                duty=duty, duty_by="user" if duty.strip() else None,
             )
         return {"project": project.to_json(), "session_id": session.id}
 

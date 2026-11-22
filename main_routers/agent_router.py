@@ -326,9 +326,9 @@ async def post_agent_command(request: Request):
         client = _get_http_client()
         try:
             r = await client.post(f"{TOOL_SERVER_BASE}/agent/command", json=data, timeout=8.0)
-        except httpx.ConnectError:
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
             # It was never sent: the session's switches go back to what they were.
-            # (After a timeout it is not known whether it was taken; they are left.)
+            # (After a timeout of the answer it is not known whether it was taken; they are left.)
             if mgr and old_flags is not None:
                 mgr.update_agent_flags(old_flags)
             raise

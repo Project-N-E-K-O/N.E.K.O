@@ -297,6 +297,26 @@ describe('a familiar up close', () => {
     expect(api.writeCard.mock.calls.every(call => call[0] === 's1')).toBe(true)
   })
 
+  it('keeps the editor open with what was typed when the card was not taken', async () => {
+    await show([card()])
+    api.writeCard.mockRejectedValue(refusal('agent_unreachable', {}, 502))
+    await click(byTest('card-edit'))
+    await type('card-title', 'Bookkeeper')
+    await click(byTest('card-save'))
+    expect(api.writeCard).toHaveBeenCalledTimes(1)
+    expect(field('card-title').value).toBe('Bookkeeper')
+    // Given the time a closing editor takes to go: it is still shown.
+    await new Promise(resolve => setTimeout(resolve, 120))
+    await flush()
+    const overlay = byTest('card-save')?.closest('.el-overlay') as HTMLElement | null
+    expect(overlay).toBeTruthy()
+    expect(overlay?.style.display).not.toBe('none')
+    // Still the same editor: pressed again, the same line is sent again.
+    await click(byTest('card-save'))
+    expect(api.writeCard).toHaveBeenCalledTimes(2)
+    expect(api.writeCard).toHaveBeenLastCalledWith('s1', { title: 'Bookkeeper' })
+  })
+
   it('shows those that belong to no project when no project is named, and reads anew for another', async () => {
     api.getProjectBoard.mockResolvedValue({ revision: 'r1', projects: [], loose: [card({ id: 's9', name: 'Screenshot to table', kind: 'single', preset: 'general', leader: false })] })
     const { container, state } = await mount(FamiliarsPane, { project: null, selectedId: 's9', onSelect: selected })
