@@ -93,39 +93,50 @@ class _Unconfirmed:
     """The switches of the sessions that commands wrote and the agent process has not answered for yet.
 
     A command writes the session's copy of a switch before it is sent
-    on, and puts it back when it was not taken. Commands are not held
-    back for one another (one that takes seconds would make the next
-    time out in the page), so several may have written the same switch:
-    kept here, for each switch, are what it was before the first of
-    them (``base``) and what each of them wrote. One that was taken
-    makes its value the base. One that was not takes its own entry out,
-    and the switch goes back to the base once none is left: never to a
-    value another command only tried, and not over a value another
-    command wrote and was answered for (that value is the base by then).
+    on, and what it wrote is taken back when the agent process did not
+    take it. Commands are not held back for one another (one that takes
+    seconds would make the next time out in the page), so several may
+    have written the same switch, and other things write it too (the
+    flags route, a character switch).
+
+    One rule covers all of it: **a switch says what was written last
+    among the writes that are not known to have failed.** Every write
+    gets a number in the order it was made. Kept for a switch, while
+    commands are under way for it, are the last write that stands
+    (``base``: what it was before them, then whatever a command that was
+    taken or another route wrote since) and what each command under way
+    wrote. A command that was not taken takes its write out, and the
+    switch is set to the latest of what is left. A command that was
+    taken makes its write the base unless a later one stands already.
     """
 
     def __init__(self) -> None:
-        # (id of the manager, switch) -> [base, {command: what it wrote}]
+        # (id of the manager, switch) -> [(number, value) that stands, {command: (number, value)}]
         self._switches: dict[tuple[int, str], list] = {}
+        self._written = 0
+
+    def _number(self) -> int:
+        self._written += 1
+        return self._written
 
     def write(self, mgr, command: object, flags: dict) -> None:
         now = getattr(mgr, "agent_flags", {}) or {}
         for key, value in flags.items():
-            entry = self._switches.setdefault((id(mgr), key), [bool(now.get(key, False)), {}])
-            entry[1][command] = value
+            entry = self._switches.get((id(mgr), key))
+            if entry is None:
+                entry = self._switches[(id(mgr), key)] = [(self._number(), bool(now.get(key, False))), {}]
+            entry[1][command] = (self._number(), value)
         mgr.update_agent_flags(flags)
 
     def written_elsewhere(self, mgr, flags: dict) -> None:
         """Note switches that were written by another way than a command (the flags route, a character switch).
 
-        What was written is what the switch is from then: a command
-        that is not taken afterwards goes back to that, not to what
-        was there before it.
+        It is a write that stands, later than every write so far.
         """
         for key, value in flags.items():
             entry = self._switches.get((id(mgr), key))
             if entry is not None:
-                entry[0] = bool(value)
+                entry[0] = (self._number(), bool(value))
 
     def settle(self, mgr, command: object, *, taken: bool) -> None:
         """A command is over: ``taken`` unless it is known that the agent process did not take it.
@@ -141,11 +152,10 @@ class _Unconfirmed:
                 continue
             wrote = entry[1].pop(command)
             if taken:
-                entry[0] = wrote
+                entry[0] = max(entry[0], wrote, key=lambda write: write[0])
             else:
-                # What it wrote is not so. The switch is what the command still under way that
-                # wrote last made it, and with none left what it was before them.
-                back[key] = list(entry[1].values())[-1] if entry[1] else entry[0]
+                # What it wrote is not so: the switch says the latest of the writes that are left.
+                back[key] = max([entry[0], *entry[1].values()], key=lambda write: write[0])[1]
             if not entry[1]:
                 del self._switches[(owner, key)]
         if back:

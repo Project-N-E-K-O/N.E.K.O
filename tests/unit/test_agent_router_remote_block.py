@@ -543,3 +543,93 @@ async def test_a_command_whose_answer_never_came_does_not_stand_in_the_way_of_th
     assert refused.status_code == 502
     assert manager.agent_flags["browser_use_enabled"] is True
     assert router._unconfirmed._switches == {}
+
+
+class _Asked:
+    def __init__(self, body: dict) -> None:
+        self.body = body
+
+    async def json(self) -> dict:
+        return self.body
+
+
+@pytest.mark.asyncio
+async def test_a_switch_says_what_was_written_last_among_the_writes_that_did_not_fail(monkeypatch):
+    """Three at once: on is under way, off is taken, another off is not taken: off stands, whenever on is answered."""
+    import asyncio
+    import json
+
+    import httpx
+
+    manager = _Switches(agent_enabled=True, browser_use_enabled=False)
+
+    async def agent(request: httpx.Request) -> httpx.Response:
+        asked = json.loads(request.content)
+        if asked["value"] is True:
+            # The first: taken, and answered last.
+            await asyncio.sleep(0.08)
+            return httpx.Response(200, json={"success": True})
+        if asked.get("request_id") == "taken":
+            await asyncio.sleep(0.01)
+            return httpx.Response(200, json={"success": True})
+        await asyncio.sleep(0.04)
+        raise httpx.ConnectError("refused", request=request)
+
+    router = _router_under_test(monkeypatch, manager, agent)
+
+    def flag(value: bool, request_id: str) -> _Asked:
+        return _Asked({"command": "set_flag", "key": "browser_use_enabled", "value": value, "request_id": request_id})
+
+    on, off, refused = await asyncio.gather(
+        router.post_agent_command(flag(True, "first")),
+        router.post_agent_command(flag(False, "taken")),
+        router.post_agent_command(flag(False, "refused")),
+    )
+    assert on["success"] is True and off["success"] is True and refused.status_code == 502
+    assert manager.agent_flags["browser_use_enabled"] is False
+    assert router._unconfirmed._switches == {}
+
+
+@pytest.mark.asyncio
+async def test_what_the_flags_route_wrote_stands_over_commands_that_were_under_way_before_it(monkeypatch):
+    """On and off are under way, the flags route writes off and is taken, the off command is refused: off stands."""
+    import asyncio
+    import json
+
+    import httpx
+
+    manager = _Switches(agent_enabled=True, browser_use_enabled=False)
+
+    async def agent(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/agent/flags"):
+            return httpx.Response(200, json={"success": True})
+        if json.loads(request.content)["value"] is True:
+            await asyncio.sleep(0.08)
+            return httpx.Response(200, json={"success": True})
+        await asyncio.sleep(0.04)
+        raise httpx.ConnectError("refused", request=request)
+
+    router = _router_under_test(monkeypatch, manager, agent)
+
+    class Config:
+        def get_character_data(self):
+            return (None, "Lan", None, None, None, None, None, None, None)
+
+        async def aget_character_data(self):
+            return self.get_character_data()
+
+        def is_agent_free(self) -> bool:
+            return False
+
+    monkeypatch.setattr(router, "get_config_manager", lambda: Config())
+
+    async def by_flags() -> object:
+        await asyncio.sleep(0.01)
+        return await router.update_agent_flags(_Asked({"flags": {"browser_use_enabled": False}}))
+
+    on, refused, flags = await asyncio.gather(
+        router.post_agent_command(_Flag(True)), router.post_agent_command(_Flag(False)), by_flags(),
+    )
+    assert on["success"] is True and refused.status_code == 502 and flags["success"] is True
+    assert manager.agent_flags["browser_use_enabled"] is False
+    assert router._unconfirmed._switches == {}
