@@ -330,3 +330,20 @@ def test_incomplete_custom_follows_a_recognition_tier_that_falls_back_to_assist(
     small = config_manager.get_model_api_config('agent_small')
     assert recognition['api_key'] == 'sk-qwen-test'
     assert _endpoint(small) == _endpoint(recognition)
+
+
+@pytest.mark.parametrize('provider', ['custom', 'qwen'])
+def test_incomplete_own_settings_never_reach_the_region_scan(config_manager, provider):
+    # Greptile security P2: a free-route URL in an incomplete slot is never used, so it must
+    # not make a paid configuration probe the user's IP.
+    from utils.config_manager import ConfigManager
+
+    _write_core_config(config_manager, {
+        'coreApiKey': 'sk-core', 'coreApi': 'openai', 'assistApi': 'openai', 'assistApiKeyOpenai': 'sk-openai-test',
+        'enableCustomApi': True, 'agentSmallModelProvider': provider,
+        'agentSmallModelUrl': 'https://www.lanlan.tech/text/v1', 'agentSmallModelId': '',
+        'agentSmallModelApiKey': 'sk-own',
+    })
+    cfg = config_manager.get_core_config()
+    assert (cfg['AGENT_SMALL_MODEL'], cfg['AGENT_SMALL_MODEL_URL'], cfg['AGENT_SMALL_MODEL_API_KEY']) == ('', '', '')
+    assert ConfigManager._config_needs_region(cfg) is False

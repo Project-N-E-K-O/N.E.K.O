@@ -1714,6 +1714,16 @@ class CoreConfigMixin:
                     elif cfg_key is not None:
                         config[apikey_key] = cfg_key
 
+            # The small familiar tier stands on its own only with both a URL and a model;
+            # anything less is the recognition tier at runtime. Drop the unused fields here
+            # so a leftover free-route URL cannot wake the region probe (invariant #2).
+            if not (
+                str(config.get('AGENT_SMALL_MODEL') or '').strip()
+                and str(config.get('AGENT_SMALL_MODEL_URL') or '').strip()
+            ):
+                config['AGENT_SMALL_MODEL'] = config['AGENT_SMALL_MODEL_URL'] = ''
+                config['AGENT_SMALL_MODEL_API_KEY'] = ''
+
             # TTS Voice ID serves as fallback for character voice_id.
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
