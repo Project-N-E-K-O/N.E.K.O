@@ -1454,13 +1454,20 @@ async def test_uninstall_reports_incomplete_permission_rollback(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["preload", "preload_fails_once", "concurrent_read"])
 async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     _isolate_runtime_overrides: dict,
+    scenario: str,
 ) -> None:
     """First store load during uninstall must bind legacy grants to the
-    plugin being removed, not to the built-in copy the registry switches to."""
+    plugin being removed, not to the built-in copy the registry switches to.
+
+    ``preload_fails_once``: the up-front load hits a transient read error; the
+    store must not be loaded (and imported) later once the source switched.
+    ``concurrent_read``: a read while the built-in is exposed must not save it.
+    """
     import json
 
     from plugin.core.state import state
@@ -1520,6 +1527,9 @@ async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
                     "id": "demo",
                     "config_path": str(builtin_dir / "plugin.toml"),
                 }
+            if scenario == "concurrent_read":
+                seen = permission_service.permission_record("demo")
+                assert seen["source"] == {"channel": "builtin", "fingerprint": None}
         return result
 
     monkeypatch.setattr(
@@ -1548,10 +1558,22 @@ async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
         raise OSError("override disk full")
 
     monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail)
+    if scenario == "preload_fails_once":
+        from plugin.server.domain.errors import ServerDomainError as _DomainError
+
+        def _transient(*_args: object) -> None:
+            raise _DomainError("PLUGIN_PERMISSIONS_READ_FAILED", "busy", 503)
+
+        monkeypatch.setattr(uninstall_module, "load_permissions", _transient)
 
     with pytest.raises(UninstallPluginError) as captured:
         await uninstall_plugin("demo")
     assert captured.value.stage == "refresh_and_preferences"
+    if scenario == "preload_fails_once":
+        # Nothing loaded the store after the source switched.
+        assert not store._manager_override.get_runtime_config_path(
+            "plugin_permissions.json"
+        ).exists()
 
     with state.acquire_plugins_write_lock():
         state.plugins["demo"] = {"id": "demo", "config_path": str(harness.config_path)}

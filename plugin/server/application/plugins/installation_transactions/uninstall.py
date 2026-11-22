@@ -783,17 +783,25 @@ async def _rollback_precommit(
     )
 
 
-async def _load_permissions_before_changes(plugin_id: str) -> None:
+async def _load_permissions_before_changes(plugin_id: str) -> bool:
+    """Whether the permission store is loaded, so later steps never import.
+
+    A failed load is not retried later in the uninstall: once the source has
+    switched, a first-use import would bind grants to the wrong source.
+    """
     try:
         await asyncio.to_thread(load_permissions)
     except ServerDomainError as exc:
-        # Same policy as the pre-commit cleanup: an unreadable store does not
-        # block the uninstall.
+        # Same policy as an unreadable store at cleanup time: the uninstall
+        # continues and the grants are not cleared.
         logger.error(
-            "uninstall could not load plugin permissions for {}: code={}",
+            "uninstall could not load plugin permissions; grants of {} will not "
+            "be cleared: code={}",
             plugin_id,
             exc.code,
         )
+        return False
+    return True
 
 
 async def _forget_permissions_precommit(plugin_id: str) -> dict | None:
@@ -912,7 +920,7 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     # Load the permission store while the registry still points at the plugin
     # being removed: a first-use import binds legacy grants to the current
     # source, which must be this plugin's, not a built-in restored below.
-    await _load_permissions_before_changes(plugin_id)
+    permissions_loaded = await _load_permissions_before_changes(plugin_id)
     stop_attempted = False
     staged_code: _StagedPluginCode | None = None
     source_update_attempted = False
@@ -968,7 +976,8 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
                 stage=stage,
             )
         # Grants belong to the uninstalled plugin; a reinstall starts from scratch.
-        removed_permissions = await _forget_permissions_precommit(plugin_id)
+        if permissions_loaded:
+            removed_permissions = await _forget_permissions_precommit(plugin_id)
         preference_action: PreferenceAction = (
             "preserved" if restored_builtin else "cleared"
         )

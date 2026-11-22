@@ -110,12 +110,14 @@ def load_permissions() -> None:
 
 
 def permission_record(plugin_id: str) -> dict:
-    """The plugin's grants after reconciling them with its current source."""
+    """The plugin's grants as they apply to its current source.
+
+    Read-only: nothing is saved, so a concurrent install or uninstall that
+    briefly exposes another source cannot change the stored grants.
+    """
     source = current_source(plugin_id)
-    record = permission_store.sync_source(plugin_id, source)
-    view = copy.deepcopy(record)
+    view = permission_store.view(plugin_id, source)
     view.setdefault("permissions", {})
-    # After sync_source a known source always equals the stored one.
     view["source_confirmed"] = source is not None
     return view
 

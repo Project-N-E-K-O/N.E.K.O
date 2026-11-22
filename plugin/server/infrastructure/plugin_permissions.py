@@ -382,8 +382,24 @@ class PluginPermissionStore:
             self._load()
             return copy.deepcopy(self._document["plugins"].get(plugin_id, {}))
 
+    def view(self, plugin_id: str, current: PluginSource | None) -> dict:
+        """The record as it applies to ``current``, without saving anything.
+
+        Same rules as :meth:`sync_source`; read paths use this so a source
+        seen in passing (e.g. mid-uninstall) is never persisted.
+        """
+        with self._lock:
+            self._load()
+            record = copy.deepcopy(self._document["plugins"].get(plugin_id) or {})
+        if record:
+            self._apply_source(record, current)
+        return record
+
     def sync_source(self, plugin_id: str, current: PluginSource | None) -> dict:
         """Reconcile a record with the plugin's current source and return it.
+
+        This persists the result, so callers must hold the plugin operation
+        lock to keep it ordered with install / uninstall.
 
         * ``current is None`` (source unavailable): keep the last known source.
         * Record has no source yet: bind ``current``; this is not a change.

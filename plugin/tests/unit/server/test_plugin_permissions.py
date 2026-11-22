@@ -823,3 +823,22 @@ def test_clear_on_ordinary_record_deletes_the_entry(manager):
     assert store.clear("x", MEMORY_READ)["permissions"] == {}
     assert store.clear("x", MEMORY_READ)["permissions"] == {}
     assert manager.saves == saves + 1
+
+
+def test_permission_record_never_saves(install_sources, monkeypatch, manager):
+    store = PluginPermissionStore(manager, source_resolver=permission_service.current_source)
+    monkeypatch.setattr(permission_service, "permission_store", store)
+    store.decide("demo", MEMORY_READ, "granted", source=MARKET)
+    store.decide("unbound", MEMORY_READ, "granted", source=None)
+    saves = manager.saves
+
+    # A different source is shown as "no grants" but not persisted.
+    install_sources["manager"] = FakeInstallSources([_lock_entry(channel="manual")])
+    assert permission_service.permission_record("demo")["permissions"] == {}
+    assert MEMORY_READ in store.read("demo")["permissions"]
+    # A first binding is shown but not persisted either.
+    unbound = _lock_entry(plugin_id="unbound", directory_name="unbound", channel="manual")
+    install_sources["manager"] = FakeInstallSources([unbound])
+    assert permission_service.permission_record("unbound")["source"] == MANUAL.to_dict()
+    assert store.read("unbound")["source"] is None
+    assert manager.saves == saves
