@@ -230,7 +230,8 @@ def test_gif_decode_failure_cannot_silently_drop_a_frame_source_from_an_export(e
             state = next(state for state in layer['states'] if state['visible'])
             assert state['frames'] > state['hframes'], 'fixture must exercise more than one atlas row'
             width, height = state['frame_width'], state['frame_height']
-            observed = [output.convert('RGB').getpixel((
+            rgb = output.convert('RGB')
+            observed = [rgb.getpixel((
                 index % state['hframes'] * width + width // 2,
                 index // state['hframes'] * height + height // 2,
             )) for index in range(state['frames'])]
