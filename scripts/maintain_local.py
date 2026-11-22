@@ -59,15 +59,31 @@ def clean_required(repo):
             raise ValueError(f"Finish or abort the existing Git operation: {name}")
 
 
+def origin_urls(repo):
+    """Return the configured ``remote.origin.url`` values ([] when unset)."""
+    # --null keeps each value intact, so a value ending in a newline is not
+    # confused with Git's line separator.
+    result = subprocess.run(
+        ["git", "config", "--null", "--get-all", "remote.origin.url"],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+    )
+    # git config exits 1 only when the key is not set; other codes are errors.
+    if result.returncode == 1 and not result.stdout:
+        return []
+    result.check_returncode()
+    return [os.fsdecode(value) for value in result.stdout.split(b"\0")[:-1]]
+
+
 def official_required(repo):
     # Validate the configured identity before Git applies transport rewrites.
     # fetch uses the first configured URL; refuse ambiguity instead of guessing.
-    # --null keeps each value intact, so a value ending in a newline is not
-    # confused with Git's line separator.
-    raw = subprocess.check_output(
-        ["git", "config", "--null", "--get-all", "remote.origin.url"], cwd=repo
-    )
-    urls = [os.fsdecode(value) for value in raw.split(b"\0")[:-1]]
+    urls = origin_urls(repo)
+    if not urls:
+        raise ValueError(
+            "origin is not configured. To follow the official repository, run:\n"
+            f"  git remote add origin {OFFICIAL_URL}"
+        )
     if len(urls) != 1:
         raise ValueError("origin must have exactly one configured URL.")
     url = urls[0]
@@ -410,7 +426,10 @@ def status(repo):
     result = {
         "branch": git(repo, "branch", "--show-current"),
         "commit": git(repo, "rev-parse", "HEAD"),
-        "origin": git(repo, "remote", "get-url", "origin"),
+        # get-url shows the URL after transport rewrites; null when unset.
+        "origin": (
+            git(repo, "remote", "get-url", "origin") if origin_urls(repo) else None
+        ),
         "working_changes": git(repo, "status", "--short"),
     }
     try:

@@ -321,18 +321,27 @@
                                     </button>
                                 </div>
 
-                                <!-- 文本聊天模型 -->
+                                <!-- 聊天模型 -->
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('conversation')">
                                         <span class="model-title">
                                             <img src="/static/icons/correction_model_icon.png"
                                                 data-i18n-alt="api.conversationModelConfig"
                                                 class="model-title-icon">
-                                            <span data-i18n="api.conversationModelConfig">文本聊天模型</span>
+                                            <span data-i18n="api.conversationModelConfig">聊天模型</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
                                     </div>
                                     <div id="conversation-model-content" class="model-content">
+                                        <div class="field-row">
+                                            <em data-i18n="api.conversationModelVisionHint" style="font-weight: normal; color: #888; font-size: 0.85em;">需要能看图：截图、一起看、小游戏画面和你发的图片都交给它</em>
+                                        </div>
+                                        <!-- 以前单独配置的看图模型（已弃用）：图片仍发往那里时显示去向，并可停用 -->
+                                        <div class="field-row" id="legacyVisionNotice" hidden style="display: none;">
+                                            <em id="legacyVisionNoticeText" style="font-weight: normal; color: #c0392b; font-size: 0.85em;"></em>
+                                            <button type="button" class="btn secondary" id="legacyVisionStopBtn"
+                                                data-i18n="api.legacyVisionStop" onclick="stopLegacyVision()">改用聊天模型看图</button>
+                                        </div>
                                         <div class="field-row">
                                             <label for="conversationModelProvider" data-i18n="api.providerLabel">服务商</label>
                                             <select id="conversationModelProvider" class="api-provider-select" style="max-width: 600px;">
@@ -449,7 +458,7 @@
                                         <span class="model-title">
                                             <img src="/static/icons/model_type_icon.png"
                                                 data-i18n-alt="api.decisionModelConfig" class="model-title-icon">
-                                            <span data-i18n="api.decisionModelConfig">决策模型（小模型）</span>
+                                            <span data-i18n="api.decisionModelConfig">决策模型（专用接口）</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
                                     </div>
@@ -644,7 +653,7 @@
                                         <span class="model-title">
                                             <img src="/static/icons/correction_model_icon.png"
                                                 data-i18n-alt="api.agentApiConfigTitle" class="model-title-icon">
-                                            <span data-i18n="api.agentApiConfigTitle">使魔模型</span>
+                                            <span data-i18n="api.agentApiConfigTitle">使魔模型·通用</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
                                     </div>
@@ -678,7 +687,7 @@
                                     </div>
                                 </div>
 
-                                <!-- 使魔模型·小 -->
+                                <!-- 使魔模型·小型 -->
                                 <div class="model-config-container">
                                     <button type="button" class="model-header" onclick="toggleModelConfig('agent-small')"
                                         aria-controls="agent-small-model-content" aria-expanded="false"
@@ -686,7 +695,7 @@
                                         <span class="model-title">
                                             <img src="/static/icons/correction_model_icon.png"
                                                 data-i18n-alt="api.agentSmallApiConfigTitle" class="model-title-icon">
-                                            <span data-i18n="api.agentSmallApiConfigTitle">使魔模型·小</span>
+                                            <span data-i18n="api.agentSmallApiConfigTitle">使魔模型·小型</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
                                     </button>
@@ -849,45 +858,6 @@
                                     </div>
                                 </div>
 
-                                <!-- 视觉聊天模型 -->
-                                <div class="model-config-container">
-                                    <div class="model-header" onclick="toggleModelConfig('vision')">
-                                        <span class="model-title">
-                                            <img src="/static/icons/vision_model_icon.png"
-                                                data-i18n-alt="api.visionModelConfig" class="model-title-icon">
-                                            <span data-i18n="api.visionModelConfig">视觉聊天模型</span>
-                                        </span>
-                                        <span class="toggle-icon">▼</span>
-                                    </div>
-                                    <div id="vision-model-content" class="model-content">
-                                        <div class="field-row">
-                                            <label for="visionModelProvider" data-i18n="api.providerLabel">服务商</label>
-                                            <select id="visionModelProvider" class="api-provider-select" style="max-width: 600px;">
-                                            </select>
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="visionModelUrl" data-i18n="api.apiUrl">API URL</label>
-                                            <input type="text" id="visionModelUrl"
-                                                data-i18n-placeholder="api.baseUrlExamplePlaceholder"
-                                                placeholder="e.g., https://api.openai.com/v1" value=""
-                                                style="max-width: 600px;">
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="visionModelId" data-i18n="api.modelId">模型ID</label>
-                                            <input type="text" id="visionModelId"
-                                                data-i18n-placeholder="api.visionModelExamplePlaceholder"
-                                                placeholder="e.g., gpt-4-vision-preview, qwen-vl-plus" value=""
-                                                style="max-width: 600px;">
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="visionModelApiKey" data-i18n="api.apiKey">API Key</label>
-                                            <input type="text" id="visionModelApiKey"
-                                                data-i18n-placeholder="api.visionModelApiKeyPlaceholder"
-                                                placeholder="Enter Vision API Key" value=""
-                                                style="max-width: 600px;">
-                                        </div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>

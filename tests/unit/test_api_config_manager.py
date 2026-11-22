@@ -2548,6 +2548,48 @@ class TestGptsovitsEnabledSaveMigration:
         assert realtime_config['api_key'] == 'sk-core-qwen'
         assert 'dashscope' in realtime_config['base_url']
 
+    @pytest.mark.unit
+    @pytest.mark.parametrize('raw_flag', ['false', '0', 'no', 'off'])
+    def test_string_false_enable_custom_api_normalizes_to_false(self, config_manager, raw_flag):
+        base_payload = {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-core-qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-assist-qwen',
+            'summaryModelUrl': 'https://custom.invalid/v1',
+            'summaryModelId': 'custom-summary',
+            'imageModelProvider': 'custom',
+            'imageModelUrl': 'https://custom.invalid/v1',
+            'imageModelId': 'custom-img',
+            'imageModelApiKey': 'sk-img',
+        }
+        _write_core_config(config_manager, {**base_payload, 'enableCustomApi': True})
+        assert config_manager.get_model_api_config('image')['enabled'] is True
+
+        _write_core_config(config_manager, {**base_payload, 'enableCustomApi': raw_flag})
+
+        cfg = config_manager.get_core_config()
+        assert cfg['ENABLE_CUSTOM_API'] is False
+        assert cfg['SUMMARY_MODEL_URL'] != 'https://custom.invalid/v1'
+
+        summary_cfg = config_manager.get_model_api_config('summary')
+        assert summary_cfg['is_custom'] is False
+        assert summary_cfg['model'] != 'custom-summary'
+
+        image_cfg = config_manager.get_model_api_config('image')
+        assert image_cfg['enabled'] is False
+
+        direct_summary = config_manager.get_model_api_config(
+            'summary',
+            _core_config={
+                **cfg,
+                'ENABLE_CUSTOM_API': raw_flag,
+                'SUMMARY_MODEL': 'custom-summary',
+                'SUMMARY_MODEL_URL': 'https://custom.invalid/v1',
+            },
+        )
+        assert direct_summary['is_custom'] is False
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

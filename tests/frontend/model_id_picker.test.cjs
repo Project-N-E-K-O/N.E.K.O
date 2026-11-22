@@ -270,11 +270,11 @@ test('agent tier falls back to the vision model when the provider has no agent m
 
 test('follow_core text slots stay on the core provider chain and never borrow assist models', () => {
     const { context, setSlot, select } = createPickerContext();
-    setSlot('vision', 'follow_core');
-    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'qwen3.8-flash');
+    setSlot('summary', 'follow_core');
+    assert.equal(context.resolveSlotModelState('summary').defaultModelId, 'qwen3.8-flash');
 
     select('coreApiSelect', 'step');
-    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'stepaudio-3-realtime');
+    assert.equal(context.resolveSlotModelState('summary').defaultModelId, 'stepaudio-3-realtime');
 });
 
 test('free and fixed-model sources do not accept a typed model ID', () => {
@@ -572,23 +572,23 @@ test('model list failures are mapped to error codes and not cached', async () =>
 
 test('named and follow_core slots read the merged defaults whichever assist provider is selected', () => {
     const { context, select, setSlot } = createPickerContext();
-    context._assistModelDefaults.qwen = { VISION_MODEL: '', CONVERSATION_MODEL: 'merged-qwen' };
+    context._assistModelDefaults.qwen = { SUMMARY_MODEL: '', CONVERSATION_MODEL: 'merged-qwen' };
     for (const assistProvider of ['qwen', 'openrouter']) {
         select('assistApiSelect', assistProvider);
         for (const mode of ['follow_core', 'qwen']) {
-            setSlot('vision', mode);
-            assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'merged-qwen');
+            setSlot('summary', mode);
+            assert.equal(context.resolveSlotModelState('summary').defaultModelId, 'merged-qwen');
         }
     }
 });
 
 test('follow_core picker uses the core input and marks stored credential origin', () => {
     const { context, el, state, setSlot } = createPickerContext();
-    setSlot('vision', 'follow_core');
+    setSlot('summary', 'follow_core');
     state.customKey = 'other-book-key';
     el('apiKeyInput').value = 'core-draft-key';
-    assert.equal(context.resolveSlotModelPickerRequest('vision').body.api_key, 'core-draft-key');
-    assert.equal(context.resolveSlotModelPickerRequest('vision').body.key_source, 'core');
+    assert.equal(context.resolveSlotModelPickerRequest('summary').body.api_key, 'core-draft-key');
+    assert.equal(context.resolveSlotModelPickerRequest('summary').body.key_source, 'core');
 });
 
 test('a model-list 404 adds a URL path hint to the localized error', () => {

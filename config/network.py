@@ -46,7 +46,15 @@ def _read_port_overrides() -> dict:
         port_file = os.path.join(base, "port_config.json")
         if os.path.exists(port_file):
             with open(port_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning(
+                    "Ignoring port_config.json (%s): expected JSON object, got %s",
+                    port_file,
+                    type(data).__name__,
+                )
+                return {}
+            return data
     except Exception as e:
         logger.debug("Failed to read port_config.json: %s", e, exc_info=True)
     return {}
@@ -71,8 +79,18 @@ def _read_port_env(port_name: str, default: int) -> int:
         except Exception:
             continue
     # Fallback: read port_config.json written by Electron frontend.
-    override = _PORT_FILE_OVERRIDES.get(port_name)
+    override = (
+        _PORT_FILE_OVERRIDES.get(port_name)
+        if isinstance(_PORT_FILE_OVERRIDES, dict)
+        else None
+    )
     if override is not None:
+        if isinstance(override, bool):
+            logger.warning(
+                "Invalid port_config.json override for %s=%r: boolean is not a valid port",
+                port_name, override,
+            )
+            return default
         try:
             value = int(override)
             if 1 <= value <= 65535:

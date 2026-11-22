@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES, normalize_permission
 from plugin.server.domain.errors import ServerDomainError
 from utils.file_utils import read_json_tolerating_replace
 
@@ -57,18 +58,6 @@ SCHEMA_VERSION = 1
 LEGACY_FILENAME = "plugin_consents.json"
 LEGACY_SCHEMA_VERSION = 2
 
-# Permission ids that legacy capability names map to.
-# TODO: import these from plugin.sdk.shared.permissions (catalog) once it lands;
-# names and values here mirror that vocabulary so the swap is a pure import.
-MEMORY_READ = "plugin_sdk.main_agent.memory:read"
-CONVERSATIONS_READ = "plugin_sdk.main_agent.conversations:read"
-MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
-
-LEGACY_PERMISSION_NAMES: dict[str, str] = {
-    "conversations.read": CONVERSATIONS_READ,
-    "memory.read": MEMORY_READ,
-    "messages.push": MESSAGES_PUSH,
-}
 
 STATE_GRANTED = "granted"
 STATE_DENIED = "denied"
@@ -133,11 +122,6 @@ def _changed_plugins(before: dict | None, after: dict) -> frozenset[str]:
     return frozenset(
         plugin_id for plugin_id in old.keys() | new.keys() if old.get(plugin_id) != new.get(plugin_id)
     )
-
-
-def normalize_permission(name: str) -> str:
-    """Map a legacy capability name to its permission id; other ids pass through."""
-    return LEGACY_PERMISSION_NAMES.get(name, name)
 
 
 def _now() -> str:
@@ -523,7 +507,7 @@ class PluginPermissionStore:
     def decide(
         self,
         plugin_id: str,
-        permission_id: str,
+        permission_id: object,
         state: str,
         *,
         condition: str = CONDITION_IN_USE,
@@ -536,9 +520,10 @@ class PluginPermissionStore:
         """
         if not plugin_id:
             raise ValueError("plugin_id is required")
-        permission_id = normalize_permission(permission_id)
-        if not permission_id:
-            raise ValueError("permission_id is required")
+        known_id = normalize_permission(permission_id)
+        if known_id is None:
+            raise ValueError(f"Unknown permission: {permission_id!r}")
+        permission_id = known_id
         if state not in STATES:
             raise ValueError(f"Unsupported permission state: {state!r}")
         if condition not in CONDITIONS:
@@ -565,16 +550,25 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return copy.deepcopy(record)
 
-    def clear(self, plugin_id: str, permission_id: str) -> dict:
+    def clear(self, plugin_id: str, permission_id: object) -> dict:
         """Return one permission to undecided.
 
         On a ``legacy_denied`` record a missing entry still means denied, so
-        an explicit ``undecided`` entry is stored instead of deleting it.
+        an explicit ``undecided`` entry is stored instead of deleting it. An
+        id outside the vocabulary is accepted only when the record already
+        holds it (e.g. an id the vocabulary has since dropped).
         """
-        permission_id = normalize_permission(permission_id)
+        known_id = normalize_permission(permission_id)
+        if known_id is None and not (isinstance(permission_id, str) and permission_id):
+            raise ValueError(f"Unknown permission: {permission_id!r}")
         with self._lock:
             manager = self._load_for_write()
             record = self._document["plugins"].get(plugin_id)
+            if known_id is None:
+                if record is None or permission_id not in record.get("permissions", {}):
+                    raise ValueError(f"Unknown permission: {permission_id!r}")
+                known_id = permission_id
+            permission_id = known_id
             if record is None:
                 return {}
             entry = record.get("permissions", {}).get(permission_id)

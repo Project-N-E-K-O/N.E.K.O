@@ -1003,10 +1003,14 @@ _STAR_MAP_LABEL_PROBE_MIN_INTERVAL_SECONDS = 86400
 async def _amaybe_refresh_star_map_labels(name: str, now: datetime) -> None:
     """Weekly low-cost Star Map theme label cache refresh piggybacked on ArchiveSweep.
 
-    Runs regardless of ``powerful_memory_enabled``; skips at zero LLM cost when
-    fewer than ``STAR_MAP_MIN_EMBEDDED_ENTRIES`` entries have vectors, when the
-    corpus hash has not changed, or when cached labels are newer than 7 days.
+    Runs only while ``powerful_memory_enabled`` is on: with it off this makes no
+    model call at all. Otherwise skips at zero LLM cost when fewer than
+    ``STAR_MAP_MIN_EMBEDDED_ENTRIES`` entries have vectors, when the corpus hash
+    has not changed, when cached labels are newer than 7 days, or when the last
+    automatic attempt failed less than 7 days ago.
     """
+    if not await gates._ais_powerful_memory_enabled():
+        return
     last = _star_map_label_last_probe.get(name)
     if (
         last is not None
@@ -1280,6 +1284,8 @@ def _log_event_log_compaction(name: str, result) -> None:
             f"[EventLogCompact] {name}: {result.pinned} 条归档事件在分片里找不到"
             f"同一份副本，作为唯一副本留在日志里（event_id: {shown}{more}）",
         )
+    if result.kept_restore:
+        logger.debug(f"[EventLogCompact] {name}: 保留最近一次快照恢复事件（全量重放的起点）")
     if result.pending_tail:
         _event_log_compact_warn_once(
             name, 'pending_tail',
@@ -1316,10 +1322,14 @@ async def _acompact_event_log_one(raw_name: str) -> None:
         char_dir = os.path.join(str(runtime._config_manager.memory_dir), name)
         if not await asyncio.to_thread(os.path.isdir, char_dir):
             return
+        from memory.analytics.snapshots import make_restore_cancelled_check, make_restore_completed_check
         from memory.evidence_handlers import make_archive_copy_check
         check = make_archive_copy_check(char_dir)
+        cancelled = await asyncio.to_thread(make_restore_cancelled_check, char_dir)
+        completed = await asyncio.to_thread(make_restore_completed_check, char_dir)
         result = await event_log.acompact_applied_history(
             name, needs_journal_copy=check, sources_unchanged=check.sources_unchanged,
+            restore_cancelled=cancelled, restore_completed=completed,
         )
         _log_event_log_compaction(name, result)
     except Exception as e:

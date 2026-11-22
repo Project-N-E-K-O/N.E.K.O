@@ -415,6 +415,45 @@ def test_loader_drops_invalid_threshold_values():
     }
 
 
+def test_loader_rejects_non_finite_thresholds_and_skip_overrides(tmp_path):
+    """NaN, Infinity, -Infinity, and overflowing numbers must be rejected."""
+    from utils.activity_config import _GLOBAL_CONVERSATION_KEY, _load_from_file, _parse_skip_overrides, _parse_thresholds
+
+    thresholds = _parse_thresholds({
+        'away_idle_seconds': 45,
+        'stale_recovery_seconds': float('nan'),
+        'voice_active_window_seconds': float('inf'),
+        'focused_work_min_dwell_seconds': float('-inf'),
+        'casual_browsing_min_dwell_seconds': 10 ** 400,
+    })
+    assert thresholds == {'away_idle_seconds': 45.0}
+
+    skip = _parse_skip_overrides({
+        'valid_mid': 0.4,
+        'clamp_high': 1.5,
+        'clamp_low': -0.2,
+        'nan_val': float('nan'),
+        'inf_val': float('inf'),
+        'neg_inf_val': float('-inf'),
+        'bool_val': True,
+        'str_val': '0.5',
+        'huge_int': 10 ** 400,
+    })
+    assert skip == {'valid_mid': 0.4, 'clamp_high': 1.0, 'clamp_low': 0.0}
+
+    cfg_path = tmp_path / 'user_preferences.json'
+    cfg_path.write_text(
+        f'[{{"model_path": "{_GLOBAL_CONVERSATION_KEY}", "activity": {{'
+        '"thresholds": {"away_idle_seconds": 1e999, "voice_active_window_seconds": NaN, "stale_recovery_seconds": 30}, '
+        '"skip_probability_overrides": {"bad_nan": NaN, "bad_inf": Infinity, "ok": 0.25}}}]',
+        encoding='utf-8',
+    )
+    loaded = _load_from_file(str(cfg_path))
+    assert loaded is not None
+    assert loaded.thresholds == {'stale_recovery_seconds': 30.0}
+    assert loaded.skip_probability_overrides == {'ok': 0.25}
+
+
 # ── #7 Tone modifier ────────────────────────────────────────────────
 
 

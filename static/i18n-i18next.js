@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增「使魔模型·小」（api.agentSmall* / api.customModelProviderFollowEmotion / api.customModelProviderFollowAgent）八语言文案，
-    // 并入记忆浏览器那批文案后的 key 结构，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-22-agent-small-tier-memory-browser';
+    // 删掉 81 个零引用的旧 key 并改名决策 / 使魔档位（main），同时新增星图手动命名冷却提示
+    // memory.starMapLabelCooldown（八语言），两边合并后的 key 结构，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-22-star-map-cooldown-after-key-cleanup';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

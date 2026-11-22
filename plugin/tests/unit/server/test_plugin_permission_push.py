@@ -9,18 +9,16 @@ from pathlib import Path
 import pytest
 
 from plugin import settings
-from plugin.sdk.shared.permissions import PERMISSIONS, UNENFORCED_PERMISSIONS
+from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES, PERMISSIONS, UNENFORCED_PERMISSIONS
 from plugin.sdk.shared.permissions.runtime import PluginPermissions
 from plugin.server.application.plugins import capability_gate, permission_push, permission_service
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import plugin_permissions
-from plugin.server.infrastructure.plugin_permissions import (
-    CONVERSATIONS_READ,
-    MEMORY_READ,
-    MESSAGES_PUSH,
-    PluginPermissionStore,
-    PluginSource,
-)
+from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore, PluginSource
+
+MEMORY_READ = LEGACY_PERMISSION_NAMES["memory.read"]
+CONVERSATIONS_READ = LEGACY_PERMISSION_NAMES["conversations.read"]
+MESSAGES_PUSH = LEGACY_PERMISSION_NAMES["messages.push"]
 
 pytestmark = pytest.mark.plugin_unit
 

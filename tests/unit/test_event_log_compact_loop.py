@@ -47,8 +47,10 @@ class _Harness:
         self.event_log = MagicMock()
         self.event_log.acompact_applied_history = AsyncMock(side_effect=self._compact)
 
-    async def _compact(self, name, *, needs_journal_copy=None, sources_unchanged=None, now=None):
+    async def _compact(self, name, *, needs_journal_copy=None, sources_unchanged=None,
+                       restore_cancelled=None, restore_completed=None, now=None):
         assert callable(needs_journal_copy)
+        assert callable(restore_cancelled) and callable(restore_completed)
         # The archive check's swap guard is passed explicitly, not looked up on the predicate.
         assert sources_unchanged == needs_journal_copy.sources_unchanged
         self.compacted.append(name)

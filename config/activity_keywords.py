@@ -2795,9 +2795,15 @@ COMMUNICATION_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
 #
 # Needle form depends on alias content:
 #   - Aliases that contain any ASCII letter/digit get compiled into a
-#     regex with ``\b`` boundaries on whichever edges are alphanumeric.
-#     This stops short tokens like ``COD``, ``LoL``, ``CS2``, ``BF`` from
-#     matching inside unrelated words (``Code``, ``Lol``, ``acsc2-test``).
+#     regex with ASCII identifier-like boundaries
+#     (``(?<![a-z0-9_])`` / ``(?![a-z0-9_])``) on whichever outer edges are
+#     ASCII alphanumeric or underscore. This stops short tokens like
+#     ``COD``, ``LoL``, ``CS2``, ``BF``, ``Rust``, ``et.exe``, ``Code.exe``
+#     from matching inside unrelated ASCII words or snake_case identifiers
+#     (``Code``, ``Lol``, ``acsc2-test``, ``rust_analyzer.rs``,
+#     ``my_lol_notes.xlsx``, ``helper_Code.exe``) while matching mixed
+#     ASCII+CJK titles like ``B站视频`` or ``看B站`` (not equivalent to full
+#     Unicode ``\b``, where Han characters count as word characters).
 #   - Pure CJK / symbol aliases stay as lowercased strings and are
 #     matched by plain substring — Unicode word-boundary semantics don't
 #     apply naturally to CJK, and false positives there are negligible
@@ -2871,8 +2877,8 @@ def _make_needle(alias: str) -> Needle:
     has_ascii_alnum = any(c.isascii() and c.isalnum() for c in low)
     if not has_ascii_alnum:
         return low  # pure CJK / symbols — substring match is correct
-    left = r'\b' if low[0].isalnum() else ''
-    right = r'\b' if low[-1].isalnum() else ''
+    left = r'(?<![a-z0-9_])' if (low[0].isascii() and (low[0].isalnum() or low[0] == '_')) else ''
+    right = r'(?![a-z0-9_])' if (low[-1].isascii() and (low[-1].isalnum() or low[-1] == '_')) else ''
     return re.compile(left + re.escape(low) + right)
 
 
@@ -2880,6 +2886,24 @@ def _match(needle: Needle, text_lower: str) -> bool:
     if isinstance(needle, str):
         return needle in text_lower
     return needle.search(text_lower) is not None
+
+
+def _match_spans(needle: Needle, text_lower: str) -> list[tuple[int, int]]:
+    """Return all non-overlapping ``(start, end)`` spans matched by ``needle``."""
+    if not needle:
+        return []
+    if isinstance(needle, str):
+        spans: list[tuple[int, int]] = []
+        step = len(needle)
+        start = 0
+        while True:
+            idx = text_lower.find(needle, start)
+            if idx == -1:
+                break
+            spans.append((idx, idx + step))
+            start = idx + step
+        return spans
+    return [match.span() for match in needle.finditer(text_lower)]
 
 
 def _unpack_game_row(row) -> tuple[str, list[str], str | None, str | None]:
@@ -2899,8 +2923,8 @@ def _unpack_game_row(row) -> tuple[str, list[str], str | None, str | None]:
     return canonical, aliases, None, None
 
 
-def _build_title_table() -> list[tuple[Needle, ClassifyResult]]:
-    """Window-title needles in priority order.
+def _iter_title_entries() -> list[tuple[str, str, ClassifyResult]]:
+    """Collect window-title ``(pool_name, alias, ClassifyResult)`` entries in priority order.
 
     Priority (highest → lowest):
       private  > own_app  > game > game_launcher > work > comm > ent
@@ -2914,45 +2938,113 @@ def _build_title_table() -> list[tuple[Needle, ClassifyResult]]:
     short-circuited during own-app foreground: the user's real activity
     (whatever was running in the background) keeps its classification.
     """
-    table: list[tuple[Needle, ClassifyResult]] = []
+    entries: list[tuple[str, str, ClassifyResult]] = []
 
     # PRIVATE — highest priority, always wins.
     for canonical, aliases in PRIVATE_TITLE_KEYWORDS:
         for alias in aliases:
-            table.append((_make_needle(alias), ClassifyResult('private', None, canonical)))
+            entries.append(('private', alias, ClassifyResult('private', None, canonical)))
 
     # OWN_APP — second priority. Beats gaming because the neko app's
     # own GPU usage would otherwise trip gaming-by-GPU fallback.
     for canonical, aliases in OWN_APP_TITLE_KEYWORDS:
         for alias in aliases:
-            table.append((_make_needle(alias), ClassifyResult('own_app', None, canonical)))
+            entries.append(('own_app', alias, ClassifyResult('own_app', None, canonical)))
 
     for row in GAME_TITLE_KEYWORDS:
         canonical, aliases, intensity, genre = _unpack_game_row(row)
         for alias in aliases:
-            table.append((
-                _make_needle(alias),
+            entries.append((
+                'gaming',
+                alias,
                 ClassifyResult('gaming', 'game', canonical, intensity, genre),
             ))
     for canonical, aliases in GAME_LAUNCHER_TITLE_KEYWORDS:
         for alias in aliases:
-            table.append((_make_needle(alias), ClassifyResult('gaming', 'launcher', canonical)))
+            entries.append(('gaming', alias, ClassifyResult('gaming', 'launcher', canonical)))
 
     for canonical, aliases, subcat in WORK_TITLE_KEYWORDS:
         for alias in aliases:
-            table.append((_make_needle(alias), ClassifyResult('work', subcat, canonical)))
+            entries.append(('work', alias, ClassifyResult('work', subcat, canonical)))
 
     # Communication > entertainment: Slack/Teams in foreground is clearly
     # chat, not entertainment background.
     for canonical, aliases, subcat in COMMUNICATION_TITLE_KEYWORDS:
         for alias in aliases:
-            table.append((_make_needle(alias), ClassifyResult('communication', subcat, canonical)))
+            entries.append(('communication', alias, ClassifyResult('communication', subcat, canonical)))
 
     for canonical, aliases, subcat in ENTERTAINMENT_TITLE_KEYWORDS:
         for alias in aliases:
-            table.append((_make_needle(alias), ClassifyResult('entertainment', subcat, canonical)))
+            entries.append(('entertainment', alias, ClassifyResult('entertainment', subcat, canonical)))
 
-    return table
+    return entries
+
+
+def _build_title_table(
+    entries: list[tuple[str, str, ClassifyResult]] | None = None,
+) -> list[tuple[Needle, ClassifyResult]]:
+    """Build window-title needles in priority order."""
+    if entries is None:
+        entries = _iter_title_entries()
+    return [(_make_needle(alias), result) for _cat, alias, result in entries]
+
+
+def _build_title_descendants(
+    entries: list[tuple[str, str, ClassifyResult]],
+    table: list[tuple[Needle, ClassifyResult]],
+) -> tuple[tuple[Needle, ...], ...]:
+    """Index longer compound needles that strictly extend earlier title entries.
+
+    Short ASCII-edged prefixes (e.g. ``QQ``, ``LINE``, ``Visual Studio Code``)
+    would otherwise shadow longer compound entries (e.g. ``QQ Music``,
+    ``LINE Manga``, ``Visual Studio Code - Insiders``) when matched earlier.
+    ``private`` and ``own_app`` entries are excluded so they always
+    short-circuit immediately, and delimiter-only extensions (where no
+    alphanumeric character sits outside the matched span) are ignored so
+    entries like ``Origin `` or ``- Discord`` cannot override higher-priority
+    categories on titles like ``Origin - Store`` or ``#general - Discord``.
+    """
+    low_aliases = [fold_script(alias.lower()) for _cat, alias, _res in entries]
+    by_low: dict[str, list[int]] = {}
+    for idx, (cat, _alias, _res) in enumerate(entries):
+        low = low_aliases[idx]
+        if low and cat not in ('private', 'own_app'):
+            by_low.setdefault(low, []).append(idx)
+
+    lengths = sorted({len(low) for low in by_low})
+    descendant_indices: list[set[int]] = [set() for _ in entries]
+
+    for j, low_j in enumerate(low_aliases):
+        len_j = len(low_j)
+        if len_j < 2:
+            continue
+        res_j = table[j][1]
+        for sub_len in lengths:
+            if sub_len >= len_j:
+                break
+            for start in range(len_j - sub_len + 1):
+                sub = low_j[start:start + sub_len]
+                cand_indices = by_low.get(sub)
+                if not cand_indices:
+                    continue
+                for i in cand_indices:
+                    if i >= j or j in descendant_indices[i]:
+                        continue
+                    if table[i][1] == res_j:
+                        continue
+                    spans = _match_spans(table[i][0], low_j)
+                    if not spans:
+                        continue
+                    if any(
+                        any(c.isalnum() for c in (low_j[:s] + low_j[e:]))
+                        for s, e in spans
+                    ):
+                        descendant_indices[i].add(j)
+
+    return tuple(
+        tuple(table[j][0] for j in sorted(idxs))
+        for idxs in descendant_indices
+    )
 
 
 def _build_process_table() -> list[tuple[Needle, ClassifyResult]]:
@@ -3075,7 +3167,9 @@ def _assert_no_process_dups() -> None:
 
 _assert_no_process_dups()
 
-_TITLE_TABLE = _build_title_table()
+_TITLE_ENTRIES = _iter_title_entries()
+_TITLE_TABLE = _build_title_table(_TITLE_ENTRIES)
+_TITLE_LONGER_DESCENDANTS = _build_title_descendants(_TITLE_ENTRIES, _TITLE_TABLE)
 _PROCESS_TABLE = _build_process_table()
 _DOMAIN_TABLE = _build_domain_table()
 _BROWSER_PROCESS_LOWER = frozenset(p.lower() for p in BROWSER_PROCESS_NAMES)
@@ -3085,14 +3179,32 @@ def classify_window_title(title: str | None) -> ClassifyResult:
     """Classify a non-browser window title against app keyword tables.
 
     Returns the first hit by priority (gaming > work > communication >
-    entertainment). For browser windows, prefer ``classify_browser_title``
-    which is keyed on URL/domain substrings rather than app names.
+    entertainment), skipping matches whose spans are strictly contained
+    inside a longer compound alias match in ``_TITLE_TABLE``. For browser
+    windows, prefer ``classify_browser_title`` which is keyed on URL/domain
+    substrings rather than app names.
     """
     if not title:
         return _UNKNOWN
     low = fold_script(title.lower())
-    for needle, result in _TITLE_TABLE:
-        if _match(needle, low):
+    for idx, (needle, result) in enumerate(_TITLE_TABLE):
+        descendants = _TITLE_LONGER_DESCENDANTS[idx]
+        if not descendants:
+            if _match(needle, low):
+                return result
+            continue
+        spans = _match_spans(needle, low)
+        if not spans:
+            continue
+        desc_spans: list[tuple[int, int]] = []
+        for desc_needle in descendants:
+            desc_spans.extend(_match_spans(desc_needle, low))
+        if not desc_spans:
+            return result
+        if any(
+            not any(ls <= s and e <= le for ls, le in desc_spans)
+            for s, e in spans
+        ):
             return result
     return _UNKNOWN
 
@@ -3100,9 +3212,12 @@ def classify_window_title(title: str | None) -> ClassifyResult:
 def classify_process_name(proc: str | None) -> ClassifyResult:
     """Classify a process executable name (e.g. ``Code.exe``).
 
-    Match is case-insensitive. ASCII names use ``\b`` word boundaries
-    so e.g. ``cod.exe`` doesn't trip on ``codium.exe``. Pass the bare
-    exe name from psutil's ``Process.name()``; a full path also works.
+    Match is case-insensitive. ASCII names use ``(?<![a-z0-9_])`` /
+    ``(?![a-z0-9_])`` boundaries so e.g. ``cod.exe`` doesn't trip on
+    ``codium.exe`` and ``Code.exe`` doesn't trip on ``helper_Code.exe``
+    (while mixed ASCII+CJK process names remain reachable, unlike Unicode
+    ``\b``). Pass the bare exe name from psutil's ``Process.name()``; a full
+    path also works.
     """
     if not proc:
         return _UNKNOWN

@@ -280,6 +280,10 @@ def validate_reserved_schema(reserved: dict) -> list[str]:
                 errors.append(
                     f"_reserved.voice_id.{field} 需要 str，实际 {type(vid.get(field)).__name__}"
                 )
+        if "config" in vid and vid["config"] is not None and not isinstance(vid["config"], dict):
+            errors.append(
+                f"_reserved.voice_id.config 需要 dict，实际 {type(vid['config']).__name__}"
+            )
     return errors
 
 

@@ -27,12 +27,13 @@ from plugin.sdk.shared.permissions.state import PermissionState
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_IN_USE,
     add_change_listener,
-    MESSAGES_PUSH,
     PluginPermissionStore,
     PluginSource,
 )
 
 logger = get_logger("server.plugins.permissions")
+
+MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
 
 
 class _SourceUnknown(Exception):
