@@ -311,29 +311,14 @@ def _same_route(
     )
 
 
-def _legacy_vision_preferred(client) -> bool:
-    """Whether images should go to the separate vision config right away.
+def _note_legacy_vision(client, where: str) -> None:
+    """Log/announce that this session sends images to a retired vision config.
 
-    Images go to the chat model. The retired vision config is used up front
-    only once the chat model has rejected an image (this session, or anywhere
-    for the same chat model). A client built without an ``image_choice`` keeps
-    the old rule: a configured vision model takes every image.
+    Only a session built with an ``image_choice`` carrying a separate vision
+    route has one (see ``utils.legacy_vision``); others do nothing.
     """
-    if not (getattr(client, "vision_model", "") or ""):
-        return False
     choice = getattr(client, "_image_choice", None)
-    if choice is None:
-        return True
-    return bool(getattr(client, "_legacy_vision_switched", False)) or bool(choice.using_legacy)
-
-
-def _on_vision_route(client) -> bool:
-    """Whether the client already talks to its vision config."""
-    return (getattr(client, "vision_model", "") or "") == getattr(client, "model", None) and _same_route(
-        getattr(client, "vision_base_url", None),
-        getattr(client, "vision_api_key", None),
-        getattr(client, "vision_provider_type", None),
-        getattr(client, "base_url", None),
-        getattr(client, "api_key", None),
-        getattr(client, "provider_type", None),
-    )
+    if choice is None or choice.legacy is None:
+        return
+    from utils.legacy_vision import note_legacy_vision_use
+    note_legacy_vision_use(choice, where)

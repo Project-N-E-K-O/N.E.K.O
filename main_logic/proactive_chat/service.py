@@ -197,6 +197,30 @@ _MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
 _PROACTIVE_VISION_SOURCE_MODES = frozenset({"vision", "window"})
 
 
+def _proactive_model_config(conversation_config: dict, vision_config: dict | None):
+    """Model settings for one proactive turn, and the image choice behind them.
+
+    Screenshots go to the chat model, or to a retired, separately configured
+    vision model until the release removes it (``utils.legacy_vision``).
+    """
+    from utils.legacy_vision import choose_image_model
+
+    image_choice = choose_image_model(conversation_config, vision_config)
+    image_config = image_choice.config
+    model_config = ProactiveModelConfig(
+        conversation_model=conversation_config.get("model"),
+        conversation_base_url=conversation_config.get("base_url"),
+        conversation_api_key=conversation_config.get("api_key"),
+        conversation_provider_type=conversation_config.get("provider_type"),
+        vision_model=image_config.get("model", ""),
+        vision_base_url=image_config.get("base_url", ""),
+        vision_api_key=image_config.get("api_key", ""),
+        vision_provider_type=image_config.get("provider_type"),
+        vision_is_custom=bool(image_config.get("is_custom")),
+    )
+    return image_choice, model_config
+
+
 _PHASE1_FETCH_PER_SOURCE = (
     PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Fixed Phase1 fetch count per source.
 )
@@ -1754,28 +1778,11 @@ async def handle_proactive_chat(
                     )
                 )
 
-            from utils.legacy_vision import choose_image_model, note_legacy_vision_use
-            image_choice = choose_image_model(
+            image_choice, model_config = _proactive_model_config(
                 conversation_config,
                 await _config_manager.aget_model_api_config(
                     "vision", core_config=_fresh_core_config
                 ),
-            )
-            # Screenshots go to the chat model; a retired vision config only
-            # takes over after the chat model has rejected an image.
-            vision_config = image_choice.config
-            note_legacy_vision_use(image_choice, "proactive screenshot")
-            model_config = ProactiveModelConfig(
-                conversation_model=conversation_model,
-                conversation_base_url=conversation_config.get("base_url"),
-                conversation_api_key=conversation_api_key,
-                conversation_provider_type=conversation_config.get("provider_type"),
-                vision_model=vision_config.get("model", ""),
-                vision_base_url=vision_config.get("base_url", ""),
-                vision_api_key=vision_config.get("api_key", ""),
-                vision_provider_type=vision_config.get("provider_type"),
-                vision_is_custom=bool(vision_config.get("is_custom")),
-                image_choice=image_choice,
             )
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
@@ -2346,6 +2353,8 @@ async def handle_proactive_chat(
         # --- Request fresh frontend screenshot, replacing Phase1's old image ---
         screenshot_b64_for_phase2 = ""
         if vision_content and model_config.has_vision_model:
+            from utils.legacy_vision import note_legacy_vision_use
+            note_legacy_vision_use(image_choice, "proactive screenshot")
             fresh = await mgr.request_fresh_screenshot(
                 timeout=3.0,
                 allow_backend_fallback=command.screenshot_allow_desktop_fallback,

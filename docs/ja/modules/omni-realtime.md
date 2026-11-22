@@ -48,7 +48,7 @@ Callback にはストリーミングテキスト・音声、入出力 transcript
 
 ## 画像
 
-Qwen、GLM、GPT、Gemini、および互換 free Gemini route はネイティブ visual frame を受け取れます。それ以外の realtime model では、チャットモデル（画像を拒否した場合は非推奨の個別 vision 設定にフォールバック）が現在のターンで最初の関連 frame を text context に変換します。
+Qwen、GLM、GPT、Gemini、および互換 free Gemini route はネイティブ visual frame を受け取れます。それ以外の realtime model では、チャットモデル（非推奨の個別 vision 設定がある間はそちら）が現在のターンで最初の関連 frame を text context に変換します。
 
 ネイティブ frame は `NATIVE_IMAGE_MIN_INTERVAL`（1.5 秒）で throttle されます。idle capture では `IMAGE_IDLE_RATE_MULTIPLIER`（5）が掛かります。`bypass_rate_limit=True` は proactive screenshot など意図的な one-shot cue に限って使います。
 

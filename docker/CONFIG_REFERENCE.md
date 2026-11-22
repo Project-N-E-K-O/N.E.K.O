@@ -148,7 +148,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 - `CONVERSATION_MODEL` - 文本对话模型
 - `SUMMARY_MODEL` - 记忆整理模型（原来的摘要、纠错两档 2026-11 合并成这一档；老配置里的纠错字段在下次保存时丢弃）
 - `EMOTION_MODEL` - 情感模型
-- `VISION_MODEL` - 视觉模型（已弃用：图片交给聊天模型，单独配置的看图模型只在聊天模型拒收图片时回退）
+- `VISION_MODEL` - 视觉模型（已弃用：图片交给聊天模型；单独配置过的看图模型在正式版前继续优先使用并提示弃用）
 - `AGENT_MODEL` - Agent 模型（键鼠控制、浏览器控制等，见第 6 节）
 
 补充说明：
@@ -256,7 +256,7 @@ Agent API Key 的取法：
 | 游戏主模型 | `gameMain` | `GAME_MAIN_MODEL` | `game_main` | 对话槽 |
 | 游戏摘要 | `gameSummary` | `GAME_SUMMARY_MODEL` | `game_summary` | 摘要槽 |
 | 情感 | `emotion` | `EMOTION_MODEL` | `emotion` | 辅助 API |
-| 视觉（已弃用，仅作回退） | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
+| 视觉（已弃用） | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
 | Agent | `agent` | `AGENT_MODEL` | `agent` | 辅助 API |
 | 实时语音 | `omni` | `REALTIME_MODEL` | `realtime` | 核心 API |
 | TTS | `tts` | `TTS_MODEL` | `tts_default` / `tts_custom` | 核心 API / 辅助 API |

@@ -623,7 +623,7 @@
         "SERVER_BUSY_THROTTLE": "⚠️ Servidor ocupado, ajustando automáticamente la velocidad de envío...",
         "ASR_INGRESS_BACKPRESSURE": "El procesamiento de voz está ocupado. Vuelve a decirlo.",
         "ASR_MULTIMODAL_TURN_FAILED": "⚠️ No se pudo enviar ese mensaje de voz junto con sus imágenes. Vuelve a decirlo, por favor.",
-        "LEGACY_VISION_FALLBACK": "⚠️ El modelo de chat {{chat_model}} no puede leer imágenes, así que se usó en su lugar el modelo de visión que configuraste por separado ({{vision_model}}). Los modelos de visión separados ya no son compatibles y se eliminarán en la versión final. Cambia el modelo de chat por uno que lea imágenes en los ajustes de API.",
+        "LEGACY_VISION_DEPRECATED": "⚠️ Tu modelo de visión configurado por separado ({{vision_model}}) sigue en uso. Los modelos de visión separados ya no son compatibles y se eliminarán en la versión final; después, las imágenes irán al modelo de chat. Cambia el modelo de chat por uno que lea imágenes en los ajustes de API.",
         "CHAT_MODEL_IMAGE_UNSUPPORTED": "⚠️ El modelo de chat actual no puede leer imágenes, así que este mensaje no se envió. Cambia el modelo de chat por uno que lea imágenes en los ajustes de API.",
         "RESPONSE_TIMEOUT": "💥 Tiempo de espera de conexión (Tiempo de espera de respuesta), conversación de voz interrumpida.",
         "CONNECTION_TIMEOUT": "💥 Tiempo de espera de conexión. Por favor verifique su conexión de red.",

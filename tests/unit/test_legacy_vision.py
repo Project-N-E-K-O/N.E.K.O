@@ -1,4 +1,4 @@
-"""Images go to the chat model; the retired vision slot is only a fallback."""
+"""Images go to the chat model; a retired vision config keeps working until the release."""
 
 import asyncio
 import json
@@ -72,84 +72,71 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_chat_model_used_when_it_reads_images():
-    calls = []
-
+def _recording_call(calls, result="ok"):
     async def call(cfg):
         calls.append(cfg["model"])
-        return "ok"
-
-    choice = lv.choose_image_model(CHAT, VISION)
-    assert _run(lv.run_with_image_fallback(choice, call, where="t")) == "ok"
-    assert calls == ["text-only"]
-    assert not choice.using_legacy
+        return result
+    return call
 
 
-def test_refusal_retries_on_legacy_vision_and_sticks():
+def test_chat_model_reads_images_without_a_separate_vision_config():
     notices = []
     lv.register_notice_sink(notices.append)
     calls = []
+    for vision in (None, CHAT, {**CHAT, "base_url": "https://chat.example/v1/"}):
+        choice = lv.choose_image_model(CHAT, vision)
+        assert not choice.using_legacy
+        assert _run(lv.run_image_call(choice, _recording_call(calls), where="t")) == "ok"
+    assert calls == ["text-only"] * 3
+    assert notices == []
 
-    async def call(cfg):
-        calls.append(cfg["model"])
-        if cfg["model"] == "text-only":
-            raise _StatusError("The model is not a VLM (Vision Language Model). Please use text-only prompts.")
-        return "seen"
 
+def test_separate_vision_config_is_used_first_and_announced_once():
+    # A local vision endpoint may have been chosen so screenshots never leave
+    # the machine: the chat provider must not start receiving them.
+    notices = []
+    lv.register_notice_sink(notices.append)
+    calls = []
     choice = lv.choose_image_model(CHAT, VISION)
-    assert _run(lv.run_with_image_fallback(choice, call, where="t")) == "seen"
-    assert calls == ["text-only", "llava"]
+    assert choice.using_legacy and choice.config is VISION
+    for where in ("screenshot", "screenshot", "mini-game"):
+        assert _run(lv.run_image_call(choice, _recording_call(calls), where=where)) == "ok"
+    assert calls == ["llava"] * 3
     assert len(notices) == 1
     payload = json.loads(notices[0])
-    assert payload["code"] == lv.LEGACY_VISION_FALLBACK_CODE
-    assert payload["details"] == {"chat_model": "text-only", "vision_model": "llava"}
+    assert payload == {"code": lv.LEGACY_VISION_DEPRECATED_CODE, "details": {"vision_model": "llava"}}
 
-    # Later calls for the same chat model skip the failing request, and the
-    # frontend is not told again.
-    again = lv.choose_image_model(CHAT, VISION)
-    assert again.using_legacy and again.config["model"] == "llava"
-    assert _run(lv.run_with_image_fallback(again, call, where="t")) == "seen"
-    assert calls == ["text-only", "llava", "llava"]
+    # Once per app start, whichever separate config shows up next.
+    other = lv.choose_image_model({**CHAT, "model": "other-chat"}, {**VISION, "model": "qwen-vl"})
+    lv.note_legacy_vision_use(other, "watch-together")
     assert len(notices) == 1
 
 
-def test_changing_the_chat_model_tries_it_again():
-    async def refuse(cfg):
-        raise _StatusError("does not support image input")
+def test_deprecation_warning_is_rate_limited_per_call_site(caplog, monkeypatch):
+    clock = [1000.0]
+    from tests.fake_clock import patch_module_clock
+    patch_module_clock(monkeypatch, lv, monotonic=lambda: clock[0])
+    choice = lv.choose_image_model(CHAT, VISION)
 
-    async def fallback_ok(cfg):
-        if cfg["model"] != "llava":
-            raise _StatusError("does not support image input")
-        return "seen"
+    def warnings():
+        return [r for r in caplog.records if "[DEPRECATED]" in r.getMessage()]
 
-    _run(lv.run_with_image_fallback(lv.choose_image_model(CHAT, VISION), fallback_ok, where="t"))
-    new_chat = {**CHAT, "model": "vision-chat"}
-    choice = lv.choose_image_model(new_chat, VISION)
-    assert not choice.using_legacy
-    assert choice.config["model"] == "vision-chat"
-
-
-def test_refusal_without_legacy_vision_propagates():
-    async def call(cfg):
-        raise _StatusError("does not support image input")
-
-    choice = lv.choose_image_model(CHAT, None)
-    with pytest.raises(_StatusError):
-        _run(lv.run_with_image_fallback(choice, call, where="t"))
-    assert not lv._engaged_routes
+    with caplog.at_level("WARNING", logger="utils.legacy_vision"):
+        lv.note_legacy_vision_use(choice, "screenshot")
+        lv.note_legacy_vision_use(choice, "screenshot")
+        assert len(warnings()) == 1 and "llava" in warnings()[0].getMessage()
+        lv.note_legacy_vision_use(choice, "mini-game")
+        assert len(warnings()) == 2
+        clock[0] += lv._WARN_INTERVAL_SECONDS
+        lv.note_legacy_vision_use(choice, "screenshot")
+        assert len(warnings()) == 3
 
 
-def test_other_errors_do_not_fall_back():
-    calls = []
-
-    async def call(cfg):
-        calls.append(cfg["model"])
-        raise _StatusError("Invalid API key", status_code=401)
-
-    with pytest.raises(_StatusError):
-        _run(lv.run_with_image_fallback(lv.choose_image_model(CHAT, VISION), call, where="t"))
-    assert calls == ["text-only"]
-    assert not lv._engaged_routes
+def test_no_notice_without_a_separate_config():
+    notices = []
+    lv.register_notice_sink(notices.append)
+    lv.note_legacy_vision_use(lv.choose_image_model(CHAT, None), "t")
+    assert notices == []
 
 
 def test_async_notice_sink_is_scheduled():
@@ -161,36 +148,17 @@ def test_async_notice_sink_is_scheduled():
     lv.register_notice_sink(sink)
 
     async def main():
-        assert lv.engage_legacy_vision(lv.choose_image_model(CHAT, VISION), "t")
+        lv.note_legacy_vision_use(lv.choose_image_model(CHAT, VISION), "t")
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 
     _run(main())
-    assert seen == [lv.LEGACY_VISION_FALLBACK_CODE]
+    assert seen == [lv.LEGACY_VISION_DEPRECATED_CODE]
 
 
-def test_deprecation_is_logged(caplog):
-    with caplog.at_level("WARNING", logger="utils.legacy_vision"):
-        lv.engage_legacy_vision(lv.choose_image_model(CHAT, VISION), "screenshot description")
-    assert any("[DEPRECATED]" in r.getMessage() and "llava" in r.getMessage() for r in caplog.records)
+def test_errors_from_the_image_call_propagate():
+    async def call(cfg):
+        raise _StatusError("does not support image input")
 
-
-def test_frontend_is_told_once_per_chat_model():
-    notices = []
-    lv.register_notice_sink(notices.append)
-    choice = lv.choose_image_model(CHAT, VISION)
-    assert lv.engage_legacy_vision(choice, "a")
-    assert lv.engage_legacy_vision(choice, "b")
-    assert len(notices) == 1
-    other = lv.choose_image_model({**CHAT, "model": "other-chat"}, VISION)
-    assert lv.engage_legacy_vision(other, "a")
-    assert len(notices) == 2
-
-
-def test_route_case_matters_only_where_urls_ignore_it():
-    tenant_a = {**CHAT, "base_url": "https://gw.example/tenant/A/v1"}
-    lv.engage_legacy_vision(lv.choose_image_model(tenant_a, VISION), "t")
-    # Same route, host case and trailing slash differ: still remembered.
-    assert lv.choose_image_model({**tenant_a, "base_url": "https://GW.example/tenant/A/v1/"}, VISION).using_legacy
-    # Path case differs: another route, tried afresh.
-    assert not lv.choose_image_model({**tenant_a, "base_url": "https://gw.example/tenant/a/v1"}, VISION).using_legacy
+    with pytest.raises(_StatusError):
+        _run(lv.run_image_call(lv.choose_image_model(CHAT, None), call, where="t"))

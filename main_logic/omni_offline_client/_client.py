@@ -66,9 +66,8 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         model (str):
             Model to use for chat.
         vision_model (str):
-            Retired separate vision model. With ``image_choice`` it is only a
-            fallback used after the chat model rejects an image; without it
-            (older construction paths) images switch to it as before.
+            Retired, separately configured vision model; images switch to it
+            while it is set. Empty when images go to the chat model.
         vision_base_url (str):
             Optional separate base URL for vision model API.
         vision_api_key (str):
@@ -133,10 +132,9 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching
-        # Images go to the chat model; the retired vision config takes over only
-        # after the chat model rejected one (see utils.legacy_vision).
+        # Images go to the chat model; ``vision_model`` is set only for a retired,
+        # separately configured vision route (see utils.legacy_vision).
         self._image_choice = image_choice
-        self._legacy_vision_switched = False
         # Independent vision-model configuration: URL and Key must fall back **as a pair**.
         #
         # These two lines originally checked for emptiness independently, so when "the visual slot had its own URL but no Key,"

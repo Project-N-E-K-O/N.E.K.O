@@ -17,7 +17,7 @@ from utils.screen_comment_guard import project_screen_history, strip_screen_labe
 
 from ._turn_context import _TurnContextMixin, is_turn_context_message
 from ._shared import (
-    _legacy_vision_preferred,
+    _note_legacy_vision,
     _answered_chunk,
     _generation_check,
     _find_by_identity,
@@ -733,10 +733,9 @@ class _ToolingMixin(_TurnContextMixin):
         by ``LLMSessionManager._route_tool_images`` while a tool result is
         being assembled, so it runs from inside a live tool loop.
 
-        Images go to the chat model. Only once the chat model has rejected an
-        image (or for a client built without an image choice) does the move
-        ``stream_text`` makes apply: the vision config wins the rest of the
-        session, because the frames stay in history and there is no way back.
+        The move is the one ``stream_text`` makes for a dragged-in screenshot:
+        a configured vision model wins the rest of the session, because the
+        frames stay in history and there is no way back.
 
         It is refused when it would change which SDK the running loop speaks.
         ``_astream_with_tools`` picks genai or OpenAI-compat once, at entry,
@@ -746,10 +745,9 @@ class _ToolingMixin(_TurnContextMixin):
         "she could not see it", which the caller already reports to the model.
         """
         vision_model = getattr(self, "vision_model", "") or ""
-        if not _legacy_vision_preferred(self):
+        if not vision_model:
             # Images go to the chat model, which is expected to read them. Only
-            # a client built without an image choice and without a vision
-            # model has nothing that can.
+            # a client built without an image choice has nothing that can.
             return getattr(self, "_image_choice", None) is not None
         # Identical model IDs count as already vision-selected only with matching URL/key/protocol
         # routing too. Different vision routes still require switching below.
@@ -774,6 +772,7 @@ class _ToolingMixin(_TurnContextMixin):
                 "genai" if on_genai else "openai-compat",
             )
             return False
+        _note_legacy_vision(self, "offline tool image")
         try:
             await self.switch_model(vision_model, use_vision_config=True)
         except asyncio.CancelledError:

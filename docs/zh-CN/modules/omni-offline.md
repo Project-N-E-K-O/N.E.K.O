@@ -30,7 +30,7 @@
 
 普通路径使用项目的 chat-LLM adapter 访问已配置的 OpenAI/Anthropic 兼容 provider；符合条件的原生 Gemini 配置改走 Google GenAI SDK。实际兼容性取决于 adapter 和 endpoint，不能假定任意 OpenAI 外形的服务端都可用。
 
-该客户端并非纯文本。`stream_image()` 会把 base64 图片加入队列，下一次 `stream_text()` 构造多模态用户消息。图片交给聊天模型；看图档取消前单独配置的看图模型只作回退：聊天模型拒收图片时，本会话改用它并重发这一轮，前端提示一次「单独的看图模型已弃用」（`utils/legacy_vision.py`）；历史中的旧图片 payload 会被淘汰以限制增长。
+该客户端并非纯文本。`stream_image()` 会把 base64 图片加入队列，下一次 `stream_text()` 构造多模态用户消息。图片交给聊天模型；看图档取消前单独配置过的看图模型在正式版前继续优先使用：带图时本会话切到它，后端打弃用警告，前端每次启动提示一次（`utils/legacy_vision.py`）；聊天模型拒收图片时报 `CHAT_MODEL_IMAGE_UNSUPPORTED`；历史中的旧图片 payload 会被淘汰以限制增长。
 
 外部语音合成由 `LLMSessionManager` 和 [TTS Client](/zh-CN/modules/tts-client) 管理，不属于 `OmniOfflineClient`。
 

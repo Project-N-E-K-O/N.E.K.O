@@ -48,7 +48,7 @@ The client accepts PCM bytes without a sample-rate argument and distinguishes th
 
 ## Images
 
-Qwen, GLM, GPT, Gemini, and the compatible free Gemini route can receive native visual frames. Other realtime models use the chat model (falling back to a separately configured, deprecated vision model if the chat model rejects images) to turn the first relevant frame into text context.
+Qwen, GLM, GPT, Gemini, and the compatible free Gemini route can receive native visual frames. Other realtime models use the chat model (or a deprecated, separately configured vision model while one exists) to turn the first relevant frame into text context.
 
 Native frames are throttled by `NATIVE_IMAGE_MIN_INTERVAL` (1.5 seconds). Idle capture multiplies the interval by `IMAGE_IDLE_RATE_MULTIPLIER` (5). `bypass_rate_limit=True` is reserved for a deliberate one-shot cue such as a proactive screenshot.
 

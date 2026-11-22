@@ -1667,8 +1667,8 @@ class LifecycleMixin:
         """Build the shared Offline/VLM client used by starts and promotions.
 
         Images go to the chat model. ``vision_config`` reaches the client only
-        when it is a separate route (a retired vision slot the user filled in),
-        and then only as the fallback for a chat model that rejects images.
+        when it is a separate route (a retired vision slot the user filled in);
+        images then keep going there until the release removes the slot.
         """
         from utils.legacy_vision import choose_image_model
 

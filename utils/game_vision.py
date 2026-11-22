@@ -106,11 +106,11 @@ def validate_vision_attachments(attachments: object) -> list[dict]:
 
 
 async def _invoke(*, text, attachments, system_prompt, max_completion_tokens, timeout, is_current):
-    from utils.legacy_vision import aresolve_image_model, run_with_image_fallback
+    from utils.legacy_vision import aresolve_image_model, run_image_call
 
-    # Frames go to the chat model; a retired vision config is only a fallback.
+    # Frames go to the chat model, or to a retired, separately configured vision model.
     choice = await aresolve_image_model(get_config_manager())
-    if not choice.conversation or not str(choice.conversation.get("model") or "").strip():
+    if not choice.config or not str(choice.config.get("model") or "").strip():
         raise ValueError("vision_unavailable")
     if not is_current():
         raise ValueError("route_inactive")
@@ -134,7 +134,7 @@ async def _invoke(*, text, attachments, system_prompt, max_completion_tokens, ti
             # trusted system<=32768 chars, labels<=128 each. No retries or history.
             return await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=content)])  # noqa: LLM_INPUT_BUDGET # hard text/system/label/image caps above; no history
 
-    result = await run_with_image_fallback(choice, _call, where="mini-game vision")
+    result = await run_image_call(choice, _call, where="mini-game vision")
     content = getattr(result, "content", None)
     if not isinstance(content, str) or not content.strip() or len(content) > 8192:
         raise ValueError("invalid_model_response")

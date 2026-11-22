@@ -420,10 +420,10 @@ def endpoint_host(base_url):
 
 
 async def vision_model_choice(cm):
-    """Chat model for the frames, with the retired vision config as fallback."""
+    """Chat model for the frames, or a retired, separately configured vision model."""
     from utils.legacy_vision import resolve_image_model
     choice = await asyncio.to_thread(resolve_image_model, cm)
-    cfg = choice.conversation
+    cfg = choice.config
     if (not isinstance(cfg.get('model'), str) or not cfg['model'].strip()
             or (not cfg.get("api_key") and not cfg.get('is_custom'))):
         raise RuntimeError("请先配置猫娘的聊天模型 API")
@@ -432,13 +432,13 @@ async def vision_model_choice(cm):
 
 async def image_json_completion(choice, system_prompt, content, job, validate, *, stage, label,
                                 where, **kwargs):
-    """``structured_json_completion`` on the chat model, retrying on a retired vision config."""
-    from utils.legacy_vision import run_with_image_fallback
+    """``structured_json_completion`` on the model image calls use."""
+    from utils.legacy_vision import run_image_call
 
     async def call(cfg):
         return await structured_json_completion(
             cfg, system_prompt, content, job, validate, stage=stage, label=label, **kwargs)
-    return await run_with_image_fallback(choice, call, where=where)
+    return await run_image_call(choice, call, where=where)
 
 
 async def structured_json_completion(cfg, system_prompt, content, job, validate, *, stage, label,

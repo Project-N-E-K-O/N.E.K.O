@@ -8,7 +8,7 @@ N.E.K.O. 按**角色**解析模型，而不是只读一个全局模型名。选�
 | 会话 | `CONVERSATION_MODEL` |
 | 记忆整理（原摘要、纠错） | `SUMMARY_MODEL` |
 | 情感 | `EMOTION_MODEL` |
-| 视觉（已弃用：图片交给聊天模型；单独配置的看图模型只在聊天模型拒收图片时作为回退，并提示弃用） | `VISION_MODEL` |
+| 视觉（已弃用：图片交给聊天模型；看图档取消前单独配置过的看图模型在正式版前继续优先使用，后端打弃用警告、前端每次启动提示一次） | `VISION_MODEL` |
 | Agent | `AGENT_MODEL` |
 | 实时 | `REALTIME_MODEL` |
 | TTS | `TTS_MODEL` |

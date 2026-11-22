@@ -198,7 +198,7 @@ priority/newest cue is shed first, and a cue is dropped after its `expires_in_s`
 or five minutes. While the video plays, the scene polls every 2.5 seconds; when
 no reaction is playing and the next reaction (or the video end) is at least five
 seconds away, the backend turns up to three held cues into one line with the
-chat model (a deprecated separate vision model only as a fallback) and the character's official TTS. The line is played only if it
+chat model (or a deprecated, separately configured vision model while one exists) and the character's official TTS. The line is played only if it
 still fits the gap, through the reaction output (soundtrack ducking and mouth
 movement). A reaction coming due, pause, seek or buffering cuts it off. A
 generated line that never started (the gap closed, playback paused or ended)

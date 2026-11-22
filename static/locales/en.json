@@ -623,7 +623,7 @@
         "SERVER_BUSY_THROTTLE": "⚠️ Server busy, automatically adjusting send rate...",
         "ASR_INGRESS_BACKPRESSURE": "Voice processing is busy. Please say that again.",
         "ASR_MULTIMODAL_TURN_FAILED": "⚠️ Couldn't send that voice message together with its images. Please say it again.",
-        "LEGACY_VISION_FALLBACK": "⚠️ The chat model {{chat_model}} can't read images, so your separately configured vision model {{vision_model}} was used instead. Separate vision models are no longer supported and will be removed in the release. Please switch the chat model to one that can read images in API settings.",
+        "LEGACY_VISION_DEPRECATED": "⚠️ Your separately configured vision model {{vision_model}} is still in use. Separate vision models are no longer supported and will be removed in the release; images will then go to the chat model. Please switch the chat model to one that can read images in API settings.",
         "CHAT_MODEL_IMAGE_UNSUPPORTED": "⚠️ The current chat model can't read images, so this message wasn't sent. Please switch the chat model to one that can read images in API settings.",
         "RESPONSE_TIMEOUT": "💥 Connection timeout (Response timeout), voice conversation interrupted.",
         "CONNECTION_TIMEOUT": "💥 Connection timeout. Please check your network connection.",

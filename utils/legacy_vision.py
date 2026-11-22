@@ -1,17 +1,15 @@
-"""Images go to the chat model; the retired vision slot is only a fallback.
+"""Images go to the chat model; a retired vision config keeps working until the release.
 
 The settings page no longer offers a separate vision model: every image path
 (screenshot description, watch-together, mini-game frames, proactive
 screenshots, images in an offline chat) sends the picture to the chat model.
-A user who configured a vision model before the slot was retired keeps it as a
-deprecated fallback: when the chat model rejects an image, the call is retried
-on the old vision config, a deprecation warning is logged and the frontend is
-told once that the separate vision model will be dropped in the release.
 
-The fallback is engaged per chat-model route. Once a chat model has rejected an
-image, later image calls go straight to the vision config until the chat model
-is changed, so a text-only chat model costs one failed request, not one per
-image.
+A user who configured a separate vision model before the slot was retired
+keeps it, unchanged, until the release removes it: images still go to that
+route (it may be a local endpoint chosen so screenshots never leave the
+machine, so the chat provider must not start receiving them silently). Each
+use logs a rate-limited deprecation warning, and the frontend is told once
+per app start that the separate vision model will be dropped.
 """
 
 from __future__ import annotations
@@ -24,23 +22,23 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-from utils.http.url import endpoint_identity, same_endpoint
+from utils.http.url import same_endpoint
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
 # Status code the frontend translates (static/locales/*.json -> errors.*).
-LEGACY_VISION_FALLBACK_CODE = "LEGACY_VISION_FALLBACK"
+LEGACY_VISION_DEPRECATED_CODE = "LEGACY_VISION_DEPRECATED"
 
-# A fallback still in use is logged again at most this often.
+# A deprecated route still in use is logged again at most this often.
 _WARN_INTERVAL_SECONDS = 600.0
 
 # Lowercased fragments that only appear when a model refuses image input.
 # Collected from provider replies (2026-11-22): SiliconFlow "The model is not a
-# VLM (Vision Language Model). Please use text-only prompts.", Zhipu
-# "messages.content.type ... ['text']", DeepSeek "unknown variant `image_url`",
-# OpenAI-compatible gateways "does not support image input".
+# VLM (Vision Language Model). Please use text-only prompts.", DeepSeek
+# "unknown variant `image_url`", OpenAI-compatible gateways "does not support
+# image input". Zhipu is matched separately (see _TEXT_ONLY_LIST).
 _IMAGE_REFUSAL_FRAGMENTS = (
     "not a vlm",
     "use text-only prompts",
@@ -93,17 +91,6 @@ def is_image_unsupported_error(exc: BaseException) -> bool:
     return any(fragment in text for fragment in _IMAGE_REFUSAL_FRAGMENTS)
 
 
-def _route_key(cfg: dict | None) -> tuple:
-    cfg = cfg or {}
-    # endpoint_identity folds only the case-insensitive URL parts: two tenant
-    # paths that differ by case are two routes.
-    return (
-        str(cfg.get("model") or "").strip(),
-        endpoint_identity(str(cfg.get("base_url") or "")),
-        str(cfg.get("provider_type") or "").strip(),
-    )
-
-
 def _usable(cfg: dict | None) -> bool:
     if not isinstance(cfg, dict):
         return False
@@ -131,29 +118,24 @@ def legacy_vision_differs(conversation: dict | None, vision: dict | None) -> boo
 
 @dataclass(frozen=True)
 class ImageModelChoice:
-    """Which config an image call should use right now."""
+    """Which config image calls use: the chat model, or a retired vision route."""
 
     conversation: dict
     legacy: Optional[dict]
 
     @property
     def using_legacy(self) -> bool:
-        return self.legacy is not None and _engaged_for(self.conversation)
+        return self.legacy is not None
 
     @property
     def config(self) -> dict:
-        return self.legacy if self.using_legacy and self.legacy is not None else self.conversation
+        return self.legacy if self.legacy is not None else self.conversation
 
 
 _lock = threading.Lock()
-_engaged_routes: set[tuple] = set()
 _last_warned: dict[str, float] = {}
+_frontend_told = False
 _notice_sink: Optional[Callable[[str], Any]] = None
-
-
-def _engaged_for(conversation: dict | None) -> bool:
-    with _lock:
-        return _route_key(conversation) in _engaged_routes
 
 
 def register_notice_sink(sink: Optional[Callable[[str], Any]]) -> None:
@@ -170,7 +152,7 @@ def _notify_frontend(details: dict) -> None:
     sink = _notice_sink
     if sink is None:
         return
-    message = json.dumps({"code": LEGACY_VISION_FALLBACK_CODE, "details": details}, ensure_ascii=False)
+    message = json.dumps({"code": LEGACY_VISION_DEPRECATED_CODE, "details": details}, ensure_ascii=False)
     try:
         result = sink(message)
     except Exception as exc:  # noqa: BLE001 - a notice must never break the image call
@@ -189,47 +171,35 @@ def _notify_frontend(details: dict) -> None:
         task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
 
-def _warn_deprecated(where: str, legacy: dict, *, first: bool) -> None:
-    now = time.monotonic()
-    with _lock:
-        last = _last_warned.get(where)
-        if not first and last is not None and now - last < _WARN_INTERVAL_SECONDS:
-            return
-        _last_warned[where] = now
-    logger.warning(
-        "[DEPRECATED] %s: the chat model cannot read images, using the separately configured "
-        "vision model %s instead. The separate vision model is no longer supported and will be "
-        "removed in the release; switch the chat model to one that can read images.",
-        where,
-        str(legacy.get("model") or ""),
-    )
+def note_legacy_vision_use(choice: ImageModelChoice, where: str) -> None:
+    """Record that an image call goes to the retired vision config.
 
-
-def engage_legacy_vision(choice: ImageModelChoice, where: str) -> bool:
-    """Record that the chat model rejected an image; return whether a fallback exists.
-
-    The first engagement for a chat-model route also tells the frontend.
+    Logs a deprecation warning (per call site, at most every ten minutes) and
+    tells the frontend once per app start.
     """
     legacy = choice.legacy
     if legacy is None:
-        return False
-    key = _route_key(choice.conversation)
+        return
+    global _frontend_told
+    now = time.monotonic()
     with _lock:
-        newly = key not in _engaged_routes
-        _engaged_routes.add(key)
-    _warn_deprecated(where, legacy, first=newly)
-    if newly:
-        _notify_frontend({
-            "chat_model": str(choice.conversation.get("model") or ""),
-            "vision_model": str(legacy.get("model") or ""),
-        })
-    return True
-
-
-def note_legacy_vision_use(choice: ImageModelChoice, where: str) -> None:
-    """Log (rate-limited) that an image call went to the retired vision config."""
-    if choice.using_legacy and choice.legacy is not None:
-        _warn_deprecated(where, choice.legacy, first=False)
+        last = _last_warned.get(where)
+        warn = last is None or now - last >= _WARN_INTERVAL_SECONDS
+        if warn:
+            _last_warned[where] = now
+        tell = not _frontend_told
+        _frontend_told = True
+    if warn:
+        logger.warning(
+            "[DEPRECATED] %s: images go to the separately configured vision model %s. "
+            "The separate vision model is no longer supported and will be removed in the "
+            "release, after which images go to the chat model; switch the chat model to one "
+            "that can read images.",
+            where,
+            str(legacy.get("model") or ""),
+        )
+    if tell:
+        _notify_frontend({"vision_model": str(legacy.get("model") or "")})
 
 
 def choose_image_model(conversation: dict, vision: dict | None) -> ImageModelChoice:
@@ -254,34 +224,21 @@ def resolve_image_model(config_manager, *, core_config: dict | None = None) -> I
     return choose_image_model(conversation, vision)
 
 
-async def run_with_image_fallback(
+async def run_image_call(
     choice: ImageModelChoice,
     call: Callable[[dict], Awaitable[T]],
     *,
     where: str,
 ) -> T:
-    """Run ``call`` on the chat model, retrying once on the retired vision config.
-
-    The retry happens only when the chat model refused the image and the user
-    still has a separate vision config; any other error propagates unchanged.
-    """
-    if choice.using_legacy:
-        note_legacy_vision_use(choice, where)
-        return await call(choice.config)
-    try:
-        return await call(choice.conversation)
-    except Exception as exc:
-        if not is_image_unsupported_error(exc) or not engage_legacy_vision(choice, where):
-            raise
-        assert choice.legacy is not None
-        logger.info("%s: retrying the image request on the legacy vision config", where)
-        return await call(choice.legacy)
+    """Run ``call`` on the config image calls use, noting a deprecated route."""
+    note_legacy_vision_use(choice, where)
+    return await call(choice.config)
 
 
 def _reset_for_tests() -> None:
-    """Forget engaged routes and warning timestamps (tests only)."""
-    global _notice_sink
+    """Forget warning timestamps and the frontend notice (tests only)."""
+    global _notice_sink, _frontend_told
     with _lock:
-        _engaged_routes.clear()
         _last_warned.clear()
+        _frontend_told = False
     _notice_sink = None
