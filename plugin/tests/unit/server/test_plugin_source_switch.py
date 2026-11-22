@@ -552,7 +552,7 @@ async def _async_value(value):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["running_start_fails", "stopped_succeeds"])
+@pytest.mark.parametrize("scenario", ["running_start_fails", "cleanup_fails", "stopped_succeeds"])
 async def test_switch_keeps_builtin_grants_with_the_builtin_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
@@ -612,7 +612,12 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
     builtin_config = tmp_path / "builtin" / "study_companion" / "plugin.toml"
     builtin_config.parent.mkdir(parents=True)
     builtin_config.write_text("builtin", encoding="utf-8")
-    running = scenario == "running_start_fails"
+    running = scenario in ("running_start_fails", "cleanup_fails")
+    if scenario == "cleanup_fails":
+        def _cannot_remove(_path: Path) -> None:
+            raise OSError("directory in use")
+
+        monkeypatch.setattr(source_switch_module, "_remove_owned_directory_sync", _cannot_remove)
     plugins_backup = copy.deepcopy(state.plugins)
 
     async def refresh() -> None:
@@ -669,6 +674,14 @@ async def test_switch_keeps_builtin_grants_with_the_builtin_source(
             record = store.read("study_companion")
             assert record["source"] == {"channel": "builtin", "fingerprint": None}
             assert "plugin_sdk.main_agent.memory:read" in record["permissions"]
+        elif scenario == "cleanup_fails":
+            # The Market code could not be removed: the builtin's grants must
+            # not be put back for it; the rollback is incomplete.
+            with pytest.raises(SourceSwitchError) as exc_info:
+                await switch_builtin_source(request, **callbacks)
+            assert target.exists()
+            assert exc_info.value.rollback_code == "override_rollback_incomplete"
+            assert store.read("study_companion") == {}
         else:
             await switch_builtin_source(request, **callbacks)
             # The install owner's post-commit reconciliation.

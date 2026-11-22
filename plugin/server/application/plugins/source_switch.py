@@ -202,6 +202,21 @@ def _validate_rebuilt_plan(plan: Mapping[str, object], request: SourceSwitchRequ
         )
 
 
+def _drop_permissions(plugin_id: str) -> None:
+    """Fail-safe after an incomplete rollback: no grants for code that may
+    still be the Market version. Never raises."""
+    from plugin.server.application.plugins.permission_service import forget_permissions
+
+    try:
+        forget_permissions(plugin_id)
+    except Exception as exc:
+        logger.error(
+            "override rollback could not clear permission grants plugin_id={} err_type={}",
+            plugin_id,
+            type(exc).__name__,
+        )
+
+
 async def _rollback_switch(
     *,
     request: SourceSwitchRequest,
@@ -412,8 +427,16 @@ async def switch_builtin_source(
             start=start,
         )
         # After the rollback restart (which reconciles to the builtin source).
-        if not await asyncio.to_thread(permissions_before.restore, request.plugin_id):
+        # Inspect disk, not intent: the builtin's grants go back only if the
+        # Market code is really gone; otherwise they must not stay with it.
+        if not plugin_promoted or not await asyncio.to_thread(
+            request.target_plugin_dir.exists
+        ):
+            if not await asyncio.to_thread(permissions_before.restore, request.plugin_id):
+                rollback_code = "override_rollback_incomplete"
+        else:
             rollback_code = "override_rollback_incomplete"
+            await asyncio.to_thread(_drop_permissions, request.plugin_id)
         if isinstance(exc, asyncio.CancelledError):
             raise
         if not isinstance(exc, Exception):
