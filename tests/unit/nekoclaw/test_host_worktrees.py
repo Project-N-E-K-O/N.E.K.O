@@ -2522,3 +2522,46 @@ async def test_a_cancellation_while_putting_back_carries_what_went_wrong(
     notes = " ".join(getattr(raised.value, "__notes__", []))
     assert "could not be put back" in notes and "a file is held" in notes
     assert isinstance(raised.value.__cause__, worktrees.GitError)
+
+
+async def test_a_landed_file_ignored_since_is_not_taken_for_deleted(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "note.txt", "first\n")
+    assert (await manager.merge_back(tree)).status == "landed"
+    write(tree.path / ".gitignore", "ignored/\n*.log\nnote.txt\n")
+    write(tree.path / "note.txt", "second\n")
+    landed = await manager.merge_back(tree)
+    assert landed.status == "landed", landed.detail
+    assert read(repo / "note.txt") == b"second\n"
+    assert read(repo / ".gitignore") == b"ignored/\n*.log\nnote.txt\n"
+    assert "note.txt" not in [change.path for change in landed.files if change.status == "deleted"]
+
+
+async def test_cleaning_up_after_a_failed_make_is_not_cut_short(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    original = manager._git
+    removing = asyncio.Event()
+
+    async def cancelled_then_slow_to_clean(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("worktree", "remove"):
+            removing.set()
+            await asyncio.sleep(0.5)  # cancelled again meanwhile
+            return await original(cwd, *args, **kwargs)
+        done = await original(cwd, *args, **kwargs)
+        if args[:2] == ("worktree", "add"):
+            raise asyncio.CancelledError
+        return done
+
+    monkeypatch.setattr(manager, "_git", cancelled_then_slow_to_clean)
+    making = asyncio.ensure_future(manager.create(repo, base / "w1"))
+    await asyncio.wait_for(removing.wait(), 30)
+    making.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await making
+    monkeypatch.setattr(manager, "_git", original)
+    assert not exists(base / "w1")
+    assert "w1" not in registered(repo)
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""

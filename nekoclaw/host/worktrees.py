@@ -444,11 +444,17 @@ class WorktreeManager:
                 commit,
                 timeout=settings.WORKTREE_GIT_WORK_SECONDS,
             )
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._forget(repo_root, target, worktree_id, remove_directory=not existed)
-                if existed:
-                    await asyncio.to_thread(target.mkdir, exist_ok=True)
+        except BaseException as error:
+            # Nothing left behind, done to the end even when cancelled again.
+            async def clean() -> None:
+                with contextlib.suppress(Exception):
+                    await self._forget(repo_root, target, worktree_id, remove_directory=not existed)
+                    if existed:
+                        await asyncio.to_thread(target.mkdir, exist_ok=True)
+
+            cancelled = await _settle(asyncio.ensure_future(clean()))
+            if cancelled and not isinstance(error, asyncio.CancelledError):
+                raise _cancelled_after(error) from error
             raise
         return Worktree(worktree_id, repo_root, target, subpath, commit)
 
@@ -858,17 +864,24 @@ class WorktreeManager:
             nested = [name for name in names if name.endswith("/")]
             files = [name for name in names if not name.endswith("/")]
             large = await asyncio.to_thread(_too_large, root, files, settings.WORKTREE_UNTRACKED_MAX_BYTES)
-            if large and start:
+            cached = await self._git(root, "ls-files", "-z", "--cached", env=env)
+            cached_names = [name for name in cached.stdout.split(b"\0") if name]
+            kept: list[str] = []
+            if start:
                 known = await self._git(root, "ls-tree", "-r", "-z", "--name-only", start)
                 had = {_decode(name) for name in known.stdout.split(b"\0") if name}
+                # The start's files are the worktree's own: whatever their
+                # size, and even when ignored since, they are taken while
+                # they are there; left out, they would read as deleted.
                 large = [name for name in large if name not in had]
+                seen = {_decode(name) for name in cached_names} | set(files)
+                kept = await asyncio.to_thread(_present, root, sorted(had - seen))
             skipped = nested + large
             specs = ["."] + [f":(exclude,literal,top){name.rstrip('/')}" for name in skipped]
             # What is to be added is checked again each time: a filter may
             # have been set up, or a file it applies to made, since.
-            cached = await self._git(root, "ls-files", "-z", "--cached", env=env)
-            adding = [name for name in cached.stdout.split(b"\0") if name]
-            adding += [name.encode("utf-8", "surrogateescape") for name in files if name not in skipped]
+            adding = list(cached_names)
+            adding += [name.encode("utf-8", "surrogateescape") for name in [*files, *kept] if name not in skipped]
             programs = await self._programs(root, adding)
             if programs:
                 raise WorktreeUnavailable(*programs)
@@ -882,6 +895,17 @@ class WorktreeManager:
                 input=_nul_join(specs),
                 timeout=settings.WORKTREE_GIT_WORK_SECONDS,
             )
+            if kept:
+                await self._git(
+                    root,
+                    "add",
+                    "--force",
+                    "--pathspec-from-file=-",
+                    "--pathspec-file-nul",
+                    env=env,
+                    input=_nul_join(f":(literal,top){name}" for name in kept),
+                    timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+                )
             tree = (await self._git(root, "write-tree", env=env)).lines()[0]
         finally:
             await asyncio.to_thread(shutil.rmtree, scratch, True)
@@ -1464,6 +1488,11 @@ def _copy_index(real: Path, copy: Path) -> bool:
     except FileNotFoundError:
         return False
     return True
+
+
+def _present(root: Path, names: list[str]) -> list[str]:
+    """Return those of ``names`` that are files or links under ``root``."""
+    return [name for name in names if _is_file_or_link(_fs(root / name))]
 
 
 def _any_file(root: Path, names: list[str]) -> bool:
