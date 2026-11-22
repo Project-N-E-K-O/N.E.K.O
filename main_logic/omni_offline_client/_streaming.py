@@ -1226,6 +1226,16 @@ class _StreamingMixin:
                             "🖼️ Not sending %d image(s): the chat model cannot read images",
                             _dropped,
                         )
+                        if attachment_images and self.on_status_message:
+                            # Pictures the user attached themselves must not vanish
+                            # silently (sampled live frames do, every voice turn).
+                            # Scheduled: nothing may await between append and here.
+                            _notice = asyncio.ensure_future(self.on_status_message(
+                                json.dumps({"code": "CHAT_MODEL_IMAGE_SKIPPED"})
+                            ))
+                            _notice.add_done_callback(
+                                lambda t: t.cancelled() or t.exception()
+                            )
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history

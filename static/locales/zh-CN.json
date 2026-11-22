@@ -625,6 +625,7 @@
         "ASR_MULTIMODAL_TURN_FAILED": "⚠️ 这句语音没能连同图片一起发出，请再说一遍。",
         "LEGACY_VISION_DEPRECATED": "⚠️ 你以前单独配置的看图模型 {{vision_model}} 仍在使用。单独的看图模型已不再支持，正式版会移除，之后图片改由聊天模型处理。请尽快在 API 设置里把聊天模型换成能看图的模型。",
         "CHAT_MODEL_IMAGE_UNSUPPORTED": "⚠️ 当前聊天模型看不了图片，这条消息没能发出。请在 API 设置里把聊天模型换成能看图的模型。",
+        "CHAT_MODEL_IMAGE_SKIPPED": "⚠️ 当前聊天模型看不了图片，这次只发送了文字。请在 API 设置里把聊天模型换成能看图的模型。",
         "RESPONSE_TIMEOUT": "💥 连接超时 (Response timeout)，语音对话已中断。",
         "CONNECTION_TIMEOUT": "💥 连接超时，请检查网络连接。",
         "RESPONSE_TOO_LONG": "回复过长，已放弃输出（可在配置中调大 TEXT_GUARD_MAX_LENGTH）",

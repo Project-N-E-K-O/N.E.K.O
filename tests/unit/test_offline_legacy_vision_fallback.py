@@ -299,6 +299,21 @@ async def test_images_after_a_refusal_are_not_sent_again():
     assert all(image_count(getattr(m, "content", "")) == 0 for m in client.requests[1])
     assert "那这张呢" in str(client.requests[1][-1].content)
     assert _emitted(client) == ["好的。"]
+    # The user is told their own picture was skipped.
+    import asyncio
+    await asyncio.sleep(0)
+    assert {"code": "CHAT_MODEL_IMAGE_SKIPPED"} in _statuses(client)
+
+
+async def test_skipped_live_frames_stay_quiet():
+    lv.mark_chat_image_refused(CHAT, "t")
+    client = _session()
+    client.script = [[_text("嗯。"), _text("", "stop")]]
+    await client.stream_text("我在看这个", turn_images=[_png_b64(4, 4)])
+    import asyncio
+    await asyncio.sleep(0)
+    assert {"code": "CHAT_MODEL_IMAGE_SKIPPED"} not in _statuses(client)
+    assert _emitted(client) == ["嗯。"]
 
 
 async def test_separate_vision_config_is_not_affected_by_a_chat_refusal():
