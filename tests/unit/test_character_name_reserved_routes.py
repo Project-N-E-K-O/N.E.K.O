@@ -162,3 +162,89 @@ def test_existing_characters_with_reserved_route_names_allowed_on_data_paths(nam
         _prepare_external_import({"character_name": f"../{name}", "files": []})
     with pytest.raises(ExternalMemoryImportError, match="Invalid target character name"):
         _prepare_external_import({"character_name": "CON", "files": []})
+
+
+class _DummyJsonRequest:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_name", ["focus", "market"])
+async def test_update_master_allows_unchanged_legacy_reserved_route_name_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_name: str
+):
+    """Existing legacy master profiles named after reserved routes can still update non-name fields, while creation and renames reject them."""
+    import copy
+    import json
+    from fastapi.responses import JSONResponse
+    from main_routers.characters_router import crud
+
+    characters_file = tmp_path / "characters.json"
+
+    class _LocalConfigManager:
+        def load_characters(self):
+            return json.loads(characters_file.read_text(encoding="utf-8"))
+
+        async def aload_characters(self):
+            return self.load_characters()
+
+        async def asave_characters(self, data):
+            characters_file.write_text(
+                json.dumps(copy.deepcopy(data), ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+    cm = _LocalConfigManager()
+    characters_file.write_text(
+        json.dumps({"主人": {"档案名": legacy_name, "昵称": "旧名"}, "猫娘": {}, "当前猫娘": "小猫"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    async def _noop_init():
+        return None
+
+    monkeypatch.setattr(crud, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(crud, "get_initialize_character_data", lambda: _noop_init)
+
+    # 1. Ordinary update without renaming keeps legacy reserved name working.
+    ok_res = await crud.update_master(_DummyJsonRequest({"昵称": "小名"}))
+    assert ok_res == {"success": True}
+    assert cm.load_characters()["主人"]["档案名"] == legacy_name
+    assert cm.load_characters()["主人"]["昵称"] == "小名"
+
+    # 2. Renaming an existing master profile or creating a catgirl with a reserved route name is rejected.
+    rename_res = await crud.rename_master(legacy_name, _DummyJsonRequest({"new_name": legacy_name}))
+    assert isinstance(rename_res, JSONResponse)
+    assert rename_res.status_code == 400
+
+    catgirl_res = await crud.add_catgirl(_DummyJsonRequest({"档案名": legacy_name}))
+    assert isinstance(catgirl_res, JSONResponse)
+    assert catgirl_res.status_code == 400
+
+    # 3. Creating a new master profile with a reserved route name is still rejected.
+    characters_file.write_text(
+        json.dumps({"主人": {}, "猫娘": {}, "当前猫娘": "小猫"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    create_res = await crud.update_master(_DummyJsonRequest({"档案名": legacy_name, "昵称": "小名"}))
+    assert isinstance(create_res, JSONResponse)
+    assert create_res.status_code == 400
+
+    # 4. Repairing a legacy path-separator name via body fallback to a reserved route name is rejected,
+    # and leaving an unsafe path-separator name unfixed also stays rejected.
+    characters_file.write_text(
+        json.dumps({"主人": {"档案名": "bad/name"}, "猫娘": {}, "当前猫娘": "小猫"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    fallback_res = await crud.update_master(_DummyJsonRequest({"档案名": legacy_name, "昵称": "小名"}))
+    assert isinstance(fallback_res, JSONResponse)
+    assert fallback_res.status_code == 400
+
+    unchanged_unsafe_res = await crud.update_master(_DummyJsonRequest({"昵称": "小名"}))
+    assert isinstance(unchanged_unsafe_res, JSONResponse)
+    assert unchanged_unsafe_res.status_code == 400
