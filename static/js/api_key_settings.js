@@ -1986,6 +1986,7 @@ function updateGptSovitsTutorialLink() {
 
 // 语言切换时同步更新教程文档链接（中文↔其它语言走不同文档）
 window.addEventListener('localechange', updateGptSovitsTutorialLink);
+window.addEventListener('localechange', () => updateLegacyVisionNotice());
 window.addEventListener('localechange', () => {
     updateTtsProtocolHint(document.getElementById('ttsModelProvider')?.value || '');
     updateTtsVoiceFallbackHint();
@@ -3050,6 +3051,7 @@ async function loadCurrentApiKey() {
             // 表单回到已保存的状态：未保存成功的「清空」不再生效，
             // 否则下一次无关的保存会把隐藏的旧看图配置删掉。
             _clearLegacyVisionOnSave = false;
+            renderLegacyVisionNotice(data);
             setInputValue('conversationModelUrl', data.conversationModelUrl);
             setInputValue('conversationModelId', data.conversationModelId);
             setSecretInputValue('conversationModelApiKey', data.conversationModelApiKey);
@@ -3548,6 +3550,54 @@ function closeClearCustomApiModal() {
     document.getElementById('clear-custom-api-modal').style.display = 'none';
 }
 
+// 与后端 utils/legacy_vision.legacy_vision_differs 同一口径：开着自定义 API、
+// 看图档自己选了服务商（不是「跟随……」）并填过地址或模型。
+const LEGACY_VISION_FOLLOW_PROVIDERS = ['follow_assist', 'follow_core', 'follow_conversation', 'follow_summary'];
+let _legacyVisionRoute = null;
+
+function legacyVisionRoute(data) {
+    if (!data || !data.enableCustomApi) return null;
+    const provider = String(data.visionModelProvider || '').trim();
+    if (LEGACY_VISION_FOLLOW_PROVIDERS.includes(provider)) return null;
+    const model = String(data.visionModelId || '').trim();
+    const url = String(data.visionModelUrl || '').trim();
+    if (!model && !url) return null;
+    return { model, url };
+}
+
+function renderLegacyVisionNotice(data) {
+    _legacyVisionRoute = legacyVisionRoute(data);
+    updateLegacyVisionNotice();
+}
+
+function updateLegacyVisionNotice() {
+    const box = document.getElementById('legacyVisionNotice');
+    const text = document.getElementById('legacyVisionNoticeText');
+    const button = document.getElementById('legacyVisionStopBtn');
+    if (!box || !text) return;
+    const route = _legacyVisionRoute;
+    box.hidden = !route;
+    if (!route) return;
+    const params = { model: route.model || '?', url: route.url || '?' };
+    if (_clearLegacyVisionOnSave) {
+        text.textContent = window.t
+            ? window.t('api.legacyVisionStopPending', params)
+            : '保存后图片改由聊天模型处理，旧的看图配置会被清除。';
+        if (button) button.hidden = true;
+    } else {
+        text.textContent = window.t
+            ? window.t('api.legacyVisionNotice', params)
+            : `图片目前仍发给你以前单独配置的看图模型 ${params.model}（${params.url}）。单独的看图模型已不再支持，正式版会移除。`;
+        if (button) button.hidden = false;
+    }
+}
+
+function stopLegacyVision() {
+    // 隐藏的旧看图配置没有输入框：随下一次保存一起清掉。
+    _clearLegacyVisionOnSave = true;
+    updateLegacyVisionNotice();
+}
+
 function confirmClearCustomApi() {
     closeClearCustomApiModal();
 
@@ -3610,6 +3660,7 @@ function confirmClearCustomApi() {
 
     // 隐藏的旧看图配置没有输入框，清空时随这次保存一起清掉。
     _clearLegacyVisionOnSave = true;
+    updateLegacyVisionNotice();
     showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '单独指定的模型已清空，请点击「保存设置」保存更改', 'success');
 }
 

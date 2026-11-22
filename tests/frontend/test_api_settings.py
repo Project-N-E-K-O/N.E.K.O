@@ -2306,18 +2306,21 @@ def test_hidden_vision_slot_is_kept_on_save_and_cleared_only_on_clear(mock_page:
             || { __status: document.getElementById('status')?.textContent || '' };
     }"""
     payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
     assert not any(key.startswith("visionModel") for key in payload)
 
     # A clear whose save failed is dropped when the saved settings reload.
     mock_page.evaluate("confirmClearCustomApi()")
     mock_page.evaluate("loadCurrentApiKey()")
     payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
     assert not any(key.startswith("visionModel") for key in payload)
 
     mock_page.evaluate("confirmClearCustomApi()")
     # Without custom models the page asks for the provider key before saving.
     mock_page.evaluate("document.getElementById('apiKeyInput').value = 'test-key'")
     payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
     assert payload["visionModelProvider"] == ""
     assert payload["visionModelUrl"] == ""
     assert payload["visionModelId"] == ""
@@ -2332,3 +2335,47 @@ def test_chat_model_card_says_it_must_read_images(mock_page: Page, running_serve
     title = mock_page.locator('#conversation-model-content').locator('xpath=..').locator('[data-i18n="api.conversationModelConfig"]')
     expect(title).to_have_text("聊天模型")
     expect(mock_page.locator('[data-i18n="api.conversationModelVisionHint"]')).to_contain_text("需要能看图")
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("provider, shown", [("custom", True), ("follow_assist", False)])
+def test_legacy_vision_destination_is_visible_and_can_be_stopped(mock_page: Page, running_server: str, provider, shown):
+    """Images still going to a separately configured vision model are shown, with a way to stop it."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            visionModelProvider=provider,
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+            visionModelApiKey="",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    notice = mock_page.locator("#legacyVisionNotice")
+    # Checked on the element itself: the card may be collapsed either way.
+    assert mock_page.evaluate("document.getElementById('legacyVisionNotice').hidden") is (not shown)
+    if not shown:
+        return
+    mock_page.evaluate("document.getElementById('custom-api-options').style.display = 'block'; toggleModelConfig('conversation')")
+    expect(notice).to_be_visible()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("llava")
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("127.0.0.1:11434")
+
+    mock_page.locator("#legacyVisionStopBtn").click()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("保存后")
+    payload = mock_page.evaluate("""async () => {
+        window.__capturedSavePayload = null;
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload;
+    }""")
+    assert payload["visionModelId"] == "" and payload["visionModelUrl"] == ""
+    assert payload["enableCustomApi"] is True
