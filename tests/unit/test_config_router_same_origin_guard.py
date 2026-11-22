@@ -1,6 +1,6 @@
 """State-changing ``/api/config/*`` requests must be same-origin JSON.
 
-The guard is a router-level dependency on ``config_router.router``. These tests
+The guard runs in the route class of ``config_router.router``. These tests
 drive the real router through an ASGI client so every write route is covered,
 and stub the persistence call so "rejected" can be checked as "nothing saved".
 """
@@ -118,6 +118,12 @@ async def test_conversation_settings_rejects_cross_site_or_non_json(app, save_re
     async with _client(app) as client:
         response = await client.post(SETTINGS_PATH, content=_BODY, headers=headers)
     assert response.status_code == status
+    body = response.json()
+    assert body["success"] is False
+    assert isinstance(body["error"], str) and body["error"]
+    assert body["error_code"] == (
+        "cross_origin_request_rejected" if status == 403 else "unsupported_content_type"
+    )
     assert save_recorder.calls == []
 
 
@@ -156,7 +162,30 @@ async def test_every_config_write_route_rejects_cross_site(app, method, path):
             headers={"Content-Type": "text/plain", "Sec-Fetch-Site": "same-origin"},
         )
     assert cross_site.status_code == 403
+    assert cross_site.json()["success"] is False
     assert not_json.status_code == 415
+    assert not_json.json()["success"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path", ["/api/config/test_connectivity", "/api/config/list_models"]
+)
+async def test_guard_runs_before_body_validation(app, path):
+    """Routes with a Pydantic body must reject before parsing (no 422 first)."""
+    async with _client(app) as client:
+        cross_site = await client.post(
+            path,
+            content=b"not json",
+            headers={"Content-Type": "text/plain", "Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+        )
+        same_origin_bad_json = await client.post(
+            path,
+            content=b"not json",
+            headers={**_JSON, "Origin": BASE_URL, "Sec-Fetch-Site": "same-origin"},
+        )
+    assert cross_site.status_code == 403
+    assert same_origin_bad_json.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -186,8 +215,9 @@ async def test_reads_are_not_guarded(app, monkeypatch):
         # Electron windows with webSecurity disabled omit Origin on POST.
         {**_JSON, "Sec-Fetch-Site": "same-origin", "Referer": f"{BASE_URL}/chat"},
         {**_JSON, "Sec-Fetch-Site": "same-origin"},
-        # Loopback alias of the same backend (localhost vs 127.0.0.1).
-        {**_JSON, "Origin": "http://127.0.0.1:48911", "Sec-Fetch-Site": "same-origin"},
+        # Local client naming the backend by a loopback alias (localhost vs
+        # 127.0.0.1); no Fetch Metadata, as a browser would report cross-site.
+        {**_JSON, "Origin": "http://127.0.0.1:48911"},
         # Native local clients (Electron main process, scripts): no browser headers.
         dict(_JSON),
     ],
@@ -337,6 +367,93 @@ async def test_https_page_behind_tls_proxy_is_same_origin(app, save_recorder, mo
     assert ok.status_code == 200, ok.text
     assert foreign.status_code == 403
     assert len(save_recorder.calls) == 1
+
+
+@pytest.fixture
+def csrf_token(monkeypatch):
+    from main_routers.system_router import _shared as system_shared
+
+    monkeypatch.setattr(system_shared, "AUTOSTART_CSRF_TOKEN", "csrf-test-token")
+    monkeypatch.setattr(
+        system_shared, "AUTOSTART_ALLOWED_ORIGINS", ["http://desktop-shell.example:9000"]
+    )
+    return "csrf-test-token"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    [
+        # Docker port mapping: same hostname, browser port differs from Host.
+        "http://neko.lan:1081",
+        # Extra origin configured in AUTOSTART_ALLOWED_ORIGINS.
+        "http://desktop-shell.example:9000",
+    ],
+)
+async def test_valid_csrf_keeps_local_mutation_origin_rules(app, save_recorder, csrf_token, origin):
+    headers = {**_JSON, "Origin": origin}
+    async with _client(app, base_url="http://neko.lan:48911") as client:
+        without_token = await client.post(SETTINGS_PATH, content=_BODY, headers=headers)
+        wrong_token = await client.post(
+            SETTINGS_PATH, content=_BODY, headers={**headers, "X-CSRF-Token": "wrong"}
+        )
+        with_token = await client.post(
+            SETTINGS_PATH, content=_BODY, headers={**headers, "X-CSRF-Token": csrf_token}
+        )
+        token_not_json = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={"Content-Type": "text/plain", "Origin": origin, "X-CSRF-Token": csrf_token},
+        )
+    assert without_token.status_code == 403
+    assert wrong_token.status_code == 403
+    assert with_token.status_code == 200, with_token.text
+    assert token_not_json.status_code == 415
+    assert len(save_recorder.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_valid_csrf_without_origin_logs_no_rejection(app, save_recorder, csrf_token, monkeypatch):
+    """A token holder without Origin passes on the general rule, silently."""
+    from main_routers.system_router import _shared as system_shared
+
+    warnings = []
+    for module_logger in (system_shared.logger, config_shared.logger):
+        monkeypatch.setattr(module_logger, "warning", lambda *a, **k: warnings.append(a))
+    async with _client(app) as client:
+        response = await client.post(
+            SETTINGS_PATH, content=_BODY, headers={**_JSON, "X-CSRF-Token": csrf_token}
+        )
+        # Loopback alias: accepted by the general rule, while the CSRF rule
+        # alone would reject it (and warn) — it must not be consulted.
+        alias = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "X-CSRF-Token": csrf_token, "Origin": "http://127.0.0.1:48911"},
+        )
+        # Rejected without Origin: answered at debug level only.
+        no_origin_cross_site = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "X-CSRF-Token": csrf_token, "Sec-Fetch-Site": "cross-site"},
+        )
+    assert response.status_code == 200, response.text
+    assert alias.status_code == 200, alias.text
+    assert no_origin_cross_site.status_code == 403
+    assert warnings == []
+    assert len(save_recorder.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_valid_csrf_does_not_admit_foreign_origin(app, save_recorder, csrf_token):
+    async with _client(app, base_url="http://neko.lan:48911") as client:
+        response = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "Origin": "https://evil.example", "X-CSRF-Token": csrf_token},
+        )
+    assert response.status_code == 403
+    assert save_recorder.calls == []
 
 
 def test_json_content_type_parser():
