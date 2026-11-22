@@ -567,6 +567,12 @@ class WorktreeManager:
             # What its own HEAD and index were (staged work included), to put
             # back as they were should preparing fail.
             own_head = await self._try_resolve(worktree.path, "HEAD")
+            # The branch it was on, if any: preparing detaches from it.
+            on_branch = await self._git(
+                worktree.path, "symbolic-ref", "--quiet", "HEAD", check=False,
+                timeout=settings.WORKTREE_GIT_QUERY_SECONDS,
+            )
+            own_branch = on_branch.lines()[0] if on_branch.ok and on_branch.lines() else None
             index = Path(
                 (await self._git(worktree.path, "rev-parse", "--path-format=absolute", "--git-path", "index")).lines()[0]
             )
@@ -611,16 +617,24 @@ class WorktreeManager:
                     # Each step is tried whatever the one before did; what
                     # fails is said, and the index's copy is kept.
                     nonlocal keep_saved
-                    if own_head:
+                    # Back on its branch (which preparing never moved), or at
+                    # its commit when it was detached.
+                    was = own_branch or own_head
+                    if was:
                         try:
-                            head = await self._git(
-                                worktree.path, "update-ref", "--no-deref", "HEAD", own_head, check=False
-                            )
+                            if own_branch:
+                                head = await self._git(
+                                    worktree.path, "symbolic-ref", "HEAD", own_branch, check=False
+                                )
+                            else:
+                                head = await self._git(
+                                    worktree.path, "update-ref", "--no-deref", "HEAD", own_head, check=False
+                                )
                             if not head.ok:
-                                error.add_note(f"the worktree's HEAD could not be put back to {own_head}: "
+                                error.add_note(f"the worktree's HEAD could not be put back to {was}: "
                                                f"{_failure('update-ref', head.stderr)}")
                         except Exception as failed:
-                            error.add_note(f"the worktree's HEAD could not be put back to {own_head}: {failed}")
+                            error.add_note(f"the worktree's HEAD could not be put back to {was}: {failed}")
                     if had_index:
                         try:
                             await asyncio.to_thread(_put_index_back, saved / "index", index)

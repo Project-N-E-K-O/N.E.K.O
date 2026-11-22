@@ -2947,3 +2947,28 @@ async def test_no_landing_while_the_project_has_unmerged_entries(
     result = await manager.merge_back(tree)
     assert result.status == "failed" and "in the project" in result.detail
     assert digest(repo) == before
+
+
+async def test_a_failed_prepare_puts_the_worktree_back_on_its_branch(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    git(tree.path, "switch", "-q", "-c", "side")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    tip = git(tree.path, "rev-parse", "side").strip()
+    original = manager._git
+
+    async def ref_locked(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start") and args[2] == conflict.current:
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", ref_locked)
+    with pytest.raises(worktrees.GitError):
+        await manager.prepare_conflicts(tree, conflict)
+    monkeypatch.setattr(manager, "_git", original)
+    assert git(tree.path, "symbolic-ref", "HEAD").strip() == "refs/heads/side"
+    assert git(tree.path, "rev-parse", "side").strip() == tip
+    assert read(tree.path / "a.txt") == b"worktree\n"
