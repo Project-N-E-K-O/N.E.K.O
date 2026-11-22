@@ -750,6 +750,23 @@ class ReportingMixin:
             if resp.status != 200:
                 raise OSError(f"Telemetry HTTP {resp.status}")
 
+    def _needs_periodic_save(self) -> bool:
+        """Return whether the periodic save loop has local sync, telemetry, or instrument work."""
+        with self._lock:
+            if self._dirty or getattr(self, "_storage_dir_sync_pending", False):
+                return True
+            if self._pending_batch_seq or self._unsent_daily or self._unsent_records:
+                return True
+            if not self._unsent_queue_loaded and _TELEMETRY_SERVER_URL and not _DO_NOT_TRACK:
+                return True
+        try:
+            from utils.instrument import has_data as _instrument_has_data
+            return bool(_instrument_has_data())
+        except Exception:
+            # Under lock, has_data only checks dict truthiness and normally cannot raise;
+            # import failures fall through, skipping this cycle and retrying next.
+            return False
+
     def start_periodic_save(self):
         """Start the background periodic save task. Must be called inside an asyncio loop."""
         if self._save_task is None or self._save_task.done():
@@ -759,23 +776,14 @@ class ReportingMixin:
     async def _periodic_save_loop(self):
         while True:
             await asyncio.sleep(self._save_interval)
-            # Two save() triggers:
-            #   (a) self._dirty: LLM token deltas need local writes +remote reporting.
+            # Two save() triggers (plus pending directory fsync / unread queue recovery):
+            #   (a) self._dirty: LLM token deltas need local writes + remote reporting.
             #   (b) instrument has_data: frontend-only interactions (WS telemetry /
             #       ws_connect / feature counters) never set _dirty=True,
             #       but instruments accumulated a window due on the 60s cadence.
             # save() takes report-only paths for (b), skipping local writes and only calling
-            # _report_to_server; (a) takes full write +report.
-            need_save = self._dirty or bool(self._pending_batch_seq or self._unsent_daily or self._unsent_records)
-            if not need_save:
-                try:
-                    from utils.instrument import has_data as _instrument_has_data
-                    need_save = _instrument_has_data()
-                except Exception:
-                    # Under lock, has_data only checks dict truthiness and normally cannot raise;
-                    # import failures fall through, skipping this cycle and retrying next.
-                    pass
-            if need_save:
+            # _report_to_server; (a) takes full write + report.
+            if self._needs_periodic_save():
                 await self.asave()
             # Also persist sparse event_logger buffers and run retention cleanup.
             # Even without token_tracker dirty state, event_logger may hold

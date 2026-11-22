@@ -768,4 +768,58 @@ def test_storage_dir_sync_failure_retries_only_fsync_without_replaying_deltas(
     assert len(sync_calls) == 3
 
 
+@pytest.mark.asyncio
+async def test_periodic_save_loop_retries_pending_dir_sync_and_unread_queue_while_idle(
+    tracker_factory, monkeypatch
+):
+    """Periodic save loop retries pending parent dir fsync and unread queue recovery while idle."""
+    import errno
+    from utils import file_utils, instrument
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(instrument, "has_data", lambda: False)
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    monkeypatch.setattr(reporting, "_TELEMETRY_SERVER_URL", "")
+    tracker = tracker_factory()
+
+    sync_calls = []
+
+    def flaky_fsync_dir(path):
+        sync_calls.append(path)
+        if len(sync_calls) == 1:
+            raise OSError(errno.EIO, "directory sync failed")
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", flaky_fsync_dir)
+
+    tracker.record("idle-model", 3, 2, 5)
+    tracker.save()
+    assert tracker._dirty is False
+    assert tracker._storage_dir_sync_pending is True
+    assert len(sync_calls) == 1
+
+    tracker._save_interval = 0.01
+    tracker.start_periodic_save()
+    try:
+        async with asyncio.timeout(2):
+            while tracker._storage_dir_sync_pending:
+                await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+    finally:
+        if tracker._save_task is not None:
+            tracker._save_task.cancel()
+            await asyncio.gather(tracker._save_task, return_exceptions=True)
+
+    assert len(sync_calls) == 2
+    persisted = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert next(iter(persisted["daily_stats"].values()))["total_tokens"] == 5
+
+    # Part B: unread unsent queue also triggers periodic save once telemetry is enabled.
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", False)
+    monkeypatch.setattr(reporting, "_TELEMETRY_SERVER_URL", "http://127.0.0.1:1")
+    tracker._unsent_queue_loaded = False
+    assert tracker._needs_periodic_save() is True
+    tracker._unsent_queue_loaded = True
+    assert tracker._needs_periodic_save() is False
+
+
 
