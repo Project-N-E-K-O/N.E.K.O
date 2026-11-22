@@ -1461,6 +1461,24 @@ def test_holds_unbound_grant_saves_a_pending_import_first(manager):
     assert on_disk["plugins"]["x"]["source"] == {"channel": "builtin", "fingerprint": None}
 
 
+def test_holds_unbound_grant_does_not_save_for_a_plugin_without_a_record(manager):
+    """A pending import that cannot be saved does not concern a plugin
+    holding no record, so checking it does not fail."""
+    _write_legacy(
+        manager,
+        {
+            "schema_version": 2,
+            "plugins": {"x": {"decision": "approved", "approved_capabilities": ["memory.read"]}},
+        },
+    )
+    manager.fail = OSError("disk full")
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: None)
+
+    assert store.holds_unbound_grant("other") is False
+    with pytest.raises(ServerDomainError):
+        store.holds_unbound_grant("x")
+
+
 @pytest.mark.parametrize("installed", [None, 3])
 def test_forget_installed_plugins_tolerates_a_malformed_install_result(installed):
     assert permission_service.forget_installed_plugins({"installed_plugins": installed}) is True

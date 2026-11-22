@@ -4983,7 +4983,8 @@ async def _do_upgrade(
         except Exception:
             # Anything else is raised before the transaction changes a file
             # (plan changed, grants could not be bound, replacement
-            # pre-checks): there is no rollback to report.
+            # pre-checks), or by the post-commit notification, which runs no
+            # rollback either: there is no rollback to report.
             task["rollback"] = None
             raise
 

@@ -548,3 +548,16 @@ async def test_local_upgrade_binds_from_the_lock_entry_while_the_registry_is_bus
         PluginSource("imported", current.source_detail.package_sha256),
     )
     assert permission not in synced.get("permissions", {})
+
+
+def test_lock_entry_lookup_does_not_trust_a_degraded_lock(environment, monkeypatch):
+    env = environment
+    target = env.user / PLUGIN_ID
+    entry = SimpleNamespace(plugin_id=PLUGIN_ID)
+    manager = SimpleNamespace(is_degraded=False, entry_for_directory=lambda _path: entry)
+
+    assert cli._lock_entry_for_plugin(manager, target, PLUGIN_ID) is entry
+    assert cli._lock_entry_for_plugin(manager, target, "another") is None
+    manager.is_degraded = True
+    assert cli._lock_entry_for_plugin(manager, target, PLUGIN_ID) is None
+    assert cli._lock_entry_for_plugin(None, target, PLUGIN_ID) is None

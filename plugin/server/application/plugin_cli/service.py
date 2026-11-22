@@ -600,8 +600,11 @@ class PluginCliService:
         # replacement that records no source keeps the current one, so it
         # needs no binding.
         if install_source is not None or plan.reason == "manual_takeover":
-            current_entry = _lock_entry_for_plugin(
-                install_source_manager, target_dir, plan.plugin_id
+            current_entry = await asyncio.to_thread(
+                _lock_entry_for_plugin,
+                install_source_manager,
+                target_dir,
+                plan.plugin_id,
             )
             if current_entry is not None:
                 await asyncio.to_thread(
@@ -2781,9 +2784,12 @@ def _lock_entry_for_plugin(
     manager: InstallSourceManager | None, target_dir: Path, plugin_id: str
 ) -> LockEntry | None:
     """The install-source lock entry of ``target_dir`` when it belongs to
-    ``plugin_id``; ``None`` when there is none or it cannot be read. An entry
-    with an empty plugin id only means the metadata was unreadable when it
-    was written."""
+    ``plugin_id``; ``None`` when there is none, it cannot be read, or the
+    lock is degraded (not trusted, as in ``current_source``). An entry with
+    an empty plugin id only means the metadata was unreadable when it was
+    written."""
+    if manager is None or getattr(manager, "is_degraded", False):
+        return None
     finder = getattr(manager, "entry_for_directory", None)
     if not callable(finder):
         return None
