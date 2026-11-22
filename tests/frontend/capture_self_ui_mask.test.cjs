@@ -766,6 +766,8 @@ test('single-shot entries pass the source they actually captured to the shell; b
     const cachedShell = shellStub(answer);
     const cached = bootProactive({ multiWindow: true, shell: cachedShell });
     cached.S.selectedScreenSourceId = 'screen:7:0';
+    // The cached stream records the source it was acquired with.
+    cached.w.appScreen.getStreamCaptureSourceId = (s) => (s === cached.S.screenCaptureStream ? 'screen:7:0' : null);
     const cachedShot = await cached.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(cachedShot.via, 'stream');
     assert.deepEqual(cachedShell.calls.map((c) => c.sourceId), ['screen:7:0', 'screen:7:0']);
@@ -1225,6 +1227,7 @@ test('voice heartbeat: the pre-capture sample follows the source the stream actu
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.getStreamCaptureSourceId = (s) => (s === stream ? 'screen:1:0' : null);
     env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     vm.runInContext(proactiveSource, env.w);
     await env.w.appProactive.sendOneProactiveVisionFrame();
@@ -1240,6 +1243,7 @@ test('single-shot: the pre-capture sample follows the source the stream actually
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.getStreamCaptureSourceId = (s) => (s === stream ? 'screen:1:0' : null);
     env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(shot.sourceId, 'screen:1:0');
@@ -1275,6 +1279,7 @@ test('voice heartbeat: every capture attempt samples right before it, for the so
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.getStreamCaptureSourceId = (s) => (s === stream ? 'screen:1:0' : null);
     env.w.appScreen.captureFrameFromStream = async () => { env.S.selectedScreenSourceId = 'screen:0:0'; return null; };
     env.w.getDesktopCaptureProvider = () => ({ nativeFrameCapture: true, captureSourceAsDataUrl() {} });
     env.w.captureDesktopSourceWithTimeout = async () => ({ success: true, dataUrl: RAW_FRAME });
@@ -1629,4 +1634,54 @@ test('settings popup re-sync is installed for every avatar type (Live2D, VRM, MM
     for (const prefix of ['live2d', 'vrm', 'mmd']) {
         assert.ok(src.includes(`_onPopupShow: createSettingsPopupShowSync('${prefix}')`), prefix);
     }
+});
+
+test('stream frames pass only the source recorded for the stream; an unrecorded stream passes null, never the selection cache', async () => {
+    const answer = async () => ({ ok: true, rects: [] });
+    // Single-shot, cached stream: recorded -> that id; unrecorded -> null.
+    for (const [recorded, expected] of [['screen:7:0', 'screen:7:0'], [null, null]]) {
+        const shell = shellStub(answer);
+        const env = bootProactive({ multiWindow: true, shell });
+        env.S.selectedScreenSourceId = 'screen:3:0';
+        env.w.appScreen.getStreamCaptureSourceId = (st) => (st === env.S.screenCaptureStream ? recorded : null);
+        const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
+        assert.equal(shot.via, 'stream');
+        assert.deepEqual(shell.calls.map((c) => c.sourceId), [expected, expected], 'single-shot recorded=' + recorded);
+    }
+    // Voice heartbeat: same pair.
+    for (const [recorded, expected] of [['screen:1:0', 'screen:1:0'], [null, null]]) {
+        const shell = shellStub(answer);
+        const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+        Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+        const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+        const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+        env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:3:0'; return stream; };
+        env.w.appScreen.getStreamCaptureSourceId = (st) => (st === stream ? recorded : null);
+        env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
+        vm.runInContext(proactiveSource, env.w);
+        await env.w.appProactive.sendOneProactiveVisionFrame();
+        assert.deepEqual(shell.calls.map((c) => c.sourceId), [expected, expected], 'heartbeat recorded=' + recorded);
+    }
+});
+
+test('manual screen share: both chromeMediaSourceId acquisitions record their source (text guard only)', () => {
+    assert.match(screenSource, /chromeMediaSourceId: selectedSourceId,[\s\S]{0,200}?\}\)\);\s*recordStreamCaptureSource\(captureStream, selectedSourceId\);/);
+    assert.match(screenSource, /chromeMediaSourceId: fallbackSources\[0\]\.id,[\s\S]{0,300}?\}\)\);\s*recordStreamCaptureSource\(captureStream, fallbackSources\[0\]\.id\);/);
+    assert.match(screenSource, /var frameSourceId = getStreamCaptureSourceId\(stream\);/);
+});
+
+test('manual screen share: a stream with no recorded source (getDisplayMedia) queries with null, not the selection cache', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    const track = { readyState: 'live', kind: 'video', addEventListener() {}, getSettings: () => ({ displaySurface: 'monitor' }), stop() {} };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    // A getDisplayMedia stream: current, but never recorded with a source.
+    env.S.screenCaptureStream = stream;
+    env.S.selectedScreenSourceId = 'screen:9:0';
+    env.w.getDesktopCaptureProvider = () => ({ getSources() {} });
+    env.w.startScreenVideoStreaming(stream, 'screen');
+    for (let i = 0; i < 10 && env.intervals.length === 0; i++) await new Promise((r) => setImmediate(r));
+    await env.intervals[0]();
+    assert.equal(env.sent.length, 1);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
 });

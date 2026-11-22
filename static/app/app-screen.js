@@ -1126,6 +1126,10 @@
         return streamCaptureSourceIds.get(stream) || null;
     }
     mod.getStreamCaptureSourceId = getStreamCaptureSourceId;
+    function recordStreamCaptureSource(stream, sourceId) {
+        if (stream && sourceId && streamCaptureSourceIds) streamCaptureSourceIds.set(stream, sourceId);
+        return stream;
+    }
 
     /**
      * 统一的流获取函数：优先缓存流 → Electron sourceId → getDisplayMedia → null
@@ -1267,7 +1271,7 @@
                                 }
                             }
                         });
-                        if (streamCaptureSourceIds) streamCaptureSourceIds.set(stream, captureSourceId);
+                        recordStreamCaptureSource(stream, captureSourceId);
                         // 超时后晚到的流需要立即释放，防止资源泄漏
                         if (timedOut) {
                             console.warn('[acquireStream] getUserMedia 在超时后返回，释放晚到的流');
@@ -1788,7 +1792,9 @@
                 var captureSocket = S.socket;
                 // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
                 // 流实际截的源优先：选中源失效、回退到第一个 screen: 源时选中状态已被清空。
-                var frameSourceId = getStreamCaptureSourceId(stream) || S.selectedScreenSourceId || null;
+                // Only the recorded source of this stream; null lets the shell use its
+                // getDisplayMedia record (see streamCaptureSourceId in app-proactive.js).
+                var frameSourceId = getStreamCaptureSourceId(stream);
                 var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream' });
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl) {
@@ -2705,6 +2711,7 @@
                                     }
                                 }
                             }));
+                            recordStreamCaptureSource(captureStream, selectedSourceId);
                             if (discardSupersededManualCapture()) return;
                         } catch (captureErr) {
                             if (discardCancelledScreenSharingStart(attempt)) return;
@@ -2742,6 +2749,7 @@
                                                 }
                                             }
                                         }));
+                                        recordStreamCaptureSource(captureStream, fallbackSources[0].id);
                                         if (discardCancelledScreenSharingStart(attempt)) return;
                                         if (discardSupersededManualCapture()) return;
                                         S.selectedScreenSourceId = fallbackSources[0].id;
