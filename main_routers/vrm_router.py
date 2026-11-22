@@ -41,7 +41,7 @@ from fastapi.responses import JSONResponse
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.config_manager import get_steam_workshop_path
+from utils.config_manager import get_steam_workshop_library_roots, get_steam_workshop_path
 from utils.frontend_utils import _resolve_workshop_search_dir
 from utils.url_utils import is_utf8_text
 from utils.logger_config import get_module_logger
@@ -721,22 +721,32 @@ def _workshop_roots() -> list[Path]:
     subscribed items (the same folders /models lists); the configured root
     (user_mod_folder, cached or default folder) is the fallback mount when
     Steam is unavailable. Both are searched so a mapping can be saved in either
-    case without a Steam query.
+    case without a Steam query. Items installed in other Steam libraries live
+    under those libraries' roots, which /workshop also serves; they come last.
     """
-    roots = []
+    candidates = []
     for getter in (get_steam_workshop_path, _resolve_workshop_search_dir):
         try:
-            root = getter()
+            candidates.append(getter())
         except Exception as e:
             logger.warning(f"获取创意工坊目录失败: {e}")
-            continue
+    try:
+        candidates.extend(get_steam_workshop_library_roots())
+    except Exception as e:
+        logger.warning(f"获取Steam创意工坊库目录失败: {e}")
+    roots = []
+    for root in candidates:
         if not root:
             continue
         try:
             resolved = Path(root).resolve()
         except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
             continue
-        if resolved.is_dir() and resolved not in roots:
+        try:
+            is_dir = resolved.is_dir()
+        except OSError:  # e.g. a registered library that lost its access permission
+            continue
+        if is_dir and resolved not in roots:
             roots.append(resolved)
     return roots
 
