@@ -226,7 +226,12 @@ def test_model_names_with_path_syntax_are_refused(name):
 
 
 _UNSAFE_REFS = ["../x.motion3.json", "motions/../../x.motion3.json", "/abs/x.motion3.json",
-                "C:/x.motion3.json", "..\\x.motion3.json", "C:x.motion3.json"]
+                "C:/x.motion3.json", "..\\x.motion3.json", "C:x.motion3.json",
+                "http://example.invalid/x.motion3.json", "file:///x.motion3.json",
+                "//example.invalid/x.motion3.json", "%2e%2e/%2e%2e/other/x.motion3.json",
+                "motions%2f..%2f..%2fx.motion3.json", "%2Fabs/x.motion3.json",
+                ".\t./x.motion3.json", "..\n/x.motion3.json", " ../x.motion3.json", "../x.motion3.json ",
+                ".%09./x.motion3.json", "x\x00.motion3.json"]
 
 
 def _by_id_model(monkeypatch, tmp_path: Path) -> Path:
@@ -301,6 +306,43 @@ def test_emotion_mapping_post_refuses_bare_string_group_value(model_dir, section
     result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
     assert _status(result) == 400
     assert (model_dir / "m.model3.json").read_bytes() == before
+
+
+_BAD_SHAPES = [
+    {"FileReferences": "x"},
+    {"FileReferences": {"Motions": ["../x.motion3.json"]}},
+    {"FileReferences": {"Motions": {"Idle": {"File": "../x.motion3.json"}}}},
+    {"FileReferences": {"Motions": {"Idle": ["../x.motion3.json"]}}},
+    {"FileReferences": {"Expressions": {"e": {"File": "../../x.exp3.json"}}}},
+    {"FileReferences": {"Expressions": [{"Name": "e", "File": ["../x.exp3.json"]}]}},
+    {"FileReferences": {"Motions": {"Idle": [{"File": "ok.motion3.json", "Sound": {"p": "../x.wav"}}]}}},
+]
+
+
+@pytest.mark.parametrize("payload", _BAD_SHAPES)
+def test_model_config_post_refuses_unexpected_shapes(monkeypatch, tmp_path, model_dir, payload):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    item_dir = _by_id_model(monkeypatch, tmp_path)
+    for call, config in (
+        (lambda: live2d_router.update_model_config("m", _FakeRequest(payload)), model_dir / "m.model3.json"),
+        (lambda: live2d_router.update_model_config_by_id("123", _FakeRequest(payload)), item_dir / "m.model3.json"),
+    ):
+        before = config.read_bytes()
+        result = asyncio.run(call())
+        assert _status(result) == 400
+        assert config.read_bytes() == before
+
+
+def test_model_config_post_keeps_extra_entry_fields_and_percent_names(model_dir):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    motions = {"Idle": [{"File": "motions/a%20b.motion3.json", "FadeInTime": 0.5},
+                        {"File": "motions/c.motion3.json", "Sound": "sounds/c.wav"}]}
+    result = asyncio.run(
+        live2d_router.update_model_config("m", _FakeRequest({"FileReferences": {"Motions": motions}}))
+    )
+    assert result["success"] is True
+    saved = json.loads((model_dir / "m.model3.json").read_text(encoding="utf-8"))
+    assert saved["FileReferences"]["Motions"] == motions
 
 
 # --- references resolving through links --------------------------------------------

@@ -452,41 +452,62 @@ def _find_model_root_file(model_dir: str, suffix: str) -> tuple[str | None, bool
 def _is_unsafe_model_ref(file_path: str, config_dir: str, model_root_real: str) -> bool:
     """
     Whether a file reference, relative to the folder holding the model config
-    (*config_dir*), would point outside the model folder: absolute, with a drive,
-    climbing out with ``..``, or resolving outside *model_root_real* through a link.
-    Links resolving inside the model folder are fine.
+    (*config_dir*), would point outside the model folder: carrying a colon (URL
+    scheme or drive), absolute, climbing out with ``..``, or resolving outside
+    *model_root_real* through a link. The frontend resolves references as URLs,
+    so the percent-decoded form is checked as well. Links resolving inside the
+    model folder are fine. URL parsing drops tabs / newlines and strips surrounding
+    spaces, so control characters are refused and the space-stripped form is checked too.
     """
-    normalized = file_path.replace('\\', '/')
-    posix = pathlib.PurePosixPath(normalized)
-    if posix.is_absolute() or ".." in posix.parts or pathlib.PureWindowsPath(normalized).drive:
-        return True
-    return not _is_inside_model_dir(model_root_real, os.path.join(config_dir, *posix.parts))
+    decoded = unquote(file_path)
+    for candidate in {file_path, decoded, file_path.strip(' '), decoded.strip(' ')}:
+        if ':' in candidate or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in candidate):
+            return True
+        normalized = candidate.replace('\\', '/')
+        posix = pathlib.PurePosixPath(normalized)
+        if posix.is_absolute() or ".." in posix.parts:
+            return True
+        if not _is_inside_model_dir(model_root_real, os.path.join(config_dir, *posix.parts)):
+            return True
+    return False
 
 
-def _find_unsafe_file_reference(file_refs, config_dir: str, model_root_real: str) -> str | None:
+def _find_invalid_file_reference(data, config_dir: str, model_root_real: str) -> str | None:
     """
-    Return the first ``File`` / ``Sound`` path under ``Motions`` / ``Expressions`` of a
-    request's ``FileReferences`` that would point outside the model folder, or None.
-    Only string values are checked; other shapes are stored as before.
+    Check the ``FileReferences`` a ``model_config`` POST would store. Return a short
+    reason when ``Motions`` / ``Expressions`` are not the Cubism shape
+    (``{group: [{"File": str, "Sound": str, ...}]}`` / ``[{"File": str, ...}]``), or
+    when a ``File`` / ``Sound`` path would point outside the model folder; else None.
+    Sections the request does not send are not stored, so they are not checked.
     """
-    if not isinstance(file_refs, dict):
+    if not isinstance(data, dict) or 'FileReferences' not in data:
         return None
+    file_refs = data['FileReferences']
+    if not isinstance(file_refs, dict):
+        return "FileReferences is not an object"
     entries = []
-    motions = file_refs.get('Motions')
-    if isinstance(motions, dict):
+    if 'Motions' in file_refs:
+        motions = file_refs['Motions']
+        if not isinstance(motions, dict) or not all(isinstance(items, list) for items in motions.values()):
+            return "Motions is not {group: [entry, ...]}"
         for items in motions.values():
-            if isinstance(items, list):
-                entries.extend(items)
-    expressions = file_refs.get('Expressions')
-    if isinstance(expressions, list):
+            entries.extend(items)
+    if 'Expressions' in file_refs:
+        expressions = file_refs['Expressions']
+        if not isinstance(expressions, list):
+            return "Expressions is not a list"
         entries.extend(expressions)
     for item in entries:
         if not isinstance(item, dict):
-            continue
+            return "entry is not an object"
         for key in ('File', 'Sound'):
-            file_path = item.get(key)
-            if isinstance(file_path, str) and _is_unsafe_model_ref(file_path, config_dir, model_root_real):
-                return file_path
+            if key not in item:
+                continue
+            file_path = item[key]
+            if not isinstance(file_path, str):
+                return f"{key} is not a string"
+            if _is_unsafe_model_ref(file_path, config_dir, model_root_real):
+                return f"{key} points outside the model folder"
     return None
 
 
@@ -726,12 +747,12 @@ async def update_model_config(model_name: str, request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
         # References from the request must stay inside the model folder; refuse before any read or write.
-        if _find_unsafe_file_reference(
-            data.get('FileReferences') if isinstance(data, dict) else None,
-            os.path.dirname(model_json_path),
-            os.path.realpath(model_dir),
-        ) is not None:
-            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用超出模型目录"})
+        invalid_ref = _find_invalid_file_reference(
+            data, os.path.dirname(model_json_path), os.path.realpath(model_dir)
+        )
+        if invalid_ref is not None:
+            logger.info("拒绝无效的模型文件引用: %s", invalid_ref)
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用无效或超出模型目录"})
 
         # Safety: modify Motions/Expressions only.
         # Lock entire read/modify/write; write-only locks let both requests read same base,
@@ -1179,12 +1200,12 @@ async def update_model_config_by_id(model_id: str, request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
         # References from the request must stay inside the model folder; refuse before any read or write.
-        if _find_unsafe_file_reference(
-            data.get('FileReferences') if isinstance(data, dict) else None,
-            os.path.dirname(model_json_path),
-            os.path.realpath(model_dir),
-        ) is not None:
-            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用超出模型目录"})
+        invalid_ref = _find_invalid_file_reference(
+            data, os.path.dirname(model_json_path), os.path.realpath(model_dir)
+        )
+        if invalid_ref is not None:
+            logger.info("拒绝无效的模型文件引用: %s", invalid_ref)
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用无效或超出模型目录"})
 
         # Safety: modify Motions/Expressions only, locking entire read/modify/write,
         # symmetric with update_model_config. Resolved-file lock keys let by-name/by-ID

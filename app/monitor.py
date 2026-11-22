@@ -44,7 +44,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
 from fastapi.templating import Jinja2Templates
-from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
+from utils.frontend_utils import _is_within, find_models, find_model_config_file, find_model_directory
 from utils.workshop_utils import get_default_workshop_folder
 from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
@@ -237,13 +237,21 @@ def get_emotion_mapping(model_name: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find the .model3.json file
+        # Find the .model3.json file. Like the main server's route, only a file whose real
+        # path stays inside the model folder is used; if every candidate leaves it, refuse.
         model_json_path = None
+        model_dir_real = os.path.realpath(model_dir)
+        escaped = False
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+                candidate = os.path.join(model_dir, file)
+                if _is_within(model_dir_real, os.path.realpath(candidate)):
+                    model_json_path = candidate
+                    break
+                escaped = True
+        if model_json_path is None and escaped:
+            return JSONResponse(status_code=403, content={"success": False, "error": "模型配置文件不在模型目录内"})
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
