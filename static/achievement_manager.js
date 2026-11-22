@@ -287,79 +287,75 @@
             // 约每 60 秒上报一次（官方常见节奏：定期/存档点/退出时同步）
             const REPORT_INTERVAL_MS = 60000;
             let prevTs = Date.now();
-            let reporting = false;
-            let activeController = null;
-            let forceFlushInFlight = false;
+            let inFlightFlush = null;
+            let pendingForceFlush = false;
 
-            const flushPlayTime = async ({ force = false } = {}) => {
-                // visibilitychange(hidden) + pagehide often fire together; only one
-                // keepalive unload flush should run for the same elapsed window.
-                if (force && forceFlushInFlight) return;
-
-                // Unload flush must not be dropped by the in-flight sentinel:
-                // abort the regular request (no keepalive) and re-send with keepalive.
-                if (reporting) {
-                    if (!force) return;
-                    // A force flush is already in flight (no AbortController) — do not
-                    // start a second keepalive with the same elapsedSeconds.
-                    if (!activeController) return;
-                    try { activeController.abort(); } catch (_) { }
-                    activeController = null;
-                }
-                const now = Date.now();
-                const elapsedSeconds = Math.min(
-                    3600,
-                    Math.max(0, Math.floor((now - prevTs) / 1000))
-                );
-                if (!force && elapsedSeconds < 1) {
-                    return;
-                }
-                if (elapsedSeconds < 1) {
-                    prevTs = now;
-                    return;
-                }
-
-                reporting = true;
-                if (force) forceFlushInFlight = true;
-                const controller = force ? null : new AbortController();
-                if (controller) activeController = controller;
-                try {
-                    const playtimeHeaders = { 'Content-Type': 'application/json' };
-                    const sec = window.nekoLocalMutationSecurity;
-                    if (sec && typeof sec.getMutationHeaders === 'function') {
-                        try { Object.assign(playtimeHeaders, await sec.getMutationHeaders()); } catch (_) { }
+            const flushPlayTime = ({ force = false } = {}) => {
+                // 严格单飞串行：不 abort 已发出的请求，避免与服务端无锁读写竞态或重复累加。
+                if (inFlightFlush) {
+                    if (force) {
+                        pendingForceFlush = true;
                     }
-                    const fetchOpts = {
-                        method: 'POST',
-                        headers: playtimeHeaders,
-                        // pagehide / visibility hidden 时页面可能正在卸载，keepalive 保证请求能发完
-                        keepalive: !!force,
-                        body: JSON.stringify({ seconds: elapsedSeconds })
-                    };
-                    if (controller) fetchOpts.signal = controller.signal;
-                    const response = await fetch('/api/steam/update-playtime', fetchOpts);
+                    return inFlightFlush;
+                }
 
-                    if (response.ok) {
-                        prevTs = now;
-                        const data = await response.json().catch(() => ({}));
-                        this.syncProgressStatAchievements(data);
-                    } else if (response.status === 503) {
-                        // Steam 未初始化：丢弃这段间隔，避免离线堆积后一次灌入
-                        console.debug('Steam 未初始化，跳过时长进度上报');
-                        prevTs = now;
-                    }
-                    // 其他错误保留 prevTs，下次重试这段时间
-                } catch (error) {
-                    if (error && error.name === 'AbortError') {
-                        // Superseded by a force/keepalive flush; keep prevTs for that retry.
+                const run = (async () => {
+                    const now = Date.now();
+                    const elapsedSeconds = Math.min(
+                        3600,
+                        Math.max(0, Math.floor((now - prevTs) / 1000))
+                    );
+                    if (elapsedSeconds < 1) {
                         return;
                     }
-                    console.debug('更新游戏时长进度失败:', error.message);
-                } finally {
-                    if (activeController === controller) activeController = null;
-                    if (force) forceFlushInFlight = false;
-                    reporting = false;
-                }
+
+                    try {
+                        const playtimeHeaders = { 'Content-Type': 'application/json' };
+                        const sec = window.nekoLocalMutationSecurity;
+                        let hasCachedToken = false;
+                        if (sec && typeof sec.peekCachedToken === 'function') {
+                            try {
+                                const cachedToken = sec.peekCachedToken();
+                                if (cachedToken) {
+                                    playtimeHeaders['X-CSRF-Token'] = cachedToken;
+                                    hasCachedToken = true;
+                                }
+                            } catch (_) { }
+                        }
+                        if (!hasCachedToken && sec && typeof sec.getMutationHeaders === 'function') {
+                            try { Object.assign(playtimeHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                        }
+                        const response = await fetch('/api/steam/update-playtime', {
+                            method: 'POST',
+                            headers: playtimeHeaders,
+                            // 全量开启 keepalive（单飞且请求体极小），确保常规在途请求在卸载时也能送达而无需中止重发
+                            keepalive: true,
+                            body: JSON.stringify({ seconds: elapsedSeconds })
+                        });
+
+                        if (response.ok) {
+                            prevTs = now;
+                            const data = await response.json().catch(() => ({}));
+                            this.syncProgressStatAchievements(data);
+                        } else if (response.status === 503) {
+                            // Steam 未初始化：丢弃这段间隔，避免离线堆积后一次灌入
+                            console.debug('Steam 未初始化，跳过时长进度上报');
+                            prevTs = now;
+                        }
+                        // 其他错误保留 prevTs，下次重试这段时间
+                    } catch (error) {
+                        console.debug('更新游戏时长进度失败:', error && error.message ? error.message : error);
+                    }
+                })().finally(() => {
+                    inFlightFlush = null;
+                    if (pendingForceFlush) {
+                        pendingForceFlush = false;
+                        void flushPlayTime({ force: true });
+                    }
+                });
+
+                inFlightFlush = run;
+                return run;
             };
 
             const scheduleNext = () => {

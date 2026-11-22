@@ -841,6 +841,19 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalityClearBtn.dataset.testid = 'character-personality-clear';
     personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span data-i18n="character.personalityClear">'
         + (window.t ? window.t('character.personalityClear') : '恢复默认') + '</span>';
+    function refreshPersonalityDisplay() {
+        const currentPersonality = readCharacterPersonalitySelection(cat);
+        if (currentPersonality.hasOverride) {
+            delete personalitySummary.dataset.i18n;
+            personalitySummary.textContent = currentPersonality.displayName;
+        } else {
+            personalitySummary.dataset.i18n = 'character.personalityUseDefault';
+            personalitySummary.textContent = window.t
+                ? window.t('character.personalityUseDefault')
+                : '跟随角色卡默认设定';
+        }
+        personalityClearBtn.disabled = !currentPersonality.hasOverride;
+    }
     personalityClearBtn.disabled = !personalitySelection.hasOverride;
     personalityClearBtn.addEventListener('click', async function () {
         if (!name || personalityClearBtn.disabled) {
@@ -855,8 +868,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
             }
             applyCharacterPersonalitySelection(result.selection);
-            if (isPersonalityPanelAlive()) {
-                buildCatgirlDetailForm(name, cat, false, container);
+            if (isPersonalityPanelAlive() && form.isConnected) {
+                refreshPersonalityDisplay();
             }
             if (typeof loadCharacterCards === 'function') {
                 loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
@@ -926,6 +939,9 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     defaultOption.dataset.i18n = 'character.voiceNotSet';
     defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
     voiceSelect.appendChild(defaultOption);
+    voiceSelect.addEventListener('change', () => {
+        voiceSelect.dataset.userChanged = 'true';
+    });
     voiceRow.appendChild(voiceSelect);
     const voiceSelectUi = _panelCreateVoiceSelectUi(voiceSelect);
     voiceRow.appendChild(voiceSelectUi.container);
@@ -1082,8 +1098,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                     throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
                 }
                 applyCharacterPersonalitySelection(result.selection);
-                if (isPersonalityPanelAlive()) {
-                    buildCatgirlDetailForm(name, cat, false, container);
+                if (isPersonalityPanelAlive() && form.isConnected) {
+                    refreshPersonalityDisplay();
                 }
                 if (typeof loadCharacterCards === 'function') {
                     loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
@@ -1143,16 +1159,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         });
         form.querySelectorAll('.setting-field-delete').forEach(_panelConfigureFieldDeleteButton);
 
-        const currentPersonality = readCharacterPersonalitySelection(cat);
-        if (currentPersonality.hasOverride) {
-            delete personalitySummary.dataset.i18n;
-            personalitySummary.textContent = currentPersonality.displayName;
-        } else {
-            personalitySummary.dataset.i18n = 'character.personalityUseDefault';
-            personalitySummary.textContent = window.t
-                ? window.t('character.personalityUseDefault')
-                : '跟随角色卡默认设定';
-        }
+        refreshPersonalityDisplay();
 
         form._voicesLoadPromise = refreshVoiceCatalog(voiceSelect.value);
     };
@@ -1772,143 +1779,151 @@ function _panelCreateVoiceSelectUi(selectEl) {
 
 // 加载音色列表（完整复制原版逻辑）
 async function _loadPanelVoices(selectEl, currentVoiceId) {
+    if (!selectEl) return;
     const GSV_PREFIX = 'gsv:';
+    selectEl._voiceCatalogLoaded = false;
 
     try {
         const response = await fetch('/api/characters/voices');
-        if (!response.ok) return;
-        const data = await response.json();
+        if (!response.ok) {
+            console.warn('加载音色列表失败: HTTP', response.status);
+        } else {
+            const data = await response.json();
 
-        if (data && data.voices) {
-            // 清空现有选项
-            while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
-            const defaultOption = document.createElement('option');
-            defaultOption.value = '';
-            defaultOption.dataset.i18n = 'character.voiceNotSet';
-            defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
-            selectEl.appendChild(defaultOption);
+            if (data && data.voices && typeof data.voices === 'object') {
+                selectEl._voiceCatalogLoaded = true;
+                // 清空现有选项
+                while (selectEl.firstChild) selectEl.removeChild(selectEl.firstChild);
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.dataset.i18n = 'character.voiceNotSet';
+                defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+                selectEl.appendChild(defaultOption);
 
-            // 置顶音色（海外免费 free_intl：yui + default），紧跟在"未指定音色"之后，
-            // 排在列表最上面。展示名按 i18n_key 本地化；Leda 不去重，仍出现在 Gemini
-            // 长列表里（default pin 的目标）。
-            if (Array.isArray(data.pinned_voices) && data.pinned_voices.length > 0) {
-                data.pinned_voices.forEach(function (pin) {
-                    if (!pin || !pin.voice_id) return;
-                    const option = document.createElement('option');
-                    option.value = pin.voice_id;
-                    option.textContent = (window.t && pin.i18n_key)
-                        ? window.t(pin.i18n_key)
-                        : (pin.prefix || pin.voice_id);
-                    option.title = pin.voice_id;
-                    if (pin.voice_id === currentVoiceId) option.selected = true;
-                    selectEl.appendChild(option);
-                });
-            }
-
-            // 注册的音色：按「provider · 来源」分组成 optgroup（source-first，§5）。来源取
-            // voiceData.source（design=描述生成 / clone=克隆），缺省按 clone（存量克隆音色没有
-            // source 字段）。同 (provider, 来源) 复用同一组；provider 缺失归到「其他 · …」。
-            const _cloneGroups = {};
-            Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
-                const provider = (voiceData && voiceData.provider) || '';
-                const source = (voiceData && voiceData.source === 'design') ? 'design' : 'clone';
-                const groupKey = provider + '|' + source;
-                if (!_cloneGroups[groupKey]) {
-                    const grp = document.createElement('optgroup');
-                    grp.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel(provider, source));
-                    grp.dataset.voiceSourceGroup = source;
-                    _cloneGroups[groupKey] = grp;
-                    selectEl.appendChild(grp);
+                // 置顶音色（海外免费 free_intl：yui + default），紧跟在"未指定音色"之后，
+                // 排在列表最上面。展示名按 i18n_key 本地化；Leda 不去重，仍出现在 Gemini
+                // 长列表里（default pin 的目标）。
+                if (Array.isArray(data.pinned_voices) && data.pinned_voices.length > 0) {
+                    data.pinned_voices.forEach(function (pin) {
+                        if (!pin || !pin.voice_id) return;
+                        const option = document.createElement('option');
+                        option.value = pin.voice_id;
+                        option.textContent = (window.t && pin.i18n_key)
+                            ? window.t(pin.i18n_key)
+                            : (pin.prefix || pin.voice_id);
+                        option.title = pin.voice_id;
+                        if (pin.voice_id === currentVoiceId) option.selected = true;
+                        selectEl.appendChild(option);
+                    });
                 }
-                const option = document.createElement('option');
-                option.value = voiceId;
-                // 克隆音色的可读名称存在 prefix 中，不能被角色占用信息或 voice_id 覆盖。
-                option.textContent = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
-                option.title = voiceId;
-                if (voiceId === currentVoiceId) option.selected = true;
-                _cloneGroups[groupKey].appendChild(option);
-            });
 
-            // 免费预设音色
-            if (data.free_voices && Object.keys(data.free_voices).length > 0) {
-                const freeGroup = document.createElement('optgroup');
-                freeGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('free', 'preset'));
-                freeGroup.dataset.voiceSourceGroup = 'preset';
-                Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
+                // 注册的音色：按「provider · 来源」分组成 optgroup（source-first，§5）。来源取
+                // voiceData.source（design=描述生成 / clone=克隆），缺省按 clone（存量克隆音色没有
+                // source 字段）。同 (provider, 来源) 复用同一组；provider 缺失归到「其他 · …」。
+                const _cloneGroups = {};
+                Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {
+                    const provider = (voiceData && voiceData.provider) || '';
+                    const source = (voiceData && voiceData.source === 'design') ? 'design' : 'clone';
+                    const groupKey = provider + '|' + source;
+                    if (!_cloneGroups[groupKey]) {
+                        const grp = document.createElement('optgroup');
+                        grp.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel(provider, source));
+                        grp.dataset.voiceSourceGroup = source;
+                        _cloneGroups[groupKey] = grp;
+                        selectEl.appendChild(grp);
+                    }
                     const option = document.createElement('option');
                     option.value = voiceId;
-                    option.textContent = window.t ? window.t('voice.freeVoice.' + voiceKey) : voiceKey;
+                    // 克隆音色的可读名称存在 prefix 中，不能被角色占用信息或 voice_id 覆盖。
+                    option.textContent = _panelGetRegisteredVoiceDisplayName(voiceId, voiceData);
+                    option.title = voiceId;
                     if (voiceId === currentVoiceId) option.selected = true;
-                    freeGroup.appendChild(option);
+                    _cloneGroups[groupKey].appendChild(option);
                 });
-                selectEl.appendChild(freeGroup);
-            }
 
-            // 当前 Realtime Provider 的原生音色（由后端按 core_api_type 注入）
-            // 去重范围：已注册自定义音色 + 已渲染的免费预设音色 ID，
-            // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
-            // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
-            if (data.native_voices && Object.keys(data.native_voices).length > 0) {
-                const renderedVoiceIds = new Set();
-                Object.keys(data.voices || {}).forEach(function (id) {
-                    renderedVoiceIds.add(String(id).toLowerCase());
-                });
-                if (data.free_voices) {
-                    Object.values(data.free_voices).forEach(function (id) {
-                        if (id) renderedVoiceIds.add(String(id).toLowerCase());
-                    });
-                }
-                const nativeEntries = Object.entries(data.native_voices)
-                    .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
-                if (nativeEntries.length > 0) {
-                    const nativeGroup = document.createElement('optgroup');
-                    // native 预制：「<Provider> · 预制」（provider 取自 voiceData.provider_label/provider）
-                    const _nativeProviderLabel = _panelGetNativeVoiceProviderLabel(nativeEntries)
-                        || _panelVoiceI18n('voice.providerUnknown', 'Other');
-                    nativeGroup.label = _panelNormalizeVoiceGroupLabel(
-                        _nativeProviderLabel + ' · ' + _panelVoiceSourceLabel('preset')
-                    );
-                    nativeGroup.dataset.voiceSourceGroup = 'preset';
-                    nativeEntries.forEach(function ([voiceId, voiceData]) {
+                // 免费预设音色
+                if (data.free_voices && Object.keys(data.free_voices).length > 0) {
+                    const freeGroup = document.createElement('optgroup');
+                    freeGroup.label = _panelNormalizeVoiceGroupLabel(_panelVoiceSourceGroupLabel('free', 'preset'));
+                    freeGroup.dataset.voiceSourceGroup = 'preset';
+                    Object.entries(data.free_voices).forEach(function ([voiceKey, voiceId]) {
                         const option = document.createElement('option');
                         option.value = voiceId;
-                        option.textContent = _panelNativeVoiceDisplayName(voiceId, voiceData);
-                        option.title = voiceId;
+                        option.textContent = window.t ? window.t('voice.freeVoice.' + voiceKey) : voiceKey;
                         if (voiceId === currentVoiceId) option.selected = true;
-                        nativeGroup.appendChild(option);
+                        freeGroup.appendChild(option);
                     });
-                    selectEl.appendChild(nativeGroup);
+                    selectEl.appendChild(freeGroup);
                 }
+
+                // 当前 Realtime Provider 的原生音色（由后端按 core_api_type 注入）
+                // 去重范围：已注册自定义音色 + 已渲染的免费预设音色 ID，
+                // 避免任一冲突时下拉里重复条目和多重 selected 视觉态。
+                // 自定义/免费音色优先保留，与 _has_custom_tts 的路由优先级一致。
+                if (data.native_voices && Object.keys(data.native_voices).length > 0) {
+                    const renderedVoiceIds = new Set();
+                    Object.keys(data.voices || {}).forEach(function (id) {
+                        renderedVoiceIds.add(String(id).toLowerCase());
+                    });
+                    if (data.free_voices) {
+                        Object.values(data.free_voices).forEach(function (id) {
+                            if (id) renderedVoiceIds.add(String(id).toLowerCase());
+                        });
+                    }
+                    const nativeEntries = Object.entries(data.native_voices)
+                        .filter(function ([voiceId]) { return !renderedVoiceIds.has(String(voiceId).toLowerCase()); });
+                    if (nativeEntries.length > 0) {
+                        const nativeGroup = document.createElement('optgroup');
+                        // native 预制：「<Provider> · 预制」（provider 取自 voiceData.provider_label/provider）
+                        const _nativeProviderLabel = _panelGetNativeVoiceProviderLabel(nativeEntries)
+                            || _panelVoiceI18n('voice.providerUnknown', 'Other');
+                        nativeGroup.label = _panelNormalizeVoiceGroupLabel(
+                            _nativeProviderLabel + ' · ' + _panelVoiceSourceLabel('preset')
+                        );
+                        nativeGroup.dataset.voiceSourceGroup = 'preset';
+                        nativeEntries.forEach(function ([voiceId, voiceData]) {
+                            const option = document.createElement('option');
+                            option.value = voiceId;
+                            option.textContent = _panelNativeVoiceDisplayName(voiceId, voiceData);
+                            option.title = voiceId;
+                            if (voiceId === currentVoiceId) option.selected = true;
+                            nativeGroup.appendChild(option);
+                        });
+                        selectEl.appendChild(nativeGroup);
+                    }
+                }
+
+                // 加载 GPT-SoVITS 声音列表
+                await _loadPanelGsvVoices(selectEl, currentVoiceId);
             }
-        }
-
-        // 加载 GPT-SoVITS 声音列表
-        await _loadPanelGsvVoices(selectEl, currentVoiceId);
-
-        // 保底：currentVoiceId 在任何分支都没渲染时（Gemini 别名、免费版被过滤掉的
-        // CosyVoice 云端 voice_id、catalog 没暴露的 ID 等），下拉里没匹配项 select
-        // 会回到首项；下次保存表单会被误判为"已清空"走 unregister_voice 分支，把
-        // 用户保存的音色丢掉。给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
-        // 必须放在所有 loader（含 _loadPanelGsvVoices）之后才能正确判断是否已渲染；
-        // gsv: 前缀 ID 由 _loadPanelGsvVoices.ensureGsvFallback 自行兜底，跳过避免双插。
-        if (currentVoiceId
-            && !currentVoiceId.startsWith(GSV_PREFIX)
-            && !selectEl.querySelector('option[value="' + CSS.escape(currentVoiceId) + '"]')) {
-            const fallbackGroup = document.createElement('optgroup');
-            const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
-            fallbackGroup.label = _panelNormalizeVoiceGroupLabel(fallbackLabel);
-            fallbackGroup.dataset.savedVoiceFallbackGroup = 'true';
-            const fallbackOption = document.createElement('option');
-            fallbackOption.value = currentVoiceId;
-            fallbackOption.textContent = currentVoiceId + ' (?)';
-            fallbackOption.title = currentVoiceId;
-            fallbackOption.selected = true;
-            fallbackGroup.appendChild(fallbackOption);
-            selectEl.appendChild(fallbackGroup);
-            selectEl.value = currentVoiceId;
         }
     } catch (e) {
         console.warn('加载音色列表失败:', e);
+    }
+
+    // 保底：currentVoiceId 在任何分支都没渲染时（包括目录请求失败、Gemini 别名、
+    // 免费版被过滤掉的 CosyVoice 云端 voice_id、catalog 没暴露的 ID 等），下拉里没匹配项
+    // select 会回到首项；下次保存表单会被误判为"已清空"走 unregister_voice 分支，把
+    // 用户保存的音色丢掉。给未知值补一条 "(?)" 占位条，保留原值供后端 normalize。
+    const hasCurrentVoiceOption = !!(currentVoiceId
+        && Array.from(selectEl.options || []).some(opt => opt.value === currentVoiceId));
+    if (currentVoiceId && !hasCurrentVoiceOption) {
+        const fallbackGroup = document.createElement('optgroup');
+        const fallbackLabel = window.t ? window.t('character.savedVoiceFallback') : '当前已保存音色';
+        fallbackGroup.label = _panelNormalizeVoiceGroupLabel(fallbackLabel);
+        fallbackGroup.dataset.savedVoiceFallbackGroup = 'true';
+        const fallbackOption = document.createElement('option');
+        fallbackOption.value = currentVoiceId;
+        fallbackOption.textContent = currentVoiceId.startsWith(GSV_PREFIX)
+            ? currentVoiceId.substring(GSV_PREFIX.length) + ' (?)'
+            : currentVoiceId + ' (?)';
+        fallbackOption.title = currentVoiceId;
+        fallbackOption.selected = true;
+        fallbackGroup.appendChild(fallbackOption);
+        selectEl.appendChild(fallbackGroup);
+        selectEl.value = currentVoiceId;
+    } else if (hasCurrentVoiceOption) {
+        selectEl.value = currentVoiceId;
     }
 }
 
@@ -2087,8 +2102,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             return false;
         }
 
-        const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
+        const voiceSelect = form.querySelector('select[name="voice_id"]');
+        const selectedVoiceId = (voiceSelect?.value ?? '').trim();
         const previousVoiceId = form._previousVoiceId || '';
+        const canUnregisterVoice = !!(voiceSelect && (
+            voiceSelect._voiceCatalogLoaded === true
+            || voiceSelect.dataset?.userChanged === 'true'
+        ));
         const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
             baseData: { '档案名': nameInput.value.trim() },
             excludeFieldNames: ['档案名', 'voice_id', 'chat_sync_enabled'],
@@ -2187,7 +2207,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                 } finally {
                     notifyVoiceConfigSwitching(savedCatgirlName, false, voiceSwitchOpId);
                 }
-            } else if (previousVoiceId) {
+            } else if (previousVoiceId && canUnregisterVoice) {
                 const voiceSwitchOpId = createVoiceConfigSwitchOpId(savedCatgirlName);
                 notifyVoiceConfigSwitching(savedCatgirlName, true, voiceSwitchOpId);
                 try {
@@ -2219,22 +2239,32 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         // 只保存 Live2D 待机动作。角色资料保存不负责模型绑定；这里的表单快照可能已经过期，
         // 不能把 form._live2dModel 一并写回，否则辅助生成自动保存会恢复旧模型。
         if (!isNew && form._modelType === 'live2d' && form._live2dModel) {
-            const motionSelect = document.getElementById('preview-motion-select');
-            const idleAnimation = motionSelect ? (motionSelect.value || '') : '';
-            try {
-                const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(savedCatgirlName), {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        live2d_idle_animation: idleAnimation
-                    })
-                });
-                const l2dResult = await l2dResp.json().catch(() => ({}));
-                if (!l2dResp.ok || l2dResult.success === false) {
-                    console.warn('[saveCatgirlFromPanel] 保存待机动作失败:', l2dResult.error || l2dResp.statusText);
+            const motionSelect = (typeof document !== 'undefined' && typeof document.getElementById === 'function')
+                ? document.getElementById('preview-motion-select')
+                : null;
+            const hasReadyMotionSelect = !!(
+                motionSelect
+                && !motionSelect.disabled
+                && motionSelect.options
+                && motionSelect.options.length > 0
+            );
+            if (hasReadyMotionSelect) {
+                const idleAnimation = motionSelect.value || '';
+                try {
+                    const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(savedCatgirlName), {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            live2d_idle_animation: idleAnimation
+                        })
+                    });
+                    const l2dResult = await l2dResp.json().catch(() => ({}));
+                    if (!l2dResp.ok || l2dResult.success === false) {
+                        console.warn('[saveCatgirlFromPanel] 保存待机动作失败:', l2dResult.error || l2dResp.statusText);
+                    }
+                } catch (l2dErr) {
+                    console.warn('[saveCatgirlFromPanel] 保存待机动作请求失败:', l2dErr);
                 }
-            } catch (l2dErr) {
-                console.warn('[saveCatgirlFromPanel] 保存待机动作请求失败:', l2dErr);
             }
         }
 

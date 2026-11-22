@@ -2,6 +2,9 @@
     'use strict';
 
     const HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY = 'neko.homeTutorial.agentRestoreSnapshot.v1';
+    const HOME_TUTORIAL_AGENT_RESTORE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+    const HOME_TUTORIAL_AGENT_RESTORE_MAX_FUTURE_SKEW_MS = 60 * 1000;
+    const HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 15000]);
     const HOME_TUTORIAL_AGENT_FLAG_KEYS = Object.freeze([
         'agent_enabled',
         'computer_use_enabled',
@@ -10,6 +13,7 @@
     ]);
 
     const mod = {};
+    let interruptedRestoreRetryTimer = null;
     const state = {
         featureSuppression: {
             active: false,
@@ -145,6 +149,52 @@
         }
     }
 
+    function getCurrentLanlanName() {
+        const fromConfig = window.lanlan_config && typeof window.lanlan_config.lanlan_name === 'string'
+            ? window.lanlan_config.lanlan_name
+            : '';
+        const fromState = window.appState && typeof window.appState.lanlan_name === 'string'
+            ? window.appState.lanlan_name
+            : '';
+        return String(fromConfig || fromState || '').trim();
+    }
+
+    async function waitForStorageBarrier() {
+        if (typeof window.waitForStorageLocationStartupBarrier === 'function') {
+            await window.waitForStorageLocationStartupBarrier();
+        } else if (window.__nekoStorageLocationStartupBarrier
+            && typeof window.__nekoStorageLocationStartupBarrier.then === 'function') {
+            await window.__nekoStorageLocationStartupBarrier;
+        }
+    }
+
+    function cancelInterruptedRestoreRetry() {
+        if (interruptedRestoreRetryTimer !== null) {
+            clearTimeout(interruptedRestoreRetryTimer);
+            interruptedRestoreRetryTimer = null;
+        }
+    }
+
+    function hasAnyEnabledAgentFlag(flags) {
+        if (!flags || typeof flags !== 'object') {
+            return false;
+        }
+        return HOME_TUTORIAL_AGENT_FLAG_KEYS.some(function (key) {
+            return flags[key] === true;
+        });
+    }
+
+    function hasUnexpectedChildFlagEnabled(currentFlags, expectedFlags) {
+        if (!currentFlags || typeof currentFlags !== 'object') {
+            return false;
+        }
+        return HOME_TUTORIAL_AGENT_FLAG_KEYS.some(function (key) {
+            return key !== 'agent_enabled'
+                && currentFlags[key] === true
+                && !(expectedFlags && expectedFlags[key] === true);
+        });
+    }
+
     function readPersistedAgentRestoreSnapshot() {
         try {
             const raw = localStorage.getItem(HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY);
@@ -152,7 +202,28 @@
                 return null;
             }
             const payload = JSON.parse(raw);
-            if (!payload || !payload.agentFlags || typeof payload.agentFlags !== 'object') {
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+                return null;
+            }
+            if (payload.version !== 1) {
+                return null;
+            }
+            if (!payload.agentFlags || typeof payload.agentFlags !== 'object' || Array.isArray(payload.agentFlags)) {
+                return null;
+            }
+            if (typeof payload.createdAt !== 'number' || !Number.isFinite(payload.createdAt)) {
+                return null;
+            }
+            const now = Date.now();
+            if (payload.createdAt > now + HOME_TUTORIAL_AGENT_RESTORE_MAX_FUTURE_SKEW_MS) {
+                return null;
+            }
+            if (now - payload.createdAt > HOME_TUTORIAL_AGENT_RESTORE_MAX_AGE_MS) {
+                return null;
+            }
+            const snapshotOwner = typeof payload.lanlanName === 'string' ? payload.lanlanName.trim() : '';
+            const currentOwner = getCurrentLanlanName();
+            if (snapshotOwner && currentOwner && snapshotOwner !== currentOwner) {
                 return null;
             }
             return payload;
@@ -172,6 +243,7 @@
                 token: token,
                 createdAt: Date.now(),
                 reason: reason || 'home-tutorial-suppression',
+                lanlanName: getCurrentLanlanName(),
                 agentFlags: flags,
             }));
         } catch (error) {
@@ -223,7 +295,7 @@
             && state.featureSuppression.token === token;
     }
 
-    async function restoreAgentSnapshot(flags, restoreToken) {
+    async function restoreAgentSnapshot(flags, restoreToken, attemptState) {
         if (!flags) {
             return false;
         }
@@ -234,6 +306,9 @@
             await postAgentCommand('set_agent_enabled', {
                 enabled: !!flags.agent_enabled,
             });
+            if (attemptState && flags.agent_enabled) {
+                attemptState.masterAppliedInAttempt = true;
+            }
         }
         if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
             if (state.featureSuppression.active && flags.agent_enabled) {
@@ -372,6 +447,7 @@
         if (suppression.active) {
             return;
         }
+        cancelInterruptedRestoreRetry();
         const token = Date.now() + Math.random();
         const snapshot = {
             galgameEnabled: snapshotGalgameState(),
@@ -423,6 +499,7 @@
         if (!suppression.active && !suppression.snapshot) {
             return;
         }
+        cancelInterruptedRestoreRetry();
         const snapshot = suppression.snapshot || {};
         suppression.active = false;
         suppression.token = Date.now() + Math.random();
@@ -459,32 +536,95 @@
         emitHomeTutorialLockIfChanged(reason || 'tutorial-ended');
     }
 
-    function restoreInterruptedAgentSuppression(reason) {
+    async function restoreInterruptedAgentSuppression(reason) {
         if (state.featureSuppression.active) {
-            return;
+            return false;
         }
+        cancelInterruptedRestoreRetry();
+        const restoreToken = Date.now() + Math.random();
+        state.featureSuppression.token = restoreToken;
+
+        try {
+            await waitForStorageBarrier();
+        } catch (barrierError) {
+            console.warn('[HomeTutorialRuntime] storage barrier failed before interrupted agent restore:', barrierError);
+            return false;
+        }
+        if (!canRestoreAgentSnapshot(restoreToken)) {
+            return false;
+        }
+
         const persisted = readPersistedAgentRestoreSnapshot();
         if (!persisted) {
             clearPersistedAgentRestoreSnapshot();
-            return;
+            return false;
         }
-        const restoreToken = Date.now() + Math.random();
-        state.featureSuppression.token = restoreToken;
-        void restoreAgentSnapshot(persisted.agentFlags, restoreToken)
-            .then(function (restored) {
+        if (!hasAnyEnabledAgentFlag(persisted.agentFlags)) {
+            clearPersistedAgentRestoreSnapshot(persisted.token);
+            return true;
+        }
+
+        const attemptState = { masterAppliedInAttempt: false };
+
+        async function runRestoreAttempt(retryIndex) {
+            if (!canRestoreAgentSnapshot(restoreToken)) {
+                return false;
+            }
+            const latestPersisted = readPersistedAgentRestoreSnapshot();
+            if (!latestPersisted || latestPersisted.token !== persisted.token) {
+                if (!latestPersisted) {
+                    clearPersistedAgentRestoreSnapshot();
+                }
+                return false;
+            }
+
+            try {
+                const currentFlags = await fetchAgentFlagSnapshot();
+                if (!canRestoreAgentSnapshot(restoreToken)) {
+                    return false;
+                }
+                if (!attemptState.masterAppliedInAttempt) {
+                    if (hasAnyEnabledAgentFlag(currentFlags)) {
+                        clearPersistedAgentRestoreSnapshot(persisted.token);
+                        return false;
+                    }
+                } else if (hasUnexpectedChildFlagEnabled(currentFlags, persisted.agentFlags)) {
+                    clearPersistedAgentRestoreSnapshot(persisted.token);
+                    return false;
+                }
+
+                const restored = await restoreAgentSnapshot(persisted.agentFlags, restoreToken, attemptState);
                 if (restored && canRestoreAgentSnapshot(restoreToken)) {
                     clearPersistedAgentRestoreSnapshot(persisted.token);
                     syncAgentFlagsUi();
+                    return true;
                 }
-            })
-            .catch(function (error) {
-                console.warn('[HomeTutorialRuntime] failed to restore interrupted agent suppression:', error);
-            });
+                return false;
+            } catch (error) {
+                if (!canRestoreAgentSnapshot(restoreToken)) {
+                    return false;
+                }
+                if (retryIndex < HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS.length) {
+                    const delayMs = HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS[retryIndex];
+                    return await new Promise(function (resolve) {
+                        interruptedRestoreRetryTimer = setTimeout(function () {
+                            interruptedRestoreRetryTimer = null;
+                            void runRestoreAttempt(retryIndex + 1).then(resolve);
+                        }, delayMs);
+                    });
+                }
+                console.warn('[HomeTutorialRuntime] failed to restore interrupted agent suppression:', reason || '', error);
+                return false;
+            }
+        }
+
+        return await runRestoreAttempt(0);
     }
 
     mod.beginHomeTutorialFeatureSuppression = beginHomeTutorialFeatureSuppression;
     mod.enforceHomeTutorialFeatureSuppression = enforceHomeTutorialFeatureSuppression;
     mod.endHomeTutorialFeatureSuppression = endHomeTutorialFeatureSuppression;
+    mod.restoreInterruptedAgentSuppression = restoreInterruptedAgentSuppression;
     mod.isHomeTutorialFeatureSuppressionActive = function () {
         return !!state.featureSuppression.active;
     };
@@ -492,6 +632,7 @@
         begin: beginHomeTutorialFeatureSuppression,
         enforce: enforceHomeTutorialFeatureSuppression,
         end: endHomeTutorialFeatureSuppression,
+        restoreInterrupted: restoreInterruptedAgentSuppression,
         isActive: mod.isHomeTutorialFeatureSuppressionActive,
     };
 
@@ -531,6 +672,6 @@
         refreshInteractionLock: emitHomeTutorialLockIfChanged,
     });
 
-    restoreInterruptedAgentSuppression('init');
+    void restoreInterruptedAgentSuppression('init');
     emitHomeTutorialLockIfChanged('init');
 })();

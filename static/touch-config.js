@@ -207,8 +207,23 @@ function syncCurrentTouchSetConfigToManager() {
     return syncTouchSetDataToManager(collectAllTouchSetData())
 }
 
-function touchPage_open(){
+function hasLoadedTouchSetForModel(manager, modelName) {
+    if (!manager || !manager._touchSetLoadedAt || !manager.touchSet || typeof manager.touchSet !== 'object') {
+        return false
+    }
+    if (!modelName) {
+        return true
+    }
+    return Object.prototype.hasOwnProperty.call(manager.touchSet, modelName)
+}
 
+let touchPageOpenInFlight = false
+
+async function touchPage_open(){
+    if (touchPageOpenInFlight) {
+        return
+    }
+    touchPageOpenInFlight = true
     try {
         const live2dManager = window.live2dManager
         if (!live2dManager) {
@@ -227,6 +242,15 @@ function touchPage_open(){
             createTouchConfigFloatingWindow({ content: window.t('live2d.touchAnim.modelDataNotReady', '模型内部数据未准备好') })
             return
         }
+
+        const modelName = live2dManager.modelName || ''
+        if (!hasLoadedTouchSetForModel(live2dManager, modelName)) {
+            const loaded = await InitializationTouchSet(undefined, { allowLive2DReload: true })
+            if (loaded !== true || !hasLoadedTouchSetForModel(live2dManager, modelName)) {
+                createTouchConfigFloatingWindow({ content: window.t('live2d.touchAnim.modelDataNotReady', '模型内部数据未准备好') })
+                return
+            }
+        }
         
         const hitAreas = internalModel.settings.hitAreas || []
         
@@ -238,6 +262,8 @@ function touchPage_open(){
     } catch (error) {
         createTouchConfigFloatingWindow({ content: `错误: ${error.message}` })
         console.error("获取 HitAreas 失败:", error)
+    } finally {
+        touchPageOpenInFlight = false
     }
 }
 
@@ -301,8 +327,12 @@ async function InitializationTouchSet(characterJson, options = {}) {
 
 
         const response = await fetch('/api/characters');
+        if (!response.ok) {
+            console.warn('[TouchSet] 获取角色配置失败:', response.status);
+            return false;
+        }
         const charactersJson = await response.json();
-        characterJson = charactersJson.猫娘[lanlanName]
+        characterJson = charactersJson?.猫娘?.[lanlanName]
         if (!characterJson) {
             // 角色不存在/数据缺失：同样视为未提交，避免 undefined 解引用。
             console.warn('[TouchSet] 未找到角色的触摸配置数据:', lanlanName)
@@ -388,6 +418,7 @@ async function saveTouchSetToServer() {
         const result = await response.json();
 
         if (result.success) {
+            touchConfigDirty = false;
             syncTouchSetDataToManager(touchSetData);
             broadcastTouchSetUpdated(modelName)
             console.log(`[TouchSet] 已保存模型 ${modelName} 的触摸配置到服务器`);
@@ -446,17 +477,22 @@ function showTouchSetConfigWindow(hitAreas, motions, expressions){
     const container = floatingWindow.getContentContainer()
     
     const nowmodle = window.live2dManager?.modelName || '';
+    const hasLoadedSnapshot = Boolean(nowmodle) && hasLoadedTouchSetForModel(window.live2dManager, nowmodle);
+    touchConfigDirty = false;
     const TouchSet = getCurrentModelTouchSet();
     
     const cleanupMultiselect = () => {
         document.removeEventListener('click', closeAllMultiselects);
     };
     floatingWindow.onClose = function(){
+        const hadPendingAutoSave = Boolean(autoSaveTimeout);
         if (autoSaveTimeout) {
             clearTimeout(autoSaveTimeout)
             autoSaveTimeout = null
         }
-        saveTouchSetToServer()
+        if (hasLoadedSnapshot && (hadPendingAutoSave || touchConfigDirty)) {
+            saveTouchSetToServer()
+        }
         cleanupMultiselect()
         console.log("[TouchSet] 配置窗口已关闭")
     }
@@ -1854,8 +1890,10 @@ function createMultiSelect(type, options, selectedValues = [], hitAreaId){
 
 let autoSaveTimeout = null
 let isSaving = false
+let touchConfigDirty = false
 
 function triggerAutoSave() {
+    touchConfigDirty = true
     syncCurrentTouchSetConfigToManager()
 
     if (autoSaveTimeout) {

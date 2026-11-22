@@ -667,11 +667,19 @@
         return normalized;
     };
 
+    function getActiveScreenshotItems() {
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return [];
+        return Array.from(screenshotsList.children).filter(function (item) {
+            return !item.dataset || item.dataset.removing !== '1';
+        });
+    }
+
     mod.normalizeAllPendingComposerAttachments = async function normalizeAllPendingComposerAttachments() {
         var screenshotsList = S.dom.screenshotsList;
         if (!screenshotsList) return [];
 
-        var items = Array.from(screenshotsList.children);
+        var items = getActiveScreenshotItems();
         var urls = [];
         var changed = false;
         for (var i = 0; i < items.length; i += 1) {
@@ -791,16 +799,25 @@
      * @param {HTMLElement} item
      */
     mod.removeScreenshotFromList = function removeScreenshotFromList(item) {
-        var screenshotsList = S.dom.screenshotsList;
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer;
+        if (!item || (item.dataset && item.dataset.removing === '1')) return;
 
-        item.style.animation = 'slideOut 0.3s ease';
+        if (item.dataset) {
+            item.dataset.removing = '1';
+        }
+        if (item.style) {
+            item.style.pointerEvents = 'none';
+            item.style.animation = 'slideOut 0.3s ease';
+        }
+        mod.updateScreenshotCount();
+        mod.syncPendingComposerAttachments();
+
         setTimeout(function () {
             item.remove();
             mod.updateScreenshotCount();
             mod.syncPendingComposerAttachments();
 
-            if (screenshotsList.children.length === 0) {
+            if (getActiveScreenshotItems().length === 0 && screenshotThumbnailContainer) {
                 screenshotThumbnailContainer.classList.remove('show');
             }
         }, 300);
@@ -811,18 +828,16 @@
      * Update the displayed screenshot count badge.
      */
     mod.updateScreenshotCount = function updateScreenshotCount() {
-        var screenshotsList = S.dom.screenshotsList;
         var screenshotCountEl = S.dom.screenshotCount;
-        var count = screenshotsList.children.length;
-        screenshotCountEl.textContent = count;
+        var count = getActiveScreenshotItems().length;
+        if (screenshotCountEl) {
+            screenshotCountEl.textContent = count;
+        }
     };
     window.updateScreenshotCount = mod.updateScreenshotCount;
 
     mod.getPendingComposerAttachments = function getPendingComposerAttachments() {
-        var screenshotsList = S.dom.screenshotsList;
-        if (!screenshotsList) return [];
-
-        return Array.from(screenshotsList.children).map(function (item, index) {
+        return getActiveScreenshotItems().map(function (item, index) {
             var img = item.querySelector('.screenshot-thumbnail');
             if (!img || !img.src) return null;
             var translatedAlt = window.t ? window.t('chat.pendingImageAlt', { index: index + 1 }) : '';
@@ -957,9 +972,7 @@
 
     mod.removePendingAttachmentById = function removePendingAttachmentById(attachmentId) {
         if (!attachmentId) return;
-        var screenshotsList = S.dom.screenshotsList;
-        if (!screenshotsList) return;
-        var items = Array.from(screenshotsList.children);
+        var items = getActiveScreenshotItems();
         var target = items.find(function (item) {
             return item.dataset.attachmentId === String(attachmentId);
         });
@@ -973,7 +986,7 @@
         var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer;
         if (!screenshotsList || !screenshotThumbnailContainer) return;
         mod.updateScreenshotCount();
-        if (screenshotsList.children.length > 0) {
+        if (getActiveScreenshotItems().length > 0) {
             screenshotThumbnailContainer.classList.add('show');
         } else {
             screenshotThumbnailContainer.classList.remove('show');
@@ -1087,7 +1100,9 @@
         var existingItems = Array.from(screenshotsList.children);
         var detachedExistingItems = [];
         existingItems.forEach(function (item) {
-            detachedExistingItems.push(item);
+            if (!item.dataset || item.dataset.removing !== '1') {
+                detachedExistingItems.push(item);
+            }
             item.remove();
         });
         refreshPendingComposerAttachmentList();
@@ -3128,7 +3143,7 @@
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
             var ignoreComposerAttachments = options.ignoreComposerAttachments === true;
-            var hasScreenshots = !ignoreComposerAttachments && screenshotsList.children.length > 0;
+            var hasScreenshots = !ignoreComposerAttachments && getActiveScreenshotItems().length > 0;
             if (!text && !hasScreenshots && !hasExtraImages) return false;
             if (isHomeTutorialInteractionLocked()) {
                 showHomeTutorialLockedToast();
@@ -3153,7 +3168,7 @@
             if (hasScreenshots) {
                 try {
                     await mod.normalizeAllPendingComposerAttachments();
-                    hasScreenshots = screenshotsList.children.length > 0;
+                    hasScreenshots = getActiveScreenshotItems().length > 0;
                 } catch (error) {
                     console.error('[Chat] 待发送图片处理失败:', error);
                     window.showStatusToast(
@@ -3371,46 +3386,48 @@
 
                     // Send screenshots first
                     if (hasScreenshots) {
-                        var screenshotItems = Array.from(screenshotsList.children);
-                        for (var i = 0; i < screenshotItems.length; i++) {
-                            var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
-                            if (img && img.src) {
-                                sentImageUrls.push(img.src);
-                                var msg = {
-                                    action: 'stream_data',
-                                    data: img.src,
-                                    input_type: getPendingAttachmentInputType(screenshotItems[i]),
-                                    request_id: requestId
-                                };
-                                // Attach paired avatar position metadata (captured at screenshot time)
-                                var storedPos = screenshotItems[i].dataset.avatarPosition;
-                                if (storedPos) {
-                                    try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                        var screenshotItems = getActiveScreenshotItems();
+                        if (screenshotItems.length > 0) {
+                            for (var i = 0; i < screenshotItems.length; i++) {
+                                var img = screenshotItems[i].querySelector('.screenshot-thumbnail');
+                                if (img && img.src) {
+                                    sentImageUrls.push(img.src);
+                                    var msg = {
+                                        action: 'stream_data',
+                                        data: img.src,
+                                        input_type: getPendingAttachmentInputType(screenshotItems[i]),
+                                        request_id: requestId
+                                    };
+                                    // Attach paired avatar position metadata (captured at screenshot time)
+                                    var storedPos = screenshotItems[i].dataset.avatarPosition;
+                                    if (storedPos) {
+                                        try { msg.avatar_position = JSON.parse(storedPos); } catch (e) { /* ignore */ }
+                                    }
+                                    S.socket.send(JSON.stringify(msg));
                                 }
-                                S.socket.send(JSON.stringify(msg));
                             }
-                        }
 
-                        if (!isReactWindowSource) {
-                            var screenshotItemCount = screenshotItems.length;
-                            window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
-                                skipReactSync: true
-                            });
-                        }
-                        sentUserContent = true;
+                            if (!isReactWindowSource) {
+                                var screenshotItemCount = screenshotItems.length;
+                                window.appendMessage('\uD83D\uDCF8 [\u5DF2\u53D1\u9001' + screenshotItemCount + '\u5F20\u622A\u56FE]', 'user', true, {
+                                    skipReactSync: true
+                                });
+                            }
+                            sentUserContent = true;
 
-                        // Achievement: send image
-                        if (window.unlockAchievement) {
-                            window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
-                                console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
-                            });
-                        }
+                            // Achievement: send image
+                            if (window.unlockAchievement) {
+                                window.unlockAchievement('ACH_SEND_IMAGE').catch(function (err) {
+                                    console.error('\u89E3\u9501\u53D1\u9001\u56FE\u7247\u6210\u5C31\u5931\u8D25:', err);
+                                });
+                            }
 
-                        // Clear screenshot list
-                        screenshotsList.innerHTML = '';
-                        screenshotThumbnailContainer.classList.remove('show');
-                        mod.updateScreenshotCount();
-                        mod.syncPendingComposerAttachments();
+                            // Clear screenshot list
+                            screenshotsList.innerHTML = '';
+                            screenshotThumbnailContainer.classList.remove('show');
+                            mod.updateScreenshotCount();
+                            mod.syncPendingComposerAttachments();
+                        }
                     }
 
                     if (hasExtraImages) {
@@ -3555,7 +3572,7 @@
             var text = String(typeof rawText === 'string' ? rawText : '').trim();
             var extraImageDataUrls = normalizeExternalImageDataUrls(options.extraImageDataUrls);
             var hasExtraImages = extraImageDataUrls.length > 0;
-            var hasScreenshots = options.ignoreComposerAttachments === true ? false : screenshotsList.children.length > 0;
+            var hasScreenshots = options.ignoreComposerAttachments === true ? false : getActiveScreenshotItems().length > 0;
 
             var theaterRuntime = window.nekoTheaterRuntime;
             if (theaterRuntime && typeof theaterRuntime.isActive === 'function' && theaterRuntime.isActive()) {
@@ -4473,7 +4490,7 @@
         // Clear all screenshots button
         // ----------------------------------------------------------------
         clearAllScreenshots.addEventListener('click', async function () {
-            if (screenshotsList.children.length === 0) return;
+            if (getActiveScreenshotItems().length === 0) return;
 
             if (await window.showConfirm(
                 window.t ? window.t('dialogs.clearScreenshotsConfirm') : '\u786E\u5B9A\u8981\u6E05\u7A7A\u6240\u6709\u5F85\u53D1\u9001\u7684\u622A\u56FE\u5417\uFF1F',
