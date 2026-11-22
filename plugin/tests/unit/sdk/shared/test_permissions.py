@@ -83,6 +83,9 @@ def test_call_chain_allows_takes_ids_and_earlier_names():
     view = view_from_wire("a", wire)
     assert view.allows(MEMORY) and view.allows("memory.read")
     assert not view.allows("messages.push") and not view.allows("screen.capture")
+    earlier_only = view_from_wire("a", {**wire, "rights": ["memory.read"]})
+    assert earlier_only.allows(MEMORY) and earlier_only.allows("memory.read")
+    assert not earlier_only.allows("plugin_sdk.main_agent.messages:push")
     # Non-string entries are dropped, so an unknown name never matches one.
     junk = view_from_wire("a", {**wire, "rights": [None, 3, MEMORY]})
     assert junk.rights == {MEMORY} and not junk.allows("screen.capture") and junk.allows("memory.read")

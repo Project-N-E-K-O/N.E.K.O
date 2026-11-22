@@ -17,7 +17,7 @@ import time
 
 from plugin.core.call_registry import CallLink, CallRecord, CallRegistry, Origin
 from plugin.core.capability_policy import Decision, current_mode, decide
-from plugin.sdk.shared.permissions import legacy_name, normalize_permission
+from plugin.sdk.shared.permissions import PLUGIN_PERMISSION_DENIED, legacy_name, normalize_permission
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import call_audit
 
@@ -45,7 +45,7 @@ _RESULT_CODES = frozenset({
     "CONNECTION_CLOSED", "TRANSPORT_ERROR", "TRANSPORT_TIMEOUT", "BUSY",
     "SERIALIZATION_FAILED", "PLUGIN_UNAVAILABLE", "PLUGIN_NOT_READY",
     "CALL_DEPTH_EXCEEDED", "REQUEST_FAILED", "INVALID_REQUEST", "UNKNOWN_OPERATION",
-    "INTERNAL_ERROR", "PLUGIN_OUTPUT_SCHEMA_VIOLATION",
+    "INTERNAL_ERROR", "PLUGIN_OUTPUT_SCHEMA_VIOLATION", PLUGIN_PERMISSION_DENIED,
 })
 _DEDUP_SECONDS = 60.0
 _last_written: dict[tuple, float] = {}

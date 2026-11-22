@@ -100,6 +100,18 @@ def test_startup_notices_for_the_deprecated_variable(switch, legacy, expected):
     assert len(notices) == (2 if legacy in ("off", "observe") else 1)
 
 
+def test_startup_notices_do_not_contradict_each_other(switch):
+    switch(host=True, legacy="enforce")
+    legacy_line, switch_line = capability_policy.startup_notices()
+    assert "switches them off anyway" in legacy_line and "switched off" in switch_line
+
+
+def test_permission_refusal_keeps_its_audit_code():
+    error = RuntimeError()
+    error.code = "PLUGIN_PERMISSION_DENIED"
+    assert capability_gate.result_code(error) == "PLUGIN_PERMISSION_DENIED"
+
+
 def test_startup_notices(switch):
     assert capability_policy.startup_notices() == []
     switch(host=True)

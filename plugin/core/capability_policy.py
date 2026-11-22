@@ -68,6 +68,8 @@ def startup_notices() -> list[str]:
             meaning = "it now turns the master switch on: uses are still judged and recorded, none are refused"
         elif legacy == "enforce":
             meaning = "it now leaves permission checks in force"
+            if SOURCE_HOST_CONFIG in checks_disabled_sources():
+                meaning += ", but NEKO_PLUGIN_PERMISSION_CHECKS_DISABLED switches them off anyway"
         else:
             meaning = "the value is not one of off / observe / enforce and is ignored"
         notices.append(
@@ -120,4 +122,3 @@ def decide(capability: str, chain: Iterable[str], granted: Callable[[str], froze
     else:
         reason = None
     return Decision(capability, chain, judged=True, blocked_by=blocked, reason=reason)
-

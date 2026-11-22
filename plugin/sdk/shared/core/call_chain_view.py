@@ -13,7 +13,7 @@ import contextvars
 from dataclasses import dataclass
 from typing import Any
 
-from plugin.sdk.shared.permissions import normalize_permission
+from plugin.sdk.shared.permissions import legacy_name, normalize_permission
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +58,11 @@ class CallChainView:
         if capability in self.rights:
             return True
         permission = normalize_permission(capability)
-        return permission is not None and permission in self.rights
+        if permission is None:
+            return False
+        # Either form may be all the host sent: an id, or its earlier name.
+        earlier = legacy_name(permission)
+        return permission in self.rights or (earlier is not None and earlier in self.rights)
 
 
 def self_only_view(plugin_id: str) -> CallChainView:
