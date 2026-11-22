@@ -7428,8 +7428,8 @@ DEEP_CONFLICT_CHECK_PROMPT: dict[str, str] = {
 {PAIRS}
 
 要求：
-- 只输出合法 JSON 数组（不要附加 markdown 代码块或额外解释），每项格式：
-[{"pair_id": 0, "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "一句话简明理由"}]""",
+- 只输出合法 JSON 数组（不要附加 markdown 代码块或额外解释），`pair_id` 必须原样返回方括号中的字符串标识符（如 `"P1"`），不要重新编号：
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "一句话简明理由"}]""",
     "zh-TW": """請對以下候選記憶對逐一進行語義關係裁決，判斷它們屬於以下四種關係中的哪一種：
 - contradiction：事實或偏好明顯互相矛盾
 - duplicate：表達幾乎相同的意思，可以合併
@@ -7440,8 +7440,8 @@ DEEP_CONFLICT_CHECK_PROMPT: dict[str, str] = {
 {PAIRS}
 
 要求：
-- 只輸出合法 JSON 陣列（不要附加 markdown 程式碼區塊或額外解釋），每項格式：
-[{"pair_id": 0, "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "一句話簡明理由"}]""",
+- 只輸出合法 JSON 陣列（不要附加 markdown 程式碼區塊或額外解釋），`pair_id` 必須原樣返回方括號中的字串識別符（如 `"P1"`），不要重新編號：
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "一句話簡明理由"}]""",
     "en": """Judge the semantic relationship for each candidate memory pair below using one of four verdicts:
 - contradiction: clearly conflicting facts or preferences
 - duplicate: nearly identical meaning that can be merged
@@ -7451,8 +7451,8 @@ DEEP_CONFLICT_CHECK_PROMPT: dict[str, str] = {
 Candidate pairs:
 {PAIRS}
 
-Output ONLY a valid JSON array (no markdown fences or extra prose):
-[{"pair_id": 0, "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "brief one-line rationale"}]""",
+Output ONLY a valid JSON array (no markdown fences or extra prose). Echo each pair's exact string identifier (e.g. "P1") without renumbering:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "brief one-line rationale"}]""",
     "ja": """以下の記憶ペアそれぞれの意味関係を4分類で判定してください：
 - contradiction：明確に矛盾する
 - duplicate：ほぼ同義で統合できる
@@ -7462,8 +7462,8 @@ Output ONLY a valid JSON array (no markdown fences or extra prose):
 候補ペア：
 {PAIRS}
 
-マークダウン記法なしで有効な JSON 配列のみを出力してください：
-[{"pair_id": 0, "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "簡潔な理由"}]""",
+マークダウン記法なしで有効な JSON 配列のみを出力してください。`pair_id` は提示された文字列ID（例: "P1"）をそのまま返し、振り直さないでください：
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "簡潔な理由"}]""",
     "ko": """아래 후보 기억 쌍 각각의 의미 관계를 4가지 중 하나로 판정하세요:
 - contradiction: 사실이나 취향이 명백히 모순됨
 - duplicate: 거의 같은 의미로 병합 가능
@@ -7473,8 +7473,8 @@ Output ONLY a valid JSON array (no markdown fences or extra prose):
 후보 쌍:
 {PAIRS}
 
-마크다운 없이 유효한 JSON 배열만 출력하세요:
-[{"pair_id": 0, "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "간단한 이유"}]""",
+마크다운 없이 유효한 JSON 배열만 출력하세요. `pair_id`는 제공된 문자열 식별자(예: "P1")를 번호 재지정 없이 그대로 반환하세요:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "간단한 이유"}]""",
     "ru": """Оцените смысловую связь для каждой пары воспоминаний ниже (один из 4 вариантов):
 - contradiction: явное противоречие
 - duplicate: почти одинаковый смысл, можно объединить
@@ -7484,8 +7484,8 @@ Output ONLY a valid JSON array (no markdown fences or extra prose):
 Пары:
 {PAIRS}
 
-Верните ТОЛЬКО валидный JSON-массив без markdown и пояснений:
-[{"pair_id": 0, "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "краткая причина"}]""",
+Верните ТОЛЬКО валидный JSON-массив без markdown и пояснений; поле `pair_id` должно точно повторять строковый идентификатор пары (например, "P1") без перенумерации:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "краткая причина"}]""",
     "es": """Evalúa la relación semántica de cada par de recuerdos usando una de cuatro categorías:
 - contradiction: contradicción clara
 - duplicate: significado casi idéntico, se pueden fusionar
@@ -7495,8 +7495,8 @@ Output ONLY a valid JSON array (no markdown fences or extra prose):
 Pares candidatos:
 {PAIRS}
 
-Devuelve SOLO un array JSON válido sin markdown ni texto extra:
-[{"pair_id": 0, "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "motivo breve"}]""",
+Devuelve SOLO un array JSON válido sin markdown ni texto extra; devuelve el identificador de texto exacto en `pair_id` (p. ej. "P1") sin renumerarlo:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "motivo breve"}]""",
     "pt": """Avalie a relação semântica de cada par de memórias usando um de quatro vereditos:
 - contradiction: contradição clara
 - duplicate: significado quase idêntico, pode ser mesclado
@@ -7506,8 +7506,8 @@ Devuelve SOLO un array JSON válido sin markdown ni texto extra:
 Pares candidatos:
 {PAIRS}
 
-Retorne APENAS um array JSON válido sem markdown nem texto extra:
-[{"pair_id": 0, "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "motivo breve"}]""",
+Retorne APENAS um array JSON válido sem markdown nem texto extra; mantenha em `pair_id` o identificador exato fornecido (ex.: "P1") sem renumerar:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "motivo breve"}]""",
 }
 
 

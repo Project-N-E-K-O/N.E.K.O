@@ -402,6 +402,41 @@ def make_reflection_archive_handler(reflection_engine):
             # this handler; PR-3 may add handlers for promoted/denied.
             return False
 
+        # Step 0: if this archive is part of a reflection duplicate merge, verify that
+        # the surviving reflection's merged wording was persisted before allowing the
+        # destructive archive replay to advance (RFC §3.3.6).
+        merged_keep_id = payload.get('merged_keep_id')
+        merged_keep_sha = payload.get('merged_keep_text_sha256')
+        path = reflection_engine._reflections_path(name)
+        if merged_keep_id and merged_keep_sha:
+            if not os.path.exists(path):
+                raise RuntimeError(
+                    f"[ArchiveHandler] {name}/reflection.merge: {path} missing while "
+                    f"verifying survivor {merged_keep_id}; pausing replay"
+                )
+            with open(path, encoding='utf-8') as f:
+                pre_data = json.load(f)
+            if not isinstance(pre_data, list):
+                raise RuntimeError(
+                    f"[ArchiveHandler] {path}: 期望 list，实际 "
+                    f"{type(pre_data).__name__}；view 结构异常，暂停 replay"
+                )
+            survivor = next(
+                (r for r in pre_data if isinstance(r, dict) and r.get('id') == merged_keep_id),
+                None,
+            )
+            if survivor is None:
+                raise RuntimeError(
+                    f"[ArchiveHandler] {name}/reflection.merge: survivor {merged_keep_id} "
+                    f"missing from active view; pausing replay"
+                )
+            cur_sha = hashlib.sha256((survivor.get('text') or '').encode('utf-8')).hexdigest()
+            if cur_sha != merged_keep_sha:
+                raise RuntimeError(
+                    f"[ArchiveHandler] {name}/reflection.merge: survivor {merged_keep_id} "
+                    f"text sha256 mismatch; view drifted from log, manual inspection required"
+                )
+
         # Step 1+2: shard self-heal (write entry into the named shard
         # if missing). Skipped if the event lacks the snapshot fields
         # — older logs from round-1 don't carry them.

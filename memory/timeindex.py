@@ -2177,16 +2177,21 @@ class TimeIndexedMemory:
         if not self._ensure_fts_table(lanlan_name):
             return 0
         stop_names = collect_stop_names(get_config_manager(), lanlan_name)
-        rows: list[tuple[str, str]] = []
-        seen_ids: set[str] = set()
+        rows: list[tuple[object, str]] = []
+        seen_ids: set[tuple[type, object]] = set()
         for f in facts:
             if not isinstance(f, dict):
                 continue
-            fid = str(f.get("id") or "").strip()
-            content = str(f.get("text") or "").strip()
-            if not fid or not content or fid in seen_ids:
+            fid = f.get("id")
+            if fid is None or fid == "":
                 continue
-            seen_ids.add(fid)
+            content = str(f.get("text") or "").strip()
+            if not content:
+                continue
+            dedup_key = (type(fid), fid)
+            if dedup_key in seen_ids:
+                continue
+            seen_ids.add(dedup_key)
             rows.append((fid, " ".join(fts_tokens(content, stop_names))))
         try:
             with self.engines[lanlan_name].connect() as conn:

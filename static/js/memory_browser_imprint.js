@@ -379,15 +379,21 @@
             if (reqId === snapshotsRequestId) {
                 snapshotsLoading = false;
                 if (activeTab === 'profile' && !overviewError) {
-                    const profilePanel = document.getElementById('memory-panel-profile');
-                    const activeEl = document.activeElement;
-                    const editingInProfile = Boolean(
-                        profilePanel && (
-                            profilePanel.querySelector('textarea.memory-inline-textarea:not([hidden])')
-                            || (activeEl && profilePanel.contains(activeEl) && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT'))
-                        )
-                    );
-                    if (!editingInProfile) {
+                    const existingVault = document.getElementById('memory-vault-section');
+                    if (existingVault && existingVault.parentNode) {
+                        const prevInput = existingVault.querySelector('input');
+                        const prevDraft = prevInput ? prevInput.value : '';
+                        const wasFocused = Boolean(prevInput && document.activeElement === prevInput);
+                        const nextVault = renderMemoryVaultSection();
+                        existingVault.replaceWith(nextVault);
+                        const nextInput = nextVault.querySelector('input');
+                        if (nextInput && prevDraft) {
+                            nextInput.value = prevDraft;
+                        }
+                        if (nextInput && wasFocused) {
+                            nextInput.focus();
+                        }
+                    } else {
                         renderProfilePanel();
                     }
                 }

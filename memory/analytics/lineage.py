@@ -34,7 +34,14 @@ from typing import Any
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 
-from .imprint import _CORE_ENTITIES, _META_ENTITY, _parse_dt, _read_json_safe, _text_bigrams
+from .imprint import (
+    _CORE_ENTITIES,
+    _META_ENTITY,
+    _entry_subject_scope_key,
+    _parse_dt,
+    _read_json_safe,
+    _text_bigrams,
+)
 
 logger = get_module_logger(__name__, "Memory")
 
@@ -295,8 +302,13 @@ def build_memory_lineage_story(
         })
 
     if not facts_step and kind != "fact" and target_shingles:
+        target_scope_key = _entry_subject_scope_key(target)
         scored_facts: list[tuple[float, dict[str, Any], bool]] = []
         for fid, (f_obj, is_archived) in fact_by_id.items():
+            # Preserve private vs scoped isolation: never attribute another subject/scope's
+            # group fact as an inferred source for a private or different-scope memory.
+            if _entry_subject_scope_key(f_obj) != target_scope_key:
+                continue
             ft = str(f_obj.get("text") or "").strip()
             if not ft:
                 continue

@@ -1136,6 +1136,32 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
         assert await pm.aarchive_persona_entry(char_name, "master", "p_keep", skip_pinned=True) is False
         assert any(e["id"] == "p_keep" for e in (await pm.aensure_persona(char_name))["master"]["facts"])
 
+        # Reflection merge archive replay pauses with RuntimeError (leaving drop_id active)
+        # when the surviving reflection's merged wording was not persisted to reflections.json
+        from memory.evidence_handlers import make_reflection_archive_handler
+        _write_json(
+            char_dir / "reflections.json",
+            [
+                {"id": "r_surv", "entity": "master", "text": "旧文案", "status": "confirmed"},
+                {"id": "r_old_drop", "entity": "master", "text": "相似旧文案", "status": "confirmed"},
+            ],
+        )
+        refl_arch_handler = make_reflection_archive_handler(re_eng)
+        with pytest.raises(RuntimeError):
+            refl_arch_handler(
+                char_name,
+                {
+                    "reflection_id": "r_old_drop",
+                    "to": "archived",
+                    "archive_shard_path": "2026-05-01_12345678.json",
+                    "entry_snapshot": {"id": "r_old_drop", "text": "相似旧文案"},
+                    "merged_keep_id": "r_surv",
+                    "merged_keep_text_sha256": hashlib.sha256("新合并文案".encode("utf-8")).hexdigest(),
+                },
+            )
+        after_abort_refls = json.loads((char_dir / "reflections.json").read_text(encoding="utf-8"))
+        assert {r["id"] for r in after_abort_refls} == {"r_surv", "r_old_drop"}
+
         # Restore checkpoint: forgotten/merged facts & persona/reflection shards must NOT remain duplicated
         # AND FTS index must be rebuilt from restored facts.json
         await arestore_snapshot(

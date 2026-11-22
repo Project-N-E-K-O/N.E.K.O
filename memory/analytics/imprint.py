@@ -216,15 +216,20 @@ def _inspect_embeddings(items: list[tuple[str, dict]]) -> dict[str, Any]:
         dims[dim] = dims.get(dim, 0) + 1
         emb_sha = entry.get("embedding_text_sha256")
         emb_legacy_hash = entry.get("embedding_text_hash")
+        is_stale = False
         if text:
             full_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
             if emb_sha:
                 if str(emb_sha).strip() != full_sha:
                     stale += 1
+                    is_stale = True
             elif emb_legacy_hash:
                 if str(emb_legacy_hash).strip()[:16] != full_sha[:16]:
                     stale += 1
-        if eid and text:
+                    is_stale = True
+        # Keep stale vectors in health counts, but exclude them from vector-based
+        # duplicate detection so entries fall back to current-text similarity.
+        if eid and text and not is_stale:
             decoded_vectors.append((kind, entity, eid, text, vec, _entry_subject_scope_key(entry)))
 
     primary_dim = max(dims.items(), key=lambda kv: kv[1])[0] if dims else None

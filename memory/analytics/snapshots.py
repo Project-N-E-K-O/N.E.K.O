@@ -547,7 +547,13 @@ async def arestore_snapshot(
                         _read_json_safe, resolved_dir / character_name / "facts.json", [],
                     )
                     restored_facts = raw if isinstance(raw, list) else []
-                    await time_indexed.arebuild_fact_index(character_name, restored_facts)
+                    archived_raw = await asyncio.to_thread(
+                        _read_json_safe, resolved_dir / character_name / "facts_archive.json", [],
+                    )
+                    restored_archive = archived_raw if isinstance(archived_raw, list) else []
+                    await time_indexed.arebuild_fact_index(
+                        character_name, [*restored_facts, *restored_archive],
+                    )
 
                 rebuild_task = asyncio.create_task(_rebuild_fts())
                 while not rebuild_task.done():

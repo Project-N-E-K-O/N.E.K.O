@@ -561,6 +561,7 @@ class EvidenceFlowMixin:
             archive_entry["archive_shard_path"] = shard_basename
             archive_entry["merged_into"] = keep_id
 
+            import hashlib
             payload = {
                 "reflection_id": drop_id,
                 "from": prev_status,
@@ -568,6 +569,8 @@ class EvidenceFlowMixin:
                 "archive_shard_path": shard_basename,
                 "archived_at": now_iso,
                 "entry_snapshot": archive_entry,
+                "merged_keep_id": keep_id,
+                "merged_keep_text_sha256": hashlib.sha256(cleaned.encode("utf-8")).hexdigest(),
             }
 
             def _sync_load(_n: str):
