@@ -199,7 +199,25 @@ describe('the switch for all of it', () => {
     expect(changed).toHaveBeenCalledWith(true)
   })
 
+  it('shows a switch that was changed elsewhere, without being asked', async () => {
+    vi.useFakeTimers()
+    api.getSwitches.mockResolvedValueOnce(switches(true))
+    await mount(PowerBar)
+    expect(byTest('power-switch')?.getAttribute('aria-checked')).toBe('true')
+    // Put off on the main page (a character was switched).
+    api.getSwitches.mockResolvedValue(switches(false))
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(byTest('power-switch')?.getAttribute('aria-checked')).toBe('false')
+    // Pressed now, it switches on: what is sent is the opposite of what is shown.
+    api.setPower.mockResolvedValue({ success: true })
+    byTest('power-switch')!.click()
+    await flush()
+    expect(api.setPower).toHaveBeenCalledWith(true)
+  })
+
   it('keeps saying that a switch did not take, with the switch where the service has it', async () => {
+    vi.useFakeTimers()
     api.getSwitches.mockResolvedValue(switches(false))
     api.setPower.mockRejectedValue(Object.assign(new Error('x'), { code: 'switch_failed', response: { status: 502 } }))
     await mount(PowerBar)
@@ -207,6 +225,11 @@ describe('the switch for all of it', () => {
     await flush()
     expect(byTest('power-error')?.textContent).toBe(words.errors.switch_failed)
     expect(byTest('power-switch')?.getAttribute('aria-checked')).toBe('false')
+    // Still said after the switch was read again in the background.
+    await vi.advanceTimersByTimeAsync(5000)
+    await flush()
+    expect(api.getSwitches.mock.calls.length).toBeGreaterThan(2)
+    expect(byTest('power-error')?.textContent).toBe(words.errors.switch_failed)
   })
 
   it('says why it is on and not ready, and shows the meters when there are some', async () => {

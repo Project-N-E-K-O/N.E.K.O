@@ -255,6 +255,24 @@ describe('the reviews and the preferences', () => {
     expect(api.deleteReview).toHaveBeenCalledWith('c1')
   })
 
+  it('removes the review that was asked to be removed, whatever was read late', async () => {
+    const first = { commission_id: 'c1', project: 'Ledger tool', archive_year: null, title: 'October bills', status: 'done', ended: '2026-11-20 21:14', entries: [], content: '' }
+    const second = { ...first, commission_id: 'c2', title: 'November bills' }
+    api.listReviews.mockResolvedValue({ reviews: [first, second] })
+    let read!: (value: unknown) => void
+    api.readReview.mockReturnValue(new Promise(resolve => { read = resolve }))
+    api.deleteReview.mockResolvedValue({ success: true })
+    const { container } = await mount(ReviewsPane, { project: 'Ledger tool' })
+    await click(buttonSaying(container.querySelector('[data-review="c1"]')!, words.space.reviews.open))
+    await click(buttonSaying(container.querySelector('[data-review="c2"]')!, words.space.reviews.remove))
+    // The first one is read only now, with the confirmation for the second open.
+    read({ review: { ...first, content: 'What went well: the table.' } })
+    await flush()
+    await click(byTest('review-remove-confirm'))
+    expect(api.deleteReview).toHaveBeenCalledTimes(1)
+    expect(api.deleteReview).toHaveBeenCalledWith('c2')
+  })
+
   it('a preference is switched off, reworded and removed', async () => {
     const preference = { id: 4, kind: 'report', text: 'Tell me the result', origin: 'stated' as const, observations: 1, active: true, lanlan_name: 'Lan', updated_at: 0 }
     api.listPreferences.mockResolvedValue({ preferences: [preference] })

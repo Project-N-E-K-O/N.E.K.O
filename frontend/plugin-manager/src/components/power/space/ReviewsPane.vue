@@ -25,7 +25,7 @@
       </tbody>
     </table>
 
-    <el-dialog v-model="reading" :title="target?.title || target?.commission_id" width="680px">
+    <el-dialog v-model="reading" :title="shown?.title || shown?.commission_id" width="680px">
       <pre class="plain" data-testid="review-text">{{ text }}</pre>
     </el-dialog>
 
@@ -55,9 +55,14 @@ const busy = ref(false)
 const error = ref('')
 const reading = ref(false)
 const removing = ref(false)
+// The review that is read and the one that is to be removed are two: one that is read late
+// must not become the one a confirmation that is open removes.
+const shown = ref<SpaceReview | null>(null)
 const target = ref<SpaceReview | null>(null)
 const text = ref('')
 let turn = 0
+// Counts what was opened: of two reads under way, the one asked for last is shown.
+let opened = 0
 
 /** Read the list; `keep` leaves the message of what just failed where it is. */
 async function load(keep = false) {
@@ -76,12 +81,16 @@ async function load(keep = false) {
 }
 
 async function open(review: SpaceReview) {
+  const mine = ++opened
   try {
-    text.value = (await readReview(review.commission_id)).review.content
-    target.value = review
+    const content = (await readReview(review.commission_id)).review.content
+    if (mine !== opened) return
+    text.value = content
+    shown.value = review
     error.value = ''
     reading.value = true
   } catch (failure) {
+    if (mine !== opened) return
     error.value = describeConsoleError(failure, t, te)
     void load(true)
   }

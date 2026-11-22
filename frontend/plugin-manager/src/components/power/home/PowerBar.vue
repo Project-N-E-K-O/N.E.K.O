@@ -18,7 +18,7 @@
       ><span class="toggle__knob" /></button>
       <div class="words">
         <strong>{{ t('power.home.power') }}</strong>
-        <small v-if="error" class="warn" data-testid="power-error">{{ error }}</small>
+        <small v-if="flipError || error" class="warn" data-testid="power-error">{{ flipError || error }}</small>
         <small v-else-if="switches" data-testid="power-state">{{ t(switches.enabled ? 'power.home.on' : 'power.home.off') }}</small>
         <small v-if="reason" class="warn" data-testid="power-reason">{{ t('power.home.notReady', { reason }) }}</small>
       </div>
@@ -53,6 +53,8 @@ const switches = ref<Switches | null>(null)
 const metrics = ref<GlobalMetrics | null>(null)
 const switching = ref(false)
 const error = ref('')
+// Why the switch did not take: said until it is pressed again, whatever is read meanwhile.
+const flipError = ref('')
 // How often the two meters are read, in milliseconds. They are an aside: a read that fails is skipped.
 const METERS_MS = 5000
 let timer: ReturnType<typeof setInterval> | null = null
@@ -66,27 +68,31 @@ const reason = computed(() => {
   return (now.gate.reasons ?? [])[0] ?? ''
 })
 
+// Counts the reads of the switch: an answer to an earlier one is not shown over a later one's.
+let asked = 0
+
 async function load() {
+  const mine = ++asked
   try {
-    switches.value = (await getSwitches()).switches ?? null
+    const answer = (await getSwitches()).switches ?? null
+    if (mine !== asked) return
+    switches.value = answer
     error.value = switches.value ? '' : t('power.errors.agent_unreachable')
   } catch (failure) {
-    error.value = describeConsoleError(failure, t, te)
+    if (mine === asked) error.value = describeConsoleError(failure, t, te)
   }
 }
 
 async function flip(enabled: boolean) {
   switching.value = true
+  flipError.value = ''
   try {
     await setPower(enabled)
-    error.value = ''
   } catch (failure) {
-    error.value = describeConsoleError(failure, t, te)
+    flipError.value = describeConsoleError(failure, t, te)
   }
   // What is shown is where the service stands now, whether the switch took or not.
-  const failed = error.value
   await load()
-  if (failed) error.value = failed
   switching.value = false
   if (switches.value) emit('changed', switches.value.enabled)
 }
@@ -104,8 +110,9 @@ onMounted(() => {
   void readMeters()
   timer = setInterval(() => {
     void readMeters()
-    // The switch could not be read (the service was not up yet): asked again, so that it comes to be usable.
-    if (!switches.value && !switching.value) void load()
+    // The switch is read again as well: it changes elsewhere too (a character switch on the main
+    // page puts it off), and one that could not be read comes to be usable.
+    if (!switching.value) void load()
   }, METERS_MS)
 })
 onBeforeUnmount(() => {
