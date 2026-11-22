@@ -367,6 +367,9 @@ async def analyze_image_with_vision_model(
 
         ignore_hint = get_avatar_annotation_ignore_hint(lang)
         if window_title:
+            from utils.tokenize import truncate_to_tokens
+            window_title = truncate_to_tokens(window_title, 256)
+        if window_title:
             system_content = VISION_WATERMARK + _loc(VISION_SYSTEM_WITH_TITLE, lang) + ' ' + ignore_hint
             user_text = _loc(VISION_USER_WITH_TITLE, lang).format(window_title=window_title)
         else:
@@ -408,7 +411,7 @@ async def analyze_image_with_vision_model(
                 provider_type=api_config.get('provider_type'),
             )
             async with llm:
-                return await llm.ainvoke(messages)
+                return await llm.ainvoke(messages)  # noqa: LLM_INPUT_BUDGET # fixed prompts, one image, window title truncated to 256 tokens above
 
         result = await run_with_image_fallback(choice, _describe, where="screenshot description")
 
