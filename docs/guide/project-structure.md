@@ -7,7 +7,7 @@ N.E.K.O/
 ├── app/
 │   ├── main_server/          # Main Web/API entrypoint
 │   ├── memory_server/        # Memory API/runtime
-│   └── agent_server/         # Agent API; hosts NekoClaw
+│   └── agent_server/         # Agent API; hosts NekoPower
 ├── launcher.py               # Thin public launcher entrypoint
 ├── launcher_core/            # Bootstrap, ports, process lifecycle
 ├── config/                   # Defaults, prompts, provider/network data

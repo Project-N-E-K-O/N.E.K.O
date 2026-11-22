@@ -35,6 +35,7 @@ from urllib.parse import quote
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks
 from utils.file_utils import read_json_async
+from utils.workshop_utils import register_workshop_roots_from_items
 
 
 # ─── UGC query-result cache ──────────────────────────────────────────────────
@@ -1134,6 +1135,10 @@ async def get_subscribed_workshop_items():
             await _resolve_missing_author_names(items_info)
         except Exception as fallback_err:
             logger.debug(f"Web API 补全 authorName 时出错（忽略）: {fallback_err}")
+
+        # Model lists build /workshop/<item_id>/... URLs from these items, so every
+        # Steam library holding one must be served by /workshop as well.
+        register_workshop_roots_from_items(items_info)
 
         return {
             "success": True,

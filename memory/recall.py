@@ -689,7 +689,7 @@ class MemoryRecallReranker:
         # Fast path: native zero-output Decisions API (e.g. Qwen decision-model-preview,
         # Gemini gemini-decision-1, OpenAI gpt-6-luna, OpenRouter Decisions). Evaluates
         # bounded candidates in one parallel forward pass (~150-250ms, 0 output tokens)
-        # and falls through to the `summary` chat-LLM rerank path on any error or cooldown.
+        # and falls through to the `emotion` chat-LLM rerank path on any error or cooldown.
         if (
             isinstance(decision_config, dict)
             and is_native_decision_protocol(decision_config.get('decision_protocol'))
@@ -697,7 +697,7 @@ class MemoryRecallReranker:
         ):
             try:
                 # Cap the native query portion so state_header never consumes the
-                # entire DECISION_STATE_MAX_TOKENS budget; summary chat fallback
+                # entire DECISION_STATE_MAX_TOKENS budget; emotion chat fallback
                 # continues to use the original query_text.
                 native_query_budget = max(256, DECISION_STATE_MAX_TOKENS // 4)
                 native_query_text = truncate_to_tokens(query_text, native_query_budget)
@@ -782,7 +782,7 @@ class MemoryRecallReranker:
 
                 # Keep native decision total latency tightly capped (2.0s; typical
                 # native latency is ~150-250ms) so upstream's ~5s query_memory budget
-                # still leaves room for the summary chat fallback on timeout. Outer
+                # still leaves room for the emotion chat fallback on timeout. Outer
                 # wait_for (2.2s) gives DecisionClient's inner 2.0s timeout priority
                 # so transient timeouts reliably trigger the 60s cooldown cache.
                 # Batches run concurrently, so the cap is unchanged; any failed batch
@@ -827,14 +827,14 @@ class MemoryRecallReranker:
                         return ranked_native
             except Exception as exc:
                 logger.warning(
-                    "[MemoryRecall] native decision rerank failed (%s); falling back to summary chat LLM",
+                    "[MemoryRecall] native decision rerank failed (%s); falling back to emotion chat LLM",
                     type(exc).__name__,
                 )
 
-        # Non-native providers and native fallback always keep the established `summary`
-        # tier for chat-LLM reranking (matching project tier policy and avoiding silent
-        # model downgrades when the user has not configured a native decision provider).
-        api_config = await config_manager.aget_model_api_config('summary')
+        # Non-native providers and native fallback rerank on the `emotion` (small) tier:
+        # recall sits on the user's reply path with an 8 s budget, so latency beats depth
+        # here; the rerank only orders candidates that coarse ranking already found.
+        api_config = await config_manager.aget_model_api_config('emotion')
         # timeout=8: recall runs in query_memory, whose upstream plugin/core/context.py
         # defaults to 5 s. Local 8 s allows connection/one failure; timeout raises
         # APITimeoutError, with outer handlers already falling back to coarse ranks.

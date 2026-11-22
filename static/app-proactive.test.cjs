@@ -444,6 +444,40 @@ test('request_screenshot declines privacy before capture and after an async capt
     }
 });
 
+test('request_screenshot privacy check: shared consent rule, and its fallback when the module lacks it', async () => {
+    const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
+    const branch = websocketSource.indexOf("response.type === 'request_screenshot'");
+    const start = websocketSource.indexOf('(async function () {', branch);
+    const end = websocketSource.indexOf('})();', start) + 5;
+    const cases = [
+        // [module exposes isVisionConsentHeldNow, its answer, window value, latest saved value, declined]
+        [true, true, false, false, false],
+        [true, false, true, true, true],
+        // Fallback: a revocation on either side declines.
+        [false, null, true, true, false],
+        [false, null, false, true, true],
+        [false, null, true, false, true],
+        [false, null, false, false, true],
+    ];
+    for (const [hasHeld, held, own, saved, declined] of cases) {
+        const sent = [];
+        const appProactive = {
+            isProactiveVisionEnabledNow: () => saved,
+            captureProactiveChatScreenshotWithSource: async () => ({ dataUrl: 'FRAME', captureType: 'screen' })
+        };
+        if (hasHeld) appProactive.isVisionConsentHeldNow = () => held;
+        await vm.runInNewContext(websocketSource.slice(start, end), {
+            window: { appProactive },
+            S: { proactiveVisionEnabled: own, socket: { readyState: 1, send(raw) { sent.push(JSON.parse(raw)); } } },
+            response: {}, WebSocket: { OPEN: 1 }, console
+        });
+        const label = JSON.stringify({ hasHeld, held, own, saved });
+        assert.equal(sent.length, 1, label);
+        assert.equal(sent[0].declined === true, declined, label);
+        assert.equal(sent[0].data, declined ? '' : 'FRAME', label);
+    }
+});
+
 test('request_screenshot forwards a remembered-window decline instead of waiting for timeout', async () => {
     const websocketSource = fs.readFileSync(path.join(__dirname, 'app/app-websocket.js'), 'utf8');
     const branch = websocketSource.indexOf("response.type === 'request_screenshot'");

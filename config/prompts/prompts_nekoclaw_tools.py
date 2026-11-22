@@ -67,6 +67,13 @@ implementation does):
   The implementation matches with Python's ``re`` line by line; it does not
   bundle ripgrep.
 
+One addition: ``subagent`` has an optional ``preset`` parameter, which names
+the preset the task agent is started with (``nekoclaw/host/templates.py``).
+dsh's sessions are offered this definition too (the host's tools are a
+service to dsh), so it holds in both runtimes. And ``report`` has an optional
+``duty`` parameter in a session that is not another task agent's
+(``REPORT_DUTY_PARAMETER``): what the session takes, for its card.
+
 Only tools the built-in runtime implements are listed. ``NEKOCLAW_TOOL_SCHEMAS``
 holds this project's own tools: ``report`` and ``note_lesson``, and the four
 that reach other sessions (``list_sessions``, ``read_session``,
@@ -597,6 +604,14 @@ DSH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                         'Omitted names default to agent-1, agent-2, and so on.'
                     ),
                 },
+                'preset': {
+                    'type': 'string',
+                    'description': (
+                        'Optional. Which kind of subagent to start, by a name from the list of '
+                        'presets in your instructions; it sets what the subagent can do. Omitted, '
+                        'it is a worker.'
+                    ),
+                },
                 'prompt': {
                     'type': 'string',
                     'description': (
@@ -765,6 +780,18 @@ DSH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 # This project's own tools. Their wording is ours, not dsh's.
+# The parameter ``report`` has besides, for a session that has a card of its
+# own to say it on: the session of a project, and one of a single commission.
+# A task agent another one started is not offered it.
+REPORT_DUTY_PARAMETER: dict[str, Any] = {
+    'type': 'string',
+    'description': (
+        'Optional. One line on the kind of work this session takes from now on, for the card '
+        'the user sees it by: its area and the kind of task, not what was just done. Only '
+        'when this commission changed that; otherwise leave it out.'
+    ),
+}
+
 NEKOCLAW_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     'list_sessions': {
         'name': 'list_sessions',

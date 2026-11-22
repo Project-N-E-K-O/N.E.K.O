@@ -151,10 +151,11 @@ class AgentHarness:
     def pop_latest_steering(self) -> AgentMessage | None:
         return self._steering_queue.pop() if self._steering_queue else None
 
-    def prompt_message(self, message: AgentMessage) -> AsyncIterator[AgentEvent]:
+    def prompt_message(self, message: AgentMessage, *, turns_taken: int = 0) -> AsyncIterator[AgentEvent]:
+        """Run the loop on a message. ``turns_taken``: model requests already made that count against ``max_turns``."""
         self._ensure_not_running()
         self._running = True
-        return self._run(prompts=(message,))
+        return self._run(prompts=(message,), turns_taken=turns_taken)
 
     def prompt(self, content: str) -> AsyncIterator[AgentEvent]:
         return self.prompt_message(UserMessage(content=content))
@@ -168,6 +169,7 @@ class AgentHarness:
         self,
         *,
         prompts: Sequence[AgentMessage] = (),
+        turns_taken: int = 0,
     ) -> AsyncIterator[AgentEvent]:
         signal = SimpleCancellationToken()
         self._current_signal = signal
@@ -187,6 +189,7 @@ class AgentHarness:
                 prelude_messages=repairs,
                 tools=self._config.tools,
                 max_turns=self._config.max_turns,
+                turns_taken=turns_taken,
                 signal=signal,
                 session_id=self._config.session_id,
                 get_steering_messages=self._drain_steering_messages,

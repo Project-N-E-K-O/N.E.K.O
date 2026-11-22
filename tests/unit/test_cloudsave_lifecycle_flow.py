@@ -1189,10 +1189,39 @@ async def test_memory_server_startup_logs_identity_even_in_limited_mode(tmp_path
     assert len(identity_calls) == 1
     args = identity_calls[0].args
     assert args[1] == APP_VERSION
-    assert isinstance(args[2], bool)
-    assert args[4] == tmp_path
-    assert args[5] == tmp_path / "memory"
+    assert args[2] == "startup"
+    assert isinstance(args[3], bool)
+    assert args[5] == tmp_path
+    assert args[6] == tmp_path / "memory"
     mock_logger.warning.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initialized, expected_lines", [(True, 1), (False, 0)])
+async def test_memory_server_continue_startup_relogs_identity_after_init(tmp_path, initialized, expected_lines):
+    """When a limited-mode boot is released, the identity line is logged again
+    with stage=continue to mark the release moment — but only when this call
+    actually initialized the runtime."""
+    from app import memory_server
+
+    cm = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / "memory")
+    with patch.object(memory_server.runtime, "_config_manager", cm), \
+         patch.object(memory_server.runtime, "_memory_storage_blocked_after_init", False), \
+         patch.object(memory_server.runtime, "get_storage_startup_blocking_reason", Mock(return_value=None)), \
+         patch.object(memory_server.runtime, "ensure_memory_server_runtime_initialized", AsyncMock(return_value=initialized)), \
+         patch.object(memory_server.runtime, "logger") as mock_logger:
+        result = await memory_server.continue_storage_startup(None)
+
+    assert result == {"ok": True, "initialized": initialized}
+    identity_calls = [
+        c for c in mock_logger.info.call_args_list
+        if c.args and str(c.args[0]).startswith("[Memory] N.E.K.O ")
+    ]
+    assert len(identity_calls) == expected_lines
+    if identity_calls:
+        args = identity_calls[0].args
+        assert args[2] == "continue"
 
 
 @pytest.mark.unit

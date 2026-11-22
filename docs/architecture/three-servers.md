@@ -64,9 +64,9 @@ See [Memory System](/architecture/memory-system) for the complete lifecycle and 
 
 ## Agent Server (`app/agent_server/`, ports 48915 and 48916)
 
-`app/agent_server/__main__.py` starts the package's Tool Server FastAPI app on `127.0.0.1:48915`. The implementation is split across `api_runtime.py`, `api_routes.py`, `capabilities.py`, `results.py`, `plugin_host.py`, `nekoclaw_mount.py`, and `nekoclaw_builtins.py`. The NekoClaw host that keeps and carries out tasks lives in `nekoclaw/host/`.
+`app/agent_server/__main__.py` starts the package's Tool Server FastAPI app on `127.0.0.1:48915`. The implementation is split across `api_runtime.py`, `api_routes.py`, `capabilities.py`, `results.py`, `plugin_host.py`, `nekoclaw_mount.py`, and `nekoclaw_builtins.py`. The NekoPower host that keeps and carries out tasks lives in `nekoclaw/host/`.
 
-During Agent startup, the process initializes capability state, the Agent-side ZeroMQ bridge, and the agent-model connectivity check, and registers the NekoClaw host. Registering builds nothing: the host's ledger, the agent runtime, and the capability gateway are created on first use. `plugin_host.py` starts the embedded user-plugin FastAPI listener on `127.0.0.1:48916` in an isolated thread. User-plugin execution remains gated by its feature flag and plugin lifecycle even though the listener is part of the same process.
+During Agent startup, the process initializes capability state, the Agent-side ZeroMQ bridge, and the agent-model connectivity check, and registers the NekoPower host. Registering builds nothing: the host's ledger, the agent runtime, and the capability gateway are created on first use. `plugin_host.py` starts the embedded user-plugin FastAPI listener on `127.0.0.1:48916` in an isolated thread. User-plugin execution remains gated by its feature flag and plugin lifecycle even though the listener is part of the same process.
 
 ### HTTP ownership
 

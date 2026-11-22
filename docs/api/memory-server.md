@@ -287,9 +287,8 @@ Models are selected from configured tiers; memory code does not hardcode provide
 | Work | Current tier or runtime |
 |---|---|
 | Local text embeddings for optional cosine retrieval and dedup candidates | Bundled CPU ONNX profile under `data/embedding_models/<profile>/`; no API model tier |
-| Recent-history compression, fact extraction, evidence signal detection, reflection synthesis and feedback checks, fact dedup decisions, and internal LLM recall reranking | `summary` |
-| Recent-history review, persona correction/refinement, reflection refinement, and reflection promotion merge | `correction` |
-| Negative-keyword target classification | `emotion` |
+| Recent-history compression and review, fact extraction, evidence signal detection, reflection synthesis, refinement and feedback checks, fact dedup decisions, persona correction/refinement, and reflection promotion merge | `summary` (the review, correction, refinement and merge calls keep thinking on) |
+| Negative-keyword target classification, and the chat-LLM recall rerank fallback (latency-bound) | `emotion` |
 | User-facing `POST /query_memory` fusion | No LLM tier; BM25 plus optional cosine and reciprocal-rank fusion |
 
 These are implementation defaults, not API guarantees. Operators configure the underlying model, base URL, and credentials for each tier.

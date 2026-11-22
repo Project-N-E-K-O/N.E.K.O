@@ -3,6 +3,7 @@ import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import powerMessages from '../power/ja'
 
 /**
  * 日本語言語パック
@@ -13,6 +14,7 @@ export default {
   marketFeedback: marketFeedbackMessages['ja'],
   modelApi: modelApiMessages['ja'],
   modelBindings: modelBindingsMessages['ja'],
+  power: powerMessages,
   common: {
     chooseLanguage: "言語を選択",
     surfaceLanguagePending: "アプリの言語が変更されました。未保存の内容を保護するため、このパネルの言語は維持されます。",
@@ -1191,7 +1193,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O プラグイン管理'
+    titleSuffix: 'N.E.K.O にゃんパワー'
   },
   tutorial: {
     yuiGuide: {

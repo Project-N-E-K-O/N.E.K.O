@@ -156,9 +156,11 @@ class MMDAnimation {
         const { VMDLoader, buildAnimation, GrantSolver, processBones } = mmdModule;
 
         // 加载 VMD 文件（旧动画继续播放，不暴露 T-pose）
+        // Animation lists and character config keep raw file names (the identity that
+        // idle selections are matched by); escape '#', '?', '%' only for the request.
         const vmdLoader = new VMDLoader();
         const vmdObject = await new Promise((resolve, reject) => {
-            vmdLoader.load(vmdUrl, resolve, undefined, reject);
+            vmdLoader.load(MMDCore.toRequestUrl(vmdUrl), resolve, undefined, reject);
         });
         if (requestId !== this._loadRequestId || this.manager.currentModel !== mmd) return null;
 

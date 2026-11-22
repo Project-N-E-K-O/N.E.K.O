@@ -504,6 +504,10 @@
       "passive",
       "silent"
      ]
+    },
+    "duty": {
+     "type": "string",
+     "description": "Optional. One line on the kind of work this session takes from now on, for the card the user sees it by: its area and the kind of task, not what was just done. Only when this commission changed that; otherwise leave it out."
     }
    },
    "required": [
@@ -571,6 +575,10 @@
     "name": {
      "type": "string",
      "description": "Optional short name for the subagent, unique among the subagents you create: lower-case letters, digits, and hyphens, starting with a letter, at most 32 characters; lead is reserved for the root agent. Omitted names default to agent-1, agent-2, and so on."
+    },
+    "preset": {
+     "type": "string",
+     "description": "Optional. Which kind of subagent to start, by a name from the list of presets in your instructions; it sets what the subagent can do. Omitted, it is a worker."
     },
     "prompt": {
      "type": "string",

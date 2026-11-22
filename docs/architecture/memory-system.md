@@ -48,7 +48,7 @@ Fact extraction converts conversation windows into atomic records such as a user
 
 New facts are deduplicated before persistence. Exact/hash and text-search checks are always available. When local embeddings are available, a background worker can identify likely paraphrases for later LLM arbitration. Facts already consumed by a reflection are marked `absorbed`; old absorbed facts move from `facts.json` to `facts_archive.json` rather than being discarded.
 
-In private chat the extractor can also flag a fact as pinned and give it one of four lifetimes (3, 14, 90 or 365 days). A pinned fact skips the reflection and promotion pipeline and goes straight into the pinned-fact section; when that section already has entries, a correction-tier model decides whether the new fact adds an entry, replaces one (the old wording stays in the file's history), renews one, or removes one that no longer holds. Candidates that contradict the character card are rejected. Expiry only takes an entry out of the section: the fact itself still goes through the ordinary pipeline. Scoped (group and member) extraction never pins.
+In private chat the extractor can also flag a fact as pinned and give it one of four lifetimes (3, 14, 90 or 365 days). A pinned fact skips the reflection and promotion pipeline and goes straight into the pinned-fact section; when that section already has entries, a summary-tier model (thinking on) decides whether the new fact adds an entry, replaces one (the old wording stays in the file's history), renews one, or removes one that no longer holds. Candidates that contradict the character card are rejected. Expiry only takes an entry out of the section: the fact itself still goes through the ordinary pipeline. Scoped (group and member) extraction never pins.
 
 Fact scheduling depends on the powerful-memory switch described below. In either mode, persisted facts remain available to reflection synthesis and explicit recall.
 
@@ -62,7 +62,7 @@ Reflections carry their own evidence, entity, lifecycle status, and optional eve
 
 Persona entries are grouped by entity. The built-in entities are `master`, `neko`, and `relationship`, while the storage format permits additional entity sections. Character-card-derived entries are marked as protected and are not removed by evidence decay or archive sweeps.
 
-With powerful memory enabled, promotion is evidence-driven. A confirmed reflection that reaches the promotion threshold goes through a correction-tier merge decision: the result may become a new persona entry, merge into existing persona knowledge, be rejected, or queue a contradiction for later resolution. With powerful memory disabled, a configurable age-based fallback confirms and promotes reflections without the merge LLM. That fallback does not advance a reflection the user turned against (net score below zero), nor one resting only on the character's own words without the user's backing, the two things the score-driven path holds back too.
+With powerful memory enabled, promotion is evidence-driven. A confirmed reflection that reaches the promotion threshold goes through a summary-tier merge decision (thinking on): the result may become a new persona entry, merge into existing persona knowledge, be rejected, or queue a contradiction for later resolution. With powerful memory disabled, a configurable age-based fallback confirms and promotes reflections without the merge LLM. That fallback does not advance a reflection the user turned against (net score below zero), nor one resting only on the character's own words without the user's backing, the two things the score-driven path holds back too.
 
 Group and member (scoped) memory gets no feedback, so it rests on facts and reflections and rarely reaches persona:
 
@@ -179,7 +179,7 @@ The memory-server startup hook scans pending outbox records and spawns replay ta
 - reflection synthesis;
 - persona and reflection refinement;
 - weekly introspection of the private block and of each group or member subject;
-- a behavior review right after each private introspection (one correction-tier call over a sample of recent conversation and the character card, leaving at most five short reminders whose evidence is counted by code, gated by both the powerful-memory and natural-expression switches; group chat is not reviewed);
+- a behavior review right after each private introspection (one summary-tier call over a sample of recent conversation and the character card, leaving at most five short reminders whose evidence is counted by code, gated by both the powerful-memory and natural-expression switches; group chat is not reviewed);
 - below-zero evidence tracking and archive sweeps;
 - an about-daily, idle-only recompute of each character's habitual-phrase avoid list (local n-gram mining, then one summary-tier call that judges only candidates without a recent verdict, gated by both the powerful-memory and natural-expression switches);
 - slow migration of legacy fact/reflection event-time schemas;

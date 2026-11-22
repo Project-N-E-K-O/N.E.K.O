@@ -47,7 +47,6 @@ def _profiles():
 _TEXT_TIERS = (
     ('conversation', 'conversation', 'CONVERSATION_MODEL'),
     ('summary', 'summary', 'SUMMARY_MODEL'),
-    ('correction', 'correction', 'CORRECTION_MODEL'),
     ('emotion', 'emotion', 'EMOTION_MODEL'),
     ('vision', 'vision', 'VISION_MODEL'),
     ('agent', 'agent', 'AGENT_MODEL'),
