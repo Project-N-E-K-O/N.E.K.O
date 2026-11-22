@@ -36,9 +36,9 @@ from __future__ import annotations
 
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 # Module-level attribute used by the decorator to mark methods. Pulling
 # this onto a constant lets ``NekoPluginBase`` discover decorated
@@ -285,10 +285,124 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
     return out
 
 
+# ---------------------------------------------------------------------------
+# Results of register_llm_tool_async / unregister_llm_tool_async
+# ---------------------------------------------------------------------------
+#
+# Built on the host from what ``main_server`` actually answered (see
+# ``plugin/server/messaging/handlers/llm_tools.py``) and normalised again on
+# the SDK side, so both ends share one shape.
+#
+# ``ok`` is the one flag plugins should branch on; the SDK commits its local
+# state change (keep the tool after register, drop it after unregister) only
+# when ``ok`` is True.
+#
+# ``error`` codes:
+#   host side  -- "invalid_request", "main_server_unavailable" (no HTTP
+#                 answer), "main_server_error" (HTTP status >= 400),
+#                 "rejected" (register: no role accepted the tool),
+#                 "partial_failure" (unregister: some roles failed).
+#   SDK side   -- "timeout" (the host did not answer within
+#                 ``request_timeout``; the outcome on main_server is unknown),
+#                 "host_unavailable" (the request could not reach the host or
+#                 the host failed to handle it), "not_registered"
+#                 (unregister: this plugin has no tool by that name).
+
+
+class LlmToolRoleFailure(TypedDict, total=False):
+    role: str
+    error: str
+
+
+class LlmToolRoleRefusal(TypedDict, total=False):
+    role: str
+    owned_by: str
+
+
+class LlmToolRegisterResult(TypedDict):
+    """``ok`` is True when at least one role accepted the tool;
+    ``failed_roles`` then lists the roles that did not."""
+
+    ok: bool
+    affected_roles: list[str]
+    failed_roles: list[LlmToolRoleFailure]
+    error: str | None
+    message: str | None
+
+
+class LlmToolUnregisterResult(TypedDict):
+    """``ok`` is True when no role still holds this plugin's tool.
+    ``removed`` says whether main_server actually removed anything;
+    ``refused_roles`` lists roles where the name belongs to another
+    source (left untouched, and not ours to remove)."""
+
+    ok: bool
+    removed: bool
+    affected_roles: list[str]
+    failed_roles: list[LlmToolRoleFailure]
+    refused_roles: list[LlmToolRoleRefusal]
+    error: str | None
+    message: str | None
+
+
+def _result_roles(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _result_role_records(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        {str(k): str(v) for k, v in item.items()}
+        for item in value
+        if isinstance(item, dict)
+    ]
+
+
+def _result_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def build_register_result(
+    body: Mapping[str, Any], *, ok: bool, error: str | None = None, message: str | None = None,
+) -> LlmToolRegisterResult:
+    """Normalise a register outcome (main_server body or host reply)."""
+    return {
+        "ok": ok,
+        "affected_roles": _result_roles(body.get("affected_roles")),
+        "failed_roles": _result_role_records(body.get("failed_roles")),  # type: ignore[typeddict-item]
+        "error": _result_text(error),
+        "message": _result_text(message),
+    }
+
+
+def build_unregister_result(
+    body: Mapping[str, Any], *, ok: bool, error: str | None = None, message: str | None = None,
+) -> LlmToolUnregisterResult:
+    """Normalise an unregister outcome (main_server body or host reply)."""
+    return {
+        "ok": ok,
+        "removed": body.get("removed") is True,
+        "affected_roles": _result_roles(body.get("affected_roles")),
+        "failed_roles": _result_role_records(body.get("failed_roles")),  # type: ignore[typeddict-item]
+        "refused_roles": _result_role_records(body.get("refused_roles")),  # type: ignore[typeddict-item]
+        "error": _result_text(error),
+        "message": _result_text(message),
+    }
+
+
 __all__ = [
     "LLM_TOOL_ENTRY_PREFIX",
     "LLM_TOOL_META_ATTR",
     "LlmToolMeta",
+    "LlmToolRegisterResult",
+    "LlmToolRoleFailure",
+    "LlmToolRoleRefusal",
+    "LlmToolUnregisterResult",
+    "build_register_result",
+    "build_unregister_result",
     "collect_llm_tool_methods",
     "entry_id_for_tool",
     "llm_tool",

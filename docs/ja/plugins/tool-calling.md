@@ -455,6 +455,59 @@ self.register_llm_tool(
 `unregister_llm_tool(name)` が逆操作。`list_llm_tools()` は現在登録中の
 ツールを dict のリストで返します。重複名は `EntryConflictError` を投げます。
 
+この 2 つの同期呼び出しは送りっぱなしです。`True` はプラグイン側で登録してホストへ通知した
+という意味で、`main_server` が受け付けたことは意味しません。実際の結果が必要なら async 版を使います：
+
+```python
+result = await self.register_llm_tool_async(
+    name="custom_tool",
+    description="...",
+    parameters={"type": "object", "properties": {...}},
+    handler=my_async_callable,
+    request_timeout=15.0,  # ホストの応答を待つ秒数（既定 15）
+)
+if not result["ok"]:
+    self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
+
+result = await self.unregister_llm_tool_async("custom_tool")
+```
+
+ホストは通知と同じ `main_server` 呼び出しを行い、`main_server` の応答を返します：
+
+| フィールド | `register_llm_tool_async` | `unregister_llm_tool_async` |
+|---|---|---|
+| `ok` | 少なくとも 1 つの role がツールを受け付けた | このプラグインのツールを持つ role がもう残っていない |
+| `removed` | — | `main_server` が実際に何かを削除した |
+| `affected_roles` | 現在ツールを持つ role | 削除された role |
+| `failed_roles` | `[{"role", "error"}]` 受け付けなかった role（部分成功時も含む） | `[{"role", "error"}]` 削除に失敗した role |
+| `refused_roles` | — | `[{"role", "owned_by"}]` 同名ツールが別 source のもので、触れなかった role |
+| `error` | `None` または下記のコード | `None` または下記のコード |
+| `message` | 人が読める説明、または `None` | 人が読める説明、または `None` |
+
+`error` コード：`rejected`（登録：どの role も受け付けなかった。例：名前が別 source に使われている）、
+`partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（HTTP 応答なし）、
+`main_server_error`（HTTP ステータス >= 400。例：存在しない role）、`timeout`（`request_timeout`
+内にホストが応答しなかった）、`host_unavailable`（リクエストがホストに届かなかった）、
+`not_registered`（解除：このプラグインにその名前のツールがない。ホストには問い合わせない）、
+`invalid_request`。
+
+ローカル状態は `ok` に従うので、プラグインとホストの状態が一致します：
+
+- `register_llm_tool_async` はホストに問い合わせる前にハンドラを設置し（`main_server` が登録した
+  瞬間からモデルが呼べるため）、`ok` が偽のとき、または呼び出しがキャンセルされたときに取り消します。
+  その後、同じ名前を再登録できます。
+- `unregister_llm_tool_async` は `ok` が真のときだけハンドラを外します。それ以外ではホスト側と同様に
+  プラグイン側でも登録が残り、まだツールを持つ role は動き続け、再度呼べばリトライになります。
+- ホストは解除時に常に `expected_source=plugin:{plugin_id}`（plugin_id はプラグインの接続から取得）
+  を付けるため、プラグインが別 source の同名ツールを消すことはできません。
+- `timeout` は `main_server` 側の結果が不明という意味です。登録のタイムアウト後は同じ名前を再登録
+  すれば収束します（同じ source の登録は上書き）。プラグイン停止時にはいずれにせよ全て消去されます。
+
+引数エラーは同期版と同じく例外になります（`ValueError`、`TypeError`、`EntryConflictError`。
+`request_timeout` が不正な場合も `ValueError`）。ホストと `main_server` の失敗は例外になりません。
+同じツール名には一方の書き方だけを使ってください。同期版と async 版は別の IPC チャネルを通るため、
+混在させると順序は保証されません。
+
 ### エラーの返し方
 
 普通の値（`str` / `dict` / `int` 等）を返せば成功扱いで LLM に返ります。
@@ -492,9 +545,10 @@ handler 内で `raise` した場合も LLM にエラーが返されます（例�
 
 | ファイル | 役割 |
 |---|---|
-| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` デコレーター、`LlmToolMeta`、name バリデーション、メソッドコレクター |
-| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` インスタンスメソッド + `__init__` 末尾の自動登録 |
+| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` デコレーター、`LlmToolMeta`、name バリデーション、メソッドコレクター、async 結果型（`LlmToolRegisterResult` / `LlmToolUnregisterResult`） |
+| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` インスタンスメソッドとその `_async` 版 + `__init__` 末尾の自動登録 |
 | `plugin/core/communication.py` | ホスト側 IPC ハンドラ `_handle_llm_tool_register` / `_handle_llm_tool_unregister`（`_MESSAGE_ROUTING` でメッセージタイプから dispatch） |
+| `plugin/server/messaging/handlers/llm_tools.py` | `_async` 版の裏側にあるホスト側リクエスト／レスポンスハンドラ `LLM_TOOL_REGISTER_REQUEST` / `LLM_TOOL_UNREGISTER_REQUEST` |
 | `plugin/server/messaging/llm_tool_registry.py` | プロセスレベルの (plugin_id → tool 名集合) インデックス + main_server の `/api/tools/{register,unregister,clear}` を叩く httpx ラッパー |
 | `plugin/server/routes/llm_tools.py` | `/api/llm-tools/callback/{plugin_id}/{tool_name}` ルート、main_server の dispatch を `host.trigger` で対応プラグインへ転送 |
 | `plugin/server/application/plugins/lifecycle_service.py` | プラグイン停止時に `clear_plugin_tools` を呼ぶ |

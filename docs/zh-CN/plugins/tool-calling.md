@@ -411,6 +411,56 @@ self.register_llm_tool(
 `unregister_llm_tool(name)` 反向，`list_llm_tools()` 以 dict list 返回当前已
 注册的工具集合。重名会抛 `EntryConflictError`。
 
+这两个同步调用都是发出去就不管：返回 `True` 只表示插件本地已登记、已通知 host，
+不代表 `main_server` 真的接受了。需要真实结果时用 async 版本：
+
+```python
+result = await self.register_llm_tool_async(
+    name="custom_tool",
+    description="...",
+    parameters={"type": "object", "properties": {...}},
+    handler=my_async_callable,
+    request_timeout=15.0,  # 等 host 回复的秒数（默认 15）
+)
+if not result["ok"]:
+    self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
+
+result = await self.unregister_llm_tool_async("custom_tool")
+```
+
+host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带回来：
+
+| 字段 | `register_llm_tool_async` | `unregister_llm_tool_async` |
+|---|---|---|
+| `ok` | 至少一个 role 接受了这个工具 | 已经没有 role 还挂着本插件的这个工具 |
+| `removed` | — | `main_server` 确实删掉了东西 |
+| `affected_roles` | 现在有这个工具的 role | 从中删掉了的 role |
+| `failed_roles` | `[{"role", "error"}]` 没接受的 role（部分成功时也会有） | `[{"role", "error"}]` 删除失败的 role |
+| `refused_roles` | — | `[{"role", "owned_by"}]` 同名工具属于其他 source 的 role，不会动它 |
+| `error` | `None` 或下面的错误码 | `None` 或下面的错误码 |
+| `message` | 可读的说明，或 `None` | 可读的说明，或 `None` |
+
+`error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
+`partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（没拿到 HTTP 回复）、
+`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在）、`timeout`（`request_timeout`
+内 host 没回复）、`host_unavailable`（请求没送到 host）、`not_registered`（注销：本插件没有
+这个名字的工具，不会联系 host）、`invalid_request`。
+
+本地状态跟着 `ok` 走，插件和 host 两边一致：
+
+- `register_llm_tool_async` 先装好 handler 再问 host（`main_server` 一登记模型就可能调用），
+  `ok` 为假或调用被取消时回滚，之后同名可以再注册。
+- `unregister_llm_tool_async` 只在 `ok` 为真时删掉 handler；否则工具在插件里照旧登记，
+  和 host 一致，还挂着它的 role 照常能用，再调一次就是重试。
+- host 注销时总带上 `expected_source=plugin:{plugin_id}`（plugin_id 取自插件连接本身），
+  插件不可能删掉其他 source 的同名工具。
+- `timeout` 表示 `main_server` 上的结果未知。注册超时后再注册同名即可收敛（同 source 注册
+  会覆盖旧的）；插件停止时无论如何都会全部清掉。
+
+参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`；
+`request_timeout` 不合法也抛 `ValueError`）。host 和 `main_server` 的失败不抛异常。
+同一个工具名只用一种写法：同步和 async 调用走不同的 IPC 通道，混用没有顺序保证。
+
 ### 错误返回
 
 普通值（`str` / `dict` / `int` ...）会作为成功结果回给 LLM。要不抛异常但向
@@ -443,9 +493,10 @@ error），插件本身不会崩溃 —— 只有那一次工具调用算失败�
 
 | 文件 | 作用 |
 |---|---|
-| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` 装饰器、`LlmToolMeta`、name 校验、方法收集器 |
-| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` 实例方法 + `__init__` 末尾自动注册 |
+| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` 装饰器、`LlmToolMeta`、name 校验、方法收集器、async 结果类型（`LlmToolRegisterResult` / `LlmToolUnregisterResult`） |
+| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` 实例方法及其 `_async` 版本 + `__init__` 末尾自动注册 |
 | `plugin/core/communication.py` | host 端 IPC handler `_handle_llm_tool_register` / `_handle_llm_tool_unregister`（在 `_MESSAGE_ROUTING` 里按 type 路由） |
+| `plugin/server/messaging/handlers/llm_tools.py` | `_async` 版本背后的 host 端请求-响应 handler `LLM_TOOL_REGISTER_REQUEST` / `LLM_TOOL_UNREGISTER_REQUEST` |
 | `plugin/server/messaging/llm_tool_registry.py` | 进程级 (plugin_id → tool 名集合) 索引 + httpx 包装 main_server 的 `/api/tools/{register,unregister,clear}` |
 | `plugin/server/routes/llm_tools.py` | `/api/llm-tools/callback/{plugin_id}/{tool_name}` 路由，接收 main_server dispatch、走 `host.trigger` 转发到对应插件 |
 | `plugin/server/application/plugins/lifecycle_service.py` | 插件停止时调 `clear_plugin_tools` |

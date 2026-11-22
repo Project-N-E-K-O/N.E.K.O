@@ -476,6 +476,70 @@ self.register_llm_tool(
 `unregister_llm_tool(name)` reverses it; `list_llm_tools()` returns the
 current set as plain dicts. Duplicate names raise `EntryConflictError`.
 
+Both calls are fire-and-forget: `True` means the tool was recorded in
+the plugin and the host was notified, not that `main_server` accepted
+it. When the plugin needs the real outcome, use the async variants:
+
+```python
+result = await self.register_llm_tool_async(
+    name="custom_tool",
+    description="...",
+    parameters={"type": "object", "properties": {...}},
+    handler=my_async_callable,
+    request_timeout=15.0,  # seconds to wait for the host (default 15)
+)
+if not result["ok"]:
+    self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
+
+result = await self.unregister_llm_tool_async("custom_tool")
+```
+
+The host makes the same `main_server` call as for the notification and
+returns what `main_server` answered:
+
+| Field | `register_llm_tool_async` | `unregister_llm_tool_async` |
+|---|---|---|
+| `ok` | At least one role accepted the tool. | No role still holds this plugin's tool. |
+| `removed` | — | `main_server` actually removed something. |
+| `affected_roles` | Roles that now have the tool. | Roles it was removed from. |
+| `failed_roles` | `[{"role", "error"}]` roles that did not accept it (also on partial success). | `[{"role", "error"}]` roles where removal failed. |
+| `refused_roles` | — | `[{"role", "owned_by"}]` roles where the name belongs to another source; left untouched. |
+| `error` | `None` or a code (below). | `None` or a code (below). |
+| `message` | Human-readable detail, or `None`. | Human-readable detail, or `None`. |
+
+`error` codes: `rejected` (register: no role accepted, e.g. the name is
+owned by another source), `partial_failure` (unregister: some roles
+failed), `main_server_unavailable` (no HTTP answer), `main_server_error`
+(HTTP status >= 400, e.g. unknown role), `timeout` (no answer from the
+host within `request_timeout`), `host_unavailable` (the request could
+not reach the host), `not_registered` (unregister: this plugin has no
+tool by that name; the host is not contacted), `invalid_request`.
+
+Local state follows `ok`, so the plugin and the host agree:
+
+- `register_llm_tool_async` installs the handler before asking the host
+  (the model may call the tool as soon as `main_server` has it) and
+  rolls it back when `ok` is false or the call is cancelled. The same
+  name can then be registered again.
+- `unregister_llm_tool_async` removes the handler only when `ok` is
+  true. Otherwise the tool stays registered in the plugin, as it does on
+  the host, so the roles that still have it keep working and calling it
+  again retries.
+- The host always unregisters with `expected_source=plugin:{plugin_id}`
+  taken from the plugin's connection, so a plugin can never remove
+  another source's tool of the same name.
+- `timeout` means the outcome on `main_server` is unknown. After a
+  register timeout, registering the same name again converges (a
+  same-source registration replaces the old one); stopping the plugin
+  clears everything either way.
+
+Argument errors raise exactly like the sync calls (`ValueError`,
+`TypeError`, `EntryConflictError`; also `ValueError` for a bad
+`request_timeout`). Host and `main_server` failures never raise. Pick
+one style per tool name: the sync and async calls travel on different
+IPC channels, so mixing them for the same name has no ordering
+guarantee.
+
 ### Returning errors
 
 Returning a plain value (`str`, `dict`, `int`, ...) is treated as
@@ -516,9 +580,10 @@ plugin doesn't crash — only that one tool call fails.
 
 | File | Role |
 |---|---|
-| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` decorator, `LlmToolMeta`, name validation, method collector. |
-| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` + auto-registration in `__init__`. |
+| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` decorator, `LlmToolMeta`, name validation, method collector, async result types (`LlmToolRegisterResult` / `LlmToolUnregisterResult`). |
+| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools`, their `_async` variants, and auto-registration in `__init__`. |
 | `plugin/core/communication.py` | Host-side IPC handlers `_handle_llm_tool_register` / `_handle_llm_tool_unregister` (routed by message type in `_MESSAGE_ROUTING`). |
+| `plugin/server/messaging/handlers/llm_tools.py` | Host-side request-response handlers `LLM_TOOL_REGISTER_REQUEST` / `LLM_TOOL_UNREGISTER_REQUEST` behind the `_async` variants. |
 | `plugin/server/messaging/llm_tool_registry.py` | Process-global tracking + httpx wrappers around `main_server`'s `/api/tools/{register,unregister,clear}`. |
 | `plugin/server/routes/llm_tools.py` | The `/api/llm-tools/callback/{plugin_id}/{tool_name}` route that receives main_server's dispatches and forwards them through `host.trigger`. |
 | `plugin/server/application/plugins/lifecycle_service.py` | Calls `clear_plugin_tools` on plugin stop. |
