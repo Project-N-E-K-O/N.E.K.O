@@ -19,7 +19,7 @@ from .. import core
 from ..core.plugin_source import load_plugin_source
 from ..paths import CliDefaults
 from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
-from ..repo_state import committed_file_sizes, git_output, worktree_dirty_paths
+from ..repo_state import committed_file_sizes, git_output, ignored_untracked_paths, worktree_dirty_paths
 from ..templates import agent_kit
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
 from .validate_cmd import collect_advisory_issues, validate_plugin_dir
@@ -80,6 +80,7 @@ def handle_check(args: argparse.Namespace) -> int:
                 plugin_dir,
                 defaults,
             ),
+            ignored_paths=_link_scan_ignored_paths(plugin_dir, defaults),
         )
         issues.extend(_diagnose_repository(plugin_dir, defaults=defaults))
         issues.extend(_diagnose_agent_kit(plugin_dir))
@@ -122,6 +123,7 @@ def handle_release_check(args: argparse.Namespace) -> int:
                 plugin_dir,
                 defaults,
             ),
+            ignored_paths=_link_scan_ignored_paths(plugin_dir, defaults),
         )
         # Both Market workflows reject such an ID before anything else runs.
         issues.extend(_diagnose_market_plugin_id(source.plugin_id))
@@ -216,6 +218,17 @@ def _repository_root(plugin_dir: Path, defaults: CliDefaults) -> Path | None:
         return None
     root = Path(toplevel).resolve()
     return None if root == defaults.repo_root.resolve() else root
+
+
+def _link_scan_ignored_paths(plugin_dir: Path, defaults: CliDefaults) -> list[str]:
+    """What git ignores in the plugin's own repository, for the link scan.
+
+    Nothing without such a repository (including the built-in root, where
+    Market CI mounts a fresh checkout) or when git fails: scan everything.
+    """
+    if _repository_root(plugin_dir, defaults) is None:
+        return []
+    return ignored_untracked_paths(plugin_dir) or []
 
 
 def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bool = False) -> list[Issue]:

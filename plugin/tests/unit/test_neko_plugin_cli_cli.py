@@ -3432,3 +3432,118 @@ def test_validate_plugin_dir_warns_plugin_store_backend_is_not_read(tmp_path: Pa
     assert lines[0] == "[plugin.store].backend is not read by the runtime and has no effect"
     assert [line.strip().split(":", 1)[0] for line in lines[1:]] == ["zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt"]
     assert all(line.strip().split(": ", 1)[1].startswith("[plugin.store].backend") for line in lines[1:])
+
+
+def _plugin_with_ignored_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, junction: bool) -> Path:
+    """An own-repository plugin with a link in a gitignored node_modules/ and one outside it.
+
+    ``junction`` fakes Windows junctions (real directories only readlink
+    reveals, as on Python 3.11) instead of creating symlinks.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    plugin_dir = _init_committed(tmp_path, "ignored_links")
+    with (plugin_dir / ".gitignore").open("a", encoding="utf-8") as gitignore:
+        gitignore.write("node_modules/\n")
+    _commit_all(plugin_dir)
+    target = tmp_path / "shared"
+    target.mkdir()
+    ignored = plugin_dir / "node_modules" / ".pnpm" / "pkg"
+    tracked = plugin_dir / "assets" / "pkg"
+    ignored.parent.mkdir(parents=True)
+    tracked.parent.mkdir(parents=True)
+    if junction:
+        ignored.mkdir()
+        tracked.mkdir()
+        real_readlink = os.readlink
+
+        def readlink(path, *args, **kwargs):
+            if Path(path) in {ignored, tracked}:
+                return str(target)
+            return real_readlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "readlink", readlink)
+    else:
+        try:
+            ignored.symlink_to(target, target_is_directory=True)
+            tracked.symlink_to(target, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks are not available here")
+    return plugin_dir
+
+
+@pytest.mark.parametrize("junction", [False, True], ids=["symlink", "junction"])
+def test_link_scan_skips_paths_git_ignores(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    junction: bool,
+) -> None:
+    plugin_dir = _plugin_with_ignored_links(tmp_path, monkeypatch, junction=junction)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 1
+    err = capsys.readouterr().err
+    # A checkout never holds node_modules/, so only the other link is reported.
+    assert f"plugin source must not contain symbolic links: {Path('assets/pkg')}\n" in err
+    assert "node_modules" not in err
+
+
+def test_link_scan_still_reports_a_tracked_link_that_matches_an_ignore_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _plugin_with_ignored_links(tmp_path, monkeypatch, junction=False)
+    (plugin_dir / "assets" / "pkg").unlink()
+    # Force-added: the checkout CI scans holds it despite the ignore rule.
+    subprocess.run(["git", "add", "-f", "node_modules/.pnpm/pkg"], cwd=plugin_dir, check=True, capture_output=True)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 1
+    assert f"symbolic links: {Path('node_modules/.pnpm/pkg')}" in capsys.readouterr().err
+
+
+def test_link_scan_ignores_no_paths_in_the_builtin_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Market CI mounts a fresh checkout into the built-in root of a N.E.K.O
+    # tree; that tree's (or the copy's) ignore rules say nothing about what
+    # the plugin repository holds, so the scan covers everything there.
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    root = tmp_path / "neko"
+    defaults = CliDefaults(root / "plugin", root / "target", root / "plugin/plugins", root / "profiles")
+    plugin_dir = _make_plugin_dir(root / "plugin" / "plugins", "mounted_links")
+    (plugin_dir / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    try:
+        (plugin_dir / "node_modules").mkdir()
+        (plugin_dir / "node_modules" / "pkg").symlink_to(tmp_path, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+    assert release_cmd._link_scan_ignored_paths(plugin_dir, defaults) == []
+    issues = validate_plugin_dir(plugin_dir, ignored_paths=release_cmd._link_scan_ignored_paths(plugin_dir, defaults))
+    assert ("error", f"plugin source must not contain symbolic links: {Path('node_modules/pkg')}") in issues
+
+
+def test_ignored_untracked_paths_lists_ignored_directories_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from plugin.neko_plugin_cli.repo_state import ignored_untracked_paths
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    repo = tmp_path / "repo"
+    plugin_dir = repo / "plugins" / "demo"
+    (plugin_dir / "node_modules" / "deep").mkdir(parents=True)
+    (plugin_dir / "node_modules" / "deep" / "a.js").write_text("", encoding="utf-8")
+    (plugin_dir / "kept.txt").write_text("", encoding="utf-8")
+    (plugin_dir / "debug.log").write_text("", encoding="utf-8")
+    (repo / "outside.log").write_text("", encoding="utf-8")
+    (repo / ".gitignore").write_text("node_modules/\n*.log\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    assert sorted(ignored_untracked_paths(plugin_dir)) == ["debug.log", "node_modules/"]
+    assert ignored_untracked_paths(tmp_path / "missing") is None

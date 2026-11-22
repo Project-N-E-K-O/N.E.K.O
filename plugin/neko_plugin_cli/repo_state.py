@@ -148,6 +148,30 @@ def _dirty_paths(status: _BranchStatus | None, untracked: list[str] | None) -> l
     return paths
 
 
+def ignored_untracked_paths(plugin_dir: Path) -> list[str] | None:
+    """Untracked paths under ``plugin_dir`` that git ignores, or None when git fails.
+
+    Relative to ``plugin_dir`` with ``/`` separators; an ignored directory is
+    listed once, with a trailing ``/``, instead of file by file. Tracked files
+    are never listed, even when they match an ignore rule.
+    """
+    output = git_output(
+        plugin_dir,
+        "ls-files",
+        "-z",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "--",
+        ".",
+        strip=False,
+    )
+    if output is None:
+        return None
+    return [path for path in output.split("\0") if path]
+
+
 def worktree_dirty_paths(plugin_dir: Path) -> list[str] | None:
     """Paths that keep the worktree from being clean, or None when git fails.
 

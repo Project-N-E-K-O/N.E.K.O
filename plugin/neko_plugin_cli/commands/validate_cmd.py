@@ -8,6 +8,7 @@ import math
 import os
 import re
 import stat
+from collections.abc import Collection
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from pydantic import TypeAdapter, ValidationError
@@ -136,7 +137,10 @@ def validate_plugin_dir(
     *,
     strict: bool = False,
     require_matching_directory_name: bool = False,
+    ignored_paths: Collection[str] = (),
 ) -> list[tuple[str, str]]:
+    """``ignored_paths``: plugin-relative paths git ignores (see
+    repo_state.ignored_untracked_paths); the link scan skips them."""
     issues: list[tuple[str, str]] = []
     config_example_path = plugin_dir / "config.example.toml"
     config_example: dict[str, object] | None = None
@@ -221,7 +225,7 @@ def validate_plugin_dir(
 
     _check_gitignore(plugin_dir / ".gitignore", issues, strict=strict)
     _check_python_decorators(plugin_dir, issues)
-    _check_symlink_tree(plugin_dir, issues)
+    _check_symlink_tree(plugin_dir, issues, ignored_paths=ignored_paths)
 
     return issues
 
@@ -1526,11 +1530,19 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
             issues.append(("warning", f".gitignore should include {pattern}"))
 
 
-def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+def _check_symlink_tree(
+    plugin_dir: Path,
+    issues: list[tuple[str, str]],
+    *,
+    ignored_paths: Collection[str] = (),
+) -> None:
     # Market CI rejects any symlink in the mounted source; report the same
     # rule locally so the upload is not the first place it surfaces. CI scans
     # the checkout before dependency sync, so vendor/ (which pip may populate
-    # with link wrappers) and .git/ are out of scope here too.
+    # with link wrappers) and .git/ are out of scope here too, and so is
+    # anything git ignores (e.g. node_modules/): a checkout never holds it.
+    # Symlinks and Windows junctions follow the same rule.
+    skipped = {plugin_dir / path.rstrip("/") for path in ignored_paths}
     links: list[Path] = []
     try:
         for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
@@ -1538,6 +1550,9 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
             if base == plugin_dir:
                 directories[:] = [name for name in directories if name not in {"vendor", ".git"}]
                 files = [name for name in files if name not in {"vendor", ".git"}]
+            if skipped:
+                directories[:] = [name for name in directories if base / name not in skipped]
+                files = [name for name in files if base / name not in skipped]
             # _is_link also catches a Windows junction, which is_symlink()
             # misses on Python 3.11 (and which os.walk would descend into).
             # Junctions are always directories, so files need only is_symlink().
