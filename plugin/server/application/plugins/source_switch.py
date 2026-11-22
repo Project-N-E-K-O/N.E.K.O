@@ -337,13 +337,20 @@ async def switch_builtin_source(
     _validate_rebuilt_plan(rebuilt_plan, request)
 
     lock_snapshot = await read_lock_snapshot()
-    # Before anything changes: a first-use import binds legacy grants to the
-    # builtin source, and a rollback can put the builtin's grants back after
-    # a restart has reconciled them to the Market source. Never raises.
     from plugin.server.application.plugins.permission_service import (
+        bind_permission_source,
         snapshot_permissions,
     )
+    from plugin.server.infrastructure.plugin_permissions import PluginSource
 
+    # The rebuilt plan has confirmed the builtin is the current source. A
+    # record without a source yet (e.g. one imported on first use while the
+    # source could not be resolved) is bound to it before anything changes,
+    # so the Market source that follows is a source change, not a first
+    # binding. When that cannot be saved the switch stops here, unchanged.
+    await asyncio.to_thread(bind_permission_source, request.plugin_id, PluginSource("builtin"))
+    # A rollback can put the builtin's grants back after a restart has
+    # reconciled them to the Market source. Never raises.
     permissions_before = await asyncio.to_thread(snapshot_permissions, request.plugin_id)
     was_running = await is_running(request.plugin_id)
     plugin_promoted = False
