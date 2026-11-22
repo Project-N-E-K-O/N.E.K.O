@@ -923,3 +923,102 @@ export default function Panel() {
     assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
   })
 })
+
+test('does not overwrite a sibling helper when a .jsx entry shares its basename stem', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'entry-helper-same-stem')
+    writePluginToml(pluginDir, 'panel.jsx')
+    writeFixtureFile(
+      join(pluginDir, 'panel.tsx'),
+      `export function formatBadge(value: string) {
+  return '[' + value + ']'
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.jsx'),
+      `import { formatBadge } from './panel'
+
+export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={formatBadge(props.locale)} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('checks multiple same-stem entries with different extensions without overwriting each other', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'same-stem-two-entries-valid')
+    writeFixtureFile(
+      join(pluginDir, 'plugin.toml'),
+      `[[plugin.ui.panel]]
+id = "tsx_panel"
+entry = "panel.tsx"
+
+[[plugin.ui.panel]]
+id = "jsx_panel"
+entry = "panel.jsx"
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.tsx'),
+      `export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={props.locale} />
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.jsx'),
+      `export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={props.locale} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(2 files\)/)
+  })
+
+  withFixture((root) => {
+    const pluginDir = join(root, 'same-stem-two-entries-diag')
+    writeFixtureFile(
+      join(pluginDir, 'plugin.toml'),
+      `[[plugin.ui.panel]]
+id = "tsx_panel"
+entry = "panel.tsx"
+
+[[plugin.ui.panel]]
+id = "jsx_panel"
+entry = "panel.jsx"
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.tsx'),
+      `export default function Panel() {
+  const bad: number = 'oops'
+  return <Page title={String(bad)} />
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'panel.jsx'),
+      `export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={props.locale} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /panel\.tsx:2:.*\[panel:tsx_panel\]/)
+  })
+})

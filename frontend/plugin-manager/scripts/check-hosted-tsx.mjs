@@ -688,11 +688,9 @@ function collectHostedUiImportAliases(sourcePath, source, exportedTypeSet) {
   }
 }
 
-function normalizeTempEntryPath(targetPath) {
-  if (/\.(tsx|jsx|ts|js)$/i.test(targetPath)) {
-    return targetPath.replace(/\.(tsx|jsx|ts|js)$/i, '.tsx')
-  }
-  return `${targetPath}.tsx`
+function tempCheckPathForEntry(sourcePath, tempDir, entryIndex) {
+  const targetPath = tempPathForSource(sourcePath, tempDir)
+  return `${targetPath}.__hosted_entry_${entryIndex}.tsx`
 }
 
 function stripHostedUiImports(sourcePath, source) {
@@ -886,7 +884,7 @@ function copyRelativeDependencies(
   }
 }
 
-function createCheckFile(entryPath, tempDir, surface, tomlPath) {
+function createCheckFile(entryPath, tempDir, surface, tomlPath, entryIndex) {
   const resolvedEntryPath = assertPathInsideRepo(entryPath, 'Hosted TSX entry')
   const pluginRoot = dirname(tomlPath)
   const source = readSourceFile(resolvedEntryPath)
@@ -906,7 +904,7 @@ function createCheckFile(entryPath, tempDir, surface, tomlPath) {
   )
   const stripped = stripHostedUiImports(resolvedEntryPath, source)
   const { localTypes, localValues } = collectLocalDeclarations(resolvedEntryPath, stripped)
-  const checkPath = normalizeTempEntryPath(tempPathForSource(resolvedEntryPath, tempDir))
+  const checkPath = tempCheckPathForEntry(resolvedEntryPath, tempDir, entryIndex)
   const prefixLines = 6
   const autoInjectedTypes = exportedTypes.filter(
     (name) => !localTypes.has(name) && !explicitTypeLocalNames.has(name),
@@ -996,6 +994,7 @@ function withHostedHint(message) {
 function main() {
   let tempDir = null
   let ambientGlobalsPath = null
+  let entryCounter = 0
   const checkFiles = []
   const errors = []
   const warnings = []
@@ -1055,7 +1054,7 @@ function main() {
         }
         let checkFile
         try {
-          checkFile = createCheckFile(checkedEntryPath, tempDir, surface, tomlPath)
+          checkFile = createCheckFile(checkedEntryPath, tempDir, surface, tomlPath, entryCounter++)
         } catch (error) {
           errors.push(`${entryPath}:1:1 [${label}] - ${withHostedHint(formatError(error))}`)
           continue

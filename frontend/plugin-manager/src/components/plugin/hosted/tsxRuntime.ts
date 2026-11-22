@@ -218,15 +218,18 @@ ${escapeScriptContent(uiKit.runtime)}
     };
     __installHostedConsoleBridge();
     try {
+      const __HostedPanel = (() => {
 ${escapeScriptContent(compiled)}
-      if (typeof __Panel !== 'function') throw new Error('Hosted TSX must export a default function component.');
+        return typeof __Panel === 'function' ? __Panel : null;
+      })();
+      if (typeof __HostedPanel !== 'function') throw new Error('Hosted TSX must export a default function component.');
       let __renderVersion = 0;
       window.__NekoRenderHostedSurface = function() {
         const root = document.getElementById('root');
         if (!root) return;
         const version = ++__renderVersion;
         try {
-          window.NekoUiKit.render(window.NekoUiKit.h(__Panel, __hostedProps()), root);
+          window.NekoUiKit.render(window.NekoUiKit.h(__HostedPanel, __hostedProps()), root);
         } catch (error) {
           __showHostedError(error);
         }
