@@ -24,6 +24,35 @@ from .reporting import record_avatar_state, record_settings_state
 class RecordingMixin:
     """In-memory usage and application-lifecycle recording methods."""
 
+    @staticmethod
+    def _compute_bucket_update(
+        bucket: dict,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        cached_tokens: int,
+        prompt_chars: int,
+    ) -> tuple[int, int, int, int, int, int]:
+        return (
+            bucket["prompt_tokens"] + prompt_tokens,
+            bucket["completion_tokens"] + completion_tokens,
+            bucket["total_tokens"] + total_tokens,
+            bucket["cached_tokens"] + cached_tokens,
+            bucket["prompt_chars"] + prompt_chars,
+            bucket["call_count"] + 1,
+        )
+
+    @staticmethod
+    def _write_bucket(bucket: dict, values: tuple[int, int, int, int, int, int]) -> None:
+        (
+            bucket["prompt_tokens"],
+            bucket["completion_tokens"],
+            bucket["total_tokens"],
+            bucket["cached_tokens"],
+            bucket["prompt_chars"],
+            bucket["call_count"],
+        ) = values
+
     def _apply_record_locked(
         self,
         today: str,
@@ -37,42 +66,50 @@ class RecordingMixin:
         rec: dict,
         prompt_chars: int = 0,
     ) -> None:
-        if today not in self._delta_daily:
-            self._delta_daily[today] = self._empty_day()
+        # Precompute all lookups and arithmetic before mutating shared state so
+        # a malformed entry never leaves partial increments in delta stats.
+        existing_day = self._delta_daily.get(today)
+        day = existing_day if existing_day is not None else self._empty_day()
 
-        day = self._delta_daily[today]
-        day["total_prompt_tokens"] += prompt_tokens
-        day["total_completion_tokens"] += completion_tokens
-        day["total_tokens"] += total_tokens
-        day["cached_tokens"] += cached_tokens
-        day["total_prompt_chars"] += prompt_chars
-        day["call_count"] += 1
-        if not success:
-            day["error_count"] += 1
+        new_day_prompt = day["total_prompt_tokens"] + prompt_tokens
+        new_day_completion = day["total_completion_tokens"] + completion_tokens
+        new_day_total = day["total_tokens"] + total_tokens
+        new_day_cached = day["cached_tokens"] + cached_tokens
+        new_day_chars = day["total_prompt_chars"] + prompt_chars
+        new_day_calls = day["call_count"] + 1
+        new_day_errors = day["error_count"] + (0 if success else 1)
 
-        # by_model
         bm = day["by_model"]
-        if model not in bm:
-            bm[model] = self._empty_bucket()
-        b = bm[model]
-        b["prompt_tokens"] += prompt_tokens
-        b["completion_tokens"] += completion_tokens
-        b["total_tokens"] += total_tokens
-        b["cached_tokens"] += cached_tokens
-        b["prompt_chars"] += prompt_chars
-        b["call_count"] += 1
+        existing_b = bm.get(model)
+        b = existing_b if existing_b is not None else self._empty_bucket()
+        b_values = self._compute_bucket_update(
+            b, prompt_tokens, completion_tokens, total_tokens, cached_tokens, prompt_chars
+        )
 
-        # by_call_type
         bt = day["by_call_type"]
-        if call_type not in bt:
-            bt[call_type] = self._empty_bucket()
-        c = bt[call_type]
-        c["prompt_tokens"] += prompt_tokens
-        c["completion_tokens"] += completion_tokens
-        c["total_tokens"] += total_tokens
-        c["cached_tokens"] += cached_tokens
-        c["prompt_chars"] += prompt_chars
-        c["call_count"] += 1
+        existing_c = bt.get(call_type)
+        c = existing_c if existing_c is not None else self._empty_bucket()
+        c_values = self._compute_bucket_update(
+            c, prompt_tokens, completion_tokens, total_tokens, cached_tokens, prompt_chars
+        )
+
+        if existing_day is None:
+            self._delta_daily[today] = day
+        day["total_prompt_tokens"] = new_day_prompt
+        day["total_completion_tokens"] = new_day_completion
+        day["total_tokens"] = new_day_total
+        day["cached_tokens"] = new_day_cached
+        day["total_prompt_chars"] = new_day_chars
+        day["call_count"] = new_day_calls
+        day["error_count"] = new_day_errors
+
+        if existing_b is None:
+            bm[model] = b
+        self._write_bucket(b, b_values)
+
+        if existing_c is None:
+            bt[call_type] = c
+        self._write_bucket(c, c_values)
 
         self._delta_records.append(rec)
         self._dirty = True
@@ -141,13 +178,12 @@ class RecordingMixin:
             prompt_chars,
         )
 
-        pending = getattr(self, "_pending_records", None)
-        if pending is None:
-            pending = deque()
-            self._pending_records = pending
-        pending.append(entry)
-
         if defer_if_locked:
+            pending = getattr(self, "_pending_records", None)
+            if pending is None:
+                pending = deque()
+                self._pending_records = pending
+            pending.append(entry)
             # Generator-exit cleanup can run synchronously on a thread already holding
             # ``self._lock``; avoid self-deadlock on the non-reentrant lock and leave
             # the queued entry to be drained by the next lock holder / reader / save.
@@ -160,6 +196,7 @@ class RecordingMixin:
 
         with self._lock:
             self._drain_pending_locked()
+            self._apply_record_locked(*entry)
 
     def _record_deferrable(
         self,

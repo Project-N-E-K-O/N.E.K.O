@@ -631,3 +631,93 @@ def test_drain_pending_locked_skips_malformed_entry_and_persists_valid_tail(tmp_
     assert day["call_count"] == 1
     assert day["total_tokens"] == 7
     assert "good-model" in day["by_model"]
+
+
+def test_apply_record_is_atomic_on_partial_failure_and_record_propagates_errors(tmp_path, monkeypatch, caplog):
+    """Failed _apply_record_locked leaves zero partial increments and record() still propagates errors."""
+    import atexit
+    from datetime import date
+    import json
+
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(tt, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = tt.TokenTracker()
+    atexit.unregister(tracker._atexit_save)
+
+    today = date.today().isoformat()
+    tracker.record(model="seed-model", prompt_tokens=2, completion_tokens=3, total_tokens=5, call_type="chat")
+
+    # prompt_tokens=5 is valid while completion_tokens="bad" fails partway through arithmetic.
+    tracker._pending_records.append((today, "partial-bad", 5, "bad", 5, 0, "chat", True, {"ts": 1.0, "tt": 5}, 0))
+    tracker._pending_records.append((today, "good-model", 3, 4, 7, 0, "chat", True, {"ts": 2.0, "tt": 7}, 0))
+
+    with caplog.at_level("WARNING"):
+        tracker.save()
+
+    assert len(tracker._pending_records) == 0
+    assert any("failed to apply deferred record" in rec.message for rec in caplog.records)
+    persisted = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    day = persisted["daily_stats"][today]
+    assert day["total_prompt_tokens"] == 5
+    assert day["total_completion_tokens"] == 7
+    assert day["total_tokens"] == 12
+    assert day["call_count"] == 2
+    assert set(day["by_model"]) == {"seed-model", "good-model"}
+
+    with pytest.raises(TypeError):
+        tracker.record(model="bad-direct", prompt_tokens=9, completion_tokens="bad", total_tokens=9)
+
+    assert tracker._dirty is False
+    assert tracker._delta_daily == {}
+
+
+def test_atexit_save_flushes_pending_records_queued_during_save(tmp_path, monkeypatch):
+    """_atexit_save performs a bounded follow-up flush if a deferred record arrives while save() ran."""
+    import atexit
+    from datetime import date
+    import json
+
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(tt, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = tt.TokenTracker()
+    atexit.unregister(tracker._atexit_save)
+
+    orig_save = tracker.save
+    save_calls = 0
+
+    def _save_with_concurrent_generator_cleanup(*args, **kwargs):
+        nonlocal save_calls
+        save_calls += 1
+        orig_save(*args, **kwargs)
+        if save_calls == 1:
+            with patch.object(tt.TokenTracker, "get_instance", return_value=tracker):
+                wrapper = _handle_sync_stream(
+                    SimpleNamespace(),
+                    lambda *_a, **_kw: _FakeSyncStream(
+                        [_chunk(5, 9, model="gpt-atexit-drain"), _chunk(None, model="gpt-atexit-drain")]
+                    ),
+                    (),
+                    {"model": "gpt-atexit-drain"},
+                    "conversation",
+                )
+                it = iter(wrapper)
+                next(it)
+                with tracker._lock:
+                    del it
+                    gc.collect()
+
+    monkeypatch.setattr(tracker, "save", _save_with_concurrent_generator_cleanup)
+
+    tracker._atexit_save()
+
+    assert save_calls == 2
+    assert len(tracker._pending_records) == 0
+    persisted = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    day = persisted["daily_stats"][date.today().isoformat()]
+    assert day["call_count"] == 1
+    assert day["total_tokens"] == 14
+    assert "gpt-atexit-drain" in day["by_model"]
