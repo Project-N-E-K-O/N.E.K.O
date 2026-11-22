@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'memory', 'recognition', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'decision'];
+const MODEL_TYPES = ['conversation', 'memory', 'recognition', 'omni', 'agentAdvanced', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'gameRecognition', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -56,7 +56,9 @@ const MODEL_DEFAULT_PROVIDER = {
     omni: 'follow_core',
     gameMain: 'follow_conversation',
     gameSummary: 'follow_memory',
+    gameRecognition: 'follow_recognition',
     agentSmall: 'follow_recognition',
+    agentAdvanced: 'follow_agent',
 };
 // follow_<source> 下拉值 → 被跟随的槽位；照搬后端 get_core_config 的 follow_* 规则。
 const FOLLOW_SOURCE_BY_PROVIDER = Object.freeze({
@@ -65,27 +67,48 @@ const FOLLOW_SOURCE_BY_PROVIDER = Object.freeze({
     follow_recognition: 'recognition',
     follow_agent: 'agent',
 });
+// 没单独配全（地址和模型名）就整格等于另一档的格子 → 那一档；和后端 _WHOLE_FOLLOW_SLOTS 一致。
+const WHOLE_FOLLOW_SOURCE = Object.freeze({
+    agentSmall: 'recognition',
+    agentAdvanced: 'agent',
+    gameRecognition: 'recognition',
+});
+// 每格下拉里排在最前面的跟随选项。
+const FOLLOW_OPTIONS_BY_TYPE = Object.freeze({
+    gameMain: ['follow_conversation'],
+    gameSummary: ['follow_memory'],
+    gameRecognition: ['follow_recognition'],
+    agentSmall: ['follow_recognition', 'follow_agent'],
+    agentAdvanced: ['follow_agent'],
+});
+const FOLLOW_OPTION_LABELS = Object.freeze({
+    follow_conversation: ['api.customModelProviderFollowConversation', '跟随聊天模型'],
+    follow_memory: ['api.customModelProviderFollowSummary', '跟随记忆整理模型'],
+    follow_recognition: ['api.customModelProviderFollowEmotion', '跟随识别模型'],
+    follow_agent: ['api.customModelProviderFollowAgent', '跟随使魔模型·通用'],
+});
 // 被跟随的槽位 → 可以跟随它的槽位（源槽位改动时要同步刷新）。
-const MODEL_FOLLOWER_BY_SOURCE = Object.freeze({
-    conversation: 'gameMain',
-    memory: 'gameSummary',
-    recognition: 'agentSmall',
-    agent: 'agentSmall',
+const MODEL_FOLLOWERS_BY_SOURCE = Object.freeze({
+    conversation: ['gameMain'],
+    memory: ['gameSummary'],
+    recognition: ['agentSmall', 'gameRecognition'],
+    agent: ['agentSmall', 'agentAdvanced'],
 });
 function followedModelType(provider) {
     return FOLLOW_SOURCE_BY_PROVIDER[provider] || '';
 }
-// 这一格现在实际跟随哪一格：跟随选项之外，使魔模型·小选「自定义」但地址、模型名没填全时，
-// 后端整格用识别模型，设置页的检测、指示灯和占位文字也都跟着识别模型。
+// 这一格现在实际跟随哪一格：跟随选项之外，整格跟随的格子选「自定义」但地址、模型名没填全时，
+// 后端整格用它跟随的那一档，设置页的检测、指示灯和占位文字也都跟着那一档。
 function effectiveFollowSource(modelType) {
     const select = document.getElementById(`${modelType}ModelProvider`);
     if (!select) return '';
     const followed = followedModelType(select.value);
     if (followed) return followed;
-    if (modelType === 'agentSmall' && select.value === 'custom') {
-        const url = document.getElementById('agentSmallModelUrl');
-        const id = document.getElementById('agentSmallModelId');
-        if (!(url && url.value.trim() && id && id.value.trim())) return 'recognition';
+    const wholeSource = WHOLE_FOLLOW_SOURCE[modelType];
+    if (wholeSource && select.value === 'custom') {
+        const url = document.getElementById(`${modelType}ModelUrl`);
+        const id = document.getElementById(`${modelType}ModelId`);
+        if (!(url && url.value.trim() && id && id.value.trim())) return wholeSource;
     }
     return '';
 }
@@ -94,10 +117,12 @@ const MODEL_CONFIG_EXPANSION_PATHS = {
     memory: ['memory'],
     gameMain: ['game', 'game-main'],
     gameSummary: ['game', 'game-summary'],
+    gameRecognition: ['game', 'game-recognition'],
     recognition: ['recognition'],
     decision: ['decision'],
     agent: ['agent'],
     agentSmall: ['agent-small'],
+    agentAdvanced: ['agent-advanced'],
     omni: ['omni'],
     tts: ['tts'],
 };
@@ -113,6 +138,8 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
     vision: 'vision_model',
     agent: 'agent_model',
     agentSmall: 'recognition_model',
+    agentAdvanced: 'agent_model',
+    gameRecognition: 'recognition_model',
     omni: 'core_model',
 };
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
@@ -1567,8 +1594,8 @@ function getResolvedCustomModelId(modelType, providerMode) {
     if (fixedModel) return fixedModel;
     const input = document.getElementById(`${modelType}ModelId`);
     const typed = input ? input.value.trim() : '';
-    // 使魔模型·小留空时后端从识别模型补齐：连通性测试要测的就是占位文字里那个模型
-    if (!typed && modelType === 'agentSmall') return resolveSlotModelState('agentSmall').defaultModelId;
+    // 整格跟随的格子留空时用它跟随的那一档：连通性测试要测的就是占位文字里那个模型
+    if (!typed && WHOLE_FOLLOW_SOURCE[modelType]) return resolveSlotModelState(modelType).defaultModelId;
     return typed;
 }
 
@@ -1578,34 +1605,10 @@ function populateModelProviderDropdowns() {
         if (!sel) return;
         sel.innerHTML = '';
 
-        if (mt === 'gameMain') {
-            appendModelProviderOption(
-                sel,
-                'follow_conversation',
-                'api.customModelProviderFollowConversation',
-                '跟随聊天模型'
-            );
-        } else if (mt === 'gameSummary') {
-            appendModelProviderOption(
-                sel,
-                'follow_memory',
-                'api.customModelProviderFollowSummary',
-                '跟随记忆整理模型'
-            );
-        } else if (mt === 'agentSmall') {
-            appendModelProviderOption(
-                sel,
-                'follow_recognition',
-                'api.customModelProviderFollowEmotion',
-                '跟随识别模型'
-            );
-            appendModelProviderOption(
-                sel,
-                'follow_agent',
-                'api.customModelProviderFollowAgent',
-                '跟随使魔模型·通用'
-            );
-        }
+        (FOLLOW_OPTIONS_BY_TYPE[mt] || []).forEach(value => {
+            const [labelKey, fallback] = FOLLOW_OPTION_LABELS[value];
+            appendModelProviderOption(sel, value, labelKey, fallback);
+        });
 
         // follow_core
         appendModelProviderOption(sel, 'follow_core', 'api.customModelProviderFollowCore', '跟随语音模型供应商');
@@ -2047,10 +2050,12 @@ const MODEL_TIER_BY_TYPE = {
     memory: 'memory',
     gameMain: 'conversation',
     gameSummary: 'memory',
+    gameRecognition: 'recognition',
     recognition: 'recognition',
     decision: 'decision',
     agent: 'agent',
     agentSmall: 'recognition',
+    agentAdvanced: 'agent',
 };
 const MODEL_PICKER_UNAVAILABLE_TEXT = {
     noProvider: ['api.modelPicker.unavailable.noProvider', '请先选择服务商'],
@@ -2272,10 +2277,10 @@ function resolveSlotModelState(modelType, visited = new Set()) {
     }
 
     // custom 留空时后端沿用快照里的值；小游戏槽那份是内置常量，不展示；
-    // 使魔模型·小那份是刚解析出的识别模型（后端在处理这一格前用识别模型补齐）
-    if (modelType === 'agentSmall') {
+    // 整格跟随的格子没填全时就是它跟随的那一档
+    if (WHOLE_FOLLOW_SOURCE[modelType]) {
         // 只镜像默认模型名：这一格是自定义输入框，不显示「免费版使用固定模型」这类提示
-        return { ...mirrorSlotModelState('recognition', visited), acceptsTypedModelId: true, fixedModelProvider: '' };
+        return { ...mirrorSlotModelState(WHOLE_FOLLOW_SOURCE[modelType], visited), acceptsTypedModelId: true, fixedModelProvider: '' };
     }
     return {
         defaultModelId: isGameSlot ? '' : getAssistTierModelId(tier),
@@ -2701,7 +2706,7 @@ function initModelIdPickers() {
             const input = document.getElementById(`${modelType}${suffix}`);
             if (input) input.addEventListener('input', () => {
                 const affected = [modelType];
-                [...new Set(Object.values(MODEL_FOLLOWER_BY_SOURCE))].forEach(followerType => {
+                [...new Set(Object.values(MODEL_FOLLOWERS_BY_SOURCE).flat())].forEach(followerType => {
                     if (effectiveFollowSource(followerType) === modelType) affected.push(followerType);
                 });
                 scheduleModelIdHintsRefresh(affected);
@@ -3069,6 +3074,9 @@ async function loadCurrentApiKey() {
             setInputValue('gameSummaryModelUrl', data.gameSummaryModelUrl);
             setInputValue('gameSummaryModelId', data.gameSummaryModelId);
             setSecretInputValue('gameSummaryModelApiKey', data.gameSummaryModelApiKey);
+            setInputValue('gameRecognitionModelUrl', data.gameRecognitionModelUrl);
+            setInputValue('gameRecognitionModelId', data.gameRecognitionModelId);
+            setSecretInputValue('gameRecognitionModelApiKey', data.gameRecognitionModelApiKey);
 
             setInputValue('recognitionModelUrl', data.recognitionModelUrl);
             setInputValue('recognitionModelId', data.recognitionModelId);
@@ -3085,6 +3093,9 @@ async function loadCurrentApiKey() {
             setInputValue('agentSmallModelUrl', data.agentSmallModelUrl);
             setInputValue('agentSmallModelId', data.agentSmallModelId);
             setSecretInputValue('agentSmallModelApiKey', data.agentSmallModelApiKey);
+            setInputValue('agentAdvancedModelUrl', data.agentAdvancedModelUrl);
+            setInputValue('agentAdvancedModelId', data.agentAdvancedModelId);
+            setSecretInputValue('agentAdvancedModelApiKey', data.agentAdvancedModelApiKey);
 
             setInputValue('omniModelUrl', data.omniModelUrl);
             setInputValue('omniModelId', data.omniModelId);
@@ -3929,6 +3940,10 @@ async function save_button_down(e) {
     const gameSummaryModelId = getVal('gameSummaryModelId');
     const gameSummaryModelApiKey = getKeyVal('gameSummaryModelApiKey');
 
+    const gameRecognitionModelUrl = getVal('gameRecognitionModelUrl');
+    const gameRecognitionModelId = getVal('gameRecognitionModelId');
+    const gameRecognitionModelApiKey = getKeyVal('gameRecognitionModelApiKey');
+
     const recognitionModelUrl = getVal('recognitionModelUrl');
     const recognitionModelId = getVal('recognitionModelId');
     const recognitionModelApiKey = getKeyVal('recognitionModelApiKey');
@@ -3943,6 +3958,9 @@ async function save_button_down(e) {
     const agentSmallModelUrl = getVal('agentSmallModelUrl');
     const agentSmallModelId = getVal('agentSmallModelId');
     const agentSmallModelApiKey = getKeyVal('agentSmallModelApiKey');
+    const agentAdvancedModelUrl = getVal('agentAdvancedModelUrl');
+    const agentAdvancedModelId = getVal('agentAdvancedModelId');
+    const agentAdvancedModelApiKey = getKeyVal('agentAdvancedModelApiKey');
 
     const omniModelUrl = getVal('omniModelUrl');
     const omniModelId = getVal('omniModelId');
@@ -4014,10 +4032,12 @@ async function save_button_down(e) {
         memoryModelUrl, memoryModelId, memoryModelApiKey,
         gameMainModelUrl, gameMainModelId, gameMainModelApiKey,
         gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
+        gameRecognitionModelUrl, gameRecognitionModelId, gameRecognitionModelApiKey,
         recognitionModelUrl, recognitionModelId, recognitionModelApiKey,
         decisionModelUrl, decisionModelId, decisionModelApiKey,
         agentModelUrl, agentModelId, agentModelApiKey,
         agentSmallModelUrl, agentSmallModelId, agentSmallModelApiKey,
+        agentAdvancedModelUrl, agentAdvancedModelId, agentAdvancedModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi,
@@ -4614,10 +4634,10 @@ const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
     decision: 'recognition',
     omni: 'tts',
     tts: 'omni',
-    agent: 'agent-small',
-    'agent-small': 'agent',
-    game: 'image',
-    image: 'game',
+    'agent-advanced': 'agent',
+    agent: 'agent-advanced',
+    'agent-small': 'game',
+    game: 'agent-small',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
@@ -4741,7 +4761,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'memory', 'game', 'game-main', 'game-summary', 'recognition', 'decision', 'image', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'memory', 'game', 'game-main', 'game-summary', 'game-recognition', 'recognition', 'decision', 'image', 'agent-advanced', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4850,12 +4870,14 @@ function getCustomModelDisplayLabel(modelType) {
         memory: ['api.summaryModelConfig', '记忆整理（大模型）'],
         gameMain: ['api.gameMainModelConfig', '小游戏聊天模型'],
         gameSummary: ['api.gameSummaryModelConfig', '小游戏记忆模型'],
+        gameRecognition: ['api.gameRecognitionModelConfig', '小游戏识别模型'],
         recognition: ['api.emotionModelConfig', '识别模型（小模型）'],
         decision: ['api.decisionModelConfig', '决策模型（专用接口）'],
         agent: ['api.agentApiConfigTitle', '使魔模型·通用'],
         omni: ['api.realtimeModelConfig', '实时语音（本地）'],
         tts: ['api.ttsModelConfig', '语音合成'],
         agentSmall: ['api.agentSmallApiConfigTitle', '使魔模型·小型'],
+        agentAdvanced: ['api.agentAdvancedApiConfigTitle', '使魔模型·高级'],
     };
     const [key, fallback] = labelMap[modelType] || ['', modelType];
     if (!key || !window.t) return fallback;
@@ -5171,9 +5193,10 @@ const ConnectivityManager = {
             if (!providerSel) return result;
 
             const provider = providerSel.value;
-            if (provider === 'custom' && effectiveFollowSource(mt) === 'recognition') {
-                // 与后端一致：使魔模型·小自定义时地址和模型名没填全，整格跟随识别模型
-                return this.resolveEffectiveKey({ type: 'custom', modelType: 'recognition' });
+            const wholeSource = provider === 'custom' ? effectiveFollowSource(mt) : '';
+            if (wholeSource) {
+                // 与后端一致：整格跟随的格子自定义时地址和模型名没填全，整格用它跟随的那一档
+                return this.resolveEffectiveKey({ type: 'custom', modelType: wholeSource });
             }
             result.url = urlInput ? urlInput.value.trim() : '';
 
@@ -6201,18 +6224,18 @@ function initConnectivityLights() {
     }
 
     function syncModelFollowers(sourceType) {
-        const followerType = MODEL_FOLLOWER_BY_SOURCE[sourceType];
-        if (!followerType) return;
-        const providerSel = document.getElementById(`${followerType}ModelProvider`);
-        if (!providerSel || effectiveFollowSource(followerType) !== sourceType) return;
-        // An incomplete custom small-familiar slot also tracks the recognition slot, but only
-        // its light moves: a provider refresh would wipe the drafted custom fields.
-        if (followedModelType(providerSel.value)) onCustomModelProviderChange(followerType);
-        reRegisterModelSlot(followerType);
+        (MODEL_FOLLOWERS_BY_SOURCE[sourceType] || []).forEach(followerType => {
+            const providerSel = document.getElementById(`${followerType}ModelProvider`);
+            if (!providerSel || effectiveFollowSource(followerType) !== sourceType) return;
+            // An incomplete custom whole-follow slot also tracks its source slot, but only
+            // its light moves: a provider refresh would wipe the drafted custom fields.
+            if (followedModelType(providerSel.value)) onCustomModelProviderChange(followerType);
+            reRegisterModelSlot(followerType);
+        });
     }
 
     function syncAllModelFollowers() {
-        Object.keys(MODEL_FOLLOWER_BY_SOURCE).forEach(syncModelFollowers);
+        Object.keys(MODEL_FOLLOWERS_BY_SOURCE).forEach(syncModelFollowers);
     }
 
     function refreshFollowModelSlot(modelType) {
@@ -6344,7 +6367,7 @@ function initConnectivityLights() {
             if (oldKey && oldKey !== customCurrentKeys[mt]) {
                 cascadeResetForKey(oldKey);
             }
-            if (MODEL_FOLLOWER_BY_SOURCE[mt]) {
+            if (MODEL_FOLLOWERS_BY_SOURCE[mt]) {
                 syncModelFollowers(mt);
             }
             // 新 key 不需要 cascadeReset — reRegister 已经从缓存正确恢复了状态
@@ -6362,7 +6385,7 @@ function initConnectivityLights() {
 
             const handleCustomEndpointChange = debounce(() => {
                 reRegisterModelSlot(mt);
-                if (MODEL_FOLLOWER_BY_SOURCE[mt]) {
+                if (MODEL_FOLLOWERS_BY_SOURCE[mt]) {
                     syncModelFollowers(mt);
                 }
             }, 300);
@@ -6461,7 +6484,7 @@ function initConnectivityLights() {
 
         providerSel.addEventListener('change', () => {
             reRegisterModelSlot(mt);
-            if (MODEL_FOLLOWER_BY_SOURCE[mt]) {
+            if (MODEL_FOLLOWERS_BY_SOURCE[mt]) {
                 syncModelFollowers(mt);
             }
         });

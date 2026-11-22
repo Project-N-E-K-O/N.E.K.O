@@ -9,7 +9,7 @@ const SOURCE_PATH = path.join(PROJECT_ROOT, 'static', 'js', 'api_key_settings.js
 const source = fs.readFileSync(SOURCE_PATH, 'utf8');
 
 const MASKED = '__NEKO_SECRET_MASKED__';
-const MODEL_TYPES = ['conversation', 'vision', 'memory', 'recognition', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary'];
+const MODEL_TYPES = ['conversation', 'vision', 'memory', 'recognition', 'omni', 'agentAdvanced', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'gameRecognition'];
 
 function sourceBetween(startMarker, endMarker) {
     const start = source.indexOf(startMarker);
@@ -232,6 +232,8 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     select('gameMainModelProvider', 'follow_conversation');
     select('gameSummaryModelProvider', 'follow_memory');
     select('agentSmallModelProvider', 'follow_recognition');
+    select('agentAdvancedModelProvider', 'follow_agent');
+    select('gameRecognitionModelProvider', 'follow_recognition');
     select('omniModelProvider', 'follow_core');
     select('coreApiSelect', 'qwen');
     select('assistApiSelect', 'openrouter');
@@ -378,6 +380,25 @@ test('the small familiar slot mirrors the recognition slot by default, the famil
     assert.equal(context.getResolvedCustomModelId('agentSmall', 'custom'), 'my-small-model');
     setSlot('agentSmall', 'custom', 'typed-small');
     assert.equal(context.getResolvedCustomModelId('agentSmall', 'custom'), 'typed-small');
+});
+
+test('the advanced familiar and minigame recognition slots mirror the slot they follow until set up in full', () => {
+    const { context, setSlot } = createPickerContext();
+    setSlot('agent', 'custom', 'my-agent-model');
+    setSlot('recognition', 'custom', 'my-small-model');
+    assert.equal(context.resolveSlotModelState('agentAdvanced').defaultModelId, 'my-agent-model');
+    assert.equal(context.resolveSlotModelState('gameRecognition').defaultModelId, 'my-small-model');
+
+    // custom with a blank model ID is the whole followed slot, so the check tests that model.
+    setSlot('agentAdvanced', 'custom', '');
+    setSlot('gameRecognition', 'custom', '');
+    assert.deepEqual(plain(context.resolveSlotModelState('agentAdvanced')), {
+        defaultModelId: 'my-agent-model', acceptsTypedModelId: true, fixedModelProvider: '',
+    });
+    assert.equal(context.getResolvedCustomModelId('agentAdvanced', 'custom'), 'my-agent-model');
+    assert.equal(context.getResolvedCustomModelId('gameRecognition', 'custom'), 'my-small-model');
+    setSlot('agentAdvanced', 'custom', 'typed-big');
+    assert.equal(context.getResolvedCustomModelId('agentAdvanced', 'custom'), 'typed-big');
 });
 
 test('following the familiar slot on a fixed-model provider resolves the familiar tier model', () => {
