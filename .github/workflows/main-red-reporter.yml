@@ -1,0 +1,85 @@
+name: Main Red Reporter
+
+# Turns a red test workflow on main into one tracking issue per workflow.
+#
+# The full unit suite runs only after merge (see unit-tests.yml), so a
+# regression the PR's related tests missed shows up here first. For every
+# completed push run of a watched workflow on main, scripts/ci/main_red_reporter.py:
+#
+# * failure: opens an issue labelled `main-red` (or comments on the open one)
+#   with the failed jobs, the FAILED/ERROR lines from their logs, the run link
+#   and every commit since the workflow last passed on main, mentioning the
+#   PR authors as the suspect range — a queued run on main gets superseded,
+#   so one failure can belong to any of several commits. When the full job's
+#   `--lf` re-run passed, the issue also gets the `flaky` label.
+# * success: comments on the open issue and closes it.
+# * cancelled and everything else: ignored.
+#
+# It only reports. Nothing here fixes, reverts or re-runs anything.
+#
+# workflow_run only fires for workflow files on the default branch, so this
+# cannot run before it is merged. workflow_dispatch replays any historical
+# run; dry_run (the default) prints the issue it would write instead of
+# writing it.
+on:
+  workflow_run:
+    workflows: [Unit Tests, Unit Test Shards, Plugin Tests]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Workflow run id to report on (from the run URL)
+        required: true
+        type: string
+      dry_run:
+        description: Only print what would be written
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  issues: write
+  actions: read
+  # Read-only: checking out the reporter script and the compare API that
+  # lists the suspect commits.
+  contents: read
+
+concurrency:
+  # One reporter at a time per watched workflow, in arrival order, so two
+  # quick failures cannot both decide that no issue is open yet.
+  group: main-red-reporter-${{ github.event.workflow_run.workflow_id || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Report main status
+    if: >-
+      github.repository == 'Project-N-E-K-O/N.E.K.O' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       (github.event.workflow_run.conclusion == 'failure' ||
+        github.event.workflow_run.conclusion == 'success')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Default branch code, never the reported run's commit.
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Open, update or close the main-red issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_HEALTH_WEBHOOK_URL }}
+        run: python scripts/ci/main_red_reporter.py
