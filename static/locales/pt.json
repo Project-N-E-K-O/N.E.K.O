@@ -4760,7 +4760,7 @@
             },
             "step6": {
                 "title": "🔑 chave de API do modelo geral",
-                "desc": "Insira aqui a chave do Provedor de modelo geral selecionado. Se o campo estiver vazio, normalmente será usada a chave do Provedor de modelo de voz; provedores que exigem uma chave própria não permitem essa alternativa, e ela precisa ser preenchida separadamente."
+                "desc": "Insira aqui a chave do Provedor de modelo geral selecionado. Se ficar vazia, os provedores que também podem ser Provedor de modelo de voz (como Alibaba, OpenAI ou Zhipu) usam a chave do Provedor de modelo de voz no lugar; os que oferecem apenas modelos gerais (como SiliconFlow ou DeepSeek) nunca fazem isso e precisam da própria chave."
             },
             "step7": {
                 "title": "🔧 Modelos por função (avançado)",

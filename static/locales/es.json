@@ -4760,7 +4760,7 @@
             },
             "step6": {
                 "title": "🔑 clave API del modelo general",
-                "desc": "Introduzca aquí la clave del Proveedor de modelo general seleccionado. Si el campo está vacío, normalmente se usa la clave del Proveedor de modelo de voz; los proveedores que requieren una clave propia no permiten esta alternativa y hay que introducirla por separado."
+                "desc": "Introduzca aquí la clave del Proveedor de modelo general seleccionado. Si se deja vacía, los proveedores que también pueden ser Proveedor de modelo de voz (como Alibaba, OpenAI o Zhipu) usan en su lugar la clave del Proveedor de modelo de voz; los que solo ofrecen modelos generales (como SiliconFlow o DeepSeek) nunca lo hacen y necesitan su propia clave."
             },
             "step7": {
                 "title": "🔧 Modelos por función (avanzado)",

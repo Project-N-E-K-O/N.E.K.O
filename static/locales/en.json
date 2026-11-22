@@ -4760,7 +4760,7 @@
             },
             "step6": {
                 "title": "🔑 General Model API Key",
-                "desc": "Enter the API Key for the selected General Model Provider here. An empty Key normally falls back to the Voice Model Provider's Key; providers that require a dedicated Key cannot use this fallback."
+                "desc": "Enter the API Key for the selected General Model Provider here. If left empty, providers that can also be a Voice Model Provider (such as Alibaba, OpenAI, Zhipu) use the Voice Model Provider's Key instead; providers that only offer general models (such as SiliconFlow, DeepSeek) never do and need their own Key."
             },
             "step7": {
                 "title": "🔧 Per-Feature Models (Advanced)",
