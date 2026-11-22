@@ -28,7 +28,9 @@ from main_logic.proactive_delivery import (
 from ._turn_context import _mark as _mark_turn_context
 from ._shared import (
     _cancelled_turn_end,
+    _chat_route_config,
     _find_by_identity,
+    _note_legacy_vision,
     _same_route,
     AIMessage,
     Any,
@@ -940,9 +942,12 @@ class _StreamingMixin:
             # vision URL/key must still switch; switch_model itself is a no-op
             # when both the id and the endpoint already match.
             if self.vision_model:
+                # Only a retired, separately configured vision model is set
+                # here; images otherwise stay on the chat model.
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 try:
                     await self.switch_model(self.vision_model, use_vision_config=True)
+                    _note_legacy_vision(self, "offline chat")
                 except BaseException:
                     # Attachments were atomically dequeued above. This is the sole await between dequeue
                     # and message assembly: vision switching creates an LLM client, so network faults /
@@ -1208,6 +1213,39 @@ class _StreamingMixin:
             # Consent was revoked while this turn was being assembled: its
             # proactive screenshot must not go out (no await since append).
             self._strip_auto_captures_missed_by_revocation(user_message)
+        if has_images and not (getattr(self, "vision_model", "") or ""):
+            from utils.legacy_vision import chat_refuses_images
+            if chat_refuses_images(_chat_route_config(self)):
+                # The chat model already rejected images this run: send the
+                # text (with image receipts) rather than another refused
+                # request. No await since append.
+                _dropped = self._drop_history_image_pixels(only=user_message)
+                if _dropped:
+                    logger.info(
+                        "🖼️ Not sending %d image(s): the chat model cannot read images",
+                        _dropped,
+                    )
+                    # Pictures the user supplied: the attachment queue, a
+                    # screenshot sampled with the live frames, or an attachment
+                    # appended after this turn's channelled frames.
+                    _user_supplied = bool(
+                        attachment_images
+                        or any(turn_image_user_flags or ())
+                        or (
+                            turn_source_count is not None
+                            and len(own_images) > turn_source_count
+                        )
+                    )
+                    if _user_supplied and self.on_status_message:
+                        # Pictures the user attached themselves must not vanish
+                        # silently (sampled live frames do, every voice turn).
+                        # Scheduled: nothing may await between append and here.
+                        _notice = asyncio.ensure_future(self.on_status_message(
+                            json.dumps({"code": "CHAT_MODEL_IMAGE_SKIPPED"})
+                        ))
+                        _notice.add_done_callback(
+                            lambda t: t.cancelled() or t.exception()
+                        )
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history
@@ -2503,10 +2541,43 @@ class _StreamingMixin:
                     except Exception:
                         # Best-effort telemetry never masks/interrupts original LLM error handling.
                         pass
+                    from utils.legacy_vision import is_image_unsupported_error
                     if is_api_key_rejected:
                         status_error_payload = {"code": "API_KEY_REJECTED"}
                         discard_error_payload = status_error_payload
                         error_msg = f"💥 文本生成异常: 检测到 API Key 被拒绝: {type(e).__name__}: {e}"
+                    elif is_image_unsupported_error(e) and not (
+                        getattr(self, "vision_model", "")
+                        and self.model == self.vision_model
+                        and _same_route(
+                            getattr(self, "vision_base_url", None),
+                            getattr(self, "vision_api_key", None),
+                            getattr(self, "vision_provider_type", None),
+                            getattr(self, "base_url", None),
+                            getattr(self, "api_key", None),
+                            getattr(self, "provider_type", None),
+                        )
+                    ):
+                        # Images go to the chat model, and this one cannot read
+                        # them. A refusal from a retired vision config the session
+                        # switched to is not the chat model's: it keeps the raw error.
+                        # The rejected pictures leave history (text and receipts
+                        # stay), or every later text turn would carry them again.
+                        # Share it with the other image paths (screenshots,
+                        # proactive chat), which then skip or go text-only.
+                        from utils.legacy_vision import mark_chat_image_refused
+                        mark_chat_image_refused(_chat_route_config(self), "offline chat")
+                        _drop_pixels = getattr(self, "_drop_history_image_pixels", None)
+                        if _drop_pixels is not None:
+                            _dropped = _drop_pixels()
+                            if _dropped:
+                                logger.info(
+                                    "🖼️ Dropped %d image(s) from history: the chat model cannot read images",
+                                    _dropped,
+                                )
+                        status_error_payload = {"code": "CHAT_MODEL_IMAGE_UNSUPPORTED"}
+                        discard_error_payload = status_error_payload
+                        error_msg = f"💥 文本生成异常: 聊天模型不支持图片: {type(e).__name__}: {e}"
                     else:
                         status_error_payload = {
                             "code": "TEXT_GEN_ERROR",
