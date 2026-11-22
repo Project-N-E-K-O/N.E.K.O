@@ -1473,8 +1473,8 @@
         "customModelProviderFollowAssist": "Follow General Model Provider",
         "customModelProviderFollowConversation": "Follow Text Dialogue Model",
         "customModelProviderFollowSummary": "Follow Memory Upkeep Model",
-        "customModelProviderFollowEmotion": "Follow recognition model",
-        "customModelProviderFollowAgent": "Follow familiar model",
+        "customModelProviderFollowEmotion": "Follow Recognition Model",
+        "customModelProviderFollowAgent": "Follow Familiar Model",
         "customModelProviderCustom": "Custom API",
         "keyAutoFilledFromModel": "Key follows the selected model configuration",
         "keyBook": {
