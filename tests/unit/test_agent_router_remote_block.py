@@ -554,8 +554,9 @@ class _Asked:
 
 
 @pytest.mark.asyncio
-async def test_a_switch_says_what_was_written_last_among_the_writes_that_did_not_fail(monkeypatch):
-    """Three at once: on is under way, off is taken, another off is not taken: off stands, whenever on is answered."""
+@pytest.mark.parametrize("refused_after", [0.04, 0.12])
+async def test_a_switch_says_what_was_written_last_among_the_writes_that_did_not_fail(monkeypatch, refused_after):
+    """Three at once: on is under way, off is taken, another off is not taken, before or after on is answered: off stands."""
     import asyncio
     import json
 
@@ -572,7 +573,7 @@ async def test_a_switch_says_what_was_written_last_among_the_writes_that_did_not
         if asked.get("request_id") == "taken":
             await asyncio.sleep(0.01)
             return httpx.Response(200, json={"success": True})
-        await asyncio.sleep(0.04)
+        await asyncio.sleep(refused_after)
         raise httpx.ConnectError("refused", request=request)
 
     router = _router_under_test(monkeypatch, manager, agent)
