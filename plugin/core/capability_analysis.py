@@ -252,8 +252,8 @@ class _Reference:
     raw_root: str = ""
     # Only stored into or deleted from (x[k] = v, del x[k]), never read.
     written: bool = False
-    # Read with a subscript (x[k]).
-    subscripted: bool = False
+    # The right side of an `in` / `not in` test.
+    membership: bool = False
     # The root name holds a value read from the environment earlier
     # (tok = os.environ.get()), whose own line is already the evidence. Other
     # stored call results (p = Path(); p.write_text()) still count.
@@ -280,8 +280,12 @@ def _references(tree, walker: _AnalysisWalker):
         )
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
-        subscripted = {
-            id(node.value) for node in nodes if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load)
+        membership = {
+            id(comparator)
+            for node in nodes
+            if isinstance(node, ast.Compare)
+            for op, comparator in zip(node.ops, node.comparators)
+            if isinstance(op, (ast.In, ast.NotIn))
         }
         comprehension_locals = _comprehension_locals(nodes, walker)
 
@@ -302,8 +306,8 @@ def _references(tree, walker: _AnalysisWalker):
                     changes["rebound"] = True
                 if id(reference.node) in written:
                     changes["written"] = True
-                if id(reference.node) in subscripted:
-                    changes["subscripted"] = True
+                if id(reference.node) in membership:
+                    changes["membership"] = True
                 if changes:
                     reference = replace(reference, **changes)
             yield reference
@@ -594,7 +598,7 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
             # references so the legacy capability scan is unchanged.
             resolved, external, bound = _resolve_with_origin(node.id, bindings)
             # Only the mapping itself, not a stored result (tok = os.environ.get()).
-            if external and bound and resolved in _DATA_READS:
+            if external and bound and (resolved in _DATA_READS or resolved == "sys.modules"):
                 yield _Reference(node, resolved, external, bound, function, False, raw_root=node.id)
 
 
@@ -961,15 +965,16 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
         # spot either way; so is reaching modules through sys.modules.
         if reference.is_call and name in _DYNAMIC_IMPORT_CALLS:
             return "dynamic_import"
-        # Looking a module up (sys.modules[name], .get, .pop) is dynamic;
-        # a membership test ("x" in sys.modules) is not.
-        if name == "sys.modules" and reference.subscripted:
-            return "dynamic_import"
-        if reference.is_call and name in ("sys.modules.get", "sys.modules.pop", "sys.modules.setdefault"):
+        # Reaching modules through sys.modules (lookups, copies, views,
+        # aliases) is dynamic; only a membership test ("x" in sys.modules) is not.
+        if _matches(name, ("sys.modules",)) and not reference.membership:
             return "dynamic_import"
         if reference.is_call and name == "builtins.getattr":
-            # A constant name reads like attribute access; see _getattr_reference.
-            if _literal_string(_call_argument(node, 1, "name")) is not None:
+            # A constant name on the bare builtin reads like attribute access
+            # (see _getattr_reference); qualified or aliased spellings are not
+            # followed, so they stay a blind spot.
+            bare = isinstance(node.func, ast.Name) and node.func.id == "getattr"
+            if bare and _literal_string(_call_argument(node, 1, "name")) is not None:
                 return None
             return "reflective_access"
         if _matches(name, ("operator.attrgetter",)):
@@ -1020,9 +1025,8 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
     Also part of the cached report's source revision, so adding or removing
     such files refreshes the report.
     """
-    inventory: dict = {"vendor": False, "non_python": [], "truncated": False, "unreadable": False}
+    inventory: dict = {"vendor": [], "non_python": [], "truncated": False, "unreadable": False}
     try:
-        inventory["vendor"] = (root / "vendor").is_dir()
         visited = 0
         def unreadable(_error: OSError) -> None:
             inventory["unreadable"] = True
@@ -1032,6 +1036,10 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
                 inventory["truncated"] = True
                 break
             base = Path(current)
+            # The Python scan skips vendor/ at any depth; list each one.
+            inventory["vendor"].extend(
+                (base / name).relative_to(root).as_posix() for name in sorted(directories) if name == "vendor"
+            )
             visited += len(directories)
             if visited > _MAX_TREE_ENTRIES:
                 inventory["truncated"] = True
@@ -1058,8 +1066,9 @@ def _skipped_parts(root: Path, stop: Event | None) -> list[dict]:
     """Blind-spot rows for vendor/ and non-Python code files, bounded."""
     inventory = skipped_inventory(root, stop)
     skipped: list[dict] = []
-    if inventory["vendor"]:
-        skipped.append({"reason": "vendor", "file": "vendor"})
+    skipped.extend(
+        {"reason": "vendor", "file": relative} for relative in inventory["vendor"][:_MAX_NON_PYTHON_REPORTED]
+    )
     skipped.extend(
         {"reason": "non_python", "file": relative}
         for relative in inventory["non_python"][:_MAX_NON_PYTHON_REPORTED]

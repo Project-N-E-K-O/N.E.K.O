@@ -1189,3 +1189,60 @@ def test_sys_modules_lookups_are_blind_spots_membership_tests_are_not(tmp_path, 
 def test_dict_reflection_only_counts_sdk_origins(tmp_path):
     source = "from plugin.plugins.demo.helpers import state\nx = state.__dict__\n"
     assert _scan(tmp_path, source)["blind_spots"] == []
+
+
+# --- review round 8 ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os, builtins\nbuiltins.getattr(os, 'system')('echo hi')\n",
+        "import os\nfrom builtins import getattr as g\ng(os, 'system')('echo hi')\n",
+    ],
+)
+def test_qualified_or_aliased_getattr_stays_a_blind_spot(tmp_path, source):
+    spots = _scan(tmp_path, source)["blind_spots"]
+    assert any(spot["type"] == "reflective_access" for spot in spots)
+
+
+def test_nested_vendor_directories_are_not_analyzed(tmp_path):
+    report = _scan(tmp_path, "x = 1\n", **{"helpers/vendor/network.py": "import socket\n"})
+    assert {"type": "not_analyzed", "file": "helpers/vendor", "line": None, "reason": "vendor"} in report["blind_spots"]
+
+
+@pytest.mark.parametrize(
+    "source,blind",
+    [
+        ("import sys\nmods = sys.modules.copy()\n", True),
+        ("import sys\nfor m in sys.modules.values():\n    pass\n", True),
+        ("from sys import modules\nmod = modules['os']\n", True),
+        ("import sys\nmodules = sys.modules\nmod = modules['os']\n", True),
+        ("import sys\nok = 'torch' not in sys.modules\n", False),
+    ],
+)
+def test_sys_modules_access_beyond_membership_is_a_blind_spot(tmp_path, source, blind):
+    spots = _scan(tmp_path, source)["blind_spots"]
+    assert any(spot["type"] == "dynamic_import" for spot in spots) is blind
+
+
+@pytest.mark.parametrize(
+    "source,reported",
+    [
+        # Subscript / attribute assignment does not rebind the decorator name.
+        ("from plugin.sdk.plugin import hook\nregistry = {}\nregistry[hook] = 1\nhook.note = 1\n"
+         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", True),
+        # A class body only sees what is bound before the class statement.
+        ("def hook(**k):\n    return lambda f: f\n"
+         "class P:\n    @hook(permissions=['x'])\n    def a(self): ...\n"
+         "from plugin.sdk.plugin import hook\n", False),
+        # Methods run later and see the module's final bindings.
+        ("def hook(**k):\n    return lambda f: f\n"
+         "class P:\n    def make(self):\n        @hook(permissions=[])\n        def a(): ...\n        return a\n"
+         "from plugin.sdk.plugin import hook\n", True),
+    ],
+)
+def test_cli_decorator_targets_and_class_snapshots(tmp_path, source, reported):
+    plugin_dir = _plugin(tmp_path, source, "[permissions]\n")
+    messages = [message for message in _issues(plugin_dir) if "permissions=" in message]
+    assert bool(messages) is reported

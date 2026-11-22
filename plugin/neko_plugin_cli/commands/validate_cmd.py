@@ -1371,9 +1371,14 @@ def _scope_bindings(body, parameters=()) -> list[tuple[tuple[int, int], str, str
         bindings.append(((node.lineno, node.col_offset), name, value))
 
     def bind_targets(node, target):
-        for item in ast.walk(target):
-            if isinstance(item, ast.Name):
-                bind(node, item.id)
+        # Only real targets bind; x[k] = v and x.attr = v do not rebind x.
+        if isinstance(target, ast.Name):
+            bind(node, target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for item in target.elts:
+                bind_targets(node, item)
+        elif isinstance(target, ast.Starred):
+            bind_targets(node, target.value)
 
     for node in _scope_nodes(body):
         if isinstance(node, ast.ImportFrom):
@@ -1423,7 +1428,9 @@ def _sdk_decorators(tree: ast.Module) -> dict[int, str]:
     def final(bindings) -> dict[str, str | None]:
         return {name: value for _position, name, value in bindings}
 
-    def visit(body, chain, is_class, parameters=()):
+    def visit(body, chain, is_class, parameters=(), later_chain=None):
+        # chain: what this scope's own code sees while it runs. later_chain:
+        # for a class body, what its methods see when they run later.
         local = _scope_bindings(body, parameters)
         for node in _scope_nodes(body):
             if not isinstance(node, _SCOPE_NODES) or isinstance(node, ast.Lambda):
@@ -1437,8 +1444,19 @@ def _sdk_decorators(tree: ast.Module) -> dict[int, str]:
                 name = _sdk_decorator_name(decorator, {key: value for key, value in names.items() if value})
                 if name:
                     found[id(decorator)] = name
-            inner_chain = chain if is_class else [final(local), *chain]
-            visit(node.body, inner_chain, isinstance(node, ast.ClassDef), _parameter_names(node))
+            # Class bodies are not visible to the functions inside them.
+            outer = later_chain if is_class else [final(local), *chain]
+            if isinstance(node, ast.ClassDef):
+                # A class body runs at definition time: it sees what is bound
+                # before the class statement, not later imports.
+                position = (node.lineno, node.col_offset)
+                snapshot = outer if is_class else [
+                    {name: value for at, name, value in local if at < position},
+                    *chain,
+                ]
+                visit(node.body, snapshot, True, (), later_chain=outer)
+            else:
+                visit(node.body, outer, False, _parameter_names(node))
 
     visit(tree.body, [], False)
     return found
