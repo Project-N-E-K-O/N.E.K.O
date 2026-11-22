@@ -1524,7 +1524,7 @@
         "baseUrlExamplePlaceholder": "por ejemplo, https://api.openai.com/v1",
         "modelExamplePlaceholder": "por ejemplo, gpt-3.5-turbo, qwen-turbo, glm-4-flash",
         "conversationApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
-        "summaryApiKeyPlaceholder": "Ingrese la clave API de resumen",
+        "summaryApiKeyPlaceholder": "Ingrese la clave API de organización de memoria",
         "emotionApiKeyPlaceholder": "Ingrese la clave API de Emotion",
         "visionModelExamplePlaceholder": "por ejemplo, gpt-4-vision-preview, qwen-vl-plus",
         "visionApiKeyPlaceholder": "Ingrese la clave API de Vision",

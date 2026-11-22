@@ -73,7 +73,7 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
             "conversationModelApiKey": "sk-deepseek",
             "summaryModelProvider": "follow_assist",
             "summaryModelUrl": "https://api.deepseek.com/v1",
-            "summaryModelId": "deepseek-v4-flash",
+            "summaryModelId": "summary-override-model",
             "summaryModelApiKey": "sk-deepseek",
             "agentModelProvider": "follow_assist",
             "agentModelUrl": "https://api.deepseek.com/v1",
@@ -82,7 +82,7 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
         })
 
         assert cm.get_model_api_config("conversation")["model"] == "deepseek-v4-flash"
-        assert cm.get_model_api_config("summary")["model"] == "deepseek-v4-flash"
+        assert cm.get_model_api_config("summary")["model"] == "summary-override-model"
         assert cm.get_model_api_config("agent")["model"] == "deepseek-v4-flash"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
@@ -135,7 +135,7 @@ def test_follow_core_uses_saved_model_id_for_text_tiers():
             "conversationModelApiKey": "sk-deepseek",
             "summaryModelProvider": "follow_core",
             "summaryModelUrl": "https://api.deepseek.com/v1",
-            "summaryModelId": "deepseek-v4-flash",
+            "summaryModelId": "summary-override-model",
             "summaryModelApiKey": "sk-deepseek",
             "agentModelProvider": "follow_core",
             "agentModelUrl": "https://api.deepseek.com/v1",
@@ -144,7 +144,7 @@ def test_follow_core_uses_saved_model_id_for_text_tiers():
         })
 
         assert cm.get_model_api_config("conversation")["model"] == "deepseek-v4-flash"
-        assert cm.get_model_api_config("summary")["model"] == "deepseek-v4-flash"
+        assert cm.get_model_api_config("summary")["model"] == "summary-override-model"
         assert cm.get_model_api_config("agent")["model"] == "deepseek-v4-flash"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)

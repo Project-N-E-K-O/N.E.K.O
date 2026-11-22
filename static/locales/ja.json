@@ -1524,7 +1524,7 @@
         "baseUrlExamplePlaceholder": "例: https://api.openai.com/v1",
         "modelExamplePlaceholder": "例: gpt-3.5-turbo, qwen-turbo",
         "conversationApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
-        "summaryApiKeyPlaceholder": "要約用APIキーを入力",
+        "summaryApiKeyPlaceholder": "記憶整理用APIキーを入力",
         "emotionApiKeyPlaceholder": "感情分析用APIキーを入力",
         "visionModelExamplePlaceholder": "例: gpt-4-vision-preview",
         "visionApiKeyPlaceholder": "視覚用APIキーを入力",
