@@ -191,9 +191,13 @@ export interface Switches {
   gate: { ready?: boolean; reasons?: string[]; is_free_version?: boolean }
   capabilities: Record<string, Capability | undefined>
   model_images: { sees: boolean; source?: string; reason?: string; noted_at?: number; lapses_at?: number }
+  /** Whether the main page shows the task HUD. Missing from an older agent process. */
+  task_hud_visible?: boolean
 }
 
 export type DeviceSwitch = 'computer_use_enabled' | 'browser_use_enabled'
+/** What a console page may switch besides the one for all of it. */
+export type ConsoleSwitch = DeviceSwitch | 'task_hud_visible'
 
 export interface BrowserSettings {
   mode: string
@@ -209,7 +213,7 @@ export interface BrowserView {
 
 export const getSwitches = () => get<{ switches: Switches }>('/console/switches')
 export const setPower = (enabled: boolean) => send<{ success: boolean }>('post', '/console/switch', { enabled })
-export const setDeviceSwitch = (key: DeviceSwitch, value: boolean) =>
+export const setDeviceSwitch = (key: ConsoleSwitch, value: boolean) =>
   send<{ success: boolean }>('post', '/console/switch', { key, value })
 export const getBrowser = () => get<BrowserView>('/console/browser')
 export const setBrowser = (settings: Partial<BrowserSettings>) => send<BrowserView>('post', '/console/browser', settings)

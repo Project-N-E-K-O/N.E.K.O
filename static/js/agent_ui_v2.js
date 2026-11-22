@@ -265,6 +265,10 @@
         state.snapshot = snapshot;
         if (Number.isFinite(rev)) state.revision = rev;
         window._agentStatusSnapshot = snapshot;
+        // 悬浮窗显不显示：后端记着的值（喵能力界面里改），同步到本页。
+        if (window.AgentHUD && typeof window.AgentHUD.syncTaskHudPreference === 'function') {
+            window.AgentHUD.syncTaskHudPreference(snapshot.task_hud_visible);
+        }
         if (snapshot.notification && typeof window.showStatusToast === 'function') {
             const msg = window.translateStatusMessage ? window.translateStatusMessage(snapshot.notification) : snapshot.notification;
             window.showStatusToast(msg, 4000);

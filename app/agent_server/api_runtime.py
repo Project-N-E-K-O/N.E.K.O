@@ -632,6 +632,15 @@ async def startup():
     Modules._persistent_tasks.add(_region_task)
     _region_task.add_done_callback(Modules._persistent_tasks.discard)
 
+    # Whether the main page shows the task HUD: read once here, off the event loop, so that the
+    # status snapshot (built synchronously) only reads memory afterwards.
+    try:
+        from app.agent_task_hud import get_visible as _task_hud_visible
+
+        await asyncio.to_thread(_task_hud_visible)
+    except Exception as e:  # noqa: BLE001 - the snapshot reads it again when asked
+        logger.warning("[Agent] Failed to read the task HUD setting at start (exc_type=%s)", type(e).__name__)
+
     try:
         await _start_embedded_user_plugin_server()
     except Exception as e:
@@ -1040,6 +1049,8 @@ async def _console_switches() -> Dict[str, Any]:
     """Where the switches stand, for the console. Unlike ``/agent/state``, the notification is left for the main page."""
     from app import agent_server as _agent_server_facade
 
+    from app.agent_task_hud import get_visible as _task_hud_visible
+
     from .capabilities import _agent_flags_snapshot, _model_images_status
 
     return {
@@ -1048,6 +1059,9 @@ async def _console_switches() -> Dict[str, Any]:
         "gate": _agent_server_facade._check_agent_api_gate(),
         "capabilities": dict(Modules.capability_cache or {}),
         "model_images": await _model_images_status(),
+        # Never set here means shown, as the main page has it by default. Off the event loop:
+        # the first read is from the file.
+        "task_hud_visible": (await asyncio.to_thread(_task_hud_visible)) is not False,
     }
 
 

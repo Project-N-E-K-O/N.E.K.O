@@ -272,6 +272,7 @@ test('switching core providers preserves key-book provenance in the save payload
 });
 
 test('all secret-bearing form fields use masked loading and masked save accessors', () => {
+    // No 'vision': the settings page has no vision card any more (#3957); see the next test.
     const modelTypes = [
         'conversation', 'summary', 'gameMain', 'gameSummary',
         'emotion', 'decision', 'agent', 'agentSmall', 'omni', 'tts',
@@ -293,6 +294,22 @@ test('all secret-bearing form fields use masked loading and masked save accessor
     assert.match(source, /if \(!coreResult\.secretMasked && coreCacheId/);
     assert.match(source, /if \(!assistResult\.secretMasked && assistCacheId/);
     assert.match(source, /if \(!customResult\.secretMasked && customCacheId/);
+});
+
+test('a vision key saved before the vision card went away never reaches the page', () => {
+    // The card is gone (#3957): a saved vision key is neither read from the
+    // config nor taken from an input, and there is no input for it. The only
+    // value the page sends for it is the empty one that clears it.
+    const template = fs.readFileSync(path.join(PROJECT_ROOT, 'templates', 'api_key_settings.html'), 'utf8');
+    assert.doesNotMatch(template, /visionModelApiKey/);
+    assert.doesNotMatch(source, /data\.visionModelApiKey/);
+    assert.doesNotMatch(source, /getKeyVal\('visionModelApiKey'\)/);
+    assert.doesNotMatch(source, /Input(Value)?\('visionModelApiKey'/);
+    const sent = source.match(/visionModelApiKey\s*:\s*[^,}\n]+/g) || [];
+    assert.ok(sent.length > 0, 'the clearing payload still names the vision key');
+    for (const entry of sent) {
+        assert.match(entry, /visionModelApiKey\s*:\s*''/);
+    }
 });
 
 test('manual core and assist tests show a localized notice instead of testing masked secrets', () => {

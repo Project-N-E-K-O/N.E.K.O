@@ -7047,8 +7047,8 @@
             "body": "Escolha uma tela ou janela. O botão à direita inicia ou para o compartilhamento. É opcional."
         },
         "agent": {
-            "title": "Agent",
-            "body": "A patinha abre as ferramentas Agent para ajudar com o computador, navegador e plugins. O painel de tarefas mostra o andamento e permite interromper tarefas."
+            "title": "NekoPower",
+            "body": "Este botão abre o NekoPower. Com o NekoPower ativado, posso ajudar com o computador, o navegador e os plugins; o interruptor, os familiares e os plugins ficam todos lá. O painel de tarefas mostra o andamento e permite interromper tarefas."
         },
         "agentMaster": {
             "title": "Interruptor do Agent",

@@ -16,7 +16,7 @@ The agent server also exchanges asynchronous session and task events with the ma
 | `GET` | `/agent/flags` | Current master/sub-feature flags |
 | `POST` | `/agent/flags` | Partially update `computer_use_enabled`, `browser_use_enabled`, `user_plugin_enabled` |
 | `GET` | `/agent/state` | Authoritative revision, flags, capabilities, notification, and active tasks |
-| `POST` | `/agent/command` | `set_agent_enabled`, `set_flag`, or `refresh_state` command |
+| `POST` | `/agent/command` | `set_agent_enabled`, `set_flag`, `set_task_hud_visible`, or `refresh_state` command |
 | `GET` | `/computer_use/availability` | Keyboard-and-mouse readiness and reasons |
 | `GET` | `/browser_use/availability` | Browser readiness and reasons |
 | `GET` | `/builtin/activity` | Which commission occupies the keyboard and mouse, and which the browser, right now |
