@@ -339,16 +339,73 @@ def test_too_deep_inferred_output_schema_is_rejected_like_an_explicit_one():
 
 
 def test_explicit_schema_is_snapshotted_when_checked():
-    schema: dict[str, object] = {"type": "object"}
+    nested: dict[str, object] = {"type": "object"}
+    schema: dict[str, object] = {"type": "object", "properties": {"x": nested}}
     factory = plugin_decorators.plugin_entry(id="snap", output_schema=schema)
-    # Made too deep after the check but before the decorator reads it.
-    schema["properties"] = {"x": _too_deep_schema()}
+    # Made too deep after the check but before the decorator reads it, at the
+    # root and inside a nested level.
+    schema["extra"] = _too_deep_schema()
+    nested["properties"] = {"y": _too_deep_schema()}
 
     @factory
     async def snap():
         return {}
 
-    assert _meta_of(snap).output_schema == {"type": "object"}
+    assert _meta_of(snap).output_schema == {"type": "object", "properties": {"x": {"type": "object"}}}
+
+
+def test_snapshot_copies_through_tuples_when_deepcopy_falls_back():
+    from types import MappingProxyType
+
+    inner: dict[str, object] = {"type": "string"}
+    proxy = MappingProxyType({"k": "v"})
+    # The mappingproxy cannot be deep-copied, which forces the per-level copy,
+    # and the tuple holding it cannot be deep-copied as a whole either.
+    schema = {"anyOf": (inner, proxy)}
+    factory = plugin_decorators.plugin_entry(id="snap_tuple", output_schema=schema)
+    inner["items"] = _too_deep_schema()
+
+    @factory
+    async def snap_tuple():
+        return {}
+
+    assert _meta_of(snap_tuple).output_schema["anyOf"] == ({"type": "string"}, proxy)
+
+
+def test_router_inference_is_finished_when_bound():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class LateRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="late")
+        async def late(self) -> "Late":
+            return None
+
+    router = LateRouter()
+    assert router.collect_entries()["late"].meta.output_schema is None
+
+    class Late(BaseModel):
+        ok: bool
+
+    # Defined after the router (e.g. later in the module): still picked up
+    # while unbound, then fixed at binding.
+    LateRouter.Late = Late
+    assert router.collect_entries()["late"].meta.output_model is Late
+    router._bind(object())
+    del LateRouter.Late
+    assert router.collect_entries()["late"].meta.output_model is Late
+
+    class DeepRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="deep")
+        async def deep(self) -> "Deep":
+            return None
+
+        class Deep(TooDeep):
+            pass
+
+    deep_router = DeepRouter()
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        deep_router._bind(object())
+    assert deep_router.is_bound is False
 
 
 def test_router_cache_accepts_an_unhashable_callable_entry():

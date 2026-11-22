@@ -175,6 +175,13 @@ def detached_copy(value: object) -> object:
 
 
 def _copy_containers(value: object, memo: dict[int, object]) -> object:
+    if isinstance(value, tuple):
+        # A tuple is immutable but may hold mutable levels; copy through it.
+        if id(value) in memo:
+            return memo[id(value)]
+        copied_tuple = tuple(_copy_containers(item, memo) for item in value)
+        memo[id(value)] = copied_tuple
+        return copied_tuple
     if not isinstance(value, (Mapping, list)):
         try:
             return copy.deepcopy(value)

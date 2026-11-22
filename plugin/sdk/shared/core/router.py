@@ -79,8 +79,7 @@ class PluginRouter:
         self._decorated_entries: list[tuple[str, EventMeta, RouteHandler]] = []
         # Contract fields inferred against this router class, per decorated entry
         # (keyed by the handler's function). Kept apart from the shared metadata;
-        # computed once, when entries are first resolved (after import).
-        # Keyed by id() so an unhashable callable works; the entry keeps the
+        # caching rules in _inferred_contract_fields. Keyed by id() so an unhashable callable works; the entry keeps the
         # function alive, and it is stored alongside so the id cannot be reused.
         self._deferred_inference: dict[int, tuple[object, dict[str, object]]] = {}
         self._main_plugin: object | None = None
@@ -175,6 +174,12 @@ class PluginRouter:
         return self._main_plugin
 
     def _bind(self, plugin: object) -> None:
+        # Finish the router-class inference once, when the plugin includes the
+        # router: a failure (an inferred schema over the depth bound) surfaces
+        # here, like @neko_plugin raises at class definition, instead of on
+        # every collect_entries() call.
+        for _, _, handler in self._decorated_entries:
+            self._inferred_contract_fields(handler, final=True)
         self._main_plugin = plugin
 
     def _unbind(self) -> None:
@@ -250,14 +255,21 @@ class PluginRouter:
             resolved[entry_id] = _EntryRecord(meta=normalized, handler=handler)
         return resolved
 
-    def _inferred_contract_fields(self, handler: RouteHandler) -> dict[str, object]:
-        """Contract fields the decorator left pending, resolved against this router (cached per entry)."""
+    def _inferred_contract_fields(self, handler: RouteHandler, *, final: bool = False) -> dict[str, object]:
+        """Contract fields the decorator left pending, resolved against this router (cached per entry).
+
+        Before the router is bound, an empty result is not cached: a model
+        defined after the router may still resolve later. From binding on
+        (module import is complete by then) every result is cached.
+        """
         fn = getattr(handler, "__func__", handler)
         cached = self._deferred_inference.get(id(fn))
-        if cached is None:
-            cached = (fn, router_entry_inference(fn, type(self)))
-            self._deferred_inference[id(fn)] = cached
-        return cached[1]
+        if cached is not None:
+            return cached[1]
+        inferred = router_entry_inference(fn, type(self))
+        if inferred or final or self.is_bound:
+            self._deferred_inference[id(fn)] = (fn, inferred)
+        return inferred
 
     def on_mount(self) -> None:
         return None
