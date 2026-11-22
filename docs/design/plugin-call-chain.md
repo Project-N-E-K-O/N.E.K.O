@@ -37,7 +37,7 @@
 
 | 调用点 | 线上类型 | Origin.kind | Origin.ref |
 |---|---|---|---|
-| `/runs`：`RunManager._execute_run`（`plugin/runs/manager.py:620`）→ `trigger_service.trigger_plugin`（`plugin/runs/trigger_service.py:477`）→ `_execute_trigger`（同文件 391 行 `host.trigger`）。上游有 `POST /runs`、`/ws/admin run.create`、猫爪 `nekoclaw/host/plugin_runs.py`、`search_gateway`、插件安装后的试跑 | TRIGGER | `run` | `run_id` |
+| `/runs`：`RunManager._execute_run`（`plugin/runs/manager.py:620`）→ `trigger_service.trigger_plugin`（`plugin/runs/trigger_service.py:477`）→ `_execute_trigger`（同文件 391 行 `host.trigger`）。上游有 `POST /runs`、`/ws/admin run.create`、喵能力 `nekoclaw/host/plugin_runs.py`、`search_gateway`、插件安装后的试跑 | TRIGGER | `run` | `run_id` |
 | `llm_tool_callback`（`plugin/server/routes/llm_tools.py:96`，200 行 `host.trigger`） | TRIGGER | `chat_tool` | 主服务给的 `call_id` |
 | `reply_completed_callback`（`plugin/server/routes/llm_tools.py:62`，84 行） | TRIGGER | `chat_hook` | `host_reply.call_id` |
 | `call_surface_action`（`plugin/server/application/plugins/ui_query_service.py:1636`，1770 行） | TRIGGER | `ui_action` | 宿主生成的 `run_id` |

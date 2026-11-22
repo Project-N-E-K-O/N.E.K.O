@@ -152,7 +152,7 @@ duplicated.
 
 ### In-process resolution
 
-Callers outside the plugin server (the NekoClaw host in the agent process)
+Callers outside the plugin server (the NekoPower host in the agent process)
 use `plugin/server/infrastructure/model_slot_resolver.py`: it reads the same
 `plugin_models.json` and resolves host-follow slots with the gateway's code,
 so it works whether or not the plugin server runs, and it never writes.
