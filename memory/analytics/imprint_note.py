@@ -16,7 +16,7 @@
 """Manual on-demand warm relationship note generator for the Imprint view.
 
 LLM discipline:
-- Uses ``summary`` tier from ``config_manager.aget_model_api_config('memory')``.
+- Uses the ``memory`` tier from ``config_manager.aget_model_api_config('memory')``.
 - Never passes ``temperature``.
 - Enforces both input token budget (``IMPRINT_NOTE_INPUT_MAX_TOKENS``) and
   output budget + timeout (``IMPRINT_NOTE_MAX_TOKENS``, ``IMPRINT_NOTE_TIMEOUT_SECONDS``).

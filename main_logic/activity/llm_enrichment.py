@@ -505,7 +505,7 @@ async def _invoke_capable_tier(prompt: str, *, timeout: float, label: str) -> st
 
     Deep-search query derivation is a step up from the emotion-tier candidate
     pass: it runs once, at open time, off the user hot path, so it uses the
-    heavier ``summary`` tier (the same tier the window search summarizer uses).
+    heavier ``memory`` tier (the same tier the window search summarizer uses).
     Returns raw response text or None on any failure.
     """
     from utils.config_manager import get_config_manager

@@ -16,7 +16,7 @@
 """Manual developer-mode semantic conflict and duplicate audit via summary tier.
 
 LLM discipline:
-- Uses ``summary`` tier from ``config_manager.aget_model_api_config('memory')``.
+- Uses the ``memory`` tier from ``config_manager.aget_model_api_config('memory')``.
 - Never passes ``temperature``.
 - Enforces both input token budget (``DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS``) and
   output budget + timeout (``DEEP_CONFLICT_CHECK_MAX_TOKENS``,
