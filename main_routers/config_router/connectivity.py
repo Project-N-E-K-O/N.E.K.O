@@ -812,10 +812,12 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
     if not assist_provider:
         assist_provider = "free" if core_provider == "free" else "qwen"
 
+    from utils.config_manager import _as_bool
+
     _add("core", core_provider)
     _add("assist", assist_provider)
 
-    if core_cfg.get("enableCustomApi", False):
+    if _as_bool(core_cfg.get("enableCustomApi", False)):
         model_types = [
             "conversation", "summary", "gameMain", "gameSummary", "emotion",
             "decision", "vision", "agent", "agentSmall", "omni", "tts",

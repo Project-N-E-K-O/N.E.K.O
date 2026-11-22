@@ -53,6 +53,14 @@ from ._shared import (
     _extract_keywords,
 )
 
+
+def _next_text_revision(entry: dict) -> int:
+    """Revision number the next event-driven text rewrite of ``entry`` stores."""
+    try:
+        return int(entry.get('text_revision') or 0) + 1
+    except (TypeError, ValueError):
+        return 1
+
 class FactsMixin:
     @staticmethod
     def _normalize_entry(entry) -> dict:
@@ -844,6 +852,15 @@ class FactsMixin:
                 'entity_key': entity_key,
                 'entry_id': canonical_entry_id,
                 'rewrite_text_sha256': new_text_sha,
+                # Lets replay write a merge back that a crash kept off disk,
+                # and tell that apart from a later rewrite.
+                'rewrite_text': merged_text or '',
+                'previous_text_sha256': hashlib.sha256(
+                    str(target_entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
+                # Persisted on the entry by the same save; replay compares
+                # the two to tell a lost save from a later change.
+                'text_revision': _next_text_revision(target_entry),
                 'reinforcement': float(merged_reinforcement),
                 'disputation': float(merged_disputation),
                 # Both clocks bumped — the merge IS a fresh signal on this
@@ -907,6 +924,7 @@ class FactsMixin:
                 # to the log, so any crash from here onward is
                 # replay-recoverable.
                 target_entry['text'] = merged_text
+                target_entry['text_revision'] = entry_payload['text_revision']
                 target_entry['reinforcement'] = float(merged_reinforcement)
                 target_entry['disputation'] = float(merged_disputation)
                 target_entry['rein_last_signal_at'] = now_iso
@@ -1215,6 +1233,13 @@ class FactsMixin:
                 'entity_key': entity_key,
                 'entry_id': entry_id,
                 'rewrite_text_sha256': hashlib.sha256(cleaned.encode('utf-8')).hexdigest(),
+                'rewrite_text': cleaned,
+                'previous_text_sha256': hashlib.sha256(
+                    str(entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
+                'text_revision': _next_text_revision(entry),
+                'history_reason': 'manual_edit',
+                'replaced_at': now_iso,
                 'source': 'manual_edit',
             }
 
@@ -1223,6 +1248,7 @@ class FactsMixin:
 
             def _sync_mutate(_view):
                 entry['text'] = cleaned
+                entry['text_revision'] = payload['text_revision']
                 entry['version_history'] = updated_history
                 self._invalidate_token_count_cache(entry)
                 self._invalidate_embedding_cache(entry)
@@ -1304,6 +1330,13 @@ class FactsMixin:
                     'entity_key': entity_key,
                     'entry_id': keep_id,
                     'rewrite_text_sha256': hashlib.sha256(cleaned.encode('utf-8')).hexdigest(),
+                    'rewrite_text': cleaned,
+                    'previous_text_sha256': hashlib.sha256(
+                        str(keep_entry.get('text') or '').encode('utf-8'),
+                    ).hexdigest(),
+                    'text_revision': _next_text_revision(keep_entry),
+                    'history_reason': 'manual_merge',
+                    'replaced_at': now_iso,
                     'source': 'manual_merge',
                 }
 
@@ -1312,6 +1345,7 @@ class FactsMixin:
 
                 def _sync_mutate_edit(_view):
                     keep_entry['text'] = cleaned
+                    keep_entry['text_revision'] = edit_payload['text_revision']
                     keep_entry['version_history'] = updated_history
                     self._invalidate_token_count_cache(keep_entry)
                     self._invalidate_embedding_cache(keep_entry)
@@ -1456,14 +1490,23 @@ class FactsMixin:
                 'entity_key': entity_key,
                 'entry_id': entry_id,
                 'rewrite_text_sha256': hashlib.sha256(restored_text.encode('utf-8')).hexdigest(),
+                'rewrite_text': restored_text,
+                'previous_text_sha256': hashlib.sha256(
+                    str(entry.get('text') or '').encode('utf-8'),
+                ).hexdigest(),
+                'text_revision': _next_text_revision(entry),
                 'source': 'manual_restore',
             }
+            if current_text and current_text != restored_text:
+                payload['history_reason'] = 'manual_restore'
+                payload['replaced_at'] = now_iso
 
             def _sync_load(_n: str):
                 return persona
 
             def _sync_mutate(_view):
                 entry['text'] = restored_text
+                entry['text_revision'] = payload['text_revision']
                 entry['version_history'] = new_history
                 self._invalidate_token_count_cache(entry)
                 self._invalidate_embedding_cache(entry)

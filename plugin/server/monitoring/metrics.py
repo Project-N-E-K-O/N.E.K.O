@@ -42,6 +42,36 @@ def _safe_metric_timestamp_utc(value: str) -> datetime | None:
         return None
 
 
+def _read_uss_mb(ps_process: object) -> float | None:
+    """Read unique memory (USS) in MiB, or ``None`` when it is unavailable.
+
+    ``memory_full_info()`` costs more than ``memory_info()`` (it walks the working
+    set on Windows and reads smaps on Linux) and can be denied even when the basic
+    counters are readable. Neither case may void the whole sample: RSS and the
+    other counters are still valid, so a denied/unsupported USS read degrades to
+    ``None`` instead of failing the collection round.
+    """
+    try:
+        full_info = ps_process.memory_full_info()
+    except (
+        psutil.NoSuchProcess,
+        psutil.AccessDenied,
+        AttributeError,
+        NotImplementedError,
+        # procfs entries can vanish mid-read, and psutil may let the raw
+        # FileNotFoundError escape instead of translating it. Catching OSError
+        # keeps that case from voiding the whole sample as well.
+        OSError,
+    ):
+        return None
+    uss = getattr(full_info, "uss", None)
+    if uss is None:
+        # Linux, macOS and Windows all expose USS; the platforms whose full-info
+        # struct has no such field are the BSD variants (FreeBSD/OpenBSD/NetBSD).
+        return None
+    return uss / 1024 / 1024
+
+
 @dataclass
 class PluginMetrics:
     """Plugin performance metrics."""
@@ -52,6 +82,11 @@ class PluginMetrics:
     pid: int | None = None
     cpu_percent: float = 0.0
     memory_mb: float = 0.0
+    # Unique memory (USS) in MiB: private pages only, so it is not inflated by
+    # shared DLLs / interpreter runtime like RSS is. ``None`` means "unknown"
+    # (platform without USS support, or the extended counters were denied);
+    # it is deliberately not 0.0 so a missing value cannot skew the totals.
+    memory_uss_mb: float | None = None
     memory_percent: float = 0.0
     num_threads: int = 0
     
@@ -281,6 +316,8 @@ class MetricsCollector:
                 cpu_percent = ps_process.cpu_percent(interval=None)
                 memory_info = ps_process.memory_info()
                 memory_mb = memory_info.rss / 1024 / 1024
+                # USS is sampled separately so a denial here cannot drop the sample.
+                memory_uss_mb = _read_uss_mb(ps_process)
                 memory_percent = ps_process.memory_percent()
                 num_threads = ps_process.num_threads()
             except psutil.NoSuchProcess:
@@ -311,6 +348,7 @@ class MetricsCollector:
                 pid=pid,
                 cpu_percent=cpu_percent,
                 memory_mb=memory_mb,
+                memory_uss_mb=memory_uss_mb,
                 memory_percent=memory_percent,
                 num_threads=num_threads,
                 pending_requests=pending_requests,
@@ -441,6 +479,9 @@ class MetricsCollector:
             "pid": metrics.pid,
             "cpu_percent": round(metrics.cpu_percent, 2),
             "memory_mb": round(metrics.memory_mb, 2),
+            "memory_uss_mb": (
+                round(metrics.memory_uss_mb, 2) if metrics.memory_uss_mb is not None else None
+            ),
             "memory_percent": round(metrics.memory_percent, 2),
             "num_threads": metrics.num_threads,
             "total_executions": metrics.total_executions,

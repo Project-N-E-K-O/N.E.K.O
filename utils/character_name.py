@@ -58,10 +58,17 @@ RESERVED_ROUTE_NAMES = frozenset({
     "memory_browser",
     "cookies_login",
     "chat",
+    "chat_full",
+    "web_chat_compact",
     "subtitle",
     "agenthud",
     "toast",
     "card_maker",
+    "theater",
+    "chara_manager",
+    "visit_persona",
+    "social_hub",
+    "avatar_tool_editor",
     "soccer_demo",
     "badminton_demo",
     "air_basketball",
@@ -74,12 +81,17 @@ RESERVED_ROUTE_NAMES = frozenset({
     "user_live2d_local",
     "user_vrm",
     "user_mmd",
+    "user_pngtuber",
+    "user_avatar_tools",
     "user_mods",
     "workshop",
-    # API / WebSocket / system
+    # API / WebSocket / system / frontend routes
     "api",
     "ws",
     "health",
+    "market",
+    "focus",
+    "templates",
 })
 
 

@@ -582,3 +582,74 @@ async def test_a_callback_round_after_an_earlier_tool_image_still_gets_its_stand
               and m["tool_calls"][0]["id"] == "b1")
     assert request[at - 1] == {"role": "user", "content": TOOL_ROUND_PROMPT_PLACEHOLDER["zh"]}
     assert request[at - 2].get("role") == "user", "A's image placeholder is still there"
+
+
+async def test_stream_text_flushes_short_pretool_prefix_buffer_consistently():
+    """F0166: short pre-tool text in prefix_buffer must flush with prefix strip and match history."""
+    client = _seeded(_client(handler=_recording_handler([])))
+    client._prefix_buffer_size = 100
+    client.lanlan_name = "L"
+    client.master_name = "Master"
+    client.script = [
+        [_text("L | 我来"), _tool_calls("c1")],
+        [_text("查到了。"), _text("", "stop")],
+    ]
+    await client.stream_text("帮我查一下")
+    assert _emitted(client) == ["我来", "查到了。"]
+    assistant_tool_msgs = [
+        m for m in client._conversation_history
+        if isinstance(m, dict) and m.get("tool_calls")
+    ]
+    assert len(assistant_tool_msgs) == 1
+    assert assistant_tool_msgs[0]["content"] == "我来"
+
+
+async def test_stream_text_think_stripper_pretool_residual_goes_through_prefix_and_guard():
+    """F0166: think_stripper pre-tool residual must pass through prefix stripping and guard checks."""
+    client = _seeded(_client(handler=_recording_handler([])))
+    client._prefix_buffer_size = 100
+    client.lanlan_name = "L"
+    client.master_name = "Master"
+    client.model = "qwen3.5-plus"
+    client.enable_response_guard = True
+    client.max_response_rerolls = 1
+    client.script = [
+        [_text("Master | hallucinated"), _tool_calls("c1")],
+        [_text("L | 先查一下"), _tool_calls("c2")],
+        [_text("好了。"), _text("", "stop")],
+    ]
+    await client.stream_text("帮我查一下", thinking_on=True)
+    assert _emitted(client) == ["先查一下", "好了。"]
+    assistant_tool_msgs = [
+        m for m in client._conversation_history
+        if isinstance(m, dict) and m.get("tool_calls")
+    ]
+    assert assistant_tool_msgs[-1]["content"] == "先查一下"
+    if len(assistant_tool_msgs) > 1:
+        assert assistant_tool_msgs[0]["content"] == ""
+
+
+@pytest.mark.parametrize("tool_boundary", [True, False])
+async def test_think_flush_gibberish_tail_preserves_prefix_once(monkeypatch, tool_boundary):
+    from main_logic.omni_offline_client import _streaming
+
+    client = _client(handler=_recording_handler([]))
+    client.model = "qwen3.5-plus"
+    client.enable_response_guard = True
+    client.enable_long_response_summary = True
+    client.llm.max_completion_tokens = 40
+    client.max_response_length = 4
+    monkeypatch.setattr(_streaming, "count_tokens", len)
+    monkeypatch.setattr(_streaming, "truncate_to_tokens", lambda text, limit: text[:limit])
+    monkeypatch.setattr(_streaming, "_SUMMARY_GIBBERISH_RECHECK_TOKENS", 5)
+    prefix = "一二三四，然后。"
+    tail = "x" * 400
+    last_chunk = _tool_calls("c1") if tool_boundary else _text("", "stop")
+    client.script = [[_text(prefix + tail), last_chunk]]
+    await client.stream_text("Q", thinking_on=True)
+
+    spoken = "".join(call.args[0] for call in client.on_text_delta.await_args_list
+                     if call.kwargs.get("tts_enabled", True))
+    history = [text for role, text, _ in _history_shape(client) if role in {"ai", "assistant"}]
+    assert spoken and "x" not in spoken
+    assert history == [spoken]

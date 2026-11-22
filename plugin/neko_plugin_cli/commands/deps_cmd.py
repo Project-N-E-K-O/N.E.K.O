@@ -23,6 +23,7 @@ from ..core.build_rules import (
     VENDOR_SYNC_PENDING_SUFFIX,
     VENDOR_SYNC_STAGING_PREFIX,
 )
+from ..git_env import git_env
 from ..paths import CliDefaults
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
@@ -1185,6 +1186,8 @@ def _run_installer(cmd: list[str], *, label: str) -> subprocess.CompletedProcess
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            # uv / pip run git for git+ requirements.
+            env=git_env(),
         )
     except OSError as exc:
         print(f"[FAIL] {label} could not start: {exc}", file=sys.stderr)

@@ -2002,3 +2002,148 @@ async def test_theater_invite_line_skips_the_call_without_story_material(monkeyp
     assert await sr._compose_theater_invite_line(
         {'title': '猫灯'}, 'zh', character_prompt='', master_name='阿八') == ''
     factory.assert_not_awaited()
+
+
+@pytest.mark.parametrize('text', [
+    '我觉得这个方案挺好的',
+    '买一件好的衣服',
+    '你好啊，今天怎么样',
+    '你不要紧吧',
+    '今天不要太晚睡',
+    '你要不要喝水',
+    '这样好不好',
+    '这样行不行',
+    '不好意思',
+    '飞机晚点了',
+    '等下班再聊',
+    '回头客很多',
+    '苹果香蕉等等',
+    '没空间了',
+    'かわいいよね',
+    '機嫌がいい',
+    'パスワード',
+    '그래프',
+    '좋아하는 음식',
+])
+def test_cjk_false_positive_sentences_do_not_match_keywords(text):
+    """F0170: ordinary CJK/Kana/Hangul sentences with embedded substrings must return None."""
+    assert sr._match_mini_game_invite_keyword(text) is None
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('música', None),
+    ('así', None),
+    ('sí', 'accept'),
+    ('não obrigado', 'decline'),
+])
+def test_accented_latin_word_boundary_matches_spanish_and_portuguese(text, expected):
+    """F0170: accented Latin keywords must use boundary matching, not bare substring."""
+    assert sr._match_mini_game_invite_keyword(text) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('안 해', 'decline'),
+    ('안 해요', 'decline'),
+    ('나는 안 해', 'decline'),
+    ('좋아 안 해', 'decline'),
+    ('좋아, 안 해', 'decline'),
+    ('그건 안 해봤어', None),
+    ('숙제 안 해도 돼', None),
+    ('그래', 'accept'),
+    ('응 그래', 'accept'),
+    ('그래요', 'accept'),
+    ('그래서 밥 먹었어', None),
+    ('그래도 괜찮아', None),
+    ('그래야', None),
+    ('좋은', None),
+    ('나중에 보자고 했어', 'later'),
+])
+def test_korean_space_keywords_and_suffix_boundaries(text, expected):
+    """F0170: Korean space-containing keywords match while connectors do not false-positive."""
+    assert sr._match_mini_game_invite_keyword(text) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('嗯好的，算了不玩了', 'decline'),
+    ('好的，不过我现在没空玩游戏', 'decline'),
+    ('好啊，等下再看看', 'later'),
+    ('好啊，但是我不想玩游戏', 'decline'),
+    ('好的，但是不要玩游戏', 'decline'),
+    ('那就一起玩', 'accept'),
+    ('好的，但是不要', 'decline'),
+    ('好的，但是不行', 'decline'),
+    ('好吧，但是没空', 'decline'),
+    ('好啊，但是沒空', 'decline'),
+    ('好的 但是不要', 'decline'),
+    ('但是好的衣服', None),
+    ('好的衣服', None),
+    ('你好啊', None),
+])
+def test_chinese_danshi_conjunction_preserves_decline_priority(text, expected):
+    """F0170: Chinese conjunction prefix preserves decline > later > accept without substring leaks."""
+    assert sr._match_mini_game_invite_keyword(text) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('好啊我们玩吧', 'accept'),
+    ('好啊我們玩吧', 'accept'),
+    ('好啊我想玩', 'accept'),
+    ('好的呀我来', 'accept'),
+    ('好的我们玩吧', 'accept'),
+    ('不想玩这个', 'decline'),
+    ('不想玩這個', 'decline'),
+    ('不玩了谢谢', 'decline'),
+    ('不玩了謝謝', 'decline'),
+    ('算了吧我不玩', 'decline'),
+    ('不要不要', 'decline'),
+    ('不行不行', 'decline'),
+    ('等下吧我在忙', 'later'),
+    ('等会儿吧我在忙', 'later'),
+    ('好啊但是我不想玩', 'decline'),
+    ('好啊但是等下吧我在忙', 'later'),
+    ('好的我不想玩', 'decline'),
+    ('好的开始', None),
+    ('好的玩具', None),
+    ('不好了出事了', None),
+    ('今天晚点了要迟到了', None),
+])
+def test_chinese_natural_continuations_and_reduplication_match_without_false_positives(
+    text, expected,
+):
+    """F0170: natural Chinese replies with trailing content or reduplication still match safely."""
+    assert sr._match_mini_game_invite_keyword(text) == expected
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('一起玩需要下载吗', None),
+    ('一起玩需要下載嗎', None),
+    ('一起玩需要下载', None),
+    ('一起玩吗', None),
+    ('一起玩吧要下载吗', None),
+    ('好啊需要下载吗', None),
+    ('来吧需要下载吗', None),
+    ('好的我们要下载吗', None),
+    ('来吧台坐坐', None),
+    ('來吧台坐坐', None),
+    ('來吧臺坐坐', None),
+    ('好的我们不想玩游戏', 'decline'),
+    ('好的我們不想玩遊戲', 'decline'),
+    ('好啊我们不想玩游戏', 'decline'),
+    ('好啊我們不想玩遊戲', 'decline'),
+    ('算了吧好吗', 'decline'),
+    ('等下吧好吗', 'later'),
+    ('一起玩', 'accept'),
+    ('一起玩吧', 'accept'),
+    ('那就一起玩', 'accept'),
+    ('好啊一起玩', 'accept'),
+    ('来吧', 'accept'),
+    ('來吧', 'accept'),
+    ('好啊我们玩吧', 'accept'),
+    ('好的我们玩吧', 'accept'),
+    ('好的我們玩吧', 'accept'),
+])
+def test_chinese_questions_bar_counter_and_plural_pronoun_refusal_priority(
+    text, expected,
+):
+    """F0170: exclude questions and noun compounds while keeping plural-subject refusal priority."""
+    assert sr._match_mini_game_invite_keyword(text) == expected
