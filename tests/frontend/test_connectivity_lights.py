@@ -524,6 +524,69 @@ def test_incomplete_small_familiar_custom_tests_the_recognition_connection(mock_
     assert state["complete"]["key"] == ""
 
 
+@pytest.mark.frontend
+def test_incomplete_small_familiar_custom_light_moves_with_the_recognition_slot(mock_page: Page, running_server: str):
+    """The incomplete custom small familiar tests the recognition connection, so editing the
+    recognition endpoint must move its light too, while its own drafted fields stay put."""
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        if (typeof toggleCustomApi === 'function') toggleCustomApi();
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            el.value = value;
+            el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
+        };
+        set('emotionModelProvider', 'custom');
+        set('emotionModelUrl', 'https://emotion-old.test/v1');
+        set('emotionModelId', 'emotion-model');
+        set('emotionModelApiKey', 'sk-emotion-test');
+        set('agentSmallModelProvider', 'custom');
+        set('agentSmallModelUrl', 'https://draft.test/v1');
+        set('agentSmallModelId', '');
+    }""")
+    mock_page.wait_for_timeout(600)
+    mock_page.evaluate("""() => {
+        const el = document.getElementById('emotionModelUrl');
+        el.value = 'https://emotion-new.test/v1';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+    }""")
+    mock_page.wait_for_timeout(600)
+
+    state = mock_page.evaluate("""() => {
+        const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }).cacheId;
+        const summary = document.querySelector('.connectivity-summary-light[data-model-type="agentSmall"]');
+        return {
+            hasSummary: !!summary,
+            onNewKey: (ConnectivityManager.keyLightsMap[cacheId] || []).includes(summary),
+            draftUrl: document.getElementById('agentSmallModelUrl').value,
+            provider: document.getElementById('agentSmallModelProvider').value,
+        };
+    }""")
+
+    assert state["hasSummary"]
+    assert state["onNewKey"]
+    assert state["draftUrl"] == "https://draft.test/v1"
+    assert state["provider"] == "custom"
+
+    # Changing the recognition key moves it as well.
+    mock_page.evaluate("""() => {
+        const el = document.getElementById('emotionModelApiKey');
+        el.value = 'sk-emotion-new';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+    }""")
+    mock_page.wait_for_timeout(600)
+    assert mock_page.evaluate("""() => {
+        const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }).cacheId;
+        const summary = document.querySelector('.connectivity-summary-light[data-model-type="agentSmall"]');
+        return (ConnectivityManager.keyLightsMap[cacheId] || []).includes(summary);
+    }""")
+
+
 # ---------------------------------------------------------------------------
 # Test 5: Error display and clearing
 # Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6

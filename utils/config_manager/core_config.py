@@ -1495,7 +1495,6 @@ class CoreConfigMixin:
                 ('decision',     'DECISION_MODEL',      'DECISION_MODEL_URL',     'DECISION_MODEL_API_KEY'),
                 ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
                 ('agent',        'AGENT_MODEL',         'AGENT_MODEL_URL',        'AGENT_MODEL_API_KEY'),
-                # After agent: follow_agent reads the agent values resolved just above.
                 ('agentSmall',   'AGENT_SMALL_MODEL',   'AGENT_SMALL_MODEL_URL',  'AGENT_SMALL_MODEL_API_KEY'),
                 ('omni',         'REALTIME_MODEL',      'REALTIME_MODEL_URL',     'REALTIME_MODEL_API_KEY'),
                 ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),

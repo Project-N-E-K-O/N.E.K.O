@@ -75,6 +75,20 @@ const MODEL_FOLLOWER_BY_SOURCE = Object.freeze({
 function followedModelType(provider) {
     return FOLLOW_SOURCE_BY_PROVIDER[provider] || '';
 }
+// 这一格现在实际跟随哪一格：跟随选项之外，使魔模型·小选「自定义」但地址、模型名没填全时，
+// 后端整格用识别模型，设置页的检测、指示灯和占位文字也都跟着识别模型。
+function effectiveFollowSource(modelType) {
+    const select = document.getElementById(`${modelType}ModelProvider`);
+    if (!select) return '';
+    const followed = followedModelType(select.value);
+    if (followed) return followed;
+    if (modelType === 'agentSmall' && select.value === 'custom') {
+        const url = document.getElementById('agentSmallModelUrl');
+        const id = document.getElementById('agentSmallModelId');
+        if (!(url && url.value.trim() && id && id.value.trim())) return 'emotion';
+    }
+    return '';
+}
 const MODEL_CONFIG_EXPANSION_PATHS = {
     conversation: ['conversation'],
     summary: ['summary'],
@@ -2257,7 +2271,8 @@ function resolveSlotModelState(modelType, visited = new Set()) {
     // custom 留空时后端沿用快照里的值；小游戏槽那份是内置常量，不展示；
     // 使魔模型·小那份是刚解析出的识别模型（后端在处理这一格前用识别模型补齐）
     if (modelType === 'agentSmall') {
-        return { ...mirrorSlotModelState('emotion', visited), acceptsTypedModelId: true };
+        // 只镜像默认模型名：这一格是自定义输入框，不显示「免费版使用固定模型」这类提示
+        return { ...mirrorSlotModelState('emotion', visited), acceptsTypedModelId: true, fixedModelProvider: '' };
     }
     return {
         defaultModelId: isGameSlot ? '' : getAssistTierModelId(tier),
@@ -2684,8 +2699,7 @@ function initModelIdPickers() {
             if (input) input.addEventListener('input', () => {
                 const affected = [modelType];
                 [...new Set(Object.values(MODEL_FOLLOWER_BY_SOURCE))].forEach(followerType => {
-                    const select = document.getElementById(`${followerType}ModelProvider`);
-                    if (select && select.value === `follow_${modelType}`) affected.push(followerType);
+                    if (effectiveFollowSource(followerType) === modelType) affected.push(followerType);
                 });
                 scheduleModelIdHintsRefresh(affected);
             });
@@ -5091,11 +5105,7 @@ const ConnectivityManager = {
             if (!providerSel) return result;
 
             const provider = providerSel.value;
-            if (
-                mt === 'agentSmall'
-                && provider === 'custom'
-                && !(urlInput && urlInput.value.trim() && modelIdInput && modelIdInput.value.trim())
-            ) {
+            if (provider === 'custom' && effectiveFollowSource(mt) === 'emotion') {
                 // 与后端一致：使魔模型·小自定义时地址和模型名没填全，整格跟随识别模型
                 return this.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' });
             }
@@ -6123,8 +6133,10 @@ function initConnectivityLights() {
         const followerType = MODEL_FOLLOWER_BY_SOURCE[sourceType];
         if (!followerType) return;
         const providerSel = document.getElementById(`${followerType}ModelProvider`);
-        if (!providerSel || providerSel.value !== `follow_${sourceType}`) return;
-        onCustomModelProviderChange(followerType);
+        if (!providerSel || effectiveFollowSource(followerType) !== sourceType) return;
+        // An incomplete custom small-familiar slot also tracks the recognition slot, but only
+        // its light moves: a provider refresh would wipe the drafted custom fields.
+        if (followedModelType(providerSel.value)) onCustomModelProviderChange(followerType);
         reRegisterModelSlot(followerType);
     }
 

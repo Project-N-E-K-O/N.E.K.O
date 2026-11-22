@@ -392,6 +392,13 @@ test('following the familiar slot on a fixed-model provider resolves the familia
     setSlot('agentSmall', 'follow_agent', 'typed');
     assert.equal(context.applyFixedModelProviderUi('agentSmall', 'follow_agent'), true);
     assert.equal(el('agentSmallModelId').value, 'duo-agent');
+
+    // A custom slot mirrors only the recognition model name; it stays a typed field, so it
+    // must not show the fixed-model notice of the provider it falls back to.
+    setSlot('agentSmall', 'custom', '');
+    assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
+        defaultModelId: 'duo-small', acceptsTypedModelId: true, fixedModelProvider: '',
+    });
 });
 
 test('game slots keep the fixed-model marker of the text slot they mirror', () => {
