@@ -1183,6 +1183,46 @@ def test_validate_plugin_dir_accepts_i18n_ui_surface_title(tmp_path: Path) -> No
     )
 
 
+def test_validate_plugin_dir_ui_permissions_match_runtime(tmp_path: Path) -> None:
+    from plugin.core.ui_manifest import PERMISSIONS
+
+    def permission_warnings(permissions: list[str]) -> list[str]:
+        manifest_path = plugin_dir / "plugin.toml"
+        manifest_path.write_text(
+            base_manifest
+            + "\n"
+            + "[plugin.ui]\n"
+            + "enabled = true\n"
+            + "\n"
+            + "[[plugin.ui.panel]]\n"
+            + 'id = "main"\n'
+            + 'mode = "hosted-tsx"\n'
+            + "permissions = "
+            + json.dumps(permissions)
+            + "\n",
+            encoding="utf-8",
+        )
+        return [
+            message
+            for _level, message in validate_plugin_dir(plugin_dir)
+            if "is not a recognized permission" in message
+        ]
+
+    plugin_dir = _make_plugin_dir(tmp_path)
+    base_manifest = (plugin_dir / "plugin.toml").read_text(encoding="utf-8")
+
+    # Every permission the runtime accepts (document:parse included) passes check.
+    assert "document:parse" in PERMISSIONS
+    assert permission_warnings(sorted(PERMISSIONS)) == []
+    # The runtime strips surrounding whitespace before looking the name up.
+    assert permission_warnings([" document:parse "]) == []
+    # A blank entry gets only the existing non-empty error, not a second warning.
+    assert permission_warnings([" "]) == []
+    assert permission_warnings(["state:read", "files:write"]) == [
+        "[plugin.ui].panel[0].permissions[1] is not a recognized permission: files:write"
+    ]
+
+
 @pytest.mark.parametrize("removed_type", ["script", "extension"])
 def test_validate_plugin_dir_rejects_removed_plugin_types(
     tmp_path: Path,
@@ -1911,6 +1951,9 @@ def test_refresh_hint_never_prints_a_windows_path_cmd_would_expand(
     assert release_cmd._shell_quote("C:\\work\\a`b\\demo") is None
     # cmd with delayed expansion expands !NAME! inside double quotes.
     assert release_cmd._shell_quote(r"C:\work\plugin!KIT!") is None
+    # PowerShell ends a double-quoted argument at typographic double quotes.
+    for quote in ("\u201c", "\u201d", "\u201e"):
+        assert release_cmd._shell_quote(f"C:\\work\\a{quote}b\\demo") is None
     fix = release_cmd._suggest_fix(
         "agent kit snapshot is older than this neko-plugin CLI: ...",
         plugin_id="demo",
