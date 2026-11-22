@@ -1281,3 +1281,39 @@ test('single-shot: the pre-capture sample follows the source the stream actually
     assert.equal(shot.sourceId, 'screen:1:0');
     assert.deepEqual(fillsOf(shot.dataUrl), [[500, 400, 250, 200]]);
 });
+
+// ---------------------------------------------------------------- review round 7
+
+test('browser: window restored from minimized (-32000,-32000) mid-capture -> only the restored position is masked', async () => {
+    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
+    const { w } = makeWindow({
+        elements: [history],
+        geom: { innerWidth: 1000, innerHeight: 800, outerWidth: 1000, outerHeight: 800, screenX: -32000, screenY: -32000, screenWidth: 2000, screenHeight: 1000 },
+        imageSizes: { [RAW_FRAME]: [2000, 1000] },
+    });
+    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    w.screenX = 500;
+    w.screenY = 0;
+    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.deepEqual(fillsOf(out), [[592, 92, 116, 116]]);
+});
+
+test('voice heartbeat: a source that goes back to the original one reuses the first pre-capture sample', async () => {
+    // acquireOrReuseCachedStream rewrites the source to screen:1:0, the stream frame
+    // fails, and the native path then captures the original source again.
+    const shell = shellStub(async () => ({ ok: true, rects: [] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+    env.S.selectedScreenSourceId = 'screen:0:0';
+    const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.captureFrameFromStream = async () => { env.S.selectedScreenSourceId = 'screen:0:0'; return null; };
+    env.w.getDesktopCaptureProvider = () => ({ nativeFrameCapture: true, captureSourceAsDataUrl() {} });
+    env.w.captureDesktopSourceWithTimeout = async () => ({ success: true, dataUrl: RAW_FRAME });
+    vm.runInContext(proactiveSource, env.w);
+    await env.w.appProactive.sendOneProactiveVisionFrame();
+    assert.equal(env.sent.length, 1);
+    // pre (screen:0:0), pre (screen:1:0), post (screen:0:0): going back does not open a third pre-capture query.
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:0:0', 'screen:1:0', 'screen:0:0']);
+});

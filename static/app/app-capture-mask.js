@@ -436,6 +436,19 @@
         var preGeom = session.geom || geom;
         var preLocal = mapLocalSample(session.local, ctx, preGeom);
         if (sameBrowserPlacement(preGeom, geom)) return unionGeometry(preLocal, postLocal);
+        // One end with the whole window off the screen (e.g. a minimized
+        // window on Windows sits at -32000,-32000) is not a drag: the window
+        // was not on the screen there, so only the other end is used.
+        // Otherwise the sweep would stretch to the edge of the image.
+        var preOff = windowOffScreen(preGeom);
+        var postOff = windowOffScreen(geom);
+        if (preOff !== postOff) {
+            var onGeom = preOff ? geom : preGeom;
+            return unionGeometry(
+                mapLocalSample(session.local, ctx, onGeom),
+                mapLocalSample(postSample, ctx, onGeom)
+            );
+        }
         // The browser window moved (or the screen reference changed) while
         // the frame was being taken. The frame may show the window anywhere
         // along the way, and the regions as either sample: cover each region
@@ -481,6 +494,15 @@
             bottom = Math.max(bottom, r.y + r.height);
         });
         return { x: left, y: top, width: right - left, height: bottom - top };
+    }
+
+    function windowOffScreen(g) {
+        if (!g) return false;
+        var x = Number(g.screenX), y = Number(g.screenY);
+        var w = Number(g.outerWidth), h = Number(g.outerHeight);
+        var sw = Number(g.screenWidth), sh = Number(g.screenHeight);
+        if (![x, y, w, h, sw, sh].every(isFiniteNumber)) return false;
+        return x + w <= 0 || y + h <= 0 || x >= sw || y >= sh;
     }
 
     function sameBrowserPlacement(a, b) {
