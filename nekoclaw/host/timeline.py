@@ -116,7 +116,8 @@ _EVENT_TYPES: tuple[str, ...] = (
 )
 _MESSAGE_KINDS: dict[str, str] = {"note": "message", "done": "done_notice", "ask": "asked_session"}
 _UNDER_WAY: tuple[str, ...] = ("queued", "working", "waiting_user")
-_CURSOR = re.compile(r"e(\d+)\.m(\d+)")
+# ASCII digits only, with no leading zero: one spelling for each cursor.
+_CURSOR = re.compile(r"e(0|[1-9][0-9]*)\.m(0|[1-9][0-9]*)")
 _EVENTS, _MESSAGES = 0, 1
 # The largest number SQLite gives a row.
 _LARGEST_ROW = 2**63 - 1

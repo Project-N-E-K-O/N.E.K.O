@@ -1670,23 +1670,29 @@ class Ledger:
             )
         return _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
 
-    async def file_under_project(self, commission_id: str, project: str, *, workdir: str | None = None) -> Commission | None:
+    async def file_under_project(self, commission_id: str, project: str, **values: Any) -> Commission | None:
         """Put a commission filed with no project under one, and note it, in one transaction.
 
         Noted as an event of its own (``filed_under_project``): whoever
         read what happened in the project and passed over its filing, as
         it was no project's then, finds this after where it read up to.
-        Both are on record, or neither. None for an unknown commission.
+        Both are on record, or neither. ``values`` are other columns
+        written with it (its working directory; the session and the
+        commission it goes on with). Once only: a commission that is a
+        project's already keeps it, and only ``values`` are written. None
+        for an unknown commission.
         """
-
-        values: dict[str, Any] = {"project": project}
-        if workdir is not None:
-            values["workdir"] = workdir
+        unknown = set(values) - _UPDATABLE
+        if unknown:
+            raise ValueError(f"fields that cannot be written with the project: {sorted(unknown)}")
 
         def work(conn: sqlite3.Connection) -> Commission | None:
-            filed = self._write(conn, commission_id, values)
-            if filed is None:
+            current = _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
+            if current is None:
                 return None
+            if current.project is not None:
+                return self._write(conn, commission_id, values)
+            filed = self._write(conn, commission_id, {**values, "project": project})
             self._event(conn, commission_id, "filed_under_project", {"project": project})
             return filed
 

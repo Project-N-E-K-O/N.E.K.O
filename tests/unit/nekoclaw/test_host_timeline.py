@@ -688,6 +688,23 @@ async def test_putting_under_a_project_is_on_record_whole_or_not_at_all(ledger, 
     assert [event.type for event in await ledger.events(commission.id)][-1] == "filed_under_project"
 
 
+async def test_a_commission_is_put_under_a_project_once_with_what_goes_with_it(ledger):
+    main = await _session(ledger, "main")
+    earlier = await _working(ledger, main, "earlier")
+    daily = await _session(ledger, "daily", project=None)
+    follow = await _file(ledger, daily, "add a chart", project=None, session_id=None)
+
+    filed = await ledger.file_under_project(follow.id, "alpha", session_id=main.id, continues=earlier.id)
+    again = await ledger.file_under_project(follow.id, "beta", workdir="D:/later")
+
+    assert (filed.project, filed.session_id, filed.continues) == ("alpha", main.id, earlier.id)
+    # A project's already: it keeps that one, and is not noted again; what goes with it is written.
+    assert (again.project, again.workdir) == ("alpha", "D:/later")
+    assert [event.type for event in await ledger.events(follow.id)].count("filed_under_project") == 1
+    with pytest.raises(ValueError):
+        await ledger.file_under_project(follow.id, "alpha", status="done")
+
+
 async def test_a_filtered_page_read_to_the_end_moves_past_what_it_passed_over(ledger):
     mine = await _session(ledger, "mine")
     theirs = await _session(ledger, "theirs", project="beta")
@@ -747,6 +764,10 @@ async def test_cursors_are_checked(ledger):
     assert parse_cursor(None) == parse_cursor("") == (0, 0)
     assert parse_cursor(cursor(12, 3)) == (12, 3)
     assert parse_cursor(f"e{2**63 - 1}.m0") == (2**63 - 1, 0)
+    # ASCII digits only, one spelling each.
+    for spelled in ("e01.m0", "e0.m00", "e" + chr(0x663) + ".m0", "e1.m" + chr(0xFF17)):
+        with pytest.raises(ValueError):
+            parse_cursor(spelled)
     for too_large in (f"e{2**63}.m0", f"e0.m{2**63}"):
         with pytest.raises(ValueError):
             await ledger.timeline(after=too_large, limit=5)

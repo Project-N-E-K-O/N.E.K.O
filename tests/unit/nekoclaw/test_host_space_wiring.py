@@ -312,6 +312,30 @@ async def test_a_commission_that_names_a_project_is_filed_under_it_and_works_in_
     assert project.commissions == 2
 
 
+async def test_a_follow_up_of_a_project_commission_is_put_under_it_on_record(hosts, tmp_path):
+    workdir = tmp_path / "budget-files"
+    workdir.mkdir()
+    llm = ScriptedLLM([_report(), _report()])
+    host = _host(hosts, tmp_path, llm)
+    await host.space.touch_project("Budget app", description="tracks spending", workdir=str(workdir))
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    earlier = await wait_status(host, first.commission_id, "done")
+    assert earlier.project == "Budget app"
+    await host.task_agents.settle()
+    seen = await host.timeline(project="Budget app", limit=1)
+
+    receipt = await _dispatch(host, "also add a total row to the CSV export of the budget app")
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    # It went on with the earlier one, and is the project's on record.
+    assert (done.continues, done.session_id, done.project) == (first.commission_id, earlier.session_id, "Budget app")
+    events = await host.ledger.events(receipt.commission_id)
+    assert [event.payload for event in events if event.type == "filed_under_project"] == [{"project": "Budget app"}]
+    # A reader of the project that went on from what it had then finds it.
+    later = await host.timeline(project="Budget app", after=seen["latest"], limit=1000)
+    assert ("filed_under_project", receipt.commission_id) in [(e["kind"], e["commission_id"]) for e in later["entries"]]
+
+
 async def test_a_project_whose_folder_is_gone_still_takes_the_commission(hosts, tmp_path):
     llm = ScriptedLLM([_report()])
     host = _host(hosts, tmp_path, llm)

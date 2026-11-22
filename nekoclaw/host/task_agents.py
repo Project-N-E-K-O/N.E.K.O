@@ -2682,14 +2682,14 @@ class TaskAgentManager:
             project = await self._space.assign_project(commission)
             if project is None:
                 return commission
-            workdir = None
+            more: dict[str, Any] = {}
             if not commission.workdir and project.workdir:
                 from pathlib import Path
 
                 if await asyncio.to_thread(Path(project.workdir).is_dir):
-                    workdir = project.workdir
+                    more["workdir"] = project.workdir
             # The project and the note of it together (``Ledger.file_under_project``).
-            return await self._ledger.file_under_project(commission.id, project.name, workdir=workdir) or commission
+            return await self._ledger.file_under_project(commission.id, project.name, **more) or commission
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it is one of the commissions that belong to no project
