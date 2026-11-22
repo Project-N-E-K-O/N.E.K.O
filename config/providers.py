@@ -120,6 +120,17 @@ EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 # Documentation: https://platform.stepfun.ai/docs/en/api-reference/chat/chat-completion-create
 EXTRA_BODY_STEP_LOW = {"reasoning_effort": "low"}
 
+# Kimi K3 always thinks; docs ask for top-level reasoning_effort (low / high / max, default
+# max) and no thinking field, yet the live API still honours thinking.disabled (observed
+# 2026-11-22: 0 reasoning tokens, 12-14 completion tokens vs 34-36 at reasoning_effort=low).
+# Owner chose the cheaper, undocumented off form; recheck if Kimi starts rejecting it.
+# Focused cognition must not send thinking.enabled alone (that runs at max), so it pairs
+# with the documented low effort like the other providers. Distinct object from
+# EXTRA_BODY_CLAUDE because _THINKING_ENABLE_FORM pairs by id().
+# Documentation: https://platform.kimi.com/docs/guide/use-reasoning-effort
+EXTRA_BODY_KIMI_K3 = {"thinking": {"type": "disabled"}}
+EXTRA_BODY_KIMI_K3_THINKING = {"reasoning_effort": "low"}
+
 # Unified agent-call switch: whether to load extra_body.
 # Enabled by default; with MODELS_EXTRA_BODY_MAP, disables thinking by default.
 AGENT_USE_EXTRA_BODY = True
@@ -169,7 +180,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
     "kimi-k2.6": EXTRA_BODY_CLAUDE,
-    "kimi-k3": EXTRA_BODY_CLAUDE,
+    "kimi-k3": EXTRA_BODY_KIMI_K3,
     # MiniMax family.
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
@@ -183,6 +194,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V4.1-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_OPENAI,
+    # Silicon emotion preset (replaces delisted inclusionAI/Ling-mini-2.0); hybrid
+    # thinking defaults on, so the regular form must send enable_thinking=False.
+    "Qwen/Qwen3.5-35B-A3B": EXTRA_BODY_OPENAI,
     # Official DeepSeek (api.deepseek.com): V4 defaults thinking on, using thinking.type dialect,
     # matching GLM/Kimi/Doubao, so reuse EXTRA_BODY_CLAUDE. Reseller gateways use different
     # model keys (SiliconFlow deepseek-ai/…, OpenRouter deepseek/…) and their own dialects,
@@ -284,6 +298,7 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_GEMINI_3_MINIMAL): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
     id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_THINKING,
+    id(EXTRA_BODY_KIMI_K3): EXTRA_BODY_KIMI_K3_THINKING,
 }
 
 # model → focused-cognition extra_body, derived from MODELS_EXTRA_BODY_MAP with one shared model list
@@ -305,7 +320,8 @@ def focus_extra_body(model: str, base_url: str | None = None) -> dict | None:
     provider's own dialect (see ``_THINKING_ENABLE_FORM`` and the paired
     ``EXTRA_BODY_*_THINKING`` constants):
       - enable_thinking: False -> True                  (Qwen / Silicon / free OpenAI-shape)
-      - thinking.type: disabled -> enabled              (GLM / Kimi / Doubao / Claude / free)
+      - thinking.type: disabled -> enabled              (GLM / Kimi K2 / Doubao / Claude / free)
+      - thinking.disabled -> reasoning_effort: low      (Kimi K3; enabled alone runs at max)
       - thinking_budget: 0 -> 800 (low fixed budget)    (Gemini 2.5)
       - thinking_level low (kept minimal), include_thoughts->True (Gemini 3)
       - reasoning.effort: none|minimal -> low           (OpenRouter; minimal
@@ -580,6 +596,11 @@ def rewrite_router_reasoning(
 EXTRA_BODY_DEEPSEEK_MEMORY_THINKING = {"reasoning_effort": "low"}
 EXTRA_BODY_DASHSCOPE_MEMORY_THINKING = {"thinking_budget": 4096}
 EXTRA_BODY_SILICON_MEMORY_THINKING = {"enable_thinking": True, "thinking_budget": 4096}
+# Kimi (api.moonshot.cn): K3 always thinks and defaults to reasoning_effort=max, so native
+# thinking on memory calls runs at max. The documented low effort bounds it; kimi-k2.6
+# accepts the field without error (observed 2026-11-22).
+# Documentation: https://platform.kimi.com/docs/guide/use-reasoning-effort
+EXTRA_BODY_KIMI_MEMORY_THINKING = {"reasoning_effort": "low"}
 
 
 def memory_thinking_extra_body(base_url: str | None, output_cap: int) -> dict | None:
@@ -828,6 +849,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         requires_header=False,
         min_cache_tokens=1024,
         cached_token_field="prompt_cache_hit_tokens",
+        memory_thinking_extra_body=EXTRA_BODY_KIMI_MEMORY_THINKING,
     ),
     "grok": CacheProviderConfig(
         provider_id="grok",
