@@ -152,7 +152,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 - `EMOTION_MODEL` - 情感模型
 - `VISION_MODEL` - 视觉模型
 - `AGENT_MODEL` - Agent 模型（键鼠控制、浏览器控制等，见第 6 节）
-- `AGENT_SMALL_MODEL` - 使魔模型·小（`get_model_api_config("agent_small")`）：默认就是识别模型（`emotion`）；开启自定义 API 后，`agentSmallModelProvider` 可选 `follow_emotion`（默认）、`follow_agent`（改用 Agent 模型）、`follow_core` / `follow_assist`（地址和 Key 跟随该提供商；模型名留空时取该提供商的识别模型，填了 `agentSmallModelId` 且该提供商不是固定模型时用填的模型名）、具体提供商或 `custom`。选 `custom` 或具体提供商时，地址和模型名都有才单独生效（具体提供商留空模型名时，只有地址属于该提供商才补上它的识别模型；地址改成别家又留空模型名，就算没填全）：具体提供商的 Key 取 API 账本里该提供商的 Key（地址属于该提供商时才用；账本没有时用这一格自己填的），`custom` 只用 `agentSmallModelApiKey`（留空即不带 Key）；地址或模型名缺一项，整格跟随识别模型（地址、模型名、Key、协议都用识别模型实际生效的那一套）
+- `AGENT_SMALL_MODEL` - 使魔模型·小（`get_model_api_config("agent_small")`）：默认就是识别模型（`emotion`）；开启自定义 API 后，`agentSmallModelProvider` 可选 `follow_emotion`（默认）、`follow_agent`（改用 Agent 模型）、`follow_core` / `follow_assist`（地址和 Key 跟随该提供商；模型名留空时取该提供商的识别模型，填了 `agentSmallModelId` 且该提供商不是固定模型时用填的模型名）、具体提供商或 `custom`。选 `custom` 或具体提供商时，地址和模型名都有才单独生效（具体提供商留空模型名时，只有地址属于该提供商才补上它的识别模型；地址改成别家又留空模型名，就算没填全）：具体提供商的 Key 依次取：API 账本里该提供商保存的 Key、这一格自己填的 Key、由核心 API Key 推出的该提供商 Key（`coreApi` / `assistApi` 就是这家时）；账本和推出的 Key 都只在地址属于该提供商时才用，`custom` 只用 `agentSmallModelApiKey`（留空即不带 Key）；地址或模型名缺一项，整格跟随识别模型（地址、模型名、Key、协议都用识别模型实际生效的那一套）
 
 补充说明：
 - `claude`、`kimi_code` 带 `provider_type: "anthropic"`，按 Anthropic Messages 协议调用。
