@@ -381,11 +381,20 @@ async def test_delete_shared_memory_rollback_preserves_co_owner_concurrent_write
     if not lower_meta.exists():
         lower_meta.symlink_to(upper_meta.name)
 
+    reload_calls = 0
+
     async def co_owner_writes_then_fail_reload(**_kwargs):
-        facts_file.write_text('["before", "co-owner-write"]', encoding="utf-8")
-        upper_face.write_bytes(b"face-updated")
-        upper_meta.write_bytes(b'{"v":2}')
-        return False
+        nonlocal reload_calls
+        reload_calls += 1
+        if reload_calls == 1:
+            facts_file.write_text('["before", "co-owner-write"]', encoding="utf-8")
+            upper_face.write_bytes(b"face-updated")
+            upper_meta.write_bytes(b'{"v":2}')
+            return False
+        assert facts_file.read_text(encoding="utf-8") == '["before", "co-owner-write"]'
+        assert upper_face.read_bytes() == b"face-updated"
+        assert upper_meta.read_bytes() == b'{"v":2}'
+        return True
 
     with patch("utils.config_manager._config_manager", cm):
         crud, (release, _) = _crud(cm)
@@ -395,9 +404,68 @@ async def test_delete_shared_memory_rollback_preserves_co_owner_concurrent_write
             status, _ = _result(await crud.delete_catgirl("neko"))
             assert status == 500
 
+    assert reload_calls == 2
     assert facts_file.read_text(encoding="utf-8") == '["before", "co-owner-write"]'
     assert upper_face.read_bytes() == b"face-updated"
     assert upper_meta.read_bytes() == b'{"v":2}'
+
+
+async def test_delete_late_unshared_card_asset_is_backed_up_and_restored_on_rollback(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {"Current": {"昵称": "Current"}, "Neko": {"昵称": "Neko"}, "Alias": {"昵称": "Alias"}},
+    )
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    neko_face = cm.card_faces_dir / "Neko.png"
+    neko_face.write_bytes(b"shared-face")
+    neko_meta = cm.card_face_meta_path("Neko")
+    neko_meta.write_bytes(b'{"owner":"Neko"}')
+
+    alias_face = cm.card_faces_dir / "Alias.png"
+    alias_meta = cm.card_face_meta_path("Alias")
+    try:
+        alias_face.symlink_to(neko_face.name)
+        alias_meta.symlink_to(neko_meta.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    real_delete = character_memory.delete_character_memory_storage
+    reload_calls = 0
+
+    def delete_then_replace_shared_assets(*args, **kwargs):
+        result = real_delete(*args, **kwargs)
+        alias_face.unlink()
+        alias_face.write_bytes(b"replaced-alias-face")
+        alias_meta.unlink()
+        alias_meta.write_bytes(b'{"replaced":true}')
+        return result
+
+    async def reload_failing_after_unlink(**_kwargs):
+        nonlocal reload_calls
+        reload_calls += 1
+        if reload_calls == 1:
+            assert not alias_face.exists()
+            assert not alias_meta.exists()
+            return False
+        assert alias_face.read_bytes() == b"replaced-alias-face"
+        assert alias_meta.read_bytes() == b'{"replaced":true}'
+        return True
+
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, _) = _crud(cm)
+        with release, patch.object(
+            crud, "delete_character_memory_storage", side_effect=delete_then_replace_shared_assets
+        ), patch.object(
+            crud, "notify_memory_server_reload", side_effect=reload_failing_after_unlink
+        ):
+            status, _ = _result(await crud.delete_catgirl("Alias"))
+            assert status == 500
+
+    assert reload_calls == 2
+    assert alias_face.read_bytes() == b"replaced-alias-face"
+    assert alias_meta.read_bytes() == b'{"replaced":true}'
+    assert neko_face.read_bytes() == b"shared-face"
+    assert neko_meta.read_bytes() == b'{"owner":"Neko"}'
 
 
 async def test_delete_skips_shared_card_face_and_meta_but_deletes_unshared_assets(tmp_path):

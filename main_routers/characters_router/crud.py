@@ -1219,8 +1219,16 @@ def _unlink_unshared_card_asset_sync(
     asset_path: Path,
     *,
     is_meta: bool,
+    backup_root: Path | None = None,
+    snapshot_records: list[dict] | None = None,
 ) -> str | None:
-    """Unlink ``asset_path`` unless shared with another registered character."""
+    """Unlink ``asset_path`` unless shared with another registered character.
+
+    If the asset was not backed up at snapshot time (for example, it was
+    shared at snapshot time and concurrently replaced before unlink), copy it
+    into ``backup_root`` and record it in ``snapshot_records`` before unlinking
+    so a subsequent rollback can restore the exact removed file.
+    """
     if not asset_path.exists():
         return None
     co_owner = _find_card_asset_co_owner_sync(
@@ -1231,6 +1239,23 @@ def _unlink_unshared_card_asset_sync(
     )
     if co_owner is not None:
         return co_owner
+    if backup_root is not None and snapshot_records is not None:
+        existing_record = next(
+            (record for record in snapshot_records if record.get("target") == asset_path),
+            None,
+        )
+        if existing_record is None or existing_record.get("backup") is None:
+            label = "late_meta" if is_meta else "late_face"
+            backup_path = backup_root / label / asset_path.name
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(asset_path, backup_path)
+            if existing_record is None:
+                snapshot_records.append({
+                    "target": asset_path,
+                    "backup": backup_path,
+                })
+            else:
+                existing_record["backup"] = backup_path
     asset_path.unlink()
     return None
 
@@ -2710,6 +2735,8 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 name,
                 face_path,
                 is_meta=False,
+                backup_root=Path(temp_dir),
+                snapshot_records=memory_snapshot_records,
             )
             if face_co_owner is not None:
                 logger.warning(
@@ -2723,6 +2750,8 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 name,
                 meta_path,
                 is_meta=True,
+                backup_root=Path(temp_dir),
+                snapshot_records=memory_snapshot_records,
             )
             if meta_co_owner is not None:
                 logger.warning(
