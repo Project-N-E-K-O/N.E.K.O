@@ -242,7 +242,7 @@ class _Watcher:
         self._wndproc = WNDPROC(self._window_proc)  # keep a reference alive
         self._apis = None
         self._error_logged = False
-        self._reregister_warned = False
+        self._reregister_warned: set[str] = set()  # one warning per failure kind
         self.thread = threading.Thread(
             target=self._run, name='neko-system-presence', daemon=True,
         )
@@ -296,9 +296,9 @@ class _Watcher:
             self._fail('notification handling failed', exc)
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
-    def _warn_reregister_once(self, message: str) -> None:
-        if not self._reregister_warned:
-            self._reregister_warned = True
+    def _warn_reregister_once(self, kind: str, message: str) -> None:
+        if kind not in self._reregister_warned:
+            self._reregister_warned.add(kind)
             logger.warning('System presence watcher, after session reconnect: %s', message)
 
     def _reregister_display_notification(self) -> None:
@@ -324,17 +324,19 @@ class _Watcher:
                 error = ctypes.get_last_error()
                 if error != ERROR_INVALID_HANDLE:
                     self._warn_reregister_once(
+                        'unregister',
                         f'UnregisterPowerSettingNotification error {error}; keeping the old registration, '
-                        'display-off gating resumes after the next display change')
+                        'display-off gating resumes after the display is next reported on')
                     return
                 # Already invalid: nothing to release, so a new one does not stack.
-                self._warn_reregister_once('display notification handle was already invalid; registering a new one')
+                logger.debug('Display notification handle was already invalid; registering a new one')
             self._power_notify = None
         handle = user32.RegisterPowerSettingNotification(
             self._hwnd, ctypes.byref(GUID_SESSION_DISPLAY_STATUS), DEVICE_NOTIFY_WINDOW_HANDLE,
         )
         if not handle:
             self._warn_reregister_once(
+                'register',
                 f'RegisterPowerSettingNotification error {ctypes.get_last_error()}; display-off gating stays '
                 'inactive (allowing proactive chat) until a later reconnect')
             return

@@ -385,3 +385,22 @@ def test_reconnect_registration_failure_allows_and_next_reconnect_recovers(win, 
     off = _display_setting(module, 0)
     watcher._window_proc(watcher._hwnd, module.WM_POWERBROADCAST, sp.PBT_POWERSETTINGCHANGE, ctypes.addressof(off))
     assert state.inactive_reason() == sp.REASON_DISPLAY_OFF
+
+
+def test_register_failure_is_still_warned_after_other_reregister_problems(win, monkeypatch, caplog):
+    module, state, watcher, _regs = _reconnect_watcher(win)
+    impl = win[2]
+    impl["UnregisterPowerSettingNotification"] = lambda handle: 0
+    impl["RegisterPowerSettingNotification"] = lambda *a: 0
+    with caplog.at_level("WARNING", logger=module.__name__):
+        # Release fails (access denied): kept, warned once.
+        watcher._window_proc(watcher._hwnd, module.WM_WTSSESSION_CHANGE, sp.WTS_REMOTE_CONNECT, 0)
+        # Handle invalid, then the new registration fails: that must still be warned.
+        monkeypatch.setattr(ctypes, "get_last_error", lambda: module.ERROR_INVALID_HANDLE)
+        watcher._window_proc(watcher._hwnd, module.WM_WTSSESSION_CHANGE, sp.WTS_REMOTE_CONNECT, 0)
+    messages = [r.getMessage() for r in caplog.records]
+    assert len([m for m in messages if "keeping the old registration" in m]) == 1
+    assert len([m for m in messages if "RegisterPowerSettingNotification error" in m]) == 1
+    assert watcher._power_notify is None
+    assert state._failed is False
+    assert state.inactive_reason() is None
