@@ -1322,13 +1322,14 @@ async def _acompact_event_log_one(raw_name: str) -> None:
         char_dir = os.path.join(str(runtime._config_manager.memory_dir), name)
         if not await asyncio.to_thread(os.path.isdir, char_dir):
             return
-        from memory.analytics.snapshots import make_restore_cancelled_check
+        from memory.analytics.snapshots import make_restore_cancelled_check, make_restore_completed_check
         from memory.evidence_handlers import make_archive_copy_check
         check = make_archive_copy_check(char_dir)
         cancelled = await asyncio.to_thread(make_restore_cancelled_check, char_dir)
+        completed = await asyncio.to_thread(make_restore_completed_check, char_dir)
         result = await event_log.acompact_applied_history(
             name, needs_journal_copy=check, sources_unchanged=check.sources_unchanged,
-            restore_cancelled=cancelled,
+            restore_cancelled=cancelled, restore_completed=completed,
         )
         _log_event_log_compaction(name, result)
     except Exception as e:

@@ -1267,8 +1267,10 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
                 finished = await asyncio.gather(
                     *(_finish_pending_restore(n) for n in catgirl_names),
                 )
-                # A character whose restore could not be finished keeps its
-                # files untouched here, so the next start can still finish it.
+                # Best effort: a character whose restore could not be finished
+                # skips this check, so it does not rewrite persona.json now.
+                # Later steps (reconcile, migrations, card sync on first use)
+                # may still write it before the next start retries.
                 checked = [n for n, ok in zip(catgirl_names, finished) if ok]
                 results = await asyncio.gather(
                     *(persona_manager.aensure_persona(n) for n in checked),

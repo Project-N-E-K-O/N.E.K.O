@@ -9043,6 +9043,7 @@ async def browser_label_star_map_clusters(
     """Manually trigger summary-tier theme labeling for Star Map clusters and cache it."""
     name = validate_lanlan_name(lanlan_name)
     from memory.analytics import alabel_star_map_clusters
+    from memory.analytics.star_map import StarMapLabelModelNotConfigured
     try:
         res = await alabel_star_map_clusters(
             name,
@@ -9053,6 +9054,10 @@ async def browser_label_star_map_clusters(
         return {"success": True, **res}
     except MaintenanceModeError:
         raise
+    except StarMapLabelModelNotConfigured:
+        return JSONResponse(
+            {"success": False, "error": "summary_model_not_configured"}, status_code=409,
+        )
     except Exception as exc:
         logger.warning("[MemoryBrowser] star_map label failed for %s: %s", name, exc)
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)

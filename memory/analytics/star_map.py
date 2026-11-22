@@ -663,8 +663,8 @@ async def alabel_star_map_clusters(
     try:
         clean_labels = await _arequest_cluster_labels(cm, prompt, clusters)
     except StarMapLabelModelNotConfigured:
-        # Nothing was sent; once the user sets the model up, the next
-        # background run may try at once instead of a week later.
+        # Nothing was sent; once the user sets the model up, the next daily
+        # background probe may try instead of waiting a week.
         raise
     except Exception:
         # A failed attempt cools down like a successful one, so the weekly

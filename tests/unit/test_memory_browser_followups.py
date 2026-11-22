@@ -1058,3 +1058,73 @@ def test_restore_outcome_ids_are_trimmed_against_the_journal_not_by_count(tmp_pa
     log.append(NAME, EVT_MEMORY_SNAPSHOT_RESTORED, {"pre_restore_snapshot_id": "p_new"})
     _mark_restore_outcome(char_dir, "p_new", "voided_restores.json")
     assert _restore_outcomes(char_dir, "voided_restores.json") == {"p_new"}
+
+
+
+@pytest.mark.asyncio
+async def test_failed_cancel_record_never_moves_the_sentinel_past_unapplied_events(tmp_path):
+    from memory.analytics import snapshots
+    from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED
+
+    log = _event_log(tmp_path)
+    char_dir = _seed_memory(tmp_path, "likes jazz", "drinks oolong")
+    meta = await _snapshot(tmp_path)
+    anchor = log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "anchor"})
+    _write_json(char_dir / "events_applied.json", {"last_applied_event_id": anchor})
+    log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "pending"})
+    real_write = snapshots.atomic_write_bytes
+    live_writes = []
+
+    def _locked(path, data):
+        if "browser_snapshots" not in str(path):
+            live_writes.append(path)
+            if len(live_writes) == 1:
+                raise PermissionError("locked")
+        return real_write(path, data)
+
+    def _no_marks(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    with (
+        patch.object(snapshots, "atomic_write_bytes", _locked),
+        patch.object(snapshots, "_mark_restore_outcome", _no_marks),
+        pytest.raises(PermissionError),
+    ):
+        await _restore(tmp_path, meta["snapshot_id"], event_log=log)
+    # The restore is not the whole tail ("pending" is in front), so the sentinel stays.
+    assert log.read_sentinel(NAME) == anchor
+
+
+def test_compaction_always_keeps_the_newest_completed_restore(tmp_path):
+    from memory import event_log as event_log_module
+    from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED, EVT_REFLECTION_EVIDENCE_UPDATED
+
+    log = _event_log(tmp_path)
+    old = (datetime.now() - timedelta(days=40)).isoformat()
+    rows = [{"event_id": "r_done", "type": EVT_MEMORY_SNAPSHOT_RESTORED, "payload": {"pre_restore_snapshot_id": "done"}}]
+    rows += [
+        {"event_id": f"r_never{i}", "type": EVT_MEMORY_SNAPSHOT_RESTORED,
+         "payload": {"pre_restore_snapshot_id": f"never{i}"}}
+        for i in range(3)
+    ]
+    rows.append({"event_id": "anchor", "type": EVT_REFLECTION_EVIDENCE_UPDATED, "payload": {}})
+    char_dir = tmp_path / NAME
+    char_dir.mkdir()
+    (char_dir / "events.ndjson").write_bytes("".join(
+        json.dumps({**row, "ts": old}) + chr(10) for row in rows
+    ).encode("utf-8"))
+    _write_json(char_dir / "events_applied.json", {"last_applied_event_id": "anchor"})
+    _write_json(char_dir / "browser_snapshots" / "completed_restores.json", ["done"])
+    from memory.analytics.snapshots import make_restore_cancelled_check, make_restore_completed_check
+
+    with patch.object(event_log_module, "_RETAIN_APPLIED_DAYS", 0), \
+            patch.object(event_log_module, "_RETAIN_APPLIED_MAX_BYTES", 0):
+        result = log.compact_applied_history(
+            NAME,
+            restore_cancelled=make_restore_cancelled_check(char_dir),
+            restore_completed=make_restore_completed_check(char_dir),
+        )
+    assert result.kept_restore == 4
+    assert [e["event_id"] for e in _journal(tmp_path)] == [
+        "r_done", "r_never0", "r_never1", "r_never2", "anchor",
+    ]

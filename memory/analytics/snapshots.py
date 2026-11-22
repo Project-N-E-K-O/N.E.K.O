@@ -668,9 +668,9 @@ def _restore_outcomes(char_dir: Path, filename: str) -> set[str]:
 
 def _restore_ids_in_journal(char_dir: Path) -> set[str] | None:
     """Pre-restore ids of every restore record still in the event journal; None if unreadable."""
-    from memory.event_log import _iter_journal_lines
+    from memory.event_log import _EVENTS_FILENAME, _iter_journal_lines
 
-    path = char_dir / "events.ndjson"
+    path = char_dir / _EVENTS_FILENAME
     if not path.is_file():
         return set()
     ids: set[str] = set()
@@ -706,16 +706,18 @@ def _mark_restore_outcome(char_dir: Path, pre_restore_id: str, filename: str) ->
 
 
 def _record_restore_outcome(char_dir: Path, payload: dict, filename: str) -> bool:
-    """Best-effort mark; returns whether it was written."""
+    """Best-effort mark, tried twice; returns whether it was written."""
     pre_id = payload.get("pre_restore_snapshot_id")
     if not isinstance(pre_id, str):
         return False
-    try:
-        _mark_restore_outcome(char_dir, pre_id, filename)
-        return True
-    except Exception as exc:
-        logger.warning("[MemorySnapshots] could not record restore outcome %s: %s", filename, exc)
-        return False
+    for attempt in (1, 2):
+        try:
+            _mark_restore_outcome(char_dir, pre_id, filename)
+            return True
+        except Exception as exc:
+            if attempt == 2:
+                logger.warning("[MemorySnapshots] could not record restore outcome %s: %s", filename, exc)
+    return False
 
 
 def _voided_restores(char_dir: Path) -> set[str]:
@@ -731,6 +733,18 @@ def _is_voided(char_dir: Path, payload: dict) -> bool:
 def _is_completed(char_dir: Path, payload: dict) -> bool:
     pre_id = payload.get("pre_restore_snapshot_id")
     return isinstance(pre_id, str) and pre_id in _restore_outcomes(char_dir, _COMPLETED_RESTORES_FILENAME)
+
+
+def make_restore_completed_check(character_dir) -> Callable[[dict], bool]:
+    """``(record) -> bool`` for compaction: a restore record whose swap completed."""
+    completed = _restore_outcomes(Path(character_dir), _COMPLETED_RESTORES_FILENAME)
+
+    def _completed(record: dict) -> bool:
+        payload = record.get("payload") if isinstance(record, dict) else None
+        pre_id = payload.get("pre_restore_snapshot_id") if isinstance(payload, dict) else None
+        return isinstance(pre_id, str) and pre_id in completed
+
+    return _completed
 
 
 def make_restore_cancelled_check(character_dir) -> Callable[[dict], bool]:
@@ -756,8 +770,8 @@ def _void_restore_event(
     still replayed in order. Only if that write fails is the sentinel moved
     onto the event instead: a compare-and-set through apply_and_advance with
     a no-op step, while the sentinel is still where it was before the append
-    and only for this very event (the last record of the tail, matched by
-    its pre-restore snapshot id). Never raises; the original error is what
+    and only when this very event (matched by its pre-restore snapshot id)
+    is the whole tail; otherwise the event is left for replay to judge. Never raises; the original error is what
     the caller reports.
     """
     try:
@@ -768,7 +782,9 @@ def _void_restore_event(
             )
             return
         tail = event_log.read_since(character_name, sentinel_before)
-        record = tail[-1] if tail else None
+        # Only when this restore is the whole tail: moving the sentinel past
+        # anything else would drop unapplied events in front of it for good.
+        record = tail[0] if len(tail) == 1 else None
         if (
             record is None
             or record.get("type") != EVT_MEMORY_SNAPSHOT_RESTORED

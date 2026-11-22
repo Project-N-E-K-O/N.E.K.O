@@ -158,11 +158,13 @@ _COMPACT_TRIGGER_AGE_DAYS = 30
 # decision; these two are the only knobs. Both 0 means "anchor line plus
 # pinned archive copies only".
 _RETAIN_APPLIED_DAYS = 7
-# Snapshot-restore records kept in front of the anchor: the newest ones not
-# cancelled. More than one, because the newest may never have taken effect
-# and a replay then starts at an earlier one.
-_KEEP_RESTORE_RECORDS = 3
 _RETAIN_APPLIED_MAX_BYTES = 256 * 1024
+
+# Snapshot-restore records kept in front of the anchor: the newest ones not
+# cancelled, plus the newest completed one. More than one, because the
+# newest may never have taken effect and a replay then starts at an earlier
+# one.
+_KEEP_RESTORE_RECORDS = 3
 
 # os.replace "target is busy" on Windows (ACCESS_DENIED / SHARING_VIOLATION).
 _BUSY_WINERRORS = frozenset({5, 32})
@@ -796,13 +798,17 @@ class EventLog:
         needs_journal_copy: Callable[[dict], bool] | None = None,
         sources_unchanged: Callable[[], bool] | None = None,
         restore_cancelled: Callable[[dict], bool] | None = None,
+        restore_completed: Callable[[dict], bool] | None = None,
         now: datetime | None = None,
     ) -> CompactionResult:
         """Drop already-applied history in front of the sentinel.
 
         ``restore_cancelled(record)`` says a snapshot-restore record belongs to
         a restore that failed and was rolled back; such records are passed
-        over when choosing which restore record to keep.
+        over when choosing which restore records to keep.
+        ``restore_completed(record)`` says its swap completed; the newest
+        such record is always kept, even when newer ones that never took
+        effect fill the quota.
 
         Invariants, whatever the outcome:
           - the sentinel's line and every line after it (corrupt and blank
@@ -874,7 +880,9 @@ class EventLog:
             return CompactionResult('not_due')
 
         with self._get_lock(name):
-            warm = self._plan_compaction_locked(name, path, needs_journal_copy, now, restore_cancelled)
+            warm = self._plan_compaction_locked(
+                name, path, needs_journal_copy, now, restore_cancelled, restore_completed,
+            )
         if isinstance(warm, CompactionResult):
             return warm
 
@@ -895,7 +903,7 @@ class EventLog:
                     if moved is not None:
                         return CompactionResult(moved, **warm.stats)
                     plan = self._plan_compaction_locked(
-                        name, path, needs_journal_copy, now, restore_cancelled,
+                        name, path, needs_journal_copy, now, restore_cancelled, restore_completed,
                     )
                     if isinstance(plan, CompactionResult):
                         return plan
@@ -1010,6 +1018,7 @@ class EventLog:
         needs_journal_copy: Callable[[dict], bool] | None,
         now: datetime,
         restore_cancelled: Callable[[dict], bool] | None = None,
+        restore_completed: Callable[[dict], bool] | None = None,
     ) -> CompactionResult | _CompactionPlan:
         """First phase: scan and self-check. Caller holds the character lock only."""
         skip, sentinel = self._admit_compaction_unlocked(name)
@@ -1029,6 +1038,7 @@ class EventLog:
         old_tail_ids: list = []
         pinned: list[tuple[int, str, str]] = []
         restores: list[tuple[int, str, str]] = []
+        latest_completed: tuple[int, str, str] | None = None
         window: deque[tuple[int, str, int]] = deque()
         window_bytes = 0
         total_lines = 0
@@ -1068,6 +1078,8 @@ class EventLog:
                     # cancelled one never replaced anything.
                     if restore_cancelled is None or not restore_cancelled(rec):
                         restores.append((lineno, raw, str(rec.get('event_id'))))
+                        if restore_completed is not None and restore_completed(rec):
+                            latest_completed = (lineno, raw, str(rec.get('event_id')))
                     continue
                 if needs_journal_copy is not None and needs_journal_copy(rec):
                     pinned.append((lineno, raw, str(rec.get('event_id'))))
@@ -1084,10 +1096,13 @@ class EventLog:
 
         if not anchor_found:
             return CompactionResult('sentinel_not_found')
+        kept_restores = restores[-_KEEP_RESTORE_RECORDS:]
+        if latest_completed is not None and latest_completed not in kept_restores:
+            kept_restores = [latest_completed, *kept_restores]
         kept_before = sorted(
             [(lineno, raw) for lineno, raw, _ in pinned]
             + [(lineno, raw) for lineno, raw, _ in window]
-            + [(lineno, raw) for lineno, raw, _ in restores[-_KEEP_RESTORE_RECORDS:]]
+            + [(lineno, raw) for lineno, raw, _ in kept_restores]
         )
         kept_lines = [raw for _, raw in kept_before] + tail
         dropped_lines = total_lines - len(kept_lines)
@@ -1096,7 +1111,7 @@ class EventLog:
             'pending_tail': len(old_tail_ids),
             'pinned': len(pinned),
             'pinned_event_ids': tuple(event_id for _, _, event_id in pinned),
-            'kept_restore': len(restores[-_KEEP_RESTORE_RECORDS:]),
+            'kept_restore': len(kept_restores),
         }
         if dropped_lines <= 0:
             return CompactionResult('nothing_to_drop', **stats)
@@ -1217,13 +1232,15 @@ class EventLog:
         needs_journal_copy: Callable[[dict], bool] | None = None,
         sources_unchanged: Callable[[], bool] | None = None,
         restore_cancelled: Callable[[dict], bool] | None = None,
+        restore_completed: Callable[[dict], bool] | None = None,
         now: datetime | None = None,
     ) -> CompactionResult:
         return await asyncio.to_thread(
             self.compact_applied_history, name,
             needs_journal_copy=needs_journal_copy,
             sources_unchanged=sources_unchanged,
-            restore_cancelled=restore_cancelled, now=now,
+            restore_cancelled=restore_cancelled,
+            restore_completed=restore_completed, now=now,
         )
 
     async def arecord_and_save(
