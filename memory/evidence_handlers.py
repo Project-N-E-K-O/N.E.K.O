@@ -601,9 +601,11 @@ def make_reflection_archive_handler(reflection_engine):
                     )
                     return False
                 drop_status = str(drop.get('status') or 'pending')
+                keep_status = str(survivor.get('status') or 'pending')
                 if (
                     (snapshot_text is not None and drop.get('text') != snapshot_text)
                     or ('from' in payload and drop_status != payload['from'])
+                    or ('merged_keep_status' in payload and keep_status != payload['merged_keep_status'])
                 ):
                     _log_skipped_rewrite(name, 'reflection.merge', rid, _REWRITE_SUPERSEDED)
                     return False

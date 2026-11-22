@@ -588,6 +588,7 @@ class EvidenceFlowMixin:
                 "merged_keep_id": keep_id,
                 "merged_keep_text_sha256": hashlib.sha256(cleaned.encode("utf-8")).hexdigest(),
                 "merged_keep_text": cleaned,
+                "merged_keep_status": str(keep_entry.get("status") or "pending"),
                 "merged_keep_previous_text_sha256": hashlib.sha256(
                     str(keep_entry.get("text") or "").encode("utf-8"),
                 ).hexdigest(),

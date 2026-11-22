@@ -584,12 +584,21 @@ def _restore_snapshot_files_sync(
 
         def _save(_name: str, view: dict[str, Any]) -> None:
             # Runs after the event was appended.
-            view["save_started"] = True
             _advance_view_generation(char_dir)
-            restored, removed = _swap_live_files(
-                char_dir, view["target_bytes"], view["orig_bytes"], view["all_targets"],
-                rollback_errors=view.setdefault("rollback_errors", []),
-            )
+            rollback_errors = view.setdefault("rollback_errors", [])
+            try:
+                restored, removed = _swap_live_files(
+                    char_dir, view["target_bytes"], view["orig_bytes"], view["all_targets"],
+                    rollback_errors=rollback_errors,
+                )
+            except Exception:
+                if rollback_errors:
+                    # Some files may be left at the target: no cache may keep
+                    # serving the old ones, and the event stays for replay.
+                    if progress is not None:
+                        progress["dirty"] = True
+                    _drop_thread_locked_caches(character_name, fact_store, directives_manager)
+                raise
             view["swapped"] = True
             if progress is not None:
                 # The files are replaced from here on, even if the sentinel
@@ -597,6 +606,7 @@ def _restore_snapshot_files_sync(
                 progress["swapped"] = True
             view["restored_files"] = restored
             view["removed_files"] = removed
+            _record_restore_outcome(char_dir, payload, _COMPLETED_RESTORES_FILENAME)
             _drop_thread_locked_caches(character_name, fact_store, directives_manager)
 
         if event_log is None:
@@ -627,9 +637,10 @@ def _restore_snapshot_files_sync(
         else:
             # Outside the store locks: voiding takes the event-log lock, which
             # is always taken before them.
-            if plan.get("save_started") and not plan.get("rollback_errors"):
-                # The user is told the restore failed and the files are back
-                # as they were: the event must not finish it later.
+            if not plan.get("rollback_errors"):
+                # The user is told the restore failed and the files are as
+                # they were (never touched, or rolled back cleanly): the event,
+                # if its line made it to disk, must not finish it later.
                 _void_restore_event(event_log, character_name, sentinel_before, payload, char_dir)
             raise failure
 
@@ -643,23 +654,44 @@ def _restore_snapshot_files_sync(
     }
 
 
+# Durable outcome lists in the snapshots folder, keyed by each restore's
+# pre-restore snapshot id: restores that failed and were rolled back
+# (voided), and restores whose swap completed (completed).
 _VOIDED_RESTORES_FILENAME = "voided_restores.json"
-_VOIDED_RESTORES_KEEP = 50
+_COMPLETED_RESTORES_FILENAME = "completed_restores.json"
+_RESTORE_OUTCOMES_KEEP = 50
 
 
-def _voided_restores(char_dir: Path) -> set[str]:
-    """Pre-restore snapshot ids of restores that failed and were rolled back."""
-    data = _read_json_safe(_snapshots_root(char_dir) / _VOIDED_RESTORES_FILENAME, [])
+def _restore_outcomes(char_dir: Path, filename: str) -> set[str]:
+    data = _read_json_safe(_snapshots_root(char_dir) / filename, [])
     return {item for item in data if isinstance(item, str)} if isinstance(data, list) else set()
 
 
-def _mark_restore_voided(char_dir: Path, pre_restore_id: str) -> None:
-    path = _snapshots_root(char_dir) / _VOIDED_RESTORES_FILENAME
+def _mark_restore_outcome(char_dir: Path, pre_restore_id: str, filename: str) -> None:
+    path = _snapshots_root(char_dir) / filename
     data = _read_json_safe(path, [])
     ids = [item for item in data if isinstance(item, str)] if isinstance(data, list) else []
     if pre_restore_id not in ids:
         ids.append(pre_restore_id)
-    atomic_write_json(str(path), ids[-_VOIDED_RESTORES_KEEP:], ensure_ascii=False)
+    atomic_write_json(str(path), ids[-_RESTORE_OUTCOMES_KEEP:], ensure_ascii=False)
+
+
+def _record_restore_outcome(char_dir: Path, payload: dict, filename: str) -> bool:
+    """Best-effort mark; returns whether it was written."""
+    pre_id = payload.get("pre_restore_snapshot_id")
+    if not isinstance(pre_id, str):
+        return False
+    try:
+        _mark_restore_outcome(char_dir, pre_id, filename)
+        return True
+    except Exception as exc:
+        logger.warning("[MemorySnapshots] could not record restore outcome %s: %s", filename, exc)
+        return False
+
+
+def _voided_restores(char_dir: Path) -> set[str]:
+    """Pre-restore snapshot ids of restores that failed and were rolled back."""
+    return _restore_outcomes(char_dir, _VOIDED_RESTORES_FILENAME)
 
 
 def _is_voided(char_dir: Path, payload: dict) -> bool:
@@ -667,24 +699,45 @@ def _is_voided(char_dir: Path, payload: dict) -> bool:
     return isinstance(pre_id, str) and pre_id in _voided_restores(char_dir)
 
 
+def _is_completed(char_dir: Path, payload: dict) -> bool:
+    pre_id = payload.get("pre_restore_snapshot_id")
+    return isinstance(pre_id, str) and pre_id in _restore_outcomes(char_dir, _COMPLETED_RESTORES_FILENAME)
+
+
+def make_restore_cancelled_check(character_dir) -> Callable[[dict], bool]:
+    """``(record) -> bool`` for compaction: a restore record that was cancelled."""
+    voided = _voided_restores(Path(character_dir))
+
+    def _cancelled(record: dict) -> bool:
+        payload = record.get("payload") if isinstance(record, dict) else None
+        pre_id = payload.get("pre_restore_snapshot_id") if isinstance(payload, dict) else None
+        return isinstance(pre_id, str) and pre_id in voided
+
+    return _cancelled
+
+
 def _void_restore_event(
     event_log, character_name: str, sentinel_before, payload: dict, char_dir: Path,
 ) -> None:
-    """Advance the sentinel onto a restore event whose swap was rolled back cleanly.
+    """Cancel a restore whose files were never touched or were rolled back cleanly.
 
-    Only when the sentinel is still where it was before the append (a
-    compare-and-set through apply_and_advance with a no-op step), and only
-    for this very event: the last record of the tail, matched by its
-    pre-restore snapshot id. The cancellation is also written down
-    (voided_restores.json in the snapshots folder) before the sentinel
-    moves, so a later full replay, after the sentinel file is lost, still
-    leaves this restore alone. Never raises; the original error is what
+    The cancellation is written down (voided_restores.json in the snapshots
+    folder); the replay handler and the tail cut then treat the event as a
+    no-op, wherever replay starts, and unapplied events in front of it are
+    still replayed in order. Only if that write fails is the sentinel moved
+    onto the event instead: a compare-and-set through apply_and_advance with
+    a no-op step, while the sentinel is still where it was before the append
+    and only for this very event (the last record of the tail, matched by
+    its pre-restore snapshot id). Never raises; the original error is what
     the caller reports.
     """
     try:
-        pre_id = payload.get("pre_restore_snapshot_id")
-        if isinstance(pre_id, str):
-            _mark_restore_voided(char_dir, pre_id)
+        if _record_restore_outcome(char_dir, payload, _VOIDED_RESTORES_FILENAME):
+            logger.info(
+                "[MemorySnapshots] %s: failed restore of %s cancelled; replay leaves it",
+                character_name, payload.get("snapshot_id"),
+            )
+            return
         tail = event_log.read_since(character_name, sentinel_before)
         record = tail[-1] if tail else None
         if (
@@ -791,8 +844,12 @@ def make_snapshot_restore_in_effect(*, memory_dir_fn: Callable[[], Any] | None =
             state, _live, _current, _relpaths = _compare_with_restore(char_dir, target, pre)
         except OSError:
             return False
-        if state != _RESTORE_INTERRUPTED:
+        if state == _RESTORE_DONE:
             return True
+        if state == _RESTORE_CHANGED:
+            # Changed after the restore, or never restored and changed since:
+            # only a completed swap, written down when it happened, tells.
+            return _is_completed(char_dir, payload)
         return _load_matching_snapshot(char_dir, snapshot_id, target) is not None
 
     return _in_effect
@@ -880,6 +937,7 @@ def make_snapshot_restore_handler(
             leftovers = [rel for rel in relpaths if target.get(rel) is None and rel in live]
             _advance_view_generation(char_dir)
             _swap_live_files(char_dir, pending, live, [*pending, *leftovers])
+            _record_restore_outcome(char_dir, payload, _COMPLETED_RESTORES_FILENAME)
             _drop_thread_locked_caches(name, fact_store, dm)
             if persona_manager is not None:
                 cache = getattr(persona_manager, "_personas", None)
@@ -1134,7 +1192,11 @@ async def arestore_snapshot(
                 pass
 
         worker_exc = None if worker.cancelled() else worker.exception()
-        if progress.get("swapped") or (worker_exc is None and not worker.cancelled()):
+        if (
+            progress.get("swapped")
+            or progress.get("dirty")
+            or (worker_exc is None and not worker.cancelled())
+        ):
             # Invalidate async-locked manager caches while still holding locks
             # whenever the files were swapped: even if cancelled mid-flight, and
             # even if a step after the swap (the sentinel write) raised. A cached

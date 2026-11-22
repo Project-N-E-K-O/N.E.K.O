@@ -421,10 +421,14 @@ def test_reflection_merge_archive_replay_three_states(tmp_path):
         [{"id": "r_keep", "text": "merged"}, {"id": "r_drop", "text": "drop"}],
         [{"id": "r_keep", "text": "keep before"}, {"id": "r_drop", "text": "drop, edited"}],
         [{"id": "r_keep", "text": "keep before"}, {"id": "r_drop", "text": "drop", "status": "confirmed"}],
+        [{"id": "r_keep", "text": "keep before", "status": "confirmed"}, {"id": "r_drop", "text": "drop"}],
     ):
         path = _seed_reflections(tmp_path, rows)
         before = path.read_bytes()
-        full = {**payload, "from": "pending", "entry_snapshot": {"id": "r_drop", "text": "drop"}}
+        full = {
+            **payload, "from": "pending", "merged_keep_status": "pending",
+            "entry_snapshot": {"id": "r_drop", "text": "drop"},
+        }
         assert handler(NAME, full) is False
         assert path.read_bytes() == before
 
@@ -495,7 +499,8 @@ async def _restore(root: Path, snapshot_id: str, *, event_log=None, **kwargs):
     with patch("memory.analytics.snapshots.assert_cloudsave_writable"):
         return await arestore_snapshot(
             NAME, snapshot_id, config_manager=_cm(root), memory_dir=root,
-            persona_manager=_Persona(), fact_store=_Facts(), event_log=event_log,
+            persona_manager=kwargs.pop("persona_manager", None) or _Persona(),
+            fact_store=_Facts(), event_log=event_log,
             directives_manager=MagicMock(spec=[]), **kwargs,
         )
 
@@ -708,7 +713,7 @@ async def test_registered_restore_replay_drains_and_full_replay_starts_at_restor
     }]
 
 
-def test_compaction_keeps_only_the_newest_restore_record(tmp_path):
+def test_compaction_keeps_the_newest_restore_records(tmp_path):
     from memory import event_log as event_log_module
     from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED, EVT_REFLECTION_EVIDENCE_UPDATED
 
@@ -719,7 +724,9 @@ def test_compaction_keeps_only_the_newest_restore_record(tmp_path):
         {"event_id": "r1", "type": EVT_MEMORY_SNAPSHOT_RESTORED},
         {"event_id": "b", "type": EVT_REFLECTION_EVIDENCE_UPDATED},
         {"event_id": "r2", "type": EVT_MEMORY_SNAPSHOT_RESTORED},
+        {"event_id": "r3", "type": EVT_MEMORY_SNAPSHOT_RESTORED},
         {"event_id": "c", "type": EVT_REFLECTION_EVIDENCE_UPDATED},
+        {"event_id": "r4", "type": EVT_MEMORY_SNAPSHOT_RESTORED},
         {"event_id": "anchor", "type": EVT_REFLECTION_EVIDENCE_UPDATED},
     ]
     char_dir = tmp_path / NAME
@@ -732,10 +739,8 @@ def test_compaction_keeps_only_the_newest_restore_record(tmp_path):
             patch.object(event_log_module, "_RETAIN_APPLIED_MAX_BYTES", 0):
         result = log.compact_applied_history(NAME)
     assert result.outcome == "compacted"
-    assert result.kept_restore == 1 and result.pinned == 0
-    assert [e["event_id"] for e in _journal(tmp_path)] == ["r2", "anchor"]
-    # A later full replay still starts at the restore record.
-    assert [r["event_id"] for r in log.read_since(NAME, None)] == ["r2", "anchor"]
+    assert result.kept_restore == 3 and result.pinned == 0
+    assert [e["event_id"] for e in _journal(tmp_path)] == ["r2", "r3", "r4", "anchor"]
 
 
 @pytest.mark.asyncio
@@ -810,8 +815,12 @@ async def test_pending_restore_is_finished_ahead_of_startup_rewrites(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("sentinel", ["anchor", None, "not-in-body"])
-async def test_restore_that_never_took_effect_keeps_earlier_events_replayable(tmp_path, sentinel):
+@pytest.mark.parametrize("sentinel,changed_later", [
+    ("anchor", False), (None, False), ("not-in-body", False), ("anchor", True),
+])
+async def test_restore_that_never_took_effect_keeps_earlier_events_replayable(
+    tmp_path, sentinel, changed_later,
+):
     import shutil
     from memory.analytics.snapshots import register_snapshot_restore_replay
     from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED, Reconciler
@@ -830,6 +839,10 @@ async def test_restore_that_never_took_effect_keeps_earlier_events_replayable(tm
     for rel, raw in pre.items():
         (char_dir / rel).write_bytes(raw)
     shutil.rmtree(char_dir / "browser_snapshots" / meta["snapshot_id"])
+    (char_dir / "browser_snapshots" / "completed_restores.json").unlink()
+    if changed_later:
+        # Never restored, then edited: a third version must not read as "restored, then changed".
+        _write_json(char_dir / "facts.json", [{"id": "f3", "text": "edited later"}])
 
     reconciler = Reconciler(log)
     seen = []
@@ -841,7 +854,8 @@ async def test_restore_that_never_took_effect_keeps_earlier_events_replayable(tm
     await reconciler.areconcile(NAME)
     # A full replay (sentinel missing or not in the body) also replays "anchor".
     assert seen == (["stale"] if sentinel == "anchor" else ["anchor", "stale"])
-    assert {rel: (char_dir / rel).read_bytes() for rel in pre} == pre
+    if not changed_later:
+        assert {rel: (char_dir / rel).read_bytes() for rel in pre} == pre
 
 
 @pytest.mark.asyncio
@@ -864,14 +878,15 @@ async def test_failed_restore_is_not_finished_later_after_a_clean_rollback(tmp_p
         if "browser_snapshots" not in str(path):
             live_writes.append(path)
             # Second live file fails (a lock held by antivirus or a sync client);
-            # with rollback_fails, restoring the first one fails as well.
-            if len(live_writes) == 2 or (rollback_fails and len(live_writes) == 3):
+            # with rollback_fails, putting the first one back (4th write) fails too.
+            if len(live_writes) == 2 or (rollback_fails and len(live_writes) == 4):
                 raise PermissionError("locked")
         return real_write(path, data)
 
+    sentinel_before = log.read_sentinel(NAME)
+    persona = _Persona()
     with patch.object(snapshots, "atomic_write_bytes", _flaky_write), pytest.raises(PermissionError):
-        await _restore(tmp_path, meta["snapshot_id"], event_log=log)
-    restore_id = _journal(tmp_path)[-1]["event_id"]
+        await _restore(tmp_path, meta["snapshot_id"], event_log=log, persona_manager=persona)
 
     reconciler = Reconciler(log)
     register_snapshot_restore_replay(
@@ -880,13 +895,17 @@ async def test_failed_restore_is_not_finished_later_after_a_clean_rollback(tmp_p
     )
     if rollback_fails:
         # Mixed files on disk: the event stays pending and the next start finishes the restore.
-        assert log.read_sentinel(NAME) != restore_id
+        assert (char_dir / "persona.json").read_bytes() != pre["persona.json"]
+        assert (char_dir / "facts.json").read_bytes() == pre["facts.json"]
+        # persona.json is at the target now: no cached old copy may survive.
+        assert NAME not in persona._personas
         assert await reconciler.arun_pending_ahead(NAME, "memory.snapshot_restored") is True
         assert _read_json(char_dir / "facts.json")[0]["id"] == "f1"
     else:
         # Clean rollback: the failure the user saw stands.
         assert {rel: (char_dir / rel).read_bytes() for rel in pre} == pre
-        assert log.read_sentinel(NAME) == restore_id
+        # Cancelled on disk, not by moving the sentinel past older unapplied events.
+        assert log.read_sentinel(NAME) == sentinel_before
         assert await reconciler.arun_pending_ahead(NAME, "memory.snapshot_restored") is False
         await reconciler.areconcile(NAME)
         assert {rel: (char_dir / rel).read_bytes() for rel in pre} == pre
@@ -917,3 +936,91 @@ async def test_star_map_unconfigured_model_does_not_start_a_cooldown(tmp_path):
             )
     make_llm.assert_not_awaited()
     assert not (tmp_path / NAME / "star_map_clusters_cache.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_tail_cut_falls_back_to_an_earlier_restore_in_effect(tmp_path):
+    from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED, EVT_REFLECTION_EVIDENCE_UPDATED, Reconciler
+
+    log = _event_log(tmp_path)
+    log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "old"})
+    log.append(NAME, EVT_MEMORY_SNAPSHOT_RESTORED, {"ok": True})
+    log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "mid"})
+    log.append(NAME, EVT_MEMORY_SNAPSHOT_RESTORED, {"ok": False})  # cancelled later restore
+    log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "after"})
+    reconciler = Reconciler(log)
+    seen = []
+    reconciler.register(EVT_REFLECTION_EVIDENCE_UPDATED, lambda n, p: seen.append(p["reflection_id"]) or False)
+    reconciler.register(EVT_MEMORY_SNAPSHOT_RESTORED, lambda n, p: False)
+    reconciler.register_tail_cut(EVT_MEMORY_SNAPSHOT_RESTORED, lambda n, p: p["ok"])
+    await reconciler.areconcile(NAME)  # no sentinel: full replay
+    assert seen == ["mid", "after"]
+
+
+def test_compaction_keeps_the_newest_restore_that_was_not_cancelled(tmp_path):
+    from memory import event_log as event_log_module
+    from memory.event_log import EVT_MEMORY_SNAPSHOT_RESTORED, EVT_REFLECTION_EVIDENCE_UPDATED
+
+    log = _event_log(tmp_path)
+    old = (datetime.now() - timedelta(days=40)).isoformat()
+    rows = [
+        {"event_id": "r1", "type": EVT_MEMORY_SNAPSHOT_RESTORED, "payload": {"pre_restore_snapshot_id": "p1"}},
+        {"event_id": "b", "type": EVT_REFLECTION_EVIDENCE_UPDATED, "payload": {}},
+        {"event_id": "r2", "type": EVT_MEMORY_SNAPSHOT_RESTORED, "payload": {"pre_restore_snapshot_id": "p2"}},
+        {"event_id": "anchor", "type": EVT_REFLECTION_EVIDENCE_UPDATED, "payload": {}},
+    ]
+    char_dir = tmp_path / NAME
+    char_dir.mkdir()
+    (char_dir / "events.ndjson").write_bytes("".join(
+        json.dumps({**row, "ts": old}) + chr(10) for row in rows
+    ).encode("utf-8"))
+    _write_json(char_dir / "events_applied.json", {"last_applied_event_id": "anchor"})
+    _write_json(char_dir / "browser_snapshots" / "voided_restores.json", ["p2"])
+    from memory.analytics.snapshots import make_restore_cancelled_check
+
+    with patch.object(event_log_module, "_RETAIN_APPLIED_DAYS", 0), \
+            patch.object(event_log_module, "_RETAIN_APPLIED_MAX_BYTES", 0):
+        result = log.compact_applied_history(
+            NAME, restore_cancelled=make_restore_cancelled_check(char_dir),
+        )
+    assert result.outcome == "compacted" and result.kept_restore == 1
+    assert [e["event_id"] for e in _journal(tmp_path)] == ["r1", "anchor"]
+
+
+
+@pytest.mark.asyncio
+async def test_cancelled_restore_keeps_older_unapplied_events(tmp_path):
+    from memory.analytics import snapshots
+    from memory.analytics.snapshots import register_snapshot_restore_replay
+    from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED, Reconciler
+
+    log = _event_log(tmp_path)
+    char_dir = _seed_memory(tmp_path, "likes jazz", "drinks oolong")
+    meta = await _snapshot(tmp_path)
+    anchor = log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "anchor"})
+    _write_json(char_dir / "events_applied.json", {"last_applied_event_id": anchor})
+    log.append(NAME, EVT_REFLECTION_EVIDENCE_UPDATED, {"reflection_id": "pending"})
+    real_write = snapshots.atomic_write_bytes
+    live_writes = []
+
+    def _locked(path, data):
+        if "browser_snapshots" not in str(path):
+            live_writes.append(path)
+            if len(live_writes) == 1:
+                raise PermissionError("locked")
+        return real_write(path, data)
+
+    with patch.object(snapshots, "atomic_write_bytes", _locked), pytest.raises(PermissionError):
+        await _restore(tmp_path, meta["snapshot_id"], event_log=log)
+    assert log.read_sentinel(NAME) == anchor
+
+    reconciler = Reconciler(log)
+    seen = []
+    reconciler.register(EVT_REFLECTION_EVIDENCE_UPDATED, lambda n, p: seen.append(p["reflection_id"]) or False)
+    register_snapshot_restore_replay(
+        reconciler, fact_store=_Facts(), persona_manager=_Persona(),
+        directives_manager_fn=lambda: None, memory_dir_fn=lambda: tmp_path,
+    )
+    await reconciler.areconcile(NAME)
+    assert seen == ["pending"]
+    assert _read_json(char_dir / "persona.json")["master"]["facts"][0]["text"] == "likes jazz"

@@ -158,6 +158,10 @@ _COMPACT_TRIGGER_AGE_DAYS = 30
 # decision; these two are the only knobs. Both 0 means "anchor line plus
 # pinned archive copies only".
 _RETAIN_APPLIED_DAYS = 7
+# Snapshot-restore records kept in front of the anchor: the newest ones not
+# cancelled. More than one, because the newest may never have taken effect
+# and a replay then starts at an earlier one.
+_KEEP_RESTORE_RECORDS = 3
 _RETAIN_APPLIED_MAX_BYTES = 256 * 1024
 
 # os.replace "target is busy" on Windows (ACCESS_DENIED / SHARING_VIOLATION).
@@ -184,8 +188,8 @@ class CompactionResult(NamedTuple):
     pending_tail: int = 0
     pinned: int = 0
     pinned_event_ids: tuple[str, ...] = ()
-    # The newest snapshot-restore record kept in front of the anchor (0 or 1);
-    # not an archive copy, so not counted in ``pinned``.
+    # Snapshot-restore records kept in front of the anchor (at most
+    # _KEEP_RESTORE_RECORDS); not archive copies, so not counted in ``pinned``.
     kept_restore: int = 0
 
 
@@ -791,9 +795,14 @@ class EventLog:
         *,
         needs_journal_copy: Callable[[dict], bool] | None = None,
         sources_unchanged: Callable[[], bool] | None = None,
+        restore_cancelled: Callable[[dict], bool] | None = None,
         now: datetime | None = None,
     ) -> CompactionResult:
         """Drop already-applied history in front of the sentinel.
+
+        ``restore_cancelled(record)`` says a snapshot-restore record belongs to
+        a restore that failed and was rolled back; such records are passed
+        over when choosing which restore record to keep.
 
         Invariants, whatever the outcome:
           - the sentinel's line and every line after it (corrupt and blank
@@ -812,8 +821,9 @@ class EventLog:
         archived entry -- or when it falls inside the retention window
         (_RETAIN_APPLIED_DAYS, capped at _RETAIN_APPLIED_MAX_BYTES, oldest
         evicted first). ``memory.long_term_replaced`` is never retained; the
-        newest ``memory.snapshot_restored`` in front of the anchor always is
-        (counted in ``kept_restore``), older ones never. Everything else in front of the anchor goes, including lines replay
+        newest _KEEP_RESTORE_RECORDS ``memory.snapshot_restored`` records in
+        front of the anchor that ``restore_cancelled`` does not reject always
+        are (counted in ``kept_restore``), older ones never. Everything else in front of the anchor goes, including lines replay
         would skip anyway.
 
         Skips without touching the body when the journal is not due
@@ -864,7 +874,7 @@ class EventLog:
             return CompactionResult('not_due')
 
         with self._get_lock(name):
-            warm = self._plan_compaction_locked(name, path, needs_journal_copy, now)
+            warm = self._plan_compaction_locked(name, path, needs_journal_copy, now, restore_cancelled)
         if isinstance(warm, CompactionResult):
             return warm
 
@@ -884,7 +894,9 @@ class EventLog:
                     moved = self._moved_since_warm(path, warm, sources_unchanged)
                     if moved is not None:
                         return CompactionResult(moved, **warm.stats)
-                    plan = self._plan_compaction_locked(name, path, needs_journal_copy, now)
+                    plan = self._plan_compaction_locked(
+                        name, path, needs_journal_copy, now, restore_cancelled,
+                    )
                     if isinstance(plan, CompactionResult):
                         return plan
                     return self._commit_compaction_locked(name, char_dir, path, plan)
@@ -997,6 +1009,7 @@ class EventLog:
         path: str,
         needs_journal_copy: Callable[[dict], bool] | None,
         now: datetime,
+        restore_cancelled: Callable[[dict], bool] | None = None,
     ) -> CompactionResult | _CompactionPlan:
         """First phase: scan and self-check. Caller holds the character lock only."""
         skip, sentinel = self._admit_compaction_unlocked(name)
@@ -1015,7 +1028,7 @@ class EventLog:
         tail: list[str] = []
         old_tail_ids: list = []
         pinned: list[tuple[int, str, str]] = []
-        latest_restore: tuple[int, str, str] | None = None
+        restores: list[tuple[int, str, str]] = []
         window: deque[tuple[int, str, int]] = deque()
         window_bytes = 0
         total_lines = 0
@@ -1049,10 +1062,12 @@ class EventLog:
                     # consumed; old head-style ones are whole snapshots.
                     continue
                 if rec.get('type') == EVT_MEMORY_SNAPSHOT_RESTORED:
-                    # Only the newest one matters: a full replay starts at
-                    # it once it is in effect (Reconciler tail cut), so it
-                    # must outlive the lines it hides.
-                    latest_restore = (lineno, raw, str(rec.get('event_id')))
+                    # The newest restores that were not cancelled: a replay
+                    # starts at the newest one in effect (Reconciler tail
+                    # cut), so they must outlive the lines they hide. A
+                    # cancelled one never replaced anything.
+                    if restore_cancelled is None or not restore_cancelled(rec):
+                        restores.append((lineno, raw, str(rec.get('event_id'))))
                     continue
                 if needs_journal_copy is not None and needs_journal_copy(rec):
                     pinned.append((lineno, raw, str(rec.get('event_id'))))
@@ -1072,7 +1087,7 @@ class EventLog:
         kept_before = sorted(
             [(lineno, raw) for lineno, raw, _ in pinned]
             + [(lineno, raw) for lineno, raw, _ in window]
-            + ([latest_restore[:2]] if latest_restore is not None else [])
+            + [(lineno, raw) for lineno, raw, _ in restores[-_KEEP_RESTORE_RECORDS:]]
         )
         kept_lines = [raw for _, raw in kept_before] + tail
         dropped_lines = total_lines - len(kept_lines)
@@ -1081,7 +1096,7 @@ class EventLog:
             'pending_tail': len(old_tail_ids),
             'pinned': len(pinned),
             'pinned_event_ids': tuple(event_id for _, _, event_id in pinned),
-            'kept_restore': 1 if latest_restore is not None else 0,
+            'kept_restore': len(restores[-_KEEP_RESTORE_RECORDS:]),
         }
         if dropped_lines <= 0:
             return CompactionResult('nothing_to_drop', **stats)
@@ -1201,12 +1216,14 @@ class EventLog:
         *,
         needs_journal_copy: Callable[[dict], bool] | None = None,
         sources_unchanged: Callable[[], bool] | None = None,
+        restore_cancelled: Callable[[dict], bool] | None = None,
         now: datetime | None = None,
     ) -> CompactionResult:
         return await asyncio.to_thread(
             self.compact_applied_history, name,
             needs_journal_copy=needs_journal_copy,
-            sources_unchanged=sources_unchanged, now=now,
+            sources_unchanged=sources_unchanged,
+            restore_cancelled=restore_cancelled, now=now,
         )
 
     async def arecord_and_save(
@@ -1268,6 +1285,11 @@ class Reconciler:
         self._tail_cuts[event_type] = in_effect
 
     async def _cut_tail(self, name: str, tail: list[dict]) -> list[dict]:
+        """Start the tail at the newest cut record that is in effect.
+
+        One that is not (cancelled, or never started and cannot finish) is
+        passed over, so an earlier one that is still counts.
+        """
         for k in range(len(tail) - 1, 0, -1):
             in_effect = self._tail_cuts.get(tail[k].get('type'))
             if in_effect is None:
@@ -1279,7 +1301,6 @@ class Reconciler:
                     f"跳过其前 {k} 条未应用事件"
                 )
                 return tail[k:]
-            return tail
         return tail
 
     async def arun_pending_ahead(self, name: str, event_type: str) -> bool:
