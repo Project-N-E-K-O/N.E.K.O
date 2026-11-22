@@ -3669,6 +3669,7 @@ class TaskAgentManager:
             # was read above: it may have been taken up again since (an
             # answer came), and is then at work, which is on record.
             await self._ledger.settle_session(session_id, commission_id)
+            commission = await self._ledger.get(commission_id)
         except Exception:  # noqa: BLE001 - the status is for showing; the hold is what counts
             # The hold is let go all the same: left here, nothing else
             # would ever start in the session.
@@ -3676,7 +3677,11 @@ class TaskAgentManager:
         # Looked at again: it may have been taken up, or let go, meanwhile.
         if self._held_by.get(session_id) != commission_id or self._closed or self._in_hand_for(commission_id, session_id):
             return
-        same_session = commission is not None and commission.session_id == session_id
+        same_session = (
+            commission is not None
+            and commission.session_id == session_id
+            and self._session_of.get(commission_id, session_id) == session_id
+        )
         if same_session and commission.status not in ENDED_STATUSES and not commission.resting:
             # It waits for the user, or for task agents it started.
             return
