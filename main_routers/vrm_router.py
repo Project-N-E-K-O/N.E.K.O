@@ -462,7 +462,11 @@ def get_vrm_animations():
                 
                 # Imported user animations remain standard .vrma; builtins use .vrma.gz, decompressed uniformly
                 # by the frontend on first playback. Both transport formats must appear in the animation selector.
-                animation_files = list(anim_dir.glob('*.vrma')) + list(anim_dir.glob('*.vrma.gz'))
+                # Match extensions in any letter case like the upload check; glob('*.vrma')
+                # would miss 'Foo.VRMA' on case-sensitive file systems.
+                entries = list(anim_dir.iterdir())
+                animation_files = [p for p in entries if p.name.lower().endswith('.vrma')] \
+                    + [p for p in entries if p.name.lower().endswith('.vrma.gz')]
                 for anim_file in animation_files:
                     try:
                         # Internal guided-movement assets need movement playback options and are excluded from ordinary animation selectors.
@@ -484,7 +488,7 @@ def get_vrm_animations():
                         
                         # Remove absolute paths; return only public URLs and relative information.
                         display_name = anim_file.name[:-len('.vrma.gz')] \
-                            if anim_file.name.endswith('.vrma.gz') else anim_file.stem
+                            if anim_file.name.lower().endswith('.vrma.gz') else anim_file.stem
                         animations.append({
                             "name": display_name,
                             "filename": anim_file.name,
@@ -498,7 +502,7 @@ def get_vrm_animations():
                         continue
                 
                 # Also support .vrm files as animations in certain cases.
-                for anim_file in anim_dir.glob('*.vrm'):
+                for anim_file in (p for p in entries if p.suffix.lower() == '.vrm'):
                     try:
                         if not anim_file.exists() or not anim_file.is_file():
                             continue
