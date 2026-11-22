@@ -120,6 +120,14 @@ EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 # Documentation: https://platform.stepfun.ai/docs/en/api-reference/chat/chat-completion-create
 EXTRA_BODY_STEP_LOW = {"reasoning_effort": "low"}
 
+# Kimi K3 series always thinks and takes no thinking field (docs: drop thinking, set the top-level
+# reasoning_effort instead; values low / high / max, default max). Sending thinking.disabled
+# would leave the default max effort, so regular and focused turns both pin low. Switching the
+# effort mid-session also breaks prefix-cache hits, another reason not to flip it on focus.
+# Omit from _THINKING_ENABLE_FORM (no focused-cognition switch).
+# Documentation: https://platform.kimi.com/docs/guide/use-reasoning-effort
+EXTRA_BODY_KIMI_K3 = {"reasoning_effort": "low"}
+
 # Unified agent-call switch: whether to load extra_body.
 # Enabled by default; with MODELS_EXTRA_BODY_MAP, disables thinking by default.
 AGENT_USE_EXTRA_BODY = True
@@ -165,7 +173,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
     "kimi-k2.6": EXTRA_BODY_CLAUDE,
-    "kimi-k3": EXTRA_BODY_CLAUDE,
+    "kimi-k3": EXTRA_BODY_KIMI_K3,
+    "kimi-k3.1-pro": EXTRA_BODY_KIMI_K3,
+    "kimi-k3.1-pro-highspeed": EXTRA_BODY_KIMI_K3,
     # MiniMax family.
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,

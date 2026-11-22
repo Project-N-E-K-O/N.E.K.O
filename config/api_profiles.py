@@ -88,7 +88,7 @@ DEFAULT_CORE_API_PROFILES = {
     },
     'step': {
         'CORE_URL': "wss://api.stepfun.com/v1/realtime",
-        'CORE_MODEL': "stepaudio-3-realtime-preview",
+        'CORE_MODEL': "stepaudio-3-realtime",
     },
     'gemini': {
         # Gemini uses google-genai SDK rather than native WebSocket.
@@ -202,14 +202,14 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'kimi': {
         'OPENROUTER_URL': "https://api.moonshot.cn/v1",
-        'CONVERSATION_MODEL': "kimi-k2.6",
-        'SUMMARY_MODEL': "kimi-k2.6",
-        'CORRECTION_MODEL': "kimi-k2.6",
-        'EMOTION_MODEL': "kimi-k2.6",
-        'DECISION_MODEL': "kimi-k2.6",
+        'CONVERSATION_MODEL': "kimi-k3",
+        'SUMMARY_MODEL': "kimi-k3",
+        'CORRECTION_MODEL': "kimi-k3",
+        'EMOTION_MODEL': "kimi-k3",
+        'DECISION_MODEL': "kimi-k3",
         'DECISION_PROTOCOL': "chat_fallback",
-        'VISION_MODEL': "kimi-k2.6",
-        'AGENT_MODEL': "kimi-k2.6",
+        'VISION_MODEL': "kimi-k3",
+        'AGENT_MODEL': "kimi-k3",
     },
     'kimi_code': {
         'OPENROUTER_URL': "https://api.kimi.com/coding",

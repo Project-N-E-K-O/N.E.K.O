@@ -575,6 +575,48 @@ def test_step_reasoning_effort_stays_low():
         assert focus_extra_body(model) == {"reasoning_effort": "low"}
 
 
+def test_kimi_k3_pins_low_reasoning_effort_instead_of_thinking():
+    """Kimi K3 always thinks and takes no ``thinking`` field.
+
+    Sending ``thinking.disabled`` would leave the server default (max effort),
+    so both regular and focus turns pin ``reasoning_effort=low``. Pin the
+    constant identity so a same-shaped dict registered in
+    ``_THINKING_ENABLE_FORM`` cannot flip it on focus.
+    """
+    from config.providers import (
+        EXTRA_BODY_KIMI_K3, MODELS_EXTRA_BODY_MAP, focus_extra_body, get_extra_body,
+    )
+
+    for model in ("kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"):
+        assert MODELS_EXTRA_BODY_MAP[model] is EXTRA_BODY_KIMI_K3
+        assert get_extra_body(model) == {"reasoning_effort": "low"}
+        assert focus_extra_body(model) == {"reasoning_effort": "low"}
+
+    # K2.x still speaks the thinking.type dialect until it retires.
+    assert get_extra_body("kimi-k2.6") == {"thinking": {"type": "disabled"}}
+
+
+def test_kimi_preset_slots_use_a_model_with_the_k3_body():
+    """Every shipped Kimi preset slot must name a model registered with the K3 body."""
+    import json
+    from pathlib import Path
+
+    from config.api_profiles import DEFAULT_ASSIST_API_PROFILES
+    from config.providers import EXTRA_BODY_KIMI_K3, MODELS_EXTRA_BODY_MAP
+
+    root = Path(__file__).resolve().parents[2]
+    shipped = json.loads((root / "config" / "api_providers.json").read_text(encoding="utf-8"))
+    json_models = {
+        v for k, v in shipped["assist_api_providers"]["kimi"].items() if k.endswith("_model")
+    }
+    py_models = {
+        v for k, v in DEFAULT_ASSIST_API_PROFILES["kimi"].items() if k.endswith("_MODEL")
+    }
+    assert json_models and py_models
+    for model in json_models | py_models:
+        assert MODELS_EXTRA_BODY_MAP.get(model) is EXTRA_BODY_KIMI_K3, model
+
+
 def test_official_deepseek_v4_registers_the_thinking_type_dialect():
     """Official DeepSeek V4 defaults to thinking-on, so it belongs in the map.
 
