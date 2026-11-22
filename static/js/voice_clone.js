@@ -617,7 +617,7 @@ function getVllmOmniCloneConfigurationWarning(cfg) {
     if (!customApiEnabled) {
         return window.t
             ? window.t('voice.vllmCloneCustomApiDisabledWarning', { provider: providerLabel })
-            : `The current TTS setting is "${providerLabel}" and Custom API is disabled. The sample will still be saved locally, but enable Custom API and switch TTS to vLLM-Omni before previewing or using this voice.`;
+            : `The current TTS setting is "${providerLabel}" and Per-Feature Models is off. The sample will still be saved locally, but turn on Per-Feature Models and switch Text-to-Speech to vLLM-Omni before previewing or using this voice.`;
     }
     if (configuredProvider !== 'vllm_omni') {
         return window.t

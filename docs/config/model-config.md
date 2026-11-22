@@ -17,7 +17,7 @@ Feature code may derive additional role values from these settings.
 
 ## Recommended flow
 
-1. Select Core and Assist providers in the Web UI.
+1. Select the Voice Model Provider (Core) and the General Model Provider (Assist) in the Web UI.
 2. Enter credentials for the selected providers.
 3. Run the UI connectivity checks.
 4. Only then configure a supported per-role model, URL, or key.
@@ -26,7 +26,7 @@ A saved resolved provider URL is reused only while it remains in the current pro
 
 ## Blank model IDs
 
-When a role's model ID is left blank in the custom API section, the role uses the same-tier default of the provider it actually points at: *follow assist* uses the assist provider's default, *follow core* uses the core provider's default, and a named provider uses its own default. The free tier and fixed-model providers (such as Kimi Code) always use their own models and ignore saved model IDs. A *custom* endpoint has no provider default; a blank model ID there keeps the assist API's current model name, so fill it in explicitly.
+When a role's model ID is left blank in the Per-Feature Models section, the role uses the same-tier default of the provider it actually points at: *follow assist* uses the assist provider's default, *follow core* uses the core provider's default, and a named provider uses its own default. The free tier and fixed-model providers (such as Kimi Code) always use their own models and ignore saved model IDs. A *custom* endpoint has no provider default; a blank model ID there keeps the assist API's current model name, so fill it in explicitly.
 
 ## Model ID pickers
 
