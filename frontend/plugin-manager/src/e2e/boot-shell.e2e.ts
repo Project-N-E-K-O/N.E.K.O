@@ -23,7 +23,7 @@ test('redirects unknown routes and completes the boot shell handoff', async ({ p
   await page.goto(`${PREVIEW_ORIGIN}/ui/route-that-does-not-exist`)
 
   await expect(page).toHaveURL(`${PREVIEW_ORIGIN}/ui/`)
-  await expect(page.locator('.dashboard')).toBeVisible()
+  await expect(page.locator('.power-home')).toBeVisible()
   await expect(page.locator(`#${BOOT_SHELL_ID}`)).toHaveCount(0)
 })
 

@@ -318,6 +318,7 @@ async def test_a_model_nothing_is_known_about_gets_the_window_of_the_setting(pat
         "compact_at_set": None,
         "idle_compact_after": 24 * 60.0,
         "idle_compact_after_set": None,
+        "idle_compact_on": True,
     }
     assert settings.TASK_AGENT_COMPACT_AT_TOKENS == 170_000 and await store.compact_at(URL, "any") == 170_000
     assert not path.exists()
@@ -343,6 +344,7 @@ async def test_a_model_whose_window_is_written_down_is_managed_for_that(path):
         "compact_at_set": None,
         "idle_compact_after": 24 * 60.0,
         "idle_compact_after_set": None,
+        "idle_compact_on": True,
     }
     # By name, whatever the address; and no other model.
     assert await store.context_window(URL, " free-agent-model ") == 128_000
@@ -554,6 +556,7 @@ async def test_the_window_a_provider_stated_counts_when_it_is_the_smaller_one(pa
         "compact_at_set": None,
         "idle_compact_after": 24 * 60.0,
         "idle_compact_after_set": None,
+        "idle_compact_on": True,
         "learned": 32_768,
         "learned_at": 1_800_000_000,
         "lapses_at": 1_800_000_000 + settings.MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS,
@@ -606,6 +609,7 @@ async def test_a_stated_window_is_believed_for_a_while_and_then_the_setting_coun
         "compact_at_set": None,
         "idle_compact_after": 24 * 60.0,
         "idle_compact_after_set": None,
+        "idle_compact_on": True,
     }
     # Stated again, a larger number is taken now: the old one is no longer believed.
     assert await store.note_context_window(URL, "local", 65_536) is True
@@ -629,3 +633,37 @@ async def test_what_is_known_of_the_window_and_of_pictures_do_not_overwrite_each
     await store.set_context_window(URL, "other", 64_000)
     assert await store.sees_images(URL, "other") is True
     assert await store.describe(URL, "other") == {"sees": True}
+
+
+async def test_the_user_switches_summing_up_idle_sessions_off_for_a_model_and_on_again(path):
+    store = ModelCapabilityStore(path)
+    # On unless switched off, and nothing is written for that.
+    assert await store.idle_compact_on(URL, "m") is True
+    assert not path.exists()
+
+    await store.set_idle_compact_after(URL, "m", 600)
+    assert await store.set_idle_compact_on(URL, "m", False) is False
+    # For that model and no other, kept across a restart, and the time set for it stays beside it.
+    assert await store.idle_compact_on(URL, "other") is True
+    again = ModelCapabilityStore(path)
+    assert await again.idle_compact_on(URL, "m") is False and await again.idle_compact_after(URL, "m") == 600.0
+    described = await store.describe_window(URL, "m")
+    assert (described["idle_compact_on"], described["idle_compact_after_set"]) == (False, 600.0)
+
+    assert await store.set_idle_compact_on(URL, "m", True) is True
+    assert (await store.describe_window(URL, "m"))["idle_compact_on"] is True
+    # Back on with nothing else set: nothing is left of the model in the file.
+    await store.set_idle_compact_after(URL, "m", None)
+    assert json.loads(path.read_text(encoding="utf-8")).get("models", {}) == {}
+
+    for not_a_switch in (None, 1, "off"):
+        with pytest.raises(ValueError):
+            await store.set_idle_compact_on(URL, "m", not_a_switch)
+    assert await store.idle_compact_on(URL, "m") is True
+
+
+async def test_a_refusal_of_pictures_does_not_switch_summing_up_idle_sessions_back_on(path):
+    store = ModelCapabilityStore(path)
+    await store.set_idle_compact_on(URL, "m", False)
+    assert await store.note_images_refused(URL, "m", "image input is not supported")
+    assert await store.idle_compact_on(URL, "m") is False

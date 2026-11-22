@@ -28,6 +28,7 @@ from collections import OrderedDict
 
 from utils.shutdown_steps import ShutdownCancellationBudget, run_shutdown_step
 
+from .api_console import build_console_router
 from .api_shared import (  # noqa: F401
     AgentServerEventBridge,
     Any,
@@ -1028,6 +1029,51 @@ async def cancel_task(task_id: str):
     return {"success": True, "task_id": task_id, "status": "cancelled"}
 
 
+def _console_token() -> str:
+    """What the console routes ask for: the token of this launch, as the plugin server holds it."""
+    from config import AUTOSTART_CSRF_TOKEN
+
+    return AUTOSTART_CSRF_TOKEN
+
+
+async def _console_switches() -> Dict[str, Any]:
+    """Where the switches stand, for the console. Unlike ``/agent/state``, the notification is left for the main page."""
+    from app import agent_server as _agent_server_facade
+
+    from .capabilities import _agent_flags_snapshot, _model_images_status
+
+    return {
+        "enabled": bool(Modules.analyzer_enabled),
+        "flags": _agent_flags_snapshot(),
+        "gate": _agent_server_facade._check_agent_api_gate(),
+        "capabilities": dict(Modules.capability_cache or {}),
+        "model_images": await _model_images_status(),
+    }
+
+
+async def _console_character() -> Optional[str]:
+    """The character the user is with now: whose task agent one made from the console is."""
+    try:
+        _, her_name, *_rest = await get_config_manager().aget_character_data()
+    except Exception as exc:  # noqa: BLE001 - told as "no character", not as a failure of the page
+        logger.warning("[Agent] reading the current character for the console failed (exc_type=%s)", type(exc).__name__)
+        return None
+    return her_name if isinstance(her_name, str) and her_name else None
+
+
+async def _console_read_browser() -> Dict[str, Any]:
+    return await get_browser_settings()
+
+
+async def _console_write_browser(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return await set_browser_settings(payload)
+
+
+# What the console pages read and change of the task agents; the plugin
+# server passes their requests on to here. Mounted at the end of the module,
+# once the browser settings routes it leans on are defined.
+
+
 @app.get("/builtin/activity")
 async def builtin_activity():
     """Return which commission is using the keyboard and mouse, and which the browser, right now.
@@ -1236,3 +1282,9 @@ def hud_status(status: str) -> str:
     from .nekoclaw_mount import _HUD_STATUS
 
     return _HUD_STATUS.get(status, status)
+
+
+app.include_router(build_console_router(
+    ready_host, _console_token, character=_console_character,
+    switches=_console_switches, read_browser=_console_read_browser, write_browser=_console_write_browser,
+))
