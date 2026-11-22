@@ -130,25 +130,33 @@ def _read_encryption_key(platform: str, key_file: Path) -> bytes:
     return key_file.read_bytes()
 
 
-_LAST_SAVE_PUBLISHED_DISK = threading.local()
+_LAST_SAVE_PUBLISHED_PAYLOAD = threading.local()
 
 
-def _publish_cookie_artifact(target_path: Path, writer) -> None:
+def _publish_cookie_artifact(
+    target_path: Path,
+    writer,
+    *,
+    track_payload_publish: bool = False,
+) -> None:
     """Write a cookie or key artifact atomically and preserve 0o600 permissions.
 
-    Tracks whether the target path was replaced on disk so callers know to
-    invalidate stale in-memory cache entries if a post-replace directory sync
-    fails.
+    When ``track_payload_publish`` is True, records that the credential payload
+    file itself was replaced on disk so callers know to invalidate stale
+    in-memory cache entries if a post-replace directory sync fails, without
+    evicting rejected/cached states when only the encryption key was published.
     """
     try:
         writer()
     except PublishedFileSyncError:
-        _LAST_SAVE_PUBLISHED_DISK.value = True
+        if track_payload_publish:
+            _LAST_SAVE_PUBLISHED_PAYLOAD.value = True
         if sys.platform != 'win32':
             with suppress(OSError):
                 os.chmod(target_path, 0o600)
         raise
-    _LAST_SAVE_PUBLISHED_DISK.value = True
+    if track_payload_publish:
+        _LAST_SAVE_PUBLISHED_PAYLOAD.value = True
     if sys.platform != 'win32':
         os.chmod(target_path, 0o600)
 
@@ -159,7 +167,7 @@ def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
 def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
     """Save cookies, with normalization checks and encryption logic"""
     try:
-        _LAST_SAVE_PUBLISHED_DISK.value = False
+        _LAST_SAVE_PUBLISHED_PAYLOAD.value = False
         if platform not in COOKIE_FILES:
             return False
 
@@ -206,6 +214,7 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
             _publish_cookie_artifact(
                 cookie_file,
                 lambda: atomic_write_bytes(cookie_file, encrypted_data),
+                track_payload_publish=True,
             )
             
             logger.info(f"✅ 已加密保存 {platform} 凭证到: {cookie_file}")
@@ -214,6 +223,7 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
             _publish_cookie_artifact(
                 cookie_file,
                 lambda: atomic_write_json(cookie_file, cookies, ensure_ascii=False, indent=4),
+                track_payload_publish=True,
             )
             
             logger.info(f"✅ 已明文保存 {platform} 凭证到: {cookie_file}")
@@ -531,18 +541,18 @@ class CredentialManager:
                     or entry.credentials != expected
                 ):
                     return False
-            _LAST_SAVE_PUBLISHED_DISK.value = False
+            _LAST_SAVE_PUBLISHED_PAYLOAD.value = False
             try:
                 saved = _save_cookies_to_file_uncached(
                     platform,
                     normalized,
                     encrypt=encrypt,
                 )
-                published_disk = bool(getattr(_LAST_SAVE_PUBLISHED_DISK, "value", False))
+                published_payload = bool(getattr(_LAST_SAVE_PUBLISHED_PAYLOAD, "value", False))
             finally:
-                _LAST_SAVE_PUBLISHED_DISK.value = False
+                _LAST_SAVE_PUBLISHED_PAYLOAD.value = False
             if not saved:
-                if published_disk:
+                if published_payload:
                     with self._cache_lock:
                         self._cache.pop(platform, None)
                 return False

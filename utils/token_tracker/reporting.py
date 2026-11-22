@@ -20,6 +20,7 @@ import gzip
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import threading
@@ -57,6 +58,51 @@ _TELEMETRY_REPORT_INTERVAL = 60
 _TELEMETRY_TIMEOUT = 10  # Seconds.
 
 _TELEMETRY_GZIP_THRESHOLD = 1024
+
+_DAY_STAT_KEYS = (
+    "total_prompt_tokens",
+    "total_completion_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "total_prompt_chars",
+    "call_count",
+    "error_count",
+)
+_BUCKET_STAT_KEYS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "prompt_chars",
+    "call_count",
+)
+
+
+def _is_finite_stat_number(val) -> bool:
+    """Return True when ``val`` is an int or float (excluding bool) with a finite value."""
+    return isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val)
+
+
+def _is_valid_day_stats(day_val) -> bool:
+    """Return True when one day's statistics match ``_merge_day_stats`` field types."""
+    if not isinstance(day_val, dict):
+        return False
+    for key in _DAY_STAT_KEYS:
+        if key in day_val and not _is_finite_stat_number(day_val[key]):
+            return False
+    for map_key in ("by_model", "by_call_type"):
+        if map_key not in day_val:
+            continue
+        nested = day_val[map_key]
+        if not isinstance(nested, dict):
+            return False
+        for bucket in nested.values():
+            if not isinstance(bucket, dict):
+                return False
+            for key in _BUCKET_STAT_KEYS:
+                if key in bucket and not _is_finite_stat_number(bucket[key]):
+                    return False
+    return True
 
 # Final saves must not queue behind work whose stop signal is issued by
 # shutdown. One shared worker also serializes periodic and shutdown saves.
@@ -341,16 +387,20 @@ class ReportingMixin:
 
     @staticmethod
     def _is_valid_unsent_window(days, records) -> bool:
-        """Return True when an unsent queue window has valid containers and finite JSON numbers."""
+        """Return True when an unsent queue window is mergeable, finite, and UTF-8 JSON encodable."""
         if (
             not isinstance(days, dict)
             or not isinstance(records, list)
-            or not all(isinstance(day_val, dict) for day_val in days.values())
+            or not all(_is_valid_day_stats(day_val) for day_val in days.values())
         ):
             return False
         try:
-            json.dumps({"daily": days, "records": records}, allow_nan=False)
-        except (TypeError, ValueError):
+            json.dumps(
+                {"daily": days, "records": records},
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError):
             return False
         return True
 
@@ -381,22 +431,24 @@ class ReportingMixin:
         raw_daily, raw_records = data.get("daily", {}), data.get("records", [])
         raw_next_daily, raw_next_records = data.get("next_daily", {}), data.get("next_records", [])
         has_batch_seq = isinstance(data.get("batch_seq"), str) and bool(data["batch_seq"])
+        has_next_window = "next_daily" in data or "next_records" in data
+        is_numbered_snapshot = has_batch_seq or has_next_window
         primary_valid = self._is_valid_unsent_window(raw_daily, raw_records)
         next_valid = (
             self._is_valid_unsent_window(raw_next_daily, raw_next_records)
-            if has_batch_seq
+            if is_numbered_snapshot
             else False
         )
 
         with self._lock:
-            if has_batch_seq:
-                if primary_valid:
+            if is_numbered_snapshot:
+                if has_batch_seq and primary_valid:
                     pending_seq: str | None = data["batch_seq"]
                     pending_daily, pending_records = raw_daily, raw_records
                 else:
                     logger.debug(
-                        "Token tracker: discarding malformed pending batch window (%s)",
-                        data["batch_seq"],
+                        "Token tracker: discarding malformed pending batch window (%r)",
+                        data.get("batch_seq"),
                     )
                     pending_seq = None
                     pending_daily, pending_records = {}, []
@@ -404,7 +456,7 @@ class ReportingMixin:
                 if next_valid:
                     recovered_daily, recovered_records = raw_next_daily, raw_next_records
                 else:
-                    if "next_daily" in data or "next_records" in data:
+                    if has_next_window:
                         logger.debug("Token tracker: discarding malformed next unsent queue window")
                     recovered_daily, recovered_records = {}, []
             else:
@@ -426,9 +478,10 @@ class ReportingMixin:
                 merged_records = (list(recovered_records) + list(self._unsent_records))[-200:]
                 json.dumps(
                     {"daily": merged_daily, "records": merged_records},
+                    ensure_ascii=False,
                     allow_nan=False,
-                )
-            except (TypeError, ValueError, AttributeError) as exc:
+                ).encode("utf-8")
+            except (TypeError, ValueError, AttributeError, UnicodeEncodeError) as exc:
                 logger.debug("Token tracker: ignoring malformed unsent queue totals: %s", exc)
                 merged_daily = copy.deepcopy(self._unsent_daily)
                 merged_records = list(self._unsent_records)

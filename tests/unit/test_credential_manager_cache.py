@@ -328,6 +328,45 @@ def test_published_sync_failure_evicts_stale_cached_credentials_and_keeps_0o600(
         assert manager.load("weibo") == {"SUB": "replacement"}
 
 
+def test_key_publish_sync_failure_preserves_auth_rejected_state(tmp_path, monkeypatch):
+    """Failing dir sync during key publish must not evict AUTH_REJECTED or revive stale plaintext."""
+    import errno
+    import stat
+    import sys
+
+    from utils import file_utils
+
+    cookie_file = tmp_path / "config" / "weibo_cookies.json"
+    monkeypatch.chdir(tmp_path)
+
+    with _patched_weibo_paths(tmp_path, cookie_file):
+        manager = CredentialManager()
+        assert manager.save("weibo", {"SUB": "old-plaintext"}, encrypt=False) is True
+        assert manager.mark_auth_rejected("weibo", {"SUB": "old-plaintext"}) is True
+        assert manager.status("weibo")["credential_state"] == manager.AUTH_REJECTED
+
+        key_file = cookies_login.get_cookie_key_file("weibo")
+        assert not key_file.exists()
+
+        real_fsync_dir = file_utils._fsync_directory
+        fail_sync = True
+
+        def fail_on_key_publish_sync(path):
+            if fail_sync and Path(path) == cookie_file.parent:
+                raise OSError(errno.EIO, "key dir sync failed")
+            return real_fsync_dir(path)
+
+        monkeypatch.setattr(file_utils, "_fsync_directory", fail_on_key_publish_sync)
+        assert manager.save("weibo", {"SUB": "new-encrypted"}, encrypt=True) is False
+        fail_sync = False
+
+        assert key_file.exists()
+        if sys.platform != "win32":
+            assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+        assert manager.status("weibo")["credential_state"] == manager.AUTH_REJECTED
+        assert manager.load("weibo") == {}
+
+
 @contextmanager
 def _patched_weibo_paths(tmp_path: Path, cookie_file: Path):
     with (

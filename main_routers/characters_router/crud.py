@@ -77,6 +77,7 @@ from utils.character_memory import (
     find_character_shared_memory_owner,
     find_co_owner_for_memory_path,
     iter_authoritative_catgirl_names,
+    iter_character_memory_roots,
     list_character_memory_paths,
     paths_refer_to_same_directory_entry,
     paths_refer_to_same_entry,
@@ -441,7 +442,7 @@ def _snapshot_existing_paths(targets: list[Path], backup_root: Path):
     seen: set[str] = set()
 
     for index, target_path in enumerate(sorted(targets, key=lambda item: (len(item.parts), str(item)))):
-        normalized_path = str(target_path)
+        normalized_path = _snapshot_target_key(target_path)
         if normalized_path in seen:
             continue
         seen.add(normalized_path)
@@ -1207,6 +1208,31 @@ def _find_self_referential_card_symlink(
     return None
 
 
+def _find_symlinked_memory_path(
+    config_manager,
+    old_name: str,
+    new_name: str | None = None,
+) -> Path | None:
+    """Return any symlinked memory root or child entry for the rename endpoints."""
+    names = (old_name, new_name) if new_name and new_name != old_name else (old_name,)
+    for char_name in names:
+        for base_dir in iter_character_memory_roots(config_manager):
+            direct_root = base_dir / char_name
+            if direct_root.is_symlink():
+                return direct_root
+        for entry_path in list_character_memory_paths(config_manager, char_name):
+            if entry_path.is_symlink():
+                return entry_path
+            if entry_path.is_dir():
+                for root, dirnames, filenames in os.walk(entry_path, followlinks=False):
+                    root_path = Path(root)
+                    for child_name in (*dirnames, *filenames):
+                        child_path = root_path / child_name
+                        if child_path.is_symlink():
+                            return child_path
+    return None
+
+
 def _find_card_asset_co_owner_sync(
     config_manager,
     character_name: str,
@@ -1267,6 +1293,12 @@ def _unlink_unshared_card_asset_sync(
     if co_owner is not None:
         _remove_snapshot_record(snapshot_records, asset_path)
         return co_owner
+    if asset_path.is_dir() and not asset_path.is_symlink():
+        raise IsADirectoryError(
+            errno.EISDIR,
+            f"Refusing to remove directory at card asset path: {asset_path}",
+            os.fspath(asset_path),
+        )
     if backup_root is not None and snapshot_records is not None:
         label = "late_meta" if is_meta else "late_face"
         backup_path = backup_root / label / asset_path.name
@@ -1331,6 +1363,17 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
     if shared_owner is not None:
         return JSONResponse(
             {'success': False, 'error': f'原档案的记忆存储与现有角色「{shared_owner}」共享，无法直接重命名'},
+            status_code=400,
+        )
+    symlinked_memory_path = await asyncio.to_thread(
+        _find_symlinked_memory_path, _config_manager, old_name, new_name,
+    )
+    if symlinked_memory_path is not None:
+        return JSONResponse(
+            {
+                'success': False,
+                'error': f'角色记忆路径「{symlinked_memory_path.name}」包含符号链接，无法安全重命名',
+            },
             status_code=400,
         )
     unsafe_card_asset = await asyncio.to_thread(
@@ -2640,22 +2683,6 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             ) is None
         ]
         targets.extend(numeric_purge.snapshot_targets())
-        if _find_card_asset_co_owner_sync(
-            _config_manager,
-            name,
-            face_path,
-            is_meta=False,
-            existing_names=existing_names,
-        ) is None:
-            targets.append(face_path)
-        if _find_card_asset_co_owner_sync(
-            _config_manager,
-            name,
-            meta_path,
-            is_meta=True,
-            existing_names=existing_names,
-        ) is None:
-            targets.append(meta_path)
         return targets
 
     memory_targets = await asyncio.to_thread(_collect_delete_snapshot_targets_sync)

@@ -1295,14 +1295,14 @@ def _find_co_owner_for_memory_path(
 find_co_owner_for_memory_path = _find_co_owner_for_memory_path
 
 
-def _is_recent_path_shared_with_other(
+def _is_recent_registry_key_shared_with_other(
     config_manager,
     character_name: str,
     recent_path: Path,
     *,
     existing_names: Iterable[str] | None = None,
 ) -> bool:
-    """Return True if another configured character owns a co-located recent path."""
+    """Return True if another configured character maps to the same recent registry key."""
     recent_key = os.path.normcase(os.path.abspath(os.fspath(recent_path)))
     names = (
         [str(name) for name in existing_names if isinstance(name, str) and name]
@@ -1313,10 +1313,8 @@ def _is_recent_path_shared_with_other(
         if other_name == character_name:
             continue
         for other_recent in list_character_recent_paths(config_manager, other_name):
-            if _paths_refer_to_same_entry(other_recent, recent_path):
-                return True
             other_key = os.path.normcase(os.path.abspath(os.fspath(other_recent)))
-            if other_key == recent_key and character_memory_exists(config_manager, other_name):
+            if other_key == recent_key:
                 return True
     return False
 
@@ -1355,7 +1353,7 @@ def delete_character_memory_storage(
         unshared_recent_candidates = [
             recent_path
             for recent_path in recent_candidates
-            if not _is_recent_path_shared_with_other(
+            if not _is_recent_registry_key_shared_with_other(
                 config_manager,
                 character_name,
                 recent_path,

@@ -973,5 +973,178 @@ def test_legacy_migration_syncs_parent_dir_before_pruning_digests_and_retains_on
     assert legacy_b.name in persisted.get("migrated_legacy_files", {})
 
 
+def test_unsent_queue_rejects_unmergeable_stats_surrogates_and_corrupt_batch_seq(
+    tracker_factory, monkeypatch
+):
+    """Recovery isolates unmergeable types, lone UTF-8 surrogates, and orphaned corrupt-seq primary batches."""
+    from datetime import date
+
+    today = date.today().isoformat()
+
+    # Case 1: unmergeable string stat in primary window must not prevent valid next window + live delta merge.
+    seed = tracker_factory()
+    seed._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "seq-bad-stats",
+                "daily": {today: {"total_tokens": "10", "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "bad-stats"}],
+                "next_daily": {today: {"total_tokens": 15, "call_count": 1}},
+                "next_records": [{"ts": 2.0, "model": "valid-next"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker_1 = tracker_factory()
+    sent_1 = []
+    monkeypatch.setattr(tracker_1, "_send_report", lambda *args: sent_1.append(args))
+    tracker_1.record("live-model", 3, 2, 5)
+    tracker_1.save()
+
+    assert len(sent_1) == 1
+    assert sent_1[0][0][today]["total_tokens"] == 20
+    assert [r["model"] for r in sent_1[0][1]] == ["valid-next", "live-model"]
+    assert not tracker_1._unsent_queue_path.exists()
+
+    # Case 2: lone surrogate in next_records isolates next window while preserving valid Unicode seq-a.
+    seed._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "seq-a",
+                "daily": {today: {"total_tokens": 10, "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "模型-正常", "tt": 10}],
+                "next_daily": {today: {"total_tokens": 99, "call_count": 1}},
+                "next_records": [{"ts": 2.0, "model": "\ud800", "tt": 99}],
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    tracker_2 = tracker_factory()
+    sent_2 = []
+    monkeypatch.setattr(tracker_2, "_send_report", lambda *args: sent_2.append(args))
+    tracker_2.record("model-b", 6, 4, 10)
+    tracker_2.save()
+
+    assert len(sent_2) == 2
+    assert sent_2[0][2] == "seq-a" and sent_2[0][3] is True
+    assert [r["model"] for r in sent_2[0][1]] == ["模型-正常"]
+    assert sent_2[1][0][today]["total_tokens"] == 10
+    assert [r["model"] for r in sent_2[1][1]] == ["model-b"]
+    assert not tracker_2._unsent_queue_path.exists()
+
+    # Case 3: numbered snapshot with corrupt empty batch_seq quarantines primary and recovers next window.
+    seed._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "",
+                "daily": {today: {"total_tokens": 10, "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "orphaned-primary"}],
+                "next_daily": {today: {"total_tokens": 25, "call_count": 1}},
+                "next_records": [{"ts": 2.0, "model": "recovered-next"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker_3 = tracker_factory()
+    sent_3 = []
+    monkeypatch.setattr(tracker_3, "_send_report", lambda *args: sent_3.append(args))
+    tracker_3.record("model-c", 3, 2, 5)
+    tracker_3.save()
+
+    assert len(sent_3) == 1
+    assert sent_3[0][0][today]["total_tokens"] == 30
+    assert [r["model"] for r in sent_3[0][1]] == ["recovered-next", "model-c"]
+    assert sent_3[0][3] is False
+    assert not tracker_3._unsent_queue_path.exists()
+
+
+def test_legacy_migration_rejects_lone_surrogate_and_syncs_dir_before_pruning_stale_digests(
+    tracker_factory, monkeypatch
+):
+    """Migration isolates lone-surrogate legacy files and fsyncs storage_dir before pruning stale digests."""
+    import errno
+    import hashlib
+    from pathlib import Path
+    from utils import file_utils
+    from utils.token_tracker import reporting, storage
+
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    monkeypatch.setattr(reporting, "_TELEMETRY_SERVER_URL", "")
+    tracker = tracker_factory()
+    folder = tracker._storage_dir
+
+    # Part A: legacy file with lone surrogate stays untouched while valid sibling migrates.
+    surrogate_legacy = folder / "token_usage_surrogate.json"
+    surrogate_legacy.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "daily_stats": {"2026-11-01": {"total_tokens": 10}},
+                "recent_records": [{"ts": "2026-11-01T00:00:00", "m": "\ud800", "tt": 10}],
+            },
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    valid_legacy = folder / "token_usage_valid.json"
+    valid_legacy.write_text(
+        json.dumps({"version": 1, "daily_stats": {"2026-11-01": {"total_tokens": 12}}}),
+        encoding="utf-8",
+    )
+
+    tracker._migrate_legacy_files()
+    assert surrogate_legacy.exists()
+    assert not valid_legacy.exists()
+    merged = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert merged["daily_stats"]["2026-11-01"]["total_tokens"] == 12
+    assert surrogate_legacy.name not in merged.get("migrated_legacy_files", {})
+
+    # Remove surrogate fixture cleanly before Part B.
+    surrogate_legacy.unlink()
+
+    # Part B: stale digest in token_usage.json for absent file stays if pre-prune dir sync fails,
+    # and is pruned once pre-prune dir sync succeeds.
+    stale_digest = hashlib.sha256(b"prior-legacy").hexdigest()
+    merged["migrated_legacy_files"] = {"token_usage_old.json": stale_digest}
+    storage.atomic_write_json(tracker._storage_path, merged)
+
+    present_legacy = folder / "token_usage_new.json"
+    present_legacy.write_text(
+        json.dumps({"version": 1, "daily_stats": {"2026-11-03": {"total_tokens": 8}}}),
+        encoding="utf-8",
+    )
+
+    real_fsync_dir = file_utils._fsync_directory
+    fsync_calls = 0
+
+    def flaky_fsync_dir(path):
+        nonlocal fsync_calls
+        if Path(path) == folder:
+            fsync_calls += 1
+            if fsync_calls == 1:
+                raise OSError(errno.EIO, "dir sync failed before prune")
+        return real_fsync_dir(path)
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", flaky_fsync_dir)
+    tracker._migrate_legacy_files()
+    after_failed_sync = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert not present_legacy.exists()
+    assert after_failed_sync["daily_stats"]["2026-11-03"]["total_tokens"] == 8
+    assert after_failed_sync["migrated_legacy_files"]["token_usage_old.json"] == stale_digest
+
+    # Next run with healthy dir sync sees another legacy file and prunes stale digest after fsync.
+    another_legacy = folder / "token_usage_another.json"
+    another_legacy.write_text(
+        json.dumps({"version": 1, "daily_stats": {"2026-11-04": {"total_tokens": 4}}}),
+        encoding="utf-8",
+    )
+    tracker._migrate_legacy_files()
+    after_ok_sync = json.loads(tracker._storage_path.read_text(encoding="utf-8"))
+    assert after_ok_sync["daily_stats"]["2026-11-04"]["total_tokens"] == 4
+    assert "migrated_legacy_files" not in after_ok_sync
+
+
+
 
 

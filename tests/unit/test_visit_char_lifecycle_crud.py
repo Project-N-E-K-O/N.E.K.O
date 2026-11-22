@@ -684,6 +684,141 @@ async def test_delete_skips_shared_card_face_and_meta_but_deletes_unshared_asset
         assert not solo_meta.exists()
 
 
+async def test_rename_refuses_symlinked_unregistered_memory_dir_before_mutation(tmp_path):
+    cm, path = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    memory_root = Path(cm.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    backing_dir = tmp_path / "external_backing"
+    backing_dir.mkdir(parents=True)
+    recent_file = backing_dir / "recent.json"
+    recent_file.write_text('[{"speaker":"Old","text":"hello"}]', encoding="utf-8")
+
+    old_dir = memory_root / "Old"
+    try:
+        old_dir.symlink_to(backing_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _rename(cm, "Old", "New")
+
+    assert status == 400 and body["success"] is False
+    assert old_dir.is_symlink()
+    assert not (memory_root / "New").exists()
+    assert recent_file.read_text(encoding="utf-8") == '[{"speaker":"Old","text":"hello"}]'
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+async def test_delete_refuses_real_directory_at_card_asset_path_without_deleting_it(tmp_path):
+    cm, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    dir_at_face_path = cm.card_faces_dir / "Old.png"
+    dir_at_face_path.mkdir(parents=True)
+    inner_file = dir_at_face_path / "keep.txt"
+    inner_file.write_text("must-survive", encoding="utf-8")
+
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _delete(cm, "Old")
+
+    assert status == 500 and body["success"] is False
+    assert dir_at_face_path.is_dir() and not dir_at_face_path.is_symlink()
+    assert inner_file.read_text(encoding="utf-8") == "must-survive"
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+async def test_delete_early_failure_before_card_unlink_preserves_concurrent_card_edit(tmp_path):
+    cm, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    memory_root = Path(cm.memory_dir)
+    old_mem = memory_root / "Old"
+    old_mem.mkdir(parents=True, exist_ok=True)
+    (old_mem / "facts.json").write_text('["old-fact"]', encoding="utf-8")
+
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    old_face = cm.card_faces_dir / "Old.png"
+    old_face.write_bytes(b"original-face")
+    old_meta = cm.card_face_meta_path("Old")
+    old_meta.write_bytes(b'{"author":"original"}')
+
+    def edit_card_then_fail_memory(*_args, **_kwargs):
+        old_face.write_bytes(b"concurrent-face-edit")
+        old_meta.write_bytes(b'{"author":"concurrent"}')
+        raise OSError("memory removal aborted before card unlink")
+
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, reload_patch) = _crud(cm)
+        with release, reload_patch, patch.object(
+            crud, "delete_character_memory_storage", side_effect=edit_card_then_fail_memory
+        ):
+            status, body = _result(await crud.delete_catgirl("Old"))
+            assert status == 500 and body["success"] is False
+
+    assert old_face.read_bytes() == b"concurrent-face-edit"
+    assert old_meta.read_bytes() == b'{"author":"concurrent"}'
+    assert (old_mem / "facts.json").read_text(encoding="utf-8") == '["old-fact"]'
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+async def test_delete_shared_memory_symlink_alias_fences_alias_registry_and_clears_pending(tmp_path):
+    from utils import recent_file
+
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}, "Other": {"昵称": "Other"}},
+    )
+    memory_root = Path(cm.memory_dir)
+    other_dir = memory_root / "Other"
+    other_dir.mkdir(parents=True, exist_ok=True)
+    other_recent = other_dir / "recent.json"
+    other_recent.write_text('[{"speaker":"Other","text":"keep"}]', encoding="utf-8")
+
+    old_dir = memory_root / "Old"
+    try:
+        old_dir.symlink_to(other_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+    old_recent = old_dir / "recent.json"
+    assert old_dir.samefile(other_dir)
+
+    old_gen = recent_file.capture_recent_generation(old_recent)
+    other_gen = recent_file.capture_recent_generation(other_recent)
+    with recent_file.recent_file_lock(old_recent):
+        recent_file.set_recent_pending_unlocked(old_recent, [{"text": "stale-old-pending"}])
+    with recent_file.recent_file_lock(other_recent):
+        recent_file.set_recent_pending_unlocked(other_recent, [{"text": "live-other-pending"}])
+
+    try:
+        # Part A: failed delete rolls back and preserves alias access and pending queue.
+        with patch("utils.config_manager._config_manager", cm):
+            status_err, _ = await _delete(cm, "Old", reload_ok=False)
+            assert status_err == 500
+        with recent_file.recent_file_access(old_recent, expected_generation=old_gen):
+            assert recent_file.get_recent_pending_unlocked(old_recent) == [{"text": "stale-old-pending"}]
+        with recent_file.recent_file_access(other_recent, expected_generation=other_gen):
+            assert recent_file.get_recent_pending_unlocked(other_recent) == [{"text": "live-other-pending"}]
+
+        # Part B: committed delete fences Old's unique alias key and clears Old's pending queue,
+        # while keeping the shared disk file, Other's registry key, and Other's pending intact.
+        with patch("utils.config_manager._config_manager", cm):
+            status_ok, body_ok = await _delete(cm, "Old", reload_ok=True)
+            assert status_ok == 200 and body_ok["success"] is True
+
+        assert old_dir.samefile(other_dir)
+        assert other_recent.read_text(encoding="utf-8") == '[{"speaker":"Other","text":"keep"}]'
+        with pytest.raises(recent_file.RecentFileDeletedError):
+            with recent_file.recent_file_access(old_recent, expected_generation=old_gen):
+                pass
+        with recent_file.recent_file_lock(old_recent):
+            assert recent_file.get_recent_pending_unlocked(old_recent) == []
+        with recent_file.recent_file_access(other_recent, expected_generation=other_gen):
+            assert recent_file.get_recent_pending_unlocked(other_recent) == [{"text": "live-other-pending"}]
+    finally:
+        with recent_file.recent_file_lock(old_recent):
+            recent_file.set_recent_pending_unlocked(old_recent, [])
+        with recent_file.recent_file_lock(other_recent):
+            recent_file.set_recent_pending_unlocked(other_recent, [])
+        recent_file.clear_recent_deletions([old_recent])
+
+
 async def test_rename_refuses_shared_source_memory_before_release(tmp_path):
     cm, path = _backfilled_manager(tmp_path, {
         "Neko": {}, "neko": {},

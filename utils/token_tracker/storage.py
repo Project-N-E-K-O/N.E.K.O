@@ -80,7 +80,21 @@ class StorageMixin:
                     else {}
                 )
                 present_names = {p.name for p in legacy_files}
-                pruned_map = {k: v for k, v in migrated_map.items() if k in present_names}
+                stale_names = [k for k in migrated_map if k not in present_names]
+                if stale_names:
+                    # Only prune digests after confirming prior unlinks in this directory are durable.
+                    try:
+                        _file_utils._fsync_directory(self._storage_dir)
+                    except OSError as e:
+                        logger.debug(
+                            "Token tracker: failed to sync storage directory before pruning index: %s",
+                            e,
+                        )
+                        pruned_map = dict(migrated_map)
+                    else:
+                        pruned_map = {k: v for k, v in migrated_map.items() if k in present_names}
+                else:
+                    pruned_map = dict(migrated_map)
                 index_dirty = pruned_map != migrated_map
                 migrated_map = pruned_map
 
@@ -109,8 +123,12 @@ class StorageMixin:
                             _merge_day_stats(staged, delta)
                             staged_days[day] = staged
                         staged_records = self._dedupe_records(existing["recent_records"] + records)
-                        # Reject overflow to inf/nan produced while summing finite floats.
-                        json.dumps({"daily_stats": staged_days, "recent_records": staged_records}, allow_nan=False)
+                        # Reject overflow to inf/nan and lone surrogates using the writer's UTF-8 rules.
+                        json.dumps(
+                            {"daily_stats": staged_days, "recent_records": staged_records},
+                            ensure_ascii=False,
+                            allow_nan=False,
+                        ).encode("utf-8")
                         existing["daily_stats"].update(staged_days)
                         existing["recent_records"] = staged_records
                         migrated_map[p.name] = file_digest
