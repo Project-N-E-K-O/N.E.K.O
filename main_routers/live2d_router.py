@@ -449,14 +449,21 @@ def _find_model_root_file(model_dir: str, suffix: str) -> tuple[str | None, bool
     return None, escaped
 
 
-def _is_unsafe_model_ref(file_path: str) -> bool:
-    """Whether a model-relative file reference is absolute, has a drive or climbs out with ``..``."""
+def _is_unsafe_model_ref(file_path: str, config_dir: str, model_root_real: str) -> bool:
+    """
+    Whether a file reference, relative to the folder holding the model config
+    (*config_dir*), would point outside the model folder: absolute, with a drive,
+    climbing out with ``..``, or resolving outside *model_root_real* through a link.
+    Links resolving inside the model folder are fine.
+    """
     normalized = file_path.replace('\\', '/')
     posix = pathlib.PurePosixPath(normalized)
-    return posix.is_absolute() or ".." in posix.parts or bool(pathlib.PureWindowsPath(normalized).drive)
+    if posix.is_absolute() or ".." in posix.parts or pathlib.PureWindowsPath(normalized).drive:
+        return True
+    return not _is_inside_model_dir(model_root_real, os.path.join(config_dir, *posix.parts))
 
 
-def _find_unsafe_file_reference(file_refs) -> str | None:
+def _find_unsafe_file_reference(file_refs, config_dir: str, model_root_real: str) -> str | None:
     """
     Return the first ``File`` / ``Sound`` path under ``Motions`` / ``Expressions`` of a
     request's ``FileReferences`` that would point outside the model folder, or None.
@@ -478,8 +485,30 @@ def _find_unsafe_file_reference(file_refs) -> str | None:
             continue
         for key in ('File', 'Sound'):
             file_path = item.get(key)
-            if isinstance(file_path, str) and _is_unsafe_model_ref(file_path):
+            if isinstance(file_path, str) and _is_unsafe_model_ref(file_path, config_dir, model_root_real):
                 return file_path
+    return None
+
+
+def _find_unsafe_emotion_mapping_reference(data, config_dir: str, model_root_real: str) -> str | None:
+    """
+    Return the first path under an emotion-mapping request's ``motions`` / ``expressions``
+    (``{group: [path, ...]}``) that would point outside the model folder, or None.
+    The whole request is also stored as ``EmotionMapping``, so every string path is checked.
+    """
+    if not isinstance(data, dict):
+        return None
+    for section in ('motions', 'expressions'):
+        groups = data.get(section)
+        if not isinstance(groups, dict):
+            continue
+        for files in groups.values():
+            # Mirror the handler's ``for file_path in files``: a bare string is iterated too.
+            if not isinstance(files, (list, str, dict)):
+                continue
+            for file_path in files:
+                if isinstance(file_path, str) and _is_unsafe_model_ref(file_path, config_dir, model_root_real):
+                    return file_path
     return None
 
 
@@ -516,21 +545,24 @@ def _search_model_files(model_root_real: str, start_dir: str, target_ext: str) -
             raise _ModelScanLimitExceeded(f"depth > {_MODEL_SCAN_MAX_DEPTH}")
         try:
             chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
-            for item in os.listdir(directory):
-                visited += 1
-                if visited > _MODEL_SCAN_MAX_ENTRIES:
-                    raise _ModelScanLimitExceeded(f"entries > {_MODEL_SCAN_MAX_ENTRIES}")
-                item_path = os.path.join(directory, item)
-                if not _is_inside_model_dir(model_root_real, item_path):
-                    continue
-                if os.path.isfile(item_path):
-                    if item.endswith(target_ext):
-                        # Normalize forward slashes across platforms.
-                        result.append(os.path.relpath(item_path, start_dir).replace('\\', '/'))
-                elif os.path.isdir(item_path):
-                    if os.path.normcase(os.path.realpath(item_path)) in chain:
+            # scandir streams names, so the entry limit also bounds what is read from a huge folder.
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    visited += 1
+                    if visited > _MODEL_SCAN_MAX_ENTRIES:
+                        raise _ModelScanLimitExceeded(f"entries > {_MODEL_SCAN_MAX_ENTRIES}")
+                    item = entry.name
+                    item_path = os.path.join(directory, item)
+                    if not _is_inside_model_dir(model_root_real, item_path):
                         continue
-                    walk(item_path, chain)
+                    if os.path.isfile(item_path):
+                        if item.endswith(target_ext):
+                            # Normalize forward slashes across platforms.
+                            result.append(os.path.relpath(item_path, start_dir).replace('\\', '/'))
+                    elif os.path.isdir(item_path):
+                        if os.path.normcase(os.path.realpath(item_path)) in chain:
+                            continue
+                        walk(item_path, chain)
         except _ModelScanLimitExceeded:
             raise
         except Exception as e:
@@ -694,7 +726,11 @@ async def update_model_config(model_name: str, request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
         # References from the request must stay inside the model folder; refuse before any read or write.
-        if _find_unsafe_file_reference(data.get('FileReferences') if isinstance(data, dict) else None) is not None:
+        if _find_unsafe_file_reference(
+            data.get('FileReferences') if isinstance(data, dict) else None,
+            os.path.dirname(model_json_path),
+            os.path.realpath(model_dir),
+        ) is not None:
             return JSONResponse(status_code=400, content={"success": False, "error": "文件引用超出模型目录"})
 
         # Safety: modify Motions/Expressions only.
@@ -809,6 +845,13 @@ async def update_emotion_mapping(model_name: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
 
+        # Every submitted path must stay inside the model folder; refuse the whole request
+        # before any read or write (the request is also stored verbatim as EmotionMapping).
+        if _find_unsafe_emotion_mapping_reference(
+            data, os.path.dirname(model_json_path), os.path.realpath(model_dir)
+        ) is not None:
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用超出模型目录"})
+
         # Lock entire read/modify/write as update_model_config. Cubism transformation below is pure CPU
         # with no await; enclosing it changes no logic (git diff -w shows indentation-only changes).
         async with _model_config_write_lock(model_json_path):
@@ -828,8 +871,6 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 items = []
                 for file_path in files or []:
                     if not isinstance(file_path, str):
-                        continue
-                    if _is_unsafe_model_ref(file_path):
                         continue
                     normalized = str(pathlib.PurePosixPath(file_path.replace('\\', '/')))
 
@@ -857,8 +898,6 @@ async def update_emotion_mapping(model_name: str, request: Request):
             for emotion, files in expressions_input.items():
                 for file_path in files or []:
                     if not isinstance(file_path, str):
-                        continue
-                    if _is_unsafe_model_ref(file_path):
                         continue
                     normalized = str(pathlib.PurePosixPath(file_path.replace('\\', '/')))
 
@@ -1140,7 +1179,11 @@ async def update_model_config_by_id(model_id: str, request: Request):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
         # References from the request must stay inside the model folder; refuse before any read or write.
-        if _find_unsafe_file_reference(data.get('FileReferences') if isinstance(data, dict) else None) is not None:
+        if _find_unsafe_file_reference(
+            data.get('FileReferences') if isinstance(data, dict) else None,
+            os.path.dirname(model_json_path),
+            os.path.realpath(model_dir),
+        ) is not None:
             return JSONResponse(status_code=400, content={"success": False, "error": "文件引用超出模型目录"})
 
         # Safety: modify Motions/Expressions only, locking entire read/modify/write,

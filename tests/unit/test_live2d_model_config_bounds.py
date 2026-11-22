@@ -275,18 +275,131 @@ def test_model_config_by_id_post_accepts_model_relative_references(monkeypatch, 
     assert saved["FileReferences"]["Expressions"] == expressions
 
 
-@pytest.mark.parametrize("ref", ["C:/x.exp3.json", "C:x.exp3.json"])
-def test_emotion_mapping_post_drops_drive_references(model_dir, ref):
+@pytest.mark.parametrize("ref", _UNSAFE_REFS)
+@pytest.mark.parametrize("section", ["motions", "expressions", "常驻"])
+def test_emotion_mapping_post_refuses_references_leaving_model_dir(model_dir, ref, section):
     _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
-    result = asyncio.run(
-        live2d_router.update_emotion_mapping(
-            "m", _FakeRequest({"motions": {"happy": [ref]}, "expressions": {"happy": [ref]}})
-        )
+    before = (model_dir / "m.model3.json").read_bytes()
+    if section == "常驻":
+        # Motions in this group are not written to FileReferences, but the request is kept as EmotionMapping.
+        payload = {"motions": {"常驻": [ref]}, "expressions": {}}
+    else:
+        payload = {"motions": {}, "expressions": {}}
+        payload[section] = {"happy": ["ok.motion3.json", ref]}
+    result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert _status(result) == 400
+    assert (model_dir / "m.model3.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("section", ["motions", "expressions"])
+def test_emotion_mapping_post_refuses_bare_string_group_value(model_dir, section):
+    # The handler iterates a bare string value; its characters are checked too.
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    before = (model_dir / "m.model3.json").read_bytes()
+    payload = {"motions": {}, "expressions": {}}
+    payload[section] = {"happy": "/"}
+    result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert _status(result) == 400
+    assert (model_dir / "m.model3.json").read_bytes() == before
+
+
+# --- references resolving through links --------------------------------------------
+
+
+def _ref_link_layout(base: Path, outside: Path) -> None:
+    """``out`` links outside the model folder, ``inner`` links to a folder inside it."""
+    _write(base / "motions" / "idle.motion3.json", {"Version": 3})
+    _link(outside, base / "out")
+    _link(base / "motions", base / "inner")
+
+
+_LINKED_CASES = {
+    "Motions": lambda ref: {"Motions": {"Idle": [{"File": ref}]}},
+    "Expressions": lambda ref: {"Expressions": [{"Name": "e", "File": ref}]},
+    "Sound": lambda ref: {"Motions": {"Idle": [{"File": "motions/idle.motion3.json", "Sound": ref}]}},
+}
+
+
+@pytest.mark.parametrize("where", list(_LINKED_CASES))
+def test_model_config_post_refuses_references_through_outside_links(monkeypatch, tmp_path, model_dir, outside, where):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    _ref_link_layout(model_dir, outside)
+    item_dir = _by_id_model(monkeypatch, tmp_path)
+    _ref_link_layout(item_dir, outside)
+    refs = _LINKED_CASES[where]("out/o.model3.json")
+
+    for call, config in (
+        (lambda: live2d_router.update_model_config("m", _FakeRequest({"FileReferences": refs})),
+         model_dir / "m.model3.json"),
+        (lambda: live2d_router.update_model_config_by_id("123", _FakeRequest({"FileReferences": refs})),
+         item_dir / "m.model3.json"),
+    ):
+        before = config.read_bytes()
+        result = asyncio.run(call())
+        assert _status(result) == 400
+        assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("where", list(_LINKED_CASES))
+def test_model_config_post_accepts_references_through_inside_links(monkeypatch, tmp_path, model_dir, outside, where):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    _ref_link_layout(model_dir, outside)
+    item_dir = _by_id_model(monkeypatch, tmp_path)
+    _ref_link_layout(item_dir, outside)
+    refs = _LINKED_CASES[where]("inner/idle.motion3.json")
+
+    for call, config in (
+        (lambda: live2d_router.update_model_config("m", _FakeRequest({"FileReferences": refs})),
+         model_dir / "m.model3.json"),
+        (lambda: live2d_router.update_model_config_by_id("123", _FakeRequest({"FileReferences": refs})),
+         item_dir / "m.model3.json"),
+    ):
+        result = asyncio.run(call())
+        assert result["success"] is True
+        saved = json.loads(config.read_text(encoding="utf-8"))["FileReferences"]
+        for key, value in refs.items():
+            assert saved[key] == value
+
+
+def test_model_config_by_id_nested_config_checks_references_against_item_folder(monkeypatch, tmp_path, outside):
+    # The config sits in a subfolder: references are relative to it, the boundary is the item folder.
+    item_dir = tmp_path / "workshop" / "456"
+    _write(item_dir / "m" / "m.model3.json", _INSIDE_CONFIG)
+    _ref_link_layout(item_dir / "m", outside)
+    monkeypatch.setattr(
+        live2d_router, "find_workshop_item_by_id", lambda _id: (str(item_dir), "/workshop")
     )
+    config = item_dir / "m" / "m.model3.json"
+    ok = {"Motions": {"Idle": [{"File": "inner/idle.motion3.json"}]}}
+    assert asyncio.run(
+        live2d_router.update_model_config_by_id("456", _FakeRequest({"FileReferences": ok}))
+    )["success"] is True
+    before = config.read_bytes()
+    bad = {"Motions": {"Idle": [{"File": "out/o.model3.json"}]}}
+    result = asyncio.run(live2d_router.update_model_config_by_id("456", _FakeRequest({"FileReferences": bad})))
+    assert _status(result) == 400
+    assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("section", ["motions", "expressions"])
+def test_emotion_mapping_post_checks_references_through_links(model_dir, outside, section):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    _ref_link_layout(model_dir, outside)
+    config = model_dir / "m.model3.json"
+    before = config.read_bytes()
+
+    bad = {"motions": {}, "expressions": {}}
+    bad[section] = {"happy": ["out/o.model3.json"]}
+    result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(bad)))
+    assert _status(result) == 400
+    assert config.read_bytes() == before
+
+    ok = {"motions": {}, "expressions": {}}
+    ok[section] = {"happy": ["inner/idle.motion3.json"]}
+    result = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(ok)))
     assert result["success"] is True
-    saved = json.loads((model_dir / "m.model3.json").read_text(encoding="utf-8"))
-    assert saved["FileReferences"]["Motions"] == {"happy": []}
-    assert saved["FileReferences"]["Expressions"] == []
+    saved = json.loads(config.read_text(encoding="utf-8"))
+    assert saved["EmotionMapping"] == ok
 
 
 # --- listing walk limits -----------------------------------------------------------
@@ -350,3 +463,31 @@ def test_listing_within_limits_is_unchanged(monkeypatch, model_dir, route):
         "d0/d1/l1.motion3.json",
         "d0/l0.motion3.json",
     ]
+
+
+def test_listing_walk_stops_reading_at_entry_limit(monkeypatch, model_dir):
+    """Names are streamed: a folder with endless entries is read only up to the limit."""
+    monkeypatch.setattr(live2d_router, "_MODEL_SCAN_MAX_ENTRIES", 50)
+    yielded = 0
+
+    class _Entry:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class _EndlessScan:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            nonlocal yielded
+            while True:
+                yielded += 1
+                yield _Entry(f"f{yielded}.txt")
+
+    monkeypatch.setattr(live2d_router.os, "scandir", lambda _path: _EndlessScan())
+    with pytest.raises(live2d_router._ModelScanLimitExceeded):
+        live2d_router._search_model_files(os.path.realpath(model_dir), str(model_dir), ".motion3.json")
+    assert yielded == 51
