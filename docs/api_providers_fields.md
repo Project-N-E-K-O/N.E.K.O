@@ -45,7 +45,6 @@ Common display metadata includes `key`, `name`, `description`, and feature flags
 | `token_plan_openrouter_url(s)` | MiMo token-plan URL field(s) |
 | `conversation_model` | `CONVERSATION_MODEL` |
 | `summary_model` | `SUMMARY_MODEL` |
-| `correction_model` | `CORRECTION_MODEL` |
 | `emotion_model` | `EMOTION_MODEL` |
 | `vision_model` | `VISION_MODEL` |
 | `agent_model` | `AGENT_MODEL` |
