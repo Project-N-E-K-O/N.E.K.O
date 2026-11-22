@@ -558,8 +558,10 @@ Local state follows `ok`, so the plugin and the host agree:
 - Async calls for the same name run one at a time, in call order, each
   waiting for the previous one's answer, also when they come from
   different event loops (e.g. an entry and an interval timer). For example,
-  `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))`
-  ends with `t` gone everywhere. Different names do not wait for each
+  in `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))`
+  the unregister is sent only after the register got its answer. The
+  ordering is all this promises: check each call's own result (an
+  unregister with `ok=False` keeps the local handler). Different names do not wait for each
   other. `request_timeout` covers the whole call, including the time spent
   waiting behind earlier calls for the same name; if it runs out while
   waiting, the result is `timeout` and nothing was sent to the host.

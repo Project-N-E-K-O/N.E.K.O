@@ -1016,12 +1016,14 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Async calls for the same name run one at a time, in call order
         (each waits for the previous one's answer, also across event
         loops such as timer threads; ``request_timeout`` covers that wait
-        plus this call's own request), so for example
+        plus this call's own request). For example, in
         ``gather(register_llm_tool_async("t", ...),
-        unregister_llm_tool_async("t"))`` ends with ``t`` gone everywhere
-        (the ordering covers requests that got an answer; after a register
-        ``timeout`` see ``cleanup`` above). The sync calls do not take part in that ordering: use one style
-        per tool name.
+        unregister_llm_tool_async("t"))`` the unregister is sent only after
+        the register got its answer. The ordering is all this promises:
+        check each call's own result (an unregister with ``ok=False``
+        keeps the local handler; after a register ``timeout`` see
+        ``cleanup`` above). The sync calls do not take part in that
+        ordering: use one style per tool name.
 
         Raises ``ValueError`` for invalid or dot-only names, a
         ``request_timeout`` outside (0, 60] (the host's limit) or a
