@@ -372,16 +372,23 @@ test('a later wake jump never shortens a longer pending recheck wait', async () 
     const pet = createWindow('/', { captureIntervals: true, noBroadcastChannel: true });
     pet.window.__proactiveResponse = INACTIVE;
     pet.appState.proactiveChatInterval = 300;  // recheck = max(300s, 60s)
+    const quietMs = () => pet.window.appProactive._getSystemQuietDelay();
     pet.window.scheduleProactiveChat();
-    clock.now += pet.scheduledDelay();
-    pet.heartbeat();
+    const due = pet.timers.get(pet.appState.proactiveChatTimer).due;
+    // Stay awake: sample well under the 120s sleep floor until the tick is due.
+    while (clock.now < due) {
+        clock.now = Math.min(due, clock.now + 100 * 1000);
+        pet.heartbeat();
+    }
+    assert.equal(quietMs(), 0, 'no quiet window before the request');
     await pet.fire();
+    assert.equal(proactiveFetches(pet), 1, 'the tick really sends and gets PASS_SYSTEM_INACTIVE');
     const passAt = clock.now;
-    clock.now += 130 * 1000;  // > 120s without a sample: looks like a wake jump (quiet = now + 60s)
+    assert.ok(quietMs() >= 300 * 1000 - 1, `recheck wait after the pass is one base interval (got ${quietMs()})`);
+    clock.now += 130 * 1000;  // > 120s without a sample: wake jump, which alone would mean now + 60s
     pet.heartbeat();
-    pet.window.scheduleProactiveChat();
-    const remaining = passAt + 300 * 1000 - clock.now;
-    assert.ok(pet.scheduledDelay() >= remaining - 1, 'the 300s recheck wait is kept');
+    const expected = passAt + 300 * 1000 - clock.now;  // 170s left of the recheck wait
+    assert.ok(quietMs() >= expected - 1, `wake jump must not shorten the recheck wait (got ${quietMs()}, want >= ${expected})`);
 });
 
 for (const mode of ['text', 'voice']) {

@@ -595,11 +595,14 @@
         var lateBy = Date.now() - _proactiveTimerDueAt;
         var baseMs = (Number(S.proactiveChatInterval) || 0) * 1000;
         if (lateBy <= Math.max(baseMs, SYSTEM_SLEEP_LATE_FLOOR_MS)) return false;
-        _systemQuietUntil = Date.now() + SYSTEM_RETURN_QUIET_MS;
+        var wakeQuietUntil = Date.now() + SYSTEM_RETURN_QUIET_MS;
+        if (!(_systemQuietUntil >= wakeQuietUntil)) _systemQuietUntil = wakeQuietUntil;
         console.log('[ProactiveChat] Timer fired ' + Math.round(lateBy / 1000) + 's late (system sleep); dropping this tick and staying quiet for ' + (SYSTEM_RETURN_QUIET_MS / 1000) + 's');
         return true;
     }
     mod._proactiveTickMissedBySleep = _proactiveTickMissedBySleep;
+    // Test hook: remaining quiet / recheck wait in ms.
+    mod._getSystemQuietDelay = function () { return _getSystemQuietDelay(); };
 
     // Every window also watches its own wall clock: a sampler (and the leader
     // heartbeat, when BroadcastChannel exists) runs every few seconds, so a gap
