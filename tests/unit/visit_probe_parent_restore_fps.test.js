@@ -87,4 +87,12 @@ test('restoreFps uses saved targetFrameRate when window.targetFrameRate is uncha
   assert.equal(P.restoreFps(), true);
   assert.deepEqual(calls.setTargetFPS, [60]);
   assert.equal(P.saved, null);
+
+  const h2 = createHarness();
+  h2.P.setMode({ kind: 'raf', fps: 45 });
+  h2.window.targetFrameRate = Number.NaN;
+
+  assert.equal(h2.P.restoreFps(), true);
+  assert.deepEqual(h2.calls.setTargetFPS, [60]);
+  assert.equal(h2.P.saved, null);
 });

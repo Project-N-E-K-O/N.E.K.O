@@ -2399,6 +2399,9 @@ async def test_aresolve_keeps_the_queued_roles_unless_the_candidate_is_known_to_
     [
         b'{"not": "a list"}',
         b'"just a string"',
+        b"null",
+        b"true",
+        b"42",
         b"{not json",
         b"\xff\xfe\xfd",
     ],

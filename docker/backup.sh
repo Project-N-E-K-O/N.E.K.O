@@ -327,7 +327,7 @@ pause_watchdog_for_cold_backup() {
         exit 1
     fi
     if [ ! -r "$WATCHDOG_STATE_DIR" ] || [ ! -w "$WATCHDOG_STATE_DIR" ] || [ ! -x "$WATCHDOG_STATE_DIR" ]; then
-        echo "backup: ❌ 无权访问看门狗状态目录 $WATCHDOG_STATE_DIR，冷备期间看门狗可能重启容器" >&2
+        echo "backup: ❌ 无权访问看门狗状态目录 ${WATCHDOG_STATE_DIR}，冷备期间看门狗可能重启容器" >&2
         echo "backup:    请使用 sudo 执行冷备，或改用 --no-stop" >&2
         exit 1
     fi
@@ -352,7 +352,7 @@ if [ "$STOP_CONTAINER" = "1" ]; then
         true)
             pause_watchdog_for_cold_backup
             container_was_running=1
-            echo "backup: 停止容器 $CONTAINER（冷备，保证 SQLite 一致）"
+            echo "backup: 停止容器 ${CONTAINER}（冷备，保证 SQLite 一致）"
             docker stop "$CONTAINER" >/dev/null
             if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo unknown)" != "false" ]; then
                 echo "backup: ❌ 无法确认容器 $CONTAINER 已停止" >&2

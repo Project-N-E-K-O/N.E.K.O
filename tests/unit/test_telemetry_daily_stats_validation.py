@@ -139,21 +139,78 @@ def test_model_rejects_negative_bool_and_overflow_counters(bad_val):
 
 def test_model_enforces_cardinality_caps():
     """Excessive daily_stats days or bucket maps must fail validation."""
-    base_date = date.today() - timedelta(days=80)
+    base_date = date.today() - timedelta(days=95)
     too_many_days = {
         (base_date + timedelta(days=i)).isoformat(): _valid_day()
         for i in range(MAX_DAILY_STATS_DAYS + 1)
     }
-    # Use repeated invalid cap check even if date window only spans 93 days;
-    # here test 101 > MAX_DAILY_STATS_DAYS by checking bucket cap too:
+    assert len(too_many_days) == MAX_DAILY_STATS_DAYS + 1
+    with pytest.raises(Exception, match="too many daily_stats days"):
+        model_from_json(
+            TelemetryEvent,
+            json.dumps(_base_event_dict(too_many_days)),
+        )
+
     today = date.today().isoformat()
     too_many_models = {f"m{i}": _valid_bucket() for i in range(MAX_DAILY_BUCKETS + 1)}
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="too many buckets"):
         model_from_json(
             TelemetryEvent,
             json.dumps(_base_event_dict({today: _valid_day(by_model=too_many_models)})),
         )
-    assert len(too_many_days) == MAX_DAILY_STATS_DAYS + 1
+
+    too_many_call_types = {f"c{i}": _valid_bucket() for i in range(MAX_DAILY_BUCKETS + 1)}
+    with pytest.raises(Exception, match="too many buckets"):
+        model_from_json(
+            TelemetryEvent,
+            json.dumps(_base_event_dict({today: _valid_day(by_call_type=too_many_call_types)})),
+        )
+
+
+def test_storage_store_event_caps_cardinality(store):
+    """Direct store_event calls must cap daily_stats days and per-day buckets."""
+    today = date.today()
+    invalid_prefix = {
+        (today - timedelta(days=200 + i)).isoformat(): _valid_day()
+        for i in range(8)
+    }
+    valid_window = {
+        (today - timedelta(days=90 - i)).isoformat(): _valid_day()
+        for i in range(93)
+    }
+    daily_stats = {**invalid_prefix, **valid_window}
+    assert len(daily_stats) == MAX_DAILY_STATS_DAYS + 1
+
+    today_str = today.isoformat()
+    daily_stats[today_str] = _valid_day(
+        by_model={f"m{i:03d}": _valid_bucket(total_tokens=1) for i in range(MAX_DAILY_BUCKETS + 5)},
+        by_call_type={f"c{i:03d}": _valid_bucket(total_tokens=1) for i in range(MAX_DAILY_BUCKETS + 5)},
+    )
+    store.store_event(
+        device_id="device_cap_1234567890",
+        app_version="1.0",
+        payload_json="{}",
+        daily_stats=daily_stats,
+    )
+    conn = store._get_conn()
+    truncated_day = (today + timedelta(days=2)).isoformat()
+    stored_days = {
+        r["stat_date"]
+        for r in conn.execute("SELECT DISTINCT stat_date FROM daily_aggregates").fetchall()
+    }
+    assert truncated_day not in stored_days
+    assert len(stored_days) == 92
+
+    model_count = conn.execute(
+        "SELECT COUNT(*) FROM daily_aggregates WHERE stat_date = ? AND model != '_total' AND call_type = '_total'",
+        (today_str,),
+    ).fetchone()[0]
+    call_type_count = conn.execute(
+        "SELECT COUNT(*) FROM daily_aggregates WHERE stat_date = ? AND model = '_total' AND call_type != '_total'",
+        (today_str,),
+    ).fetchone()[0]
+    assert model_count == MAX_DAILY_BUCKETS
+    assert call_type_count == MAX_DAILY_BUCKETS
 
 
 def test_http_submit_returns_400_for_forged_daily_stats(tmp_path, monkeypatch):

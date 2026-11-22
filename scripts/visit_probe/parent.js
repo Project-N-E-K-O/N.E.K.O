@@ -235,7 +235,7 @@
     if (!s) return false;
     if (P._origBoostX11) { window.live2dManager.boostLinuxX11InteractiveFPS = P._origBoostX11; P._origBoostX11 = null; }
     window.live2dManager._startIdleFpsGovernor();
-    const fps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : s.targetFrameRate;
+    const fps = Number.isFinite(window.targetFrameRate) ? window.targetFrameRate : s.targetFrameRate;
     window.live2dManager.setTargetFPS(fps);
     P.saved = null;
     return true;

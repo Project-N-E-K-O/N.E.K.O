@@ -917,11 +917,12 @@ class FactStore:
                 # (False → True only: absorbed, signal_processed).
                 # Otherwise stale-cache writes overwrite disk True with False, making drain loops
                 # resend facts to Stage-2 / synthesize duplicate reflections.
+                _DISK_FACTS_ABSENT = object()
                 try:
                     with open(path, encoding='utf-8') as f:
                         disk_facts = json.load(f)
                 except FileNotFoundError:
-                    disk_facts = None
+                    disk_facts = _DISK_FACTS_ABSENT
                 except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
                     logger.warning(
                         f"[FactStore] {name}: facts.json 读取失败，拒绝覆盖写入: {e}"
@@ -929,7 +930,7 @@ class FactStore:
                     raise RuntimeError(
                         f"Refusing to overwrite unreadable facts file {path}: {e}"
                     ) from e
-                if disk_facts is not None:
+                if disk_facts is not _DISK_FACTS_ABSENT:
                     if not isinstance(disk_facts, list):
                         logger.warning(
                             f"[FactStore] {name}: facts.json 顶层非 list ({type(disk_facts).__name__})，拒绝覆盖写入"
