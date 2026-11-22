@@ -51,6 +51,7 @@ from main_logic.tts_client import (
     TTS_SHUTDOWN_SENTINEL,
     TTS_AUDIO_DONE_SENTINEL,
     TTS_SOFT_FLUSH_SENTINEL,
+    TTS_PRECONNECT_SENTINEL,
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
@@ -431,6 +432,25 @@ class TtsRuntimeMixin:
         except RuntimeError:
             # No running loop (synchronous test fixture enqueues directly): no fallback, simply do not send.
             self._tts_soft_flush_task = None
+
+    def request_tts_preconnect(self) -> bool:
+        """Ask the TTS worker to open the next speech's socket now.
+
+        Called when a reply's LLM request starts, so the socket handshake runs
+        while the model is still producing its first text instead of after it.
+        Only for workers that recognize ``TTS_PRECONNECT_SENTINEL``; a worker
+        that does not would read it as a new speech id. Returns whether the
+        request was queued.
+        """
+        if not getattr(self, "_tts_preconnect_supported", False):
+            return False
+        if getattr(self, "_tts_quota_blocked", False):
+            # Every connect is refused until the quota window passes.
+            return False
+        if not (self.tts_ready and self.tts_thread and self.tts_thread.is_alive()):
+            return False
+        self.tts_request_queue.put((TTS_PRECONNECT_SENTINEL, None))
+        return True
 
     def _cancel_tts_soft_flush(self) -> None:
         task = getattr(self, "_tts_soft_flush_task", None)
@@ -1620,6 +1640,9 @@ class TtsRuntimeMixin:
         self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
         # Send text-idle soft flush only to workers recognizing this sentinel (capability in registry).
         self._tts_soft_flush_supported = bool(meta and meta.soft_flush)
+        # Read off the worker callable rather than the registry: 'free' runs the
+        # Step protocol but is deliberately absent from TTS_PROVIDER_REGISTRY.
+        self._tts_preconnect_supported = bool(getattr(tts_worker, "supports_preconnect", False))
         self._cancel_tts_soft_flush()
         self._tts_replay_progress_supported = bool(
             meta and meta.category == "http_sentence"

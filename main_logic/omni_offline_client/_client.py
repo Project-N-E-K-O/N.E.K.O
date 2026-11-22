@@ -279,6 +279,11 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # first output (see _run_displaced_followup).
         self._displaced_followup = None
         self.on_idle: Optional[Callable[[], None]] = None
+        # Optional sync on_response_start(): a reply's LLM request is about to
+        # go out (stream_text / prompt_ephemeral). The host uses it to get
+        # speech output ready while the model is still thinking. Sync so the
+        # call adds no await to either entry point's reply-begin section.
+        self.on_response_start: Optional[Callable[[], None]] = None
         self._conversation_history = []
         self._instructions = ""
         # Knowledge blocks the session's requests carry beside the history
