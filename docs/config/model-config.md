@@ -33,7 +33,7 @@ When a role's model ID is left blank in the Per-Feature Models section, the role
 
 ## Model ID pickers
 
-Every model ID field in the Web UI has a *Fetch models* button that lists the models the upstream endpoint offers (`POST /api/config/list_models`), filtered by what you type. A blank field shows the model currently in use as its grey placeholder. The button stays disabled where a typed model ID would not be used: free and fixed-model providers, mirrored mini-game slots, and follow modes of the realtime, TTS and mini-game slots.
+Every model ID field in the Web UI has a *Fetch models* button that lists the models the upstream endpoint offers (`POST /api/config/list_models`), filtered by what you type. A blank field shows the model currently in use as its grey placeholder. The button stays disabled where a typed model ID would not be used: free and fixed-model providers, mirrored mini-game slots, and follow modes of the realtime, TTS and mini-game chat / memory slots (the mini-game recognition slot, like the familiar slots, still uses a typed model ID under *follow core* / *follow assist*).
 
 ## Avoid catalog snapshots
 

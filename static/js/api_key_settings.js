@@ -69,7 +69,7 @@ const FOLLOW_SOURCE_BY_PROVIDER = Object.freeze({
     follow_recognition: 'recognition',
     follow_agent: 'agent',
 });
-// 没单独配全（地址和模型名）就整格等于另一档的格子 → 那一档；和后端 _WHOLE_FOLLOW_SLOTS 一致。
+// 没单独配全（地址和模型名）就整格等于另一档的格子 → 那一档；和后端 core_config.py 的 WHOLE_FOLLOW_SLOTS 一致。
 const WHOLE_FOLLOW_SOURCE = Object.freeze({
     agentSmall: 'recognition',
     agentAdvanced: 'agent',

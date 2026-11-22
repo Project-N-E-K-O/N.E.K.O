@@ -300,7 +300,7 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
     summary_count = mock_page.evaluate("""() => {
         return document.querySelectorAll('.connectivity-summary-light').length;
     }""")
-    # Ten slots: the retired vision slot has no card or light any more.
+    # Twelve slots: the retired vision slot has no card or light any more.
     assert summary_count == 12, "Summary lights should cover all custom model slots"
 
     tooltip_state = mock_page.evaluate("""() => {
