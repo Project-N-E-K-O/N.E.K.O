@@ -25,10 +25,11 @@
 LLM_PROMPT_AUDIT_ENABLED = False
 
 # tfLink file-upload service configuration
-TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
+TFLINK_UPLOAD_URL = 'https://tmpfile.link/api/upload'
 # tfLink hostname allowlist for SSRF protection
 TFLINK_ALLOWED_HOSTS = [
-    '47.101.214.205',  # Official tfLink IP
+    'tmpfile.link',
+    'd.tmpfile.link',
 ]
 
 # Default API and model configuration

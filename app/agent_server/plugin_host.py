@@ -67,23 +67,25 @@ async def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     new_cache = {}
     cache_time = now
     try:
-        async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
-            resp = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
-            if resp.status_code == 200:
-                data = resp.json()
-                plugins = data.get("plugins", [])
-                for p in plugins:
-                    if isinstance(p, dict):
-                        pid = p.get("id")
-                        pname = p.get("name")
-                        if pid and pname:
-                            new_cache[pid] = pname
-                        elif pid:
-                            new_cache[pid] = pid
-                async with _plugin_name_cache_lock:
-                    _plugin_name_cache = new_cache
-                    _plugin_name_cache_time = cache_time
-                return new_cache.get(plugin_id)
+        from utils import internal_http_client as _internal_http_client
+
+        client = _internal_http_client.get_internal_http_client()
+        resp = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins", timeout=1.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            plugins = data.get("plugins", [])
+            for p in plugins:
+                if isinstance(p, dict):
+                    pid = p.get("id")
+                    pname = p.get("name")
+                    if pid and pname:
+                        new_cache[pid] = pname
+                    elif pid:
+                        new_cache[pid] = pid
+            async with _plugin_name_cache_lock:
+                _plugin_name_cache = new_cache
+                _plugin_name_cache_time = cache_time
+            return new_cache.get(plugin_id)
     except Exception as e:
         logger.warning("[AgentServer] Failed to fetch plugin names from port %s: %s", USER_PLUGIN_SERVER_PORT, e)
 
@@ -270,24 +272,29 @@ async def _ensure_plugin_lifecycle_stopped(
 async def _fire_user_plugin_capability_check() -> None:
     """Probe the user plugin server to determine if user_plugin capability is ready."""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=1.0), proxy=None, trust_env=False) as client:
-            r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
-            if r.status_code == 200:
-                data = r.json()
-                plugins = data.get("plugins", []) if isinstance(data, dict) else []
-                if plugins:
-                    _set_capability("user_plugin", True, "")
-                    logger.debug("[Agent] UserPlugin capability check passed (%d plugins)", len(plugins))
-                else:
-                    _set_capability("user_plugin", False, "AGENT_NO_PLUGINS_FOUND")
-                    logger.debug("[Agent] UserPlugin capability check: no plugins found")
+        from utils import internal_http_client as _internal_http_client
+
+        client = _internal_http_client.get_internal_http_client()
+        r = await client.get(
+            f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins",
+            timeout=httpx.Timeout(3.0, connect=1.0),
+        )
+        if r.status_code == 200:
+            data = r.json()
+            plugins = data.get("plugins", []) if isinstance(data, dict) else []
+            if plugins:
+                _set_capability("user_plugin", True, "")
+                logger.debug("[Agent] UserPlugin capability check passed (%d plugins)", len(plugins))
             else:
-                _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
-                _get_throttled_logger().warning(
-                    "user_plugin_capability_check_failed",
-                    "[Agent] UserPlugin capability check failed: status %s",
-                    r.status_code,
-                )
+                _set_capability("user_plugin", False, "AGENT_NO_PLUGINS_FOUND")
+                logger.debug("[Agent] UserPlugin capability check: no plugins found")
+        else:
+            _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
+            _get_throttled_logger().warning(
+                "user_plugin_capability_check_failed",
+                "[Agent] UserPlugin capability check failed: status %s",
+                r.status_code,
+            )
     except Exception as e:
         _set_capability("user_plugin", False, "AGENT_PLUGIN_SERVER_ERROR")
         logger.debug("[Agent] UserPlugin capability check error: %s", e)

@@ -37,13 +37,46 @@ from .telemetry import (
     _get_telemetry_locale, _get_telemetry_metadata, _get_telemetry_timezone,
 )
 
-_TELEMETRY_SERVER_URL = "http://118.31.122.91:8099"
+def _is_allowed_telemetry_url(url: str) -> bool:
+    """Allow HTTPS for remote hosts and plain HTTP only for loopback hosts."""
+    text = str(url or "").strip()
+    if not text:
+        return False
+    try:
+        import ipaddress
+        from urllib.parse import urlsplit
 
-if _TELEMETRY_SERVER_URL and not _TELEMETRY_SERVER_URL.startswith(("http://", "https://")):
-    logger.warning("Token tracker: invalid telemetry URL scheme, disabling remote reporting")
+        parsed = urlsplit(text)
+    except ValueError:
+        return False
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").strip()
+    if not host or parsed.username is not None or parsed.password is not None:
+        return False
+    if scheme == "https":
+        return True
+    if scheme != "http":
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return (mapped or ip).is_loopback
+
+
+_TELEMETRY_SERVER_URL = os.getenv("NEKO_TELEMETRY_SERVER_URL", "").strip()
+
+if _TELEMETRY_SERVER_URL and not _is_allowed_telemetry_url(_TELEMETRY_SERVER_URL):
+    logger.warning(
+        "Token tracker: insecure or invalid telemetry URL %r (remote endpoints require https://), disabling remote reporting",
+        _TELEMETRY_SERVER_URL,
+    )
     _TELEMETRY_SERVER_URL = ""
 
-_TELEMETRY_HMAC_SECRET = "neko-v1-a3f8b2c1d4e5f6789012345678abcdef"  # noqa: S105
+_TELEMETRY_HMAC_SECRET = os.getenv("NEKO_TELEMETRY_HMAC_SECRET", "").strip()
 
 _DO_NOT_TRACK = any(
     os.getenv(v, "").strip() in ("1", "true", "yes")
@@ -287,7 +320,7 @@ class ReportingMixin:
         try:
             from utils.instrument import has_data as _instrument_has_data
             if (_instrument_has_data() and self._pending_batch_seq is None
-                    and _TELEMETRY_SERVER_URL and not _DO_NOT_TRACK):
+                    and _is_allowed_telemetry_url(_TELEMETRY_SERVER_URL) and not _DO_NOT_TRACK):
                 with self._lock:
                     self._last_report_time = 0.0
                 self.save()
@@ -325,7 +358,7 @@ class ReportingMixin:
 
     def _load_unsent_queue(self):
         """Load remote data that previously failed to report, at startup."""
-        if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
+        if _DO_NOT_TRACK or not _is_allowed_telemetry_url(_TELEMETRY_SERVER_URL):
             return
         try:
             p = self._unsent_queue_path
@@ -370,7 +403,7 @@ class ReportingMixin:
         uses the same seq, letting server seen_batches dedupe commits of uncertain
         outcome.
         """
-        if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
+        if _DO_NOT_TRACK or not _is_allowed_telemetry_url(_TELEMETRY_SERVER_URL):
             return
         try:
             with self._lock:
@@ -503,7 +536,7 @@ class ReportingMixin:
         - the unsent queue file is cleared after a successful send
         - on send failure, put back into memory + persisted, retried next time
         """
-        if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
+        if _DO_NOT_TRACK or not _is_allowed_telemetry_url(_TELEMETRY_SERVER_URL):
             return
 
         # Accumulate unsent data.
@@ -657,6 +690,8 @@ class ReportingMixin:
                 body = gzip.compress(body, compresslevel=6, mtime=0)
                 headers["Content-Encoding"] = "gzip"
 
+            if not _is_allowed_telemetry_url(_TELEMETRY_SERVER_URL):
+                return
             req = urllib.request.Request(
                 f"{_TELEMETRY_SERVER_URL}/api/v1/telemetry",
                 data=body,

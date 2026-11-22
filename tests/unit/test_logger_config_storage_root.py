@@ -264,3 +264,95 @@ def test_get_log_directory_falls_back_when_first_candidate_has_missing_root(tmp_
     stub.app_name = "N.E.K.O"
     chosen = stub._get_log_directory()
     assert chosen == fallback_docs / "N.E.K.O" / "logs"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad_subdir",
+    ["../escape", "foo/../bar", "..\\escape", ".", "..", "C:evil", "C:/evil", "a\x00b", "one//two"],
+)
+def test_host_log_subdirectory_rejects_traversal_and_drive_escapes(tmp_path, monkeypatch, bad_subdir):
+    """B21B-004: log_subdir must reject traversal segments, drive prefixes, and NUL bytes."""
+    from utils.logger_config import RobustLoggerConfig
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "storage"))
+    with pytest.raises(ValueError):
+        RobustLoggerConfig(service_name="Main", log_subdir=bad_subdir)
+
+
+@pytest.mark.unit
+def test_host_log_subdirectory_rejects_symlink_escape(tmp_path, monkeypatch):
+    """B21B-004: log_subdir resolving outside log root via symlink must be rejected."""
+    from utils.logger_config import RobustLoggerConfig
+
+    storage = tmp_path / "storage"
+    logs_dir = storage / "logs"
+    logs_dir.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    escape_link = logs_dir / "escape_link"
+    try:
+        escape_link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(storage))
+    with pytest.raises(ValueError):
+        RobustLoggerConfig(service_name="Main", log_subdir="escape_link")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_component", ["../bad", "a/b", "a\\b", "C:bad", "bad\x00", "..", "."])
+def test_log_filename_and_logger_config_reject_unsafe_service_or_app_names(tmp_path, monkeypatch, bad_component):
+    """B21B-004: service_name and app_name must reject path separators, drive syntax, and traversal."""
+    from utils.logger_config import RobustLoggerConfig
+    from utils.logging_layout import log_filename
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "storage"))
+    with pytest.raises(ValueError):
+        log_filename(bad_component)
+    with pytest.raises(ValueError):
+        log_filename("Main", app_name=bad_component)
+    with pytest.raises(ValueError):
+        RobustLoggerConfig(service_name=bad_component)
+    with pytest.raises(ValueError):
+        RobustLoggerConfig(service_name="Main", app_name=bad_component)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad_subdir",
+    [" .. ", " . ", ".", "..", "", "   ", "C:evil", "sub:evil", "a\x00b", "a/b", "a\\b"],
+)
+def test_logging_layout_log_subdirectory_rejects_unsafe_inputs(bad_subdir):
+    """B21B-004: log_subdirectory must reject whitespace-padded dots, empty strings, colons, drives, NUL, and slashes."""
+    from utils.logging_layout import log_subdirectory, resolve_log_directory
+
+    with pytest.raises(ValueError):
+        log_subdirectory(bad_subdir)
+    with pytest.raises(ValueError):
+        resolve_log_directory(log_subdir=bad_subdir)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad_app",
+    ["../evil", " .. ", " . ", ".", "..", "", "   ", "C:evil", "app:evil", "a\x00b", "a/b", "a\\b"],
+)
+def test_logging_layout_resolve_log_directory_rejects_unsafe_app_name(bad_app):
+    """B21B-004: log_directory_candidates and resolve_log_directory must validate app_name."""
+    from utils.logging_layout import log_directory_candidates, resolve_log_directory
+
+    with pytest.raises(ValueError):
+        log_directory_candidates(app_name=bad_app)
+    with pytest.raises(ValueError):
+        resolve_log_directory(app_name=bad_app)
+
+
+@pytest.mark.unit
+def test_logging_layout_log_subdirectory_allows_none_and_plain_name():
+    """B21B-004: log_subdirectory keeps None -> Path() and valid single directory names."""
+    from utils.logging_layout import log_subdirectory
+
+    assert log_subdirectory(None) == Path()
+    assert log_subdirectory("plugin") == Path("plugin")

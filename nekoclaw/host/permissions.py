@@ -235,15 +235,35 @@ class PermissionStore:
                 )
             return None
 
-        def modes(section: Any) -> dict[str, str]:
-            if not isinstance(section, dict):
+        def parse_modes(section: Any) -> dict[str, str] | None:
+            if section is None:
                 return {}
-            return {str(name): mode for name, mode in section.items() if mode in MODES}
+            if not isinstance(section, dict):
+                return None
+            parsed: dict[str, str] = {}
+            for name, raw_mode in section.items():
+                if not isinstance(raw_mode, str):
+                    return None
+                normalized = raw_mode.strip().lower()
+                if normalized not in MODES:
+                    return None
+                parsed[str(name)] = normalized
+            return parsed
+
+        categories = parse_modes(sections[0])
+        raw_servers = parse_modes(sections[1])
+        if categories is None or raw_servers is None:
+            if not self._unreadable:
+                logger.warning(
+                    "permissions file %s has an invalid mode; everything is denied until it is repaired",
+                    path,
+                )
+            return None
 
         # Server names are looked up as ``mode`` writes them: stripped, and
         # "*" for none. A key edited by hand is read the same way.
-        servers = {(name.strip() or "*"): mode for name, mode in modes(sections[1]).items()}
-        return modes(sections[0]), servers
+        servers = {(name.strip() or "*"): mode for name, mode in raw_servers.items()}
+        return categories, servers
 
     def _write(self, categories: dict[str, str], mcp_servers: dict[str, str]) -> None:
         from utils.file_utils import atomic_write_json

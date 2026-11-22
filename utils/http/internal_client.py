@@ -95,6 +95,36 @@ def get_internal_http_client() -> httpx.AsyncClient:
         return client
 
 
+async def _attach_internal_service_proof(request: httpx.Request) -> None:
+    """Attach signed internal-service header on loopback hops when proxy/remote mode is active."""
+    from utils.deployment import is_behind_proxy, is_remote_backend_deployment
+
+    if not (is_behind_proxy() or is_remote_backend_deployment()):
+        return
+    host = (request.url.host or "").strip().strip("[]").lower()
+    if not host:
+        return
+    is_loopback = host == "localhost"
+    if not is_loopback:
+        import ipaddress
+
+        try:
+            ip = ipaddress.ip_address(host)
+            is_loopback = (getattr(ip, "ipv4_mapped", None) or ip).is_loopback
+        except ValueError:
+            is_loopback = False
+    if not is_loopback:
+        return
+    from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
+
+    if INTERNAL_SERVICE_HEADER in request.headers:
+        return
+    key = await asyncio.to_thread(instance_key)
+    request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+        key, request.method, request.url.path
+    )
+
+
 def _create_internal_http_client() -> httpx.AsyncClient:
     """Create a client dedicated to internal 127.0.0.1 services."""
     # verify=False skips SSLContext initialization entirely: we access only
@@ -106,6 +136,7 @@ def _create_internal_http_client() -> httpx.AsyncClient:
         proxy=None,
         trust_env=False,
         transport=transport,
+        event_hooks={"request": [_attach_internal_service_proof]},
     )
 
 

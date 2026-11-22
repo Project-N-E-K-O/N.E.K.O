@@ -666,6 +666,31 @@ def _is_path_within(candidate_path: Path, base_path: Path) -> bool:
         return False
 
 
+def _is_strictly_within(candidate_path: Path, base_path: Path) -> bool:
+    if not _is_path_within(candidate_path, base_path):
+        return False
+    try:
+        candidate_real = os.path.normcase(os.path.realpath(str(candidate_path)))
+        base_real = os.path.normcase(os.path.realpath(str(base_path)))
+        return candidate_real != base_real
+    except Exception:
+        return False
+
+
+def _is_safe_relative_subpath(value: str) -> bool:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text or "\x00" in text or text.startswith("/"):
+        return False
+    if os.path.splitdrive(text)[0] or ":" in text:
+        return False
+    return all(part not in ("", ".", "..") for part in text.split("/"))
+
+
+def _is_plain_component(value: str) -> bool:
+    text = str(value or "")
+    return _is_safe_relative_subpath(text) and "/" not in text and "\\" not in text
+
+
 def _infer_binding_source_from_resolved_path(
     config_manager,
     *,
@@ -709,16 +734,16 @@ def _resolve_binding_file_path(
     asset_source_id: str,
 ) -> Path | None:
     normalized_ref = str(model_ref or "").strip().replace("\\", "/")
-    if not normalized_ref or normalized_ref.startswith(("http://", "https://")):
+    if not normalized_ref or "\x00" in normalized_ref or normalized_ref.startswith(("http://", "https://")):
         return None
 
-    candidates: list[Path] = []
+    candidates: list[tuple[Path, Path]] = []
     live2d_roots = _collect_binding_live2d_roots(config_manager)
     readable_live2d_dir = getattr(config_manager, "readable_live2d_dir", None)
     workshop_roots = _collect_binding_workshop_roots(config_manager)
 
     def _resolve_workshop_live2d_fallback() -> Path | None:
-        if model_type != "live2d" or asset_source != "steam_workshop" or not asset_source_id:
+        if model_type != "live2d" or asset_source != "steam_workshop" or not _is_plain_component(asset_source_id):
             return None
 
         normalized_suffix, relative_parent, expected_filename, expected_folder_name = _build_live2d_model_ref_hints(normalized_ref)
@@ -726,10 +751,13 @@ def _resolve_binding_file_path(
         ranked_candidates: list[tuple[int, int, str, Path]] = []
         for workshop_root in workshop_roots:
             item_root = workshop_root / asset_source_id
-            if not _is_dir_quietly(item_root):
+            if not _is_strictly_within(item_root, workshop_root) or not _is_dir_quietly(item_root):
                 continue
             try:
-                discovered_files = sorted(path for path in item_root.rglob("*.model3.json") if path.is_file())
+                discovered_files = sorted(
+                    path for path in item_root.rglob("*.model3.json")
+                    if _is_file_quietly(path) and _is_strictly_within(path, item_root)
+                )
             except Exception:
                 continue
 
@@ -766,17 +794,24 @@ def _resolve_binding_file_path(
         return ranked_candidates[0][3]
 
     def _resolve_local_live2d_fallback() -> Path | None:
-        if model_type != "live2d" or normalized_ref.startswith("/"):
+        if model_type != "live2d" or normalized_ref.startswith("/") or not _is_safe_relative_subpath(normalized_ref):
             return None
 
         normalized_suffix, relative_parent, expected_filename, expected_folder_name = _build_live2d_model_ref_hints(normalized_ref)
+        if relative_parent and not _is_safe_relative_subpath(relative_parent):
+            return None
+        if expected_folder_name and not _is_safe_relative_subpath(expected_folder_name):
+            return None
         ranked_candidates: list[tuple[int, int, str, Path]] = []
 
         def _append_candidates(search_root: Path, candidate_base: Path) -> None:
-            if not _is_dir_quietly(candidate_base):
+            if not _is_path_within(candidate_base, search_root) or not _is_dir_quietly(candidate_base):
                 return
             try:
-                discovered_files = sorted(path for path in candidate_base.rglob("*.model3.json") if path.is_file())
+                discovered_files = sorted(
+                    path for path in candidate_base.rglob("*.model3.json")
+                    if _is_file_quietly(path) and _is_strictly_within(path, search_root)
+                )
             except Exception:
                 return
             for discovered_path in discovered_files:
@@ -808,7 +843,11 @@ def _resolve_binding_file_path(
 
         for workshop_root in workshop_roots:
             try:
-                item_roots = sorted(child for child in workshop_root.iterdir() if child.is_dir())
+                item_roots = sorted(
+                    child
+                    for child in workshop_root.iterdir()
+                    if _is_dir_quietly(child) and _is_strictly_within(child, workshop_root)
+                )
             except Exception:
                 continue
             for item_root in item_roots:
@@ -848,46 +887,70 @@ def _resolve_binding_file_path(
     if model_type == "live2d":
         if normalized_ref.startswith("/user_live2d/"):
             relative_part = normalized_ref[len("/user_live2d/"):]
-            if readable_live2d_dir is not None:
-                candidates.append(Path(readable_live2d_dir) / relative_part)
-            candidates.append(Path(config_manager.live2d_dir) / relative_part)
+            if _is_safe_relative_subpath(relative_part):
+                if readable_live2d_dir is not None:
+                    root = Path(readable_live2d_dir)
+                    candidates.append((root, root / relative_part))
+                live2d_root = Path(config_manager.live2d_dir)
+                candidates.append((live2d_root, live2d_root / relative_part))
         elif normalized_ref.startswith("/user_live2d_local/"):
-            candidates.append(Path(config_manager.live2d_dir) / normalized_ref[len("/user_live2d_local/"):])
+            relative_part = normalized_ref[len("/user_live2d_local/"):]
+            if _is_safe_relative_subpath(relative_part):
+                live2d_root = Path(config_manager.live2d_dir)
+                candidates.append((live2d_root, live2d_root / relative_part))
         elif normalized_ref.startswith("/workshop/"):
             relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
-            for workshop_root in workshop_roots:
-                candidates.append(workshop_root / relative_workshop_path)
-        else:
-            if asset_source == "steam_workshop" and asset_source_id:
+            if _is_safe_relative_subpath(relative_workshop_path):
                 for workshop_root in workshop_roots:
-                    candidates.append(workshop_root / asset_source_id / normalized_ref)
-                    candidates.append(workshop_root / asset_source_id / Path(normalized_ref).name)
+                    candidates.append((workshop_root, workshop_root / relative_workshop_path))
+        elif _is_safe_relative_subpath(normalized_ref):
+            if asset_source == "steam_workshop" and _is_plain_component(asset_source_id):
+                for workshop_root in workshop_roots:
+                    candidates.append((workshop_root, workshop_root / asset_source_id / normalized_ref))
+                    candidates.append((workshop_root, workshop_root / asset_source_id / Path(normalized_ref).name))
             if asset_source == "local_imported":
                 if readable_live2d_dir is not None:
-                    candidates.append(Path(readable_live2d_dir) / normalized_ref)
-                candidates.append(Path(config_manager.live2d_dir) / normalized_ref)
-            candidates.append(Path(config_manager.project_root) / "static" / normalized_ref)
+                    root = Path(readable_live2d_dir)
+                    candidates.append((root, root / normalized_ref))
+                live2d_root = Path(config_manager.live2d_dir)
+                candidates.append((live2d_root, live2d_root / normalized_ref))
+            static_root = Path(config_manager.project_root) / "static"
+            candidates.append((static_root, static_root / normalized_ref))
     elif model_type == "vrm":
         if normalized_ref.startswith("/user_vrm/"):
-            candidates.append(Path(config_manager.vrm_dir) / normalized_ref[len("/user_vrm/"):])
+            relative_part = normalized_ref[len("/user_vrm/"):]
+            if _is_safe_relative_subpath(relative_part):
+                vrm_root = Path(config_manager.vrm_dir)
+                candidates.append((vrm_root, vrm_root / relative_part))
         elif normalized_ref.startswith("/static/vrm/"):
-            candidates.append(Path(config_manager.project_root) / "static" / "vrm" / normalized_ref[len("/static/vrm/"):])
+            relative_part = normalized_ref[len("/static/vrm/"):]
+            if _is_safe_relative_subpath(relative_part):
+                static_vrm_root = Path(config_manager.project_root) / "static" / "vrm"
+                candidates.append((static_vrm_root, static_vrm_root / relative_part))
         elif normalized_ref.startswith("/workshop/"):
             relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
-            for workshop_root in workshop_roots:
-                candidates.append(workshop_root / relative_workshop_path)
+            if _is_safe_relative_subpath(relative_workshop_path):
+                for workshop_root in workshop_roots:
+                    candidates.append((workshop_root, workshop_root / relative_workshop_path))
     elif model_type == "mmd":
         if normalized_ref.startswith("/user_mmd/"):
-            candidates.append(Path(config_manager.mmd_dir) / normalized_ref[len("/user_mmd/"):])
+            relative_part = normalized_ref[len("/user_mmd/"):]
+            if _is_safe_relative_subpath(relative_part):
+                mmd_root = Path(config_manager.mmd_dir)
+                candidates.append((mmd_root, mmd_root / relative_part))
         elif normalized_ref.startswith("/static/mmd/"):
-            candidates.append(Path(config_manager.project_root) / "static" / "mmd" / normalized_ref[len("/static/mmd/"):])
+            relative_part = normalized_ref[len("/static/mmd/"):]
+            if _is_safe_relative_subpath(relative_part):
+                static_mmd_root = Path(config_manager.project_root) / "static" / "mmd"
+                candidates.append((static_mmd_root, static_mmd_root / relative_part))
         elif normalized_ref.startswith("/workshop/"):
             relative_workshop_path = "/".join(normalized_ref.split("/")[2:])
-            for workshop_root in workshop_roots:
-                candidates.append(workshop_root / relative_workshop_path)
+            if _is_safe_relative_subpath(relative_workshop_path):
+                for workshop_root in workshop_roots:
+                    candidates.append((workshop_root, workshop_root / relative_workshop_path))
 
-    for candidate in candidates:
-        if _is_readable_file(candidate):
+    for intended_root, candidate in candidates:
+        if _is_strictly_within(candidate, intended_root) and _is_readable_file(candidate):
             return candidate
 
     fallback_candidate = _resolve_workshop_live2d_fallback()

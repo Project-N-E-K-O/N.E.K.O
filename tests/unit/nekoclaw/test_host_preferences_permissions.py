@@ -31,6 +31,7 @@ from nekoclaw.host.permissions import (
     DENIED_NO_ANSWER,
     GrantBinding,
     GrantScope,
+    PermissionFileError,
     PermissionGate,
     PermissionStore,
 )
@@ -806,14 +807,78 @@ async def test_server_names_edited_by_hand_are_read_as_they_are_looked_up(tmp_pa
     assert await store.mode("mcp_server") == "allow"
 
 
-async def test_an_unknown_mode_in_the_file_falls_back_to_the_default(tmp_path):
+async def test_an_unknown_mode_in_the_file_fails_closed_and_denies_everything(tmp_path):
     path = tmp_path / "permissions.json"
-    path.write_text(json.dumps({"categories": {"run_command": "bogus"}}), encoding="utf-8")
+    original = json.dumps({"categories": {"run_command": "bogus", "plugin_entry": "allow"}})
+    path.write_text(original, encoding="utf-8")
 
     store = PermissionStore(path)
 
-    assert await store.mode("run_command") == "first_ask"
+    assert await store.mode("run_command") == "deny"
+    assert await store.mode("plugin_entry") == "deny"
+    assert await store.native_mode("outside_write") == "deny"
+    assert store.unreadable is True
+    snapshot = await store.snapshot()
+    assert snapshot["unreadable"] is True
+    assert set(snapshot["categories"].values()) == {"deny"}
+    with pytest.raises(PermissionFileError):
+        await store.set_mode("run_command", "allow")
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"categories": {"run_command": True}},
+        {"categories": {"outside_write": 1}},
+        {"categories": {"plugin_entry": None}},
+        {"categories": {"run_command": "denY_typo"}},
+        {"mcp_servers": {"github": "bogus"}},
+        {"mcp_servers": {"github": False}},
+    ],
+)
+async def test_invalid_or_non_string_modes_fail_closed_without_overwriting(tmp_path, payload, caplog):
+    path = tmp_path / "permissions.json"
+    original = json.dumps(payload)
+    path.write_text(original, encoding="utf-8")
+
+    store = PermissionStore(path)
+    with caplog.at_level("WARNING"):
+        assert await store.mode("run_command") == "deny"
+        assert await store.mode("mcp_server", "github") == "deny"
+        assert await store.native_mode("workdir_files") == "deny"
+        assert await store.native_mode("other") == "deny"
+    assert store.unreadable is True
+    assert sum("invalid mode" in rec.message for rec in caplog.records) == 1
+
+    with pytest.raises(PermissionFileError):
+        await store.set_mode("plugin_entry", "allow")
+    assert path.read_text(encoding="utf-8") == original
+
+    # Once repaired, normal settings take effect again.
+    path.write_text(json.dumps({"categories": {"run_command": "allow"}}), encoding="utf-8")
+    assert await store.mode("run_command") == "allow"
+    assert store.unreadable is False
+
+
+async def test_hand_edited_mode_case_and_whitespace_are_normalized(tmp_path):
+    path = tmp_path / "permissions.json"
+    path.write_text(
+        json.dumps(
+            {
+                "categories": {"run_command": " Deny ", "outside_write": "FIRST_ASK", "plugin_entry": "Allow"},
+                "mcp_servers": {"github": "  denY\n"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = PermissionStore(path)
+    assert await store.mode("run_command") == "deny"
+    assert await store.mode("outside_write") == "first_ask"
     assert await store.mode("plugin_entry") == "allow"
+    assert await store.mode("mcp_server", "github") == "deny"
+    assert store.unreadable is False
 
 
 # ---------------------------------------------------------------------------

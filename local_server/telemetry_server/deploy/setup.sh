@@ -60,10 +60,8 @@ sudo cp "$SOURCE_DIR/server.py" "$SOURCE_DIR/models.py" "$SOURCE_DIR/security.py
 # 创建虚拟环境并安装依赖
 echo "→ Creating virtualenv ..."
 sudo python3 -m venv "$INSTALL_DIR/venv"
-echo "→ Upgrading pip ..."
-sudo "$INSTALL_DIR/venv/bin/pip" install --upgrade pip -i https://pypi.org/simple/
 echo "→ Installing dependencies ..."
-sudo "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -i https://pypi.org/simple/
+sudo "$INSTALL_DIR/venv/bin/pip" install --no-cache-dir --require-hashes --only-binary :all: -r "$INSTALL_DIR/requirements.txt" -i https://pypi.org/simple/
 
 PYTHON_BIN="$INSTALL_DIR/venv/bin/python3"
 
@@ -113,8 +111,10 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# 设置目录权限（venv 需要 nobody 可读，data 需要可写）
-sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/venv" "$INSTALL_DIR/data"
+# 设置目录权限（venv 保持 root 所有且只读，仅 data 需要 nobody 可写）
+sudo chown -R root:root "$INSTALL_DIR/venv"
+sudo chmod -R a+rX,go-w "$INSTALL_DIR/venv"
+sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/data"
 
 # 启动
 sudo systemctl daemon-reload

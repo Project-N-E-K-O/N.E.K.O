@@ -483,10 +483,69 @@ class QwenVoiceCloneClient:
     MAX_RETRIES = 3
     RETRY_DELAY = 3  # Seconds
 
-    def __init__(self, api_key: str, tflink_upload_url: str, dashscope_base_url: str = ""):
+    def __init__(
+        self,
+        api_key: str,
+        tflink_upload_url: str,
+        dashscope_base_url: str = "",
+        allowed_hosts: tuple[str, ...] | list[str] | None = None,
+    ):
         self.api_key = api_key
         self.tflink_upload_url = tflink_upload_url
         self.dashscope_base_url = dashscope_base_url
+        self._allowed_hosts = tuple(allowed_hosts) if allowed_hosts is not None else None
+
+    def _validate_tflink_url(self, url: str, *, require_allowlist: bool = True) -> str:
+        """Validate a tfLink upload or download URL against HTTPS and SSRF rules."""
+        import ipaddress
+        from urllib.parse import urlsplit
+
+        if not isinstance(url, str) or not url.strip():
+            raise QwenVoiceCloneError('无效的URL格式: empty URL')
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in url):
+            raise QwenVoiceCloneError('无效的URL格式: contains control characters')
+        candidate = url.strip()
+        parsed = urlsplit(candidate)
+        if parsed.scheme.lower() != 'https':
+            raise QwenVoiceCloneError(f'无效的URL协议（仅允许HTTPS）: {candidate}')
+        if parsed.username is not None or parsed.password is not None:
+            raise QwenVoiceCloneError(f'无效的URL（不允许包含用户信息）: {candidate}')
+        host = (parsed.hostname or '').rstrip('.').casefold()
+        if not host:
+            raise QwenVoiceCloneError(f'无效的URL（缺少主机名）: {candidate}')
+
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+
+        if ip is not None and (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+            or not ip.is_global
+        ):
+            raise QwenVoiceCloneError(f'拒绝不安全的内网/保留IP地址: {candidate}')
+
+        if require_allowlist:
+            if self._allowed_hosts is not None:
+                raw_hosts = self._allowed_hosts
+            else:
+                import config
+
+                raw_hosts = getattr(config, 'TFLINK_ALLOWED_HOSTS', ())
+            allowlist = {
+                str(entry).strip().rstrip('.').casefold()
+                for entry in raw_hosts
+                if str(entry).strip()
+            }
+            if not allowlist or host not in allowlist:
+                raise QwenVoiceCloneError(f'URL主机不在tfLink白名单内: {host}')
+
+        return candidate
 
     # ------------------------------------------------------------------
     # Step 1 - Upload audio to tfLink and obtain a public direct URL
@@ -502,9 +561,13 @@ class QwenVoiceCloneClient:
         Raises:
             QwenVoiceCloneError
         """
+        from urllib.parse import urljoin
+
         file_size = len(audio_buffer.getvalue())
         if file_size > 100 * 1024 * 1024:  # 100MB
             raise QwenVoiceCloneError('文件大小超过100MB，超过tfLink的限制')
+
+        upload_url = self._validate_tflink_url(self.tflink_upload_url, require_allowlist=False)
 
         audio_buffer.seek(0)
         files = {'file': (filename, audio_buffer, mime_type)}
@@ -514,8 +577,8 @@ class QwenVoiceCloneClient:
                      filename, file_size, mime_type)
 
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                resp = await client.post(self.tflink_upload_url, files=files, headers=headers)
+            async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
+                resp = await client.post(upload_url, files=files, headers=headers)
 
                 if resp.status_code != 200:
                     raise QwenVoiceCloneError(
@@ -543,12 +606,21 @@ class QwenVoiceCloneClient:
                 if not tmp_url:
                     raise QwenVoiceCloneError(f'上传成功但无法从响应中提取URL: {data}')
 
-                if not tmp_url.startswith(('http://', 'https://')):
-                    raise QwenVoiceCloneError(f'无效的URL格式: {tmp_url}')
+                tmp_url = self._validate_tflink_url(tmp_url, require_allowlist=True)
 
-                # Test URL accessibility
+                # Test URL accessibility without following off-allowlist redirects
                 test_resp = await client.head(tmp_url, timeout=10)
-                if test_resp.status_code >= 400:
+                if 300 <= test_resp.status_code < 400:
+                    location = test_resp.headers.get('location', '')
+                    if not location:
+                        raise QwenVoiceCloneError(
+                            f'生成的临时URL重定向缺少Location头: {tmp_url}, 状态码: {test_resp.status_code}'
+                        )
+                    redirect_target = self._validate_tflink_url(
+                        urljoin(tmp_url, location), require_allowlist=True
+                    )
+                    test_resp = await client.head(redirect_target, timeout=10)
+                if test_resp.status_code >= 300:
                     raise QwenVoiceCloneError(
                         f'生成的临时URL无法访问: {tmp_url}, 状态码: {test_resp.status_code}'
                     )

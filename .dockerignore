@@ -18,6 +18,14 @@ venv
 env
 ENV
 
+# Environment files containing secrets (root and subdirectories such as docker/.env)
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+**/*.env
+
 # Node
 node_modules
 

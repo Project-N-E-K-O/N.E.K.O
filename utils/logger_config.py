@@ -194,8 +194,12 @@ class RobustLoggerConfig:
                 subdirectory, keeping them apart from host-process logs like
                 PluginServer / Main / Memory / Agent.
         """
+        from utils.logging_layout import _validate_log_name_component
+
         self.app_name = app_name if app_name is not None else APP_NAME
+        _validate_log_name_component(self.app_name, label="app_name")
         self.service_name = service_name  # Service name distinguishes filenames.
+        _validate_log_name_component(self.service_name, label="service_name")
         self.log_level = log_level or self.DEFAULT_LOG_LEVEL
         self.max_bytes = max_bytes or self.DEFAULT_MAX_BYTES
         self.backup_count = backup_count or self.DEFAULT_BACKUP_COUNT
@@ -205,10 +209,23 @@ class RobustLoggerConfig:
         # Get the base log directory, then route to the log_subdir subdirectory.
         self.log_dir = self._get_log_directory()
         self._log_root = self.log_dir
-        if log_subdir:
-            safe = str(log_subdir).strip().strip("/\\")
+        if log_subdir is not None:
+            raw_subdir = str(log_subdir)
+            if "\x00" in raw_subdir:
+                raise ValueError("log_subdir must not contain NUL bytes")
+            safe = raw_subdir.strip().strip("/\\")
             if safe:
-                self.log_dir = self.log_dir / safe
+                if os.path.splitdrive(safe)[0] or ":" in safe:
+                    raise ValueError(f"log_subdir must not contain a drive prefix: {log_subdir!r}")
+                parts = safe.replace("\\", "/").split("/")
+                if any(part in ("", ".", "..") for part in parts):
+                    raise ValueError(f"log_subdir must not contain traversal segments: {log_subdir!r}")
+                candidate_dir = self.log_dir.joinpath(*parts)
+                log_root_real = os.path.normcase(os.path.realpath(str(self._log_root)))
+                candidate_real = os.path.normcase(os.path.realpath(str(candidate_dir)))
+                if os.path.commonpath([log_root_real, candidate_real]) != log_root_real or candidate_real == log_root_real:
+                    raise ValueError(f"log_subdir escapes log root: {log_subdir!r}")
+                self.log_dir = candidate_dir
 
         # Log filename includes service_name when present; otherwise use only app_name.
         self.log_file = self.log_dir / log_filename(self.service_name, app_name=self.app_name)

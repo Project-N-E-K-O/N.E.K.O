@@ -7,8 +7,8 @@
 ```bash
 cd local_server/telemetry_server
 
-# Docker（推荐）
-# 修改 docker-compose.yml 中的 TELEMETRY_ADMIN_TOKEN
+# Docker（推荐；admin API 默认禁用，如需启用请在 .env 或环境变量中设置强随机 TELEMETRY_ADMIN_TOKEN）
+# TELEMETRY_ADMIN_TOKEN=your-strong-random-token docker-compose up -d
 docker-compose up -d
 
 # 或直接运行

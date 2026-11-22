@@ -21,9 +21,27 @@ NEKO_STORAGE_SELECTED_ROOT_ENV = "NEKO_STORAGE_SELECTED_ROOT"
 _LOG_SUFFIX = re.compile(r"(?:\d{8}|error)\.log(?:\.\d+|\.\d{4}-\d{2}-\d{2})?\Z")
 
 
+def _validate_log_name_component(value: str | None, *, label: str) -> str | None:
+    """Validate a single filename component used in log prefixes/filenames."""
+    if value is None:
+        return None
+    text = str(value)
+    if not text:
+        return text
+    if "\x00" in text or "/" in text or "\\" in text or ":" in text:
+        raise ValueError(f"{label} must not contain path separators, colons, or NUL bytes: {value!r}")
+    if os.path.splitdrive(text)[0] or text.strip() in {".", ".."}:
+        raise ValueError(f"{label} must be a plain filename component: {value!r}")
+    return text
+
+
 def _log_prefix(service_name: str | None, app_name: str | None) -> str:
-    name = APP_NAME if app_name is None else app_name
-    return f"{name}_{service_name}_" if service_name else f"{name}_"
+    validated_app = _validate_log_name_component(app_name, label="app_name")
+    name = APP_NAME if validated_app is None else validated_app
+    if service_name:
+        validated_service = _validate_log_name_component(service_name, label="service_name")
+        return f"{name}_{validated_service}_"
+    return f"{name}_"
 
 
 def log_filename(
@@ -117,13 +135,7 @@ def documents_directory() -> Path:
             return Path(xdg_docs)
         return Path.home() / "Documents"
 
-def log_directory_candidates(app_name=None, *, documents=None, application=None, selected_root=None):
-    """Yield candidates lazily in the historical writer order, without writes.
-
-    Writer hooks remain injectable for packaged applications and existing tests.
-    Failures resolving one candidate do not prevent trying the next one.
-    """
-    name = APP_NAME if app_name is None else app_name
+def _iter_log_directory_candidates(name: str, *, documents=None, application=None, selected_root=None):
     documents = documents_directory if documents is None else documents
     application = application_directory if application is None else application
     selected_root = get_selected_storage_root if selected_root is None else selected_root
@@ -163,6 +175,24 @@ def log_directory_candidates(app_name=None, *, documents=None, application=None,
         print(f"Warning: Failed to use temp directory: {error}", file=sys.stderr)
 
 
+def log_directory_candidates(app_name=None, *, documents=None, application=None, selected_root=None):
+    """Yield candidates lazily in the historical writer order, without writes.
+
+    Writer hooks remain injectable for packaged applications and existing tests.
+    Failures resolving one candidate do not prevent trying the next one.
+    """
+    validated_app = _validate_log_name_component(app_name, label="app_name")
+    name = APP_NAME if validated_app is None else validated_app
+    if not str(name).strip():
+        raise ValueError(f"app_name must not be empty: {app_name!r}")
+    return _iter_log_directory_candidates(
+        name,
+        documents=documents,
+        application=application,
+        selected_root=selected_root,
+    )
+
+
 def _can_use(directory: Path) -> bool:
     """Check the existing ancestor, without creating or probing the directory."""
     ancestor = directory
@@ -172,11 +202,20 @@ def _can_use(directory: Path) -> bool:
 
 
 def log_subdirectory(log_subdir: str | None) -> Path:
-    if not log_subdir:
+    if log_subdir is None:
         return Path()
-    if log_subdir in (".", "..") or "/" in log_subdir or "\\" in log_subdir:
+    text = str(log_subdir).strip()
+    if (
+        not text
+        or text in {".", ".."}
+        or "/" in text
+        or "\\" in text
+        or ":" in text
+        or "\x00" in text
+        or os.path.splitdrive(text)[0]
+    ):
         raise ValueError("log_subdir must be a single directory name")
-    return Path(log_subdir)
+    return Path(text)
 
 
 def select_log_directory(candidates):
