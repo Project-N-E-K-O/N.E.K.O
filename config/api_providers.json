@@ -160,7 +160,7 @@
       "conversation_model": "deepseek-ai/DeepSeek-V4-Flash",
       "summary_model": "deepseek-ai/DeepSeek-V4-Flash",
       "correction_model": "deepseek-ai/DeepSeek-V4-Flash",
-      "emotion_model": "inclusionAI/Ling-mini-2.0",
+      "emotion_model": "Qwen/Qwen3.5-35B-A3B",
       "decision_model": "deepseek-ai/DeepSeek-V4-Flash",
       "decision_protocol": "chat_fallback",
       "vision_model": "Qwen/Qwen3.5-122B-A10B",

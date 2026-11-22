@@ -188,6 +188,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_OPENAI,
+    # Silicon emotion preset (replaces delisted inclusionAI/Ling-mini-2.0); hybrid
+    # thinking defaults on, so the regular form must send enable_thinking=False.
+    "Qwen/Qwen3.5-35B-A3B": EXTRA_BODY_OPENAI,
     # Official DeepSeek (api.deepseek.com): V4 defaults thinking on, using thinking.type dialect,
     # matching GLM/Kimi/Doubao, so reuse EXTRA_BODY_CLAUDE. Reseller gateways use different
     # model keys (SiliconFlow deepseek-ai/…, OpenRouter deepseek/…) and their own dialects,

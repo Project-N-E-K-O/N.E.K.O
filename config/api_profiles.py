@@ -182,7 +182,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CONVERSATION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
         'SUMMARY_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
         'CORRECTION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
-        'EMOTION_MODEL': "inclusionAI/Ling-mini-2.0",
+        'EMOTION_MODEL': "Qwen/Qwen3.5-35B-A3B",
         'DECISION_MODEL': "deepseek-ai/DeepSeek-V4-Flash",
         'DECISION_PROTOCOL': "chat_fallback",
         'VISION_MODEL': "Qwen/Qwen3.5-122B-A10B",
