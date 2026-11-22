@@ -8821,7 +8821,9 @@ class TaskAgentManager:
         session.handing_back = (said or "".join(session.findings)).strip()
         try:
             await self._ledger.append_event(
-                session.commission_id, "handed_back", {"tool": session.hand_back, "to": session.carries_on_for}
+                session.commission_id,
+                "handed_back",
+                {"tool": session.hand_back, "to": session.carries_on_for, "copy": session.session_id},
             )
         except Exception:  # noqa: BLE001 - the note is for the record; it is handed back all the same
             logger.warning("noting that a copy handed its commission back failed", exc_info=True)

@@ -2556,7 +2556,7 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 | `child_returned` 子使魔交回 | 子使魔的委托结束 | 原因 | 父委托 | `outcome` |
 | `ask_answered` 问一句有了回答 | 问一句的副本委托结束 | 原因 | 问的那件委托 | `outcome` |
 | `into_copy` 进了副本 | 事件 `carried_on_in_copy` | — | 主线会话 | `copy_session_id` |
-| `handed_back` 从副本交回 | 事件 `handed_back` | — | 主线会话 | — |
+| `handed_back` 从副本交回 | 事件 `handed_back` | — | 主线会话 | `copy_session_id`（从哪个副本交回的） |
 | `copy_called_off` 搬进副本又收回 | 事件 `not_carried_on`（还没在副本里开工，又说了话，回主线办） | — | 主线会话 | `copy_session_id` |
 | `back_from_copy` 从副本收回主线 | 事件 `back_from_copy`（在副本里办过的那件被重新拿起来） | — | 主线会话 | `copy_session_id` |
 | `copies_reported` 主线收到副本的回报 | 事件 `told_of_copies`（17.6 的回报） | —（那段话是给模型看的包装，不显示） | — | — |
@@ -2619,10 +2619,17 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 
 用不着加索引，表结构不动。`waits()` 的时间主要花在逐件找「最后一次改状态、最后一次排队」上，和在办的件数成正比；真实情况下同时在办的远少于 800。
 
-**写入那一侧的两处改动**
+**写入那一侧的改动**
 
 - 问用户的问题：委托只在等着的时候存着那一问（`pending_question`），答完就清掉。所以 `Ledger._transition` 改成 `waiting_user` 时把问题文字和种类（`question`、`question_kind`，取法同 `timeline.question_text`）一起记进那条状态事件，回放时每一次问过什么都看得到。这一步以前的状态事件没有这两个字段（猫爪没上线，不为旧数据补）。
-- 委托归到项目：她派的委托立的时候（记 `created`）还没有项目，交给使魔时才补上，原来只改委托那一行、不记事件。按项目读时间线的人要是正好在这中间读过，`created` 那条因为当时还不属于这个项目被跳过，游标越过了它，之后也读不到这件事了。现在补项目和记一条 `filed_under_project` 在台账的一个事务里一起做（`Ledger.file_under_project`，要么都记上、要么都没有），这一条一定在那人读到的位置后面，而且属于这个项目。所以在项目的时间线里，这种委托的第一条是 `filed_under_project`，不一定有 `filed`。
+- 委托归到项目：她派的委托立的时候（记 `created`）还没有项目，交给使魔时才补上，原来只改委托那一行、不记事件。按项目读时间线的人要是正好在这中间读过，`created` 那条因为当时还不属于这个项目被跳过，游标越过了它，之后也读不到这件事了。现在补项目和记一条 `filed_under_project` 在台账的一个事务里一起做（`Ledger.file_under_project`，要么都记上、要么都没有），这一条一定在那人读到的位置后面，而且属于这个项目。所以靠游标读新条目的读者，在项目归属变化以后一定会读到 `filed_under_project`；它之前的那几条（`filed` 等）要看读的时机：项目定下来以后才第一次从头读，它们也会按委托现在的项目出现，排在 `filed_under_project` 前面。 另外 `handed_back` 事件多记了副本的 id（`copy`），回放时看得出是从哪个副本交回的。
+
+**已知边界**
+
+- 按项目、按角色筛选看的是委托和会话**现在**的项目。台账里委托的项目只在开工时补一次（上面那条）；收工复盘（`space_keeper._target_project`）只搬使魔空间的笔记，不改台账的项目。以后谁要在台账里事后改委托的项目，必须走 `Ledger.file_under_project`；界面在项目列表变了的时候从头读一遍最稳。
+- 游标依赖 `events` 的隐式 `rowid` 只增不减：现在没有任何地方删 `events`，也不 `VACUUM`。以后谁要删 `events` 的行（比如给台账做清理），得先给 `events` 换成显式的自增编号，否则已经发出去的游标会错位。
+- `waits()` 只读台账，看不到内存里的占用：一件委托刚占了会话、还在启动（等模型配置之类），台账里它还是 `queued`，排在它后面的那件这一小会儿会显示成 `place`，等它改成 `working` 就对了。
+- 第一次调用（`timeline`、`waits`，和别的方法一样）会打开台账，打开时会把上一个宿主进程留下的东西理顺（`_reconcile`），这一步会写台账；不是游标的字符串在打开之前就被拒绝。
 
 **没做的**
 

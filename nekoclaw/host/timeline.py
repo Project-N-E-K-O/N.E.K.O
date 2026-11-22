@@ -181,7 +181,13 @@ def question_text(pending: str | None) -> tuple[str, str]:
         # A request for approval says what kind of thing it may do (and, of
         # an MCP server, which), never what with: that is its ``detail``.
         asked = ":".join(part for part in (_text(question.get("category")), _text(question.get("key"))) if part)
-    return asked, _text(question.get("kind"))
+    # As text SQLite can store: half of a surrogate pair, escaped in the
+    # JSON, would fail the write of the move it is kept with.
+    return _storable(asked), _storable(_text(question.get("kind")))
+
+
+def _storable(text: str) -> str:
+    return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def _filters(project: str | None, lanlan_name: str | None, project_col: str, owner_col: str) -> tuple[str, list[Any]]:
@@ -234,7 +240,9 @@ def _message_rows(
         "sf.project AS from_project, sf.lanlan_name AS from_owner, "
         "st.project AS to_project, st.lanlan_name AS to_owner "
         "FROM messages m LEFT JOIN sessions sf ON sf.id = m.from_session "
-        f"LEFT JOIN sessions st ON st.id = m.to_session WHERE m.id > ?{where} ORDER BY m.id LIMIT ?",
+        "LEFT JOIN sessions st ON st.id = m.to_session WHERE m.id > ? "
+        # A question that was not asked after all (its copy could not be made).
+        f"AND NOT (m.kind = 'ask' AND m.status = 'void'){where} ORDER BY m.id LIMIT ?",
         [after, *values, count],
     ).fetchall()
 
@@ -308,7 +316,7 @@ def _event_entry(
             kind, detail = "queued", {"from": came_from, "ahead": None, "behind": None}
         elif to == "waiting_user":
             # What it asked was put with the move (``Ledger._transition``).
-            kind, text, peer = "asked_user", _text(payload.get("question")), _USER
+            kind, text, peer = "asked_user", _text(payload.get("question")), dict(_USER)
             detail = {"question_kind": _text(payload.get("question_kind"))}
         else:
             kind, text, detail = "ended", _text(payload.get("reason")), {"outcome": to}
@@ -316,7 +324,7 @@ def _event_entry(
                 kind = "child_returned" if row["source"] == "task_agent" else "ask_answered"
                 peer = _session(sessions.get(row["parent_id"]), row["parent_id"])
     elif kind in ("answered", "told"):
-        text, peer = _text(payload.get("text")), _USER
+        text, peer = _text(payload.get("text")), dict(_USER)
     elif kind == "report":
         kind, text, detail = "reported", _text(payload.get("summary")), {"status": _text(payload.get("status"))}
     elif kind == "subagent_started":
@@ -330,6 +338,7 @@ def _event_entry(
         detail = {"copy_session_id": payload.get("session_id") if isinstance(payload.get("session_id"), str) else None}
     elif kind == "handed_back":
         peer = _session(payload.get("to"))
+        detail = {"copy_session_id": payload.get("copy") if isinstance(payload.get("copy"), str) else None}
     elif kind in ("not_carried_on", "back_from_copy"):
         main = payload.get("of") if kind == "not_carried_on" else payload.get("to")
         kind, peer = "copy_called_off" if kind == "not_carried_on" else kind, _session(main)

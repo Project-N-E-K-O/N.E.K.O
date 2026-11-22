@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from nekoclaw.host import call_audit
-from nekoclaw.host.timeline import question_text, read_timeline, read_waits
+from nekoclaw.host.timeline import parse_cursor, question_text, read_timeline, read_waits
 
 logger = logging.getLogger(__name__)
 
@@ -3606,8 +3606,12 @@ class Ledger:
         """Return a page of what happened, in order; ``timeline.read_timeline``. Reads only.
 
         Texts are as recorded: shortening them here would hold the ledger's
-        one thread, and every write waiting on it, for each of them.
+        one thread, and every write waiting on it, for each of them. Like
+        any first use, the first call opens the ledger, which puts right what
+        an earlier host process left (``_reconcile``); a cursor that is not
+        one is refused before that.
         """
+        parse_cursor(after)
         return await self.run(
             lambda conn: read_timeline(conn, project=project, lanlan_name=lanlan_name, after=after, limit=limit)
         )

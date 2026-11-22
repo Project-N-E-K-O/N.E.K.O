@@ -239,6 +239,18 @@ async def test_a_question_written_before_the_move_is_the_one_recorded(ledger):
     assert (asked["commission_id"], asked["text"], asked["detail"]) == (commission.id, "go on?", {"question_kind": "confirmation"})
 
 
+async def test_a_question_with_half_a_surrogate_pair_still_moves_the_commission(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    # The JSON escape of a lone high surrogate, which json.loads gives back as one.
+    question = '{"kind": "confirmation", "question": "' + chr(92) + 'ud800 go on?"}'
+
+    assert (await ledger.transition(commission.id, "waiting_user", pending_question=question)).applied
+
+    [asked] = _of(await _all(ledger), "asked_user")
+    assert (asked["text"], asked["detail"]) == ("? go on?", {"question_kind": "confirmation"})
+
+
 async def test_a_question_too_deep_to_read_still_moves_the_commission(ledger):
     main = await _session(ledger, "main")
     commission = await _working(ledger, main)
@@ -367,8 +379,34 @@ async def test_a_copy_carries_on_and_hands_back(ledger):
     assert into["peer"] == {"type": "session", "session_id": main.id, "commission_id": None}
     assert into["detail"] == {"copy_session_id": "copy-1"}
     [back] = _of(entries, "handed_back")
-    assert back["peer"]["session_id"] == main.id and back["detail"] == {}
+    assert back["peer"]["session_id"] == main.id and back["detail"] == {"copy_session_id": None}
     assert "write_file" not in json.dumps(entries)
+
+
+async def test_handed_back_names_the_copy_it_came_from(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    await ledger.append_event(commission.id, "handed_back", {"tool": "write", "to": main.id, "copy": "copy-7"})
+
+    [back] = _of(await _all(ledger), "handed_back")
+
+    assert back["detail"] == {"copy_session_id": "copy-7"}
+
+
+async def test_entries_do_not_share_the_user_end(ledger):
+    main = await _session(ledger, "main")
+    commission = await _working(ledger, main)
+    assert (await ledger.transition(commission.id, "waiting_user", pending_question='{"question": "ok?"}')).applied
+    await ledger.append_event(commission.id, "answered", {"text": "yes"})
+    await ledger.append_event(commission.id, "told", {"text": "and quickly"})
+
+    entries = await _all(ledger)
+    [asked], [answered], [told] = _of(entries, "asked_user"), _of(entries, "answered"), _of(entries, "told")
+    asked["peer"]["shown_as"] = "you"
+    answered["peer"]["said_by"] = "you"
+
+    assert "shown_as" not in answered["peer"] and "said_by" not in told["peer"] and "said_by" not in asked["peer"]
+    assert all("shown_as" not in entry["peer"] for entry in _of(await _all(ledger), "asked_user"))
 
 
 async def test_taken_back_from_a_copy_and_copies_reporting(ledger):
@@ -672,6 +710,31 @@ async def test_a_page_cut_short_stops_at_its_last_entry(ledger):
 
     assert page["more"] and page["next"] == page["entries"][-1]["cursor"]
     assert page["next"] != page["latest"]
+
+
+async def test_a_cursor_that_is_not_one_is_refused_before_the_ledger_is_opened(ledger):
+    with pytest.raises(ValueError):
+        await ledger.timeline(after="bad", limit=5)
+
+    assert not ledger.opened
+
+
+async def test_a_question_that_was_not_asked_after_all_is_not_shown(ledger):
+    main = await _session(ledger, "main")
+    other = await _session(ledger, "other")
+    asker = await _working(ledger, main)
+    asked, _refusal, _wait = await ledger.ask_add(
+        from_session=main.id, from_commission=asker.id, to_session=other.id, body="not asked", asks_per_hour=9
+    )
+    await ledger.message_void(asked.id, "no copy")
+    await ledger.ask_add(from_session=main.id, from_commission=asker.id, to_session=other.id, body="asked", asks_per_hour=9)
+    dropped = await _note(ledger, asker, other.id, "a note dropped by a stop")
+    await ledger.message_void(dropped.id, "stopped")
+
+    entries = await _all(ledger)
+
+    assert [entry["text"] for entry in _of(entries, "asked_session")] == ["asked"]
+    assert [entry["detail"]["status"] for entry in _of(entries, "message")] == ["void"]
 
 
 async def test_cursors_are_checked(ledger):
