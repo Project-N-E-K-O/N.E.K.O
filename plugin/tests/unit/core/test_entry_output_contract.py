@@ -408,6 +408,63 @@ def test_router_inference_is_finished_when_bound():
     assert deep_router.is_bound is False
 
 
+def test_failed_bind_caches_nothing_and_a_later_bind_infers_again():
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class FixableRouter(PluginRouter):
+        # Collected (and inferred) in name order: "a_good" before "b_deep".
+        @plugin_decorators.plugin_entry(id="a_good")
+        async def a_good(self) -> "Good":
+            return None
+
+        @plugin_decorators.plugin_entry(id="b_deep")
+        async def b_deep(self) -> "Deep":
+            return None
+
+        class Deep(TooDeep):
+            pass
+
+    router = FixableRouter()
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        router._bind(object())
+    assert router._deferred_inference == {}
+
+    class Good(BaseModel):
+        ok: bool
+
+    class Deep(BaseModel):
+        fine: bool
+
+    FixableRouter.Good = Good
+    FixableRouter.Deep = Deep
+    router._bind(object())
+    assert len(router._deferred_inference) == 2
+    entries = router.collect_entries()
+    assert entries["a_good"].meta.output_model is Good
+    assert entries["b_deep"].meta.output_model is Deep
+
+
+def test_failed_include_router_keeps_the_prefix():
+    from plugin.sdk.shared.core.base import NekoPluginBase as SharedBase
+    from plugin.sdk.shared.core.router import PluginRouter
+
+    class DeepRouter(PluginRouter):
+        @plugin_decorators.plugin_entry(id="deep")
+        async def deep(self) -> "Deep":
+            return None
+
+        class Deep(TooDeep):
+            pass
+
+    host = SharedBase.__new__(SharedBase)
+    host._routers = []
+    router = DeepRouter(prefix="old_")
+    with pytest.raises(ValueError, match="output_schema nests deeper than"):
+        SharedBase.include_router(host, router, prefix="new_")
+    assert router.prefix == "old_"
+    assert host._routers == []
+
+
 def test_router_cache_accepts_an_unhashable_callable_entry():
     import dataclasses
 

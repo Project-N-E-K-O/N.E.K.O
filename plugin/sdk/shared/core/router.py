@@ -77,10 +77,10 @@ class PluginRouter:
         # set_prefix() to change prefix; early insertion would prevent that later prefix from taking effect.
         # Instead resolve lazily in collect_entries() using the current prefix.
         self._decorated_entries: list[tuple[str, EventMeta, RouteHandler]] = []
-        # Contract fields inferred against this router class, per decorated entry
-        # (keyed by the handler's function). Kept apart from the shared metadata;
-        # caching rules in _inferred_contract_fields. Keyed by id() so an unhashable callable works; the entry keeps the
-        # function alive, and it is stored alongside so the id cannot be reused.
+        # Contract fields inferred against this router class, one per decorated
+        # entry, kept apart from the shared metadata (caching rules: see
+        # _inferred_contract_fields). Keyed by id() so an unhashable callable
+        # works; the object is stored alongside, so its id cannot be reused.
         self._deferred_inference: dict[int, tuple[object, dict[str, object]]] = {}
         self._main_plugin: object | None = None
         self._collect_decorated_entries()
@@ -178,8 +178,14 @@ class PluginRouter:
         # router: a failure (an inferred schema over the depth bound) surfaces
         # here, like @neko_plugin raises at class definition, instead of on
         # every collect_entries() call.
+        # Nothing is cached until every entry succeeds, so a failed bind leaves
+        # the router as it was and a later bind infers again.
+        pending: dict[int, tuple[object, dict[str, object]]] = {}
         for _, _, handler in self._decorated_entries:
-            self._inferred_contract_fields(handler, final=True)
+            fn = getattr(handler, "__func__", handler)
+            if id(fn) not in self._deferred_inference:
+                pending[id(fn)] = (fn, router_entry_inference(fn, type(self)))
+        self._deferred_inference.update(pending)
         self._main_plugin = plugin
 
     def _unbind(self) -> None:
@@ -255,7 +261,7 @@ class PluginRouter:
             resolved[entry_id] = _EntryRecord(meta=normalized, handler=handler)
         return resolved
 
-    def _inferred_contract_fields(self, handler: RouteHandler, *, final: bool = False) -> dict[str, object]:
+    def _inferred_contract_fields(self, handler: RouteHandler) -> dict[str, object]:
         """Contract fields the decorator left pending, resolved against this router (cached per entry).
 
         Before the router is bound, an empty result is not cached: a model
@@ -267,7 +273,7 @@ class PluginRouter:
         if cached is not None:
             return cached[1]
         inferred = router_entry_inference(fn, type(self))
-        if inferred or final or self.is_bound:
+        if inferred or self.is_bound:
             self._deferred_inference[id(fn)] = (fn, inferred)
         return inferred
 
