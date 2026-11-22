@@ -7987,17 +7987,19 @@ async def new_dialog(
     language: str | None = None,
     render_language: str | None = None,
     preempt_summary: bool = False,
+    preference_evidence: bool = False,
 ):
     """``preempt_summary``: the caller is starting a conversation and waits for this response
     (#3601), so a summary LLM call holding the settle lock is abandoned to background
     compression instead of being waited for. Hot-swap preparation leaves it off: the old
     session is still serving, and the new one should start from the finished summary."""
     request_language = language if is_supported_language_code(language) else render_language
+    options = {"preference_evidence": True} if preference_evidence else {}
     with language_context(_activate_request_language(request_language)):
         if not preempt_summary:
-            return await _new_dialog(lanlan_name, language, render_language)
+            return await _new_dialog(lanlan_name, language, render_language, **options)
         with runtime._preempting_summaries(validate_lanlan_name(lanlan_name)):
-            return await _new_dialog(lanlan_name, language, render_language)
+            return await _new_dialog(lanlan_name, language, render_language, **options)
 
 
 async def _write_new_dialog_locale(
@@ -8132,6 +8134,8 @@ async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
     render_language: str | None = None,
+    *,
+    preference_evidence: bool = False,
 ):
     lanlan_name = validate_lanlan_name(lanlan_name)
     from .long_term_sync import consume_for_name
@@ -8315,16 +8319,33 @@ async def _new_dialog(
         rendered_history = await asyncio.to_thread(lambda: list(_iter_theater_rendered_history(
             recent_history, lang=_lang, name=lanlan_name, master=master_name,
         )))
+        preference_sources = []
         for i, capsule_text in rendered_history:
             if capsule_text is not None:
                 result += capsule_text + "\n"
                 continue
             if isinstance(i.content, str):
-                cleaned_content = brackets_pattern.sub('', i.content).strip()
-                result += f"{name_mapping[i.type]} | {cleaned_content}\n"
+                raw_text = i.content
+                cleaned_content = brackets_pattern.sub('', raw_text).strip()
             else:
-                texts = [brackets_pattern.sub('', j['text']).strip() for j in i.content if j['type'] == 'text']
-                result += f"{name_mapping[i.type]} | " + "\n".join(texts) + "\n"
+                texts = [j['text'] for j in i.content if j['type'] == 'text']
+                raw_text = "\n".join(texts)
+                cleaned_content = "\n".join(brackets_pattern.sub('', text).strip() for text in texts)
+            if preference_evidence and i.type == "human" and cleaned_content.strip():
+                proof = message_metadata(i).get("chat_original_source")
+                if isinstance(proof, dict) and proof.get("origin") == "chat":
+                    source = proof.get("recordId")
+                    from memory.long_term_sync import original_source_time
+
+                    at = original_source_time(proof.get("originalTime"))
+                    if isinstance(source, str) and at is not None:
+                        preference_sources.append({
+                            "id": source,
+                            "at": at // 1000,
+                            "offset": len(result),
+                            "digest": hashlib.sha256(raw_text.strip().encode()).hexdigest(),
+                        })
+            result += f"{name_mapping[i.type]} | {cleaned_content}\n"
 
         # ── Time since last chat hint (last, immediately before CONTEXT_SUMMARY_READY) ──
         try:
@@ -8363,6 +8384,8 @@ async def _new_dialog(
         # shows her doing the very thing and she follows that instead.
         result += await _arender_behavior_notes(lanlan_name, _lang)
 
+        if preference_evidence:
+            return JSONResponse({"context": result, "preference_sources": preference_sources[-32:]})
         return PlainTextResponse(result)
 
 @app.get("/last_conversation_gap/{lanlan_name}")

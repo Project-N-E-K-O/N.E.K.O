@@ -18,7 +18,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from config import MEMORY_SERVER_PORT
 from config.prompts.prompts_proactive import build_proactive_action_note
@@ -140,7 +140,9 @@ class ProactiveLifecycle:
             "next_schedule_fixed_mode",
             self.next_schedule_fixed_mode,
         )
-        return ProactiveChatResult(body=body, status_code=result.status_code)
+        return ProactiveChatResult(
+            body=body, status_code=result.status_code, community_tags=result.community_tags,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +228,7 @@ async def _commit_proactive_delivery(
     log: logging.Logger | None = None,
     round_id: str | None = None,
     vision_consent_epoch: int | None = None,
+    delivery_is_current: Callable[[], Awaitable[bool]] | None = None,
 ) -> DeliveryCommit:
     """Build, feed, and atomically finish one proactive delivery.
 
@@ -234,7 +237,9 @@ async def _commit_proactive_delivery(
     """
     active_logger = log or logger
     # The TTS/commit critical sections recheck round ownership themselves.
-    delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
+    delivery_round: dict[str, Any] = {"expected_round_id": round_id} if round_id is not None else {}
+    if delivery_is_current is not None:
+        delivery_round["delivery_is_current"] = delivery_is_current
     has_music_topic = "music" in active_channels
     primary_channel, source_links = build_proactive_response(
         source_tag,
@@ -562,10 +567,13 @@ async def _record_committed_delivery(
         web_title = web_link.get("title", "") or (
             web_parsed.get("title", "") if web_parsed else ""
         )
+        from .phase1_ranking import history_aliases
+
         await _record_source_used(
             url=web_link.get("dedupe_key") or web_link.get("url", "") or "",
             kind="web",
             title=web_title,
+            **({"aliases": history_aliases(web_link)} if web_link else {}),
             **state_storage_kwargs,
         )
         print(
@@ -623,5 +631,8 @@ async def _record_committed_delivery(
                if delivery.vision_screenshot_b64 and response_text.strip()
                and not source_links and primary_channel in {"chat", "vision", "unknown"}
                else {}),
-        )
+        ),
+        community_tags=tuple(selected_web_link.get("tags") or ())
+        if selected_web_link and selected_web_link.get("mode") == "community"
+        and _is_link_selected(selected_web_link, source_links) else (),
     )

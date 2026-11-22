@@ -1682,6 +1682,54 @@ async def test_community_recommendations_retry_anonymously(status, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cloud_status", [200, 401, 422, 503])
+async def test_proactive_community_never_uses_guest_candidates_for_an_account(cloud_status, monkeypatch):
+    from utils.proactive_preferences.personalization import LocalPreferences, RecommendationContext
+
+    base = "https://proactive-community.example.test"
+    requests = []
+    offline = False
+
+    def handle(request):
+        requests.append(request)
+        if offline:
+            raise httpx.ConnectError("offline", request=request)
+        status = cloud_status if "Authorization" in request.headers else 200
+        return httpx.Response(status, json={"items": [
+            {"id": "cloud-first", "title": "Another topic", "tags": ["science"]},
+            {"id": "local-first", "title": "Local topic", "tags": ["Games"]},
+        ]})
+
+    transport = httpx.MockTransport(handle)
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(trending_content, "_public_community_pools", {})
+    monkeypatch.setattr(trending_content, "social_base_url", lambda: base)
+    async with async_client(transport=transport) as shared:
+        monkeypatch.setattr(trending_content, "get_external_http_client", lambda: shared)
+        monkeypatch.setattr(trending_content.httpx, "AsyncClient",
+                            lambda **kwargs: async_client(transport=transport, **kwargs))
+        profile = LocalPreferences(community_tags={"games": 2})
+        context = RecommendationContext(preferences=profile, community=base, bearer="desktop-token")
+        result = await fetch_neko_community_feed(limit=1, locale="ja", recommendations=context)
+        assert requests[0].headers["Authorization"] == "Bearer desktop-token"
+        assert json.loads(requests[0].content) == {"cursor": None, "limit": 60, "surface": "proactive"}
+        assert result["success"] is (cloud_status == 200)
+        assert [post["id"] for post in result["posts"]] == (["cloud-first"] if cloud_status == 200 else [])
+        assert all("Authorization" in request.headers for request in requests)
+        guest = RecommendationContext(preferences=profile)
+        public = await fetch_neko_community_feed(limit=1, locale="ja", recommendations=guest)
+        assert public["success"] and not public["authenticated"]
+        assert public["posts"][0]["id"] == "local-first"
+        offline = True
+        rejected = await fetch_neko_community_feed(limit=1, locale="ja", recommendations=context)
+        assert not rejected["success"] and not rejected["posts"]
+        assert "Authorization" in requests[-1].headers
+        fallback = await fetch_neko_community_feed(limit=1, locale="ja", recommendations=guest)
+        assert fallback["success"] and not fallback["authenticated"]
+        assert fallback["posts"][0]["id"] == "local-first"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [200, 401, 403, 404, 500])
 async def test_community_recommendations_empty_pool_and_failures(status, monkeypatch):
     requests = []

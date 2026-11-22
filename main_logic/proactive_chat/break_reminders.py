@@ -17,7 +17,7 @@
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from config import (
     ANTI_REPEAT_INJECT_TOP_K,
@@ -273,6 +273,7 @@ async def _deliver_break_reminder_via_llm(
     lang: str,
     timeout_seconds: float = 25.0,
     round_id: str | None = None,
+    delivery_is_current: Callable[[], Awaitable[bool]] | None = None,
 ) -> BreakReminderDeliveryResult:
     """Minimal Phase 2 LLM stream delivery for break reminders.
 
@@ -585,6 +586,8 @@ async def _deliver_break_reminder_via_llm(
     # draft can already be audible while the long-window guard is still running.
     if _round_retired():
         return BreakReminderDeliveryResult()
+    if delivery_is_current is not None:
+        delivery_round["delivery_is_current"] = delivery_is_current
     try:
         expected_user_engagement_time = getattr(
             mgr,

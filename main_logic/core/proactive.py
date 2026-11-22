@@ -21,6 +21,7 @@ Method-only mixin: every instance attribute is assigned in
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 from main_logic.omni_realtime_client import (
     MultimodalTurnDelivery,
@@ -630,6 +631,7 @@ class ProactiveMixin:
         expected_speech_id: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
         expected_round_id: str | None = None,
+        delivery_is_current: Callable[[], Awaitable[bool]] | None = None,
     ) -> bool:
         """Feed text to the TTS pipeline only, without sending it to the frontend display.
 
@@ -654,6 +656,8 @@ class ProactiveMixin:
         if not self.use_tts:
             return True
         async with self.tts_cache_lock:
+            if delivery_is_current is not None and not await delivery_is_current():
+                return False
             if getattr(self, "_takeover_active", False):
                 return False
             if not ProactiveMixin._proactive_round_owned(self, expected_round_id):
@@ -702,6 +706,7 @@ class ProactiveMixin:
         expected_user_engagement_time: Any = Ellipsis,
         expected_round_id: str | None = None,
         vision_consent_epoch: int | None = None,
+        delivery_is_current: Callable[[], Awaitable[bool]] | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -805,6 +810,8 @@ class ProactiveMixin:
                 {"round_id": expected_round_id} if expected_round_id is not None else {}
             )
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING, **round_payload)
+            if delivery_is_current is not None and not await delivery_is_current():
+                return False
             publication_times: list[float] = []
             observation = {
                 "reply_id": uuid4().hex,
@@ -827,6 +834,7 @@ class ProactiveMixin:
                         None if expected_round_id is None
                         else lambda: ProactiveMixin._proactive_round_owned(self, expected_round_id)
                     ),
+                    **({"publish_if_async": delivery_is_current} if delivery_is_current is not None else {}),
                 )
             except (asyncio.CancelledError, Exception) as exc:
                 if observation["started"]:
@@ -846,7 +854,6 @@ class ProactiveMixin:
                     self.lanlan_name,
                 )
                 return False
-
             # Flush per-turn AI-text buffer to activity tracker. The regular
             # /api/proactive_chat path doesn't call handle_proactive_complete
             # (only the agent-direct-reply path in main_server.py does), so

@@ -39,6 +39,7 @@ from utils.music_crawlers import fetch_music_content
 from utils.music_audio import filter_playable_candidates
 
 from .music_refusal import reset_music_card_skips
+from utils.proactive_preferences.personalization import LocalPreferences
 from .state import _clear_channel_from_proactive_history
 
 logger = get_module_logger(__name__, "Main")
@@ -146,6 +147,7 @@ def _select_music_recommendation(
     source_hash: Callable[[str, str], str],
     should_skip_source: Callable[[str], bool],
     lanlan_name: str = "",
+    preferences: LocalPreferences | None = None,
 ) -> MusicRecommendationSelection:
     """Filter used songs by identity and legacy URL, keeping prompt/link data aligned."""
     if not music_content or not music_content.get("formatted_content"):
@@ -161,7 +163,7 @@ def _select_music_recommendation(
 
     eligible_tracks = []
     seen_identities = set()
-    picked_key = ""
+    identities = {}
     for candidate in tracks:
         name = candidate.get("name", "")
         title = f"{name} - {candidate.get('artist', '')}".strip(" -")
@@ -178,13 +180,17 @@ def _select_music_recommendation(
             continue
         if identity:
             seen_identities.add(identity)
-        if not eligible_tracks:
-            picked_key = identity
+        identities[id(candidate)] = identity
         eligible_tracks.append(candidate)
 
     if not eligible_tracks:
         logger.debug("[%s] 所有音乐候选均被衰减 skip，清空音乐通道", lanlan_name)
         return MusicRecommendationSelection()
+
+    if preferences:
+        eligible_tracks = preferences.rank_music(eligible_tracks)
+        if not eligible_tracks:
+            return MusicRecommendationSelection()
 
     selected_content = music_content
     topic = music_content["formatted_content"]
@@ -213,7 +219,7 @@ def _select_music_recommendation(
         content=selected_content,
         topic=topic,
         link=link,
-        topic_key=picked_key,
+        topic_key=identities[id(track)],
     )
 
 

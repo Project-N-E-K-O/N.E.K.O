@@ -104,6 +104,7 @@ class ProactiveChatResult:
 
     body: dict[str, Any]
     status_code: int = 200
+    community_tags: tuple[str, ...] = ()
 
 
 PROACTIVE_REASON_CHAT_DELIVERED = "CHAT_DELIVERED"

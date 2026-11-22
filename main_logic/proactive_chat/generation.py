@@ -18,6 +18,7 @@
 import asyncio
 from contextlib import suppress
 import logging
+import json
 import unicodedata
 import re
 from dataclasses import dataclass
@@ -500,6 +501,7 @@ async def _llm_call_with_retry(
     log: logging.Logger | None = None,
     live_consent_check: Callable[[], bool] | None = None,
     vision_consent_required: bool = False,
+    log_response: bool = True,
 ) -> str:
     """Call the proactive model with the established retry and message shape."""
     active_logger = log or logger
@@ -539,10 +541,11 @@ async def _llm_call_with_retry(
                     llm.ainvoke(messages),
                     timeout=timeout,
                 )
-                print(
-                    f"\n[PROACTIVE-DEBUG] LLM output [{label}]: "
-                    f"{response.content[:500]}...\n"
-                )
+                if log_response:
+                    print(
+                        f"\n[PROACTIVE-DEBUG] LLM output [{label}]: "
+                        f"{response.content[:500]}...\n"
+                    )
                 return response.content.strip()
         except _proactive_llm_retry_error_types() as exc:
             if attempt < 2:
@@ -613,6 +616,7 @@ async def _run_unified_phase1(
     log: logging.Logger | None = None,
     live_consent_check: Callable[[], bool] | None = None,
     vision_consent_required: bool = False,
+    preference_evidence: bool = False,
 ) -> dict[str, Any]:
     """Build, call, and parse the unified Phase 1 model request."""
     active_logger = log or logger
@@ -622,7 +626,7 @@ async def _run_unified_phase1(
         "meme_keyword": None,
     }
     has_web_task = bool(merged_web_content)
-    if not (has_web_task or has_music_task or has_meme_task):
+    if not (has_web_task or has_music_task or has_meme_task or preference_evidence):
         return empty_result
 
     try:
@@ -638,6 +642,7 @@ async def _run_unified_phase1(
             if has_music_task
             else None,
             meme_enabled=has_meme_task,
+            preference_evidence=preference_evidence,
             lanlan_name=lanlan_name,
             master_name=master_name,
         )
@@ -647,12 +652,17 @@ async def _run_unified_phase1(
             lanlan_name=lanlan_name,
             system_prompt=prompt,
             label="unified_phase1",
+            log_response=not preference_evidence,
+            max_completion_tokens=PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS + (768 if preference_evidence else 0),
             log=active_logger,
             live_consent_check=live_consent_check,
             vision_consent_required=vision_consent_required,
         )
-        print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {result_text[:500]}")
+        if not preference_evidence:
+            print(f"[{lanlan_name}] Phase 1 合并 LLM 结果: {result_text[:500]}")
         parsed = _parse_unified_phase1_result(result_text)
+        if not preference_evidence:
+            parsed.pop("preference_evidence", None)
         active_logger.debug(
             f"[{lanlan_name}] Phase 1 解析: "
             f"web={'有' if parsed.get('web') else '无'}, "
@@ -725,16 +735,21 @@ async def _fetch_phase1_followups(
     fetch_tasks: list[Any] = []
     fetch_labels: list[str] = []
 
-    if has_music_task and not parsed.get("music_pass"):
+    if has_music_task and (music_content or {}).get("verse_music_selection"):
+        if parsed.get("music_pass"):
+            music_content = None
+    elif has_music_task and not parsed.get("music_pass"):
         fetch_tasks.append(
             _fetch_music_with_fallback(
-                parsed.get("music_keyword") or "",
+                (music_content or {}).get("verse_keyword") or parsed.get("music_keyword") or "",
                 lanlan_name=lanlan_name,
             )
         )
         fetch_labels.append("music")
 
-    if has_meme_task and not parsed.get("meme_pass"):
+    if has_meme_task and not parsed.get("meme_pass") and (meme := (meme_content or {}).get("verse_meme")):
+        meme_content = {"success": True, "data": [meme], "source": meme["source"]}
+    elif has_meme_task and not parsed.get("meme_pass"):
         fetch_tasks.append(
             _fetch_meme_with_fallback(
                 parsed.get("meme_keyword") or "",
@@ -2095,7 +2110,7 @@ def _parse_unified_phase1_result(text: str) -> dict:
         "meme_pass": False,
     }
 
-    # Split into [WEB] / [MUSIC] / [MEME] sections.
+    # Split the Phase 1 tasks into sections.
     # Regex split retaining labels.
     sections: dict[str, str] = {}
     current_tag = None
@@ -2117,6 +2132,12 @@ def _parse_unified_phase1_result(text: str) -> dict:
                 sections[current_tag] = "\n".join(current_lines)
             current_tag = "music"
             remainder = stripped[7:].strip()
+            current_lines = [remainder] if remainder else []
+        elif upper.startswith("[PREFERENCES]"):
+            if current_tag:
+                sections[current_tag] = "\n".join(current_lines)
+            current_tag = "preferences"
+            remainder = stripped[len("[PREFERENCES]"):].strip()
             current_lines = [remainder] if remainder else []
         elif upper.startswith("[MEME]"):
             if current_tag:
@@ -2190,6 +2211,18 @@ def _parse_unified_phase1_result(text: str) -> dict:
                 r"\[?\s*pass\s*\]?", keyword, re.IGNORECASE
             ):
                 result["meme_keyword"] = keyword
+
+    preference_text = sections.get("preferences", "").strip()
+    if len(preference_text) <= 8192 and preference_text:
+        if preference_text.startswith("```") and preference_text.endswith("```"):
+            preference_text = preference_text.partition("\n")[2][:-3].strip()
+        try:
+            evidence = json.loads(preference_text)
+        except (ValueError, RecursionError):
+            pass
+        else:
+            if isinstance(evidence, list):
+                result["preference_evidence"] = evidence
 
     return result
 

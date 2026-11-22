@@ -273,7 +273,9 @@ def test_phase1_lookup_maps_escaped_community_title_to_canonical_card():
         ["community"],
         {
             "community": {
-                "links": [{"title": "A|B", "source": "喵宇宙社区"}]
+                "links": [
+                    {"title": "A|B", "source": "喵宇宙社区", "url": "https://example.test/cards/1"}
+                ]
             }
         },
         total=1,

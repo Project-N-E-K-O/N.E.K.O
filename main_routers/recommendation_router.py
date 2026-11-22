@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import sqlite3
 from pathlib import Path
 from typing import Literal
@@ -12,8 +11,10 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from utils.proactive_preferences.personalization import LocalPreferences, RecommendationContext
 from main_logic.recommendation_feedback import FeedbackConflict, FeedbackDecisionConflict, RecommendationStore, RecommendationEventKind
 from services.chat_sync import host
+from services.proactive_feedback.host import owner_from_snapshot
 from utils.config_manager import get_config_manager
 from utils.preferences import load_global_conversation_settings
 
@@ -46,11 +47,7 @@ CATEGORY_SETTINGS = {
 
 
 def _owner():
-    snapshot = host.saved_session_snapshot() or {}
-    user_id = snapshot.get("local_user_id") if snapshot.get("access_token") else None
-    base = snapshot.get("base_url", "") if user_id else ""
-    key = hashlib.sha256(f"{base}\n{user_id or ''}".encode()).hexdigest()
-    return {"key": key, "user_id": user_id, "community": base or None}
+    return owner_from_snapshot(host.saved_session_snapshot())
 
 
 def _operate(operation, *args):
@@ -63,7 +60,68 @@ def _operate(operation, *args):
 
 
 async def capture_owner():
-    return await asyncio.to_thread(_operate, lambda store, owner: owner)
+    def read_owner():
+        with host.saved_session_writer_fence():
+            return _owner()
+
+    return await asyncio.to_thread(read_owner)
+
+
+async def load_recommendation_context(expected_owner: dict) -> RecommendationContext:
+    async def load_chat_sources(character):
+        def read(store, owner):
+            return store.chat_source_digests(owner["key"], character) if owner == expected_owner else {}
+
+        try:
+            return await asyncio.to_thread(_operate, read)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            return {}
+
+    async def save_chat(evidence):
+        def save(store, owner):
+            if owner == expected_owner:
+                store.save_chat_preferences(owner["key"], evidence)
+        try:
+            await asyncio.to_thread(_operate, save)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            pass
+
+    def load():
+        with host.saved_session_writer_fence():
+            snapshot = host.saved_session_snapshot() or {}
+            owner = owner_from_snapshot(snapshot)
+            if owner != expected_owner:
+                return RecommendationContext(community_identity_known=False)
+            # The snapshot reader treats an unreadable credential file as no
+            # session; the strict state tells that apart from signed out.
+            if host.signed_in_account_state()[0] == "unknown":
+                return RecommendationContext(community_identity_known=False)
+            try:
+                path = Path(get_config_manager().get_runtime_config_path("recommendation_feedback.sqlite3"))
+                store = RecommendationStore(path, protocol_version=STORE_PROTOCOL_VERSION)
+                preferences = store.local_preferences(owner)
+            except (OSError, sqlite3.Error, ValueError, RuntimeError):
+                preferences = LocalPreferences()
+            return RecommendationContext(
+                preferences=preferences,
+                community=owner["community"] or "",
+                bearer=snapshot["access_token"] if owner["community"] else "",
+                account_id=str(owner["user_id"] or ""),
+                # A legacy session (token without local_user_id) cannot be tied
+                # to an account, so it uses the guest profile and guest feed.
+                community_identity_known=(
+                    bool(owner["community"])
+                    or not snapshot.get("access_token")
+                    or not snapshot.get("local_user_id")
+                ),
+                save_chat=save_chat,
+                load_chat_sources=load_chat_sources,
+            )
+
+    try:
+        return await asyncio.to_thread(load)
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        return RecommendationContext(community_identity_known=False)
 
 
 async def attach_music_recommendation(body: dict, expected_owner: dict, character: str):
@@ -87,7 +145,8 @@ async def attach_music_recommendation(body: dict, expected_owner: dict, characte
     body["music_recommendation"] = await asyncio.to_thread(_operate, create)
 
 
-async def attach_proactive_recommendations(body: dict, expected_owner: dict, character: str):
+async def attach_proactive_recommendations(body: dict, expected_owner: dict, character: str,
+                                          *, community_tags: tuple[str, ...] = ()):
     """Register committed content; screen text is UI-only, never evidence."""
     if not body.get("success") or body.get("action") != "chat":
         return
@@ -115,8 +174,11 @@ async def attach_proactive_recommendations(body: dict, expected_owner: dict, cha
             category = "meme"
         if category not in CATEGORY_SETTINGS or category in {"music", "chat"}:
             category = "web"
-        candidates.append((category, {"name": str(link.get("title") or "")[:240],
-                            "artist": str(link.get("source") or parsed.hostname)[:120], "url": raw_url, "cover": ""}))
+        candidate = {"name": str(link.get("title") or "")[:240],
+                     "artist": str(link.get("source") or parsed.hostname)[:120], "url": raw_url, "cover": ""}
+        if category == "community" and community_tags:
+            candidate["local_tags"] = community_tags
+        candidates.append((category, candidate))
         if len(candidates) == 3:
             break
     observation = body.get("screen_observation")

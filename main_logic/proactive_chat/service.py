@@ -58,6 +58,7 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_PRIVACY,
+    PROACTIVE_REASON_PASS_SOURCE_EMPTY,
     ProactiveChatCommand,
     ProactiveChatResult,
     _proactive_chat_body,
@@ -93,6 +94,7 @@ from main_logic.proactive_chat.candidate_selection import (
     _phase1_linkless_modes,
     _unmatched_pick_may_be_grounded_news,
     _round_robin_phase1_links,
+    _select_phase1_links,
     _selected_web_link_from_match,
 )
 from main_logic.proactive_chat.generation import (
@@ -122,9 +124,14 @@ from main_logic.proactive_chat.mini_game_invite import (
 from main_logic.proactive_chat.music_recommendation import (
     _build_music_dynamic_context,
     _build_music_playing_hint,
+    _fetch_music_with_fallback,
+    _format_music_content,
     _select_music_recommendation,
 )
 from main_logic.proactive_chat.music_refusal import is_music_refusal_cooldown_active
+from main_logic.proactive_chat.preference_capture import annotate_chat_sources, build_chat_evidence
+from utils.proactive_preferences.personalization import RecommendationContext
+from utils.proactive_preferences.preference_model import Profile
 from main_logic.proactive_chat.state import (
     _enter_proactive_phase2,
     _ensure_source_history_loaded,
@@ -135,6 +142,7 @@ from main_logic.proactive_chat.state import (
     _source_hash,
 )
 from main_logic.proactive_chat.sources import collect_proactive_sources
+from main_logic.proactive_chat.verse_plan import VERSE_MODES, fetch_verse_plan, iter_verse_sources
 from utils.web_scraper.proactive_candidate import (
     SelectedWebCandidatePreempted,
     prepare_selected_web_candidate,
@@ -142,6 +150,7 @@ from utils.web_scraper.proactive_candidate import (
 from utils.language_utils import (
     get_global_language,
     get_global_language_full,
+    is_china_region,
     is_supported_language_code,
     normalize_language_code,
 )
@@ -206,6 +215,8 @@ _PHASE1_TOTAL_TOPIC_TARGET = (
     PROACTIVE_PHASE1_TOTAL_TOPICS  # Target total candidates passed to Phase1 filtering model.
 )
 
+_PHASE1_TRENDING_PROBABILITY = 0.20
+
 
 def _phase1_fallback_records(content_text: str) -> list[str]:
     """Group numbered fallback records with their continuation lines."""
@@ -259,6 +270,121 @@ def _merge_phase1_parts_within_token_budget(
         if kept_candidates:
             kept_parts.append(header + "\n" + "\n".join(kept_candidates))
     return "\n\n".join(kept_parts)
+
+
+def _build_ranked_web_prompt(
+    modes: list[str],
+    sources: dict[str, dict],
+    *,
+    profile: Profile | None,
+    source_weights: dict[str, float],
+    language: str,
+    prefer_trending: bool = False,
+) -> tuple[str, list[dict], list[str], list[str]]:
+    """Render eligible links in rank order and reserve space for live context.
+
+    Formatted-only records are checked against the profile like linked
+    candidates. A source whose every record or link is excluded is marked
+    with ``preference_exhausted`` so the caller can still run an evidence pass.
+    """
+    from utils.tokenize import truncate_to_tokens
+
+    header = "--- Ranked recommendations ---"
+    labels = PROACTIVE_SOURCE_LABELS.get(language, PROACTIVE_SOURCE_LABELS["en"])
+    context_parts = []
+    for mode in _phase1_linkless_modes(modes, sources):
+        if mode == "community":
+            continue
+        records = _phase1_fallback_records(sources[mode]["formatted_content"])
+        if profile is not None:
+            allowed = [
+                record for record in records
+                if profile.score(mode, profile.match(mode, {"content": record})) is not None
+            ]
+            if records and not allowed:
+                sources[mode]["preference_exhausted"] = True
+            records = allowed
+        if records:
+            context_parts.append((
+                labels.get(mode, mode),
+                [truncate_to_tokens(record, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS) for record in records],
+            ))
+    if profile is not None:
+        # Linked candidates are dropped silently during ranking; flag a
+        # source whose every link is excluded so evidence can still lift it.
+        for mode in modes:
+            links = (sources.get(mode) or {}).get("links") or []
+            if links and all(
+                profile.score(mode, profile.match(mode, link)) is None for link in links
+            ):
+                sources[mode]["preference_exhausted"] = True
+    fallback = _merge_phase1_parts_within_token_budget(
+        [(f"--- {label} ---", records[:1]) for label, records in context_parts],
+        max_tokens=PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS,
+    )
+    chosen = _select_phase1_links(
+        modes, sources, profile=profile, source_weights=source_weights,
+        total=max(0, _PHASE1_TOTAL_TOPIC_TARGET - len(context_parts)),
+        prefer_trending=prefer_trending,
+    )
+    links: list[dict] = []
+    rows: list[str] = []
+    positions: dict[str, int] = {}
+    for link in chosen:
+        tentative_positions = positions.copy()
+        [(index, _)] = _number_phase1_links_by_source([link], source_positions=tentative_positions)
+        line = truncate_to_tokens(
+            _format_phase1_link_candidate(index, link), PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS
+        )
+        tentative = "\n\n".join(
+            part for part in ("\n".join([header, *rows, line]), fallback) if part
+        )
+        if truncate_to_tokens(tentative, PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS) != tentative:
+            continue
+        rendered_title = line.removeprefix(f"{index}. ").split(" | ", 1)[0].strip()
+        if rendered_title:
+            link["phase1_rendered_title"] = rendered_title
+        positions = tentative_positions
+        links.append(link)
+        rows.append(line)
+    link_section = "\n".join([header, *rows]) if rows else ""
+    visible_parts = {label: records[:1] for label, records in context_parts if f"--- {label} ---" in fallback}
+    remaining = _PHASE1_TOTAL_TOPIC_TARGET - len(links) - len(visible_parts)
+    for label, rows_in_context in context_parts:
+        for record in rows_in_context[1:]:
+            if remaining <= 0:
+                break
+            expanded = {**visible_parts, label: [*visible_parts.get(label, []), record]}
+            addition = "\n\n".join(
+                "\n".join([f"--- {section_label} ---", *records])
+                for section_label, records in expanded.items()
+            )
+            combined = "\n\n".join(part for part in (link_section, addition) if part)
+            if truncate_to_tokens(combined, PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS) == combined:
+                visible_parts = expanded
+                fallback = addition
+                remaining -= 1
+    merged = "\n\n".join(part for part in (link_section, fallback) if part)
+    fallback_labels = list(visible_parts)
+    fallback_records = [record for records in visible_parts.values() for record in records]
+    return merged, links, fallback_labels, fallback_records
+
+
+def _preference_excluded_result() -> ProactiveChatResult:
+    return ProactiveChatResult(
+        body=_proactive_pass_body(
+            PROACTIVE_REASON_PASS_SOURCE_EMPTY, message="all sources excluded by preferences",
+        ),
+    )
+
+
+def _eligible_meme_candidates(candidates: list[dict], profile: Profile | None) -> list[dict]:
+    if profile is None:
+        return candidates
+    return [
+        candidate for candidate in candidates
+        if profile.score("meme", profile.match("meme", candidate)) is not None
+    ]
 
 
 def _open_threads_for_activity_state(
@@ -580,7 +706,10 @@ async def _collect_sources_under_vision_consent(
     lanlan_name: str,
     vision_consent_check: Any,
     mgr: Any = None,
-) -> tuple[list[str], dict[str, dict], bool]:
+    recommendations: RecommendationContext | None = None,
+    music_available: bool = True,
+    meme_proxy_candidate_fetchable: Any = None,
+) -> tuple[list[str], dict[str, dict], bool, bool]:
     """Collect enabled sources; screen and window sources only under vision consent.
 
     The frontend withdraws these modes at send time. A revocation that arrives
@@ -599,21 +728,78 @@ async def _collect_sources_under_vision_consent(
             mode for mode in enabled_modes if mode not in _PROACTIVE_VISION_SOURCE_MODES
         ]
         withheld = True
+    locale = (
+        _resolve_proactive_locale(command, mgr, fmt="full")
+        if "community" in enabled_modes or recommendations is not None else None
+    )
+    verse_plan = None
+    delegated = VERSE_MODES.intersection(enabled_modes)
+    if not music_available:
+        delegated = delegated - {"music"}
+    if recommendations is not None and recommendations.account_id and delegated:
+        verse_plan = await fetch_verse_plan(
+            recommendations, delegated, locale=locale or "en", china=is_china_region(),
+        )
+    # A valid plan owns public sources this round. Empty plans and choices
+    # rejected by device checks leave those channels empty.
+    collect_modes = enabled_modes if verse_plan is None else [
+        mode for mode in enabled_modes if mode not in VERSE_MODES
+    ]
     sources = await collect_proactive_sources(
         command=command,
-        enabled_modes=enabled_modes,
+        enabled_modes=collect_modes,
         lanlan_name=lanlan_name,
         log=logger,
-        community_locale=(
-            _resolve_proactive_locale(command, mgr, fmt="full")
-            if "community" in enabled_modes else None
-        ),
+        community_locale=locale,
+        **({"recommendations": recommendations} if recommendations is not None else {}),
     )
+    if verse_plan is not None and recommendations is not None:
+        deadline = asyncio.get_running_loop().time() + 10.0
+        meme_checks = 0
+        for mode, content in iter_verse_sources(verse_plan, recommendations, delegated):
+            if mode in {"music", "meme"}:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    continue
+                if mode == "meme":
+                    if meme_checks >= _MEME_PROXY_CANDIDATE_CHECK_LIMIT:
+                        continue
+                    meme_checks += 1
+                try:
+                    async with asyncio.timeout(min(remaining, 5.0)):
+                        if mode == "music":
+                            raw = await _fetch_music_with_fallback(content["verse_keyword"], lanlan_name=lanlan_name)
+                            if not raw or not raw.get("success"):
+                                continue
+                            lang = _resolve_proactive_locale(command, mgr, fmt="prompt")
+                            selection = _select_music_recommendation(
+                                {"raw_data": raw, "formatted_content": _format_music_content(raw, lang)},
+                                lang=lang, source_hash=_source_hash, should_skip_source=_should_skip_source,
+                                lanlan_name=lanlan_name, preferences=recommendations.preferences,
+                            )
+                            if not selection.link:
+                                continue
+                            content["verse_music_selection"] = selection
+                        else:
+                            meme = content["verse_meme"]
+                            moderation = await moderate_meme_image_url(meme["url"], fail_closed=False)
+                            if not moderation.allowed:
+                                continue
+                            if meme_proxy_candidate_fetchable is not None:
+                                fetchable, _ = await meme_proxy_candidate_fetchable(meme["url"])
+                                if not fetchable:
+                                    continue
+                            meme["verse_checked"] = True
+                except Exception as exc:
+                    logger.warning("[%s] Verse %s candidate preflight failed: %s", lanlan_name, mode, type(exc).__name__)
+                    continue
+            sources[mode] = content
+            break
     if await _withhold_revoked_vision_sources(
         sources, vision_consent_check, lanlan_name=lanlan_name, stage="采集期间",
     ):
         withheld = True
-    return enabled_modes, sources, withheld
+    return enabled_modes, sources, withheld, verse_plan is not None
 
 
 async def handle_proactive_chat(
@@ -628,6 +814,8 @@ async def handle_proactive_chat(
     push_mini_game_invite_options: Any,
     push_mini_game_invite_resolved: Any,
     meme_proxy_candidate_fetchable: Any | None = None,
+    load_recommendations: Any = None,
+    recommendation_owner_is_current: Any = None,
 ) -> ProactiveChatResult:
     """
     Proactive chat: two-phase architecture — Phase 1 merged LLM (web screening + music/meme keywords, 1 call), Phase 2 persona-aware chat generation.
@@ -1008,6 +1196,14 @@ async def handle_proactive_chat(
                 )
                 await asyncio.sleep(_jitter)
 
+        recommendations = None
+
+        async def round_recommendations():
+            nonlocal recommendations
+            if recommendations is None and load_recommendations is not None:
+                recommendations = await load_recommendations()
+            return recommendations
+
         # ========== Must-fire: break-reminder branches ==========
         # Anti-slack outranks water-break (transition trigger more
         # time-sensitive than the cumulative one). Both bypass Phase 1
@@ -1146,6 +1342,7 @@ async def handle_proactive_chat(
 
                 _gi_prob = _gi_prob_default
             branch_game_invite = False
+            context = None
             chosen_game_type: str | None = None
             selected_theater = None
             gi_prompt: str | None = None
@@ -1153,9 +1350,11 @@ async def handle_proactive_chat(
                 import random as _random
 
                 if _random.random() < _gi_prob:
+                    context = await round_recommendations()
                     chosen_game_type = _pick_mini_game_type(
                         lanlan_name, manager=mgr, user_toggle_enabled=_user_invite_toggle,
                         theater_toggle_enabled=_theater_invite_toggle,
+                        **({"preferences": context.preferences.profile} if context is not None else {}),
                     )
                     if chosen_game_type == "theater":
                         selected_theater = await _select_theater_story()
@@ -1188,6 +1387,8 @@ async def handle_proactive_chat(
                     channel="work_break_game_invite",
                     lang=_break_lang,
                     round_id=lifecycle.screenshot_request_id,
+                    **({"delivery_is_current": recommendation_owner_is_current}
+                       if context is not None and recommendation_owner_is_current is not None else {}),
                 )
                 delivered_text = reminder_delivery.delivered_text
                 if reminder_delivery.repeat_suppressed:
@@ -1251,7 +1452,9 @@ async def handle_proactive_chat(
                         session_id=invite_session_id,
                     )
                     try:
-                        await push_mini_game_invite_options(mgr, options_payload)
+                        if (context is None or recommendation_owner_is_current is None
+                                or await recommendation_owner_is_current()):
+                            await push_mini_game_invite_options(mgr, options_payload)
                     except Exception as _ws_err:
                         logger.warning(
                             "[%s] work_break+game_invite options WS push failed: %s",
@@ -1463,6 +1666,9 @@ async def handle_proactive_chat(
             # A theater invite is spoken in the character's own voice.
             character_prompt=lanlan_prompt_map.get(lanlan_name, "").replace(
                 "{LANLAN_NAME}", lanlan_name).replace("{MASTER_NAME}", master_name_current),
+            **({"load_recommendations": round_recommendations} if load_recommendations is not None else {}),
+            **({"recommendation_owner_is_current": recommendation_owner_is_current}
+               if recommendation_owner_is_current is not None else {}),
             **state_storage_kwargs,
         )
         if invite_short_circuit is not None:
@@ -1512,16 +1718,42 @@ async def handle_proactive_chat(
 
         # ========== 0. Fetch all sources concurrently (no LLM) ==========
         vision_consent_check = _proactive_vision_consent_checker(mgr, vision_consent_epoch)
-        enabled_modes, sources, vision_sources_withheld = (
+        if enabled_modes:
+            await round_recommendations()
+        enabled_modes, sources, vision_sources_withheld, verse_ranked = (
             await _collect_sources_under_vision_consent(
                 command=command,
                 enabled_modes=enabled_modes,
                 lanlan_name=lanlan_name,
                 vision_consent_check=vision_consent_check,
                 mgr=mgr,
+                recommendations=recommendations,
+                music_available=not (is_music_occupied or is_playing_music or music_cooldown),
+                meme_proxy_candidate_fetchable=meme_proxy_candidate_fetchable,
             )
         )
+        if recommendations is not None and recommendation_owner_is_current is not None:
+            if not await recommendation_owner_is_current():
+                return await _end_proactive(ProactiveChatResult(
+                    body=_proactive_preempted_json("recommendation_account_changed"),
+                ))
+        profile = recommendations.preferences.profile if recommendations is not None else None
+        preference_withheld_source = False
+        if profile is not None:
+            for mode, source in list(sources.items()):
+                if not source.get("links") and mode in {"vision", "window"}:
+                    candidate = {"title": source.get("window_title"), "content": source.get("formatted_content")}
+                    if profile.score(mode, profile.match(mode, candidate)) is None:
+                        sources.pop(mode)
+                        preference_withheld_source = True
+        # Snapshot before source-weight suppression can drop an emptied feed.
+        preference_exhausted = preference_withheld_source or any(
+            source.get("preference_exhausted") for source in sources.values()
+        )
         avatar_position = command.avatar_position
+        # Every source was excluded by preferences: still read the chat so an
+        # evidence-only Phase 1 can lift the exclusion, then pass as before.
+        evidence_only_round = False
 
         if not sources:
             # Exception: unfinished-thread mode may already clear enabled_modes (restricted_screen_only
@@ -1537,7 +1769,11 @@ async def handle_proactive_chat(
                         ),
                     )
                 )
-            if not _has_unfinished_thread:
+            if not _has_unfinished_thread and preference_withheld_source:
+                if recommendations is None or recommendations.save_chat is None:
+                    return await _end_proactive(_preference_excluded_result())
+                evidence_only_round = True
+            if not _has_unfinished_thread and not verse_ranked and not evidence_only_round:
                 return await _end_proactive(
                     ProactiveChatResult(
                         body=_proactive_pass_body(
@@ -1548,9 +1784,8 @@ async def handle_proactive_chat(
                         status_code=500,
                     )
                 )
-            print(
-                f"[{lanlan_name}] sources 为空但有未收尾话题，进入 text-only 跟进路径"
-            )
+            if _has_unfinished_thread:
+                print(f"[{lanlan_name}] sources 为空但有未收尾话题，进入 text-only 跟进路径")
 
         # Phase1 preemption check after concurrent source fetch, before LLM.
         if _round_preempted():
@@ -1571,6 +1806,8 @@ async def handle_proactive_chat(
         # ...
 
         raw_memory_context = ""
+        preference_source_rows = None
+        request_preference_sources = recommendations is not None and recommendations.save_chat is not None
         try:
             # fmt="prompt": proactive_lang feeds Phase1/2 templates, screen/external/
             # music/meme sections, recent proactive records, action notes: all prompt dicts.
@@ -1586,14 +1823,23 @@ async def handle_proactive_chat(
             from utils.internal_http_client import get_internal_http_client
 
             _pt_client = get_internal_http_client()
+            params = _new_dialog_locale_params(command, mgr)
+            if request_preference_sources:
+                params = {**(params or {}), "preference_evidence": "true"}
             resp = await _pt_client.get(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
-                params=_new_dialog_locale_params(command, mgr),
+                params=params,
                 timeout=5.0,
             )
             resp.raise_for_status()  # Check for HTTP errors explicitly
             if resp.status_code == 200:
-                raw_memory_context = resp.text
+                if request_preference_sources and resp.headers.get("content-type", "").startswith("application/json"):
+                    dialog = resp.json()
+                    if isinstance(dialog, dict) and isinstance(dialog.get("context"), str):
+                        raw_memory_context = dialog["context"]
+                        preference_source_rows = dialog.get("preference_sources")
+                else:
+                    raw_memory_context = resp.text
             else:
                 logger.warning(
                     f"[{lanlan_name}] 记忆服务返回非200状态: {resp.status_code}，使用空上下文"
@@ -1808,19 +2054,9 @@ async def handle_proactive_chat(
             f"[{lanlan_name}] 主动搭话-表情包内容: type={type(meme_content)}, success={meme_content.get('success') if meme_content else 'N/A'}"
         )
 
-        all_web_links: list[dict] = []
-        # Phase 1 sections rendered as plain text without links (e.g. window
-        # search); an unmatched pick may legitimately come from one of them.
-        phase1_linkless_labels: list[str] = []
-        phase1_linkless_records: list[str] = []
-
-        # Collect music links after Phase1 web selection.
-        # Memes likewise bypass Phase1 LLM selection and add topics directly.
         web_modes = [m for m in sources if m not in ("vision", "music", "meme")]
-        # Personal-feed context wins when the same URL also appears elsewhere.
+        # The ranker gives personal-feed links a source bonus. Visit them first for ties.
         web_modes.sort(key=lambda mode: 0 if mode == "personal" else 1)
-
-        merged_web_content = ""
 
         # Collect Phase1 results.
         phase1_topics: list[tuple[str, str]] = []  # [(channel, topic_summary), ...]
@@ -1861,9 +2097,13 @@ async def handle_proactive_chat(
             sources,
             has_reminiscence=bool(_surfaced_reflection_ids),
         )
-        if source_weight_selection.weights:
-            source_weights = source_weight_selection.weights
-            suppressed = source_weight_selection.suppressed
+        source_weights = source_weight_selection.weights
+        if source_weights:
+            # Linked candidates use channel history as a score penalty.
+            suppressed = {
+                mode for mode in source_weight_selection.suppressed
+                if not sources.get(mode, {}).get("links")
+            }
             weight_str = " ".join(f"{ch}={w:.3f}" for ch, w in source_weights.items())
             logger.debug(
                 f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}"
@@ -1892,86 +2132,20 @@ async def handle_proactive_chat(
                 )
 
 
-        # Build once after source suppression so candidates are decayed only once.
         web_modes = [mode for mode in web_modes if mode in sources]
-        if web_modes:
-            from utils.tokenize import truncate_to_tokens as _ttt
-
-            parts = []
-            fallback_modes = _phase1_linkless_modes(web_modes, sources)
-            selected_by_mode = _round_robin_phase1_links(
-                web_modes,
-                sources,
-                total=max(
-                    0, _PHASE1_TOTAL_TOPIC_TARGET - len(fallback_modes)
-                ),
-            )
-            remaining_total = _PHASE1_TOTAL_TOPIC_TARGET - sum(
-                len(items) for items in selected_by_mode.values()
-            )
-            remaining_fallback_modes = len(fallback_modes)
-            phase1_source_positions: dict[str, int] = {}
-            for mode in web_modes:
-                src = sources[mode]
-                label_map = PROACTIVE_SOURCE_LABELS.get(
-                    proactive_lang, PROACTIVE_SOURCE_LABELS["en"]
-                )
-                label = label_map.get(mode, mode)
-                selected_links = selected_by_mode.get(mode, [])
-
-                if selected_links:
-                    all_web_links.extend(selected_links)
-                    lines = []
-                    for index, item in _number_phase1_links_by_source(
-                        selected_links, source_positions=phase1_source_positions
-                    ):
-                        rendered = _ttt(
-                            _format_phase1_link_candidate(index, item),
-                            PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
-                        )
-                        rendered_title = rendered.removeprefix(f"{index}. ").split(
-                            " | ", 1
-                        )[0].strip()
-                        if rendered_title:
-                            item["phase1_rendered_title"] = rendered_title
-                        lines.append(rendered)
-                    if lines:
-                        parts.append((f"--- {label} ---", lines))
-                        continue
-
-                # Community cards only enter Phase 1 through selected links:
-                # a formatted fallback would bypass cooldown and data escaping.
-                if mode == "community":
-                    continue
-                content_text = src.get("formatted_content", "")
-                if content_text and remaining_total > 0:
-                    fallback_records = _phase1_fallback_records(content_text)
-                    if fallback_records:
-                        is_reserved_fallback = mode in fallback_modes
-                        reserve_for_later = max(
-                            0,
-                            remaining_fallback_modes
-                            - (1 if is_reserved_fallback else 0),
-                        )
-                        fallback_limit = remaining_total - reserve_for_later
-                        if fallback_limit <= 0:
-                            continue
-                        fallback_lines = [
-                            _ttt(record, PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS)
-                            for record in fallback_records[:fallback_limit]
-                        ]
-                        parts.append((f"--- {label} ---", fallback_lines))
-                        phase1_linkless_labels.append(label)
-                        phase1_linkless_records.extend(fallback_lines)
-                        remaining_total -= len(fallback_lines)
-                        if is_reserved_fallback:
-                            remaining_fallback_modes -= 1
-
-            # Keep source sections whole so any rendered title remains exactly
-            # as visible to the Phase 1 model.
-            merged_web_content = _merge_phase1_parts_within_token_budget(
-                parts, max_tokens=PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS
-            )
+        prefer_trending = bool(
+            profile is not None
+            and profile.weights
+            and any(sources[mode].get("trend_ranks") for mode in web_modes)
+            and random.random() < _PHASE1_TRENDING_PROBABILITY
+        )
+        (
+            merged_web_content, all_web_links, phase1_linkless_labels, phase1_linkless_records,
+        ) = _build_ranked_web_prompt(
+            web_modes, sources, profile=profile, source_weights=source_weights,
+            language=proactive_lang,
+            prefer_trending=prefer_trending,
+        )
 
         # ============================================================
         # Combine Phase1 LLM: web selection + music/meme keywords.
@@ -1982,10 +2156,34 @@ async def handle_proactive_chat(
         has_web_task = bool(merged_web_content)
 
         enriched_memory_context = memory_context
+        preference_refs = {}
+        if (
+            recommendations is not None and request_preference_sources and memory_context
+            and preference_source_rows and recommendations.load_chat_sources is not None
+        ):
+            owned_sources = await recommendations.load_chat_sources(lanlan_name)
+            annotated, preference_refs = annotate_chat_sources(
+                raw_memory_context,
+                preference_source_rows,
+                owned=owned_sources,
+                analyzed=recommendations.preferences.analyzed_chat_sources,
+                start=len(raw_memory_context.rstrip()) - len(memory_context),
+            )
+            if preference_refs:
+                enriched_memory_context, _ = _parse_new_dialog(annotated)
         if followup_topics_prompt:
-            enriched_memory_context = memory_context + "\n" + followup_topics_prompt
+            enriched_memory_context += "\n" + followup_topics_prompt
 
-        if has_web_task or has_music_task or has_meme_task:
+        # A feed emptied by local exclusions still needs the evidence pass:
+        # it is the only path where a chat request can lift those exclusions.
+        preference_exhausted = preference_exhausted or any(
+            source.get("preference_exhausted") for source in sources.values()
+        )
+        request_evidence = bool(preference_refs) and (
+            has_web_task or has_music_task or has_meme_task or verse_ranked
+            or preference_exhausted
+        )
+        if has_web_task or has_music_task or has_meme_task or request_evidence:
             # Phase1 preemption: final check before dialing. Expensive LLM call starts next;
             # later interruption can be detected only by fallback after stream ends.
             if _round_preempted():
@@ -2002,6 +2200,7 @@ async def handle_proactive_chat(
             merged_web_content=merged_web_content,
             memory_context=enriched_memory_context,
             recent_chats_section=proactive_chat_history_prompt,
+            **({"preference_evidence": True} if request_evidence else {}),
             has_music_task=has_music_task,
             has_meme_task=has_meme_task,
             log=logger,
@@ -2009,6 +2208,20 @@ async def handle_proactive_chat(
             # Only window content enters the combined Phase 1 text; screenshots go only to Phase 2.
             vision_consent_required="window" in sources,
         )
+
+        if (
+            preference_refs
+            and recommendations is not None
+            and recommendations.save_chat is not None
+            and not _round_preempted()
+        ):
+            evidence = build_chat_evidence(
+                unified_parsed.get("preference_evidence"), preference_refs
+            )
+            if evidence:
+                await recommendations.save_chat(evidence)
+        if evidence_only_round:
+            return await _end_proactive(_preference_excluded_result())
 
         # ============================================================
         # Parse web output → match links → deduplicate.
@@ -2071,7 +2284,7 @@ async def handle_proactive_chat(
                     phase1_topics.append(("web", web_topic_text.strip()))
 
         # ============================================================
-        # Parallel post-fetch: music + memes using LLM-generated keywords.
+        # Resolve the chosen music or meme through the desktop provider.
         # ============================================================
         if has_music_task and unified_parsed.get("music_pass"):
             print(f"[{lanlan_name}] Phase 1 音乐通道明确 PASS，跳过后置 fetch")
@@ -2104,12 +2317,13 @@ async def handle_proactive_chat(
         # Symmetric web/meme: overfetch N, probabilistically skip each and proceed to next on hit.
         # If all skipped, clear music_content to degrade entire channel.
         # ============================================================
-        music_selection = _select_music_recommendation(
+        music_selection = (music_content or {}).get("verse_music_selection") or _select_music_recommendation(
             music_content,
             lang=proactive_lang,
             source_hash=_source_hash,
             should_skip_source=_should_skip_source,
             lanlan_name=lanlan_name,
+            **({"preferences": recommendations.preferences} if recommendations is not None else {}),
         )
         music_content = music_selection.content
         if music_selection.link:
@@ -2127,7 +2341,7 @@ async def handle_proactive_chat(
         # Assemble meme topics (iterate → deduplicate → one-image limit).
         # ============================================================
         if meme_content and meme_content.get("success") and meme_content.get("data"):
-            meme_data = meme_content.get("data", [])
+            meme_data = _eligible_meme_candidates(meme_content["data"], profile)
             if meme_data:
                 proxy_checked_count = 0
                 for candidate_meme in meme_data:
@@ -2137,7 +2351,8 @@ async def handle_proactive_chat(
                         continue  # Skip candidates lacking URL.
                     meme_source = candidate_meme.get("source", "表情包")
                     meme_topic_key = _source_hash(meme_url, meme_title)
-                    if meme_topic_key and _should_skip_source(meme_topic_key):
+                    verse_checked = bool(candidate_meme.get("verse_checked"))
+                    if not verse_checked and meme_topic_key and _should_skip_source(meme_topic_key):
                         logger.debug(
                             f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}"
                         )
@@ -2150,7 +2365,7 @@ async def handle_proactive_chat(
                                 )
                             )
                         )
-                    moderation = await moderate_meme_image_url(
+                    moderation = None if verse_checked else await moderate_meme_image_url(
                         meme_url, fail_closed=False
                     )
                     if _round_preempted():
@@ -2161,7 +2376,7 @@ async def handle_proactive_chat(
                                 )
                             )
                         )
-                    if not moderation.allowed:
+                    if moderation is not None and not moderation.allowed:
                         logger.info(
                             "[%s]- Phase 1 meme candidate moderation blocked: reason=%s cached=%s url_hash=%s title=%s",
                             lanlan_name,
@@ -2182,7 +2397,7 @@ async def handle_proactive_chat(
                             meme_topic_key[:16],
                         )
                         continue
-                    if meme_proxy_candidate_fetchable is not None:
+                    if not verse_checked and meme_proxy_candidate_fetchable is not None:
                         if (
                             proxy_checked_count
                             >= _MEME_PROXY_CANDIDATE_CHECK_LIMIT
@@ -2661,6 +2876,11 @@ async def handle_proactive_chat(
             return await _end_proactive(ProactiveChatResult(
                 body=_proactive_preempted_json("phase2_post_generation"),
             ))
+        if recommendations is not None and recommendation_owner_is_current is not None:
+            if not await recommendation_owner_is_current():
+                return await _end_proactive(ProactiveChatResult(
+                    body=_proactive_preempted_json("recommendation_account_changed"),
+                ))
         # Consent was revoked during generation: the response uses screen/window content, and the screenshot would persist into the next round; do not commit it.
         if round_uses_vision_material and await _vision_consent_declined(vision_consent_check):
             logger.info("[%s] 视觉授权在生成期间撤回，放弃本轮投递", lanlan_name)
@@ -2704,6 +2924,8 @@ async def handle_proactive_chat(
             log=logger,
             round_id=lifecycle.screenshot_request_id,
             vision_consent_epoch=vision_consent_epoch,
+            **({"delivery_is_current": recommendation_owner_is_current}
+               if recommendations is not None and recommendation_owner_is_current is not None else {}),
         )
         if delivery_commit.result is not None:
             return await _end_proactive(
@@ -2746,12 +2968,7 @@ async def handle_proactive_chat(
             memory_server_port=MEMORY_SERVER_PORT,
             log=logger,
         )
-        return await _end_proactive(
-            ProactiveChatResult(
-                body=recorded_result.body,
-                status_code=recorded_result.status_code,
-            )
-        )
+        return await _end_proactive(recorded_result)
 
     except asyncio.CancelledError:
         if lifecycle is not None:
