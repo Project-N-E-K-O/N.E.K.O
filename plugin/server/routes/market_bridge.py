@@ -75,7 +75,7 @@ from plugin.server.application.install_source.scanner import PluginDirectoryScan
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.permission_service import (
-    bind_current_permission_source,
+    bind_entry_permission_source,
 )
 from plugin.server.application.plugins.installation_transactions import (
     ReplacePluginError,
@@ -4644,11 +4644,14 @@ async def _replace_market_plugin_transaction(
     else:
         validate_manual_backup = None
     # Before anything changes: a grant record without a source yet is bound
-    # to the plugin's current source, so the Market source recorded for the
-    # new package is a source change rather than a first binding. A failed
-    # save stops the replacement here, unchanged.
+    # to the source of the entry validated above (not looked up again), so
+    # the Market source recorded for the new package is a source change
+    # rather than a first binding. A failed save, or an incomplete entry with
+    # a source-less record, stops the replacement here, unchanged.
     try:
-        await asyncio.to_thread(bind_current_permission_source, active_entry.plugin_id)
+        await asyncio.to_thread(
+            bind_entry_permission_source, active_entry.plugin_id, active_entry
+        )
     except ServerDomainError as exc:
         raise _TaskError(
             code=exc.code.lower(),
