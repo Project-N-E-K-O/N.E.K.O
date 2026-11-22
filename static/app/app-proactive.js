@@ -1561,8 +1561,12 @@
                         // 这里不再二次推断：抓帧是异步的，等到这一步 S 里的流 / 源
                         // 可能已经换人，拿它解释这张旧图会叠错或漏叠。
                         var captureType = screenshotResult.captureType || null;
-                        var avatarPos = typeof window.getAvatarScreenPosition === 'function'
-                            ? window.getAvatarScreenPosition(captureType) : null;
+                        // 位置在拿到原图后、遮罩之前算好随图返回（见 captureProactiveChatScreenshotWithSource），
+                        // 遮罩和其它并行任务都会拖后这里的时间点。
+                        var avatarPos = screenshotResult.avatarPositionPinned === true
+                            ? (screenshotResult.avatarPosition || null)
+                            : (typeof window.getAvatarScreenPosition === 'function'
+                                ? window.getAvatarScreenPosition(captureType) : null);
                         if (avatarPos) {
                             requestBody.avatar_position = avatarPos;
                         }
@@ -2081,6 +2085,9 @@
                 return;
             }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+            // 这一帧属于当前这条连接的会话：采集和遮罩期间 connectWebSocket() 可能换掉 S.socket
+            // （例如切换角色），帧不能发到新连接上。
+            var captureSocket = S.socket;
             // A revocation during this capture voids the frame, even if
             // consent is granted again before it would be sent.
             // Only an actual "not allowed now" stops the heartbeat: after a
@@ -2205,6 +2212,9 @@
 
             // 后端 pyautogui 兜底
             if (!dataUrl) {
+                // 后端整屏图的遮罩区域按 'backend' 口径取（#3474）：开头那次是按选中源取的，
+                // 桌面壳下对不上目标会被丢弃，只剩截图后那一次。
+                maskSession = beginSelfUiMaskSession({ sourceId: null, via: 'backend' });
                 var backendResult = await fetchBackendScreenshot();
                 dataUrl = backendResult.dataUrl;
                 if (dataUrl) {
@@ -2260,7 +2270,12 @@
                 console.warn('[ProactiveVision] 记忆窗口身份已变化，丢弃过期语音视觉帧');
                 return;
             }
-            if (visionMessage && S.socket && S.socket.readyState === WebSocket.OPEN) {
+            if (visionMessage && S.socket !== captureSocket) {
+                console.log('[ProactiveVision] 采集期间连接已更换，丢弃这一帧');
+                return;
+            }
+            // 上面已确认 S.socket 仍是采集时那条连接。
+            if (visionMessage && S.socket.readyState === WebSocket.OPEN) {
                 S.socket.send(JSON.stringify(visionMessage));
                 frameSent = true;
                 console.log('[ProactiveVision] 发送单帧屏幕数据');
@@ -2718,6 +2733,8 @@
 
         // 策略2: 后端 pyautogui 兜底
         if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
+        // 后端整屏图的遮罩区域按 'backend' 口径取（#3474），见外层 captureProactiveChatScreenshotWithSource。
+        if (captureScope) captureScope.backendMaskSession = beginSelfUiMaskSession({ sourceId: null, via: 'backend' });
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
@@ -2742,6 +2759,15 @@
         var shot = await captureProactiveChatScreenshotWithSourceInternal(captureScope);
         // 遮罩必须在返回（即发送）之前完成：调用方拿到的就是要发的那张图。
         if (shot && shot.dataUrl) {
+            // Avatar 位置在拿到原图后、遮罩之前算好，随图返回：遮罩是异步的，调用方事后再读会和图对不上。
+            // 调用方见到 avatarPositionPinned 就直接用 avatarPosition（null 表示这张图不标注）。
+            shot.avatarPosition = typeof window.getAvatarScreenPosition === 'function'
+                ? (window.getAvatarScreenPosition(shot.captureType || null) || null) : null;
+            shot.avatarPositionPinned = true;
+            // 后端整屏兜底图：用截后端图之前按 'backend' 口径取的那次区域。
+            if (shot.via === 'backend' && captureScope.backendMaskSession) {
+                maskSession = captureScope.backendMaskSession;
+            }
             var maskedDataUrl = await maskSelfUiInFrame(shot.dataUrl, {
                 captureType: shot.captureType || null,
                 sourceId: shot.sourceId || null,

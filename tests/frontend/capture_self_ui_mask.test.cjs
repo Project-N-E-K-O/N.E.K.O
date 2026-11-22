@@ -1080,3 +1080,105 @@ test('single-shot: backend desktop frames are re-encoded at their capture qualit
     assert.equal(fillsOf(shot.dataUrl).length, 2);
     assert.deepEqual(qualities, [['image/jpeg', 0.8]]);
 });
+
+// ---------------------------------------------------------------- review round 4
+
+test('browser: window moved AND regions changed mid-capture -> every position x region combination is covered', async () => {
+    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
+    const { w } = makeWindow({
+        elements: [history],
+        geom: { innerWidth: 1000, innerHeight: 800, outerWidth: 1000, outerHeight: 800, screenX: 0, screenY: 0, screenWidth: 2000, screenHeight: 1000 },
+        imageSizes: { [RAW_FRAME]: [2000, 1000] },
+    });
+    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    w.screenX = 500;
+    history.rect = { x: 300, y: 100, w: 100, h: 100 };
+    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    const xs = fillsOf(out).map((f) => f[0]).sort((a, b) => a - b);
+    // old regions @ old window (92), new regions @ old window (292),
+    // old regions @ new window (592), new regions @ new window (792)
+    assert.deepEqual(xs, [92, 292, 592, 792]);
+});
+
+test('browser: window not moved -> no cross-mapped extra regions', async () => {
+    const history = makeElement({ x: 100, y: 100, w: 100, h: 100 });
+    const { w } = makeWindow({ elements: [history], geom: { screenWidth: 2000, screenHeight: 1000 }, imageSizes: { [RAW_FRAME]: [2000, 1000] } });
+    const session = w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    history.rect = { x: 300, y: 100, w: 100, h: 100 };
+    const out = await w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.deepEqual(fillsOf(out).map((f) => f[0]).sort((a, b) => a - b), [92, 292]);
+});
+
+// Options are open when the backend screenshot is taken and close right after it.
+function backendOptionsCloseShell() {
+    const state = { optionsOpen: true };
+    const shell = shellStub(async (req) => {
+        if (req.surface !== 'backend' || !state.optionsOpen) return { ok: true, rects: [] };
+        return { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] };
+    });
+    shell.fetchBackendScreenshot = async () => { state.optionsOpen = false; return { dataUrl: RAW_FRAME }; };
+    return shell;
+}
+
+test('single-shot backend frame: regions are sampled for the backend surface before the backend screenshot', async () => {
+    const shell = backendOptionsCloseShell();
+    const env = bootProactive({ multiWindow: true, shell });
+    env.S.screenCaptureStream = null;
+    env.w.appScreen.acquireOrReuseCachedStream = async () => null;
+    env.w.appScreen.fetchBackendScreenshot = shell.fetchBackendScreenshot;
+    const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(shot.via, 'backend');
+    assert.deepEqual(fillsOf(shot.dataUrl), [[500, 400, 250, 200]], 'options visible at screenshot time stay covered');
+});
+
+test('voice heartbeat backend frame: regions are sampled for the backend surface before the backend screenshot', async () => {
+    const shell = backendOptionsCloseShell();
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+    env.w.appScreen.acquireOrReuseCachedStream = async () => null;
+    env.w.appScreen.fetchBackendScreenshot = shell.fetchBackendScreenshot;
+    vm.runInContext(proactiveSource, env.w);
+    await env.w.appProactive.sendOneProactiveVisionFrame();
+    assert.equal(env.sent.length, 1);
+    assert.deepEqual(fillsOf(env.sent[0].data), [[500, 400, 250, 200]]);
+});
+
+test('voice heartbeat: a frame captured on one connection is not sent on a reconnected socket', async () => {
+    let env;
+    const replaced = [];
+    const shell = shellStub(async (_req, n) => {
+        if (n === 2) env.S.socket = { readyState: 1, send: (m) => replaced.push(m) };
+        return { ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] };
+    });
+    env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+    const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    env.w.appScreen.acquireOrReuseCachedStream = async () => stream;
+    env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
+    vm.runInContext(proactiveSource, env.w);
+    await env.w.appProactive.sendOneProactiveVisionFrame();
+    assert.equal(env.sent.length, 0, 'not sent on the old socket');
+    assert.equal(replaced.length, 0, 'not sent on the new socket either');
+});
+
+test('single-shot: avatar_position is pinned when the raw frame arrives, before masking', async () => {
+    let centerX = 0.1;
+    let shellEnv;
+    const shell = shellStub(async (_req, n) => {
+        if (n === 2) centerX = 0.9; // avatar moves while the frame is being masked
+        return { ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] };
+    });
+    shellEnv = bootProactive({ multiWindow: true, shell });
+    shellEnv.w.getAvatarScreenPosition = () => ({ centerX });
+    const shot = await shellEnv.w.appProactive.captureProactiveChatScreenshotWithSource();
+    assert.equal(shot.avatarPositionPinned, true);
+    assert.equal(shot.avatarPosition.centerX, 0.1);
+});
+
+test('single-shot consumers use the pinned avatar position (text guard only, not a behaviour test)', () => {
+    const ws = fs.readFileSync(path.join(repo, 'static/app/app-websocket.js'), 'utf8');
+    assert.match(ws, /shot\.avatarPositionPinned === true/);
+    assert.match(ws, /hasPinnedAvatarPos\s*\?\s*pinnedAvatarPos/);
+    assert.match(proactiveSource, /screenshotResult\.avatarPositionPinned === true/);
+});

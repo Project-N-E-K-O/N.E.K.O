@@ -400,13 +400,17 @@
         // back the current config, so this cannot be detected at runtime.
         var handle = captureHandle && captureHandle.handle;
         if (handle === OWN_CAPTURE_HANDLE) return 'own';
+        // Only same-origin N.E.K.O pages are recognised: the handle is
+        // published to its own origin only, so a N.E.K.O page on another
+        // origin (localhost vs 127.0.0.1, another port) reads as 'other'.
         if (typeof handle === 'string' && handle.indexOf(OWN_CAPTURE_HANDLE_PREFIX) === 0) return 'other-neko';
         return 'other';
     }
 
     /**
      * @returns {boolean|null} true: the stream captures this tab; false: it
-     *          captures another tab; null: cannot tell.
+     *          captures another tab, including another N.E.K.O page (use
+     *          classifyTabCapture() to tell those apart); null: cannot tell.
      */
     function isOwnTabCapture(stream) {
         var kind = classifyTabCapture(stream);
@@ -426,11 +430,27 @@
             return unionGeometry(pre, post);
         }
         var geom = readBrowserGeometry(win);
-        var postLocal = mapLocalSample(sampleLocal(win), ctx, geom);
-        var preLocal = session && session.local
-            ? mapLocalSample(session.local, ctx, session.geom || geom)
-            : null;
-        return unionGeometry(preLocal, postLocal);
+        var postSample = sampleLocal(win);
+        var postLocal = mapLocalSample(postSample, ctx, geom);
+        if (!(session && session.local)) return postLocal;
+        var preGeom = session.geom || geom;
+        var preLocal = mapLocalSample(session.local, ctx, preGeom);
+        if (sameBrowserPlacement(preGeom, geom)) return unionGeometry(preLocal, postLocal);
+        // The browser window moved while the frame was being taken. The frame
+        // shows the window at one of the two positions and the regions as one
+        // of the two samples, and which one is unknown: map both samples with
+        // both positions so every combination is covered.
+        return unionGeometry(
+            unionGeometry(preLocal, postLocal),
+            unionGeometry(mapLocalSample(session.local, ctx, geom), mapLocalSample(postSample, ctx, preGeom))
+        );
+    }
+
+    function sameBrowserPlacement(a, b) {
+        if (!a || !b) return a === b;
+        return a.screenX === b.screenX && a.screenY === b.screenY
+            && a.outerWidth === b.outerWidth && a.outerHeight === b.outerHeight
+            && a.innerWidth === b.innerWidth && a.innerHeight === b.innerHeight;
     }
 
     function unionGeometry(pre, post) {
@@ -455,7 +475,8 @@
     /**
      * The chat history / option regions may be in the frame, but where they
      * are is unknown (several displays in the browser, a shared window that
-     * may or may not be this browser, a desktop shell without
+     * may or may not be this browser, a shared browser tab showing another
+     * N.E.K.O page of the same origin, a desktop shell without
      * getSelfUiCaptureMask, or a failed query).
      *
      * Also reached when the position is known but painting failed
@@ -531,8 +552,11 @@
      * @param {{captureType: ('screen'|'viewport'|null), sourceId?: string|null, via?: string, jpegQuality?: number, stream?: MediaStream}} ctx
      *        what this frame actually is (pinned when it was captured).
      *        jpegQuality: re-encode quality for JPEG frames (match the capture
-     *        quality). stream: the stream a browser-tab frame came from, used
-     *        to tell this tab from another one (defaults to the cached stream).
+     *        quality). stream: the stream the frame came from. Callers must pass
+     *        it for browser-tab frames: it is the only way to tell this tab from
+     *        another one. Without it the tab is "unknown" (old rule: masked only
+     *        while this page is in the foreground); the cached stream is never
+     *        consulted, since it may have been swapped during capture.
      * @param {object} [session] from beginMaskSession(), taken before capture
      * @returns {Promise<string|null>} the frame to send, or null to send nothing
      */
@@ -695,6 +719,7 @@
         REPORT_MAX_RECTS: REPORT_MAX_RECTS,
         startShellReporter: startShellReporter,
         isOwnTabCapture: isOwnTabCapture,
+        classifyTabCapture: classifyTabCapture,
         OWN_CAPTURE_HANDLE: OWN_CAPTURE_HANDLE
     };
 })();

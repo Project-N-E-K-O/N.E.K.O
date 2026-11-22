@@ -5458,6 +5458,8 @@
                             // 抓帧是异步的，等到这一步 S 里的流 / 源可能已经换人。
                             var shotCaptureType = null;
                             var hasPairedCaptureType = false;
+                            var pinnedAvatarPos = null;
+                            var hasPinnedAvatarPos = false;
                             if (window.appProactive
                                 && typeof window.appProactive.captureProactiveChatScreenshotWithSource === 'function') {
                                 var shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
@@ -5468,6 +5470,11 @@
                                 dataUrl = shot && shot.dataUrl ? shot.dataUrl : null;
                                 shotCaptureType = shot ? (shot.captureType || null) : null;
                                 hasPairedCaptureType = true;
+                                // 截图函数在拿到原图后、遮罩之前算好的 Avatar 位置（遮罩是异步的，事后再读会对不上）。
+                                if (shot && shot.avatarPositionPinned === true) {
+                                    pinnedAvatarPos = shot.avatarPosition || null;
+                                    hasPinnedAvatarPos = true;
+                                }
                             } else if (typeof window.captureProactiveChatScreenshot === 'function') {
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
@@ -5494,8 +5501,10 @@
                                         captureType = 'screen';
                                     }
                                 }
-                                var avatarPos = typeof window.getAvatarScreenPosition === 'function'
-                                    ? window.getAvatarScreenPosition(captureType) : null;
+                                var avatarPos = hasPinnedAvatarPos
+                                    ? pinnedAvatarPos
+                                    : (typeof window.getAvatarScreenPosition === 'function'
+                                        ? window.getAvatarScreenPosition(captureType) : null);
                                 if (avatarPos) {
                                     respMsg.avatar_position = avatarPos;
                                 }
