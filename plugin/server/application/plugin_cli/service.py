@@ -589,11 +589,14 @@ class PluginCliService:
                 details=asdict(plan),
             )
 
-        # Before anything changes: a grant record without a source yet is
-        # bound to the plugin's current source, so the new package's source
-        # is a source change rather than a first binding. A failed save stops
-        # the replacement here, unchanged.
-        await asyncio.to_thread(bind_current_permission_source, plan.plugin_id)
+        # Before anything changes, on the paths that record a new source (a
+        # requested install source, a manual takeover): a grant record without
+        # a source yet is bound to the plugin's current source, so the new
+        # package's source is a source change rather than a first binding. A
+        # failed save stops the replacement here, unchanged. A replacement
+        # that records no source keeps the current one, so it needs no binding.
+        if install_source is not None or plan.reason == "manual_takeover":
+            await asyncio.to_thread(bind_current_permission_source, plan.plugin_id)
 
         # If the target directory contains only config/data/cache and no plugin.toml, install_plan
         # chooses reinstall — but by definition that replacement path does not register pending approval. Yet no plugin code was previously installed there:

@@ -429,9 +429,12 @@ async def test_local_upgrade_binds_a_source_less_record_before_replacing(environ
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("install_source", ["imported", None])
 async def test_local_upgrade_stops_unchanged_when_the_binding_cannot_be_saved(
-    environment, monkeypatch,
+    environment, monkeypatch, install_source,
 ):
+    """Only a replacement that records a new source binds first; one that
+    records none keeps the current source and is not stopped by the store."""
     from plugin.server.application.plugins import permission_service
 
     env = environment
@@ -447,14 +450,20 @@ async def test_local_upgrade_stops_unchanged_when_the_binding_cannot_be_saved(
 
     monkeypatch.setattr(permission_service.permission_store, "bind_unbound_source", cannot_bind)
 
+    arguments = dict(
+        package=str(package), install_source=install_source, confirm_upgrade=True,
+        confirmation_token=plan["confirmation_token"],
+    )
+    manifest = env.user / PLUGIN_ID / "plugin.toml"
+    if install_source is None:
+        await env.service.install(**arguments)
+        assert 'version="2.0.0"' in manifest.read_text(encoding="utf-8")
+        return
     with pytest.raises(ServerDomainError) as captured:
-        await env.service.install(
-            package=str(package), install_source="imported", confirm_upgrade=True,
-            confirmation_token=plan["confirmation_token"],
-        )
+        await env.service.install(**arguments)
 
     assert captured.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
-    assert 'version="1.0.0"' in (env.user / PLUGIN_ID / "plugin.toml").read_text(encoding="utf-8")
+    assert 'version="1.0.0"' in manifest.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
