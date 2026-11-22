@@ -38,6 +38,7 @@ from config import MONITOR_SERVER_PORT, MONITOR_TOKEN, MONITOR_VIEWER_TOKEN
 VIEWER_SESSION_COOKIE = f"neko_monitor_session_{MONITOR_SERVER_PORT}"
 VIEWER_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 
+# Static model/asset mounts stay tokenless; /user_mods serves the same root as /workshop.
 _PUBLIC_PATH_PREFIXES = (
     "/static/", "/user_live2d/", "/user_live2d_local/", "/workshop/", "/user_mods/",
 )

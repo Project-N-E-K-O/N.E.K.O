@@ -27,7 +27,11 @@ import utils.config_manager as config_manager_module
 from app import monitor, monitor_auth
 from utils import frontend_utils
 from utils.config_manager.workshop import WorkshopMixin
-from utils.workshop_utils import create_workshop_static_files, register_workshop_roots_from_items
+from utils.workshop_utils import (
+    WorkshopStaticFiles,
+    create_workshop_static_files,
+    register_workshop_roots_from_items,
+)
 
 
 pytestmark = pytest.mark.unit
@@ -217,3 +221,8 @@ def test_monitor_user_mods_is_public_like_workshop(libraries, monkeypatch):
     with TestClient(app) as client:
         assert client.get("/user_mods/mods/Delta/Delta.model3.json").status_code == 200
         assert client.get("/workshop/mods/Delta/Delta.model3.json").status_code == 200
+
+
+def test_monitor_app_mounts_workshop_with_the_multi_library_app():
+    mounts = {getattr(r, "path", None): r for r in monitor.app.routes}
+    assert isinstance(mounts["/workshop"].app, WorkshopStaticFiles)
