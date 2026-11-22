@@ -1249,7 +1249,27 @@ def test_publish_github_stops_before_tag_when_release_workflow_is_not_standard(
     assert _run_git(remote, "tag", "--list") == ""
     error = capsys.readouterr().err
     assert "standard release workflow is not current" in error
-    assert "setup-repo" in error
+    target = publish_cmd.release_cmd._plugin_dir_argument(plugin_dir, "")
+    assert f"neko-plugin setup-repo {target} --upgrade-github-actions" in error
+
+
+def test_release_workflow_hint_names_the_directory_behind_a_placeholder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(publish_cmd.release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir = tmp_path / "%USERPROFILE%"
+    stale = SimpleNamespace(relative_path=Path(".github/workflows/release.yml"), status=None)
+    monkeypatch.setattr(publish_cmd, "migrate_github_actions", lambda *args, **kwargs: [stale])
+
+    with pytest.raises(RuntimeError) as caught:
+        publish_cmd._ensure_standard_release_workflow(plugin_dir, plugin_id="demo")
+    message = str(caught.value)
+    assert 'setup-repo "<plugin directory>" --upgrade-github-actions' in message
+    assert f"(plugin directory: {plugin_dir})" in message
+    assert f"（插件目录：{plugin_dir}）" in message
 
 
 def test_publish_can_resume_when_remote_tag_already_points_to_head(

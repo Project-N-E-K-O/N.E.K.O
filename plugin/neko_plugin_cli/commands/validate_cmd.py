@@ -39,6 +39,7 @@ from plugin.utils.source_paths import iter_plugin_python_files
 from ..core.build_rules import reraise_walk_error
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
+from .deps_cmd import _is_link
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 _PLUGIN_ENTRIES_MAX = 1024
@@ -1530,17 +1531,23 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
     # rule locally so the upload is not the first place it surfaces. CI scans
     # the checkout before dependency sync, so vendor/ (which pip may populate
     # with link wrappers) and .git/ are out of scope here too.
+    links: list[Path] = []
     try:
-        links = []
         for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
             base = Path(root)
             if base == plugin_dir:
                 directories[:] = [name for name in directories if name not in {"vendor", ".git"}]
                 files = [name for name in files if name not in {"vendor", ".git"}]
-            links.extend(base / name for name in (*directories, *files) if (base / name).is_symlink())
+            # _is_link also catches a Windows junction, which is_symlink()
+            # misses on Python 3.11 (and which os.walk would descend into).
+            # Junctions are always directories, so files need only is_symlink().
+            linked = {name for name in directories if _is_link(base / name)}
+            linked.update(name for name in files if (base / name).is_symlink())
+            links.extend(base / name for name in (*directories, *files) if name in linked)
+            directories[:] = [name for name in directories if name not in linked]
     except OSError as exc:
+        # Still report the links found before the failure.
         issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
-        return
     if not links:
         return
     shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
