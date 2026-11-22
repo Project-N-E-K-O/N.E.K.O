@@ -47,6 +47,10 @@ async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) 
         return _register_result(
             {}, ok=False, error="main_server_unavailable", message=f"{type(exc).__name__}: {exc}",
         )
+    except ValueError as exc:  # main_server answered, but not with JSON
+        return _register_result(
+            {}, ok=False, error="main_server_error", message=f"{type(exc).__name__}: {exc}",
+        )
     return _register_result(body if isinstance(body, dict) else {}, ok=True)
 
 
@@ -62,5 +66,9 @@ async def handle_llm_tool_unregister(ctx: RpcContext, request: dict[str, object]
     except httpx.HTTPError as exc:
         return _unregister_result(
             {}, ok=False, error="main_server_unavailable", message=f"{type(exc).__name__}: {exc}",
+        )
+    except ValueError as exc:  # main_server answered, but not with JSON
+        return _unregister_result(
+            {}, ok=False, error="main_server_error", message=f"{type(exc).__name__}: {exc}",
         )
     return _unregister_result(body if isinstance(body, dict) else {}, ok=True)

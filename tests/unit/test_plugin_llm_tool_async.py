@@ -594,6 +594,37 @@ async def test_host_register_main_server_http_error(monkeypatch, registry):
     assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
 
 
+class _NonJsonResp(_FakeResp):
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["register", "unregister"])
+async def test_host_non_json_answer_is_main_server_error(monkeypatch, registry, op):
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
+
+    class _Server(_FakeMainServer):
+        async def post(self, url, json=None, **_):
+            self.posts.append((url, json))
+            return _NonJsonResp("<html>", 200)
+
+    await _seed_tracking(registry)
+    _use_main_server(monkeypatch, registry, _Server())
+    if op == "register":
+        result = await handle_llm_tool_register(_rpc_ctx(), dict(_REGISTER_REQUEST))
+    else:
+        result = await handle_llm_tool_unregister(_rpc_ctx(), dict(_UNREGISTER_REQUEST))
+
+    assert result["ok"] is False
+    assert result["error"] == "main_server_error"
+    # Neither path drops existing tracking on an unreadable answer.
+    assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
 @pytest.mark.asyncio
 async def test_host_register_missing_name_is_invalid_request(monkeypatch, registry):
     from plugin.server.messaging.handlers.llm_tools import handle_llm_tool_register

@@ -510,7 +510,7 @@ returns what `main_server` answered:
 `error` codes: `rejected` (register: no role accepted, e.g. the name is
 owned by another source), `partial_failure` (unregister: some roles
 failed), `main_server_unavailable` (no HTTP answer), `main_server_error`
-(HTTP status >= 400, e.g. unknown role), `timeout` (no answer from the
+(HTTP status >= 400, e.g. unknown role, or a non-JSON answer), `timeout` (no answer from the
 host within `request_timeout`), `host_unavailable` (the request could
 not reach the host), `not_registered` (unregister: this plugin has no
 tool by that name; the host is not contacted), `invalid_request`.

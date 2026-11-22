@@ -299,7 +299,8 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #
 # ``error`` codes:
 #   host side  -- "invalid_request", "main_server_unavailable" (no HTTP
-#                 answer), "main_server_error" (HTTP status >= 400),
+#                 answer), "main_server_error" (HTTP status >= 400 or
+#                 a non-JSON answer),
 #                 "rejected" (register: no role accepted the tool),
 #                 "partial_failure" (unregister: some roles failed).
 #   SDK side   -- "timeout" (the host did not answer within

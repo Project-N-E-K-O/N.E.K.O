@@ -442,7 +442,7 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
 `partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（没拿到 HTTP 回复）、
-`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在）、`timeout`（`request_timeout`
+`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在；或回复不是 JSON）、`timeout`（`request_timeout`
 内 host 没回复）、`host_unavailable`（请求没送到 host）、`not_registered`（注销：本插件没有
 这个名字的工具，不会联系 host）、`invalid_request`。
 

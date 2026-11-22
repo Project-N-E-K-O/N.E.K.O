@@ -486,7 +486,7 @@ result = await self.unregister_llm_tool_async("custom_tool")
 
 `error` コード：`rejected`（登録：どの role も受け付けなかった。例：名前が別 source に使われている）、
 `partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（HTTP 応答なし）、
-`main_server_error`（HTTP ステータス >= 400。例：存在しない role）、`timeout`（`request_timeout`
+`main_server_error`（HTTP ステータス >= 400。例：存在しない role。または JSON でない応答）、`timeout`（`request_timeout`
 内にホストが応答しなかった）、`host_unavailable`（リクエストがホストに届かなかった）、
 `not_registered`（解除：このプラグインにその名前のツールがない。ホストには問い合わせない）、
 `invalid_request`。
