@@ -10,6 +10,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..git_env import git_env
+
 if TYPE_CHECKING:
     from plugin.neko_plugin_cli.templates.generator import PluginSpec
 
@@ -49,6 +51,7 @@ def _run_git(command: list[str], *, cwd: Path) -> None:
         subprocess.run(
             ["git", *command],
             cwd=cwd,
+            env=git_env(),
             capture_output=True,
             text=True,
             encoding="utf-8",

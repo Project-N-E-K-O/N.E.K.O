@@ -1445,7 +1445,7 @@ class _TransportMixin:
         *,
         update_turn_state: bool = True,
     ) -> str:
-        """Use VISION_MODEL to analyze an image and return its description.
+        """Describe an image with the chat model (legacy vision config as fallback).
 
         Callback-owned images pass ``update_turn_state=False`` because their
         description is delivered in the callback's exact arbiter ticket. They
@@ -1479,7 +1479,7 @@ class _TransportMixin:
                 logger.info("✅ Image analysis complete.")
                 return description
             else:
-                logger.warning("VISION_MODEL not configured or analysis failed")
+                logger.warning("Image description unavailable (chat model not configured or analysis failed)")
                 if update_turn_state:
                     self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                     self._image_recognized_this_turn = False

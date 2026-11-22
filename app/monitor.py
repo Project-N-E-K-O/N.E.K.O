@@ -44,7 +44,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
 from fastapi.templating import Jinja2Templates
-from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
+from utils.frontend_utils import _is_within, find_models, find_model_config_file, find_model_directory
+from utils.live2d_model_refs import sanitize_emotion_mapping
 from utils.workshop_utils import create_workshop_static_files, get_default_workshop_folder
 from utils.preferences import GLOBAL_CONVERSATION_KEY, aload_user_preferences
 
@@ -249,13 +250,21 @@ def get_emotion_mapping(model_name: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find the .model3.json file
+        # Find the .model3.json file. Like the main server's route, only a file whose real
+        # path stays inside the model folder is used; if every candidate leaves it, refuse.
         model_json_path = None
+        model_dir_real = os.path.realpath(model_dir)
+        escaped = False
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+                candidate = os.path.join(model_dir, file)
+                if _is_within(model_dir_real, os.path.realpath(candidate)):
+                    model_json_path = candidate
+                    break
+                escaped = True
+        if model_json_path is None and escaped:
+            return JSONResponse(status_code=403, content={"success": False, "error": "模型配置文件不在模型目录内"})
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
@@ -263,16 +272,22 @@ def get_emotion_mapping(model_name: str):
             config_data = json.load(f)
 
         # Prefer EmotionMapping; if absent, derive from FileReferences
-        emotion_mapping = config_data.get('EmotionMapping')
-        if not emotion_mapping:
+        emotion_mapping = config_data.get('EmotionMapping') if isinstance(config_data, dict) else None
+        # A stored mapping that is not an object (a corrupted file) is ignored like a missing one.
+        if not isinstance(emotion_mapping, dict) or not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
-            file_refs = config_data.get('FileReferences', {}) or {}
+            # Unexpected shapes on disk are skipped, never a 500.
+            file_refs = config_data.get('FileReferences') if isinstance(config_data, dict) else None
+            if not isinstance(file_refs, dict):
+                file_refs = {}
 
             # Derive from the standard Motions structure
-            motions = file_refs.get('Motions', {}) or {}
+            motions = file_refs.get('Motions')
+            if not isinstance(motions, dict):
+                motions = {}
             for group_name, items in motions.items():
                 files = []
-                for item in items or []:
+                for item in items if isinstance(items, list) else []:
                     try:
                         file_path = item.get('File') if isinstance(item, dict) else None
                         if file_path:
@@ -282,13 +297,17 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["motions"][group_name] = files
 
             # Derive from the standard Expressions structure (group by the Name prefix, such as happy_xxx)
-            expressions = file_refs.get('Expressions', []) or []
+            expressions = file_refs.get('Expressions')
+            if not isinstance(expressions, list):
+                expressions = []
             for item in expressions:
                 if not isinstance(item, dict):
                     continue
-                name = item.get('Name') or ''
+                name = item.get('Name')
+                if not isinstance(name, str):
+                    name = ''
                 file_path = item.get('File') or ''
-                if not file_path:
+                if not isinstance(file_path, str) or not file_path:
                     continue
                 file_path = file_path.replace('\\', '/')
                 # Split the group at the first underscore
@@ -300,7 +319,11 @@ def get_emotion_mapping(model_name: str):
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
             emotion_mapping = derived_mapping
-        
+
+        # Same output as the main server's route: references it would refuse are left out.
+        emotion_mapping = sanitize_emotion_mapping(
+            emotion_mapping, os.path.dirname(model_json_path), model_dir_real
+        )
         return {"success": True, "config": emotion_mapping}
     except Exception as e:
         print(f"获取情绪映射配置失败: {e}")

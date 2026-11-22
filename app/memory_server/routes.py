@@ -8653,6 +8653,15 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
 from contextlib import contextmanager
 
 
+def _queue_long_term_capture(name: str, *, force: bool = False) -> None:
+    """Let multi-device sync publish what a Memory Browser write just saved."""
+    try:
+        from .long_term_sync import queue_capture
+        queue_capture(name, force=force)
+    except Exception as exc:
+        logger.debug("[MemoryBrowser] sync capture not queued for %s: %s", name, exc)
+
+
 @contextmanager
 def _admit_browser_character_write(name: str):
     """Register body-addressed browser mutations in the character release-draining ledger."""
@@ -8681,6 +8690,7 @@ async def browser_edit_persona(request: _BrowserPersonaEditRequest):
             raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Persona entry not found")
+    _queue_long_term_capture(name)
     return {"success": True, "entry": updated}
 
 
@@ -8702,6 +8712,7 @@ async def browser_set_persona_flags(request: _BrowserPersonaFlagsRequest):
             raise HTTPException(status_code=403, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Persona entry not found")
+    _queue_long_term_capture(name)
     return {"success": True, "entry": updated}
 
 
@@ -8716,6 +8727,7 @@ async def browser_archive_persona(request: _BrowserPersonaArchiveRequest):
         )
     if not ok:
         raise HTTPException(status_code=404, detail="Persona entry not found or protected")
+    _queue_long_term_capture(name)
     return {"success": True}
 
 
@@ -8742,6 +8754,7 @@ async def browser_restore_persona_version(request: _BrowserPersonaRestoreRequest
             raise HTTPException(status_code=409, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Persona entry not found")
+    _queue_long_term_capture(name)
     return {"success": True, "entry": updated}
 
 
@@ -8768,6 +8781,7 @@ async def browser_resolve_correction(request: _BrowserCorrectionResolveRequest):
             raise HTTPException(status_code=400, detail=str(exc))
         except LookupError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
+    _queue_long_term_capture(name)
     return {"success": True, **res}
 
 
@@ -8788,6 +8802,7 @@ async def browser_review_reflection(request: _BrowserReflectionReviewRequest):
             raise HTTPException(status_code=400, detail=str(exc))
     if res is None:
         raise HTTPException(status_code=404, detail="Reflection not found")
+    _queue_long_term_capture(name)
     return {"success": True, **res}
 
 
@@ -8805,6 +8820,7 @@ async def browser_edit_fact(request: _BrowserFactEditRequest):
             raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Fact not found")
+    _queue_long_term_capture(name)
     return {"success": True, "fact": updated}
 
 
@@ -8820,6 +8836,7 @@ async def browser_archive_fact(request: _BrowserFactArchiveRequest):
             raise HTTPException(status_code=400, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=404, detail="Fact not found")
+    _queue_long_term_capture(name)
     return {"success": True}
 
 
@@ -8885,6 +8902,7 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
                 raise HTTPException(status_code=400, detail=str(exc))
             except LookupError as exc:
                 raise HTTPException(status_code=404, detail=str(exc))
+            _queue_long_term_capture(name)
             return {"success": True, "kept": updated, "dropped": True}
 
         if request.kind == "fact":
@@ -8906,6 +8924,7 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
                 raise HTTPException(status_code=400, detail=str(exc))
             except LookupError as exc:
                 raise HTTPException(status_code=404, detail=str(exc))
+            _queue_long_term_capture(name)
             return {"success": True, "kept": updated, "dropped": True}
 
         if runtime.reflection_engine is None:
@@ -8933,6 +8952,7 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
             raise HTTPException(status_code=400, detail=str(exc))
         except LookupError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+        _queue_long_term_capture(name)
         return {"success": True, "kept": updated, "dropped": True}
 
 
@@ -8961,6 +8981,7 @@ async def browser_add_directive(request: _BrowserDirectiveRequest):
             status_code=409,
             detail="Directive could not be retained because the directive list is at capacity with newer entries",
         )
+    _queue_long_term_capture(name)
     return {"success": True, "directive": created}
 
 
@@ -8977,6 +8998,7 @@ async def browser_remove_directive(request: _BrowserDirectiveRequest):
         removed = await get_user_directives_manager().aremove(name, request.term)
     if not removed:
         raise HTTPException(status_code=404, detail="Directive not found")
+    _queue_long_term_capture(name)
     return {"success": True}
 
 
@@ -9021,6 +9043,7 @@ async def browser_label_star_map_clusters(
     """Manually trigger summary-tier theme labeling for Star Map clusters and cache it."""
     name = validate_lanlan_name(lanlan_name)
     from memory.analytics import alabel_star_map_clusters
+    from memory.analytics.star_map import StarMapLabelModelNotConfigured
     try:
         res = await alabel_star_map_clusters(
             name,
@@ -9031,6 +9054,10 @@ async def browser_label_star_map_clusters(
         return {"success": True, **res}
     except MaintenanceModeError:
         raise
+    except StarMapLabelModelNotConfigured:
+        return JSONResponse(
+            {"success": False, "error": "summary_model_not_configured"}, status_code=409,
+        )
     except Exception as exc:
         logger.warning("[MemoryBrowser] star_map label failed for %s: %s", name, exc)
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
@@ -9151,6 +9178,14 @@ async def browser_restore_snapshot(
     """Restore a safety snapshot under manager locks with automatic pre-restore backup."""
     name = validate_lanlan_name(lanlan_name)
     from memory.analytics import arestore_snapshot
+    from .long_term_sync import _views_locked
+    if (
+        runtime.persona_manager is None
+        or runtime.fact_store is None
+        or runtime.reflection_engine is None
+        or runtime.event_log is None
+    ):
+        raise HTTPException(status_code=503, detail="Memory managers not ready")
     try:
         result = await arestore_snapshot(
             name,
@@ -9159,17 +9194,22 @@ async def browser_restore_snapshot(
             persona_manager=runtime.persona_manager,
             fact_store=runtime.fact_store,
             reflection_engine=runtime.reflection_engine,
+            event_log=runtime.event_log,
+            views_lock=_views_locked,
         )
-        return {"success": True, **result}
     except MaintenanceModeError:
         raise
     except ValueError as exc:
+        if str(exc) == "character_release_in_progress":
+            raise HTTPException(status_code=409, detail="character release in progress")
         raise HTTPException(status_code=400, detail=str(exc))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         logger.exception("[MemoryBrowser] restore_snapshot failed for %s", name)
         return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+    _queue_long_term_capture(name, force=True)
+    return {"success": True, **result}
 
 
 @app.get("/internal/memory/browser/export/{lanlan_name}")

@@ -69,7 +69,7 @@
       "emotion_model": "free-mini-model",
       "decision_model": "free-mini-model",
       "decision_protocol": "chat_fallback",
-      "vision_model": "free-vision-model",
+      "vision_model": "free-model",
       "agent_model": "free-agent-model",
       "audio_api_key": "free-access",
       "openrouter_api_key": "free-access",
@@ -125,12 +125,12 @@
       "name": "智谱",
       "description": "并发限制严格，支持使魔",
       "openrouter_url": "https://open.bigmodel.cn/api/paas/v4",
-      "conversation_model": "glm-4.7-flash",
+      "conversation_model": "glm-5.3-flash",
       "summary_model": "glm-4.7-flash",
       "emotion_model": "glm-4.7-flash",
       "decision_model": "glm-4.7-flash",
       "decision_protocol": "chat_fallback",
-      "vision_model": "glm-4.6v-flash",
+      "vision_model": "glm-5.3-flash",
       "agent_model": "glm-5v-turbo"
     },
     "step": {
@@ -151,13 +151,13 @@
       "name": "硅基流动",
       "description": "性价比高，支持使魔",
       "openrouter_url": "https://api.siliconflow.cn/v1",
-      "conversation_model": "deepseek-ai/DeepSeek-V4-Flash",
+      "conversation_model": "deepseek-ai/DeepSeek-V4.1-Flash",
       "summary_model": "deepseek-ai/DeepSeek-V4-Flash",
       "emotion_model": "Qwen/Qwen3.5-35B-A3B",
       "decision_model": "deepseek-ai/DeepSeek-V4-Flash",
       "decision_protocol": "chat_fallback",
-      "vision_model": "Qwen/Qwen3.5-122B-A10B",
-      "agent_model": "Qwen/Qwen3.5-122B-A10B"
+      "vision_model": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "agent_model": "deepseek-ai/DeepSeek-V4.1-Flash"
     },
     "gemini": {
       "key": "gemini",
