@@ -330,7 +330,8 @@
             appState.assistantTurnAwaitingBubble
             || appState.assistantSpeechActiveTurnId
             || (appState.assistantTurnId
-                && appState.assistantTurnId !== appState.assistantTurnCompletedId)
+                && appState.assistantTurnId !== appState.assistantTurnCompletedId
+                && appState.assistantTurnId !== appState.assistantTurnSettledId)
         );
     }
 
