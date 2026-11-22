@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+import threading
 import time
+from contextlib import suppress
 from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -114,6 +118,39 @@ class PluginStatePersistence(StorageResultTemplate):
         self.backend = normalized_backend
         self._state_path = self.plugin_dir / ".plugin_state"
         self._memory_state: bytes | None = None
+        self._state_lock = threading.RLock()
+
+    @staticmethod
+    def _atomic_write_bytes(target: Path, data: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            dir=str(target.parent),
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                fd = -1
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            for attempt, delay in enumerate((0.0, 0.05, 0.1, 0.2)):
+                if delay > 0:
+                    time.sleep(delay)
+                try:
+                    os.replace(tmp_path, target)
+                    break
+                except PermissionError:
+                    if attempt == 3:
+                        raise
+        except BaseException:
+            if fd >= 0:
+                with suppress(OSError):
+                    os.close(fd)
+            with suppress(OSError):
+                tmp_path.unlink()
+            raise
 
     def _serialize_value(self, key: str, value: Any, instance: object) -> Any:
         if hasattr(instance, "__freeze_serialize__"):
@@ -170,88 +207,93 @@ class PluginStatePersistence(StorageResultTemplate):
     def _save_state(self, instance: object) -> bool:
         if self.backend == "off":
             return False
-        payload = {
-            "version": self.STATE_VERSION,
-            "plugin_id": self.plugin_id,
-            "saved_at": time.time(),
-            "data": self._collect_snapshot(instance),
-        }
-        data = _pack(payload)
-        if self.backend == "memory":
-            self._memory_state = data
-        else:
-            self.plugin_dir.mkdir(parents=True, exist_ok=True)
-            self._state_path.write_bytes(data)
-        return True
+        with self._state_lock:
+            payload = {
+                "version": self.STATE_VERSION,
+                "plugin_id": self.plugin_id,
+                "saved_at": time.time(),
+                "data": self._collect_snapshot(instance),
+            }
+            data = _pack(payload)
+            if self.backend == "memory":
+                self._memory_state = data
+            else:
+                self._atomic_write_bytes(self._state_path, data)
+            return True
 
     def _load_state(self, instance: object) -> bool:
         if self.backend == "off":
             return False
-        data: bytes | None
-        if self.backend == "memory":
-            data = self._memory_state
-            if data is None:
+        with self._state_lock:
+            data: bytes | None
+            if self.backend == "memory":
+                data = self._memory_state
+                if data is None:
+                    return False
+            else:
+                if not self._state_path.exists():
+                    return False
+                data = self._state_path.read_bytes()
+            raw = _unpack(data)
+            if not isinstance(raw, dict):
                 return False
-        else:
-            if not self._state_path.exists():
+            snapshot = raw.get("data", {})
+            if not isinstance(snapshot, dict):
                 return False
-            data = self._state_path.read_bytes()
-        raw = _unpack(data)
-        if not isinstance(raw, dict):
-            return False
-        snapshot = raw.get("data", {})
-        if not isinstance(snapshot, dict):
-            return False
-        self._restore_attrs(instance, snapshot)
-        return True
+            self._restore_attrs(instance, snapshot)
+            return True
 
     def _clear_state(self) -> bool:
         if self.backend == "off":
             return False
-        if self.backend == "memory":
-            existed = self._memory_state is not None
-            self._memory_state = None
-            return existed
-        if self._state_path.exists():
-            self._state_path.unlink()
-            return True
-        return False
+        with self._state_lock:
+            if self.backend == "memory":
+                existed = self._memory_state is not None
+                self._memory_state = None
+                return existed
+            if self._state_path.exists():
+                self._state_path.unlink()
+                return True
+            return False
 
     def _snapshot_state(self) -> JsonObject:
         if self.backend == "off":
             return {}
-        if self.backend == "memory":
-            if self._memory_state is None:
-                return {}
-            raw = _unpack(self._memory_state)
-        else:
-            if not self._state_path.exists():
-                return {}
-            raw = _unpack(self._state_path.read_bytes())
-        if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
-            return raw["data"]
-        return {}
+        with self._state_lock:
+            if self.backend == "memory":
+                if self._memory_state is None:
+                    return {}
+                raw = _unpack(self._memory_state)
+            else:
+                if not self._state_path.exists():
+                    return {}
+                raw = _unpack(self._state_path.read_bytes())
+            if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
+                return raw["data"]
+            return {}
 
     def _has_saved_state_local(self) -> bool:
         if self.backend == "off":
             return False
-        if self.backend == "memory":
-            return self._memory_state is not None
-        return self._state_path.exists()
+        with self._state_lock:
+            if self.backend == "memory":
+                return self._memory_state is not None
+            return self._state_path.exists()
 
     def _read_state_info(self) -> JsonObject | None:
         if self.backend == "off":
             return None
-        if not self._has_saved_state_local():
-            return None
-        if self.backend == "memory":
-            size = len(self._memory_state or b"")
-            return {"backend": "memory", "plugin_id": self.plugin_id, "size_bytes": size}
-        try:
-            stat = self._state_path.stat()
-        except Exception:
-            return None
-        return {"backend": self.backend, "plugin_id": self.plugin_id, "path": str(self._state_path), "size_bytes": stat.st_size}
+        with self._state_lock:
+            if not self._has_saved_state_local():
+                return None
+            if self.backend == "memory":
+                size = len(self._memory_state or b"")
+                return {"backend": "memory", "plugin_id": self.plugin_id, "size_bytes": size}
+            try:
+                stat = self._state_path.stat()
+            except Exception:
+                return None
+            return {"backend": self.backend, "plugin_id": self.plugin_id, "path": str(self._state_path), "size_bytes": stat.st_size}
 
     async def save(self, instance: object) -> Result[bool, TransportError]:
         return await self._run_local_result("storage.state.save", self._save_state, instance)

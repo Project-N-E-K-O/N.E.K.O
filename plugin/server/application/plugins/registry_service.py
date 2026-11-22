@@ -42,6 +42,7 @@ from plugin.utils.path_resolution import PathResolutionCache, canonical_read_pat
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS
+from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.project_sources import (
     PROJECT_SOURCE,
     ProjectSource,
@@ -1064,6 +1065,21 @@ def _apply_discovery_record_sync(
         dependencies=record.meta_payload.get("dependencies") if isinstance(record.meta_payload.get("dependencies"), list) else None,
         plugin_ui=record.meta_payload.get("plugin_ui") if isinstance(record.meta_payload.get("plugin_ui"), dict) else None,
     )
+    is_project_source = record.meta_payload.get("source") == PROJECT_SOURCE
+    project_id = record.meta_payload.get("project_id")
+    if is_project_source and isinstance(project_id, str) and project_id:
+        from plugin.server.infrastructure import authoring_project_store
+
+        if not any(
+            item.project_id == project_id
+            for item in authoring_project_store.list_records()
+        ):
+            raise ServerDomainError(
+                code="PLUGIN_CONFIG_NOT_FOUND",
+                message=f"Plugin '{record.plugin_id}' configuration not found",
+                status_code=404,
+                details={"plugin_id": record.plugin_id},
+            )
     if source_replacement:
         resolved_id = runtime_plugin_id
         with state.acquire_plugins_write_lock():
@@ -1098,24 +1114,47 @@ def _apply_discovery_record_sync(
                 plugin_id=resolved_id,
             )
 
+    removed_project_concurrently = False
     with state.acquire_plugins_write_lock():
-        current_meta = state.plugins.get(resolved_id)
-        merged = dict(current_meta) if isinstance(current_meta, dict) else {}
-        if (
-            record.meta_payload.get("source") == PROJECT_SOURCE
-            and isinstance(existing_target_meta, dict)
-            and existing_target_meta.get("project_id") == record.meta_payload.get("project_id")
-        ):
-            for runtime_key in ("runtime_startup_state", "runtime_startup_error"):
-                if runtime_key in existing_target_meta:
-                    merged[runtime_key] = existing_target_meta[runtime_key]
-        for key in _MANAGED_META_KEYS:
-            if key in payload:
-                merged[key] = payload[key]
-            else:
-                merged.pop(key, None)
-        state.plugins[resolved_id] = merged
+        if is_project_source and isinstance(project_id, str) and project_id:
+            from plugin.server.infrastructure import authoring_project_store
+
+            if not any(
+                item.project_id == project_id
+                for item in authoring_project_store.list_records()
+            ):
+                prior_meta = existing_snapshot.get(resolved_id)
+                if not (
+                    isinstance(prior_meta, dict)
+                    and prior_meta.get("source") != PROJECT_SOURCE
+                ):
+                    state.plugins.pop(resolved_id, None)
+                removed_project_concurrently = True
+        if not removed_project_concurrently:
+            current_meta = state.plugins.get(resolved_id)
+            merged = dict(current_meta) if isinstance(current_meta, dict) else {}
+            if (
+                is_project_source
+                and isinstance(existing_target_meta, dict)
+                and existing_target_meta.get("project_id") == project_id
+            ):
+                for runtime_key in ("runtime_startup_state", "runtime_startup_error"):
+                    if runtime_key in existing_target_meta:
+                        merged[runtime_key] = existing_target_meta[runtime_key]
+            for key in _MANAGED_META_KEYS:
+                if key in payload:
+                    merged[key] = payload[key]
+                else:
+                    merged.pop(key, None)
+            state.plugins[resolved_id] = merged
     state.invalidate_snapshot_cache("plugins")
+    if removed_project_concurrently:
+        raise ServerDomainError(
+            code="PLUGIN_CONFIG_NOT_FOUND",
+            message=f"Plugin '{record.plugin_id}' configuration not found",
+            status_code=404,
+            details={"plugin_id": record.plugin_id},
+        )
     return resolved_id, payload
 
 
@@ -1322,6 +1361,7 @@ def _get_autostart_plugin_groups_sync() -> tuple[list[str], list[str]]:
 
 
 class PluginRegistryService:
+    @serialized_plugin_operation
     async def refresh_registry(self) -> dict[str, object]:
         """Rebuild the registry from what is on disk.
 
@@ -1332,6 +1372,7 @@ class PluginRegistryService:
         """
         return await asyncio.to_thread(self._refresh_registry_sync)
 
+    @serialized_plugin_operation
     async def refresh_plugin(self, plugin_id: str) -> dict[str, object]:
         """Rebuild one plugin's registry entry from what is on disk."""
         return await asyncio.to_thread(self._refresh_plugin_sync, plugin_id)
@@ -1425,6 +1466,11 @@ class PluginRegistryService:
                     else:
                         updated.append(resolved_id)
                 except ServerDomainError as exc:
+                    if (
+                        record.meta_payload.get("source") == PROJECT_SOURCE
+                        and exc.code == "PLUGIN_CONFIG_NOT_FOUND"
+                    ):
+                        continue
                     failed.append(
                         {
                             "plugin_id": record.plugin_id,
@@ -1447,7 +1493,28 @@ class PluginRegistryService:
                         }
                     )
 
-            missing_ids = _collect_missing_plugin_ids_sync(existing_snapshot) - refreshed_ids
+            from plugin.server.infrastructure import authoring_project_store
+
+            try:
+                active_project_ids = {
+                    rec.project_id for rec in authoring_project_store.list_records()
+                }
+            except ServerDomainError:
+                active_project_ids = None
+
+            missing_ids = _collect_missing_plugin_ids_sync(existing_snapshot)
+            if active_project_ids is not None:
+                for plugin_id, meta in existing_snapshot.items():
+                    if meta.get("source") != PROJECT_SOURCE:
+                        continue
+                    project_id = meta.get("project_id")
+                    if (
+                        isinstance(project_id, str)
+                        and project_id
+                        and project_id not in active_project_ids
+                    ):
+                        missing_ids.add(plugin_id)
+            missing_ids -= refreshed_ids
             removed, removed_running = _remove_stale_plugin_metadata_sync(missing_ids, running_ids=running_ids)
             return {
                 "success": not failed,

@@ -555,3 +555,97 @@ def test_stale_tmp_files_are_swept_on_load(tmp_path: Path) -> None:
     assert not stale1.exists()
     assert not stale2.exists()
     assert unrelated.exists()
+
+
+def test_runtime_missing_lock_file_preserves_entries_and_degrades_readonly(
+    tmp_path: Path,
+) -> None:
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    imported_dir = user_root / "imported_plug"
+    market_dir.mkdir(parents=True)
+    imported_dir.mkdir(parents=True)
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.2.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+    mgr.record_import(
+        directory_path=imported_dir,
+        package_filename="imp.neko-plugin",
+        package_sha256="abc123",
+    )
+    saved_bytes = lock_path.read_bytes()
+    assert len(mgr.list_entries()) == 2
+
+    # Simulate external removal of plugins.lock.json at runtime.
+    lock_path.unlink()
+    mgr.load()
+
+    assert mgr.is_degraded is True
+    assert "lock_file_missing" in (mgr.degrade_reason or "")
+    entries = {e.directory_name: e for e in mgr.list_entries()}
+    assert set(entries) == {"market_plug", "imported_plug"}
+    assert entries["market_plug"].channel == "market"
+    assert entries["imported_plug"].channel == "imported"
+
+    with pytest.raises(InstallSourceError) as err_info:
+        mgr.record_market_install(
+            root_id="user",
+            directory_name="new_mk",
+            plugin_id="new_mk",
+            market_detail={
+                "plugin_market_id": "new_mk",
+                "version": "1.0.0",
+                "package_url": "https://example.test/new.neko-plugin",
+            },
+        )
+    assert err_info.value.code == "INSTALL_SOURCE_READ_ONLY"
+
+    # record_import must not overwrite disk with a 1-entry lock file while degraded.
+    extra_dir = user_root / "extra_imp"
+    extra_dir.mkdir(parents=True)
+    mgr.record_import(
+        directory_path=extra_dir,
+        package_filename="extra.neko-plugin",
+        package_sha256="def456",
+    )
+    assert not lock_path.exists()
+
+    # Restoring the lock file and calling load() recovers cleanly.
+    lock_path.write_bytes(saved_bytes)
+    mgr.load()
+    assert mgr.is_degraded is False
+    assert {e.directory_name for e in mgr.list_entries()} == {"market_plug", "imported_plug"}
+
+
+def test_reconcile_after_runtime_missing_lock_heals_without_downgrading_provenance(
+    tmp_path: Path,
+) -> None:
+    mgr, _, user_root, lock_path = _build_mgr(tmp_path)
+    market_dir = user_root / "market_plug"
+    market_dir.mkdir(parents=True)
+    (market_dir / "plugin.toml").write_text('[plugin]\nid = "market_plug"\n', encoding="utf-8")
+
+    mgr.load()
+    mgr.record_market(
+        directory_path=market_dir,
+        plugin_market_id="mk-1",
+        version="1.0.0",
+        package_url="https://example.test/mk.neko-plugin",
+    )
+
+    lock_path.unlink()
+    mgr.load()
+    assert mgr.is_degraded is True
+
+    mgr.reconcile()
+    assert mgr.is_degraded is False
+    assert lock_path.is_file()
+    entries = mgr.list_entries()
+    assert len(entries) == 1
+    assert entries[0].channel == "market"
+    assert isinstance(entries[0].source_detail, SourceDetailMarket)

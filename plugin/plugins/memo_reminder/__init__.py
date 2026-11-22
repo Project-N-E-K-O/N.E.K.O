@@ -13,6 +13,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -52,6 +53,28 @@ _IMMEDIATE_KEYWORDS = frozenset({
 
 def _now(tz: timezone | ZoneInfo) -> datetime:
     return datetime.now(tz)
+
+
+def _parse_iso_datetime(raw: object) -> Optional[datetime]:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ_UTC)
+    return dt
+
+
+def _is_push_submitted(receipt: object) -> bool:
+    if not isinstance(receipt, Mapping):
+        return False
+    if "submitted" in receipt:
+        return receipt.get("submitted") is True
+    if "ok" in receipt:
+        return receipt.get("ok") is True
+    return False
 
 
 def _parse_time(raw: str, tz: timezone | ZoneInfo) -> Optional[Tuple[datetime, bool]]:
@@ -261,11 +284,15 @@ class MemoReminderPlugin(NekoPluginBase):
         now = _now(_TZ_UTC)
         earliest: Optional[float] = None
         for r in reminders:
-            try:
-                dt = datetime.fromisoformat(r.get("trigger_at", ""))
-            except (ValueError, TypeError):
+            dt = _parse_iso_datetime(r.get("trigger_at", ""))
+            if dt is None:
                 continue
-            delta = (dt - now).total_seconds()
+            effective_dt = dt
+            if not r.get("delivered"):
+                retry_dt = _parse_iso_datetime(r.get("next_retry_at"))
+                if retry_dt is not None and retry_dt > effective_dt:
+                    effective_dt = retry_dt
+            delta = (effective_dt - now).total_seconds()
             if earliest is None or delta < earliest:
                 earliest = delta
         return earliest
@@ -323,13 +350,14 @@ class MemoReminderPlugin(NekoPluginBase):
             for raw in reminders:
                 r = self._strip_legacy_deferred_fields(raw)
                 trigger_iso = r.get("trigger_at", "")
-                try:
-                    trigger_dt = datetime.fromisoformat(trigger_iso)
-                except (ValueError, TypeError):
+                trigger_dt = _parse_iso_datetime(trigger_iso)
+                if trigger_dt is None:
                     kept.append(r)
                     continue
 
-                if trigger_dt <= now:
+                retry_dt = _parse_iso_datetime(r.get("next_retry_at"))
+                retry_due = bool(r.get("delivered")) or retry_dt is None or retry_dt <= now
+                if trigger_dt <= now and retry_due:
                     to_push.append(r)
                 else:
                     kept.append(r)
@@ -344,39 +372,63 @@ class MemoReminderPlugin(NekoPluginBase):
 
         for r in to_push:
             rid = r.get("id", "?")
+            was_delivered = bool(r.get("delivered"))
             try:
-                self._push_reminder(r)
+                pushed = self._push_reminder(r)
             except Exception:
                 self.logger.exception("Failed to push reminder {}", rid)
                 continue
+            if not pushed:
+                continue
             fired_ids.append(rid)
+            if not was_delivered:
+                with self._reminders_lock:
+                    current = self._load_reminders_unlocked()
+                    changed = False
+                    for item in current:
+                        if item.get("id") == rid:
+                            item["delivered"] = True
+                            changed = True
+                    if changed:
+                        self._save_reminders_unlocked(current)
 
         # Phase 3 - under lock: merge results back (handles concurrent add/delete).
         with self._reminders_lock:
+            now_phase3 = _now(_TZ_UTC)
             processed_ids = {r.get("id") for r in to_push}
+            current = self._load_reminders_unlocked()
+            current_ids = {item.get("id") for item in current}
             final: List[Dict[str, Any]] = []
             for r in to_push:
                 rid = r.get("id", "?")
+                if rid not in current_ids:
+                    continue
                 if rid in fired_ids:
-                    updated = self._reschedule(r, now)
+                    updated = self._reschedule(r, now_phase3)
                     if updated:
                         final.append(updated)
                 else:
-                    final.append(r)
-            current = self._load_reminders_unlocked()
+                    failed_item = dict(r)
+                    retry_count = int(failed_item.get("delivery_retry_count") or 0) + 1
+                    delay_sec = min(60.0, 2.0 ** min(retry_count, 6))
+                    failed_item["delivery_retry_count"] = retry_count
+                    failed_item["next_retry_at"] = (
+                        now_phase3 + timedelta(seconds=delay_sec)
+                    ).isoformat()
+                    final.append(failed_item)
             merged = [r for r in current if r.get("id") not in processed_ids] + final
             self._save_reminders_unlocked(merged)
             if fired_ids:
                 self.logger.info("Fired reminders: {}", fired_ids)
 
-    def _push_reminder(self, r: Dict[str, Any]) -> None:
+    def _push_reminder(self, r: Dict[str, Any]) -> bool:
         msg = r.get("message", "提醒时间到了！")
         rid = r.get("id", "?")
         repeat_label = r.get("repeat", "once")
 
         # Send only reminders whose message has not been sent, preventing duplicate retry delivery.
         if not r.get("delivered"):
-            self.ctx.push_message(
+            receipt = self.ctx.push_message(
                 source="memo_reminder",
                 visibility=[],
                 ai_behavior="respond",
@@ -394,8 +446,17 @@ class MemoReminderPlugin(NekoPluginBase):
                 },
                 target_lanlan=r.get("lanlan_name"),
             )
+            if not _is_push_submitted(receipt):
+                reason = receipt.get("reason") if isinstance(receipt, Mapping) else None
+                self.logger.warning(
+                    "Push reminder {} rejected (reason={}); will retry",
+                    rid,
+                    reason,
+                )
+                return False
             # Mark the message as sent.
             r["delivered"] = True
+        return True
 
     @staticmethod
     def _reschedule(r: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
@@ -447,6 +508,8 @@ class MemoReminderPlugin(NekoPluginBase):
         r["trigger_at"] = next_dt.isoformat()
         # Clear transient state so the next trigger sends a message again.
         r.pop("delivered", None)
+        r.pop("delivery_retry_count", None)
+        r.pop("next_retry_at", None)
         r.pop("callback_pending", None)
         r.pop("callback_error", None)
         r.pop("callback_retry_count", None)

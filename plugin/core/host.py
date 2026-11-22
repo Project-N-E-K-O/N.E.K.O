@@ -1009,6 +1009,53 @@ async def _run_with_model_client_cleanup(ctx: PluginContext, awaitable: Any) -> 
                 logger.warning("[Plugin Process] Model client cleanup failed: {}", type(exc).__name__)
 
 
+async def _persist_plugin_state(
+    instance: object,
+    freezable_keys: list[str],
+    reason: str,
+    log: Any = logger,
+) -> None:
+    """Persist freezable plugin state and raise on explicit Result failure."""
+    sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+    if not sp:
+        return
+
+    save_method = getattr(sp, "save", None)
+    if not callable(save_method):
+        return
+
+    use_legacy_sig = False
+    try:
+        sig = inspect.signature(save_method)
+    except (ValueError, TypeError):
+        sig = None
+
+    if sig is not None:
+        try:
+            sig.bind(instance)
+        except TypeError:
+            sig.bind(instance, freezable_keys, reason=reason)
+            use_legacy_sig = True
+
+    if use_legacy_sig:
+        save_result = save_method(instance, freezable_keys, reason=reason)
+    else:
+        save_result = save_method(instance)
+
+    if inspect.isawaitable(save_result):
+        save_result = await save_result
+
+    is_ok = getattr(save_result, "is_ok", None)
+    if callable(is_ok) and not is_ok():
+        error_obj = getattr(save_result, "error", None)
+        log.warning(
+            "[Plugin Process] State persistence save failed (reason={}): {}",
+            reason,
+            error_obj,
+        )
+        raise RuntimeError(f"state persistence save failed: {error_obj}")
+
+
 def _resolve_persist_mode(
     instance: object,
     effective_cfg: object,
@@ -1644,21 +1691,7 @@ def _plugin_process_runner(
 
 
         async def _save_plugin_state(reason: str) -> None:
-            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
-            if not sp:
-                return
-
-            save_method = getattr(sp, "save", None)
-            if not callable(save_method):
-                return
-
-            try:
-                save_result = save_method(instance)
-            except TypeError:
-                save_result = save_method(instance, freezable_keys, reason=reason)
-
-            if inspect.isawaitable(save_result):
-                await save_result
+            await _persist_plugin_state(instance, freezable_keys, reason, log=logger)
 
         # run_id → asyncio.Task – used by CANCEL_RUN to propagate cancellation
         _run_tasks: Dict[str, asyncio.Task] = {}

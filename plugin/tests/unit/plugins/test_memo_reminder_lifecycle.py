@@ -237,3 +237,140 @@ async def test_bind_task_is_kept_as_compatibility_noop() -> None:
     assert result.value == {"bound": True, "ignored": True}
     reminder = plugin.store.data[_STORE_KEY][0]
     assert _legacy_keys().isdisjoint(reminder)
+
+
+@pytest.mark.plugin_unit
+def test_failed_push_submission_retains_oneshot_reminder_with_backoff_and_recovers() -> None:
+    plugin = _plugin()
+    due = _due_iso()
+    plugin._save_reminders([
+        {
+            "id": "oneshot123",
+            "message": "喝水",
+            "trigger_at": due,
+            "created_at": due,
+            "repeat": "once",
+        }
+    ])
+
+    receipts = iter([
+        {"ok": False, "submitted": False, "reason": "backpressure"},
+        {"submitted": True},
+    ])
+    plugin.ctx.push_message = lambda **kwargs: (plugin.ctx.pushed.append(kwargs) or next(receipts))  # type: ignore[method-assign]
+
+    plugin._fire_due_reminders()
+    assert len(plugin.ctx.pushed) == 1
+
+    reminders = plugin.store.data[_STORE_KEY]
+    assert len(reminders) == 1
+    rem = reminders[0]
+    assert rem.get("delivered") is not True
+    assert rem["delivery_retry_count"] == 1
+    assert datetime.fromisoformat(rem["next_retry_at"]) > datetime.now(timezone.utc)
+
+    # _next_trigger_seconds must respect backoff instead of spinning at <= 0s.
+    wait_sec = plugin._next_trigger_seconds()
+    assert wait_sec is not None and wait_sec > 0.5
+
+    # Calling before next_retry_at must NOT push again.
+    plugin._fire_due_reminders()
+    assert len(plugin.ctx.pushed) == 1
+
+    # Advance past next_retry_at and verify recovery deletes one-shot reminder.
+    rem["next_retry_at"] = _due_iso(1)
+    plugin._save_reminders([rem])
+    plugin._fire_due_reminders()
+    assert len(plugin.ctx.pushed) == 2
+    assert plugin.store.data[_STORE_KEY] == []
+
+
+@pytest.mark.plugin_unit
+def test_failed_push_does_not_advance_repeating_reminder_until_submitted() -> None:
+    plugin = _plugin()
+    due = _due_iso()
+    plugin._save_reminders([
+        {
+            "id": "repeatfail1",
+            "message": "休息",
+            "trigger_at": due,
+            "created_at": due,
+            "repeat": "30s",
+            "max_count": 3,
+            "fire_count": 0,
+        }
+    ])
+    receipts = iter([
+        {"ok": False, "submitted": False, "reason": "transport_unavailable"},
+        {"submitted": True},
+    ])
+    plugin.ctx.push_message = lambda **kwargs: (plugin.ctx.pushed.append(kwargs) or next(receipts))  # type: ignore[method-assign]
+
+    plugin._fire_due_reminders()
+    rem = plugin.store.data[_STORE_KEY][0]
+    assert rem["fire_count"] == 0
+    assert rem["trigger_at"] == due
+    assert rem["delivery_retry_count"] == 1
+
+    rem["next_retry_at"] = _due_iso(1)
+    plugin._save_reminders([rem])
+    plugin._fire_due_reminders()
+    rem_after = plugin.store.data[_STORE_KEY][0]
+    assert rem_after["fire_count"] == 1
+    assert "delivery_retry_count" not in rem_after
+    assert "next_retry_at" not in rem_after
+    assert "delivered" not in rem_after
+
+
+@pytest.mark.plugin_unit
+def test_phase2_persists_delivered_immediately_and_phase3_respects_concurrent_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin = _plugin()
+    due = _due_iso()
+    plugin._save_reminders([
+        {
+            "id": "crash1",
+            "message": "喝水",
+            "trigger_at": due,
+            "created_at": due,
+            "repeat": "once",
+        }
+    ])
+    plugin.ctx.push_message = lambda **kwargs: (plugin.ctx.pushed.append(kwargs) or {"submitted": True})  # type: ignore[method-assign]
+
+    real_reschedule = plugin._reschedule
+
+    def _boom_reschedule(r, now):
+        raise RuntimeError("phase3 crash")
+
+    monkeypatch.setattr(plugin, "_reschedule", _boom_reschedule)
+    with pytest.raises(RuntimeError, match="phase3 crash"):
+        plugin._fire_due_reminders()
+    assert plugin.store.data[_STORE_KEY][0]["delivered"] is True
+
+    # Next tick must NOT push duplicate message and cleans up cleanly.
+    monkeypatch.setattr(plugin, "_reschedule", real_reschedule)
+    plugin._fire_due_reminders()
+    assert len(plugin.ctx.pushed) == 1
+    assert plugin.store.data[_STORE_KEY] == []
+
+    # Concurrent delete during Phase 2 must not be resurrected in Phase 3.
+    plugin._save_reminders([
+        {
+            "id": "conc1",
+            "message": "测试",
+            "trigger_at": due,
+            "created_at": due,
+            "repeat": "30s",
+        }
+    ])
+
+    def _push_and_delete(**kwargs):
+        plugin.ctx.pushed.append(kwargs)
+        plugin.store.data[_STORE_KEY] = []
+        return {"submitted": True}
+
+    plugin.ctx.push_message = _push_and_delete  # type: ignore[method-assign]
+    plugin._fire_due_reminders()
+    assert plugin.store.data[_STORE_KEY] == []

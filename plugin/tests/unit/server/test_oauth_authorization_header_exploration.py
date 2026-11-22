@@ -251,3 +251,36 @@ async def test_oauth_start_with_authorization_header_documented_counterexample()
     """
 
     await _run_one("/market/oauth/start")
+
+
+def test_write_private_json_is_atomic_and_sets_0600_permissions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import os
+    import stat
+
+    from plugin.server.routes import market_bridge as market_bridge_module
+    import utils.file_utils as file_utils_mod
+
+    target = tmp_path / "market_auth.json"
+    market_bridge_module._write_private_json(
+        target, {"access_token": "at-1", "refresh_token": "rt-1"}
+    )
+    assert json.loads(target.read_text(encoding="utf-8"))["refresh_token"] == "rt-1"
+    if os.name == "posix":
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    # Failure during atomic replace must preserve prior token file intact with no leftover tmp files.
+    def _boom_replace(_src, _dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(file_utils_mod.os, "replace", _boom_replace)
+    with pytest.raises(OSError, match="disk full"):
+        market_bridge_module._write_private_json(
+            target, {"access_token": "at-2", "refresh_token": "rt-2"}
+        )
+
+    assert json.loads(target.read_text(encoding="utf-8"))["refresh_token"] == "rt-1"
+    assert not [p for p in tmp_path.iterdir() if p.name != "market_auth.json"]

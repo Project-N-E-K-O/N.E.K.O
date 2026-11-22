@@ -395,19 +395,24 @@ class AppLauncherPlugin(NekoPluginBase):
 
         return []
 
+    def _update_app_autostart_field_unlocked(self, app_id: str, autostart: bool) -> None:
+        """Update the autostart field in an application record without locking."""
+        apps = [dict(app) for app in self._load_apps_unlocked()]
+        found = False
+        for app in apps:
+            if app.get("id") == app_id:
+                app["autostart"] = autostart
+                app["updated_at"] = _now()
+                found = True
+                break
+        if not found:
+            raise SdkError(f"未找到软件: {app_id}")
+        self._save_apps_unlocked(apps)
+
     def _update_app_autostart_field(self, app_id: str, autostart: bool) -> None:
-        """Update the autostart field in an application record"""
-        try:
-            with self._apps_lock:
-                apps = self._load_apps_unlocked()
-                for app in apps:
-                    if app.get("id") == app_id:
-                        app["autostart"] = autostart
-                        app["updated_at"] = _now()
-                        break
-                self._save_apps_unlocked(apps)
-        except Exception as exc:
-            self.logger.warning("Failed to update autostart field for {}: {}", app_id, exc)
+        """Update the autostart field in an application record."""
+        with self._apps_lock:
+            self._update_app_autostart_field_unlocked(app_id, autostart)
 
     def _load_categories(self) -> List[Dict[str, Any]]:
         """Load the category list"""
@@ -593,18 +598,25 @@ class AppLauncherPlugin(NekoPluginBase):
         # Handle startup autostart
         autostart_msg = ""
         if autostart and file_type == "exe":
-            success, msg = _set_autostart_windows(app_id, name, resolved_path, True)
-            if success:
-                with self._apps_lock:
-                    apps = self._load_apps_unlocked()
-                    for a in apps:
-                        if a.get("id") == app_id:
-                            a["autostart"] = True
-                            break
-                    self._save_apps_unlocked(apps)
-                autostart_msg = "，已设置开机自启"
-            else:
-                autostart_msg = f"，开机自启设置失败: {msg}"
+            with self._apps_lock:
+                success, msg = _set_autostart_windows(app_id, name, resolved_path, True)
+                if success:
+                    try:
+                        self._update_app_autostart_field_unlocked(app_id, True)
+                        autostart_msg = "，已设置开机自启"
+                    except SdkError as exc:
+                        rollback_ok, rollback_msg = _set_autostart_windows(
+                            app_id, name, resolved_path, False
+                        )
+                        if not rollback_ok:
+                            self.logger.warning(
+                                "Failed to roll back autostart registry for app {}: {}",
+                                app_id,
+                                rollback_msg,
+                            )
+                        autostart_msg = f"，开机自启持久化失败: {exc}"
+                else:
+                    autostart_msg = f"，开机自启设置失败: {msg}"
 
         return Ok({
             "app_id": app_id,
@@ -643,12 +655,26 @@ class AppLauncherPlugin(NekoPluginBase):
             if not target:
                 return Err(SdkError(f"未找到软件: {app_id}"))
 
-            # Clean up autostart registry entries
-            if target.get("autostart", False):
-                _set_autostart_windows(app_id, target.get("name", ""), target.get("path", ""), False)
+            # Unconditionally clean up autostart registry entries regardless of cached flag.
+            cleanup_ok, cleanup_msg = _set_autostart_windows(
+                app_id,
+                target.get("name", ""),
+                target.get("path", ""),
+                False,
+            )
+            if not cleanup_ok:
+                self.logger.warning(
+                    "Failed to remove autostart entry for app {}: {}",
+                    app_id,
+                    cleanup_msg,
+                )
+                return Err(SdkError(f"清理开机自启失败: {cleanup_msg}"))
 
             apps = [a for a in apps if a.get("id") != app_id]
-            self._save_apps_unlocked(apps)
+            try:
+                self._save_apps_unlocked(apps)
+            except SdkError as exc:
+                return Err(exc)
 
         self.logger.info("App removed: id={} name={}", app_id, target.get("name"))
 
@@ -859,14 +885,22 @@ class AppLauncherPlugin(NekoPluginBase):
 
             # Refresh the autostart command when the path changes
             autostart_msg = ""
-            if path_changed and app.get("autostart", False):
+            if path_changed and (app.get("autostart", False) or _get_autostart_status_windows(app_id)):
                 if app.get("type") != "exe":
                     success, msg = _set_autostart_windows(app_id, app.get("name", ""), old_path, False)
                     if success:
                         app["autostart"] = False
                         apps[target_idx] = app
-                        self._save_apps_unlocked(apps)
-                        autostart_msg = "，已关闭开机自启（仅支持 .exe 文件）"
+                        try:
+                            self._save_apps_unlocked(apps)
+                            autostart_msg = "，已关闭开机自启（仅支持 .exe 文件）"
+                        except SdkError as exc:
+                            self.logger.warning(
+                                "Failed to persist disabled autostart for app {}: {}",
+                                app_id,
+                                exc,
+                            )
+                            autostart_msg = f"，已关闭开机自启，但状态持久化失败: {exc}"
                     else:
                         autostart_msg = f"，但开机自启关闭失败: {msg}"
                         self.logger.warning("Failed to disable autostart for app {}: {}", app_id, msg)
@@ -879,8 +913,16 @@ class AppLauncherPlugin(NekoPluginBase):
                         if disable_success:
                             app["autostart"] = False
                             apps[target_idx] = app
-                            self._save_apps_unlocked(apps)
-                            autostart_msg = f"，开机自启更新失败并已关闭: {msg}"
+                            try:
+                                self._save_apps_unlocked(apps)
+                                autostart_msg = f"，开机自启更新失败并已关闭: {msg}"
+                            except SdkError as exc:
+                                self.logger.warning(
+                                    "Failed to persist disabled autostart for app {}: {}",
+                                    app_id,
+                                    exc,
+                                )
+                                autostart_msg = f"，开机自启更新失败并已关闭，但状态持久化失败: {exc}"
                         else:
                             autostart_msg = f"，但开机自启更新失败: {msg}；旧自启项关闭失败: {disable_msg}"
                         self.logger.warning("Failed to refresh autostart for app {}: {}", app_id, msg)
@@ -924,33 +966,53 @@ class AppLauncherPlugin(NekoPluginBase):
         if not app_id:
             return Err(SdkError("app_id 不能为空"))
 
-        apps = self._load_apps()
-        target = self._find_app_by_id(apps, app_id)
-        
-        if not target:
-            return Err(SdkError(f"未找到软件: {app_id}"))
+        with self._apps_lock:
+            apps = self._load_apps_unlocked()
+            target = self._find_app_by_id(apps, app_id)
 
-        app_name = target.get("name", "未知")
-        app_path = target.get("path", "")
+            if not target:
+                return Err(SdkError(f"未找到软件: {app_id}"))
 
-        success, message = _set_autostart_windows(app_id, app_name, app_path, enabled)
-        
-        if success:
-            self._update_app_autostart_field(app_id, enabled)
-            
-            action = "开启" if enabled else "关闭"
-            self.logger.info("Autostart {} for app: id={} name={}", action, app_id, app_name)
-            
-            return Ok({
-                "success": True,
-                "app_id": app_id,
-                "app_name": app_name,
-                "enabled": enabled,
-                "message": message,
-            })
-        else:
-            self.logger.error("Failed to set autostart for app: id={} name={} error={}", app_id, app_name, message)
-            return Err(SdkError(message))
+            app_name = target.get("name", "未知")
+            app_path = target.get("path", "")
+
+            success, message = _set_autostart_windows(app_id, app_name, app_path, enabled)
+            if not success:
+                self.logger.error("Failed to set autostart for app: id={} name={} error={}", app_id, app_name, message)
+                return Err(SdkError(message))
+
+            try:
+                self._update_app_autostart_field_unlocked(app_id, enabled)
+            except SdkError as exc:
+                if enabled:
+                    rollback_ok, rollback_msg = _set_autostart_windows(
+                        app_id, app_name, app_path, False
+                    )
+                    if not rollback_ok:
+                        self.logger.warning(
+                            "Failed to roll back autostart registry for app {}: {}",
+                            app_id,
+                            rollback_msg,
+                        )
+                self.logger.error(
+                    "Failed to persist autostart={} for app id={} name={}: {}",
+                    enabled,
+                    app_id,
+                    app_name,
+                    exc,
+                )
+                return Err(SdkError(f"保存开机自启状态失败: {exc}"))
+
+        action = "开启" if enabled else "关闭"
+        self.logger.info("Autostart {} for app: id={} name={}", action, app_id, app_name)
+
+        return Ok({
+            "success": True,
+            "app_id": app_id,
+            "app_name": app_name,
+            "enabled": enabled,
+            "message": message,
+        })
 
     @plugin_entry(
         id="get_autostart_status",

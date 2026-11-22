@@ -19,8 +19,10 @@ import random
 import re
 import shutil
 import socket
+import tempfile
 import threading
 import time
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -133,6 +135,31 @@ def _format_bytes(size_bytes: int) -> str:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            fd = -1
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        if fd >= 0:
+            with suppress(OSError):
+                os.close(fd)
+        with suppress(OSError):
+            tmp_path.unlink()
+        raise
 
 
 def _iso(dt: datetime | None = None) -> str:
@@ -421,6 +448,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._tasks: dict[str, dict[str, Any]] = {}
         self._upload_name_map: dict[str, dict[str, Any]] = {}
         self._lyrics_map: dict[str, dict[str, Any]] = {}
+        self._degraded_state: dict[str, dict[str, str]] = {}
 
         self._active_task_id: str | None = None
         self._active_track: dict[str, Any] | None = None
@@ -777,6 +805,32 @@ class MusicPusherPlugin(NekoPluginBase):
             "updated_at": now_iso,
         }
 
+    def _backup_corrupt_file_locked(self, path: Path, reason: str) -> None:
+        degraded = getattr(self, "_degraded_state", None)
+        if degraded is None:
+            degraded = {}
+            self._degraded_state = degraded
+        backup_name = f"{path.name}.corrupt.{_utc_now().strftime('%Y%m%dT%H%M%SZ')}.{uuid4().hex[:6]}"
+        backup_path = path.with_name(backup_name)
+        recorded_backup = ""
+        try:
+            os.replace(path, backup_path)
+            recorded_backup = str(backup_path)
+            self.logger.error(
+                "MusicPusher backed up corrupt state file {} -> {} (reason={})",
+                path,
+                backup_path,
+                reason,
+            )
+        except OSError as exc:
+            self.logger.error(
+                "MusicPusher failed to back up corrupt state file {} (reason={}): {}",
+                path,
+                reason,
+                exc,
+            )
+        degraded[path.name] = {"reason": reason, "backup_path": recorded_backup}
+
     def _load_upload_name_map_locked(self) -> None:
         path = self._upload_name_map_file
         self._upload_name_map = {}
@@ -787,10 +841,13 @@ class MusicPusherPlugin(NekoPluginBase):
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             self.logger.warning(f"读取上传映射失败，将重建: {exc}")
+            self._backup_corrupt_file_locked(path, f"invalid_json: {exc}")
             return
 
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
+            self.logger.warning("读取上传映射失败，将重建: 映射文件结构无效")
+            self._backup_corrupt_file_locked(path, "invalid_schema")
             return
 
         cleaned: dict[str, dict[str, Any]] = {}
@@ -816,15 +873,11 @@ class MusicPusherPlugin(NekoPluginBase):
         self._upload_name_map = cleaned
 
     def _save_upload_name_map_locked(self) -> None:
-        self._upload_name_map_file.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "entries": self._upload_name_map,
             "updated_at": _iso(),
         }
-        self._upload_name_map_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write_json(self._upload_name_map_file, payload)
 
     def _upsert_upload_name_map_locked(
         self,
@@ -859,10 +912,13 @@ class MusicPusherPlugin(NekoPluginBase):
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             self.logger.warning(f"读取歌词映射失败，将重建: {exc}")
+            self._backup_corrupt_file_locked(path, f"invalid_json: {exc}")
             return
 
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
+            self.logger.warning("读取歌词映射失败，将重建: 映射文件结构无效")
+            self._backup_corrupt_file_locked(path, "invalid_schema")
             return
 
         cleaned: dict[str, dict[str, Any]] = {}
@@ -885,15 +941,11 @@ class MusicPusherPlugin(NekoPluginBase):
         self._lyrics_map = cleaned
 
     def _save_lyrics_map_locked(self) -> None:
-        self._lyrics_map_file.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "entries": self._lyrics_map,
             "updated_at": _iso(),
         }
-        self._lyrics_map_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write_json(self._lyrics_map_file, payload)
 
     def _bind_lyrics_to_item_locked(self, *, item_id: str, lyric_text: str, lyric_filename: str) -> None:
         clean_id = str(item_id or "").strip()
@@ -1211,9 +1263,19 @@ class MusicPusherPlugin(NekoPluginBase):
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             self.logger.warning(f"读取调度状态失败，将重置为空状态: {exc}")
+            self._backup_corrupt_file_locked(path, f"invalid_json: {exc}")
             return
         if not isinstance(data, dict):
             self.logger.warning("读取调度状态失败，将重置为空状态: 状态文件根节点不是对象")
+            self._backup_corrupt_file_locked(path, "invalid_root_type")
+            return
+        if (
+            data.get("music_items") is not None and not isinstance(data.get("music_items"), list)
+        ) or (
+            data.get("tasks") is not None and not isinstance(data.get("tasks"), list)
+        ):
+            self.logger.warning("读取调度状态失败，将重置为空状态: 状态文件集合字段类型无效")
+            self._backup_corrupt_file_locked(path, "invalid_collection_type")
             return
 
         raw_items = data.get("music_items")
@@ -1291,7 +1353,6 @@ class MusicPusherPlugin(NekoPluginBase):
             self._tasks = tasks
 
     def _save_state_locked(self) -> None:
-        self._state_file.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "music_items": self._music_items,
             "tasks": list(self._tasks.values()),
@@ -1300,10 +1361,7 @@ class MusicPusherPlugin(NekoPluginBase):
             },
             "updated_at": _iso(),
         }
-        self._state_file.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _atomic_write_json(self._state_file, payload)
 
     def _serialize_task(self, task: dict[str, Any]) -> dict[str, Any]:
         raw_queue = task.get("queue")
@@ -1362,10 +1420,13 @@ class MusicPusherPlugin(NekoPluginBase):
                 "trigger_at": nxt.get("trigger_at"),
             }
 
+        degraded_files = dict(getattr(self, "_degraded_state", {}) or {})
         return {
             "active": active,
             "next_task": next_task,
             "playback": dict(self._playback_state),
+            "degraded": bool(degraded_files),
+            "degraded_files": degraded_files,
             "now": _iso(),
         }
 
@@ -1747,6 +1808,7 @@ class MusicPusherPlugin(NekoPluginBase):
         self._migrate_legacy_uploads()
         self._upload_dir.mkdir(parents=True, exist_ok=True)
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        self._degraded_state = {}
         async with self._state_lock:
             await self._load_state()
             self._load_upload_name_map_locked()
@@ -1757,6 +1819,11 @@ class MusicPusherPlugin(NekoPluginBase):
             self._save_upload_name_map_locked()
             self._save_lyrics_map_locked()
             self._save_state_locked()
+        if self._degraded_state:
+            self.logger.error(
+                "MusicPusher started in degraded state; backed up corrupt files: {}",
+                self._degraded_state,
+            )
         self._install_push_mapper()
         self._register_writable_static_ui()
         self._scheduler_stop.clear()

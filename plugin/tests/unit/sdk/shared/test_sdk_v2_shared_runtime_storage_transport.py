@@ -399,3 +399,60 @@ async def test_plugin_database_configure_database_name_preserves_active_sessions
     assert (await db.kv.set("k", "new")).is_ok()
     assert (await db.kv.get("k")).unwrap() == "new"
     assert (plugin_dir / "new.db").exists()
+
+
+@pytest.mark.asyncio
+async def test_state_persistence_concurrent_file_saves_and_atomic_replace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = tmp_path / "state_concurrency"
+    plugin_dir.mkdir()
+    persistence = state.PluginStatePersistence(
+        plugin_id="demo", plugin_dir=plugin_dir, backend="file"
+    )
+
+    class _Obj:
+        __freezable__ = ["blob"]
+
+        def __init__(self, blob: str) -> None:
+            self.blob = blob
+
+    small = _Obj("short")
+    large = _Obj("X" * 65536)
+
+    results = await asyncio.gather(
+        *[
+            persistence.save(large if i % 2 == 0 else small)
+            for i in range(24)
+        ],
+        persistence.snapshot(),
+        persistence.snapshot(),
+    )
+    save_results = results[:24]
+    assert all(res.is_ok() and res.unwrap() is True for res in save_results)
+    assert all(res.is_ok() for res in results[24:])
+
+    # Final on-disk snapshot must unpack cleanly with no leftover .tmp files.
+    loader = _Obj("")
+    assert (await persistence.load(loader)).unwrap() is True
+    assert loader.blob in {"short", "X" * 65536}
+    assert not list(plugin_dir.glob("*.tmp"))
+
+    # Simulate os.replace failure; previous valid .plugin_state must remain intact.
+    assert (await persistence.save(_Obj("stable-v1"))).unwrap() is True
+    expected_bytes = (plugin_dir / ".plugin_state").read_bytes()
+
+    def _boom(_src: Path, _dst: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(state.os, "replace", _boom)
+    failed = await persistence.save(_Obj("broken-v2"))
+    assert failed.is_err()
+    assert (plugin_dir / ".plugin_state").read_bytes() == expected_bytes
+    assert not list(plugin_dir.glob("*.tmp"))
+
+    monkeypatch.undo()
+    check_obj = _Obj("")
+    assert (await persistence.load(check_obj)).unwrap() is True
+    assert check_obj.blob == "stable-v1"

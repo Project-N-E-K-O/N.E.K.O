@@ -1099,6 +1099,7 @@ class InstallSourceManager:
         self._lock: threading.RLock = threading.RLock()
         self._read_only: bool = False
         self._degrade_reason: str | None = None
+        self._missing_lock_degraded: bool = False
 
         # Seed an empty snapshot so readers that fire before ``load()``
         # completes (or in tests that skip ``load``) see a consistent
@@ -1143,6 +1144,7 @@ class InstallSourceManager:
 
         self._read_only = False
         self._degrade_reason = None
+        self._missing_lock_degraded = False
 
     # ------------------------------------------------------------------
     # Read-only properties
@@ -1229,6 +1231,12 @@ class InstallSourceManager:
                         )
                         return
                 if legacy_path is None:
+                    if self._current.entries:
+                        self._missing_lock_degraded = True
+                        self._enter_read_only_degrade(
+                            reason=f"lock_file_missing: {self.lock_path}"
+                        )
+                        return
                     # First_Startup: empty snapshot with created_at stamped.
                     self._current = LockFile(
                         schema_version=1,
@@ -1449,7 +1457,18 @@ class InstallSourceManager:
                 updated_at=now,
             )
             self._current = new_lock
-            self.save()
+            was_missing_lock_degraded = self._missing_lock_degraded
+            if was_missing_lock_degraded:
+                self._clear_degrade()
+            try:
+                self.save()
+            except Exception:
+                if was_missing_lock_degraded:
+                    self._missing_lock_degraded = True
+                    self._enter_read_only_degrade(
+                        reason=f"lock_file_missing: {self.lock_path}"
+                    )
+                raise
 
     # ------------------------------------------------------------------
     # Write-path helpers (tasks 2.4 / 2.5)

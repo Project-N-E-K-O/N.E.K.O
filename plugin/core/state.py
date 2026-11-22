@@ -241,7 +241,7 @@ class GlobalState:
         self._plugin_downlink_senders: Dict[str, Any] = {}
         self._plugin_downlink_senders_lock = threading.Lock()
 
-        self._bus_store_lock = threading.Lock()
+        self._bus_store_lock = threading.RLock()
         self._message_store: Deque[Dict[str, Any]] = deque(maxlen=MESSAGE_QUEUE_MAX)
         self._event_store: Deque[Dict[str, Any]] = deque(maxlen=EVENT_QUEUE_MAX)
         self._lifecycle_store: Deque[Dict[str, Any]] = deque(maxlen=LIFECYCLE_QUEUE_MAX)
@@ -897,12 +897,12 @@ class GlobalState:
             if isinstance(eid, str) and eid in self._deleted_event_ids:
                 return
             self._event_store.append(record)
-        try:
-            from plugin.server.messaging.plane_bridge import publish_record
+            try:
+                from plugin.server.messaging.plane_bridge import publish_record
 
-            publish_record(store="events", record=dict(record), topic="all")
-        except Exception:
-            pass
+                publish_record(store="events", record=dict(record), topic="all")
+            except Exception:
+                pass
         try:
             rev = self._bump_bus_rev("events")
             self.bus_change_hub.emit("events", "add", {"record": dict(record), "rev": rev})
@@ -926,16 +926,16 @@ class GlobalState:
                     continue
                 self._event_store.append(rec)
                 kept.append(rec)
-        if not kept:
-            return 0
-        try:
-            from plugin.server.messaging.plane_bridge import publish_record
+            if not kept:
+                return 0
+            try:
+                from plugin.server.messaging.plane_bridge import publish_record
 
-            for rec in kept:
-                if isinstance(rec, dict):
-                    publish_record(store="events", record=dict(rec), topic="all")
-        except Exception:
-            pass
+                for rec in kept:
+                    if isinstance(rec, dict):
+                        publish_record(store="events", record=dict(rec), topic="all")
+            except Exception:
+                pass
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("events")
@@ -952,12 +952,12 @@ class GlobalState:
             if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
                 return
             self._lifecycle_store.append(record)
-        try:
-            from plugin.server.messaging.plane_bridge import publish_record
+            try:
+                from plugin.server.messaging.plane_bridge import publish_record
 
-            publish_record(store="lifecycle", record=dict(record), topic="all")
-        except Exception:
-            pass
+                publish_record(store="lifecycle", record=dict(record), topic="all")
+            except Exception:
+                pass
         try:
             rev = self._bump_bus_rev("lifecycle")
             self.bus_change_hub.emit("lifecycle", "add", {"record": dict(record), "rev": rev})
@@ -981,16 +981,16 @@ class GlobalState:
                     continue
                 self._lifecycle_store.append(rec)
                 kept.append(rec)
-        if not kept:
-            return 0
-        try:
-            from plugin.server.messaging.plane_bridge import publish_record
+            if not kept:
+                return 0
+            try:
+                from plugin.server.messaging.plane_bridge import publish_record
 
-            for rec in kept:
-                if isinstance(rec, dict):
-                    publish_record(store="lifecycle", record=dict(rec), topic="all")
-        except Exception:
-            pass
+                for rec in kept:
+                    if isinstance(rec, dict):
+                        publish_record(store="lifecycle", record=dict(rec), topic="all")
+            except Exception:
+                pass
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("lifecycle")
@@ -1107,6 +1107,25 @@ class GlobalState:
             except Exception:
                 pass
 
+    @staticmethod
+    def _extract_message_id(rec: Any) -> Optional[str]:
+        if not isinstance(rec, dict):
+            return None
+        mid = rec.get("message_id")
+        if isinstance(mid, str) and mid:
+            return mid
+        payload = rec.get("payload")
+        if isinstance(payload, dict):
+            pmid = payload.get("message_id")
+            if isinstance(pmid, str) and pmid:
+                return pmid
+        index = rec.get("index")
+        if isinstance(index, dict):
+            imid = index.get("id")
+            if isinstance(imid, str) and imid:
+                return imid
+        return None
+
     def refresh_messages_cache_from_message_plane(
         self,
         *,
@@ -1154,18 +1173,25 @@ class GlobalState:
                     return 0
 
             items = self._message_plane_rpc_get_recent_messages(limit=int(limit), timeout=float(timeout))
+            kept = 0
             with self._bus_store_lock:
                 try:
                     self._message_store.clear()
                 except Exception:
                     self._message_store = deque(maxlen=self._message_store.maxlen)
                 for rec in items:
+                    if not isinstance(rec, dict):
+                        continue
+                    mid = self._extract_message_id(rec)
+                    if isinstance(mid, str) and mid in self._deleted_message_ids:
+                        continue
                     self._message_store.append(rec)
+                    kept += 1
             try:
                 object.__setattr__(self, "_messages_cache_last_sync_ts", float(time.time()))
             except Exception:
                 self._messages_cache_last_sync_ts = float(time.time())  # type: ignore[attr-defined]
-            return int(len(items))
+            return int(kept)
 
     def message_store_len(self) -> int:
         with self._bus_store_lock:
@@ -1274,7 +1300,7 @@ class GlobalState:
             # Rebuild deque excluding deleted records.
             new_store = deque(maxlen=self._message_store.maxlen)
             for rec in self._message_store:
-                if isinstance(rec, dict) and rec.get("message_id") == message_id:
+                if self._extract_message_id(rec) == message_id:
                     removed = True
                 else:
                     new_store.append(rec)
@@ -1343,6 +1369,8 @@ class GlobalState:
                 else:
                     new_store.append(rec)
             self._event_store = new_store
+            if removed:
+                self.sync_message_plane_events()
         if removed:
             try:
                 rev = self._bump_bus_rev("events")
@@ -1370,6 +1398,8 @@ class GlobalState:
                 else:
                     new_store.append(rec)
             self._lifecycle_store = new_store
+            if removed:
+                self.sync_message_plane_lifecycle()
         if removed:
             try:
                 rev = self._bump_bus_rev("lifecycle")

@@ -34,6 +34,7 @@ from fastapi import Path as PathParam
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
+from utils.file_utils import atomic_write_json
 from utils.social_base import social_base_url, validate_http_url
 
 from plugin.server.application.plugins.capability_analysis_service import (
@@ -2371,7 +2372,8 @@ async def market_oauth_start(
     redirect_uri = _oauth_redirect_uri_for_request(request)
 
     _unlink_if_exists(_OAUTH_CALLBACK_FILE)
-    _write_private_json(
+    await asyncio.to_thread(
+        _write_private_json,
         _OAUTH_PENDING_FILE,
         {
             "state": state,
@@ -2498,7 +2500,8 @@ async def market_oauth_callback(
     if not expected_state or not secrets.compare_digest(state, expected_state):
         raise HTTPException(status_code=400, detail="OAuth state 校验失败")
 
-    _write_private_json(
+    await asyncio.to_thread(
+        _write_private_json,
         _OAUTH_CALLBACK_FILE,
         {"code": code, "state": state, "timestamp": time.time()},
     )
@@ -2836,7 +2839,7 @@ async def market_oauth_complete(
         stored["market_api_url_last_verified"] = _normalized_base_url(MARKET_API_URL)
         stored["market_user_verified_at"] = now
     await _require_active_oauth_session(state, token_payload)
-    _write_private_json(_OAUTH_TOKEN_FILE, stored)
+    await asyncio.to_thread(_write_private_json, _OAUTH_TOKEN_FILE, stored)
     _clear_account_summary_cache()
     _clear_oauth_session()
 
@@ -3068,8 +3071,7 @@ def _auth_issuer() -> str:
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(path, payload, ensure_ascii=False, indent=2)
     try:
         path.chmod(0o600)
     except OSError as exc:
