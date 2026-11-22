@@ -83,6 +83,9 @@ def test_call_chain_allows_takes_ids_and_earlier_names():
     view = view_from_wire("a", wire)
     assert view.allows(MEMORY) and view.allows("memory.read")
     assert not view.allows("messages.push") and not view.allows("screen.capture")
+    # Non-string entries are dropped, so an unknown name never matches one.
+    junk = view_from_wire("a", {**wire, "rights": [None, 3, MEMORY]})
+    assert junk.rights == {MEMORY} and not junk.allows("screen.capture") and junk.allows("memory.read")
     unknown = view_from_wire("a", {**wire, "rights": None})
     assert not unknown.allows(MEMORY) and not unknown.allows("memory.read")
 
@@ -218,6 +221,23 @@ async def test_fake_permissions_states_requests_and_changes():
     assert seen == [("system.network:connect", "granted"), (MEMORY, "granted")]
     assert perms.requests == [("system.network:connect", True), (MEMORY, False)]
     assert perms.get(MEMORY).background is False
+
+
+def test_fake_permissions_cancel_is_per_handle_and_idempotent():
+    perms = FakePermissions()
+    seen = []
+
+    def callback(permission, state):
+        seen.append(state.status)
+
+    first, second = perms.on_change(callback), perms.on_change(callback)
+    first.cancel()
+    first.unsubscribe()  # already cancelled: must not remove the second registration
+    perms.set(MEMORY, "denied")
+    assert seen == ["denied"]
+    second.cancel()
+    perms.set(MEMORY, "granted")
+    assert seen == ["denied"]
 
 
 def test_fake_permissions_denial_and_switch():

@@ -22,12 +22,16 @@ ChangeCallback = Callable[[str, PermissionState], object]
 
 
 class _Subscription:
-    __slots__ = ("_owner", "_callback")
+    __slots__ = ("_owner", "_callback", "_cancelled")
 
     def __init__(self, owner: "FakePermissions", callback: ChangeCallback) -> None:
-        self._owner, self._callback = owner, callback
+        self._owner, self._callback, self._cancelled = owner, callback, False
 
     def cancel(self) -> None:
+        """Remove this registration once; later calls do nothing."""
+        if self._cancelled:
+            return
+        self._cancelled = True
         try:
             self._owner._callbacks.remove(self._callback)
         except ValueError:

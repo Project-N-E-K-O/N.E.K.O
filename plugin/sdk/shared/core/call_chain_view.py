@@ -55,7 +55,10 @@ class CallChainView:
     def allows(self, capability: str) -> bool:
         if not self.rights_known:
             return False
-        return capability in self.rights or normalize_permission(capability) in self.rights
+        if capability in self.rights:
+            return True
+        permission = normalize_permission(capability)
+        return permission is not None and permission in self.rights
 
 
 def self_only_view(plugin_id: str) -> CallChainView:
@@ -75,7 +78,7 @@ def view_from_wire(plugin_id: str, payload: Any) -> CallChainView:
             plugin_id, payload.get("trace_id"), payload.get("call_id"), len(hops) - 1,
             CallOrigin(origin["kind"], origin.get("ref")), hops,
             tuple(hop.plugin_id for hop in hops[:-1]),
-            frozenset(rights or ()), isinstance(rights, list),
+            frozenset(right for right in rights or () if isinstance(right, str)), isinstance(rights, list),
         )
     except Exception:
         return self_only_view(plugin_id)
