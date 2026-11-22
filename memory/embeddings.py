@@ -1553,6 +1553,11 @@ def get_embedding_service() -> EmbeddingService:
     not instant, and it may run on several threads at once, so creation is
     serialized: a lock-free fast path for the common already-built case,
     then a re-check under ``_SERVICE_LOCK`` before building.
+
+    A caller on the event-loop thread (e.g. hybrid_recall) that arrives while
+    another thread is building waits on the lock for the rest of that build.
+    That is the same short, one-time cost it would have paid building the
+    service itself before the lock existed, so it is accepted here.
     """
     global _SERVICE
     service = _SERVICE
@@ -1582,9 +1587,11 @@ async def release_embedding_service() -> None:
     with _SERVICE_LOCK:
         service = _SERVICE
     if service is not None:
-        # Awaited outside the (thread) lock. Callers racing with shutdown keep
-        # getting the closing instance, whose operations already return None,
-        # instead of building a fresh one mid-shutdown.
+        # Awaited outside the (thread) lock. Until the clear below, callers
+        # racing with shutdown get the closing instance, whose operations
+        # already return None. After the clear, a late caller would lazily
+        # build a fresh, never-loaded instance; the process is exiting, so
+        # that is tolerated rather than guarded with a "released" flag.
         await service.close()
     # Compare-and-clear under the same lock as construction, so we never
     # drop an instance that another thread installed meanwhile.
