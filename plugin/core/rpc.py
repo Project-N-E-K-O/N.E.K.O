@@ -252,6 +252,20 @@ def current_request_id() -> str | None:
     return parent.request_id
 
 
+def narrow_scope_deadline(deadline: float) -> None:
+    """Lower the active invocation's deadline to ``deadline`` if that is earlier.
+
+    The scope object is the one ``request_scope`` opened for this invocation,
+    so tasks it already shares the scope with see the new deadline too. A
+    closed or missing scope is left alone.
+    """
+    current = _scope.get()
+    if current is None or current.closed:
+        return
+    if current.deadline is None or deadline < current.deadline:
+        current.deadline = deadline
+
+
 @contextmanager
 def request_scope(request: Mapping[str, Any]):
     """Carry one local control call's deadline and trace into nested requests."""
