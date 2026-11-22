@@ -35,6 +35,8 @@ import os
 from collections import OrderedDict
 from datetime import datetime
 
+from fastapi import HTTPException
+
 from . import gates, runtime
 from ._shared import logger, validate_lanlan_name
 from .gates import (
@@ -96,7 +98,10 @@ def is_character_periodic_write_admitted(lanlan_name: str) -> bool:
     names = {lanlan_name}
     try:
         names.add(validate_lanlan_name(lanlan_name))
-    except Exception:
+    except HTTPException:
+        # Not a valid character name, so the release endpoint (which
+        # validates the same way) cannot have fenced a normalized spelling;
+        # checking the raw key alone is enough.
         pass
     return not any(
         name in _retired_derived_task_names

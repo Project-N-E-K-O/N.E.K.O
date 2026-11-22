@@ -21,7 +21,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app import memory_server
 from app.memory_server import (
     evidence_loops,
     gates,
