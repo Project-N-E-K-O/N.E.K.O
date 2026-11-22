@@ -21,6 +21,7 @@ import plugin.server.application.plugins.installation_transactions.uninstall as 
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import runtime_overrides as runtime_overrides_module
 from plugin.sdk.plugin.decorators import plugin_entry
+from plugin.sdk.shared.permissions import PERMISSIONS
 
 
 class _FakeProcessHost:
@@ -36,6 +37,15 @@ class _FakeProcessHost:
         self.process = SimpleNamespace(is_alive=lambda: True, exitcode=None)
         self.started = False
         self.stopped = False
+        self.initial_permissions: dict | None = None
+        self.permission_pushes: list[dict] = []
+
+    def set_initial_permissions(self, snapshot: dict) -> None:
+        assert not self.started, "the launch snapshot must be set before the process starts"
+        self.initial_permissions = snapshot
+
+    async def push_permissions(self, snapshot: dict) -> None:
+        self.permission_pushes.append(snapshot)
 
     async def start(self, startup_timeout: float | None = None) -> None:
         self.startup_timeout = startup_timeout
@@ -544,10 +554,13 @@ async def test_start_plugin_refreshes_registry_before_loading(
             },
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+        created_hosts: list[_FakeProcessHost] = []
+
         def host_factory(**kwargs):
             source_modes.append(kwargs.pop("source_only", False))
             capability_threads["create_plugin_host"] = threading.current_thread()
-            return _FakeProcessHost(**kwargs)
+            created_hosts.append(_FakeProcessHost(**kwargs))
+            return created_hosts[-1]
         scan = _metadata_scan_for(_FakeAdapterPlugin)
         def metadata_scan(**kwargs):
             capability_threads["scan_plugin_metadata_isolated"] = threading.current_thread()
@@ -579,6 +592,13 @@ async def test_start_plugin_refreshes_registry_before_loading(
 
         assert response["success"] is True
         assert reconciled == [("refresh_adapter", 1)]
+        # Launched with a permission snapshot, then sent the current one once
+        # registered (a newer revision).
+        (host,) = created_hosts
+        assert host.initial_permissions is not None
+        assert set(host.initial_permissions["states"]) == set(PERMISSIONS)
+        (pushed,) = host.permission_pushes
+        assert pushed["revision"] > host.initial_permissions["revision"]
         assert refresh_calls == ["refresh_adapter"]
         assert source_modes == [project]
         assert set(capability_threads) == {

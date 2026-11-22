@@ -43,7 +43,9 @@ from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.server.application.plugins.consent_service import denied_plugin_ids
+from plugin.server.application.plugins.permission_push import push_permissions
 from plugin.server.application.plugins.permission_service import (
+    permission_snapshot,
     reconcile_permission_source,
 )
 from plugin.server.application.plugins.operation_lock import (
@@ -1379,6 +1381,13 @@ class PluginLifecycleService:
                     error_type=type(created_host).__name__,
                 )
             host_obj = created_host
+            # The child starts with its permission snapshot, so ctx.permissions
+            # is filled before plugin code runs.
+            set_initial_permissions = getattr(created_host, "set_initial_permissions", None)
+            if callable(set_initial_permissions):
+                set_initial_permissions(
+                    await asyncio.to_thread(permission_snapshot, current_plugin_id)
+                )
 
             dependencies = _parse_plugin_dependencies(conf, logger, current_plugin_id)
             for dep in dependencies:
@@ -1527,6 +1536,9 @@ class PluginLifecycleService:
 
             await asyncio.to_thread(_register_or_replace_host_sync, current_plugin_id, host_obj)
             registered_plugin_id = current_plugin_id
+            # A change written after the launch snapshot was built found no
+            # registered host to update; send the current state once now.
+            await push_permissions(current_plugin_id, host_obj)
 
             _emit_lifecycle_event(event_type="plugin_started", plugin_id=current_plugin_id)
             response: dict[str, object] = {

@@ -9,35 +9,16 @@ Nothing here talks to a host.
 
 from __future__ import annotations
 
-import contextlib
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 
 from ..models.exceptions import PermissionDeniedError
 from .catalog import PERMISSIONS
-from .state import PermissionState
+from .state import PermissionState, PermissionSubscription, known_permission
 
 StateLike = str | PermissionState | Mapping[str, object]
 ChangeCallback = Callable[[str, PermissionState], object]
-
-
-class _Subscription:
-    __slots__ = ("_owner", "_callback", "_cancelled")
-
-    def __init__(self, owner: "FakePermissions", callback: ChangeCallback) -> None:
-        self._owner, self._callback, self._cancelled = owner, callback, False
-
-    def cancel(self) -> None:
-        """Remove this registration once; later calls do nothing."""
-        if self._cancelled:
-            return
-        self._cancelled = True
-        # The registration may already be gone if the owner dropped its callbacks.
-        with contextlib.suppress(ValueError):
-            self._owner._callbacks.remove(self._callback)
-
-    unsubscribe = cancel
 
 
 class FakePermissions:
@@ -86,9 +67,11 @@ class FakePermissions:
             return self.set(permission, self._answers[permission])
         return self.get(permission)
 
-    def on_change(self, callback: ChangeCallback) -> _Subscription:
+    def on_change(self, callback: ChangeCallback) -> PermissionSubscription:
+        if inspect.iscoroutinefunction(callback):
+            raise TypeError("FakePermissions.on_change callbacks must be synchronous")
         self._callbacks.append(callback)
-        return _Subscription(self, callback)
+        return PermissionSubscription(self._callbacks, callback)
 
     def set(self, permission: str, state: StateLike) -> PermissionState:
         """Change a state as the user would in the panel; notifies ``on_change``."""
@@ -130,10 +113,7 @@ class FakePermissions:
         raise TypeError(f"unsupported permission state: {state!r}")
 
 
-def _known(permission: str) -> str:
-    if permission not in PERMISSIONS:
-        raise ValueError(f"unknown permission id: {permission!r}")
-    return permission
+_known = known_permission
 
 
 __all__ = ["FakePermissions"]

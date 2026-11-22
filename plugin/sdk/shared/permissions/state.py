@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
+
+from .catalog import PERMISSIONS
 
 PermissionStatus = Literal["granted", "denied", "undecided", "once"]
 PERMISSION_STATUSES: tuple[str, ...] = ("granted", "denied", "undecided", "once")
@@ -29,4 +34,44 @@ class PermissionState:
             raise ValueError(f"unknown permission status: {self.status!r}")
 
 
-__all__ = ["PERMISSION_STATUSES", "PermissionState", "PermissionStatus"]
+def known_permission(permission: str) -> str:
+    """Return ``permission`` if it is a permission id; raises ``ValueError`` otherwise."""
+    if not isinstance(permission, str) or permission not in PERMISSIONS:
+        raise ValueError(f"unknown permission id: {permission!r}")
+    return permission
+
+
+class PermissionSubscription:
+    """Handle returned by ``on_change``; ``cancel()`` (alias ``unsubscribe()``)
+    removes the registration once, later calls do nothing."""
+
+    __slots__ = ("_callbacks", "_callback", "_lock", "_cancelled")
+
+    def __init__(
+        self,
+        callbacks: list[Callable[..., object]],
+        callback: Callable[..., object],
+        lock: threading.Lock | None = None,
+    ) -> None:
+        self._callbacks, self._callback, self._lock = callbacks, callback, lock
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        if self._cancelled:
+            return
+        self._cancelled = True
+        with self._lock if self._lock is not None else contextlib.nullcontext():
+            # The registration may already be gone if the owner dropped its callbacks.
+            with contextlib.suppress(ValueError):
+                self._callbacks.remove(self._callback)
+
+    unsubscribe = cancel
+
+
+__all__ = [
+    "PERMISSION_STATUSES",
+    "PermissionState",
+    "PermissionStatus",
+    "PermissionSubscription",
+    "known_permission",
+]

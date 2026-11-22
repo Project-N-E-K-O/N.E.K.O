@@ -15,13 +15,18 @@ sources differ.
 from __future__ import annotations
 
 import copy
+import itertools
+import threading
 from pathlib import Path
 from typing import Callable
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
+from plugin.sdk.shared.permissions.catalog import PERMISSIONS
+from plugin.sdk.shared.permissions.state import PermissionState
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_IN_USE,
+    MESSAGES_PUSH,
     PluginPermissionStore,
     PluginSource,
 )
@@ -304,3 +309,86 @@ def snapshot_permissions(plugin_id: str) -> PermissionSnapshot:
 def restore_permissions(plugin_id: str, record: dict | None) -> None:
     """Put back an earlier record; ``None`` removes the plugin's record."""
     permission_store.restore(plugin_id, record)
+
+
+# ----------------------------------------------------------------------
+# Snapshots sent down to plugin processes (``ctx.permissions``)
+# ----------------------------------------------------------------------
+
+_snapshot_lock = threading.Lock()
+_snapshot_revision = itertools.count(1)
+# Last record read successfully per plugin: a later read failure keeps using it.
+_last_records: dict[str, dict] = {}
+
+
+def _resolve_state(permission: str, record: dict | None, *, checks_off: bool) -> PermissionState:
+    from plugin.sdk.shared.permissions.runtime import unavailable_state
+    from plugin.server.infrastructure.plugin_permissions import (
+        CONDITION_ANYTIME,
+        LEGACY_DENIED,
+        STATE_GRANTED,
+    )
+
+    spec = PERMISSIONS[permission]
+    if record is None:
+        return unavailable_state(permission, checks_disabled=checks_off)
+    enforced = spec.enforced and not checks_off
+    entry = (record.get("permissions") or {}).get(permission)
+    if isinstance(entry, dict):
+        status = entry.get("state")
+        background = status == STATE_GRANTED and entry.get("condition") == CONDITION_ANYTIME
+    elif record.get(LEGACY_DENIED) and spec.legacy_name is not None:
+        # A whole-plugin denial from the earlier consent flow covers the
+        # permissions that flow knew about; later ones are undecided.
+        status, background = "denied", False
+    else:
+        status, background = "undecided", False
+    if status not in ("granted", "denied", "undecided"):
+        status, background = "undecided", False
+    if permission == MESSAGES_PUSH and status != "granted":
+        # Disclosure only: either the user approved it or it is undecided.
+        status = "undecided"
+    return PermissionState(status, background=background, enforced=enforced)
+
+
+def permission_snapshot(plugin_id: str) -> dict:
+    """The plugin's resolved permission states, in the shape the plugin
+    process takes (see ``plugin.sdk.shared.permissions.runtime``). Never raises.
+
+    When the grants cannot be read, the last record read for this plugin is
+    used; when none was ever read, enforced permissions are denied and
+    disclosure-only ones undecided. While the master switch is on every
+    permission is ``enforced=False``.
+    """
+    from plugin.core.capability_policy import checks_disabled
+    from plugin.sdk.shared.permissions.runtime import state_to_wire
+
+    # Numbered before reading: a snapshot that starts after a write always
+    # outranks one that may have read the data from before it.
+    with _snapshot_lock:
+        revision = next(_snapshot_revision)
+    try:
+        record: dict | None = permission_record(plugin_id)
+        with _snapshot_lock:
+            _last_records[plugin_id] = copy.deepcopy(record)
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        with _snapshot_lock:
+            record = copy.deepcopy(_last_records.get(plugin_id))
+        logger.error(
+            "plugin permissions could not be read for the plugin process: plugin_id={}, error={}, using={}",
+            plugin_id,
+            code or type(exc).__name__,
+            "last read" if record is not None else "nothing (enforced permissions count as denied)",
+        )
+    try:
+        checks_off = checks_disabled()
+    except Exception as exc:
+        # The switch only ever turns checks off; if it cannot be read, keep them on.
+        logger.error("permission master switch could not be read: error={}", type(exc).__name__)
+        checks_off = False
+    states = {
+        permission: state_to_wire(_resolve_state(permission, record, checks_off=checks_off))
+        for permission in PERMISSIONS
+    }
+    return {"revision": revision, "states": states}

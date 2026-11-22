@@ -23,6 +23,7 @@ from .types import (
     Metadata,
     PluginContextProtocol,
     PluginModelsProtocol,
+    PluginPermissionsProtocol,
     ReplyTailProtocol,
     PushMessageResult,
 )
@@ -118,6 +119,7 @@ class SdkContext:
         self._host_ctx = cast(_HostContextProtocol, host_ctx)
         self._bus_ctx: SdkBusContext | None | object = _UNSET
         self._models_ctx: PluginModelsProtocol | None = None
+        self._permissions_ctx: object | None = None
         self._reply_tail_ctx: ReplyTailProtocol | None = None
 
     async def _send_request_and_wait_async(
@@ -287,6 +289,20 @@ class SdkContext:
 
             self._models_ctx = PluginModels(self._host_ctx)
         return self._models_ctx
+
+    @property
+    def permissions(self) -> PluginPermissionsProtocol:
+        """This plugin's permission states (``get`` / ``on_change``), read locally."""
+        permissions = getattr(self._host_ctx, "permissions", None)
+        if permissions is not None:
+            return cast(PluginPermissionsProtocol, permissions)
+        # A host context without a permission copy (older hosts, test
+        # contexts): report as if the grants could not be read.
+        if self._permissions_ctx is None:
+            from plugin.sdk.shared.permissions.runtime import PluginPermissions
+
+            self._permissions_ctx = PluginPermissions(self.logger)
+        return cast(PluginPermissionsProtocol, self._permissions_ctx)
 
     @property
     def reply_tail(self) -> ReplyTailProtocol:
