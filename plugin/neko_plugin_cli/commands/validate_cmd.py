@@ -1340,7 +1340,7 @@ def _is_sdk_module(module: str) -> bool:
 def _sdk_imported_names(tree: ast.Module) -> dict[str, str]:
     """Local name -> qualified symbol for imports from the plugin SDK."""
     names: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in _module_level_nodes(tree):
         if isinstance(node, ast.ImportFrom) and not node.level and node.module:
             for item in node.names:
                 qualified = f"{node.module}.{item.name}"
@@ -1353,6 +1353,16 @@ def _sdk_imported_names(tree: ast.Module) -> dict[str, str]:
                 elif not item.asname and item.name.split(".")[0] == "plugin" and _is_sdk_module(item.name):
                     names["plugin"] = "plugin"
     return names
+
+
+def _module_level_nodes(tree: ast.Module):
+    """Nodes in module scope (inside if / try blocks too), not in functions or classes."""
+    stack = list(tree.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            stack.extend(ast.iter_child_nodes(node))
 
 
 def _sdk_decorator_name(decorator: ast.expr, sdk_names: dict[str, str]) -> str | None:

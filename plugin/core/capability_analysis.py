@@ -202,6 +202,10 @@ def _resolve_with_origin(
     return value, False, None
 
 
+def _sdk_origin(path: str) -> bool:
+    return path == "plugin.sdk" or path.startswith(("plugin.sdk.", "plugin.sdk("))
+
+
 def _sdk_module(path: str) -> bool:
     return path == "plugin" or path.startswith("plugin.")
 
@@ -361,6 +365,9 @@ def _rebound_names(nodes, walker) -> frozenset[str]:
         elif isinstance(node, ast.NamedExpr):
             _target_names(node.target, names)
         elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            if node.value is None:
+                # A bare annotation (requests: Any) binds nothing.
+                continue
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             # A value the alias resolution cannot follow (a lambda, a
             # conditional, a subscript ...) leaves the previous binding in
@@ -368,8 +375,7 @@ def _rebound_names(nodes, walker) -> frozenset[str]:
             # A constant (the optional-import fallback "requests = None") is
             # not an alternative origin worth weakening the import for.
             opaque = (
-                node.value is None
-                or isinstance(node, ast.AugAssign)
+                isinstance(node, ast.AugAssign)
                 or (not _name(node.value) and not isinstance(node.value, ast.Constant))
             )
             for target in targets:
@@ -895,7 +901,8 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
         direct = BASIS_RESOLVED_CALL if reference.is_call else BASIS_RESOLVED_NAME
         named = BASIS_RESOLVED_NAME
     if not reference.external:
-        sdk_resolved = reference.bound is True and _sdk_module(reference.method)
+        # Definite only for the SDK itself, not the plugin's own plugin.* modules.
+        sdk_resolved = reference.bound is True and _sdk_origin(reference.method)
         sdk_basis = direct if sdk_resolved else BASIS_SUFFIX_MATCH
         capability = _capability_for(reference.method)
         if capability:
@@ -943,10 +950,12 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
     name = None if reference.via_call_result else _origin_name(reference)
     method = reference.method
     if name is not None:
+        # Even a literal target is not followed by the scan, so it is a blind
+        # spot either way; so is reaching modules through sys.modules.
         if reference.is_call and name in _DYNAMIC_IMPORT_CALLS:
-            if _literal_string(_call_argument(node, 0, "name")) is None:
-                return "dynamic_import"
-            return None
+            return "dynamic_import"
+        if _matches(name, ("sys.modules",)):
+            return "dynamic_import"
         if reference.is_call and name == "builtins.getattr":
             # A constant name reads like attribute access; see _getattr_reference.
             if _literal_string(_call_argument(node, 1, "name")) is not None:
@@ -965,9 +974,9 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
     ):
         return "reflective_access"
     if reference.is_call and method.endswith(".run_in_executor"):
-        executor = _call_argument(node, 0, "executor")
-        if not (isinstance(executor, ast.Constant) and executor.value is None):
-            return "context_loss"
+        # Executor threads, the default one included, do not carry the
+        # caller's context variables.
+        return "context_loss"
     return None
 
 
@@ -1004,7 +1013,10 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
     try:
         inventory["vendor"] = (root / "vendor").is_dir()
         visited = 0
-        for current, directories, files in os.walk(root, followlinks=False):
+        def unreadable(_error: OSError) -> None:
+            inventory["truncated"] = True
+
+        for current, directories, files in os.walk(root, onerror=unreadable, followlinks=False):
             if stop is not None and stop.is_set():
                 inventory["truncated"] = True
                 break
@@ -1102,13 +1114,16 @@ class _PermissionCollector:
 
     def add_blind_spot(self, kind: str, file: str | None, line: int | None, **extra) -> None:
         key = (kind, file, line)
-        if key in self.blind_spots or len(self.blind_spots) >= MAX_BLIND_SPOTS:
+        # Unscanned parts are always kept; per-reference spots share the cap.
+        if key in self.blind_spots or (kind != "not_analyzed" and len(self.blind_spots) >= MAX_BLIND_SPOTS):
             return
         self.blind_spots[key] = {"type": kind, "file": file, "line": line, **extra}
 
     def scan(self, relative: str, reference: _Reference) -> None:
         node = reference.node
         if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if isinstance(node, ast.ImportFrom) and any(item.name == "*" for item in node.names):
+                self.add_blind_spot("dynamic_import", relative, node.lineno, method="import *")
             for permission in _import_hints(node):
                 self.import_hints.setdefault(
                     permission,
@@ -1225,6 +1240,7 @@ def analyze_capabilities(
         "files_analyzed": count,
         "source_bytes": sources.size,
         "declarations": declarations.status,
+        "invalid_declarations": sorted(declarations.invalid),
         "permissions": permissions,
         "blind_spots": blind_spots,
     }
@@ -1244,8 +1260,12 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
         return []
     issues: list[PermissionIssue] = []
     status = report.get("status")
+    # Ids whose entry is itself invalid already have an error of their own.
+    invalid = set(report.get("invalid_declarations") or [])
     for permission, item in (report.get("permissions") or {}).items():
         findings = item.get("findings") or []
+        if permission in invalid:
+            continue
         if item.get("declared") is None and findings:
             direct = [row for row in findings if row.get("basis") in DIRECT_BASES]
             definite = bool(direct) and permission not in POSSIBLE_ONLY_PERMISSIONS

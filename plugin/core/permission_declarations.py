@@ -80,6 +80,8 @@ class PermissionDeclarations:
     # table exists but is not a table.
     status: str = "none"
     items: dict[str, PermissionDeclaration] = field(default_factory=dict)
+    # Known ids whose entry is invalid (reported on its own).
+    invalid: set[str] = field(default_factory=set)
 
     def level(self, permission: str) -> str | None:
         item = self.items.get(permission)
@@ -158,6 +160,8 @@ def parse_permission_declarations(
             issues.extend(entry_issues)
             if declaration is not None:
                 declarations.items[permission] = declaration
+            else:
+                declarations.invalid.add(permission)
     return declarations, issues
 
 

@@ -334,6 +334,11 @@ def test_file_access_and_open_modes(tmp_path, call, expected, mode):
         ("import threading\nthreading.Thread(target=f).start()", "context_loss"),
         ("from concurrent.futures import ThreadPoolExecutor\nThreadPoolExecutor()", "context_loss"),
         ("async def f(loop, pool):\n    await loop.run_in_executor(pool, g)", "context_loss"),
+        ("async def f(loop):\n    await loop.run_in_executor(None, g)", "context_loss"),
+        ("import importlib\nimportlib.import_module('subprocess')", "dynamic_import"),
+        ("__import__('os')", "dynamic_import"),
+        ("import sys\nsys.modules['os']", "dynamic_import"),
+        ("from os import *", "dynamic_import"),
     ],
 )
 def test_blind_spots_are_reported(tmp_path, source, kind):
@@ -346,10 +351,8 @@ def test_blind_spots_are_reported(tmp_path, source, kind):
 @pytest.mark.parametrize(
     "source",
     [
-        "import importlib\nimportlib.import_module('json')",
         "getattr(obj, 'name')",
         "getattr(obj, 'not-an-identifier', None)",
-        "async def f(loop):\n    await loop.run_in_executor(None, g)",
         "import asyncio\nasyncio.to_thread(g)",
         "def eval(x):\n    return x\neval('1')",
     ],
@@ -712,6 +715,7 @@ def test_analyzer_upgrade_does_not_ask_approved_plugins_again(tmp_path):
         encoding="utf-8",
     )
     report = analyze_capabilities(tmp_path)
+    assert report["capabilities"] == ["memory.read", "messages.push"]
     record = {"decision": "approved", "approved_capabilities": ["memory.read", "messages.push"]}
     view = derive_consent(record, report)
     assert (view.state, view.upgraded) == ("clear", False)
@@ -1038,6 +1042,62 @@ def test_cli_ignores_plugin_owned_helpers_with_sdk_names(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "from plugin.plugins.perm_demo.helpers import hook\n"
+        "class P:\n    @hook(permissions=['local-cache'])\n    def a(self): ...\n",
+        "[permissions]\n",
+    )
+    assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
+
+
+# --- review round 5 ----------------------------------------------------------------------
+
+
+def test_a_bare_annotation_is_not_a_rebinding(tmp_path):
+    assert _errors(_scan(tmp_path, "import requests\nrequests: object\nrequests.get('u')\n")) == [
+        "system.network:connect"
+    ]
+
+
+def test_plugin_owned_modules_are_not_sdk_evidence(tmp_path):
+    report = _scan(tmp_path, "from plugin.plugins.demo.helpers import create_card\ncreate_card()\n")
+    assert report["permissions"]["plugin_sdk.main_agent.messages:push"]["basis"] == "suffix_match"
+    assert _errors(report) == []
+
+
+def test_an_invalid_declaration_is_not_also_reported_as_undeclared(tmp_path):
+    report = _scan(
+        tmp_path,
+        "import os\nos.getenv('A')\n",
+        manifest='[permissions.ask]\n"system.env:read" = { reason = "" }\n',
+    )
+    assert report["invalid_declarations"] == ["system.env:read"]
+    assert [issue.code for issue in compare_declarations(report)] == []
+
+
+def test_unreadable_directories_mark_the_inventory_incomplete(tmp_path, monkeypatch):
+    import os as os_module
+
+    real_walk = os_module.walk
+
+    def walk(top, onerror=None, followlinks=False):
+        if onerror is not None:
+            onerror(PermissionError("denied"))
+        yield from real_walk(top, followlinks=followlinks)
+
+    monkeypatch.setattr(capability_analysis.os, "walk", walk)
+    assert capability_analysis.skipped_inventory(tmp_path)["truncated"] is True
+
+
+def test_not_analyzed_survives_the_blind_spot_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "MAX_BLIND_SPOTS", 2)
+    report = _scan(tmp_path, "\n".join(f"eval(x{i})" for i in range(5)) + "\n", **{"ui/panel.tsx": "1"})
+    assert any(spot["type"] == "not_analyzed" for spot in report["blind_spots"])
+
+
+def test_cli_only_counts_module_level_sdk_imports_for_decorators(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "def hook(**kwargs):\n    return lambda f: f\n"
+        "def setup():\n    from plugin.sdk.plugin import hook\n    return hook\n"
         "class P:\n    @hook(permissions=['local-cache'])\n    def a(self): ...\n",
         "[permissions]\n",
     )
