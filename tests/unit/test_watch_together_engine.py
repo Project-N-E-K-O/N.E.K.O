@@ -250,9 +250,17 @@ def test_character_language_selects_laughter_without_changing_legacy_baseline(tm
 
 def test_links_reject_unrelated_hosts_and_keep_page():
     assert parse_video_url("https://www.bilibili.com/video/BV1GJ411x7h7?p=2") == ("BV1GJ411x7h7", 1)
-    for url in ("https://evil.test/video/BV1GJ411x7h7", "http://127.0.0.1/video/BV1GJ411x7h7", "https://www.bilibili.com/video/BV1GJ411x7h7?p=0"):
+    assert parse_video_url("https://www.bilibili.com/video/BV1GJ411x7h7?p=") == ("BV1GJ411x7h7", 0)
+    for url in ("https://evil.test/video/BV1GJ411x7h7", "http://127.0.0.1/video/BV1GJ411x7h7"):
         with pytest.raises(ValueError):
             parse_video_url(url)
+
+
+@pytest.mark.parametrize("raw_p", ["0", "-2", "abc", "2.5"])
+def test_parse_video_url_rejects_invalid_page_with_localized_error(raw_p):
+    """Non-integer or out-of-range ?p= must raise the localized page error."""
+    with pytest.raises(ValueError, match="分 P 序号无效"):
+        parse_video_url(f"https://www.bilibili.com/video/BV1GJ411x7h7?p={raw_p}")
 
 
 def test_rejects_spoilers_nan_weak_evidence_and_dense_cues():

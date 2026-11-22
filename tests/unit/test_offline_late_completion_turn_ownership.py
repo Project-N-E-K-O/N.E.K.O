@@ -681,10 +681,12 @@ async def test_a_truncation_discard_wraps_up_only_while_its_reply_owns_the_turn(
 
 
 @pytest.mark.parametrize("current", [True, False])
-async def test_a_stale_reply_skips_the_takeover_cleanup(current):
-    """During a game takeover an ordinary completion clears the shared output.
-    A retired reply that no longer owns the turn must not: that would cut the
-    takeover's own speech and wipe its bookkeeping. A current one still does."""
+@pytest.mark.parametrize("req_owner", ["req-A", "req-mirror"])
+async def test_a_stale_reply_skips_the_takeover_cleanup(current, req_owner):
+    """During a game takeover an ordinary completion clears the shared output
+    and compare-and-clears _active_text_request_id (preserving foreign takeover
+    request ids), while emitting 'turn abandoned' without a sync 'turn end'.
+    A retired reply that no longer owns the turn must skip the shared cleanup."""
     mgr = _core_manager()
     mgr._takeover_active = True
     mgr._clear_tts_pipeline = AsyncMock()
@@ -692,13 +694,40 @@ async def test_a_stale_reply_skips_the_takeover_cleanup(current):
     if not current:
         mgr.current_speech_id = "speech-mirror"  # the takeover speaks meanwhile
     mgr._current_ai_turn_text = "镜像台词"
-    mgr._active_text_request_id = "req-mirror"
+    mgr._active_text_request_id = req_owner
 
     await mgr.handle_response_complete(reply_turn=reply_turn)
 
     assert mgr._clear_tts_pipeline.await_count == (1 if current else 0)
     assert mgr._current_ai_turn_text == ("" if current else "镜像台词")
-    assert mgr._active_text_request_id == (None if current else "req-mirror")
+    expected_req = None if req_owner == "req-A" else "req-mirror"
+    assert mgr._active_text_request_id == expected_req
+    assert _sync(mgr, "turn end") == []
+    if current:
+        assert [m.get("request_id") for m in _ws(mgr, "turn abandoned")] == ["req-A"]
+        assert reply_turn.turn_ended is True
+    else:
+        assert _ws(mgr, "turn abandoned") == []
+
+
+@pytest.mark.parametrize("intervened", [False, True])
+async def test_takeover_unbound_completion_emits_turn_abandoned_and_compare_clears(intervened):
+    """R1111-P2-02: unbound completion under takeover emits turn abandoned and compare-and-clears."""
+    mgr = _core_manager()
+    mgr._takeover_active = True
+    mgr._active_text_request_id = "req-1"
+
+    async def clear_tts():
+        if intervened:
+            mgr._active_text_request_id = "req-2"
+
+    mgr._clear_tts_pipeline = AsyncMock(side_effect=clear_tts)
+
+    await mgr.handle_response_complete()
+
+    assert [m.get("request_id") for m in _ws(mgr, "turn abandoned")] == ["req-1"]
+    assert _sync(mgr, "turn end") == []
+    assert mgr._active_text_request_id == ("req-2" if intervened else None)
 
 
 async def test_the_avatar_path_hands_its_own_snapshot_to_the_client(monkeypatch):

@@ -1028,34 +1028,68 @@ async def _push_mini_game_invite_resolved(
         )
 
 
-# Match ASCII / Cyrillic keywords with word-boundary regex; other scripts (CJK / Hiragana /
-# Katakana / Hangul) use substrings. Python `\b` tests \w boundaries, but East Asian characters
-# are also \w, lacking internal boundaries; word-boundary matching misses 我好啊.
-# Cyrillic and Latin are letter-based, so \b works. Codex P1: prevent English false matches
-# such as yes in yesterday and no in no idea.
-_LETTER_ONLY_KW_RE = re.compile(r"^[A-Za-z0-9\s'\-Ѐ-ӿ]+$")
+# Match ASCII / accented Latin / Greek / Cyrillic keywords with letter-boundary
+# lookarounds; other scripts (CJK / Hiragana / Katakana / Hangul) use clause-anchored
+# matching so embedded substrings in ordinary sentences do not trigger false positives.
+_LETTER_ONLY_KW_RE = re.compile(r"^[0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ\s'\-]+$")
+_LETTER_BOUNDARY_CLASS = "0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ"
+_CLAUSE_SPLIT_RE = re.compile(
+    r"[\s,，.。!！?？;；:：、…~～\-—()（）\[\]【】「」『』\"']+"
+)
+_CJK_PREFIX_RE = re.compile(
+    r"^(?:但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|那就|就|我|咱|咱们|咱們|先|还是|還是|"
+    r"现在|現在|今天|这次|這次|好吧|行吧|好啊|好的|行啊|来吧|來吧|うん|うーん|いや|でも|"
+    r"じゃあ|それ|ちょっと|また|もう|あとで|いま|응|어|음|아니|나|난|나는|나도|지금|좀|일단)*$"
+)
+_CJK_SUFFIX_RE = re.compile(
+    r"^(?:吧|呀|啊|呢|啦|哦|嘛|呗|唄|咯|喔|哈|呵|了|的|儿|兒|玩|说|說|再说|再說|"
+    r"再玩|再聊|再看|一会|一會|一下|~|等下|等会|等會|一起玩|よ|ね|な|か|わ|さ|ぞ|ぜ|"
+    r"だ|です|ます|かな|かも|する|요|서|네|지|야|만|에|은|는|도|다|가)*$"
+)
 
 
 _KEYWORD_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
 
 
 def _keyword_matches(keyword: str, norm_text: str) -> bool:
-    """Locale-aware substring/word-boundary match.
+    """Locale-aware boundary matching for mini-game invite keywords.
 
-    Keywords made of ASCII / digits / Cyrillic / spaces / apostrophes / hyphens
-    go through a word-boundary regex (``\\b...\\b``); other scripts (CJK /
-    Hiragana / Katakana / Hangul) use substring matching — Python's regex counts
-    those characters as \\w, so adding \\b would cause misses (in "我好啊" there
-    is no boundary before '好')."""  # noqa: DOCSTRING_CJK
+    Keywords made of Latin / accented Latin / Greek / Cyrillic / digits /
+    spaces / apostrophes / hyphens use explicit letter-class boundary
+    lookarounds; East Asian script keywords (CJK / Hiragana / Katakana /
+    Hangul) require clause-anchored matching with bounded conversational
+    prefixes and particles so embedded substrings in ordinary sentences do not
+    trigger false positives.
+    """
     if not keyword or not norm_text:
         return False
     if _LETTER_ONLY_KW_RE.fullmatch(keyword):
         pattern = _KEYWORD_PATTERN_CACHE.get(keyword)
         if pattern is None:
-            pattern = re.compile(r'\b' + re.escape(keyword) + r'\b', re.IGNORECASE)
+            pattern = re.compile(
+                rf"(?<![{_LETTER_BOUNDARY_CLASS}])"
+                + re.escape(keyword)
+                + rf"(?![{_LETTER_BOUNDARY_CLASS}])",
+                re.IGNORECASE,
+            )
             _KEYWORD_PATTERN_CACHE[keyword] = pattern
         return bool(pattern.search(norm_text))
-    return keyword in norm_text
+    for clause in _CLAUSE_SPLIT_RE.split(norm_text):
+        if not clause:
+            continue
+        if clause == keyword:
+            return True
+        start = 0
+        while True:
+            idx = clause.find(keyword, start)
+            if idx < 0:
+                break
+            prefix = clause[:idx]
+            suffix = clause[idx + len(keyword):]
+            if _CJK_PREFIX_RE.fullmatch(prefix) and _CJK_SUFFIX_RE.fullmatch(suffix):
+                return True
+            start = idx + 1
+    return False
 
 
 def _match_mini_game_invite_keyword(text: str) -> str | None:

@@ -2142,3 +2142,127 @@ def test_focused_video_default_dwell_threshold_is_120():
     assert sm.get_snapshot(now=t0 + 119).state == 'casual_browsing'
     # Just past it → focused_video.
     assert sm.get_snapshot(now=t0 + 121).state == 'focused_video'
+
+
+def test_external_heartbeat_timeout_clears_stale_window_and_degrades_cleanly():
+    """F0153: falling back to degraded collector must clear stale window and gate OS metrics."""
+    from types import SimpleNamespace
+    from main_logic.activity.tracker import UserActivityTracker
+
+    degraded = SystemSnapshot(
+        timestamp=0.0,
+        idle_seconds=None,
+        cpu_avg_30s=0.0,
+        cpu_instant=0.0,
+        window_title=None,
+        process_name=None,
+        gpu_utilization=None,
+        os_signals_available=False,
+    )
+    tracker = UserActivityTracker(
+        lanlan_name='test_lanlan',
+        collector=SimpleNamespace(snapshot=lambda: degraded),
+    )
+
+    t0 = 1000.0
+    tracker.push_external_system_signal(
+        window_title='proactive_chat.py - Visual Studio Code',
+        process_name='Code.exe',
+        idle_seconds=1.0,
+        cpu_avg_30s=85.0,
+        gpu_utilization=90.0,
+        now=t0,
+    )
+    snap_live = tracker.get_snapshot_sync(now=t0 + 5.0)
+    assert snap_live.os_signals_available is True
+    assert snap_live.active_window is not None
+    assert snap_live.active_window.category == 'work'
+
+    # After 15s TTL expires, _select_system_snapshot falls back to degraded collector.
+    t_expired = t0 + 20.0
+    snap_degraded = tracker.get_snapshot_sync(now=t_expired)
+    assert snap_degraded.os_signals_available is False
+    assert snap_degraded.active_window is None
+    assert snap_degraded.system_idle_seconds is None
+    assert snap_degraded.state == 'idle'
+    assert snap_degraded.window_switch_rate_5min == 0
+    assert all(code not in ('high_cpu', 'high_gpu') for code, _ in snap_degraded.propensity_reasons)
+
+    # Voice signal still works in degraded mode.
+    tracker.on_voice_mode(True)
+    tracker.on_voice_rms(now=t_expired + 1.0)
+    snap_voice = tracker.get_snapshot_sync(now=t_expired + 2.0)
+    assert snap_voice.state == 'voice_engaged'
+    assert snap_voice.os_signals_available is False
+
+    llm_signals = tracker._snapshot_signals_for_llm(snap_degraded, now=t_expired + 10.0)
+    assert llm_signals['active_window'] is None
+    assert llm_signals['window_title'] is None
+    assert llm_signals['recent_windows'] is None
+    assert llm_signals['system_idle_seconds'] is None
+    assert llm_signals['cpu_avg_30s'] is None
+    assert llm_signals['window_switch_rate_5min'] is None
+
+
+def test_partial_external_signal_without_idle_does_not_fake_active_input():
+    """F0156: omitted idle_seconds stays None; GPU/CPU-only push stays os_signals_available=False."""
+    from types import SimpleNamespace
+    from main_logic.activity.tracker import UserActivityTracker
+
+    degraded = SystemSnapshot(
+        timestamp=0.0,
+        idle_seconds=None,
+        cpu_avg_30s=0.0,
+        cpu_instant=0.0,
+        window_title=None,
+        process_name=None,
+        gpu_utilization=None,
+        os_signals_available=False,
+    )
+    tracker = UserActivityTracker(
+        lanlan_name='test_lanlan',
+        collector=SimpleNamespace(snapshot=lambda: degraded),
+    )
+    t0 = 2000.0
+
+    # Window-only push (no idle_seconds) marks OS available but idle unknown.
+    tracker.push_external_system_signal(
+        window_title='main.py - VS Code',
+        process_name='Code.exe',
+        now=t0,
+    )
+    snap1 = tracker.get_snapshot_sync(now=t0)
+    assert snap1.os_signals_available is True
+    assert snap1.system_idle_seconds is None
+
+    # Even after work dwell threshold (90s), without recent_input or known idle_seconds,
+    # focused_work must NOT fire on an empty seat.
+    tracker.push_external_system_signal(
+        window_title='main.py - VS Code',
+        process_name='Code.exe',
+        now=t0 + 100.0,
+    )
+    snap2 = tracker.get_snapshot_sync(now=t0 + 100.0)
+    assert snap2.state == 'idle'
+
+    # Unknown window + high GPU without idle_seconds must NOT trigger gaming-by-GPU.
+    tracker.push_external_system_signal(
+        window_title='Custom App',
+        process_name='custom.exe',
+        gpu_utilization=95.0,
+        now=t0 + 110.0,
+    )
+    snap3 = tracker.get_snapshot_sync(now=t0 + 110.0)
+    assert snap3.state != 'gaming'
+
+    # GPU-only or CPU-only push (no window, no idle_seconds) is NOT os_signals_available.
+    tracker.push_external_system_signal(gpu_utilization=90.0, now=t0 + 120.0)
+    snap4 = tracker.get_snapshot_sync(now=t0 + 120.0)
+    assert snap4.os_signals_available is False
+    assert snap4.system_idle_seconds is None
+
+    # Explicit high idle_seconds alone triggers away.
+    tracker.push_external_system_signal(idle_seconds=1000.0, now=t0 + 130.0)
+    snap5 = tracker.get_snapshot_sync(now=t0 + 130.0)
+    assert snap5.os_signals_available is True
+    assert snap5.state == 'away'

@@ -496,15 +496,19 @@ class UserActivityTracker:
         right now" (legitimate — e.g., desktop visible).
         """
         ts = now if now is not None else time.time()
+        has_window = bool(
+            (window_title is not None and window_title.strip() != "")
+            or (process_name is not None and process_name.strip() != "")
+        )
         self._external_system_snap = SystemSnapshot(
             timestamp=ts,
-            idle_seconds=idle_seconds if idle_seconds is not None else 0.0,
+            idle_seconds=idle_seconds,
             cpu_avg_30s=cpu_avg_30s if cpu_avg_30s is not None else 0.0,
             cpu_instant=cpu_avg_30s if cpu_avg_30s is not None else 0.0,
             window_title=window_title,
             process_name=process_name,
             gpu_utilization=gpu_utilization,
-            os_signals_available=True,
+            os_signals_available=has_window or (idle_seconds is not None),
         )
 
     # ── snapshot ────────────────────────────────────────────────
@@ -1361,7 +1365,12 @@ class UserActivityTracker:
         (canonical names + dwell, no titles) so the narration can describe the
         user's activity FLOW rather than only the instantaneous window.
         """
-        win = snap.active_window
+        win = snap.active_window if snap.os_signals_available else None
+        idle_seconds = (
+            int(snap.system_idle_seconds)
+            if snap.os_signals_available and snap.system_idle_seconds is not None
+            else None
+        )
         return {
             'rule_state': snap.state,
             'active_window': (
@@ -1369,10 +1378,15 @@ class UserActivityTracker:
                 if win and win.canonical else None
             ),
             'window_title': win.title if win else None,
-            'recent_windows': self._format_window_trail(now=now),
-            'system_idle_seconds': int(snap.system_idle_seconds),
-            'cpu_avg_30s': round(snap.cpu_avg_30s, 1),
-            'window_switch_rate_5min': snap.window_switch_rate_5min,
+            'recent_windows': (
+                self._format_window_trail(now=now)
+                if snap.os_signals_available else None
+            ),
+            'system_idle_seconds': idle_seconds,
+            'cpu_avg_30s': round(snap.cpu_avg_30s, 1) if snap.os_signals_available else None,
+            'window_switch_rate_5min': (
+                snap.window_switch_rate_5min if snap.os_signals_available else None
+            ),
             'voice_mode_active': snap.voice_mode_active,
             'time_period': snap.period,
         }

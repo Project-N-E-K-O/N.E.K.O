@@ -136,3 +136,16 @@ def test_recent_window_trail_dwell_not_inflated_by_noncanonical_gap():
     trail = sm.recent_window_trail(now=t0 + 130, limit=5)
     assert trail[0] == ('A', 50.0)   # not 100.0 — the gap's 50s is dropped, not added
     assert trail[1] == ('B', 30.0)
+
+
+def test_recent_window_trail_stops_dwell_on_signal_loss():
+    """F0153: update_window(None) appends a boundary so dwell stops at disconnect time."""
+    sm = _sm()
+    t0 = 1000.0
+    sm.update_window(_win('VS Code', 'work', 'ide'), now=t0)
+    sm.update_window(_win('Chrome', 'entertainment', 'browser'), now=t0 + 60.0)
+    # Signal lost at t0 + 90.0
+    sm.update_window(None, now=t0 + 90.0)
+
+    trail = sm.recent_window_trail(now=t0 + 500.0)
+    assert trail == [('VS Code', 60.0), ('Chrome', 30.0)]

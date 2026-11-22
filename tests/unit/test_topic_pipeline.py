@@ -3206,3 +3206,36 @@ async def test_topic_pool_success_still_clears_when_only_a_new_turn_arrived():
     assert "妮可" not in pool._analyzer_failures
     assert "妮可" not in pool._analyzer_retry_not_before
     assert pool.get_ready_materials("妮可") == []
+
+
+def test_future_used_at_timestamps_are_ignored_and_pruned():
+    """F0175: future used_at from clock rollback must not stall the 4h trigger gap or daily quota."""
+    pool = TopicHookPool(
+        auto_schedule=False,
+        daily_topic_limit=1,
+        min_trigger_gap_seconds=4 * 3600,
+    )
+    now = 1_776_000_000.0
+    with pool._used_topics_lock:
+        pool._used_topics["妮可"] = [
+            {
+                "used_at": now + 3600.0,  # same-day future timestamp
+                "weight": 1.0,
+                "hook_id": "future-same-day",
+                "interest": "同日未来话题",
+                "keywords": ["未来"],
+            },
+            {
+                "used_at": now + 8 * 3600.0,  # cross-day future timestamp
+                "weight": 1.0,
+                "hook_id": "future-next-day",
+                "interest": "跨日未来话题",
+                "keywords": ["跨日"],
+            },
+        ]
+
+    assert pool._recent_used_topics("妮可", now=now) == []
+    assert pool._seconds_until_next_topic_trigger("妮可", now=now) == 0.0
+    assert pool._daily_quota_reached("妮可", now=now) is False
+    with pool._used_topics_lock:
+        assert pool._used_topics.get("妮可") is None

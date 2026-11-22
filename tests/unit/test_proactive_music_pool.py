@@ -266,3 +266,51 @@ async def test_all_failed_audio_does_not_mark_a_successful_query(monkeypatch):
     request = music_requests.MusicRequest()
     assert await pool.fetch_candidates('broken', request, AsyncMock(return_value={'success': True, 'data': [row]})) is None
     assert not music_requests.was_music_request_recent('broken', request)
+
+
+@pytest.mark.asyncio
+async def test_pool_backed_music_recommendation_rolls_source_decay_once(monkeypatch):
+    """F0171: pool-filtered candidates must not roll should_skip_source a second time."""
+    from main_logic.proactive_chat import music_recommendation as rec
+
+    skip_calls = []
+
+    def tracking_skip(key):
+        skip_calls.append(key)
+        return False
+
+    monkeypatch.setattr(pool, '_should_skip_source', tracking_skip)
+    fetch = AsyncMock(return_value={
+        'success': True,
+        'data': [{'name': 'Single Track', 'artist': 'Singer', 'url': '/api/music/play/netease/1'}],
+    })
+    result = await pool.fetch_candidates('cat', music_requests.MusicRequest(), fetch)
+    assert result is not None
+    assert result.get('_source_decay_checked') is True
+    # Cached payload in _pools must stay clean (without _source_decay_checked).
+    cached_payload = next(iter(pool._pools.values()))[1]
+    assert '_source_decay_checked' not in cached_payload
+
+    calls_from_pool = len(skip_calls)
+    assert calls_from_pool >= 1
+
+    selection = rec._select_music_recommendation(
+        {'formatted_content': 'Single Track - Singer', 'raw_data': result},
+        lang='zh',
+        source_hash=state._source_hash,
+        should_skip_source=tracking_skip,
+        lanlan_name='cat',
+    )
+    assert selection.topic_key != ''
+    assert len(skip_calls) == calls_from_pool
+
+    # Direct _select_music_recommendation call (strict path / unpooled) still rolls once.
+    plain_raw = {'success': True, 'data': [{'name': 'Direct Track', 'artist': 'Singer', 'url': '/api/music/play/netease/2'}]}
+    rec._select_music_recommendation(
+        {'formatted_content': 'Direct Track - Singer', 'raw_data': plain_raw},
+        lang='zh',
+        source_hash=state._source_hash,
+        should_skip_source=tracking_skip,
+        lanlan_name='cat',
+    )
+    assert len(skip_calls) > calls_from_pool

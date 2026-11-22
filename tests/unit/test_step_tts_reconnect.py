@@ -812,3 +812,97 @@ def test_shutdown_arriving_during_handshake_timeout_close_preempts(monkeypatch):
         handshake_outcome="timeout",
         control_arrival="close",
     )
+
+
+def _run_step_delta_failure_scenario(monkeypatch, queue_items):
+    initial = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
+        {"type": "tts.response.created"},
+    ])
+    # fail_send_at=3 fails the post-create tts.text.delta (1: tts.create, 2: first delta, 3: second delta).
+    first_speech = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "s1"}}],
+        fail_send_at=3,
+    )
+    second_speech = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "s2"}},
+    ])
+    sockets = [initial, first_speech, second_speech]
+    connect_attempt = 0
+
+    async def connect(*_args, **_kwargs):
+        nonlocal connect_attempt
+        connect_attempt += 1
+        return sockets[connect_attempt - 1]
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+
+    requests = _AutoShutdownQueue()
+    for item in queue_items:
+        requests.put(item)
+    responses = queue.Queue()
+    _step_protocol.run_step_protocol_tts_worker(
+        requests,
+        responses,
+        "test-key",
+        "test-voice",
+        provider_key="step",
+    )
+    return first_speech, second_speech
+
+
+def test_text_delta_send_failure_preserves_chunk_for_terminal_reconnect(monkeypatch):
+    """F0178: failed tts.text.delta followed by (None, None) must reconnect and replay chunk."""
+    first_chunk = "第一句话已经足够长可以触发建连。"
+    second_chunk = "第二句话。"
+    first, second = _run_step_delta_failure_scenario(
+        monkeypatch,
+        [
+            ("s1", first_chunk),
+            ("s1", second_chunk),
+            (None, None),
+        ],
+    )
+    assert [e["type"] for e in first.sent] == ["tts.create", "tts.text.delta"]
+    assert first.sent[1]["data"]["text"] == first_chunk
+    assert [e["type"] for e in second.sent] == [
+        "tts.create",
+        "tts.text.delta",
+        "tts.text.done",
+    ]
+    assert second.sent[1]["data"]["text"] == second_chunk
+
+
+def test_text_delta_send_failure_followed_by_next_chunk_replays_in_order(monkeypatch):
+    """F0178: failed chunk followed by another same-speech chunk replays both in order."""
+    first_chunk = "第一句话已经足够长可以触发建连。"
+    _first, second = _run_step_delta_failure_scenario(
+        monkeypatch,
+        [
+            ("s1", first_chunk),
+            ("s1", "第二句。"),
+            ("s1", "第三句。"),
+            (None, None),
+        ],
+    )
+    deltas = [e["data"]["text"] for e in second.sent if e["type"] == "tts.text.delta"]
+    assert deltas == ["第二句。第三句。"] or deltas == ["第二句。", "第三句。"]
+    assert "".join(deltas) == "第二句。第三句。"
+    assert any(e["type"] == "tts.text.done" for e in second.sent)
+
+
+def test_text_delta_send_failure_followed_by_new_speech_discards_old_chunk(monkeypatch):
+    """F0178: switching to a new speech_id after send failure must discard old unsent text."""
+    first_chunk = "第一句话已经足够长可以触发建连。"
+    _first, second = _run_step_delta_failure_scenario(
+        monkeypatch,
+        [
+            ("s1", first_chunk),
+            ("s1", "被丢弃的旧句。"),
+            ("s2", "全新回合已经足够长。"),
+            (None, None),
+        ],
+    )
+    deltas = [e["data"]["text"] for e in second.sent if e["type"] == "tts.text.delta"]
+    assert deltas == ["全新回合已经足够长。"]
+    assert all("被丢弃" not in d for d in deltas)

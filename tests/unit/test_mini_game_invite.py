@@ -2002,3 +2002,40 @@ async def test_theater_invite_line_skips_the_call_without_story_material(monkeyp
     assert await sr._compose_theater_invite_line(
         {'title': '猫灯'}, 'zh', character_prompt='', master_name='阿八') == ''
     factory.assert_not_awaited()
+
+
+@pytest.mark.parametrize('text', [
+    '我觉得这个方案挺好的',
+    '买一件好的衣服',
+    '你好啊，今天怎么样',
+    '你不要紧吧',
+    '今天不要太晚睡',
+    '你要不要喝水',
+    '这样好不好',
+    '这样行不行',
+    '不好意思',
+    '飞机晚点了',
+    '等下班再聊',
+    '回头客很多',
+    '苹果香蕉等等',
+    '没空间了',
+    'かわいいよね',
+    '機嫌がいい',
+    'パスワード',
+    '그래프',
+    '좋아하는 음식',
+])
+def test_cjk_false_positive_sentences_do_not_match_keywords(text):
+    """F0170: ordinary CJK/Kana/Hangul sentences with embedded substrings must return None."""
+    assert sr._match_mini_game_invite_keyword(text) is None
+
+
+@pytest.mark.parametrize(('text', 'expected'), [
+    ('música', None),
+    ('así', None),
+    ('sí', 'accept'),
+    ('não obrigado', 'decline'),
+])
+def test_accented_latin_word_boundary_matches_spanish_and_portuguese(text, expected):
+    """F0170: accented Latin keywords must use boundary matching, not bare substring."""
+    assert sr._match_mini_game_invite_keyword(text) == expected

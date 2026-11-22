@@ -1756,7 +1756,10 @@ async def _guard_phase2_output(
 
         cleaned = (regen_text or "").strip()
         cleaned, regen_source_tag = _parse_proactive_phase2_prefix(cleaned, final=True)
-        cleaned = _strip_proactive_intent_label_leak(cleaned)
+        cleaned, regen_leak_tag = _strip_proactive_screen_tag_leak(cleaned)
+        if regen_leak_tag and not regen_source_tag:
+            regen_source_tag = regen_leak_tag
+        cleaned = _strip_proactive_intent_label_leak(cleaned.strip())
         if (
             regen_source_tag == "PASS"
             or (expects_source_tag and not regen_source_tag)

@@ -95,3 +95,147 @@ async def test_audio_contract_change_invalidates_active_enrollment(tmp_path):
             )
     finally:
         await service.close()
+
+
+@pytest.mark.asyncio
+async def test_audio_contract_change_invalidates_initial_enrollment_without_profile(
+    tmp_path,
+):
+    """F0593: toggling noise reduction during initial enrollment must abort stale enrollment."""
+    service, _model, _activations, events = _service(tmp_path)
+    await service.initialize()
+    try:
+        assert service._profile is None
+        assert service._requested_enabled is False
+        enrollment = await service.start_enrollment()
+        assert await service.prepare_runtime_audio_contract_change(False)
+        assert service.status().enrollment is None
+        assert service._runtime_audio_contract_transition_pending is True
+        assert any(event.startswith("restore:") for event in events)
+
+        with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
+            await service.submit_enrollment_segment(
+                enrollment.enrollment_id,
+                "profile-a",
+                1,
+                _pcm(),
+                sample_rate_hz=48_000,
+                audio_contract_id=OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
+            )
+
+        settled = await service.update_runtime_noise_reduction_enabled(
+            False, runtime_ready=True
+        )
+        assert settled.state.effective_reason == "disabled"
+        assert service._runtime_noise_reduction_enabled is False
+        assert service._runtime_audio_contract_transition_pending is False
+
+        fresh = await service.start_enrollment()
+        completed = await service.complete_enrollment(
+            fresh.enrollment_id, "profile-a", _pcm()
+        )
+        assert completed.state.effective_enabled is True
+        assert completed.state.effective_reason == "ready"
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rejects_runtime_ready_mutation_while_enrollment_active(
+    tmp_path,
+):
+    """F0593: direct runtime_ready=True update must reject active enrollment and preserve contract."""
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+    try:
+        enrollment = await service.start_enrollment()
+        with pytest.raises(VoiceIdentityServiceError, match="audio_contract_changed"):
+            await service.update_runtime_noise_reduction_enabled(
+                False, runtime_ready=True
+            )
+        assert service._runtime_noise_reduction_enabled is True
+        assert service._runtime_audio_contract_transition_pending is True
+        assert service.status().state.effective_reason == "runtime_degraded"
+
+        # When runtime_ready=False (e.g. failed detach holding lease), degrade without throwing.
+        degraded = await service.update_runtime_noise_reduction_enabled(
+            False, runtime_ready=False
+        )
+        assert degraded.state.effective_reason == "runtime_degraded"
+        assert service._runtime_noise_reduction_enabled is True
+        assert service._runtime_audio_contract_transition_pending is True
+        assert service._enrollment is not None
+        assert enrollment.enrollment_id == service._enrollment.enrollment_id
+
+        with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
+            await service.submit_enrollment_segment(
+                enrollment.enrollment_id,
+                "profile-a",
+                1,
+                _pcm(),
+                sample_rate_hz=48_000,
+                audio_contract_id=OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
+            )
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_preferences_noise_reduction_toggle_protects_initial_enrollment(
+    tmp_path, monkeypatch
+):
+    """F0593: full preferences _apply_noise_reduction_if_current flow during initial enrollment."""
+    import asyncio
+    from types import SimpleNamespace
+    import main_routers.config_router.preferences as preferences
+
+    service, _model, _activations, _events = _service(tmp_path)
+    await service.initialize()
+
+    async def snapshot(*, strict: bool = False):
+        return SimpleNamespace(revision=1, settings={"noiseReductionEnabled": False})
+
+    async def apply_sessions(enabled: bool) -> bool:
+        return True
+
+    async def prepare(enabled: bool) -> bool:
+        return await service.prepare_runtime_audio_contract_change(enabled)
+
+    async def reconcile(enabled: bool, *, runtime_ready: bool) -> None:
+        await service.update_runtime_noise_reduction_enabled(
+            enabled, runtime_ready=runtime_ready
+        )
+
+    monkeypatch.setattr(
+        preferences, "aload_global_conversation_settings_snapshot", snapshot
+    )
+    monkeypatch.setattr(
+        preferences, "_apply_noise_reduction_to_active_sessions", apply_sessions
+    )
+    monkeypatch.setattr(preferences, "_NOISE_REDUCTION_APPLY_LOCK", asyncio.Lock())
+    preferences.configure_voice_identity_audio_contract_callbacks(
+        prepare=prepare, reconcile=reconcile
+    )
+    try:
+        enrollment = await service.start_enrollment()
+        await preferences._apply_noise_reduction_if_current(False)
+        assert service.status().enrollment is None
+        assert service._runtime_noise_reduction_enabled is False
+        assert not service._runtime_audio_contract_transition_pending
+
+        with pytest.raises(VoiceIdentityServiceError, match="stale_enrollment"):
+            await service.submit_enrollment_segment(
+                enrollment.enrollment_id,
+                "profile-a",
+                1,
+                _pcm(),
+                sample_rate_hz=48_000,
+                audio_contract_id=OWNER_CAMPPLUS_DESKTOP_CONTRACT_ID,
+            )
+        fresh = await service.start_enrollment()
+        done = await service.complete_enrollment(fresh.enrollment_id, "profile-a", _pcm())
+        assert done.state.effective_enabled is True
+        assert done.state.effective_reason == "ready"
+    finally:
+        preferences.configure_voice_identity_audio_contract_callbacks()
+        await service.close()

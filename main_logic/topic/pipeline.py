@@ -109,6 +109,17 @@ def _local_day(value: float) -> date:
     return datetime.fromtimestamp(value).date()
 
 
+def _coerce_used_at(record: Mapping[str, Any]) -> float | None:
+    raw = record.get("used_at")
+    try:
+        value = float(0.0 if raw is None else raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return value
+
+
 def _clean_material(material: Mapping[str, Any]) -> dict[str, Any] | None:
     interest = _clean_text(material.get("interest"), token_limit=90)
     if not interest:
@@ -1037,8 +1048,13 @@ class TopicHookPool:
             records = []
             today_records = []
             for record in self._used_topics.get(name, []):
-                used_at = float(record.get("used_at") or 0.0)
-                used_day = _local_day(used_at)
+                used_at = _coerce_used_at(record)
+                if used_at is None or used_at > current_time:
+                    continue
+                try:
+                    used_day = _local_day(used_at)
+                except (OSError, OverflowError, ValueError):
+                    continue
                 if used_day == current_day or current_time - used_at < _USED_TOPIC_RECENT_SECONDS:
                     records.append(record)
                 if used_day == current_day:
@@ -1055,11 +1071,15 @@ class TopicHookPool:
     def _recent_used_topics(self, name: str, *, now: float | None = None) -> list[dict[str, Any]]:
         current_time = float(now if now is not None else time.time())
         with self._used_topics_lock:
-            return [
-                record
-                for record in self._used_topics.get(name, [])
-                if current_time - float(record.get("used_at") or 0.0) < _USED_TOPIC_RECENT_SECONDS
-            ]
+            recent = []
+            for record in self._used_topics.get(name, []):
+                used_at = _coerce_used_at(record)
+                if used_at is None:
+                    continue
+                elapsed = current_time - used_at
+                if 0.0 <= elapsed < _USED_TOPIC_RECENT_SECONDS:
+                    recent.append(record)
+            return recent
 
     def _daily_quota_reached(self, name: str, *, now: float | None = None) -> bool:
         if self._daily_topic_limit <= 0:
@@ -1074,7 +1094,7 @@ class TopicHookPool:
         records = self._recent_used_topics(name, now=now)
         if not records:
             return 0.0
-        latest_used_at = max(float(record.get("used_at") or 0.0) for record in records)
+        latest_used_at = max(_coerce_used_at(record) or 0.0 for record in records)
         current_time = float(now if now is not None else time.time())
         elapsed = max(0.0, current_time - latest_used_at)
         return max(0.0, self._min_trigger_gap_seconds - elapsed)

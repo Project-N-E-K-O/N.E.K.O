@@ -159,6 +159,10 @@ def _select_music_recommendation(
         )
         return MusicRecommendationSelection()
 
+    already_decay_checked = bool(
+        music_content.get("_source_decay_checked")
+        or (music_content.get("raw_data") or {}).get("_source_decay_checked")
+    )
     eligible_tracks = []
     seen_identities = set()
     picked_key = ""
@@ -173,7 +177,10 @@ def _select_music_recommendation(
         identity = key or legacy_key
         if identity and identity in seen_identities:
             continue
-        if (key and should_skip_source(key)) or (legacy_key and legacy_key != key and should_skip_source(legacy_key)):
+        if not already_decay_checked and (
+            (key and should_skip_source(key))
+            or (legacy_key and legacy_key != key and should_skip_source(legacy_key))
+        ):
             logger.debug("[%s] 音乐候选去重命中，跳过: %s", lanlan_name, name)
             continue
         if identity:

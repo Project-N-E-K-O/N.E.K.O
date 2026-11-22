@@ -582,3 +582,48 @@ async def test_a_callback_round_after_an_earlier_tool_image_still_gets_its_stand
               and m["tool_calls"][0]["id"] == "b1")
     assert request[at - 1] == {"role": "user", "content": TOOL_ROUND_PROMPT_PLACEHOLDER["zh"]}
     assert request[at - 2].get("role") == "user", "A's image placeholder is still there"
+
+
+async def test_stream_text_flushes_short_pretool_prefix_buffer_consistently():
+    """F0166: short pre-tool text in prefix_buffer must flush with prefix strip and match history."""
+    client = _seeded(_client(handler=_recording_handler([])))
+    client._prefix_buffer_size = 100
+    client.lanlan_name = "L"
+    client.master_name = "Master"
+    client.script = [
+        [_text("L | 我来"), _tool_calls("c1")],
+        [_text("查到了。"), _text("", "stop")],
+    ]
+    await client.stream_text("帮我查一下")
+    assert _emitted(client) == ["我来", "查到了。"]
+    assistant_tool_msgs = [
+        m for m in client._conversation_history
+        if isinstance(m, dict) and m.get("tool_calls")
+    ]
+    assert len(assistant_tool_msgs) == 1
+    assert assistant_tool_msgs[0]["content"] == "我来"
+
+
+async def test_stream_text_think_stripper_pretool_residual_goes_through_prefix_and_guard():
+    """F0166: think_stripper pre-tool residual must pass through prefix stripping and guard checks."""
+    client = _seeded(_client(handler=_recording_handler([])))
+    client._prefix_buffer_size = 100
+    client.lanlan_name = "L"
+    client.master_name = "Master"
+    client.model = "qwen3.5-plus"
+    client.enable_response_guard = True
+    client.max_response_rerolls = 1
+    client.script = [
+        [_text("Master | hallucinated"), _tool_calls("c1")],
+        [_text("L | 先查一下"), _tool_calls("c2")],
+        [_text("好了。"), _text("", "stop")],
+    ]
+    await client.stream_text("帮我查一下", thinking_on=True)
+    assert _emitted(client) == ["先查一下", "好了。"]
+    assistant_tool_msgs = [
+        m for m in client._conversation_history
+        if isinstance(m, dict) and m.get("tool_calls")
+    ]
+    assert assistant_tool_msgs[-1]["content"] == "先查一下"
+    if len(assistant_tool_msgs) > 1:
+        assert assistant_tool_msgs[0]["content"] == ""

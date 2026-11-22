@@ -1114,16 +1114,11 @@ def run_step_protocol_tts_worker(
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     rejected_now = _reject_on_server_close(e)
-                    # Connection closed: mark invalid for reconnection next time.
-                    ws = None
-                    session_id = None
                     if not rejected_now:
-                        # Clear ID to force reconnection; retain rejected-round IDs so finalization can match them.
-                        current_speech_id = None
-                    session_created = False
-                    pending_text_buffer = ""
-                    if receive_task and not receive_task.done():
-                        receive_task.cancel()
+                        # Retain the unsent chunk for the next same-speech reconnect/finalization.
+                        pending_text_buffer += tts_text
+                    await _invalidate_current_socket("发送 tts.text.delta 失败后的")
+                    session_ready.clear()
 
         except Exception as e:
             logger.error(

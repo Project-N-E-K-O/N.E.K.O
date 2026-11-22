@@ -754,6 +754,7 @@ class _StreamingMixin:
         # anchor after this turn's user message and survive the provider response in later session requests;
         # ephemeral corpus/memory blocks enter this request only. Neither enters history.
         turn_context: Any = None,
+        on_generation_started: Optional[Callable[[], Any]] = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -1383,6 +1384,14 @@ class _StreamingMixin:
                     await self.on_status_message(json.dumps({"code": "NO_USER_MESSAGE"}))
                     status_reported = True
                 return
+            if on_generation_started is not None:
+                try:
+                    on_generation_started()
+                except Exception as callback_err:
+                    logger.warning(
+                        "OmniOfflineClient.stream_text: on_generation_started failed: %s",
+                        callback_err,
+                    )
             for attempt in range(max_retries):
                 # close() alone sets self.llm to None. If it runs during retry sleep after an earlier
                 # APIConnectionError (user changes mode / disconnects / session circuit breaker trips),
@@ -1478,6 +1487,151 @@ class _StreamingMixin:
                             if not recovery_text.startswith(length_guard_persisted_prefix):
                                 return False
                             return bool(recovery_text[len(length_guard_persisted_prefix):].strip())
+
+                        async def _flush_prefix_buffer() -> None:
+                            nonlocal prefix_buffer, prefix_checked, guard_triggered, discard_reason
+                            nonlocal pipe_count, fence_triggered, assistant_message, assistant_message_total
+                            nonlocal summary_state, summary_trigger_tokens, summary_overflow_offset
+                            nonlocal length_guard_original_tokens, length_guard_recovery_text
+                            nonlocal summary_prefix_for_history, summary_tail_buffer, is_first_chunk
+                            if not prefix_buffer or prefix_checked:
+                                return
+                            prefix_checked = True
+                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
+                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
+                            if master_match:
+                                guard_triggered = True
+                                discard_reason = "role_hallucination"
+                                logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
+                                return
+                            flush_text = prefix_buffer
+                            if lanlan_match:
+                                logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
+                                flush_text = prefix_buffer[lanlan_match:]
+                            # fence + length guard
+                            for idx, char in enumerate(flush_text):
+                                if char == '|':
+                                    pipe_count += 1
+                                    if pipe_count >= 2:
+                                        flush_text = flush_text[:idx]
+                                        fence_triggered = True
+                                        break
+                            if not flush_text or not flush_text.strip():
+                                return
+                            emit_flush_text = flush_text
+                            if self.enable_response_guard:
+                                # Length guard counts the whole turn (including pre-tool), symmetric with accumulation above.
+                                candidate_total = assistant_message_total + flush_text
+                                current_length = count_tokens(candidate_total)
+                                if current_length > self.max_response_length:
+                                    if summary_mode_enabled:
+                                        # Symmetric with main accumulation: summary mode does not abort;
+                                        # switch to pending_cutover for emit-split below.
+                                        if summary_state == 'idle':
+                                            summary_state = 'pending_cutover'
+                                            summary_trigger_tokens = current_length
+                                            # Compute crossing character offset in flush_text, symmetric with main accumulation.
+                                            _capped = truncate_to_tokens(
+                                                candidate_total, self.max_response_length,
+                                            )
+                                            summary_overflow_offset = max(
+                                                0, len(_capped) - len(assistant_message_total),
+                                            )
+                                            logger.info(
+                                                "OmniOfflineClient summary: 长回复触发于 flush "
+                                                "(%d tokens > %d，flush 内越界 offset=%d)",
+                                                current_length, self.max_response_length,
+                                                summary_overflow_offset,
+                                            )
+                                    else:
+                                        guard_triggered = True
+                                        discard_reason = f"length>{self.max_response_length}"
+                                        length_guard_original_tokens = current_length
+                                        emit_flush_text = ""
+                                        if not _is_gibberish_response(candidate_total):
+                                            capped = truncate_to_tokens(
+                                                candidate_total, self.max_response_length,
+                                            )
+                                            candidate_recovery = _truncate_to_last_sentence_end(capped)
+                                            if candidate_recovery:
+                                                if candidate_recovery.startswith(assistant_message_total):
+                                                    recovery_suffix = candidate_recovery[len(assistant_message_total):]
+                                                    if recovery_suffix.strip():
+                                                        emit_flush_text = recovery_suffix
+                                                        length_guard_recovery_text = candidate_recovery
+                                                elif (
+                                                    assistant_message_total
+                                                    and _has_unpersisted_recovery_suffix(assistant_message_total)
+                                                ):
+                                                    length_guard_recovery_text = assistant_message_total
+                            if not emit_flush_text or not emit_flush_text.strip():
+                                return
+                            # Emit fork (symmetric with main accumulation): summary mode splits UI/TTS at cutover.
+                            if (
+                                summary_mode_enabled
+                                and summary_state in ('pending_cutover', 'cutover_done')
+                            ):
+                                if summary_state == 'pending_cutover':
+                                    # Symmetric with main accumulation: consume crossing offset from trigger flush.
+                                    search_from = summary_overflow_offset
+                                    summary_overflow_offset = 0
+                                    term_pos_in_slice = _find_summary_terminator(
+                                        emit_flush_text[search_from:]
+                                    )
+                                    if term_pos_in_slice >= 0:
+                                        term_pos = search_from + term_pos_in_slice
+                                        pre = emit_flush_text[:term_pos + 1]
+                                        post = emit_flush_text[term_pos + 1:]
+                                        if pre:
+                                            assistant_message += pre
+                                            assistant_message_total += pre
+                                            if self.on_text_delta:
+                                                await self.on_text_delta(pre, is_first_chunk)
+                                            is_first_chunk = False
+                                        summary_prefix_for_history = assistant_message
+                                        summary_state = 'cutover_done'
+                                        # Symmetric with chunk-loop emit fork's cutover log:
+                                        # use summary_trigger_tokens (set at flush entry)
+                                        # to retain when the trigger occurred in logs.
+                                        logger.info(
+                                            "OmniOfflineClient summary: cutover 完成于 flush "
+                                            "(prefix_chars=%d, trigger=%d tokens)",
+                                            len(assistant_message), summary_trigger_tokens,
+                                        )
+                                        # The await before it may have cut the reply:
+                                        # its remaining half is never shown.
+                                        if post and self._active_response_generation == response_generation:
+                                            assistant_message += post
+                                            assistant_message_total += post
+                                            summary_tail_buffer += post
+                                            if self.on_text_delta:
+                                                await self.on_text_delta(
+                                                    post, is_first_chunk,
+                                                    ui_enabled=True, tts_enabled=False,
+                                                )
+                                            is_first_chunk = False
+                                    else:
+                                        assistant_message += emit_flush_text
+                                        assistant_message_total += emit_flush_text
+                                        if self.on_text_delta:
+                                            await self.on_text_delta(emit_flush_text, is_first_chunk)
+                                        is_first_chunk = False
+                                else:
+                                    assistant_message += emit_flush_text
+                                    assistant_message_total += emit_flush_text
+                                    summary_tail_buffer += emit_flush_text
+                                    if self.on_text_delta:
+                                        await self.on_text_delta(
+                                            emit_flush_text, is_first_chunk,
+                                            ui_enabled=True, tts_enabled=False,
+                                        )
+                                    is_first_chunk = False
+                            else:
+                                assistant_message += emit_flush_text
+                                assistant_message_total += emit_flush_text
+                                if self.on_text_delta:
+                                    await self.on_text_delta(emit_flush_text, is_first_chunk)
+                                is_first_chunk = False
 
                         # Tool-aware streaming: ``_astream_with_tools`` runs
                         # the multi-turn tool loop inside (executing tools and
@@ -1617,21 +1771,29 @@ class _StreamingMixin:
                             # to history twice. Do not reset ``_total``: repetition detection
                             # and token-length guard still need the full turn's actual text volume.
                             if getattr(chunk, "tool_round_persisted", False):
-                                # A cancelled round still reports what it kept
-                                # (see _settle_unfinished_tool_round); reset the
-                                # state below but emit nothing further, and keep
-                                # only the text that reached UI/TTS in it. A
-                                # round whose turn left history went with it,
-                                # its text included.
                                 _round_cancelled = (
                                     self._active_response_generation != response_generation
                                 )
-                                if _round_cancelled:
-                                    self._trim_cancelled_round_text(
-                                        assistant_message, _turn_tool_rounds,
-                                    )
-                                length_guard_persisted_prefix = assistant_message_total
-                                assistant_message = ""
+                                if think_stripper is not None:
+                                    # Flush before reset: if this pre-tool segment
+                                    # never emitted </think>, the stripper is still
+                                    # holding real answer text it withheld from
+                                    # TTS/UI. Feed it back through prefix_buffer
+                                    # so it goes through prefix/fence/length-guard
+                                    # and accounting symmetrically with end-of-stream.
+                                    _pretool_residual = think_stripper.flush()
+                                    think_stripper.reset()
+                                    if not _round_cancelled and _pretool_residual:
+                                        prefix_buffer += _pretool_residual
+                                        prefix_checked = False
+                                if not _round_cancelled:
+                                    await _flush_prefix_buffer()
+                                # Always align the persisted tool-round message
+                                # with what actually reached UI/TTS (stripped,
+                                # fenced, guarded, or empty on cancellation).
+                                self._trim_cancelled_round_text(
+                                    assistant_message, _turn_tool_rounds,
+                                )
                                 segment_round = self._last_tool_round_of(
                                     _turn_tool_rounds,
                                 )
@@ -1641,35 +1803,25 @@ class _StreamingMixin:
                                 pipe_count = 0
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
-                                if think_stripper is not None:
-                                    # Flush before reset: if this pre-tool segment
-                                    # never emitted </think>, the stripper is still
-                                    # holding real answer text it withheld from
-                                    # TTS/UI. The inner generator already persisted
-                                    # that text to history (stripped), so emit it to
-                                    # TTS/UI only here — dropping it (a bare reset)
-                                    # would lose the pre-tool sentence. Then re-arm
-                                    # for the post-tool segment (new semantic unit).
-                                    _pretool_residual = think_stripper.flush()
-                                    if (
-                                        not _round_cancelled
-                                        and _pretool_residual and _pretool_residual.strip()
-                                        and self.on_text_delta
-                                    ):
-                                        await self.on_text_delta(_pretool_residual, is_first_chunk)
-                                        is_first_chunk = False
-                                    think_stripper.reset()
+                                if guard_triggered or summary_state == 'gibberish_fallback':
+                                    assistant_message = ""
+                                    self._pause_response_generation(response_generation)
+                                    break
+                                if self._active_response_generation != response_generation:
+                                    assistant_message = ""
+                                    cut_keeps_shown = False
+                                    break
+                                length_guard_persisted_prefix = assistant_message_total
+                                assistant_message = ""
                                 # Finalize summary state: post-cutover tail was emitted UI-only,
                                 # not yet heard by TTS. At a tool boundary, post-tool segment length
                                 # is unknown, so the "final < max+slack" decision
                                 # cannot apply. Always abandon, sending the tail to TTS
-                                # to finish reading the original. `_astream_*_with_tools` already persisted
-                                # full pre-tool text including tail in assistant.tool_calls.content
-                                # within _conversation_history, aligning UI/TTS/history.
+                                # to finish reading the original.
                                 # Then reset state so the post-tool segment
                                 # starts again from idle.
                                 if (
-                                    # Re-read: the residual send above may have cut it.
+                                    # Re-read: the flush above may have cut it.
                                     self._active_response_generation == response_generation
                                     and summary_mode_enabled
                                     and summary_state == 'cutover_done'
@@ -1691,6 +1843,8 @@ class _StreamingMixin:
                                 summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
                                 summary_trigger_tokens = 0
                                 summary_overflow_offset = 0
+                                if fence_triggered:
+                                    break
                                 continue
                             if not self._response_generation_is_active(response_generation):
                                 break
@@ -1935,141 +2089,7 @@ class _StreamingMixin:
                                 # path, so prefix_checked carried no completed state.
                                 prefix_checked = False
                         # After stream ends: flush unprocessed prefix buffer through generic emit/guard.
-                        if prefix_buffer and not prefix_checked:
-                            prefix_checked = True
-                            master_match = self._match_name_prefix(prefix_buffer, self.master_name)
-                            lanlan_match = self._match_name_prefix(prefix_buffer, self.lanlan_name)
-                            if master_match:
-                                guard_triggered = True
-                                discard_reason = "role_hallucination"
-                                logger.info(f"OmniOfflineClient: 流结束时检测到主人名前缀 '{prefix_buffer[:master_match]}'，触发重试")
-                            else:
-                                flush_text = prefix_buffer
-                                if lanlan_match:
-                                    logger.info(f"OmniOfflineClient: 流结束时剥离角色名前缀 '{prefix_buffer[:lanlan_match]}'")
-                                    flush_text = prefix_buffer[lanlan_match:]
-                                # fence + length guard
-                                for idx, char in enumerate(flush_text):
-                                    if char == '|':
-                                        pipe_count += 1
-                                        if pipe_count >= 2:
-                                            flush_text = flush_text[:idx]
-                                            fence_triggered = True
-                                            break
-                                if flush_text and flush_text.strip():
-                                    emit_flush_text = flush_text
-                                    if self.enable_response_guard:
-                                        # Length guard counts the whole turn (including pre-tool), symmetric with accumulation above.
-                                        candidate_total = assistant_message_total + flush_text
-                                        current_length = count_tokens(candidate_total)
-                                        if current_length > self.max_response_length:
-                                            if summary_mode_enabled:
-                                                # Symmetric with main accumulation: summary mode does not abort;
-                                                # switch to pending_cutover for emit-split below.
-                                                if summary_state == 'idle':
-                                                    summary_state = 'pending_cutover'
-                                                    summary_trigger_tokens = current_length
-                                                    # Compute crossing character offset in flush_text, symmetric with main accumulation.
-                                                    _capped = truncate_to_tokens(
-                                                        candidate_total, self.max_response_length,
-                                                    )
-                                                    summary_overflow_offset = max(
-                                                        0, len(_capped) - len(assistant_message_total),
-                                                    )
-                                                    logger.info(
-                                                        "OmniOfflineClient summary: 长回复触发于 flush "
-                                                        "(%d tokens > %d，flush 内越界 offset=%d)",
-                                                        current_length, self.max_response_length,
-                                                        summary_overflow_offset,
-                                                    )
-                                            else:
-                                                guard_triggered = True
-                                                discard_reason = f"length>{self.max_response_length}"
-                                                length_guard_original_tokens = current_length
-                                                emit_flush_text = ""
-                                                if not _is_gibberish_response(candidate_total):
-                                                    capped = truncate_to_tokens(
-                                                        candidate_total, self.max_response_length,
-                                                    )
-                                                    candidate_recovery = _truncate_to_last_sentence_end(capped)
-                                                    if candidate_recovery:
-                                                        if candidate_recovery.startswith(assistant_message_total):
-                                                            recovery_suffix = candidate_recovery[len(assistant_message_total):]
-                                                            if recovery_suffix.strip():
-                                                                emit_flush_text = recovery_suffix
-                                                                length_guard_recovery_text = candidate_recovery
-                                                        elif (
-                                                            assistant_message_total
-                                                            and _has_unpersisted_recovery_suffix(assistant_message_total)
-                                                        ):
-                                                            length_guard_recovery_text = assistant_message_total
-                                    if emit_flush_text and emit_flush_text.strip():
-                                        # Emit fork (symmetric with main accumulation): summary mode splits UI/TTS at cutover.
-                                        if (
-                                            summary_mode_enabled
-                                            and summary_state in ('pending_cutover', 'cutover_done')
-                                        ):
-                                            if summary_state == 'pending_cutover':
-                                                # Symmetric with main accumulation: consume crossing offset from trigger flush.
-                                                search_from = summary_overflow_offset
-                                                summary_overflow_offset = 0
-                                                term_pos_in_slice = _find_summary_terminator(
-                                                    emit_flush_text[search_from:]
-                                                )
-                                                if term_pos_in_slice >= 0:
-                                                    term_pos = search_from + term_pos_in_slice
-                                                    pre = emit_flush_text[:term_pos + 1]
-                                                    post = emit_flush_text[term_pos + 1:]
-                                                    if pre:
-                                                        assistant_message += pre
-                                                        assistant_message_total += pre
-                                                        if self.on_text_delta:
-                                                            await self.on_text_delta(pre, is_first_chunk)
-                                                        is_first_chunk = False
-                                                    summary_prefix_for_history = assistant_message
-                                                    summary_state = 'cutover_done'
-                                                    # Symmetric with chunk-loop emit fork's cutover log:
-                                                    # use summary_trigger_tokens (set at flush entry)
-                                                    # to retain when the trigger occurred in logs.
-                                                    logger.info(
-                                                        "OmniOfflineClient summary: cutover 完成于 flush "
-                                                        "(prefix_chars=%d, trigger=%d tokens)",
-                                                        len(assistant_message), summary_trigger_tokens,
-                                                    )
-                                                    # The await before it may have cut the reply:
-                                                    # its remaining half is never shown.
-                                                    if post and self._active_response_generation == response_generation:
-                                                        assistant_message += post
-                                                        assistant_message_total += post
-                                                        summary_tail_buffer += post
-                                                        if self.on_text_delta:
-                                                            await self.on_text_delta(
-                                                                post, is_first_chunk,
-                                                                ui_enabled=True, tts_enabled=False,
-                                                            )
-                                                        is_first_chunk = False
-                                                else:
-                                                    assistant_message += emit_flush_text
-                                                    assistant_message_total += emit_flush_text
-                                                    if self.on_text_delta:
-                                                        await self.on_text_delta(emit_flush_text, is_first_chunk)
-                                                    is_first_chunk = False
-                                            else:
-                                                assistant_message += emit_flush_text
-                                                assistant_message_total += emit_flush_text
-                                                summary_tail_buffer += emit_flush_text
-                                                if self.on_text_delta:
-                                                    await self.on_text_delta(
-                                                        emit_flush_text, is_first_chunk,
-                                                        ui_enabled=True, tts_enabled=False,
-                                                    )
-                                                is_first_chunk = False
-                                        else:
-                                            assistant_message += emit_flush_text
-                                            assistant_message_total += emit_flush_text
-                                            if self.on_text_delta:
-                                                await self.on_text_delta(emit_flush_text, is_first_chunk)
-                                            is_first_chunk = False
+                        await _flush_prefix_buffer()
 
                         # The flush's sends are cancellation points too: a reply
                         # cut there sends no tail or summary under the turn
