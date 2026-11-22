@@ -58,9 +58,15 @@ through one of these private channels:
 **属于本项目 / In scope**：
 
 - 核心服务与本地 Web 界面（`main_routers/`、`app/`、`frontend/`）；
+  the core server and the local web UI (`main_routers/`, `app/`, `frontend/`);
 - 插件运行时与沙箱、插件间 IPC / 权限边界（`plugin/`、`main_logic/`）；
+  the plugin runtime and sandbox, plugin-to-plugin IPC / permission
+  boundaries (`plugin/`, `main_logic/`);
 - 插件市场的供应链问题（市场基础设施、分发链路被篡改等）；
+  supply-chain issues in the plugin market (marketplace infrastructure,
+  tampered distribution channels, etc.);
 - 官方 Docker / 安装包的打包配置（`docker/`、`pkgbuild/`）。
+  the official Docker / installer packaging (`docker/`, `pkgbuild/`).
 
 **不属于本项目 / Out of scope**：
 
@@ -80,15 +86,17 @@ through one of these private channels:
 
 - 仅为验证漏洞而进行必要且最小化的测试，不访问、不改动人机主机的
   任何真实用户数据；
+  test only as much as necessary to validate the issue, and never access or
+  alter any real user data on the host machine;
 - 发现用户隐私数据（聊天记录、凭据、截图等）时立即停止操作并报告，
   不复制、不传播；
+  stop and report immediately upon encountering user private data (chat
+  history, credentials, screenshots, etc.) — do not copy or redistribute it;
 - 不利用漏洞破坏服务、勒索或公开未修复细节；
+  do not exploit vulnerabilities to disrupt service, extort, or disclose
+  unpatched details;
 - 给合理时间完成修复后再行披露。
+  allow reasonable time for remediation before any public disclosure.
 
 We will not pursue legal action against researchers acting in good faith
-under this policy, provided that they: test only as much as necessary to
-validate the issue; never access or alter real user data (chat history,
-credentials, screenshots, etc.) and stop to report immediately upon
-encountering it; do not exploit vulnerabilities to disrupt service, extort,
-or disclose unpatched details; and allow reasonable time for remediation
-before any public disclosure.
+under this policy, provided that they follow the principles listed above.
