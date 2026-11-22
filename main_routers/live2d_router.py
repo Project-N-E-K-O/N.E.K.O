@@ -458,9 +458,9 @@ def _is_unsafe_model_ref(file_path: str) -> bool:
 
 def _find_unsafe_file_reference(file_refs) -> str | None:
     """
-    Return the first ``File`` entry under ``Motions`` / ``Expressions`` of a request's
-    ``FileReferences`` that would point outside the model folder, or None.
-    Only string ``File`` values are checked; other shapes are stored as before.
+    Return the first ``File`` / ``Sound`` path under ``Motions`` / ``Expressions`` of a
+    request's ``FileReferences`` that would point outside the model folder, or None.
+    Only string values are checked; other shapes are stored as before.
     """
     if not isinstance(file_refs, dict):
         return None
@@ -474,15 +474,19 @@ def _find_unsafe_file_reference(file_refs) -> str | None:
     if isinstance(expressions, list):
         entries.extend(expressions)
     for item in entries:
-        file_path = item.get('File') if isinstance(item, dict) else None
-        if isinstance(file_path, str) and _is_unsafe_model_ref(file_path):
-            return file_path
+        if not isinstance(item, dict):
+            continue
+        for key in ('File', 'Sound'):
+            file_path = item.get(key)
+            if isinstance(file_path, str) and _is_unsafe_model_ref(file_path):
+                return file_path
     return None
 
 
 # Upper bounds for the motion / expression listing walk. Links between inside folders
 # are followed (alias folders are listed twice), so stacked aliases can grow the walk
-# exponentially; real models stay far below both limits.
+# exponentially; real models stay far below both limits. The entry limit counts every
+# directory entry visited (textures, sounds and skipped links included), per listing walk.
 _MODEL_SCAN_MAX_DEPTH = 32
 _MODEL_SCAN_MAX_ENTRIES = 10000
 _MODEL_SCAN_LIMIT_ERROR = "模型目录层级或条目数量超过上限"

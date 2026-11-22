@@ -239,14 +239,16 @@ def _by_id_model(monkeypatch, tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize("ref", _UNSAFE_REFS)
-@pytest.mark.parametrize("where", ["Motions", "Expressions"])
+@pytest.mark.parametrize("where", ["Motions", "Expressions", "Sound"])
 def test_model_config_post_refuses_references_leaving_model_dir(monkeypatch, tmp_path, model_dir, ref, where):
     _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
     item_dir = _by_id_model(monkeypatch, tmp_path)
     if where == "Motions":
         refs = {"Motions": {"Idle": [{"File": "ok.motion3.json"}, {"File": ref}]}}
-    else:
+    elif where == "Expressions":
         refs = {"Expressions": [{"Name": "e", "File": ref}]}
+    else:
+        refs = {"Motions": {"Idle": [{"File": "ok.motion3.json", "Sound": ref}]}}
 
     for call, config in (
         (lambda: live2d_router.update_model_config("m", _FakeRequest({"FileReferences": refs})),
