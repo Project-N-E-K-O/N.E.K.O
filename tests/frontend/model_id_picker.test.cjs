@@ -43,10 +43,10 @@ const ASSIST_PROVIDERS = {
         agent_model: 'qwen3.8-flash',
     },
     kimi: {
-        conversation_model: 'kimi-k2.6',
-        vision_model: 'kimi-k2.6',
-        summary_model: 'kimi-k2.6',
-        emotion_model: 'kimi-k2.6',
+        conversation_model: 'kimi-k3',
+        vision_model: 'kimi-k3',
+        summary_model: 'kimi-k3',
+        emotion_model: 'kimi-k3',
         agent_model: '',
     },
     fixedduo: {
@@ -70,7 +70,7 @@ const ASSIST_PROVIDERS = {
 const CORE_PROVIDERS = {
     free: { is_free_version: true, core_model: 'free-model' },
     qwen: { core_model: 'qwen3.8-omni-flash-realtime' },
-    step: { core_model: 'stepaudio-3-realtime-preview' },
+    step: { core_model: 'stepaudio-3-realtime' },
 };
 Object.entries(ASSIST_PROVIDERS).forEach(([key, profile]) => {
     profile.openrouter_url = `https://${key}.example.test/v1`;
@@ -265,7 +265,7 @@ test('follow_assist text slots use the tier default of the selected assist provi
 test('agent tier falls back to the vision model when the provider has no agent model', () => {
     const { context, select } = createPickerContext();
     select('assistApiSelect', 'kimi');
-    assert.equal(context.getAssistTierModelId('agent'), 'kimi-k2.6');
+    assert.equal(context.getAssistTierModelId('agent'), 'kimi-k3');
 });
 
 test('follow_core text slots stay on the core provider chain and never borrow assist models', () => {
@@ -274,7 +274,7 @@ test('follow_core text slots stay on the core provider chain and never borrow as
     assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'qwen3.8-flash');
 
     select('coreApiSelect', 'step');
-    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'stepaudio-3-realtime-preview');
+    assert.equal(context.resolveSlotModelState('vision').defaultModelId, 'stepaudio-3-realtime');
 });
 
 test('free and fixed-model sources do not accept a typed model ID', () => {

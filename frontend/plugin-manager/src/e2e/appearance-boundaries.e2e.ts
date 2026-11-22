@@ -143,7 +143,7 @@ appearanceTest(
       'aria-hidden',
       'true'
     )
-    await page.getByRole('button', { name: 'Dashboard', exact: true }).click()
+    await page.getByRole('button', { name: 'Overview', exact: true }).click()
     await expect(page.locator('.dashboard')).toBeVisible()
     await expect(header.getByTestId('language-switcher')).toBeVisible()
     await expect(header.getByRole('button', { name: 'Choose theme', exact: true })).toBeVisible()
@@ -161,13 +161,16 @@ appearanceTest(
     await page.goto(`${PREVIEW_ORIGIN}/ui/`)
     const sidebar = page.locator('.sidebar')
     for (const name of [
-      'Dashboard',
+      'Home',
+      'Familiar space',
+      'Familiar runtime',
       'Plugins',
+      'Overview',
+      'Plugin forge',
       'Knowledge',
       'Plugin API',
       'Runs',
       'Server Logs',
-      'Plugin studio',
     ]) {
       await expect(sidebar.getByRole('button', { name, exact: true })).toBeVisible()
     }
@@ -609,7 +612,7 @@ appearanceTest('dark surfaces and accent controls remain legible and restore the
   await page.keyboard.press('Escape')
   await expect(contextMenu).not.toBeVisible()
 
-  await page.getByRole('button', { name: 'Dashboard', exact: true }).click()
+  await page.getByRole('button', { name: 'Overview', exact: true }).click()
   const primary = page.locator('.dashboard-hero__guide')
   await expect(primary).toBeVisible()
   await readable(['.dashboard-hero__guide'])

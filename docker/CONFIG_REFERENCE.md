@@ -135,7 +135,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | qwen | wss://dashscope.aliyuncs.com/api-ws/v1/realtime | qwen3.8-omni-flash-realtime | 阿里云百炼（国内） |
 | qwen_intl | wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime | qwen3.8-omni-flash-realtime | 阿里云国际版 |
 | openai | wss://api.openai.com/v1/realtime | gpt-realtime-2.1 | OpenAI |
-| step | wss://api.stepfun.com/v1/realtime | stepaudio-3-realtime-preview | 阶跃星辰 |
+| step | wss://api.stepfun.com/v1/realtime | stepaudio-3-realtime | 阶跃星辰 |
 | gemini | -（无 `core_url`） | gemini-3.8-live | Google，经 google-genai SDK 连接 |
 | glm | wss://open.bigmodel.cn/api/paas/v4/realtime | glm-realtime-plus | 智谱 |
 | grok | wss://api.x.ai/v1/realtime | grok-voice-latest | xAI |
@@ -184,7 +184,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | step | step-5-preview | https://api.stepfun.com/v1 |
 | silicon | Qwen/Qwen3.5-122B-A10B | https://api.siliconflow.cn/v1 |
 | gemini | gemini-3.8-flash | https://generativelanguage.googleapis.com/v1beta/openai/ |
-| kimi | kimi-k2.6 | https://api.moonshot.cn/v1 |
+| kimi | kimi-k3 | https://api.moonshot.cn/v1 |
 | kimi_code | kimi-for-coding | https://api.kimi.com/coding |
 | deepseek | deepseek-flash | https://api.deepseek.com/v1 |
 | doubao | doubao-seed-2-0-lite-260428 | https://ark.cn-beijing.volces.com/api/v3 |

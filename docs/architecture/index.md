@@ -12,7 +12,7 @@ Project N.E.K.O. uses three principal Python service processes. The Main Server 
 |---|---:|---|---|
 | **Main Server** | 48911 | `app/main_server/__main__.py` | Web UI/static assets, REST API, browser WebSocket, per-character sessions, external TTS |
 | **Memory Server** | 48912 | `app/memory_server/__main__.py` | Conversation ingest, recent context, facts/reflections/persona, startup rendering, and recall |
-| **Agent Server / Tool Server** | 48915 | `app/agent_server/__main__.py` | Capability state, the NekoClaw host (task ledger, dispatch, task agents), cancellation, and task reports |
+| **Agent Server / Tool Server** | 48915 | `app/agent_server/__main__.py` | Capability state, the NekoPower host (task ledger, dispatch, task agents), cancellation, and task reports |
 
 Each service's FastAPI application and implementation live in the matching package. In particular, the Agent implementation is `app/agent_server/`.
 
@@ -61,4 +61,4 @@ Text input uses `OmniOfflineClient`; audio input uses `OmniRealtimeClient`. The 
 - [Data Flow](/architecture/data-flow) — browser input through model output and persistence
 - [Session Management](/architecture/session-management) — mode selection and hot-swap lifecycle
 - [Memory System](/architecture/memory-system) — persistence, automatic rendering, and on-demand recall
-- [Agent System](/architecture/agent-system) — task tools, the NekoClaw host, reports, and the turn check
+- [Agent System](/architecture/agent-system) — task tools, the NekoPower host, reports, and the turn check

@@ -5756,15 +5756,27 @@ class TaskAgentSpace:
 
     # -- for the console: rules and indexes -------------------------------
 
-    async def read_rules(self, project: str | None = None) -> str:
-        return await self._read(lambda: self._read_text(self._paths().rules(project)) or "")
+    async def read_rules(self, project: str | None = None, *, archive_year: str | None = None) -> str:
+        """Return the rules of a project or of every task agent; with ``archive_year``, of an archived project."""
+        return await self._read(
+            lambda: self._read_text(self._scope(project, archive_year) / SpacePaths.RULES_NAME) or ""
+        )
 
     async def write_rules(self, text: str, project: str | None = None) -> None:
         """Write the rules as the user gave them. The host itself never calls this."""
-        await self._write(lambda: self._put_text(self._paths().rules(project), text))
 
-    async def read_index(self, project: str | None = None) -> str:
-        return await self._read(lambda: self._read_text(self._paths().index(project)) or "")
+        def work() -> None:
+            # Archived a moment ago: brought back, not begun anew beside the archived one.
+            self._revive(project)
+            self._put_text(self._paths().rules(project), text)
+
+        await self._write(work)
+
+    async def read_index(self, project: str | None = None, *, archive_year: str | None = None) -> str:
+        """Return the index of a project or of every task agent; with ``archive_year``, of an archived project."""
+        return await self._read(
+            lambda: self._read_text(self._scope(project, archive_year) / SpacePaths.INDEX_NAME) or ""
+        )
 
     # -- projects ---------------------------------------------------------
 
@@ -5932,6 +5944,38 @@ class TaskAgentSpace:
             return self._project_from(directory) if directory.is_dir() else None
 
         return await self._read(work)
+
+    async def set_project_workdir(self, name: str, workdir: str) -> Project | None:
+        """Write where a project's files are, as the user asks. Returns the project, or None for one that is not there.
+
+        Its record and its line in the index of the space (which says
+        where its files are). Not for an archived project: that is named
+        with its year, and nothing works in it. Whether the directory is
+        one a task agent may work in, and whether anything is at work in
+        the project, is for the caller to see to (``NekoClawHost.set_project_workdir``).
+        """
+        safe_segment(name, "project")
+
+        def work() -> Project | None:
+            paths = self._paths()
+            directory = paths.project_dir(name)
+            if not directory.is_dir():
+                return None
+            project, known = self._project_to_change(directory)
+            if not known:
+                return None
+            changed = replace(project, workdir=workdir)
+            self._put_project(directory, changed)
+            if name != DEFAULT_PROJECT:
+                try:
+                    line, target = self._project_line(changed)
+                    self._index_set(paths.index(None), line, target)
+                except OSError:
+                    # The project works there all the same; its line says the old place till it is written again.
+                    logger.warning("a project's working directory was changed, but its line in the index was not", exc_info=True)
+            return changed
+
+        return await self._write(work)
 
     async def read_project(self, name: str) -> tuple[Project | None, bool]:
         """Return a project that is not archived, or None, and whether its record could be read.
