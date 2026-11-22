@@ -41,7 +41,9 @@ function createSettingsPopupShowSync(prefix) {
         const mouseTracking = this && typeof this._getMouseTrackingState === 'function'
             ? this._getMouseTrackingState()
             : window.mouseTrackingEnabled;
-        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), mouseTracking);
+        // The switch lives in the animation settings side panel, which is
+        // appended to document.body, not to the popup.
+        syncCheckbox(document.querySelector(`#${prefix}-mouse-tracking-toggle`), mouseTracking);
         if (window.CHAT_MODE_CONFIG) {
             window.CHAT_MODE_CONFIG.forEach(config => {
                 const cb = document.querySelector(`#${prefix}-proactive-${config.mode}-chat`);
@@ -189,7 +191,9 @@ const _mmdPopupConfig = {
         console.log(`[MMD] 跟踪鼠标已${enabled ? '开启' : '关闭'}`);
     },
     getMouseTrackingState: function() {
-        return this.cursorFollow ? this.cursorFollow.enabled : false;
+        // Before the model (and its cursorFollow) is loaded, show the saved
+        // global setting instead of "off".
+        return this.cursorFollow ? this.cursorFollow.enabled : window.mouseTrackingEnabled !== false;
     },
     // Same show-time refresh as Live2D / VRM: a setting changed in another
     // window must not leave a stale checkbox here.

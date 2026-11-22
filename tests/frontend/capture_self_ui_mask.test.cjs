@@ -1967,7 +1967,21 @@ test('settings popup re-sync: mouse tracking follows the avatar type own state (
         const query = (sel) => (sel === '#mmd-mouse-tracking-toggle' ? cb : null);
         const ctx = { document: { querySelector: query }, window: { mouseTrackingEnabled: global }, requestAnimationFrame() {} };
         const sync = vm.runInNewContext(fnSrc, ctx)('mmd');
-        sync.call({ _getMouseTrackingState: () => own }, { querySelector: query }, 'settings');
+        // The switch is in the side panel appended to document.body: the popup does not contain it.
+        sync.call({ _getMouseTrackingState: () => own }, { querySelector: () => null }, 'settings');
         assert.equal(cb.checked, expected, `own=${own} global=${global}`);
+    }
+});
+
+test('MMD mouse tracking state: before cursorFollow exists the saved global setting is shown, not "off"', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup-config.js'), 'utf8');
+    const start = src.indexOf('getMouseTrackingState: function()', src.indexOf("console.log(`[MMD] 跟踪鼠标"));
+    assert.ok(start > 0);
+    const fnSrc = '(' + src.slice(start + 'getMouseTrackingState: '.length, src.indexOf('\n    },', start) + 6) + ')';
+    for (const [global, expected] of [[undefined, true], [true, true], [false, false]]) {
+        const get = vm.runInNewContext(fnSrc, { window: { mouseTrackingEnabled: global } });
+        assert.equal(get.call({ cursorFollow: null }), expected, `no cursorFollow, global=${global}`);
+        assert.equal(get.call({ cursorFollow: { enabled: false } }), false, 'cursorFollow wins');
+        assert.equal(get.call({ cursorFollow: { enabled: true } }), true, 'cursorFollow wins');
     }
 });
