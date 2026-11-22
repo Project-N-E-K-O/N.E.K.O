@@ -588,7 +588,8 @@ class WorktreeManager:
                 # too: a checkout leaves a file its index never had (one
                 # landed from here earlier). The result snapshot puts it back
                 # should preparing fail below.
-                await asyncio.to_thread(_remove_files, worktree.path, sorted(held - merged_names))
+                # Waited for to the end: putting back must not race it.
+                await _to_the_end(asyncio.to_thread(_remove_files, worktree.path, sorted(held - merged_names)))
                 await self._git(worktree.repo_root, "update-ref", _start_ref(worktree.id), conflict.current)
             except BaseException as error:
                 # Its files as they were (the result snapshot holds them) and
@@ -1430,8 +1431,14 @@ def _put_index_back(copy: Path, index: Path) -> None:
 
 
 def _remove_files(root: Path, names: list[str]) -> None:
-    """Remove those of ``names`` under ``root`` that are files or links."""
+    """Remove those of ``names`` under ``root`` that are files or links, through real directories only.
+
+    A name whose parent is now a link (or no directory) is left alone: the
+    path leads elsewhere, maybe out of the worktree.
+    """
     for name in names:
+        if any(os.path.islink(_fs(root / up)) or not os.path.isdir(_fs(root / up)) for up in _parents(name)):
+            continue
         target = _fs(root / name)
         if _is_file_or_link(target):
             os.remove(target)

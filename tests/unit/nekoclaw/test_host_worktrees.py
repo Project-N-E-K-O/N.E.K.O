@@ -2850,3 +2850,54 @@ async def test_an_index_that_cannot_be_put_back_is_kept_and_said(
     kept = Path(notes.split("what it was is kept in ")[1].split()[0])
     assert kept.exists()
     shutil.rmtree(kept.parent)
+
+
+def test_removing_does_not_go_through_a_link(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    write(outside / "app.py", "not the worktree's\n")
+    root = tmp_path / "wt"
+    root.mkdir()
+    try:
+        os.symlink(outside, root / "src", target_is_directory=True)
+    except OSError:
+        pytest.skip("links to directories cannot be made here")
+    write(root / "kept" / "gone.txt", "removed\n")
+    write(root / "plain", "a file now\n")
+    worktrees._remove_files(root, ["src/app.py", "kept/gone.txt", "plain/old.txt"])
+    assert read(outside / "app.py") == b"not the worktree's\n"
+    assert not exists(root / "kept" / "gone.txt")
+
+
+async def test_removing_finishes_before_putting_back(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    import threading
+    import time
+
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "note.txt", "landed from the worktree\n")
+    assert (await manager.merge_back(tree)).status == "landed"
+    os.remove(repo / "note.txt")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    real = worktrees._remove_files
+    removing = threading.Event()
+    finished = []
+
+    def slow(root: Path, names: list[str]) -> None:
+        removing.set()
+        time.sleep(0.5)
+        real(root, names)
+        finished.append(time.monotonic())
+
+    monkeypatch.setattr(worktrees, "_remove_files", slow)
+    preparing = asyncio.ensure_future(manager.prepare_conflicts(tree, conflict))
+    began = await asyncio.to_thread(removing.wait, 30)
+    assert began
+    preparing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await preparing
+    assert finished  # done before putting back began
+    assert read(tree.path / "note.txt") == b"landed from the worktree\n"  # put back, not removed after
+    assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.base
