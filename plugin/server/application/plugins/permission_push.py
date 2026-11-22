@@ -74,7 +74,11 @@ async def push_permissions(plugin_id: str, host: Any | None = None) -> bool:
     Returns whether it was sent; a plugin that is not running is not an
     error. A failed send is logged and never raises.
     """
-    outcome, _read_failed = await _deliver(plugin_id, host)
+    outcome, read_failed = await _deliver(plugin_id, host)
+    if read_failed:
+        # Built from the fallback: let the running service rebuild it once
+        # reads work again, as it does for its own pushes.
+        permission_push_service.retry_read_later(plugin_id)
     return outcome == SENT
 
 
@@ -189,6 +193,27 @@ class PermissionPushService:
         ids = None if key == "*" else frozenset({key})
         self._timers[key] = loop.call_later(delay, self._fire, key, ids)
 
+    def retry_read_later(self, plugin_id: str) -> None:
+        """Rebuild ``plugin_id``'s snapshot later because it was built
+        without reading the store; any thread. No-op while not started."""
+        with self._lock:
+            loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._schedule_read_retry, plugin_id)
+        except RuntimeError:
+            logger.warning("permission read retry not scheduled: server loop is closed")
+
+    def _schedule_read_retry(self, plugin_id: str) -> None:
+        # Sent or not, the plugin needs a snapshot read from the store:
+        # rebuild later with a growing delay until a read works.
+        if self._loop is None:
+            return
+        delay = self._read_retry_delay.get(plugin_id, READ_RETRY_SECONDS)
+        self._read_retry_delay[plugin_id] = min(delay * 2, READ_RETRY_MAX_SECONDS)
+        self._retry_later(plugin_id, delay)
+
     def _fire(self, key: str, ids: frozenset[str] | None) -> None:
         self._timers.pop(key, None)
         self.notify(ids)
@@ -261,11 +286,7 @@ class PermissionPushService:
             self._read_retry_delay.pop(plugin_id, None)
             return
         if read_failed:
-            # Sent or not, the plugin needs a snapshot read from the store:
-            # rebuild later with a growing delay until a read works.
-            delay = self._read_retry_delay.get(plugin_id, READ_RETRY_SECONDS)
-            self._read_retry_delay[plugin_id] = min(delay * 2, READ_RETRY_MAX_SECONDS)
-            self._retry_later(plugin_id, delay)
+            self._schedule_read_retry(plugin_id)
         else:
             self._read_retry_delay.pop(plugin_id, None)
             if outcome == SENT:

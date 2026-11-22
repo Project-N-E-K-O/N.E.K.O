@@ -326,6 +326,7 @@ class Host:
         self.alive, self.fail = alive, fail
         self.permissions = PluginPermissions()
         self.pushes: list[dict] = []
+        self.attempts = 0
         self.seen: list[tuple[str, str]] = []
 
     def set_initial_permissions(self, snapshot):
@@ -336,6 +337,7 @@ class Host:
         return self.alive
 
     async def push_permissions(self, snapshot):
+        self.attempts += 1
         if self.fail is not None:
             raise self.fail
         self.pushes.append(snapshot)
@@ -372,9 +374,23 @@ async def service(monkeypatch, store, hosts):
     await service.stop()
 
 
-async def _settle():
-    for _ in range(50):
-        await asyncio.sleep(0.01)
+async def _until(condition, timeout: float = 5.0):
+    """Wait for ``condition()`` to hold; fails the test after ``timeout``."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not condition():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("condition not reached in time")
+        await asyncio.sleep(0.005)
+
+
+def _idle(service) -> bool:
+    """Nothing queued or running in the push service."""
+    return (
+        not service._pending
+        and not service._all
+        and not service._wakeup.is_set()
+        and not service._inflight
+    )
 
 
 async def test_push_reaches_the_running_plugin(store, hosts):
@@ -437,8 +453,7 @@ async def test_every_store_write_reaches_the_plugin(monkeypatch, service, store,
         monkeypatch.setattr(permission_service, "current_source", lambda _pid: PluginSource("manual"))
         await asyncio.to_thread(permission_service.reconcile_permission_source, "demo")
         expected = "undecided"
-    await _settle()
-    assert host.permissions.get(MEMORY_READ).status == expected
+    await _until(lambda: host.permissions.get(MEMORY_READ).status == expected and _idle(service))
     assert (MEMORY_READ, expected) in host.seen
     assert len(host.seen) == len(set(host.seen))  # one notification per change
 
@@ -446,7 +461,7 @@ async def test_every_store_write_reaches_the_plugin(monkeypatch, service, store,
 async def test_first_load_pushes_to_every_running_plugin(service, store, hosts):
     hosts["a"], hosts["b"] = Host(), Host()
     await asyncio.to_thread(store.read, "a")
-    await _settle()
+    await _until(lambda: hosts["a"].pushes and hosts["b"].pushes and _idle(service))
     assert len(hosts["a"].pushes) == 1 and len(hosts["b"].pushes) == 1
 
 
@@ -459,7 +474,7 @@ async def test_changes_are_coalesced_and_the_last_state_wins(service, store, hos
             store.decide("demo", MEMORY_READ, state)
 
     await asyncio.to_thread(burst)
-    await _settle()
+    await _until(lambda: host.permissions.get(MEMORY_READ).status == "denied" and _idle(service))
     assert host.permissions.get(MEMORY_READ).status == "denied"
     assert 1 <= len(host.pushes) <= 4
 
@@ -493,9 +508,8 @@ async def test_a_busy_host_table_is_retried_not_treated_as_not_running(monkeypat
     host.set_initial_permissions(permission_service.permission_snapshot("demo"))
     busy["left"] = 3
     await asyncio.to_thread(store.decide, "demo", MEMORY_READ, "granted")
-    await _settle()
+    await _until(lambda: host.permissions.get(MEMORY_READ).status == "granted")
     assert busy["left"] == 0
-    assert host.permissions.get(MEMORY_READ).status == "granted"
 
 
 async def test_a_host_table_that_stays_busy_is_logged(monkeypatch, service, store, hosts):
@@ -506,8 +520,7 @@ async def test_a_host_table_that_stays_busy_is_logged(monkeypatch, service, stor
     hosts["demo"] = Host()
     busy["left"] = 1000
     await asyncio.to_thread(store.decide, "demo", MEMORY_READ, "granted")
-    await _settle()
-    assert any(level == "error" and "plugin_id=demo" in line for level, line in log.lines)
+    await _until(lambda: any(level == "error" and "plugin_id=demo" in line for level, line in log.lines))
 
 
 async def test_a_stuck_plugin_does_not_hold_up_another(monkeypatch, service, store, hosts):
@@ -521,10 +534,11 @@ async def test_a_stuck_plugin_does_not_hold_up_another(monkeypatch, service, sto
     fast = hosts["fast"] = Host()
     fast.set_initial_permissions(permission_service.permission_snapshot("fast"))
     await asyncio.to_thread(store.decide, "stuck", MEMORY_READ, "granted")
-    await _settle()
+    await _until(lambda: "stuck" in service._inflight)
     await asyncio.to_thread(store.decide, "fast", MEMORY_READ, "granted")
-    await _settle()
-    assert fast.permissions.get(MEMORY_READ).status == "granted"
+    # Well inside PUSH_TIMEOUT_SECONDS: the stuck push is still pending.
+    await _until(lambda: fast.permissions.get(MEMORY_READ).status == "granted", timeout=2.0)
+    assert "stuck" in service._inflight
     release.set()
 
 
@@ -532,19 +546,22 @@ async def test_a_change_during_a_running_push_is_pushed_again(monkeypatch, servi
     gate = asyncio.Event()
 
     class SlowHost(Host):
+        waiting = False
+
         async def push_permissions(self, snapshot):
             if not self.pushes:
+                self.waiting = True
                 await gate.wait()
             await super().push_permissions(snapshot)
 
     host = hosts["demo"] = SlowHost()
     host.set_initial_permissions(permission_service.permission_snapshot("demo"))
     await asyncio.to_thread(store.decide, "demo", MEMORY_READ, "granted")
-    await _settle()
+    await _until(lambda: host.waiting)  # the first push is held at the gate
     await asyncio.to_thread(store.decide, "demo", MEMORY_READ, "denied")
+    await _until(lambda: "demo" in service._rerun)
     gate.set()
-    await _settle()
-    assert host.permissions.get(MEMORY_READ).status == "denied"
+    await _until(lambda: host.permissions.get(MEMORY_READ).status == "denied" and _idle(service))
 
 
 async def test_an_error_while_collecting_does_not_stop_the_service(monkeypatch, service, store, hosts):
@@ -563,11 +580,9 @@ async def test_an_error_while_collecting_does_not_stop_the_service(monkeypatch, 
 
     monkeypatch.setattr(service, "_take", take)
     service.notify(frozenset({"demo"}))
-    await _settle()
-    assert any(level == "error" for level, _ in log.lines)
+    await _until(lambda: any(level == "error" for level, _ in log.lines))
     await asyncio.to_thread(store.decide, "demo", MEMORY_READ, "granted")
-    await _settle()
-    assert host.permissions.get(MEMORY_READ).status == "granted"
+    await _until(lambda: host.permissions.get(MEMORY_READ).status == "granted")
 
 
 async def test_a_fallback_snapshot_is_rebuilt_once_reads_recover(monkeypatch, service, store, hosts):
@@ -588,11 +603,11 @@ async def test_a_fallback_snapshot_is_rebuilt_once_reads_recover(monkeypatch, se
     # The store changes behind a failing read (e.g. edited on disk).
     store._document["plugins"]["demo"]["permissions"].clear()
     service.notify(frozenset({"demo"}))
-    await _settle()
+    await _until(lambda: host.pushes and "demo" in service._timers)
     assert host.permissions.get(MEMORY_READ).status == "granted"  # last read
     broken["on"] = False
-    await _settle()
-    assert host.permissions.get(MEMORY_READ).status == "undecided"
+    await _until(lambda: host.permissions.get(MEMORY_READ).status == "undecided")
+    await _until(lambda: "demo" not in service._timers and _idle(service))
 
 
 def test_undoing_a_consent_mirror_to_nothing_counts_as_a_removal(store):
@@ -641,10 +656,9 @@ async def test_one_read_retry_per_plugin_however_many_changes(monkeypatch, servi
     host = hosts["demo"] = Host()
     host.set_initial_permissions(permission_service.permission_snapshot("demo"))
     _unreadable(monkeypatch)
-    for _ in range(4):
+    for count in range(1, 5):
         service.notify(frozenset({"demo"}))
-        await _settle()
-    assert len(host.pushes) == 4
+        await _until(lambda count=count: len(host.pushes) == count and _idle(service))
     assert list(service._timers) == ["demo"]
 
 
@@ -667,13 +681,13 @@ async def test_a_failed_send_keeps_retrying_an_unreadable_store(monkeypatch, ser
     store._document["plugins"]["demo"]["permissions"].clear()
     host.fail = RuntimeError("downlink busy")  # the fallback push is not delivered either
     service.notify(frozenset({"demo"}))
-    await _settle()
-    assert "demo" in service._timers
+    # The failing send happened and a read retry is pending.
+    await _until(lambda: host.attempts >= 1 and "demo" in service._timers and _idle(service))
+    assert host.pushes == []
     host.fail = None
     broken["on"] = False
-    await _settle()
-    assert host.permissions.get(MEMORY_READ).status == "undecided"
-    assert "demo" not in service._timers
+    await _until(lambda: host.permissions.get(MEMORY_READ).status == "undecided")
+    await _until(lambda: "demo" not in service._timers and _idle(service))
 
 
 async def test_stopping_cancels_pending_retries(monkeypatch, store, hosts):
@@ -685,7 +699,38 @@ async def test_stopping_cancels_pending_retries(monkeypatch, store, hosts):
     hosts["demo"] = Host()
     _unreadable(monkeypatch)
     service.notify(frozenset({"demo"}))
-    await _settle()
+    await _until(lambda: service._timers and _idle(service))
     (timer,) = service._timers.values()
     await service.stop()
     assert timer.cancelled() and not service._timers
+
+
+async def test_a_fallback_launch_push_is_retried_by_the_service(monkeypatch, store, hosts):
+    """The post-registration push at plugin start goes through
+    ``push_permissions`` directly; a fallback snapshot there is rebuilt too."""
+    monkeypatch.setattr(plugin_permissions, "_change_listeners", [])
+    monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 0.05)
+    monkeypatch.setattr(permission_service, "logger", Log())
+    service = permission_push.permission_push_service
+    service.start()
+    try:
+        store.decide("demo", MEMORY_READ, "granted")
+        host = hosts["demo"] = Host()
+        host.set_initial_permissions(permission_service.permission_snapshot("demo"))
+        real_record = permission_service.permission_record
+        broken = {"on": True}
+
+        def flaky(plugin_id):
+            if broken["on"]:
+                raise ServerDomainError(plugin_permissions.READ_FAILED, "x", 503)
+            return real_record(plugin_id)
+
+        monkeypatch.setattr(permission_service, "permission_record", flaky)
+        store._document["plugins"]["demo"]["permissions"].clear()
+        assert await permission_push.push_permissions("demo", host)
+        await _until(lambda: "demo" in service._timers)
+        broken["on"] = False
+        await _until(lambda: host.permissions.get(MEMORY_READ).status == "undecided")
+        await _until(lambda: "demo" not in service._timers and _idle(service))
+    finally:
+        await service.stop()
