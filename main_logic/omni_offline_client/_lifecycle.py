@@ -729,6 +729,19 @@ class _LifecycleMixin:
                     _notice_error,
                 )
 
+        if images and not (getattr(self, "vision_model", "") or ""):
+            _choice = getattr(self, "_image_choice", None)
+            if _choice is not None:
+                from utils.legacy_vision import chat_refuses_images
+                if chat_refuses_images(_choice.conversation):
+                    # The chat model already rejected images this run: deliver
+                    # the callback's text instead of a request that fails again.
+                    logger.info(
+                        "prompt_ephemeral: not sending %d image(s), the chat model cannot read images",
+                        len(images),
+                    )
+                    images = []
+
         if images:
             # Images permanently switch to vision models by existing design (above). Vision also handles
             # later text-only turns, and Focus no longer disables thinking for vision.
@@ -1186,6 +1199,21 @@ class _LifecycleMixin:
                     break
         except Exception as e:
             observation_failed = True
+            if not (getattr(self, "vision_model", "") or ""):
+                from utils.legacy_vision import is_image_unsupported_error, mark_chat_image_refused
+                if is_image_unsupported_error(e):
+                    # Shared with the other image paths: later callbacks and
+                    # turns send text only to this chat model.
+                    _choice = getattr(self, "_image_choice", None)
+                    mark_chat_image_refused(
+                        _choice.conversation if _choice is not None else {
+                            "model": self.model,
+                            "base_url": getattr(self, "base_url", None),
+                            "api_key": getattr(self, "api_key", None),
+                            "provider_type": getattr(self, "provider_type", None),
+                        },
+                        "offline proactive media",
+                    )
             if _is_api_key_rejected_error(e):
                 logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
                 if self.on_status_message:

@@ -325,3 +325,30 @@ async def test_separate_vision_config_is_not_affected_by_a_chat_refusal():
     client.script = [[_text("看到了。"), _text("", "stop")]]
     await client.stream_text("看看这个")
     assert image_count(client.requests[0][-1].content) == 1
+
+
+async def test_proactive_callback_refusal_is_recorded():
+    client = _session()
+    client.script = [_refusal()]
+    await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
+    assert lv.chat_refuses_images(CHAT)
+
+
+async def test_proactive_callback_sends_text_only_to_a_refusing_chat_model():
+    from utils.image_history import image_count
+
+    lv.mark_chat_image_refused(CHAT, "t")
+    client = _session()
+    client.script = [[_text("收到。"), _text("", "stop")]]
+    await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
+
+    assert len(client.requests) == 1
+    assert all(image_count(getattr(m, "content", "")) == 0 for m in client.requests[0])
+    assert _emitted(client) == ["收到。"]
+
+
+async def test_proactive_callback_refusal_on_a_separate_vision_route_is_not_recorded():
+    client = _session(vision=VISION)
+    client.script = [_refusal()]
+    await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
+    assert not lv.chat_refuses_images(CHAT)
