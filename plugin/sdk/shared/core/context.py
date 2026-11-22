@@ -619,6 +619,11 @@ class _PermissionsFallbackContext:
 
     @property
     def permissions(self) -> PluginPermissionsProtocol:
+        # Whatever the host attaches later (or is assigned through this
+        # proxy) wins over the fallback, as SdkContext reads it each time.
+        attached = getattr(self._wrapped_ctx, "permissions", None)
+        if attached is not None:
+            return cast(PluginPermissionsProtocol, attached)
         if self._fallback_permissions is None:
             from plugin.sdk.shared.permissions.runtime import PluginPermissions
 

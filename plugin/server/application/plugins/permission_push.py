@@ -204,6 +204,8 @@ class PermissionPushService:
         self._rerun.clear()
         self._busy_retries.clear()
         self._read_retry_delay.clear()
+        # An old _run cancelled mid-batch may never reach its finally.
+        self._collecting = False
         _send_failures.clear()
 
     def notify(self, plugin_ids: frozenset[str] | None, *, fresh: bool = True) -> None:

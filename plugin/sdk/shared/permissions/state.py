@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import threading
 from collections.abc import Callable
@@ -43,8 +44,13 @@ def known_permission(permission: str) -> str:
 
 
 def is_async_callable(callback: object) -> bool:
-    """``async def`` functions (also behind ``functools.partial``) and
-    objects whose ``__call__`` is ``async def``."""
+    """``async def`` functions and objects whose ``__call__`` is ``async def``,
+    also behind ``functools.partial``. A class is not: calling it constructs
+    an instance synchronously."""
+    while isinstance(callback, functools.partial):
+        callback = callback.func
+    if isinstance(callback, type):
+        return False
     return inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
         getattr(callback, "__call__", None)
     )

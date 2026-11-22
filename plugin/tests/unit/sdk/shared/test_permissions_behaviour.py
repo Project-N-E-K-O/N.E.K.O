@@ -7,6 +7,8 @@ one is driven by host snapshots, the fake by ``set``.
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 
 from plugin.sdk.plugin import FakePermissions, PermissionState
@@ -187,6 +189,19 @@ def test_async_callbacks_are_rejected(make):
 
     driver.perms.on_change(SyncCallable()).cancel()
 
+    with pytest.raises(TypeError):
+        driver.perms.on_change(functools.partial(AsyncCallable()))
+
+    class SyncClassWithAsyncInstances:
+        # Calling the class constructs an instance; nothing is awaited.
+        async def __call__(self):
+            return None
+
+        def __init__(self, permission=None, state=None):
+            pass
+
+    driver.perms.on_change(SyncClassWithAsyncInstances).cancel()
+
 
 # ---------------------------------------------------------------------------
 # Real implementation only: snapshots from the host
@@ -348,6 +363,9 @@ async def test_a_context_from_before_permissions_keeps_its_methods_and_falls_bac
     assert old.marker == 1
     assert context.permissions is context.permissions
     assert context.permissions.get(MEMORY) == PermissionState("denied", enforced=True)
+    attached = PluginPermissions()
+    context.permissions = attached  # or attached by the host later: it wins
+    assert old.permissions is attached and context.permissions is attached
 
 
 def test_a_context_with_permissions_is_used_as_is():

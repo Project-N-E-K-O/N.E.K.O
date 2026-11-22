@@ -1082,9 +1082,11 @@ async def test_starting_on_another_loop_drops_the_old_loops_state(monkeypatch, s
         service._timers["demo"] = stale_timer
         service._inflight["demo"] = stale_task
         service._rerun.add("demo")
+        service._collecting = True  # an old _run cancelled inside _take()
         permission_push._send_failures["demo"] = 4
         service.start()
         assert stale_timer.cancelled()
+        assert not service._collecting
         assert not service._timers and not service._inflight and not service._rerun
         assert not permission_push._send_failures
         host = hosts["demo"] = Host()
