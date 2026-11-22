@@ -1126,6 +1126,14 @@
         return streamCaptureSourceIds.get(stream) || null;
     }
     mod.getStreamCaptureSourceId = getStreamCaptureSourceId;
+    // getDisplayMedia numbered by the mask module (#3474), so frames of an
+    // older stream are not masked at a newer request's source.
+    function requestDisplayMediaStream(constraints) {
+        var mask = window.appCaptureMask;
+        return mask && typeof mask.requestDisplayMedia === 'function'
+            ? mask.requestDisplayMedia(navigator.mediaDevices, constraints)
+            : navigator.mediaDevices.getDisplayMedia(constraints);
+    }
     function recordStreamCaptureSource(stream, sourceId) {
         if (stream && sourceId && streamCaptureSourceIds) streamCaptureSourceIds.set(stream, sourceId);
         return stream;
@@ -1334,7 +1342,7 @@
                     readRememberedWindowTitle()
                 );
                 var pickerRememberedEnabled = isScreenSourceTitleMatchEnabled();
-                var displayStream = await navigator.mediaDevices.getDisplayMedia({
+                var displayStream = await requestDisplayMediaStream({
                     video: { cursor: 'always', frameRate: { max: 1 } },
                     audio: false,
                 });
@@ -1795,7 +1803,7 @@
                 // Only the recorded source of this stream; null lets the shell use its
                 // getDisplayMedia record (see streamCaptureSourceId in app-proactive.js).
                 var frameSourceId = getStreamCaptureSourceId(stream);
-                var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream' });
+                var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream', stream: stream });
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl) {
                     var frameMessage = await buildMaskedStreamDataMessage(
@@ -2774,7 +2782,7 @@
                                 if (!manualCaptureIdentityIsCurrent()) return;
                                 try {
                                     console.log('[屏幕源] chromeMediaSource 不可用，降级到 getDisplayMedia');
-                                    captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getDisplayMedia({
+                                    captureStream = rememberScreenSharingAttemptStream(attempt, await requestDisplayMediaStream({
                                         video: { cursor: 'always', frameRate: 1 },
                                         audio: false,
                                     }));
@@ -2831,7 +2839,7 @@
                         // 使用标准的getDisplayMedia（显示系统选择器）
                         var displayCaptureGeneration = screenSourceSelectionGeneration;
                         try {
-                            captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getDisplayMedia({
+                            captureStream = rememberScreenSharingAttemptStream(attempt, await requestDisplayMediaStream({
                                 video: {
                                     cursor: 'always',
                                     frameRate: 1,

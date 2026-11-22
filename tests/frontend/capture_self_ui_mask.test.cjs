@@ -1696,3 +1696,80 @@ test('manual screen share: a stream with no recorded source (getDisplayMedia) qu
     assert.equal(env.sent.length, 1);
     assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
 });
+
+// ---------------------------------------------------------------- superseded getDisplayMedia streams
+
+function displayStream(name) {
+    const track = { readyState: 'live', kind: 'video', label: name, getSettings: () => ({ displaySurface: 'monitor' }) };
+    return { name, active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+}
+
+test('getDisplayMedia: the latest stream queries the shell with null; a superseded one is not queried and goes out as captured', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const A = displayStream('A');
+    const B = displayStream('B');
+    const queue = [A, B];
+    const md = { getDisplayMedia: () => Promise.resolve(queue.shift()) };
+    const mask = env.w.appCaptureMask;
+    const frame = async (stream) => {
+        const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream };
+        return mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession({ sourceId: null, via: 'stream', stream }));
+    };
+
+    assert.equal(await mask.requestDisplayMedia(md, { video: true }), A);
+    assert.deepEqual(fillsOf(await frame(A)), [[800, 225, 400, 450]], 'latest stream: masked');
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
+
+    assert.equal(await mask.requestDisplayMedia(md, { video: true }), B);
+    assert.equal(await frame(A), RAW_FRAME, 'superseded stream: sent as captured');
+    assert.equal(shell.calls.length, 2, 'superseded stream: no shell query');
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+
+    assert.deepEqual(fillsOf(await frame(B)), [[800, 225, 400, 450]], 'new latest stream: masked');
+    assert.equal(shell.calls.length, 4);
+});
+
+test('getDisplayMedia: a cancelled newer request also supersedes the older stream; streams with a recorded source are not affected', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [] }));
+    const env = makeWindow({ multiWindow: true, shell });
+    const mask = env.w.appCaptureMask;
+    const A = displayStream('A');
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(A) }, {});
+    await assert.rejects(mask.requestDisplayMedia({ getDisplayMedia: () => Promise.reject(new Error('NotAllowedError')) }, {}));
+    assert.equal(await mask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: null, via: 'stream', stream: A }), RAW_FRAME);
+    assert.equal(shell.calls.length, 0);
+    // A stream opened by source id names that id: the shell does not use its hand-out record.
+    await mask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: 'screen:2:0', via: 'stream', stream: A });
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:2:0']);
+});
+
+test('voice heartbeat: a superseded getDisplayMedia stream is not queried before or after capture', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+    const old = displayStream('old');
+    const mask = env.w.appCaptureMask;
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(old) }, {});
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(displayStream('new')) }, {});
+    env.w.appScreen.acquireOrReuseCachedStream = async () => old;
+    env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
+    vm.runInContext(proactiveSource, env.w);
+    await env.w.appProactive.sendOneProactiveVisionFrame();
+    assert.equal(env.sent.length, 1);
+    assert.equal(shell.calls.length, 0);
+    assert.equal(env.sent[0].data, RAW_FRAME);
+});
+
+test('every getDisplayMedia call in the app goes through the numbered request (text guard only)', () => {
+    const websocketSource = fs.readFileSync(path.join(repo, 'static/app/app-websocket.js'), 'utf8');
+    for (const [name, src] of [['app-screen.js', screenSource], ['app-proactive.js', proactiveSource], ['app-websocket.js', websocketSource]]) {
+        // Only the fallback branch of each wrapper may call it directly.
+        const raw = src.split('\n').filter((line) => /\.getDisplayMedia\(/.test(line)
+            && !/^\s*: navigator\.mediaDevices\.getDisplayMedia\((constraints|displayMediaOptions)\);\s*$/.test(line));
+        assert.deepEqual(raw, [], name);
+    }
+    assert.equal((screenSource.match(/await requestDisplayMediaStream\(/g) || []).length, 3);
+    assert.match(websocketSource, /captureMask\.requestDisplayMedia\(navigator\.mediaDevices, displayMediaOptions\)/);
+});

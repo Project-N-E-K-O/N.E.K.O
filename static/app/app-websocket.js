@@ -261,10 +261,16 @@
         // would otherwise be lost while querying Electron display metadata.
         var request;
         try {
-            request = navigator.mediaDevices.getDisplayMedia({
+            // Numbered by the mask module (#3474): this request replaces the
+            // source the desktop shell remembers for this window.
+            var captureMask = window.appCaptureMask;
+            var displayMediaOptions = {
                 video: { displaySurface: 'monitor', frameRate: { max: 1 } },
                 audio: false
-            });
+            };
+            request = captureMask && typeof captureMask.requestDisplayMedia === 'function'
+                ? captureMask.requestDisplayMedia(navigator.mediaDevices, displayMediaOptions)
+                : navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
         } catch (_) {
             _computerUseCaptureFailure = 'display_media_request_failed';
             return Promise.resolve(false);

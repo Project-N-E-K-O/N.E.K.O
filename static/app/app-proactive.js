@@ -2338,7 +2338,7 @@
                 // 必须在 acquireOrReuseCachedStream 之后取——它自己就会改写这个字段。
                 var streamSourceId = S.selectedScreenSourceId;
                 var streamMaskSourceId = streamCaptureSourceId(stream);
-                retargetScopeMaskSession(maskScope, streamMaskSourceId);
+                retargetScopeMaskSession(maskScope, streamMaskSourceId, 'stream', stream);
                 var frame = await captureFrameFromStream(stream, 0.8);
                 if (frame && frame.dataUrl) {
                     dataUrl = frame.dataUrl;
@@ -2784,11 +2784,14 @@
     // 截图前后两次取交集，所以这次取得越贴近抓帧越准；取早了，中途移动或新出现的
     // 区域会让交集变小。每次抓帧尝试都重取，结果记在 captureScope 上由外层使用。
     // 单张截图和语音心跳共用。via 'backend'：后端整屏兜底图，按 backend 口径取（sourceId 恒为 null）。
-    function retargetScopeMaskSession(captureScope, sourceId, via) {
+    function retargetScopeMaskSession(captureScope, sourceId, via, stream) {
         if (!captureScope) return;
         captureScope.maskSession = beginSelfUiMaskSession({
             sourceId: sourceId || null,
-            via: via === 'backend' ? 'backend' : 'stream'
+            via: via === 'backend' ? 'backend' : 'stream',
+            // The stream this attempt captures: a superseded getDisplayMedia
+            // stream is not queried (see appCaptureMask.requestDisplayMedia).
+            stream: stream || null
         });
     }
 
@@ -2846,7 +2849,7 @@
                 var tracks = cachedStream.getVideoTracks();
                 if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
                     var cachedMaskSourceId = streamCaptureSourceId(cachedStream);
-                    retargetScopeMaskSession(captureScope, cachedMaskSourceId);
+                    retargetScopeMaskSession(captureScope, cachedMaskSourceId, 'stream', cachedStream);
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
                         if (discardSupersededRememberedFrame('缓存流截图')) {
@@ -2914,7 +2917,7 @@
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
             var streamSourceId = S.selectedScreenSourceId;
             var streamMaskSourceId = streamCaptureSourceId(stream);
-            retargetScopeMaskSession(captureScope, streamMaskSourceId);
+            retargetScopeMaskSession(captureScope, streamMaskSourceId, 'stream', stream);
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 if (discardSupersededRememberedFrame('前端流截图')) {
@@ -2947,7 +2950,7 @@
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
                 var retryMaskSourceId = streamCaptureSourceId(stream);
-                retargetScopeMaskSession(captureScope, retryMaskSourceId);
+                retargetScopeMaskSession(captureScope, retryMaskSourceId, 'stream', stream);
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
                     if (discardSupersededRememberedFrame('前端流重试截图')) {

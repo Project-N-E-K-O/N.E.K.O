@@ -315,6 +315,41 @@
         } catch (e) { return true; }
     }
 
+    // ======================== getDisplayMedia hand-out order (desktop shell) ========================
+
+    // For a stream without a recorded source the shell query names no source,
+    // and the shell answers with the source its display-media handler last
+    // handed this window. That record follows the latest request, not the
+    // stream: once a newer getDisplayMedia request was made here, an older
+    // stream still in use would be masked at the newer source's position.
+    // Every request is numbered (before the call: even a cancelled or failed
+    // one may change the shell's record), its stream remembers the number, and
+    // frames of a superseded stream are position unknown without asking.
+    var displayMediaRequestSeq = 0;
+    var displayMediaStreamSeqs = typeof WeakMap === 'function' ? new WeakMap() : null;
+
+    /**
+     * getDisplayMedia, numbered. Call it in place of
+     * mediaDevices.getDisplayMedia(): it calls that synchronously (user
+     * activation is kept) and resolves to the same stream.
+     */
+    function requestDisplayMedia(mediaDevices, constraints) {
+        var seq = ++displayMediaRequestSeq;
+        var request = mediaDevices.getDisplayMedia(constraints);
+        return Promise.resolve(request).then(function (stream) {
+            if (stream && displayMediaStreamSeqs) displayMediaStreamSeqs.set(stream, seq);
+            return stream;
+        });
+    }
+
+    // A query that would name no source for a display-media stream that is
+    // no longer this window's latest request.
+    function isSupersededDisplayMediaStream(ctx) {
+        if (!ctx || ctx.sourceId || ctx.via === 'backend' || !ctx.stream || !displayMediaStreamSeqs) return false;
+        var seq = displayMediaStreamSeqs.get(ctx.stream);
+        return typeof seq === 'number' && seq !== displayMediaRequestSeq;
+    }
+
     // ======================== Geometry resolution ========================
 
     // Same captured surface as far as the shell query is concerned: the C2
@@ -343,6 +378,9 @@
         // pre-capture sample to intersect with: when unsure, mask less).
         if (!isMaskEnabled(win)) return { hint: hint, switchedOff: true };
         if (isDesktopMultiWindow(win)) {
+            if (isSupersededDisplayMediaStream(hint)) {
+                return { hint: hint, pending: Promise.resolve({ known: false, rects: [], reason: 'superseded_stream' }) };
+            }
             return { hint: hint, pending: queryShellMask(win, hint) };
         }
         // Keep the window geometry of this sample too: if the browser window
@@ -476,6 +514,7 @@
     async function resolveGeometry(session, ctx) {
         var win = window;
         if (isDesktopMultiWindow(win)) {
+            if (isSupersededDisplayMediaStream(ctx)) return { known: false, rects: [], reason: 'superseded_stream' };
             var post = await queryShellMask(win, ctx);
             var pre = null;
             // A snapshot taken for a different capture target describes a
@@ -791,6 +830,7 @@
         clipNormalizedRects: clipNormalizedRects,
         paintMaskRects: paintMaskRects,
         beginMaskSession: beginMaskSession,
+        requestDisplayMedia: requestDisplayMedia,
         maskFrameForModel: maskFrameForModel,
         decideWhenGeometryUnavailable: decideWhenGeometryUnavailable,
         buildReportPayload: buildReportPayload,
