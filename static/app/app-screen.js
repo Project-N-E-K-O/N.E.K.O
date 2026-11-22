@@ -1118,6 +1118,15 @@
         return cached;
     }
 
+    // 流实际截的是哪个桌面源（#3474 遮罩查询要用）。选中源失效时，下面会清空
+    // S.selectedScreenSourceId 并回退到第一个 screen: 源，事后读选中状态只能拿到 null。
+    var streamCaptureSourceIds = typeof WeakMap === 'function' ? new WeakMap() : null;
+    function getStreamCaptureSourceId(stream) {
+        if (!stream || !streamCaptureSourceIds) return null;
+        return streamCaptureSourceIds.get(stream) || null;
+    }
+    mod.getStreamCaptureSourceId = getStreamCaptureSourceId;
+
     /**
      * 统一的流获取函数：优先缓存流 → Electron sourceId → getDisplayMedia → null
      * @param {Object} opts
@@ -1258,6 +1267,7 @@
                                 }
                             }
                         });
+                        if (streamCaptureSourceIds) streamCaptureSourceIds.set(stream, captureSourceId);
                         // 超时后晚到的流需要立即释放，防止资源泄漏
                         if (timedOut) {
                             console.warn('[acquireStream] getUserMedia 在超时后返回，释放晚到的流');
@@ -1602,22 +1612,7 @@
         var msg = { action: 'stream_data', data: dataUrl, input_type: input_type, live_share: true };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
-            var captureType;
-            if (typeof explicitCaptureType !== 'undefined') {
-                // 单帧路径的画面可能来自缓存流 / 原生帧 / 后端整屏兜底，三者互相回退。
-                // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
-                // 「本会话配置抓什么」，不是「这一帧抓到了什么」，推不出来。
-                captureType = explicitCaptureType;
-            } else if (sourceId) {
-                // 原生帧按显式源判定。
-                captureType = detectScreenshotCaptureType(null, sourceId);
-            } else {
-                // 有前端流时按流/已选源判定；两者都没有时按全屏处理，
-                // 持续屏幕分享不会再进入后端整屏截图轮询。
-                captureType = S.screenCaptureStream
-                    ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
-                    : 'screen';
-            }
+            var captureType = resolveStreamFrameCaptureType(sourceId, explicitCaptureType);
             var avatarPos = getAvatarScreenPosition(captureType);
             if (avatarPos) {
                 msg.avatar_position = avatarPos;
@@ -1626,6 +1621,78 @@
         return msg;
     }
     mod.buildStreamDataMessage = buildStreamDataMessage;
+
+    /**
+     * 屏幕帧的画面来源（Avatar 标注和聊天区遮罩共用同一判据）。
+     * @param {string|null|undefined} sourceId 原生帧的显式源 ID
+     * @param {'screen'|'viewport'|null|undefined} explicitCaptureType 见 buildStreamDataMessage
+     */
+    function resolveStreamFrameCaptureType(sourceId, explicitCaptureType) {
+        if (typeof explicitCaptureType !== 'undefined') {
+            // 单帧路径的画面可能来自缓存流 / 原生帧 / 后端整屏兜底，三者互相回退。
+            // 发送时的 S.screenCaptureStream / S.selectedScreenSourceId 描述的是
+            // 「本会话配置抓什么」，不是「这一帧抓到了什么」，推不出来。
+            return explicitCaptureType;
+        }
+        if (sourceId) {
+            // 原生帧按显式源判定。
+            return detectScreenshotCaptureType(null, sourceId);
+        }
+        // 有前端流时按流/已选源判定；两者都没有时按全屏处理，
+        // 持续屏幕分享不会再进入后端整屏截图轮询。
+        return S.screenCaptureStream
+            ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
+            : 'screen';
+    }
+
+    // ======================== self-UI mask (#3474) ========================
+    // 遮罩实现在 app-capture-mask.js；模块缺失时按「拿不到区域」处理（原样发送，等同改动前）。
+    function beginScreenFrameMaskSession(inputType, hint) {
+        if (inputType !== 'screen') return null;
+        var mask = window.appCaptureMask;
+        if (!mask || typeof mask.beginMaskSession !== 'function') return null;
+        try { return mask.beginMaskSession(hint); } catch (e) { return null; }
+    }
+    mod.beginScreenFrameMaskSession = beginScreenFrameMaskSession;
+
+    // 浏览器流和原生屏幕分享的抓帧质量；被遮的屏幕帧按它重编码，帧不会因遮罩变大。
+    var STREAM_FRAME_JPEG_QUALITY = 0.8;
+
+    /**
+     * 持续屏幕分享、原生屏幕分享、语音期间视觉心跳共用的发送前一步：
+     * 先把这一帧里 N.E.K.O 自己的聊天记录 / 选项区遮住，再构造 stream_data。
+     * 画面来源在 await 之前钉住，避免遮罩期间换源导致 Avatar 标注按新源解释旧帧。
+     *
+     * @param {{sourceId?: string|null, via?: string, session?: object, stream?: MediaStream}} [maskOptions]
+     *        stream：浏览器流帧所属的流，用来判断共享的是不是本标签页
+     * @returns {Promise<object|null>} 要发送的消息；null 表示这一帧不发
+     */
+    async function buildMaskedStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType, maskOptions) {
+        // 后端整屏兜底图是桌面截图：移动端会把它标成 'camera'，但它照样拍得到聊天区，也要遮。
+        var opts0 = maskOptions || {};
+        if (input_type !== 'screen' && opts0.via !== 'backend') {
+            return buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType);
+        }
+        var captureType = resolveStreamFrameCaptureType(sourceId, explicitCaptureType);
+        // 消息骨架（含 avatar_position）在遮罩等待之前按拍图这一刻算好，遮完只换 data。
+        var msg = buildStreamDataMessage(dataUrl, input_type, sourceId, captureType);
+        var opts = maskOptions || {};
+        var mask = window.appCaptureMask;
+        if (mask && typeof mask.maskFrameForModel === 'function') {
+            var maskedDataUrl = await mask.maskFrameForModel(dataUrl, {
+                captureType: captureType,
+                sourceId: opts.sourceId || sourceId || null,
+                via: opts.via || (sourceId ? 'native' : 'stream'),
+                stream: opts.stream || null,
+                // 语音心跳的原生帧可能是壳的默认质量，这里统一按 0.8 重编码。
+                jpegQuality: STREAM_FRAME_JPEG_QUALITY
+            }, opts.session);
+            if (!maskedDataUrl) return null;
+            msg.data = maskedDataUrl;
+        }
+        return msg;
+    }
+    mod.buildMaskedStreamDataMessage = buildMaskedStreamDataMessage;
 
     function getLiveVisionStreamBlockedReason(inputType) {
         if (inputType !== 'screen' && inputType !== 'camera') {
@@ -1700,7 +1767,10 @@
                 }
             }
 
-            var senderInterval = setInterval(async function () {
+            // 遮罩（#3474）让每帧多了一次异步等待：上一帧还没发完时跳过这一拍，
+            // 避免相邻两帧重叠、乱序发送。
+            var frameInFlight = false;
+            async function sendOneScreenShareFrame() {
                 if (!isCurrentStream()) {
                     clearInterval(senderInterval);
                     if (S.videoSenderInterval === senderInterval) {
@@ -1712,14 +1782,40 @@
                     return;
                 }
                 if (!isCurrentStream()) return;
+                if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+                // 帧属于抓帧时的那条连接：遮罩等待期间重连换了 S.socket 的话只丢这一帧，
+                // 下一拍在新连接上继续（原生路径则停止整段分享，见 startNativeScreenStreaming）。
+                var captureSocket = S.socket;
+                // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
+                // 流实际截的源优先：选中源失效、回退到第一个 screen: 源时选中状态已被清空。
+                var frameSourceId = getStreamCaptureSourceId(stream) || S.selectedScreenSourceId || null;
+                var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream' });
                 var frame = captureCanvasFrame(video, 0.8);
-                if (frame && frame.dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify(buildStreamDataMessage(frame.dataUrl, input_type)));
+                if (frame && frame.dataUrl) {
+                    var frameMessage = await buildMaskedStreamDataMessage(
+                        frame.dataUrl, input_type, undefined, undefined,
+                        { sourceId: frameSourceId, via: 'stream', session: maskSession, stream: stream }
+                    );
+                    // 遮罩期间可能停止 / 换源 / 断线：旧帧不能落到新会话里。
+                    if (!frameMessage || !isCurrentStream()) return;
+                    if (!canSendLiveVisionStreamFrame(input_type)) return;
+                    if (S.socket !== captureSocket || captureSocket.readyState !== WebSocket.OPEN) return;
+                    captureSocket.send(JSON.stringify(frameMessage));
 
                     // 刷新最后使用时间，防止活跃屏幕分享被误释放
                     if (isCurrentStream()) {
                         S.screenCaptureStreamLastUsed = Date.now();
                     }
+                }
+            }
+
+            var senderInterval = setInterval(async function () {
+                if (frameInFlight) return;
+                frameInFlight = true;
+                try {
+                    await sendOneScreenShareFrame();
+                } finally {
+                    frameInFlight = false;
                 }
             }, 1000);
             if (!isCurrentStream()) {
@@ -1779,6 +1875,7 @@
                 await stopScreenSharing(true);
                 return false;
             }
+            var maskSession = beginScreenFrameMaskSession(inputType, { sourceId: sourceId, via: 'native' });
             var result = await window.captureDesktopSourceWithTimeout(
                 provider,
                 'captureSourceAsDataUrl',
@@ -1811,14 +1908,26 @@
             if (!streamDataUrl) {
                 throw new Error('Native screen capture image conversion failed');
             }
-            if (canSendLiveVisionStreamFrame(inputType) && isCaptureSocketOpen()) {
-                captureSocket.send(JSON.stringify(
-                    buildStreamDataMessage(streamDataUrl, inputType, sourceId)
-                ));
-            } else if (isCurrentNativeCapture()) {
-                stopScreening();
+            // 遮住聊天记录 / 选项区后才发（#3474）；遮罩是异步的，回来后重新确认会话仍有效。
+            var nativeMessage = await buildMaskedStreamDataMessage(
+                streamDataUrl, inputType, sourceId, undefined,
+                { sourceId: sourceId, via: 'native', session: maskSession }
+            );
+            if (!isCurrentNativeCapture()) return false;
+            // 遮罩是异步的：等待期间连接断开或被重连替换时，和前面几处一样完整停止分享
+            // （更新 UI、通知后端、释放原生源），不能只停帧循环。
+            if (!isCaptureSocketOpen()) {
+                await stopScreenSharing(true);
                 return false;
             }
+            if (!nativeMessage) return true;
+            if (!canSendLiveVisionStreamFrame(inputType)) {
+                // 遮罩等待期间语音结束 / 进入告别模式：和函数开头一样完整停止分享，
+                // 不只停帧循环（否则界面仍显示共享中、后端也不知道）。
+                if (isCurrentNativeCapture()) await stopLiveVisionStreamIfBlocked(inputType);
+                return false;
+            }
+            captureSocket.send(JSON.stringify(nativeMessage));
             return true;
         }
 

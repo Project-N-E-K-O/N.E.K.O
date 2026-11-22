@@ -3008,6 +3008,7 @@ export default function FullChatSurface({
       {galgameOptionsVisible ? (
         <div
           className={`composer-galgame-slot${compactChoiceLayerOpen && galgameOptionsVisible ? ' is-open' : ''}`}
+          data-neko-capture-mask="choices"
           aria-hidden={!(compactChoiceLayerOpen && galgameOptionsVisible)}
         >
           <div
@@ -3060,6 +3061,7 @@ export default function FullChatSurface({
       {choicePromptHasOptions && choicePrompt.source !== 'mini_game_invite' ? (
         <div
           className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
+          data-neko-capture-mask="choices"
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
           data-choice-source={choicePrompt.source}
         >
