@@ -4,6 +4,7 @@ fall back to manual steps when gh is unavailable."""
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -38,6 +39,95 @@ def test_git_command_quotes_the_directory_for_windows_shells(monkeypatch: pytest
     # No quoting keeps %VAR% literal in cmd, so the user fills in the path.
     assert init_cmd._git_command(Path(r"C:\work\%K%\demo"), "init -b main") == (
         'git -C "<plugin directory>" init -b main'
+    )
+
+
+@pytest.mark.skipif(release_cmd._WINDOWS_SHELL, reason="POSIX shell quoting")
+def test_printed_branch_and_remote_stay_one_literal_argument_in_a_posix_shell(tmp_path, monkeypatch):
+    # Branch names may hold $ ; ( &: pasting the hint must not run anything else.
+    branch = "feat;$(touch pwned)&x"
+    argument = init_cmd._branch_argument(branch)
+    assert argument == "'feat;$(touch pwned)&x'"
+    echoed = subprocess.run(["sh", "-c", f"printf %s {argument}"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert echoed.stdout == branch
+    assert not (tmp_path / "pwned").exists()
+
+    # shlex.quote leaves "=git" bare, and zsh expands a leading = to a path.
+    assert init_cmd._branch_argument("=git") == "'=git'"
+
+    remote = "https://user:t$ken@github.com/octocat/demo.git"
+    message = init_cmd._existing_repository_remote_message(Path("/work/demo"), remote)
+    assert message.endswith("git -C /work/demo remote add origin 'https://user:t$ken@github.com/octocat/demo.git'")
+
+
+def test_push_refspec_spells_out_a_branch_starting_with_plus():
+    # A leading + in a refspec means "force"; no quoting hides it from git.
+    assert release_cmd._push_refspec("main") == "main"
+    assert release_cmd._push_refspec("+main") == "refs/heads/+main"
+    assert release_cmd._push_refspec("+feat", "main") == "refs/heads/+feat:main"
+    assert release_cmd._push_refspec("feat", "+x") == "feat:refs/heads/+x"
+
+
+@pytest.mark.skipif(release_cmd._WINDOWS_SHELL, reason="runs the printed command in sh")
+def test_printed_push_of_a_plus_branch_pushes_that_branch_without_force(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    remote = tmp_path / "origin.git"
+    _git(tmp_path, "init", "--bare", "-q", str(remote))
+    plugin_dir = _make_plugin_dir(tmp_path / "plugins")
+    _commit_all(plugin_dir)
+    _git(plugin_dir, "remote", "add", "origin", str(remote))
+    _git(plugin_dir, "push", "-q", "origin", "main")
+    pushed_main = _git(plugin_dir, "rev-parse", "main")
+    # Local main moves on: a forced "+main" push would overwrite origin/main.
+    (plugin_dir / "local.txt").write_text("local\n", encoding="utf-8")
+    _git(plugin_dir, "add", "local.txt")
+    _git(plugin_dir, "commit", "-q", "--amend", "-m", "rewritten")
+    _git(plugin_dir, "checkout", "-q", "-b", "+main")
+
+    command, hidden = init_cmd._push_step(plugin_dir)
+    assert hidden is None
+    assert command.endswith(" push -u origin refs/heads/+main")
+    subprocess.run(["sh", "-c", command], cwd=tmp_path, check=True, capture_output=True)
+
+    assert _git(remote, "rev-parse", "refs/heads/main") == pushed_main
+    assert _git(remote, "rev-parse", "refs/heads/+main") == _git(plugin_dir, "rev-parse", "HEAD")
+
+
+def test_printed_branch_and_remote_for_windows_shells(monkeypatch):
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    for branch, expected in [
+        ("main", "main"),
+        ("feature/x-1.2", "feature/x-1.2"),
+        ("a&b", '"a&b"'),
+        # PowerShell would pass an array, or splat.
+        ("feat,x", '"feat,x"'),
+        ("@feat", '"@feat"'),
+        # No quoting keeps %VAR% or !VAR! literal in cmd, and a " would end it.
+        ("a%PATH%b", '"<branch>"'),
+        ("a!b!", '"<branch>"'),
+        ('a"&calc&"', '"<branch>"'),
+    ]:
+        assert init_cmd._branch_argument(branch) == expected
+    url = "https://github.com/octocat/demo.git"
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), url).endswith(f"remote add origin {url}")
+    # Quoted, the trailing backslash would escape the closing quote: "C:\repo\" reaches git as C:\repo".
+    local_remote = "C:\\repo\\"
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), local_remote).endswith(
+        f'remote add origin "<repository-url>" (repository URL: {local_remote})'
+    )
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), "C:\\repo").endswith(
+        'remote add origin "C:\\repo"'
+    )
+    # cmd ends the command at a line break inside the quotes.
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), "C:\\repo\nx").endswith(
+        'remote add origin "<repository-url>" (repository URL: C:\\repo\nx)'
+    )
+    # The same rule covers the plugin directory (a drive root keeps its backslash).
+    assert release_cmd._plugin_dir_argument(Path("D:\\"), "") == '"<plugin directory>"'
+    token_url = "https://user:p%40ss@github.com/octocat/demo.git"
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), token_url).endswith(
+        f'remote add origin "<repository-url>" (repository URL: {token_url})'
     )
 
 
@@ -116,7 +206,7 @@ def test_manual_steps_when_gh_is_unavailable(tmp_path, monkeypatch, capsys):
     # work on the plugin's own repository.
     assert "n.e.k.o_plugin_demo_repo" in out
     assert f'git -C {_quoted(plugin_dir)} init -b main' in out
-    assert f'git -C {_quoted(plugin_dir)} remote add origin <repository-url>' in out
+    assert f'git -C {_quoted(plugin_dir)} remote add origin "<repository-url>"' in out
     assert f'git -C {_quoted(plugin_dir)} push -u origin main' in out
     assert "setup-repo" not in out
 
@@ -130,8 +220,39 @@ def test_manual_steps_name_the_directory_behind_a_placeholder(tmp_path, monkeypa
 
     assert init_cmd.handle_create_repo(_args(plugin_dir)) == MANUAL
     out = capsys.readouterr().out
-    assert 'git -C "<plugin directory>" remote add origin <repository-url>' in out
+    assert 'git -C "<plugin directory>" remote add origin "<repository-url>"' in out
     assert out.count(f"(plugin directory: {plugin_dir})") == 1
+
+
+def test_push_steps_name_the_branch_behind_a_placeholder(tmp_path, monkeypatch, capsys):
+    # No Windows quoting keeps $ literal in PowerShell, so the commands show a placeholder.
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir = _make_plugin_dir(tmp_path / "plugins")
+    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "feature/$name")
+
+    init_cmd._print_manual_repo_steps(plugin_dir, repo_name="demo")
+    init_cmd._print_push_next_step(plugin_dir)
+    out = capsys.readouterr().out
+    assert out.count('push -u origin "<branch>"') == 2
+    assert out.count("(branch: feature/$name)") == 2
+
+    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "main")
+    init_cmd._print_manual_repo_steps(plugin_dir, repo_name="demo")
+    out = capsys.readouterr().out
+    assert "push -u origin main" in out
+    assert "branch:" not in out
+
+
+def test_push_steps_name_a_plus_branch_behind_a_placeholder_as_its_refspec(tmp_path, monkeypatch, capsys):
+    # Typed back in from the note, a bare "+a%b" would force-push "a%b".
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir = _make_plugin_dir(tmp_path / "plugins")
+    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "+a%b")
+
+    init_cmd._print_push_next_step(plugin_dir)
+    out = capsys.readouterr().out
+    assert 'push -u origin "<branch>"' in out
+    assert "(branch: refs/heads/+a%b)" in out
 
 
 def test_manual_steps_do_not_add_a_directory_note_to_quoted_commands(tmp_path, monkeypatch, capsys):
@@ -154,7 +275,7 @@ def test_manual_steps_for_a_committed_repo_only_wire_and_push(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "init -b main" not in out
     assert "commit -m" not in out
-    assert f'git -C {_quoted(plugin_dir)} remote add origin <repository-url>' in out
+    assert f'git -C {_quoted(plugin_dir)} remote add origin "<repository-url>"' in out
     assert f'git -C {_quoted(plugin_dir)} push -u origin trunk' in out
 
 
