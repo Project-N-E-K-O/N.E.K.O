@@ -1470,6 +1470,8 @@ async def test_open_and_remove_only_what_is_registered(
     await manager.remove(replace(tree, path=stranger))
     assert read(stranger / "keep.txt") == b"not a worktree\n"
     assert exists(tree.path / "a.txt")
+    reopened = await manager.open(repo, tree.path)  # its refs were left alone
+    assert reopened.start == tree.start
 
 
 async def test_landed_work_is_no_longer_a_change(repo: Path, manager: WorktreeManager, base: Path) -> None:
@@ -2139,21 +2141,17 @@ async def test_preparing_does_not_replace_a_directory_holding_what_only_the_work
     assert conflict.status == "conflict"
     with pytest.raises(WorktreeError) as raised:
         await manager.prepare_conflicts(tree, conflict)
-    assert "data/blob.bin" in str(raised.value)
+    assert "data" in str(raised.value)
     assert read(tree.path / "data" / "blob.bin") == b"W" * 2000
 
 
-def test_paths_overlap() -> None:
-    def hits(written: list[str], entries: list[str]) -> list[str]:
-        return worktrees._overlapping({path.encode() for path in written}, entries)
-
-    assert hits(["data"], ["data"]) == ["data"]
-    assert hits(["data/blob.bin"], ["data/"]) == ["data/"]  # written inside an entry
-    assert hits(["data"], ["data/blob.bin"]) == ["data/blob.bin"]  # written around an entry
-    assert hits(["a/b/c/d.txt"], ["a/b/"]) == ["a/b/"]
-    assert hits(["database"], ["data/"]) == []
-    assert hits(["data"], ["database/x"]) == []
-    assert hits([], ["data/"]) == []
+def test_what_a_checkout_would_overwrite(tmp_path: Path) -> None:
+    write(tmp_path / "file.txt", "x")
+    write(tmp_path / "data" / "blob.bin", "x")
+    write(tmp_path / "plain", "a file")
+    hit = worktrees._in_the_way(tmp_path, ["file.txt", "data", "plain/inside.txt", "new/thing.txt", "database"])
+    assert hit == ["data", "file.txt", "plain"]
+    assert worktrees._in_the_way(tmp_path, ["data/new.txt"]) == []  # beside what is there, in a directory
     assert worktrees._parents("a/b/c") == ["a", "a/b"] and worktrees._parents("a") == []
 
 
@@ -2587,3 +2585,33 @@ async def test_a_landed_file_ignored_since_does_not_stop_preparing(
     prepared = await manager.prepare_conflicts(tree, conflict)
     assert "<<<<<<<" in read(prepared.path / "a.txt").decode()
     assert read(prepared.path / "note.txt") == b"the worktree's\n"
+
+
+async def test_a_cleanup_that_falls_short_says_so(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    original = manager._git
+
+    async def add_fails(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("worktree", "add"):
+            raise worktrees.GitError(args, 128, b"simulated")
+        return await original(cwd, *args, **kwargs)
+
+    async def forget_fails(*args: Any, **kwargs: Any) -> None:
+        raise worktrees.GitError(["worktree", "list"], None, b"no answer")
+
+    monkeypatch.setattr(manager, "_git", add_fails)
+    monkeypatch.setattr(manager, "_forget", forget_fails)
+    with pytest.raises(worktrees.GitError) as raised:
+        await manager.create(repo, base / "w1")
+    notes = " ".join(getattr(raised.value, "__notes__", []))
+    assert "cleaning up fell short" in notes and f"{REF_PREFIX}w1/start" in notes
+
+
+async def test_has_changes_after_a_removal_queued_first(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "work.txt", "x\n")
+    removing = asyncio.ensure_future(manager.remove(tree))
+    asking = asyncio.ensure_future(manager.has_changes(tree))
+    await removing
+    assert await asking is False

@@ -447,10 +447,14 @@ class WorktreeManager:
         except BaseException as error:
             # Nothing left behind, done to the end even when cancelled again.
             async def clean() -> None:
-                with contextlib.suppress(Exception):
+                try:
                     await self._forget(repo_root, target, worktree_id, remove_directory=not existed)
                     if existed:
                         await asyncio.to_thread(target.mkdir, exist_ok=True)
+                except Exception as failed:
+                    error.add_note(
+                        f"cleaning up fell short ({failed}); {ref} or {target} may be left: remove() or reconcile()"
+                    )
 
             cancelled = await _settle(asyncio.ensure_future(clean()))
             if cancelled and not isinstance(error, asyncio.CancelledError):
@@ -529,26 +533,19 @@ class WorktreeManager:
             programs = await self._programs(worktree.path, names, source=conflict.merged_tree)
             if programs:
                 raise WorktreeUnavailable(*programs)
-            # What only the worktree has is in no snapshot: left out (too
-            # large, a repository of its own) or ignored. A forced checkout
-            # would overwrite it wherever the merge has something.
-            ignored = await self._git(
-                worktree.path, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"
-            )
-            only_here = [*now.skipped, *(_decode(name) for name in ignored.stdout.split(b"\0") if name)]
-            if only_here:
-                # Only what the merge has and the worktree's snapshot has not
-                # is written anew; the rest is the worktree's own already
-                # (an ignored file its start had is in the snapshot).
-                held = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", now.tree)
-                hit = await asyncio.to_thread(
-                    _overlapping, set(names) - set(held.stdout.split(b"\0")), only_here
+            # The checkout writes anew what the merge has and the worktree's
+            # snapshot has not. Whatever stands at such a path, or a file
+            # where it needs a directory, is the worktree's alone (ignored,
+            # left out as too large, a repository of its own): it would be
+            # overwritten, so nothing is checked out.
+            held = await self._git(worktree.path, "ls-tree", "-r", "-z", "--name-only", now.tree)
+            written = sorted(_decode(name) for name in set(names) - set(held.stdout.split(b"\0")) if name)
+            hit = await asyncio.to_thread(_in_the_way, worktree.path, written)
+            if hit:
+                raise WorktreeError(
+                    f"preparing would overwrite what only the worktree has (ignored, too large, or a "
+                    f"repository of its own): {', '.join(hit)}"
                 )
-                if hit:
-                    raise WorktreeError(
-                        f"preparing would overwrite what only the worktree has (ignored, too large, or a "
-                        f"repository of its own): {', '.join(hit)}"
-                    )
             half_done = await self._commit_tree(
                 worktree.path, conflict.merged_tree, conflict.current, "nekoclaw: conflicts to resolve"
             )
@@ -594,9 +591,10 @@ class WorktreeManager:
 
     async def has_changes(self, worktree: Worktree) -> bool:
         """Return whether the worktree holds anything not landed yet; False when its directory is gone."""
-        if not await asyncio.to_thread(worktree.path.is_dir):
-            return False
         async with await self._lock(worktree.repo_root):
+            # Under the lock: a removal queued before this one is done by now.
+            if not await asyncio.to_thread(worktree.path.is_dir):
+                return False
             return await self._has_changes(worktree.repo_root, worktree.path, worktree.id, worktree.start)
 
     async def remove(self, worktree: Worktree) -> None:
@@ -1079,7 +1077,9 @@ class WorktreeManager:
             )
         finally:
             if not keep:
-                await asyncio.to_thread(shutil.rmtree, backup, True)
+                # Not waited for: once landed, no cancellation can come in
+                # between the landing and its result.
+                asyncio.get_running_loop().run_in_executor(None, shutil.rmtree, backup, True)
 
     async def _apply(self, root: Path, patch: bytes) -> _Run:
         return await self._git(
@@ -1144,7 +1144,10 @@ class WorktreeManager:
 
     async def _forget(self, repo_root: Path, path: Path, worktree_id: str, *, remove_directory: bool) -> None:
         """Drop a worktree's registration, its directory when registered (or ``remove_directory``), and its refs."""
-        registered = any(_same_path(known, path) for known in await self._registered(repo_root))
+        listed = await self._registered(repo_root)
+        registered = any(_same_path(known, path) for known in listed)
+        # Another registered worktree of the same name owns the refs.
+        theirs = any(known.name == worktree_id and not _same_path(known, path) for known in listed)
         common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
         removed_by_git = False
         if registered:
@@ -1166,7 +1169,8 @@ class WorktreeManager:
                 raise WorktreeError(f"{path} could not be removed entirely; its registration and refs are kept")
         if registered and not removed_by_git:
             await asyncio.to_thread(_drop_registration, common, path)
-        await self._delete_refs(repo_root, worktree_id)
+        if not theirs:
+            await self._delete_refs(repo_root, worktree_id)
 
     async def _delete_refs(self, repo_root: Path, worktree_id: str) -> None:
         listed = await self._git(repo_root, "for-each-ref", "--format=%(refname)", f"{REF_PREFIX}{worktree_id}/")
@@ -1285,8 +1289,12 @@ class WorktreeManager:
             **extra,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(input), timeout)
-        except asyncio.TimeoutError:
+            # asyncio.timeout, not wait_for: in 3.11 wait_for can return the
+            # finished command's result and drop a cancellation that came
+            # in meanwhile.
+            async with asyncio.timeout(timeout):
+                stdout, stderr = await process.communicate(input)
+        except TimeoutError:
             await _stop(process)
             raise GitError(args, None, f"no answer within {timeout} seconds".encode()) from None
         except BaseException:
@@ -1328,17 +1336,17 @@ def _worktree_id(target: Path) -> str:
     return worktree_name(target.name)
 
 
-def _overlapping(written: set[bytes], entries: list[str]) -> list[str]:
-    """Return the entries a checkout writing ``written`` would overwrite: the same path, inside it, or around it.
+def _in_the_way(root: Path, written: list[str]) -> list[str]:
+    """Return what under ``root`` a checkout writing ``written`` would overwrite.
 
-    Entries are paths, a directory's ending in ``/``. Each path is looked up
-    with its parent directories, so this takes about (paths + entries) x
-    depth, not paths x entries.
+    That is anything at one of those paths, and a file (or link) where one
+    of them needs a directory.
     """
-    paths = {_decode(path) for path in written if path}
-    by_key = {entry.rstrip("/"): entry for entry in entries}
-    hit = {entry for key, entry in by_key.items() if key in paths or any(up in paths for up in _parents(key))}
-    hit |= {by_key[up] for path in paths for up in _parents(path) if up in by_key}
+    hit: set[str] = set()
+    for path in written:
+        if os.path.lexists(_fs(root / path)):
+            hit.add(path)
+        hit.update(up for up in _parents(path) if _is_file_or_link(_fs(root / up)))
     return sorted(hit)
 
 
