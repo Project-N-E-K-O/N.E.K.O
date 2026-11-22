@@ -539,6 +539,66 @@ class NekoClawHost:
         del lanlan_name
         return await draft_session(self._decision_llm, self.templates_store, text, workdir)
 
+    # -- what happened between sessions -----------------------------------
+    #
+    # For a screen that draws the task agents of a project as a group, with
+    # the lines between them, and replays what they did (no route leads
+    # here yet). Both only read the ledger; no model is called. See
+    # ``nekoclaw/host/timeline.py`` for the kinds and the cursor.
+
+    async def timeline(
+        self,
+        project: str | None = None,
+        lanlan_name: str | None = None,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return a page of what happened among sessions, in the order it happened.
+
+        ``project`` / ``lanlan_name`` keep to one project, one character;
+        neither, everything. ``after`` is the ``next`` of the page before,
+        or the ``cursor`` of an entry; none starts from the beginning.
+        ``limit`` entries at most (``TIMELINE_PAGE_ROWS`` when not given,
+        at least one, never more than ``TIMELINE_PAGE_MAX_ROWS``). Returns
+        ``{"entries", "next", "more", "latest"}``; see
+        ``timeline.read_timeline``. A cursor that is not one raises
+        ``ValueError``.
+        """
+        from config.nekoclaw_settings import TIMELINE_PAGE_MAX_ROWS, TIMELINE_PAGE_ROWS
+
+        rows = TIMELINE_PAGE_ROWS if limit is None else max(1, min(int(limit), TIMELINE_PAGE_MAX_ROWS))
+        page = await self.ledger.timeline(project=project, lanlan_name=lanlan_name, after=after, limit=rows)
+        await self._shorten(page["entries"])
+        return page
+
+    async def waits(self, project: str | None = None, lanlan_name: str | None = None) -> dict[str, Any]:
+        """Return who waits for whom now: ``{"waits", "more"}``; see ``timeline.read_waits``.
+
+        ``project`` keeps to the waits with one side in that project,
+        ``lanlan_name`` to those of one character.
+        """
+        from config.nekoclaw_settings import WAITS_MAX_ROWS
+
+        result = await self.ledger.waits(project=project, lanlan_name=lanlan_name, limit=WAITS_MAX_ROWS)
+        await self._shorten(result["waits"])
+        return result
+
+    @staticmethod
+    async def _shorten(items: list[dict[str, Any]]) -> None:
+        """Cut the ``text`` of each item to ``TIMELINE_TEXT_MAX_TOKENS``, on a thread of its own.
+
+        Not on the ledger's: counting tokens of a thousand long notes takes
+        a good part of a second, and every write would wait for it.
+        """
+        from config.nekoclaw_settings import TIMELINE_TEXT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        def shorten() -> None:
+            for item in items:
+                item["text"] = truncate_to_tokens(item["text"], TIMELINE_TEXT_MAX_TOKENS)
+
+        await asyncio.to_thread(shorten)
+
     # -- dsh --------------------------------------------------------------
     #
     # For a page about the runtimes (there is none yet, and no route leads
