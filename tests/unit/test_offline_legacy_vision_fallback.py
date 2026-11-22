@@ -155,3 +155,19 @@ async def test_proactive_media_uses_a_separate_vision_config():
     client.switch_model.assert_awaited_once()
     assert client.switch_model.await_args.args == ("llava",)
     assert len(notices) == 1
+
+
+async def test_refusal_on_the_separate_vision_config_is_not_blamed_on_the_chat_model():
+    client = _session(vision=VISION)
+    # The session already talks to the separate vision config.
+    client.model = VISION["model"]
+    client.base_url = VISION["base_url"]
+    client.api_key = None
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [_refusal()]
+
+    await client.stream_text("看看这个")
+
+    codes = [s.get("code") for s in _statuses(client)]
+    assert "CHAT_MODEL_IMAGE_UNSUPPORTED" not in codes
+    assert "TEXT_GEN_ERROR" in codes

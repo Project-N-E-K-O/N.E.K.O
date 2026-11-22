@@ -229,9 +229,15 @@ async def run_image_call(
     call: Callable[[dict], Awaitable[T]],
     *,
     where: str,
+    has_image: bool = True,
 ) -> T:
-    """Run ``call`` on the config image calls use, noting a deprecated route."""
-    note_legacy_vision_use(choice, where)
+    """Run ``call`` on the config image calls use, noting a deprecated route.
+
+    ``has_image=False`` marks a text-only request on the same route: it is
+    not a use of the retired vision config and announces nothing.
+    """
+    if has_image:
+        note_legacy_vision_use(choice, where)
     return await call(choice.config)
 
 

@@ -18,6 +18,7 @@ VISION = {"model": "llava", "base_url": "http://127.0.0.1:11434/v1", "api_key": 
 @pytest.fixture(autouse=True)
 def _reset():
     lv._reset_for_tests()
+    routes.clear()
     yield
     lv._reset_for_tests()
 
@@ -30,6 +31,13 @@ def _configs(vision=VISION):
         return {"conversation": CHAT, "vision": vision}[slot]
 
     return SimpleNamespace(aget_model_api_config=aget, get_model_api_config=get)
+
+
+routes = []
+
+
+def _route(cfg):
+    return (cfg["model"], cfg["base_url"], cfg["api_key"])
 
 
 def _llm_factory(models):
@@ -51,6 +59,7 @@ def _llm_factory(models):
     async def create(*args, **kwargs):
         model = kwargs.get("model") or (args[0] if args else "")
         models.append(model)
+        routes.append((model, kwargs.get("base_url"), kwargs.get("api_key") or ""))
         return _LLM(model)
 
     return create
@@ -67,6 +76,7 @@ async def test_screenshot_description_model(monkeypatch, vision, expected):
 
     assert await screenshot_utils.analyze_image_with_vision_model("encoded") == "a cat on a desk"
     assert models == [expected]
+    assert routes == [_route(VISION if expected == "llava" else CHAT)]
 
 
 @pytest.mark.asyncio
@@ -86,6 +96,7 @@ async def test_minigame_vision_model(monkeypatch, vision, expected):
     )
     assert result == "a cat on a desk"
     assert models == [expected]
+    assert routes == [_route(VISION if expected == "llava" else CHAT)]
 
 
 @pytest.mark.asyncio
@@ -96,7 +107,7 @@ async def test_watch_together_completion_model(monkeypatch, tmp_path, vision, ex
     used = []
 
     async def completion(cfg, *_args, **_kwargs):
-        used.append(cfg["model"])
+        used.append(_route(cfg))
         return {"events": []}
 
     monkeypatch.setattr(engine, "structured_json_completion", completion)
@@ -104,7 +115,7 @@ async def test_watch_together_completion_model(monkeypatch, tmp_path, vision, ex
     instance._cm = _configs(vision=vision)
 
     assert await instance.llm([{"type": "text", "text": "x"}], {}) == {"events": []}
-    assert used == [expected]
+    assert used == [_route(VISION if expected == "llava" else CHAT)]
     assert instance.vision_endpoint["model"] == expected
 
 
@@ -173,3 +184,39 @@ async def test_watch_together_accepts_a_separate_vision_config_alone(tmp_path):
     instance._cm = SimpleNamespace(
         get_model_api_config=lambda slot: {"model": "", "api_key": ""} if slot == "conversation" else VISION)
     assert await instance.vision_config() is VISION
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_image, told", [(False, 0), (True, 1)])
+async def test_watch_together_text_only_request_is_not_a_vision_use(monkeypatch, with_image, told):
+    from main_logic.watch_together import engine
+
+    notices = []
+    lv.register_notice_sink(notices.append)
+
+    async def completion(cfg, *_args, **_kwargs):
+        return {"line": "hi"}
+
+    monkeypatch.setattr(engine, "structured_json_completion", completion)
+    content = [{"type": "text", "text": "intermission"}]
+    if with_image:
+        content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}})
+    await engine.image_json_completion(
+        lv.choose_image_model(CHAT, VISION), "sys", content, {}, lambda v: (v, []),
+        stage="s", label="l", where="watch-together live")
+    assert len(notices) == told
+
+
+@pytest.mark.parametrize("vision, available", [(VISION, True), (None, False)])
+def test_watch_invitation_accepts_a_separate_vision_config(monkeypatch, vision, available):
+    from main_logic.watch_together import engine, preparation
+
+    monkeypatch.setattr(engine.media, "check_available", lambda: None)
+    manager = SimpleNamespace(
+        _config_manager=SimpleNamespace(get_model_api_config=lambda slot: {"model": "", "api_key": ""}
+                                        if slot == "conversation" else vision),
+        _resolve_tts_worker_spec=lambda: (None, "tts-key", "", "provider", False, {}),
+        _tts_worker_supports_completion=lambda *args: True,
+    )
+    assert preparation.is_available(manager) is available

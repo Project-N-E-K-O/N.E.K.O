@@ -2512,8 +2512,21 @@ class _StreamingMixin:
                         status_error_payload = {"code": "API_KEY_REJECTED"}
                         discard_error_payload = status_error_payload
                         error_msg = f"💥 文本生成异常: 检测到 API Key 被拒绝: {type(e).__name__}: {e}"
-                    elif is_image_unsupported_error(e):
-                        # Images go to the chat model, and this one cannot read them.
+                    elif is_image_unsupported_error(e) and not (
+                        getattr(self, "vision_model", "")
+                        and self.model == self.vision_model
+                        and _same_route(
+                            getattr(self, "vision_base_url", None),
+                            getattr(self, "vision_api_key", None),
+                            getattr(self, "vision_provider_type", None),
+                            getattr(self, "base_url", None),
+                            getattr(self, "api_key", None),
+                            getattr(self, "provider_type", None),
+                        )
+                    ):
+                        # Images go to the chat model, and this one cannot read
+                        # them. A refusal from a retired vision config the session
+                        # switched to is not the chat model's: it keeps the raw error.
                         status_error_payload = {"code": "CHAT_MODEL_IMAGE_UNSUPPORTED"}
                         discard_error_payload = status_error_payload
                         error_msg = f"💥 文本生成异常: 聊天模型不支持图片: {type(e).__name__}: {e}"

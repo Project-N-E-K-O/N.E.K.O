@@ -67,7 +67,8 @@ def test_gptsovits_readiness_uses_worker_tts_custom_url(monkeypatch, route_url, 
         return {'base_url': worker_url}
     current._config_manager.get_model_api_config = model_config
     assert preparation.is_available(current) is available
-    assert requested == ['vision', 'tts_custom']
+    # Image readiness reads the chat model and the retired vision slot.
+    assert requested == ['conversation', 'vision', 'tts_custom']
 
 
 @pytest.mark.parametrize('missing', [True, False])

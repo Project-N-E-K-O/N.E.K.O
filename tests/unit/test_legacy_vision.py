@@ -162,3 +162,14 @@ def test_errors_from_the_image_call_propagate():
 
     with pytest.raises(_StatusError):
         _run(lv.run_image_call(lv.choose_image_model(CHAT, None), call, where="t"))
+
+
+def test_text_only_request_on_the_route_announces_nothing():
+    notices = []
+    lv.register_notice_sink(notices.append)
+    calls = []
+    choice = lv.choose_image_model(CHAT, VISION)
+    _run(lv.run_image_call(choice, _recording_call(calls), where="t", has_image=False))
+    assert calls == ["llava"] and notices == []
+    _run(lv.run_image_call(choice, _recording_call(calls), where="t"))
+    assert len(notices) == 1

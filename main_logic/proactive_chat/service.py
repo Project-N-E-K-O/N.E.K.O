@@ -2353,8 +2353,6 @@ async def handle_proactive_chat(
         # --- Request fresh frontend screenshot, replacing Phase1's old image ---
         screenshot_b64_for_phase2 = ""
         if vision_content and model_config.has_vision_model:
-            from utils.legacy_vision import note_legacy_vision_use
-            note_legacy_vision_use(image_choice, "proactive screenshot")
             fresh = await mgr.request_fresh_screenshot(
                 timeout=3.0,
                 allow_backend_fallback=command.screenshot_allow_desktop_fallback,
@@ -2402,6 +2400,10 @@ async def handle_proactive_chat(
         # Build screen-content section (vision).
         screen_section = ""
         if screenshot_b64_for_phase2:
+            # Only a screenshot that is actually sent counts as a use of a
+            # retired vision config (a declined or failed capture does not).
+            from utils.legacy_vision import note_legacy_vision_use
+            note_legacy_vision_use(image_choice, "proactive screenshot")
             sl = get_screen_section_header(master_name_current, proactive_lang)
             sf = get_screen_section_footer(master_name_current, proactive_lang)
             vision_window = (

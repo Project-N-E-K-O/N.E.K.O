@@ -438,7 +438,8 @@ async def image_json_completion(choice, system_prompt, content, job, validate, *
     async def call(cfg):
         return await structured_json_completion(
             cfg, system_prompt, content, job, validate, stage=stage, label=label, **kwargs)
-    return await run_image_call(choice, call, where=where)
+    has_image = any(isinstance(block, dict) and block.get('type') == 'image_url' for block in content)
+    return await run_image_call(choice, call, where=where, has_image=has_image)
 
 
 async def structured_json_completion(cfg, system_prompt, content, job, validate, *, stage, label,
