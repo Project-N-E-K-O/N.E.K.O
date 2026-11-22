@@ -784,11 +784,14 @@ def _preflight_git_request(target_dir: Path, *, initialize_git: bool, remote: st
 
 
 def _existing_repository_remote_message(target_dir: Path, remote: str) -> str:
+    remote_argument = release_cmd._shell_argument(remote, _REMOTE_PLACEHOLDER)
+    # Name what a placeholder stands for, as for the directory.
+    remote_note = f" (repository URL: {remote})" if remote_argument == _REMOTE_PLACEHOLDER else ""
     return (
         "--remote can only be used when initializing a new git repository; "
         "to add origin to the existing one run: "
-        f"{_git_command(target_dir, f'remote add origin {release_cmd._shell_argument(remote, _REMOTE_PLACEHOLDER)}')}"
-        f"{release_cmd._placeholder_note(target_dir)}"
+        f"{_git_command(target_dir, f'remote add origin {remote_argument}')}"
+        f"{release_cmd._placeholder_note(target_dir)}{remote_note}"
     )
 
 

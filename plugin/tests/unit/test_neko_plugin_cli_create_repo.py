@@ -63,16 +63,21 @@ def test_printed_branch_and_remote_for_windows_shells(monkeypatch):
         ("main", "main"),
         ("feature/x-1.2", "feature/x-1.2"),
         ("a&b", '"a&b"'),
-        # No quoting keeps %VAR% or !VAR! literal in cmd.
+        # PowerShell would pass an array, or splat.
+        ("feat,x", '"feat,x"'),
+        ("@feat", '"@feat"'),
+        # No quoting keeps %VAR% or !VAR! literal in cmd, and a " would end it.
         ("a%PATH%b", '"<branch>"'),
         ("a!b!", '"<branch>"'),
+        ('a"&calc&"', '"<branch>"'),
     ]:
         monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir, branch=branch: branch)
         assert init_cmd._branch_argument(Path("C:/work")) == expected
     url = "https://github.com/octocat/demo.git"
     assert init_cmd._existing_repository_remote_message(Path("C:/work"), url).endswith(f"remote add origin {url}")
-    assert init_cmd._existing_repository_remote_message(Path("C:/work"), "git@github.com:o/r$x.git").endswith(
-        'remote add origin "<repository-url>"'
+    token_url = "https://user:p%40ss@github.com/octocat/demo.git"
+    assert init_cmd._existing_repository_remote_message(Path("C:/work"), token_url).endswith(
+        f'remote add origin "<repository-url>" (repository URL: {token_url})'
     )
 
 
