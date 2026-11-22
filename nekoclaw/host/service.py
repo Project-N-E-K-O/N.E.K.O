@@ -851,6 +851,10 @@ class NekoClawHost:
         wanted = await self._working_directory(workdir)
         # Carried through once begun, also when whoever asked for it goes away meanwhile: its two
         # writes are both made or both undone, with the lock held until then.
+        # None begins once the host is shutting down: those under way are waited for before the
+        # ledger is closed (``_settle_changes``), and one begun after that look would not be.
+        if self._shut_down:
+            raise RuntimeError("the host is shutting down")
         change = asyncio.ensure_future(self._change_project_workdir(project, wanted))
         self._changes.add(change)
         change.add_done_callback(self._changes.discard)

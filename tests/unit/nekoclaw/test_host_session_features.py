@@ -6131,3 +6131,18 @@ async def test_a_change_of_where_a_project_works_is_settled_before_the_host_shut
     # Over by the time the host is shut down, with the sessions put back while the ledger was open.
     assert asked.done() and isinstance(asked.exception(), OSError)
     assert put_back == [str(new)]
+
+
+async def test_no_change_of_where_a_project_works_begins_in_a_host_that_is_shutting_down(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    new = tmp_path / "new"
+    new.mkdir()
+    was = (await host.ledger.get_session(lan.id)).workdir
+    await host.shutdown()
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert not host._changes
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    assert was != str(new)
