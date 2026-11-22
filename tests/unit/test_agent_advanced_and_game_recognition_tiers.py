@@ -1,4 +1,4 @@
-"""使魔模型·高级 (agent_advanced) and 小游戏识别模型 (game_recognition).
+"""The advanced familiar tier (agent_advanced) and the minigame recognition tier (game_recognition).
 
 Both work like the small familiar tier: unless set up in full on their own
 (URL and model), they are the tier they follow, as a whole. agent_advanced
