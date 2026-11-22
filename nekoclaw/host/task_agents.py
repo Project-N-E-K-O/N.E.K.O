@@ -1748,6 +1748,19 @@ class TaskAgentManager:
             or commission_id in self._taking_up
         )
 
+    def _in_hand_for(self, commission_id: str, session_id: str) -> bool:
+        """Whether a commission holds a place, waits for one, or is on its way to one in ``session_id``."""
+        live = self._sessions.get(commission_id)
+        if live is not None and live.session_id == session_id:
+            return True
+        if self._session_of.get(commission_id) != session_id:
+            return False
+        return (
+            commission_id in self._queue
+            or commission_id in self._requeueing
+            or commission_id in self._taking_up
+        )
+
     async def _out_of_copy(self, commission: Commission) -> Commission:
         """Give a commission filed for a copy that carried another one on the session the copy was made of instead.
 
@@ -3644,7 +3657,7 @@ class TaskAgentManager:
         any other). The session's status is written while it is still held.
         """
         commission_id = self._held_by.get(session_id)
-        if commission_id is None or self._closed or self._in_hand(commission_id):
+        if commission_id is None or self._closed or self._in_hand_for(commission_id, session_id):
             return
         commission = await self._ledger.get(commission_id)
         if self._held_by.get(session_id) != commission_id:
@@ -3661,9 +3674,10 @@ class TaskAgentManager:
             # would ever start in the session.
             logger.warning("noting where a session stands failed", exc_info=True)
         # Looked at again: it may have been taken up, or let go, meanwhile.
-        if self._held_by.get(session_id) != commission_id or self._closed or self._in_hand(commission_id):
+        if self._held_by.get(session_id) != commission_id or self._closed or self._in_hand_for(commission_id, session_id):
             return
-        if commission is not None and commission.status not in ENDED_STATUSES and not commission.resting:
+        same_session = commission is not None and commission.session_id == session_id
+        if same_session and commission.status not in ENDED_STATUSES and not commission.resting:
             # It waits for the user, or for task agents it started.
             return
         # (One that rests lets its session go like one that is over: nobody
@@ -3671,7 +3685,7 @@ class TaskAgentManager:
         # hours, and other commissions of the session are worked on
         # meanwhile. Woken, it waits for its session like any other.)
         del self._held_by[session_id]
-        if commission is not None:
+        if same_session:
             # Nothing more is asked of the user for it, and nobody is told
             # to hand anything over: it is over (taken up again, a stuck
             # one is asked about anew).
@@ -3737,7 +3751,7 @@ class TaskAgentManager:
             and session_id
             and commission.status in ENDED_STATUSES
             and self._held_by.get(session_id) == commission.id
-            and not self._in_hand(commission.id)
+            and not self._in_hand_for(commission.id, session_id)
         ):
             self._spawn(self._settle_hold(session_id))
 
@@ -3772,11 +3786,19 @@ class TaskAgentManager:
         if commission_id in self._queue or commission_id in self._requeueing:
             # Queued to be taken up again: what was said meanwhile goes along
             # with it, and so do its candidate plugins. It goes on holding
-            # its session.
+            # its session (unless it already moved out of an old copy).
             self._cancel_control_calls(commission_id)
             if session is not None:
                 self._close_answer_receipts(session)
             self._sessions.pop(commission_id, None)
+            if (
+                session is not None
+                and session.session_id
+                and session.session_id != self._session_of.get(commission_id)
+                and self._held_by.get(session.session_id) == commission_id
+                and not self._closed
+            ):
+                self._spawn(self._settle_hold(session.session_id))
             if self._gateway is not None:
                 self._gateway.revoke(commission_id)
         else:
@@ -5640,8 +5662,6 @@ class TaskAgentManager:
             if still_wanted is not None and not still_wanted():
                 return False
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
-            if from_copy:
-                self._notes.setdefault(commission_id, [])[0:0] = from_copy
             # Should it open a session with nothing said in it (its start
             # failed before, or what was said was removed, being old), it is
             # handed what was said in the main dialogue just before this:
@@ -5653,7 +5673,9 @@ class TaskAgentManager:
             # that joins a round under way adds its words to it, and the
             # round keeps what was said before it began.
             fresh = self._said_before(commission)
-            taken = await self._take_up_again(commission_id, text, still_wanted=still_wanted, excerpt=fresh)
+            taken = await self._take_up_again(
+                commission_id, text, still_wanted=still_wanted, excerpt=fresh, from_copy=from_copy
+            )
             if not taken and fresh and self._excerpts.get(commission_id) is fresh:
                 del self._excerpts[commission_id]
             if not taken and from_copy:
@@ -5722,8 +5744,10 @@ class TaskAgentManager:
         else:
             # Moved before, and not opened in the session itself since (its
             # taking up was called off then): told now what it was to be told.
+            # A closing copy session still in ``_sessions`` is not a taking-up
+            # in ``main``; only work in hand for ``main`` itself already brings it.
             main = commission.session_id
-            if self._in_hand(commission.id):
+            if self._in_hand_for(commission.id, main) and self._under_way.get(commission.id) is None:
                 # Being taken up by what was said just before this, which
                 # brings it: this goes along as more of what is said.
                 return None
@@ -5772,6 +5796,7 @@ class TaskAgentManager:
         still_wanted: Callable[[], bool] | None = None,
         same_round: bool = False,
         excerpt: list[Any] | None = None,
+        from_copy: list[str] | None = None,
     ) -> bool:
         """Start a commission's task agent again where its transcript ends, ``text`` its next work.
 
@@ -5829,7 +5854,12 @@ class TaskAgentManager:
                 # by itself.
                 await asyncio.wait([called_off])
                 return await self._take_up_again(
-                    commission_id, text, still_wanted=still_wanted, same_round=same_round, excerpt=excerpt
+                    commission_id,
+                    text,
+                    still_wanted=still_wanted,
+                    same_round=same_round,
+                    excerpt=excerpt,
+                    from_copy=from_copy,
                 )
             # An earlier sentence is taking it up again or queueing it right
             # now: this one goes along with that rather than starting or
@@ -5842,6 +5872,8 @@ class TaskAgentManager:
             # session behind a commission that says it is working.
             self._taking_up.add(commission_id)
             self._new_round_of(commission_id, same_round=same_round, excerpt=excerpt)
+            if from_copy:
+                self._notes.setdefault(commission_id, [])[0:0] = from_copy
             launch = self._spawn(self._launch(commission_id, prompt=text, still_wanted=still_wanted))
             self._note_under_way(commission_id, still_wanted, launch)
 
@@ -5857,9 +5889,12 @@ class TaskAgentManager:
         # queued. That runs as a task shutting down waits for, so a shutdown
         # while the status is written still finds the commission afterwards.
         # Marked at once, before anything is awaited, so a sentence arriving
-        # meanwhile joins this one.
+        # meanwhile joins this one (and a closing old session's ``_release``
+        # keeps ``from_copy`` in ``_notes`` instead of discarding it).
         self._requeueing.add(commission_id)
         self._new_round_of(commission_id, same_round=same_round, excerpt=excerpt)
+        if from_copy:
+            self._notes.setdefault(commission_id, [])[0:0] = from_copy
         queueing = self._spawn(self._requeue(commission_id, text, still_wanted=still_wanted))
         self._note_under_way(commission_id, still_wanted, queueing)
         return await asyncio.shield(queueing)
