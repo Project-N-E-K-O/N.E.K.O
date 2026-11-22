@@ -222,7 +222,7 @@ async def test_execute_trigger_passes_through_output_schema_violation(
         "message": "output does not match output_schema",
         "details": {
             "plugin_id": "spoofed",
-            "event_id": "run",
+            "event_id": "spoofed_entry",
             "error_type": "PluginOutputSchemaError",
             "issues": issues,
         },

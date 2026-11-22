@@ -418,6 +418,7 @@ async def _execute_trigger(
                     **remote_error_details(exc),
                     "plugin_id": plugin_id,
                     "entry_id": entry_id,
+                    "event_id": entry_id,
                     "type": type(exc).__name__,
                 },
                 trace_id=trace_id,
