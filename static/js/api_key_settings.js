@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'emotion', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'decision'];
+const MODEL_TYPES = ['conversation', 'summary', 'emotion', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -96,7 +96,6 @@ const MODEL_CONFIG_EXPANSION_PATHS = {
     gameSummary: ['game', 'game-summary'],
     emotion: ['emotion'],
     decision: ['decision'],
-    vision: ['vision'],
     agent: ['agent'],
     agentSmall: ['agent-small'],
     omni: ['omni'],
@@ -119,6 +118,8 @@ let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
 let _customTtsDraft = null;
+// 看图档已从设置页隐藏：老用户存的看图配置保存时原样保留，只有「清空」时才一并清掉。
+let _clearLegacyVisionOnSave = false;
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
@@ -1580,7 +1581,7 @@ function populateModelProviderDropdowns() {
                 sel,
                 'follow_conversation',
                 'api.customModelProviderFollowConversation',
-                '跟随文本对话模型'
+                '跟随聊天模型'
             );
         } else if (mt === 'gameSummary') {
             appendModelProviderOption(
@@ -1615,7 +1616,7 @@ function populateModelProviderDropdowns() {
             if (pk === 'free') return;
             if (isProviderRestricted(pk)) return;
             // 特异 TTS provider（tts_dropdown_only）仅在 TTS 下拉里出现，不污染
-            // conversation/summary/emotion/vision/agent/omni 的下拉。
+            // conversation/summary/emotion/agent/omni 的下拉。
             // 成员由后端 tts_provider_registry 驱动；注册表元数据缺失时 getTtsProviderMeta
             // 用结构信号兜底，前端始终不硬编码 provider key。
             const _spFilter = getTtsProviderMeta(pk);
@@ -2045,7 +2046,6 @@ const MODEL_TIER_BY_TYPE = {
     gameSummary: 'summary',
     emotion: 'emotion',
     decision: 'decision',
-    vision: 'vision',
     agent: 'agent',
     agentSmall: 'emotion',
 };
@@ -3072,9 +3072,6 @@ async function loadCurrentApiKey() {
             setInputValue('decisionModelUrl', data.decisionModelUrl);
             setInputValue('decisionModelId', data.decisionModelId);
             setSecretInputValue('decisionModelApiKey', data.decisionModelApiKey);
-            setInputValue('visionModelUrl', data.visionModelUrl);
-            setInputValue('visionModelId', data.visionModelId);
-            setSecretInputValue('visionModelApiKey', data.visionModelApiKey);
             setInputValue('agentModelUrl', data.agentModelUrl);
             setInputValue('agentModelId', data.agentModelId);
             setSecretInputValue('agentModelApiKey', data.agentModelApiKey);
@@ -3608,6 +3605,8 @@ function confirmClearCustomApi() {
     const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
     if (customApiToggleBtn) customApiToggleBtn.classList.remove('rotated');
 
+    // 隐藏的旧看图配置没有输入框，清空时随这次保存一起清掉。
+    _clearLegacyVisionOnSave = true;
     showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '单独指定的模型已清空，请点击「保存设置」保存更改', 'success');
 }
 
@@ -3874,9 +3873,6 @@ async function save_button_down(e) {
     const decisionModelId = getVal('decisionModelId');
     const decisionModelApiKey = getKeyVal('decisionModelApiKey');
 
-    const visionModelUrl = getVal('visionModelUrl');
-    const visionModelId = getVal('visionModelId');
-    const visionModelApiKey = getKeyVal('visionModelApiKey');
     const agentModelUrl = getVal('agentModelUrl');
     const agentModelId = getVal('agentModelId');
     const agentModelApiKey = getKeyVal('agentModelApiKey');
@@ -3956,7 +3952,6 @@ async function save_button_down(e) {
         gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
         emotionModelUrl, emotionModelId, emotionModelApiKey,
         decisionModelUrl, decisionModelId, decisionModelApiKey,
-        visionModelUrl, visionModelId, visionModelApiKey,
         agentModelUrl, agentModelId, agentModelApiKey,
         agentSmallModelUrl, agentSmallModelId, agentSmallModelApiKey,
         omniModelUrl, omniModelId, omniModelApiKey,
@@ -3968,6 +3963,11 @@ async function save_button_down(e) {
         resolvedProviderUrls: _resolvedProviderUrls,
         ...modelProviders
     };
+    if (_clearLegacyVisionOnSave) {
+        Object.assign(payload, {
+            visionModelProvider: '', visionModelUrl: '', visionModelId: '', visionModelApiKey: '',
+        });
+    }
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
     } else if (selectedTtsProvider === 'mimo' || selectedTtsProvider === 'deepseek') {
@@ -4209,6 +4209,7 @@ async function saveApiKey(params) {
         if (response.ok) {
             const result = await response.json();
             if (result.success) {
+                _clearLegacyVisionOnSave = false;
                 invalidateModelLists();
                 // 后端的 GET 响应不会回传密钥明文。先保留当前页面已有值，供下面
                 // loadCurrentApiKey() 在收到哨兵时显示为“前后部分可见”的遮蔽形式；
@@ -4674,7 +4675,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'emotion', 'decision', 'vision', 'image', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'emotion', 'decision', 'image', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4779,13 +4780,12 @@ const LightStatus = {
 
 function getCustomModelDisplayLabel(modelType) {
     const labelMap = {
-        conversation: ['api.conversationModelConfig', '文本聊天模型'],
+        conversation: ['api.conversationModelConfig', '聊天模型'],
         summary: ['api.summaryModelConfig', '记忆整理（大模型）'],
         gameMain: ['api.gameMainModelConfig', '小游戏聊天模型'],
         gameSummary: ['api.gameSummaryModelConfig', '小游戏记忆模型'],
         emotion: ['api.emotionModelConfig', '识别模型（小模型）'],
         decision: ['api.decisionModelConfig', '决策模型（小模型）'],
-        vision: ['api.visionModelConfig', '视觉聊天模型'],
         agent: ['api.agentApiConfigTitle', '使魔模型'],
         omni: ['api.realtimeModelConfig', '实时语音（本地）'],
         tts: ['api.ttsModelConfig', '语音合成'],

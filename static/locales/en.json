@@ -1471,7 +1471,7 @@
         "noOptionsAvailable": "No options available",
         "customModelProviderFollowCore": "Follow Voice Model Provider",
         "customModelProviderFollowAssist": "Follow General Model Provider",
-        "customModelProviderFollowConversation": "Follow Text Dialogue Model",
+        "customModelProviderFollowConversation": "Follow Chat Model",
         "customModelProviderFollowSummary": "Follow Memory Upkeep Model",
         "customModelProviderFollowEmotion": "Follow Recognition Model",
         "customModelProviderFollowAgent": "Follow Familiar Model",
@@ -1554,7 +1554,8 @@
             "title": "Alibaba US API Notice",
             "message": "You are currently using Alibaba's US API, which does not support TTS or realtime voice. We recommend switching to Alibaba's Singapore API."
         },
-        "conversationModelConfig": "Text Chat Model",
+        "conversationModelConfig": "Chat Model",
+        "conversationModelVisionHint": "Must be able to read images: screenshots, watch-together, mini-game frames and pictures you send all go to it",
         "summaryModelConfig": "Memory Upkeep (Large Model)",
         "gameModelsConfig": "Mini-game Model",
         "gameMainModelConfig": "Mini-game Chat Model",

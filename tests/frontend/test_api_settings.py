@@ -367,7 +367,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             agentSmall: rect(cards[7]),
             game: rect(cards[8]),
             image: rect(cards[9]),
-            vision: rect(cards[10]),
+            cardCount: cards.length,
         };
     }""")
 
@@ -384,7 +384,6 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "agent-small-model-content",
         "game-model-content",
         "image-model-content",
-        "vision-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
@@ -397,11 +396,9 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.agentSmallApiConfigTitle",
         "api.gameModelsConfig",
         "api.imageModelConfig",
-        "api.visionModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
-        "vision",
         "summary",
         "emotion",
         "omni",
@@ -436,7 +433,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["agent"]["top"] > desktop["omni"]["top"]
     assert desktop["game"]["top"] == desktop["image"]["top"]
     assert desktop["game"]["left"] < desktop["image"]["left"]
-    assert desktop["vision"]["top"] > desktop["game"]["top"]
+    # The retired vision slot has no card any more (stored settings are kept).
+    assert desktop["cardCount"] == 10
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)
@@ -450,7 +448,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         const contentRect = content.getBoundingClientRect();
         const header = content.previousElementSibling;
         const partnerHeader = document.getElementById('summary-model-content').previousElementSibling;
-        const unpairedHeader = document.getElementById('vision-model-content').previousElementSibling;
+        const unpairedHeader = document.getElementById('emotion-model-content').previousElementSibling;
         const headerStyle = getComputedStyle(header);
         return {
             cardWidth: Math.round(card.width),
@@ -2271,6 +2269,60 @@ def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: 
     mock_page.locator('#conversationModelId ~ button').click()
     menu = mock_page.locator('#conversationModelId-model-menu')
     expect(menu.locator('.api-provider-dropdown-option')).to_be_visible()
-    mock_page.evaluate("""() => document.getElementById('visionModelId')
+    mock_page.evaluate("""() => document.getElementById('emotionModelId')
         .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
     expect(menu).to_be_hidden()
+
+
+@pytest.mark.frontend
+def test_hidden_vision_slot_is_kept_on_save_and_cleared_only_on_clear(mock_page: Page, running_server: str):
+    """The vision card is gone; a stored vision config survives saves until the user clears custom models."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            visionModelProvider="custom",
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+            visionModelApiKey="",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    assert mock_page.locator("#vision-model-content").count() == 0
+    assert mock_page.locator("#visionModelProvider").count() == 0
+
+    capture = """async () => {
+        window.__capturedSavePayload = null;
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload
+            || { __status: document.getElementById('status')?.textContent || '' };
+    }"""
+    payload = mock_page.evaluate(capture)
+    assert not any(key.startswith("visionModel") for key in payload)
+
+    mock_page.evaluate("confirmClearCustomApi()")
+    # Without custom models the page asks for the provider key before saving.
+    mock_page.evaluate("document.getElementById('apiKeyInput').value = 'test-key'")
+    payload = mock_page.evaluate(capture)
+    assert payload["visionModelProvider"] == ""
+    assert payload["visionModelUrl"] == ""
+    assert payload["visionModelId"] == ""
+    assert payload["visionModelApiKey"] == ""
+
+
+@pytest.mark.frontend
+def test_chat_model_card_says_it_must_read_images(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    title = mock_page.locator('#conversation-model-content').locator('xpath=..').locator('[data-i18n="api.conversationModelConfig"]')
+    expect(title).to_have_text("聊天模型")
+    expect(mock_page.locator('[data-i18n="api.conversationModelVisionHint"]')).to_contain_text("需要能看图")

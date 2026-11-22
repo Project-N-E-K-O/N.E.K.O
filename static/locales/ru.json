@@ -1471,7 +1471,7 @@
         "noOptionsAvailable": "Нет доступных вариантов",
         "customModelProviderFollowCore": "Как у провайдера голосовой модели",
         "customModelProviderFollowAssist": "Как у провайдера универсальной модели",
-        "customModelProviderFollowConversation": "Следовать текстовой диалоговой модели",
+        "customModelProviderFollowConversation": "Следовать модели чата",
         "customModelProviderFollowSummary": "Следовать модели обработки памяти",
         "customModelProviderFollowEmotion": "Как у модели распознавания",
         "customModelProviderFollowAgent": "Как у модели фамильяра",
@@ -1554,7 +1554,8 @@
             "title": "Уведомление об API Alibaba в США",
             "message": "Сейчас используется API Alibaba в США. Он не поддерживает TTS и голос в реальном времени. Рекомендуется перейти на API Alibaba в Сингапуре."
         },
-        "conversationModelConfig": "Модель текстового чата",
+        "conversationModelConfig": "Модель чата",
+        "conversationModelVisionHint": "Должна уметь читать изображения: скриншоты, совместный просмотр, кадры мини-игр и отправленные вами картинки обрабатывает она",
         "summaryModelConfig": "Обработка памяти (большая модель)",
         "gameModelsConfig": "Модель мини-игры",
         "gameMainModelConfig": "Модель чата мини-игр",

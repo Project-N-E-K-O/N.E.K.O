@@ -1471,7 +1471,7 @@
         "noOptionsAvailable": "利用可能な項目はありません",
         "customModelProviderFollowCore": "音声モデルのプロバイダーに従う",
         "customModelProviderFollowAssist": "汎用モデルのプロバイダーに従う",
-        "customModelProviderFollowConversation": "テキスト対話モデルに従う",
+        "customModelProviderFollowConversation": "チャットモデルに従う",
         "customModelProviderFollowSummary": "記憶整理モデルに従う",
         "customModelProviderFollowEmotion": "認識モデルに従う",
         "customModelProviderFollowAgent": "使い魔モデルに従う",
@@ -1554,7 +1554,8 @@
             "title": "Alibaba 米国 API の注意",
             "message": "現在 Alibaba の米国 API を使用しています。この API は TTS とリアルタイム音声に対応していません。Alibaba のシンガポール API への切り替えをおすすめします。"
         },
-        "conversationModelConfig": "テキストチャットモデル",
+        "conversationModelConfig": "チャットモデル",
+        "conversationModelVisionHint": "画像を読めるモデルが必要です：スクリーンショット、一緒に見る、ミニゲームの画面、送った画像はすべてこのモデルが処理します",
         "summaryModelConfig": "記憶整理（大規模モデル）",
         "gameModelsConfig": "ミニゲームモデル",
         "gameMainModelConfig": "ミニゲームのチャットモデル",

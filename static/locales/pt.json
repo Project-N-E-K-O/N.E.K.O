@@ -1471,7 +1471,7 @@
         "noOptionsAvailable": "Nenhuma opção disponível",
         "customModelProviderFollowCore": "Seguir o provedor de modelo de voz",
         "customModelProviderFollowAssist": "Seguir o provedor de modelo geral",
-        "customModelProviderFollowConversation": "Seguir modelo de diálogo de texto",
+        "customModelProviderFollowConversation": "Seguir modelo de chat",
         "customModelProviderFollowSummary": "Seguir modelo de organização da memória",
         "customModelProviderFollowEmotion": "Seguir o modelo de reconhecimento",
         "customModelProviderFollowAgent": "Seguir o modelo de familiar",
@@ -1554,7 +1554,8 @@
             "title": "Aviso da API dos EUA da Alibaba",
             "message": "Você está usando a API dos EUA da Alibaba, que não oferece suporte a TTS nem voz em tempo real. Recomendamos mudar para a API de Singapura da Alibaba."
         },
-        "conversationModelConfig": "Modelo de chat de texto",
+        "conversationModelConfig": "Modelo de chat",
+        "conversationModelVisionHint": "Precisa conseguir ler imagens: capturas de tela, assistir juntos, telas de minijogos e as imagens que você envia vão para este modelo",
         "summaryModelConfig": "Organização da memória (modelo grande)",
         "gameModelsConfig": "Modelo de minijogo",
         "gameMainModelConfig": "Modelo de chat de minijogos",

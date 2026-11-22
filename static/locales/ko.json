@@ -1471,7 +1471,7 @@
         "noOptionsAvailable": "사용 가능한 항목이 없습니다",
         "customModelProviderFollowCore": "음성 모델 제공업체 따르기",
         "customModelProviderFollowAssist": "범용 모델 제공업체 따르기",
-        "customModelProviderFollowConversation": "텍스트 대화 모델 따르기",
+        "customModelProviderFollowConversation": "채팅 모델 따르기",
         "customModelProviderFollowSummary": "기억 정리 모델 따르기",
         "customModelProviderFollowEmotion": "인식 모델 따르기",
         "customModelProviderFollowAgent": "사역마 모델 따르기",
@@ -1554,7 +1554,8 @@
             "title": "Alibaba 미국 API 안내",
             "message": "현재 Alibaba의 미국 API를 사용 중입니다. 이 API는 TTS와 실시간 음성을 지원하지 않으므로 Alibaba 싱가포르 API로 변경하는 것을 권장합니다."
         },
-        "conversationModelConfig": "텍스트 채팅 모델",
+        "conversationModelConfig": "채팅 모델",
+        "conversationModelVisionHint": "이미지를 읽을 수 있어야 합니다: 스크린샷, 함께 보기, 미니게임 화면, 보낸 이미지를 모두 이 모델이 처리합니다",
         "summaryModelConfig": "기억 정리 (대형 모델)",
         "gameModelsConfig": "미니게임 모델",
         "gameMainModelConfig": "미니게임 채팅 모델",
