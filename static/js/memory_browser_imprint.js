@@ -454,6 +454,9 @@
                 { snapshot_id: snapshotId }
             );
             const data = await resp.json();
+            if (resp.ok && data && data.success) {
+                notifyMainWindowMemoryEdited(targetChar);
+            }
             if (targetChar !== activeCharacter) return;
             if (!resp.ok || !data.success) {
                 showToast(data.error || tr('memory.snapshotRestoreFailed', '恢复安全点失败'), true);
@@ -461,7 +464,6 @@
                 showToast(tr('memory.snapshotRestoredToast', '已恢复记忆安全点（恢复前已自动留存备份）'), false);
                 dagData = null;
                 deepConflictsData = null;
-                notifyMainWindowMemoryEdited(targetChar);
                 await fetchOverview(targetChar);
             }
         } catch (err) {

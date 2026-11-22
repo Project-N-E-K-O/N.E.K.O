@@ -182,11 +182,14 @@ def _text_bigrams(text: str) -> set[str]:
 
 def _entry_subject_scope_key(entry: dict) -> tuple[str, str, str]:
     """Return a canonical subject/scope isolation key so merges never cross subject boundaries."""
-    return (
-        str(entry.get("subject_kind") or ""),
-        str(entry.get("subject_id") or ""),
-        str(entry.get("scope") or ""),
-    )
+    from memory.scopes import LEGACY_PRIVATE_SCOPE
+
+    subject_kind = str(entry.get("subject_kind") or "")
+    subject_id = str(entry.get("subject_id") or "")
+    scope = str(entry.get("scope") or "")
+    if scope == LEGACY_PRIVATE_SCOPE and not subject_kind and not subject_id:
+        scope = ""
+    return (subject_kind, subject_id, scope)
 
 
 def _inspect_embeddings(items: list[tuple[str, dict]]) -> dict[str, Any]:

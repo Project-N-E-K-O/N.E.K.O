@@ -8568,6 +8568,8 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
             if isinstance(recalled_payload, dict)
             else recalled_payload
         ) or []
+        from memory.scopes import LEGACY_PRIVATE_SCOPE
+
         seen_ids = {(r["kind"], r["id"]) for r in results if r.get("id")}
         for item in recalled_items:
             if not isinstance(item, dict):
@@ -8579,6 +8581,11 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
             if iid and (kind, iid) in seen_ids:
                 continue
             seen_ids.add((kind, iid))
+            subj_kind = str(item.get("subject_kind") or "")
+            subj_id = str(item.get("subject_id") or "")
+            raw_scope = str(item.get("scope") or "")
+            if raw_scope == LEGACY_PRIVATE_SCOPE and not subj_kind and not subj_id:
+                raw_scope = ""
             results.append({
                 "kind": kind,
                 "id": iid,
@@ -8588,9 +8595,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                 "archived": is_archived_hit,
                 "protected": False,
                 "created_at": item.get("created_at"),
-                "subject_kind": str(item.get("subject_kind") or ""),
-                "subject_id": str(item.get("subject_id") or ""),
-                "scope": str(item.get("scope") or ""),
+                "subject_kind": subj_kind,
+                "subject_id": subj_id,
+                "scope": raw_scope,
                 "score": float(item.get("score") or 0.0),
             })
     except Exception as exc:

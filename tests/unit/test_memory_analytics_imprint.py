@@ -1463,6 +1463,18 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
     assert "f_priv" in rel_priv_ids
     assert "f_other_scope" not in rel_priv_ids
 
+    # Synthetic legacy_private scope from hybrid_recall matches persisted unscoped private entries
+    rel_legacy_priv = find_related_memories(
+        char_name,
+        kind="persona",
+        entry_id="p_priv",
+        text="每天早上都会喝一杯燕麦拿铁",
+        memory_dir=cm.memory_dir,
+        scope="legacy_private",
+    )
+    assert "f_priv" in {r["id"] for r in rel_legacy_priv}
+    assert "f_other_scope" not in {r["id"] for r in rel_legacy_priv}
+
     # Forgotten scoped entry passes canonical persisted fields and only sees same-scope candidates
     rel_scoped = find_related_memories(
         char_name,
