@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import inspect
 import re
 import time
 from typing import (
@@ -304,10 +306,20 @@ class BusList(BusListCore, Generic[TRecord]):
     # it directly rather than this flag, preserving explicit refresh.
     _snapshot_chain: bool = False
 
+    @staticmethod
+    def _in_running_event_loop() -> bool:
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
     def _is_lazy_mode(self) -> bool:
         if self._snapshot_chain:
             return False
-        return self._ctx is not None and self._plan is not None
+        if self._ctx is None or self._plan is None:
+            return False
+        return not self._in_running_event_loop()
 
     def _invalidate_cache(self) -> None:
         if self._is_lazy_mode():
@@ -453,7 +465,7 @@ class BusList(BusListCore, Generic[TRecord]):
             kwargs.pop("plugin_id", None)
             out = ctor(items, **kwargs)
         with suppress(Exception):
-            if getattr(self, "_ctx", None) is not None and plan is not None:
+            if out._is_lazy_mode():
                 out._cache_valid = False
         return out
 
@@ -739,6 +751,13 @@ class BusList(BusListCore, Generic[TRecord]):
 
     def _replay_plan(self, ctx: BusReplayContext, plan: TraceNode) -> "BusList[TRecord]":
         def _as_eager(lst: Any) -> Any:
+            if inspect.isawaitable(lst):
+                if inspect.iscoroutine(lst):
+                    lst.close()
+                raise NonReplayableTraceError(
+                    "Cannot replay BusList synchronously inside an active event loop; "
+                    "use 'await lst.reload_with_async(ctx)' instead."
+                )
             with suppress(Exception):
                 lst._ctx = None
                 lst._cache_valid = True

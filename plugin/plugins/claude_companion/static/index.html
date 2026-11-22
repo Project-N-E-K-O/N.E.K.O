@@ -746,6 +746,8 @@
     <script>
         const pluginId = 'claude_companion';
         let refreshTimer = null;
+        let nameDirty = false;
+        let cooldownDirty = false;
         let translations = {};
         let localeLoaded = false;
 
@@ -976,7 +978,7 @@
         }
 
         // ── 加载状态 ──
-        async function loadStatus() {
+        async function loadStatus(options) {
             console.log('[ClaudeCompanion] Loading status...');
             var result = await callPlugin('get_status');
             console.log('[ClaudeCompanion] Status result:', result);
@@ -993,8 +995,15 @@
             document.getElementById('user-name').textContent = result.user_name || '-';
             document.getElementById('port-num').textContent = result.port || '-';
             document.getElementById('cooldown-val').textContent = result.cooldown || '-';
-            document.getElementById('input-name').value = result.user_name || '';
-            document.getElementById('input-cooldown').value = result.cooldown || 60;
+            var forceInputs = Boolean(options && options.forceInputs);
+            var nameInput = document.getElementById('input-name');
+            if (nameInput && (forceInputs || (!nameDirty && document.activeElement !== nameInput))) {
+                nameInput.value = result.user_name || '';
+            }
+            var cooldownInput = document.getElementById('input-cooldown');
+            if (cooldownInput && (forceInputs || (!cooldownDirty && document.activeElement !== cooldownInput))) {
+                cooldownInput.value = result.cooldown || 60;
+            }
         }
 
         // ── 加载事件时间线 ──
@@ -1057,26 +1066,36 @@
 
         // ── 设置操作 ──
         async function saveUserName() {
-            var name = document.getElementById('input-name').value.trim();
+            var nameInput = document.getElementById('input-name');
+            var submitted = nameInput ? nameInput.value : '';
+            var name = submitted.trim();
             if (!name) { showToast(t('ui.toast_username_empty', '请输入用户名')); return; }
             var r = await callPlugin('set_user_name', { name: name });
             if (r && r.user_name) {
+                if (!nameInput || nameInput.value === submitted) {
+                    nameDirty = false;
+                }
                 var nameMsg = t('ui.toast_username_updated', '用户名已更新为: ');
                 showToast(nameMsg.includes('{name}') ? nameMsg.replace('{name}', () => r.user_name) : nameMsg + r.user_name);
-                loadStatus();
+                loadStatus({ forceInputs: !nameDirty });
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
             }
         }
 
         async function saveCooldown() {
-            var sec = parseInt(document.getElementById('input-cooldown').value);
+            var cooldownInput = document.getElementById('input-cooldown');
+            var submitted = cooldownInput ? cooldownInput.value : '';
+            var sec = parseInt(submitted);
             if (isNaN(sec) || sec < 10) { showToast(t('ui.toast_cooldown_invalid', '冷却时间至少 10 秒')); return; }
             var r = await callPlugin('set_cooldown', { seconds: sec });
             if (r && r.cooldown_seconds) {
+                if (!cooldownInput || cooldownInput.value === submitted) {
+                    cooldownDirty = false;
+                }
                 var cdMsg = t('ui.toast_cooldown_updated', '冷却时间已设为 ');
                 showToast(cdMsg.includes('{sec}') ? cdMsg.replace('{sec}', () => r.cooldown_seconds) : cdMsg + r.cooldown_seconds + ' 秒');
-                loadStatus();
+                loadStatus({ forceInputs: !cooldownDirty });
             } else {
                 showToast(t('ui.toast_fail', '更新失败'));
             }
@@ -1106,6 +1125,14 @@
 
         // ── 初始化 ─
         document.addEventListener('DOMContentLoaded', async function() {
+            var nameInput = document.getElementById('input-name');
+            if (nameInput) {
+                nameInput.addEventListener('input', function() { nameDirty = true; });
+            }
+            var cooldownInput = document.getElementById('input-cooldown');
+            if (cooldownInput) {
+                cooldownInput.addEventListener('input', function() { cooldownDirty = true; });
+            }
             await loadLocale();
             loadStatus();
             loadEvents();

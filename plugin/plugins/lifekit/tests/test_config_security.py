@@ -144,3 +144,62 @@ def test_confirmation_token_is_bound_to_available_conversation_scope() -> None:
         {"id": "home"},
         scope="conversation-b",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("false", False),
+        ("0", False),
+        ("off", False),
+        ("no", False),
+        ("true", True),
+        ("1", True),
+        ("on", True),
+        ("yes", True),
+        (False, False),
+        (True, True),
+    ],
+)
+async def test_update_config_parses_boolean_strings_strictly(
+    raw_value: object,
+    expected: bool,
+) -> None:
+    plugin = _bare_plugin()
+    updates: list[dict[str, object]] = []
+
+    class _Config:
+        async def update(self, value: dict[str, object]) -> None:
+            updates.append(value)
+
+    async def reload_config() -> None:
+        return None
+
+    plugin.config = _Config()
+    plugin._cfg = {}
+    plugin._reload_config = reload_config
+
+    first = await plugin.update_config_entry(
+        force_locale=raw_value,
+        enable_geoip=raw_value,
+    )
+    assert isinstance(first, Ok)
+    assert first.value["status"] == "clarify"
+    result = await plugin.update_config_entry(**first.value["context"])
+
+    assert isinstance(result, Ok)
+    assert result.value["status"] == "ready"
+    assert updates == [{"lifekit": {"force_locale": expected, "enable_geoip": expected}}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", ["maybe", "2", "", None, []])
+async def test_update_config_rejects_invalid_boolean_strings(bad_value: object) -> None:
+    plugin = _bare_plugin()
+    plugin._cfg = {}
+
+    first = await plugin.update_config_entry(force_locale=bad_value)
+    assert isinstance(first, Ok)
+    result = await plugin.update_config_entry(**first.value["context"])
+    assert isinstance(result, Err)

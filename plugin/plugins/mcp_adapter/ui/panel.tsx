@@ -168,29 +168,40 @@ auto_connect = true`
 
   const parseArgs = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean)
 
-  // Accept only boolean or literal "true"/"false"; ignore any other type so it
+  // Accept only boolean or strict boolean strings; ignore any other type so it
   // falls back to the backend default. A string "false" must NOT be coerced to
-  // true by !! (would silently enable chat injection on JSON import).
+  // true by !! (would silently enable/auto-connect disabled servers on JSON import).
+  const resolveBooleanValue = (raw: unknown): boolean | undefined => {
+    if (typeof raw === "boolean") return raw
+    if (typeof raw === "string") {
+      const normalized = raw.trim().toLowerCase()
+      if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true
+      if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") return false
+    }
+    return undefined
+  }
+
   const resolveInjectToChatValue = (server: Partial<ServerFormValues> | ImportServerConfig): boolean | undefined => {
     let raw: unknown
     if ("injectToChat" in server) raw = server.injectToChat
     else if ("inject_to_chat" in server) raw = server.inject_to_chat
-    if (typeof raw === "boolean") return raw
-    if (raw === "true") return true
-    if (raw === "false") return false
-    return undefined
+    return resolveBooleanValue(raw)
   }
 
   const buildServerPayload = (server: Partial<ServerFormValues> | ImportServerConfig, autoConnectOverride?: boolean) => {
     const name = String(server.name || "").trim()
     const transport = String(server.transport || "stdio").trim() || "stdio"
     if (!name) throw new Error(t("panel.form.errors.nameRequired"))
+    const rawAutoConnect = autoConnectOverride === undefined ? server.autoConnect : autoConnectOverride
     const payload: Record<string, any> = {
       name,
       transport,
-      auto_connect: autoConnectOverride === undefined ? !!server.autoConnect : !!autoConnectOverride,
+      auto_connect: resolveBooleanValue(rawAutoConnect) ?? false,
     }
-    if ("enabled" in server && server.enabled !== undefined) payload.enabled = !!server.enabled
+    if ("enabled" in server && server.enabled !== undefined) {
+      const enabled = resolveBooleanValue(server.enabled)
+      if (enabled !== undefined) payload.enabled = enabled
+    }
     const injectToChat = resolveInjectToChatValue(server)
     if (injectToChat !== undefined) payload.inject_to_chat = injectToChat
     if (transport === "stdio") {
@@ -336,21 +347,29 @@ auto_connect = true`
     }
   }
 
-  const removeSelectedServers = async () => {
-    if (!removeServers || selectedNames.length === 0) return
+  const removeServersByNames = async (serverNames: string[]) => {
+    const targets = Array.from(new Set(serverNames.filter(Boolean)))
+    if (!removeServers || targets.length === 0) return
     const accepted = await confirm({
       title: t("panel.servers.removeConfirmTitle"),
-      message: t("panel.servers.removeConfirmMessage", { count: selectedNames.length }),
+      message: t("panel.servers.removeConfirmMessage", { count: targets.length }),
       tone: "danger",
       confirmLabel: t("panel.servers.removeConfirmAction"),
       cancelLabel: t("panel.servers.removeConfirmCancel"),
     })
     if (!accepted) return
-    await props.api.call("remove_servers", { server_names: selectedNames })
-    setSelectedServerNames([])
-    await props.api.refresh()
-    toast.success(t("panel.servers.removed", { count: selectedNames.length }))
+    try {
+      await props.api.call("remove_servers", { server_names: targets })
+      setSelectedServerNames((previous) => previous.filter((name) => !targets.includes(name)))
+      setSelectedServerName((previous) => (targets.includes(previous) ? "" : previous))
+      await props.api.refresh()
+      toast.success(t("panel.servers.removed", { count: targets.length }))
+    } catch (error) {
+      toast.error(error && error.message ? error.message : String(error))
+    }
   }
+
+  const removeSelectedServers = () => removeServersByNames(selectedNames)
 
   return (
     <Page
@@ -475,7 +494,9 @@ auto_connect = true`
                 <ActionButton action={disconnectServer} values={{ server_name: effectiveActionServerName }} />
               ) : null}
               {removeServers && effectiveActionServerName ? (
-                <ActionButton action={removeServers} values={{ server_names: [effectiveActionServerName] }} />
+                <Button tone="danger" onClick={() => removeServersByNames([effectiveActionServerName])}>
+                  {removeServers.label || t("panel.servers.removeConfirmAction")}
+                </Button>
               ) : null}
               {removeServers && selectedNames.length > 0 ? (
                 <Button tone="danger" onClick={removeSelectedServers}>{t("panel.servers.removeSelected", { count: selectedNames.length })}</Button>

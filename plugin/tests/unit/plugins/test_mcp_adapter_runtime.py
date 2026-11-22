@@ -1155,3 +1155,120 @@ async def test_failed_enable_reports_error_and_rolls_back_partial_injection(monk
     assert isinstance(result, Err)
     assert plugin.ctx._effective_config["mcp_servers"]["example"]["inject_to_chat"] is cleanup_fails
     assert bool(plugin._chat_tools) is cleanup_fails
+
+
+@pytest.mark.asyncio
+async def test_set_chat_injection_skips_incompatible_schema_tools_and_keeps_compatible_ones(monkeypatch):
+    """F0284: incompatible tool schema returns False and is excluded from expected_tool_ids."""
+    from types import SimpleNamespace
+
+    plugin = MCPAdapterPlugin(_Ctx())
+    cfg = {"example": {"transport": "stdio", "command": "demo", "inject_to_chat": False}}
+    plugin.ctx._effective_config["mcp_servers"] = cfg
+    plugin._servers_config = cfg
+    plugin._clients["example"] = SimpleNamespace(
+        tools=[
+            SimpleNamespace(
+                name="good_tool",
+                description="good",
+                input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+            ),
+            SimpleNamespace(
+                name="bad_tool",
+                description="bad",
+                input_schema={"type": "object", "properties": {"x": {"type": ["string", "null"]}}},
+            ),
+        ]
+    )
+    plugin._route_engine = SimpleNamespace(get_tool_server=lambda _tid: "example")
+    monkeypatch.setattr(plugin, "register_llm_tool", lambda **_kw: None)
+    monkeypatch.setattr(plugin, "unregister_llm_tool", lambda _name: None)
+
+    async def no_foreign():
+        return set()
+
+    async def fake_confirm(server_name):
+        moved = 0
+        for tid, info in list(plugin._pending_chat_tools.items()):
+            if info.get("server_name") == server_name:
+                plugin._chat_tools[tid] = plugin._pending_chat_tools.pop(tid)
+                moved += 1
+        return moved
+
+    monkeypatch.setattr(plugin, "_fetch_foreign_llm_tool_names", no_foreign)
+    monkeypatch.setattr(plugin, "_confirm_pending_chat_tools_locked", fake_confirm)
+
+    result = await plugin.set_chat_injection("example", True)
+    assert isinstance(result, Ok)
+    assert result.value["applied"] == 1
+    assert "mcp_example_good_tool" in plugin._chat_tools
+    assert "mcp_example_bad_tool" not in plugin._chat_tools
+    assert plugin.ctx._effective_config["mcp_servers"]["example"]["inject_to_chat"] is True
+
+
+@pytest.mark.asyncio
+async def test_set_chat_injection_all_incompatible_tools_succeeds_with_zero_applied(monkeypatch):
+    """F0284: when every tool schema is rejected, enable does not fail with unconfirmed error."""
+    from types import SimpleNamespace
+
+    plugin = MCPAdapterPlugin(_Ctx())
+    cfg = {"example": {"transport": "stdio", "command": "demo", "inject_to_chat": False}}
+    plugin.ctx._effective_config["mcp_servers"] = cfg
+    plugin._servers_config = cfg
+    plugin._clients["example"] = SimpleNamespace(
+        tools=[
+            SimpleNamespace(
+                name="bad_tool",
+                description="bad",
+                input_schema={"type": "object", "oneOf": [{"properties": {"a": {"type": "string"}}}]},
+            ),
+        ]
+    )
+    plugin._route_engine = SimpleNamespace(get_tool_server=lambda _tid: "example")
+    monkeypatch.setattr(plugin, "register_llm_tool", lambda **_kw: None)
+
+    async def no_foreign():
+        return set()
+
+    async def fake_confirm(_server_name):
+        return 0
+
+    monkeypatch.setattr(plugin, "_fetch_foreign_llm_tool_names", no_foreign)
+    monkeypatch.setattr(plugin, "_confirm_pending_chat_tools_locked", fake_confirm)
+
+    result = await plugin.set_chat_injection("example", True)
+    assert isinstance(result, Ok)
+    assert result.value["applied"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_enabled", ["false", "0", "off", "no", False])
+async def test_add_server_and_startup_coerce_disabled_string_booleans(
+    monkeypatch,
+    raw_enabled: object,
+) -> None:
+    """F0285: string 'false'/'0'/'off'/'no' for enabled is coerced to False and never auto-connects."""
+    plugin = MCPAdapterPlugin(_Ctx())
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        plugin,
+        "_schedule_connect_server",
+        lambda name, _cfg, _timeout: scheduled.append(name) or True,
+    )
+
+    result = await plugin.add_server(
+        name="disabled_srv",
+        transport="stdio",
+        command="echo",
+        enabled=raw_enabled,  # type: ignore[arg-type]
+        auto_connect="true",  # type: ignore[arg-type]
+    )
+    assert isinstance(result, Ok)
+    assert scheduled == []
+    assert plugin._servers_config["disabled_srv"]["enabled"] is False
+    assert plugin.ctx._effective_config["mcp_servers"]["disabled_srv"]["enabled"] is False
+
+    plugin._pending_auto_connect.clear()
+    plugin.ctx._effective_config["mcp_servers"]["disabled_srv"]["enabled"] = raw_enabled
+    await plugin.on_startup()
+    assert "disabled_srv" not in plugin._pending_auto_connect

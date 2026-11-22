@@ -18,9 +18,10 @@ import threading
 import time
 import uuid
 import weakref
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterator
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional
 
 from config import (
     MAIN_SERVER_PORT,
@@ -821,6 +822,31 @@ async def _handle_config_update_command(
         res_sender.put(ret_payload, timeout=10.0)
     except Exception:
         logger.exception("[Plugin Process] Failed to send CONFIG_UPDATE response")
+
+
+def _resolve_cancel_run_id(msg: Mapping[str, Any]) -> Optional[str]:
+    raw_run_id = msg.get("run_id")
+    if isinstance(raw_run_id, str):
+        stripped = raw_run_id.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def _resolve_trigger_task_key(msg: Mapping[str, Any]) -> str:
+    run_id: Optional[str] = None
+    args = msg.get("args")
+    if isinstance(args, Mapping):
+        ctx_obj = args.get("_ctx")
+        if isinstance(ctx_obj, Mapping):
+            raw_run_id = ctx_obj.get("run_id")
+            if isinstance(raw_run_id, str):
+                stripped = raw_run_id.strip()
+                if stripped:
+                    run_id = stripped
+    if run_id is not None:
+        return run_id
+    return f"trigger:{msg.get('req_id') or uuid.uuid4()}"
 
 
 def _deep_merge(base: dict, updates: dict) -> None:
@@ -1717,7 +1743,7 @@ def _plugin_process_runner(
 
                 # ── CANCEL_RUN ──
                 if msg_type == "CANCEL_RUN":
-                    run_id = msg.get("run_id")
+                    run_id = _resolve_cancel_run_id(msg)
                     task = _run_tasks.get(run_id) if run_id else None
                     if task and not task.done():
                         task.cancel()
@@ -1797,17 +1823,10 @@ def _plugin_process_runner(
 
                 # ── TRIGGER ──
                 if msg_type == "TRIGGER":
-                    run_id = None
-                    try:
-                        ctx_obj = msg.get("args", {}).get("_ctx")
-                        if isinstance(ctx_obj, dict):
-                            run_id = ctx_obj.get("run_id")
-                    except Exception:
-                        pass
                     task = asyncio.create_task(_handle_trigger(msg))
                     # Register every trigger so shutdown cancels it before the
                     # model clients close; only run_id keys are cancellable by CANCEL_RUN.
-                    task_key = run_id if run_id else f"trigger:{msg.get('req_id') or uuid.uuid4()}"
+                    task_key = _resolve_trigger_task_key(msg)
                     _run_tasks[task_key] = task
                     task.add_done_callback(
                         lambda _t, key=task_key: _run_tasks.pop(key, None) if _run_tasks.get(key) is _t else None

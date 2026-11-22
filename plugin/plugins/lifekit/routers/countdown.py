@@ -15,30 +15,46 @@ from .._holiday import HolidayResolution, HolidayResolver, default_saved_country
 _HOLIDAYS = HolidayResolver()
 
 
-def _parse_numeric_date(text: str) -> Optional[date]:
-    """Parse YYYY-MM-DD or MM-DD without applying regional assumptions."""
+def _parse_numeric_date_info(
+    text: str,
+    *,
+    reference_year: Optional[int] = None,
+) -> tuple[Optional[date], bool]:
+    """Parse YYYY-MM-DD or MM-DD and report whether a year was explicit."""
     t = text.strip().lower()
 
     # YYYY-MM-DD
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
         try:
-            return datetime.strptime(t, fmt).date()
+            return datetime.strptime(t, fmt).date(), True
         except ValueError:
             continue
 
-    # MM-DD (this year or next year)
+    # MM-DD (anchored to reference_year if provided, else next upcoming occurrence)
     for fmt in ("%m-%d", "%m/%d", "%m.%d"):
         try:
             parsed = datetime.strptime(t, fmt).date()
+            if reference_year is not None:
+                return date(reference_year, parsed.month, parsed.day), False
             today = date.today()
             target = date(today.year, parsed.month, parsed.day)
             if target < today:
                 target = date(today.year + 1, parsed.month, parsed.day)
-            return target
+            return target, False
         except ValueError:
             continue
 
-    return None
+    return None, False
+
+
+def _parse_numeric_date(
+    text: str,
+    *,
+    reference_year: Optional[int] = None,
+) -> Optional[date]:
+    """Parse YYYY-MM-DD or MM-DD without applying regional assumptions."""
+    parsed, _ = _parse_numeric_date_info(text, reference_year=reference_year)
+    return parsed
 
 
 def _holiday_note(i18n, event: str, resolution: HolidayResolution) -> str:
@@ -193,21 +209,41 @@ class CountdownRouter(PluginRouter):
                     end_date,
                     country_hint=default_country,
                 )
-        d1 = (
-            start_holiday.target or _parse_numeric_date(start_date)
-            if start_date.strip()
-            else today
-        )
-        d2 = (
-            end_holiday.target or _parse_numeric_date(end_date)
-            if end_date.strip()
-            else today
-        )
+        start_stripped = start_date.strip()
+        end_stripped = end_date.strip()
+
+        start_has_year = True
+        end_has_year = True
+
+        if not start_stripped:
+            d1: Optional[date] = today
+        elif start_holiday.target is not None:
+            d1 = start_holiday.target
+        else:
+            d1, start_has_year = _parse_numeric_date_info(start_date, reference_year=today.year)
+
+        if not end_stripped:
+            d2: Optional[date] = today
+        elif end_holiday.target is not None:
+            d2 = end_holiday.target
+        else:
+            d2, end_has_year = _parse_numeric_date_info(end_date, reference_year=today.year)
 
         if d1 is None:
             return Err(SdkError(i18n.t("date.invalid_start", value=start_date)))
         if d2 is None:
             return Err(SdkError(i18n.t("date.invalid_end", value=end_date)))
+
+        if not start_has_year and end_has_year:
+            d1 = date(d2.year, d1.month, d1.day)
+            if d1 > d2 and end_stripped and start_holiday.target is None:
+                d1 = date(d1.year - 1, d1.month, d1.day)
+        elif not end_has_year and start_has_year:
+            d2 = date(d1.year, d2.month, d2.day)
+            if d2 < d1:
+                d2 = date(d2.year + 1, d2.month, d2.day)
+        elif not start_has_year and not end_has_year and d2 < d1:
+            d2 = date(d2.year + 1, d2.month, d2.day)
 
         delta = abs((d2 - d1).days)
         years = delta // 365

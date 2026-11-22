@@ -869,3 +869,30 @@ def test_search_entries_allow_internal_timeout_to_finish() -> None:
     summary_meta = web_search.WebSearchPlugin.search_summary.__neko_event_meta__
     assert search_meta.timeout == 30.0
     assert summary_meta.timeout == 30.0
+
+
+@pytest.mark.asyncio
+async def test_coordinator_allows_throttle_wait_beyond_three_seconds_within_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B32A-006: coordinator wait > 3.0s paces and succeeds if within total_timeout."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=5.0, queue_wait_seconds=1.0)
+    coordinator._loop = asyncio.get_running_loop()
+    coordinator._backends["duckduckgo"] = resilience._BackendState(
+        asyncio.Lock(),
+        next_allowed=resilience.time.monotonic() + 3.5,
+    )
+
+    slept: list[float] = []
+
+    async def _fast_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(resilience.asyncio, "sleep", _fast_sleep)
+
+    async def fetch() -> resilience.SearchResults:
+        return [{"title": "ok", "url": "https://example.com", "snippet": ""}]
+
+    results = await coordinator.run(("duckduckgo", "q", 3), fetch)
+    assert slept and slept[0] > 3.0
+    assert results[0]["title"] == "ok"

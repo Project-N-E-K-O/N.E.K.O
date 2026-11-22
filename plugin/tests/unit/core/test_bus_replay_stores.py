@@ -209,3 +209,93 @@ async def test_frames_can_still_be_reloaded_explicitly() -> None:
     assert frames._plan is not None, "计划被顺手删了——显式 reload 就没了"
     refreshed = await frames.reload_with_async(ctx)
     assert [r.frame_id for r in refreshed] == ["f1", "f2", "f3"]
+
+
+def _bus_client(store: str):
+    from plugin.core.bus.events import EventClient
+    from plugin.core.bus.lifecycle import LifecycleClient
+    from plugin.core.bus.messages import MessageClient
+
+    id_field = {
+        "messages": "message_id",
+        "events": "event_id",
+        "lifecycle": "lifecycle_id",
+    }[store]
+
+    class _MultiStoreStubRpc:
+        def _resp(self):
+            return {
+                "ok": True,
+                "result": {
+                    "items": [
+                        {"payload": {id_field: "r1", "type": "a", "timestamp": 2.0, "source": "s1"}},
+                        {"payload": {id_field: "r2", "type": "b", "timestamp": 5.0, "source": "s2"}},
+                        {"payload": {id_field: "r3", "type": "a", "timestamp": 4.0, "source": "s1"}},
+                    ]
+                },
+            }
+
+        async def request_async(self, **_kw):
+            return self._resp()
+
+        def request(self, **_kw):
+            return self._resp()
+
+    ctx = SimpleNamespace(plugin_id="demo", _mp_rpc_client=_MultiStoreStubRpc(), bus=None)
+    client_cls = {
+        "messages": MessageClient,
+        "events": EventClient,
+        "lifecycle": LifecycleClient,
+    }[store]
+    client = client_cls(ctx)
+    ctx.bus = SimpleNamespace(**{store: client})
+    return ctx, client, id_field
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("store", ["messages", "events", "lifecycle"])
+@pytest.mark.asyncio
+async def test_async_chained_bus_list_evaluates_without_coroutine_leak(store: str) -> None:
+    """F0028: chained filter/sort/limit on async get() evaluates locally without coroutine leak."""
+    import warnings
+
+    def _sync_leg():
+        _sctx, sync_client, id_field = _bus_client(store)
+        chained = sync_client.get(max_count=10).filter(type="a").sort(by="timestamp", reverse=True).limit(1)
+        return [getattr(r, id_field) for r in chained]
+
+    sync_ids = await asyncio.to_thread(_sync_leg)
+
+    ctx, async_client, id_field = _bus_client(store)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        snapshot = await async_client.get(max_count=10)
+        chained = snapshot.filter(type="a").sort(by="timestamp", reverse=True).limit(1)
+        assert len(chained) == 1
+        async_ids = [getattr(r, id_field) for r in chained]
+        dumped_ids = [getattr(r, id_field) for r in chained.dump_records()]
+
+    assert async_ids == sync_ids == ["r3"]
+    assert dumped_ids == ["r3"]
+    assert chained._plan is not None
+    reloaded = await chained.reload_with_async(ctx)
+    assert [getattr(r, id_field) for r in reloaded] == ["r3"]
+    leaked = [w for w in caught if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)]
+    assert leaked == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_sync_reload_inside_event_loop_closes_coroutine_and_raises() -> None:
+    """Direct sync reload() inside an active event loop closes the coroutine and raises NonReplayableTraceError."""
+    import warnings
+
+    ctx, client, _ = _bus_client("events")
+    snapshot = await client.get(max_count=10)
+    chained = snapshot.filter(type="a")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(NonReplayableTraceError):
+            chained.reload(ctx)
+    leaked = [w for w in caught if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)]
+    assert leaked == []

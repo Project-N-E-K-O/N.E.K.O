@@ -395,3 +395,112 @@ def test_runtime_all_exports_exist() -> None:
     # Explicit contract placeholders should exist.
     assert rt.CallChain.__name__ == "CallChain"
     assert rt.AsyncCallChain.__name__ == "AsyncCallChain"
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_ticks_unstarted_collector_on_demand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time as _time
+    import main_logic.activity as activity_mod
+
+    class _StubCollector:
+        def __init__(self) -> None:
+            self.os_signals_available = True
+            self._task = None
+            self._poll_interval = 5.0
+            self._psutil = None
+            self.tick_calls = 0
+            self._latest = SimpleNamespace(
+                timestamp=0.0,
+                idle_seconds=None,
+                window_title=None,
+                process_name=None,
+                os_signals_available=False,
+            )
+
+        def snapshot(self):
+            return self._latest
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+            self._latest = SimpleNamespace(
+                timestamp=_time.time(),
+                idle_seconds=12.5,
+                window_title="Code",
+                process_name="code.exe",
+                os_signals_available=True,
+            )
+
+    stub = _StubCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: stub)
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda snap: SimpleNamespace(category="coding") if snap.window_title == "Code" else None,
+    )
+
+    snap1 = await activity_api.get_os_activity_snapshot("study_companion")
+    assert stub.tick_calls == 1
+    assert snap1.os_signals_available is True
+    assert snap1.foreground_category == "coding"
+    assert snap1.system_idle_seconds == 12.5
+    assert snap1.privacy_state == "visible"
+
+    snap2 = await activity_api.get_os_activity_snapshot("study_companion")
+    assert stub.tick_calls == 1
+    assert snap2.os_signals_available is True
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_skips_tick_when_unavailable_or_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main_logic.activity as activity_mod
+
+    class _UnavailableCollector:
+        os_signals_available = False
+        _task = None
+        _poll_interval = 5.0
+        tick_calls = 0
+
+        def snapshot(self):
+            return SimpleNamespace(timestamp=0.0, idle_seconds=None, os_signals_available=False)
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+
+    unavailable = _UnavailableCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: unavailable)
+    snap_unavail = await activity_api.get_os_activity_snapshot("study_companion")
+    assert unavailable.tick_calls == 0
+    assert snap_unavail.os_signals_available is False
+    assert snap_unavail.privacy_state == "unavailable"
+
+    class _RunningTask:
+        def done(self) -> bool:
+            return False
+
+    class _RunningCollector:
+        os_signals_available = True
+        _task = _RunningTask()
+        _poll_interval = 5.0
+        tick_calls = 0
+
+        def snapshot(self):
+            return SimpleNamespace(timestamp=0.0, idle_seconds=3.0, os_signals_available=True)
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+
+    running = _RunningCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: running)
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda _snap: SimpleNamespace(category="browser"),
+    )
+    snap_running = await activity_api.get_os_activity_snapshot("study_companion")
+    assert running.tick_calls == 0
+    assert snap_running.foreground_category == "browser"
+    assert snap_running.privacy_state == "visible"

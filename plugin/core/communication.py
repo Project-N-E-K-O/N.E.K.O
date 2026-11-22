@@ -326,7 +326,8 @@ class PluginCommunicationResourceManager:
             return
         args = request.get("args", {})
         context = args.get("_ctx", {}) if isinstance(args, dict) else {}
-        run_id = context.get("run_id") if operation == "TRIGGER" and isinstance(context, dict) else None
+        raw_run_id = context.get("run_id") if operation == "TRIGGER" and isinstance(context, dict) else None
+        run_id = raw_run_id.strip() if isinstance(raw_run_id, str) and raw_run_id.strip() else None
         await self.transport.send_command({"type": "CANCEL_RUN", "run_id": run_id or f"{prefix}:{request['request_id']}"})
 
     async def _send_command_and_wait_local(self, req_id: str, msg: dict, timeout: float | None, error_context: str) -> Any:

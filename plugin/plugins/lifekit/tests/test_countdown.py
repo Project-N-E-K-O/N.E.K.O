@@ -149,3 +149,44 @@ async def test_unknown_country_hint_keeps_a_best_effort_holiday_result() -> None
     assert isinstance(result, Ok)
     assert result.value["detail"]["target"]
     assert result.value["detail"]["holiday_alternatives"]
+
+
+@pytest.mark.asyncio
+async def test_days_between_mm_dd_uses_shared_reference_year_across_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F0279: MM-DD endpoints spanning today share the same year instead of rolling start forward."""
+    import plugin.plugins.lifekit.routers.countdown as countdown_mod
+
+    class _FixedDate(date):
+        @classmethod
+        def today(cls) -> _FixedDate:
+            return cls(2026, 6, 15)
+
+    monkeypatch.setattr(countdown_mod, "date", _FixedDate)
+    router = CountdownRouter()
+    router._bind(_Plugin("en"))
+
+    same_year = await router.days_between(start_date="03-01", end_date="12-01")
+    assert isinstance(same_year, Ok)
+    assert same_year.value["detail"]["start"] == "2026-03-01"
+    assert same_year.value["detail"]["end"] == "2026-12-01"
+    assert same_year.value["detail"]["days"] == 275
+
+    cross_year = await router.days_between(start_date="12-20", end_date="01-05")
+    assert isinstance(cross_year, Ok)
+    assert cross_year.value["detail"]["start"] == "2026-12-20"
+    assert cross_year.value["detail"]["end"] == "2027-01-05"
+    assert cross_year.value["detail"]["days"] == 16
+
+    explicit_end = await router.days_between(start_date="12-20", end_date="2027-01-05")
+    assert isinstance(explicit_end, Ok)
+    assert explicit_end.value["detail"]["start"] == "2026-12-20"
+    assert explicit_end.value["detail"]["end"] == "2027-01-05"
+    assert explicit_end.value["detail"]["days"] == 16
+
+    explicit_start = await router.days_between(start_date="2027-12-20", end_date="01-05")
+    assert isinstance(explicit_start, Ok)
+    assert explicit_start.value["detail"]["start"] == "2027-12-20"
+    assert explicit_start.value["detail"]["end"] == "2028-01-05"
+    assert explicit_start.value["detail"]["days"] == 16

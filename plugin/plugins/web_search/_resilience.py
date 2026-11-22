@@ -24,7 +24,6 @@ SearchResults = List[Dict[str, str]]
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _NO_RETRY_STATUS = frozenset({429})
-_MAX_THROTTLE_WAIT_SECONDS = 3.0
 
 
 def _copy_results(results: SearchResults) -> SearchResults:
@@ -211,10 +210,6 @@ class SearchCoordinator:
                 )
             wait_seconds = state.next_allowed - now
             if wait_seconds > 0:
-                if wait_seconds > _MAX_THROTTLE_WAIT_SECONDS:
-                    raise SearchBusyError(
-                        "search backend rate-limited; retry shortly"
-                    )
                 await asyncio.sleep(wait_seconds)
             try:
                 results = await fetch()

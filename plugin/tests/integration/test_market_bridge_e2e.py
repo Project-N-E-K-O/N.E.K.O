@@ -506,19 +506,24 @@ async def test_install_rejects_another_plugins_release(
 def test_market_task_cleanup_prunes_overflow_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Capacity pruning releases both task states and their worker handles."""
+    """Capacity pruning releases completed task states and their worker handles."""
     from plugin.server.routes import market_bridge as market_bridge_module
 
+    class _DoneWorker:
+        def done(self) -> bool:
+            return True
+
+    now = time.time()
     monkeypatch.setattr(market_bridge_module, "_TASK_MAX_ENTRIES", 1)
     monkeypatch.setattr(
         market_bridge_module,
         "_tasks",
         {
-            "old": {"created_at": 1.0, "completed_at": None},
-            "new": {"created_at": 2.0, "completed_at": None},
+            "old": {"created_at": now - 20.0, "completed_at": now - 10.0},
+            "new": {"created_at": now - 15.0, "completed_at": now - 5.0},
         },
     )
-    workers = {"old": object(), "new": object()}
+    workers = {"old": _DoneWorker(), "new": _DoneWorker()}
     monkeypatch.setattr(market_bridge_module, "_task_workers", workers)
 
     market_bridge_module._cleanup_tasks()
@@ -527,6 +532,50 @@ def test_market_task_cleanup_prunes_overflow_workers(
     assert "old" not in workers
     assert "new" in market_bridge_module._tasks
     assert "new" in workers
+
+
+def test_market_task_cleanup_never_evicts_inflight_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F0317: in-flight tasks and active workers are never evicted on overflow or TTL."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    class _Worker:
+        def __init__(self, is_done: bool) -> None:
+            self._done = is_done
+
+        def done(self) -> bool:
+            return self._done
+
+    monkeypatch.setattr(market_bridge_module, "_TASK_MAX_ENTRIES", 1)
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_tasks",
+        {
+            "inflight_old": {"created_at": 1.0, "completed_at": None},
+            "done_mid": {"created_at": 2.0, "completed_at": 2.5},
+            "active_worker_done_ts": {"created_at": 3.0, "completed_at": 3.5},
+            "inflight_new": {"created_at": 4.0, "completed_at": None},
+        },
+    )
+    workers = {
+        "inflight_old": _Worker(False),
+        "done_mid": _Worker(True),
+        "active_worker_done_ts": _Worker(False),
+        "inflight_new": _Worker(False),
+    }
+    monkeypatch.setattr(market_bridge_module, "_task_workers", workers)
+
+    market_bridge_module._cleanup_tasks()
+
+    assert "done_mid" not in market_bridge_module._tasks
+    assert "done_mid" not in workers
+    assert "inflight_old" in market_bridge_module._tasks
+    assert "inflight_old" in workers
+    assert "active_worker_done_ts" in market_bridge_module._tasks
+    assert "active_worker_done_ts" in workers
+    assert "inflight_new" in market_bridge_module._tasks
+    assert "inflight_new" in workers
 
 
 @pytest.mark.asyncio
