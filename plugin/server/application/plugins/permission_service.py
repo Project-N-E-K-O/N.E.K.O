@@ -31,7 +31,10 @@ from plugin.server.infrastructure.plugin_permissions import (
 logger = get_logger("server.plugins.permissions")
 
 # A damaged or newer-version store: every read and write fails, so it holds
-# no grant that could apply and there is nothing to bind or drop.
+# no grant that could apply and there is nothing to bind or drop. The records
+# are still on disk, though; if the file becomes readable again (e.g. after
+# upgrading back to the version that wrote it) they apply as stored, and the
+# usual source rules reconcile them on the next plugin start.
 _UNUSABLE_STORE_CODES = (CORRUPT, UNSUPPORTED_VERSION)
 
 
@@ -201,6 +204,8 @@ def forget_installed_plugins(result: dict, *, plugin_ids: tuple[str, ...] = ()) 
     not be recorded: the grants stay bound to the previous source, so they
     are dropped and the plugin is asked again. Call under the plugin
     operation lock. Never raises; returns whether every grant was dropped.
+    A damaged or newer-version store counts as dropped (see
+    ``_UNUSABLE_STORE_CODES``), although its records stay on disk.
     """
     targets = set(plugin_ids)
     complete = True
