@@ -258,3 +258,21 @@ async def test_character_fallback_drops_a_saved_item_id_outside_the_workshop(lib
     info = await _fallback_info(libraries.config, "Echo", item_id="555")
     assert info["path"] == "/user_live2d/Echo/Echo.model3.json"
     assert info["item_id"] == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved_id", ["999", "300"])
+async def test_character_fallback_drops_an_item_id_whose_by_id_lookup_picks_another_model(
+        libraries, monkeypatch, saved_id):
+    """Two models in one item: by id the item resolves to Alpha, so Charlie gets no id."""
+    _write_model(libraries.a / "300" / "Alpha", "Alpha")
+    _write_model(libraries.a / "300" / "Charlie", "Charlie")
+    info = await _fallback_info(libraries.config, "Charlie", item_id=saved_id)
+    assert info["path"] == "/workshop/300/Charlie/Charlie.model3.json"
+    assert info["item_id"] == ""
+    with _model_files_by_id_client(libraries, monkeypatch) as client:
+        # Why: by id the item resolves to the other model.
+        by_id = client.get("/api/live2d/model_files_by_id/300").json()
+        assert by_id["model_config_url"] == "/workshop/300/Alpha/Alpha.model3.json"
+        # The by-name lookup the frontend falls back to finds Charlie.
+        assert client.get("/api/live2d/model_files/Charlie").json()["success"] is True

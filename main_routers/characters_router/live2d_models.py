@@ -38,7 +38,13 @@ from utils.config_manager import (
     get_reserved,
     set_reserved,
 )
-from utils.frontend_utils import find_models, find_model_directory, model_url_dir
+from utils.frontend_utils import (
+    find_model_directory,
+    find_models,
+    find_workshop_item_by_id,
+    find_workshop_item_model_file,
+    model_url_dir,
+)
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError
 from config import (
@@ -502,16 +508,24 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                             logger.debug(f"按模型目录构建路径: {model_path}")
 
                             # The frontend loads the model files by item_id
-                            # (/api/live2d/model_files_by_id/<item_id>), so it must name the
-                            # folder that was found: under /workshop that is the item folder,
-                            # the first segment of url_dir. A saved id that does not match
-                            # (stale, or a non-Workshop folder) is dropped, so the frontend
-                            # looks the model up by name instead.
+                            # (/api/live2d/model_files_by_id/<item_id>), so only report an id
+                            # whose by-id lookup picks this very file: under /workshop the
+                            # candidate is the item folder (first segment of url_dir). If the
+                            # by-id choice differs (stale saved id, or another model of the
+                            # same item would win) or the folder is not a Workshop item, report
+                            # no id so the frontend looks the model up by name instead.
                             found_item_id = ''
                             if saved_item_id and url_prefix == '/workshop':
-                                first_segment = url_dir.split('/', 1)[0]
-                                if '/' in url_dir or first_segment == saved_item_id:
-                                    found_item_id = first_segment
+                                candidate_id = url_dir.split('/', 1)[0]
+                                try:
+                                    item_dir, _ = find_workshop_item_by_id(candidate_id)
+                                    chosen = find_workshop_item_model_file(item_dir) if item_dir else None
+                                    if chosen and os.path.realpath(chosen) == os.path.realpath(
+                                        os.path.join(model_dir, model_file)
+                                    ):
+                                        found_item_id = candidate_id
+                                except Exception as e:
+                                    logger.debug(f"按物品ID核对回退模型失败: {e}")
 
                             model_info = {
                                 'name': live2d_model_name,
