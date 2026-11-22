@@ -4304,7 +4304,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 if (capabilityUnavailable) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionNativeCoreHint')
-                        : '当前核心使用免费API；独立 ASR 相关开关不适用';
+                        : '当前语音模型供应商是免费版，独立 ASR 相关开关不适用';
                 } else if (S.voiceSettingsPendingUntilEpoch !== null) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionSettingsPending')
