@@ -610,10 +610,11 @@ async def delete_vrm_model(request: Request):
         target = entry.resolve()
         if not target.is_relative_to(vrm_dir.resolve()):
             return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
-        if _is_unverifiable_vrm_link(entry):
+        found = _file_check(target)
+        if entry.is_symlink() and (found or _is_unverifiable_vrm_link(entry)):
             # Remove the link itself, never its target.
             target = entry
-        elif not _file_check(target):
+        elif not found:
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
         target.unlink()
@@ -824,7 +825,13 @@ def _resolved_child_dir(path: Path, parent: Path) -> Path | None:
     return None
 
 
-def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
+def _find_vrm_model_file(vrm_dir: Path, model_name: str, *, keep_links: bool = False) -> Path | None:
+    """Resolved model file, or with ``keep_links`` the matching link itself.
+
+    Deletion passes ``keep_links``: ``Path.unlink`` on the link does not follow
+    it, so deleting never removes the file it points to (which may be another
+    listed model, or one reached through an unsearchable ``locked/..``).
+    """
     canonical_path = vrm_dir / f"{model_name}.vrm"
     def candidates():
         yield canonical_path
@@ -841,7 +848,7 @@ def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
             raise ValueError("路径越界")
         # Type cannot be checked: try the next candidate instead of failing the lookup.
         if resolved.suffix.lower() == '.vrm' and _file_check(resolved):
-            return resolved
+            return candidate if keep_links and candidate.is_symlink() else resolved
     return None
 
 
@@ -953,7 +960,7 @@ async def delete_vrm_model(model_name: str):
 
         # Allow deleting VRM models only under the user directory.
         try:
-            vrm_path = _find_vrm_model_file(vrm_dir, model_name)
+            vrm_path = _find_vrm_model_file(vrm_dir, model_name, keep_links=True)
         except ValueError as e:
             return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
         if vrm_path is None:
