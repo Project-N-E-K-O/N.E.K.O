@@ -12,7 +12,7 @@ from pathlib import Path, PureWindowsPath
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
-from plugin.neko_plugin_cli.commands import init_cmd, release_cmd
+from plugin.neko_plugin_cli.commands import init_cmd, release_cmd, validate_cmd
 from plugin.neko_plugin_cli.commands._resolve import parse_github_repository_remote
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
 from plugin.neko_plugin_cli.core.toml_utils import load_toml
@@ -3547,3 +3547,44 @@ def test_ignored_untracked_paths_lists_ignored_directories_once(tmp_path: Path, 
 
     assert sorted(ignored_untracked_paths(plugin_dir)) == ["debug.log", "node_modules/"]
     assert ignored_untracked_paths(tmp_path / "missing") is None
+
+
+@pytest.mark.parametrize("junction", [False, True], ids=["symlink", "junction"])
+def test_link_scan_skips_a_link_that_is_itself_ignored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    junction: bool,
+) -> None:
+    # A rule without a trailing slash also matches a link; a symlink and a
+    # junction (a directory to git on Linux) at that path are skipped alike.
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    plugin_dir = _init_committed(tmp_path, "ignored_link")
+    with (plugin_dir / ".gitignore").open("a", encoding="utf-8") as gitignore:
+        gitignore.write("shared_cache\n")
+    _commit_all(plugin_dir)
+    link = plugin_dir / "shared_cache"
+    if junction:
+        link.mkdir()
+        real_readlink = os.readlink
+
+        def readlink(path, *args, **kwargs):
+            if Path(path) == link:
+                return str(tmp_path)
+            return real_readlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "readlink", readlink)
+        # Without the ignore rule the scan would report it.
+        issues = []
+        validate_cmd._check_symlink_tree(plugin_dir, issues)
+        assert issues == [("error", "plugin source must not contain symbolic links: shared_cache")]
+    else:
+        try:
+            link.symlink_to(tmp_path, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks are not available here")
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "symbolic links" not in capsys.readouterr().err
