@@ -1629,10 +1629,13 @@ def test_custom_tts_without_voice_explains_core_voice_fallback(mock_page: Page, 
     type_voice("")
     provider.select_option("custom", force=True, timeout=5000)
     expect(hint).to_have_css("display", "block")
-    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。")
+    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用语音模型自带的声音。")
 
     mock_page.evaluate("window.changeLanguage('en')")
-    expect(hint).to_contain_text("Core API's built-in voice")
+    expect(hint).to_contain_text("Voice Model's built-in voice")
+    # Switching language rebuilds the provider dropdowns asynchronously; wait until
+    # the rebuilt options are in English so it cannot race with the edits below.
+    expect(mock_page.locator("#ttsModelProvider option[value='custom']")).to_have_text("Enter manually")
 
     type_voice("af_heart")
     expect(hint).to_have_css("display", "none")

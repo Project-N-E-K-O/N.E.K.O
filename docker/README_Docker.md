@@ -69,6 +69,8 @@ bash docker/nginx/test-render.sh
 
 #### 核心 API 配置
 
+> 设置页上「核心 API」叫「语音模型供应商」，「辅助 API」叫「通用模型供应商」；环境变量名不变。
+
 | 环境变量 | 说明 | 默认值 | 示例 |
 |---------|------|--------|------|
 | `NEKO_CORE_API_KEY` | 核心 API Key（必填） | - | `sk-xxxxx` |

@@ -41,6 +41,8 @@
 
 ### 1. 核心 API 配置
 
+> 设置页上「核心 API」叫**语音模型供应商**，「辅助 API」叫**通用模型供应商**，「自定义 API 配置」叫**按功能单独指定模型（进阶）**；配置字段和环境变量名不变。
+
 > **关于"环境变量"列**：这些 `NEKO_*` 变量 Python 代码不读取，只由 Docker 镜像的 `docker/entrypoint.sh` 在数据根下还没有 `core_config.json`（或设置了 `NEKO_FORCE_ENV_UPDATE`）时用来生成这个文件，之后以文件为准。生效条件和坑见「🐳 Docker 部署配置方式 → 方式 1」。
 
 | 配置项 | 配置文件字段 | 环境变量 | 默认值 | 说明 |
@@ -246,7 +248,7 @@ Agent API Key 的取法：
 
 ### 7. 自定义模型配置（高级）
 
-在 Web UI 的 API 设置页（`/api_key`）勾选「启用自定义API配置」后，可以给每个用途单独指定提供商、地址、模型和 Key。这些设置保存在 `core_config.json` 中：总开关是 `enableCustomApi`（缺省为 `false`），每个用途（槽位）各有 4 个字段：`<前缀>ModelProvider`、`<前缀>ModelUrl`、`<前缀>ModelId`、`<前缀>ModelApiKey`。以摘要为例，就是 `summaryModelProvider`、`summaryModelUrl`、`summaryModelId`、`summaryModelApiKey`。
+在 Web UI 的 API 设置页（`/api_key`）开启「按功能单独指定模型」后，可以给每个用途单独指定提供商、地址、模型和 Key。这些设置保存在 `core_config.json` 中：总开关是 `enableCustomApi`（缺省为 `false`），每个用途（槽位）各有 4 个字段：`<前缀>ModelProvider`、`<前缀>ModelUrl`、`<前缀>ModelId`、`<前缀>ModelApiKey`。以摘要为例，就是 `summaryModelProvider`、`summaryModelUrl`、`summaryModelId`、`summaryModelApiKey`。
 
 > ⚠️ 下表「快照键」一列（如 `SUMMARY_MODEL`、`SUMMARY_MODEL_URL`、`SUMMARY_MODEL_API_KEY`）只是 `get_core_config()` 返回的内存字典里的键。它们既不是环境变量，也不是 `core_config.json` 的字段，写进环境变量或 JSON 都不会生效。
 

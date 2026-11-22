@@ -18,7 +18,7 @@ Feature code may derive additional role values from these settings.
 
 ## Recommended flow
 
-1. Select Core and Assist providers in the Web UI.
+1. Select the Voice Model Provider (Core) and the General Model Provider (Assist) in the Web UI.
 2. Enter credentials for the selected providers.
 3. Run the UI connectivity checks.
 4. Only then configure a supported per-role model, URL, or key.
