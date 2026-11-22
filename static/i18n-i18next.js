@@ -40,8 +40,8 @@
     // 新增百炼业务空间 ID（api.bailianWorkspaceId* / connectivity.error.invalid_workspace_id / connectivity.decisionFallback.*）八语言文案，刷新客户端缓存。
     // 新增「使魔模型·小」（api.agentSmall* / api.customModelProviderFollowEmotion / api.customModelProviderFollowAgent）八语言文案，
     // 并入记忆浏览器那批文案后的 key 结构，刷新客户端缓存。
-    // Merge the legacy-vision notice with knowledge-manager keys; retire both previous cache versions.
-    const LOCALE_VERSION = '2026-11-22-knowledge-legacy-vision-merge';
+    // Merge chat-model settings with knowledge-manager keys; retire both previous cache versions.
+    const LOCALE_VERSION = '2026-11-22-knowledge-chat-settings-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
