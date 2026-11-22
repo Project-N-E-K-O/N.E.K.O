@@ -332,7 +332,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-你可以定义任意多个自定义段，想叫什么名字都行。
+你可以定义任意多个自定义段，名字随意，但 `permissions` 除外：顶层的 `[permissions]` 表保留给权限声明（见上文）。已经用 `[permissions]` 存放自己业务配置的插件需要给这一段改名，否则 `neko-plugin check` 会把它当作无效的权限声明报错。
 
 ---
 

@@ -1248,19 +1248,26 @@ _PERMISSION_NARROWING_DECORATORS = frozenset(
 
 
 def _check_permission_narrowing(
-    decorator: ast.expr, label: str, declared: frozenset[str] | None, issues: list[tuple[str, str]]
+    decorator: ast.expr,
+    label: str,
+    declared: frozenset[str] | None,
+    issues: list[tuple[str, str]],
+    *,
+    narrows: bool = True,
 ) -> None:
+    """``narrows``: the decorator is a component that may narrow; others only
+    get the load-time error."""
     if not isinstance(decorator, ast.Call):
         return
     for item in decorator.keywords:
         if item.arg != "permissions":
             continue
-        # The SDK decorators are keyword-only and do not take this yet, so the
+        # No SDK decorator takes this yet (they are keyword-only), so the
         # plugin would fail to load.
         issues.append(
             _permission_issue(PermissionIssue("error", "narrowing_runtime_unsupported", {"label": label}))
         )
-        if declared is None:
+        if declared is None or not narrows:
             return
         try:
             value = ast.literal_eval(item.value)
@@ -1518,9 +1525,13 @@ def _check_python_decorators(
             for decorator in node.decorator_list:
                 name = _decorator_name(decorator)
                 sdk_name = sdk_decorators.get(id(decorator))
-                if sdk_name in _PERMISSION_NARROWING_DECORATORS:
+                if sdk_name is not None:
                     _check_permission_narrowing(
-                        decorator, f"@{sdk_name} in {relative}:{node.lineno}", declared, issues
+                        decorator,
+                        f"@{sdk_name} in {relative}:{node.lineno}",
+                        declared,
+                        issues,
+                        narrows=sdk_name in _PERMISSION_NARROWING_DECORATORS,
                     )
                 if name == "plugin_entry":
                     entry_id = _decorator_keyword_string(decorator, "id") or node.name

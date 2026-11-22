@@ -1362,3 +1362,77 @@ def test_excluded_files_do_not_use_up_the_scan_budget(tmp_path, monkeypatch):
         (plugin_dir / "build" / f"a{index}.py").write_text("x = 1\n", encoding="utf-8")
     errors = _issues(plugin_dir, "error")
     assert [message for message in errors if "system.process:spawn" in message]
+
+
+def test_test_named_files_that_ship_are_not_analyzed_blind_spots(tmp_path):
+    # The scan leaves test-named files out, but the package still ships them.
+    report = _scan(
+        tmp_path,
+        "from .net_test import fetch\n",
+        "[permissions.require]\n",
+        **{
+            "net_test.py": "import requests\ndef fetch():\n    return requests.get('https://example.com')\n",
+            "tests/helper.py": "import subprocess\nsubprocess.run(['ls'])\n",
+            "vendor/test_lib.py": "x = 1\n",
+        },
+    )
+    assert report["status"] == "completed"
+    assert report["permissions"] == {}
+    assert [(spot["reason"], spot["file"]) for spot in report["blind_spots"]] == [
+        ("test_source", "net_test.py"),
+        ("test_source", "tests/helper.py"),
+        ("vendor", "vendor"),
+    ]
+    assert scan_note(report) == "blind_spots"
+    assert report["capabilities"] == []
+
+
+def test_cli_lists_shipped_test_files_but_not_excluded_ones(tmp_path):
+    plugin_dir = _plugin(tmp_path, "x = 1\n", "[permissions.require]\n")
+    (plugin_dir / "net_test.py").write_text("import requests\n", encoding="utf-8")
+    for folder in ("build", "dist"):
+        (plugin_dir / folder).mkdir()
+        (plugin_dir / folder / "test_a.py").write_text("x = 1\n", encoding="utf-8")
+        (plugin_dir / folder / "app.js").write_text("1\n", encoding="utf-8")
+    info = _issues(plugin_dir, "info")
+    blind = [message for message in info if "(not scanned" in message.splitlines()[0]]
+    assert [message.split(":", 1)[0] for message in blind] == ["net_test.py"]
+    assert "test_source" in blind[0].splitlines()[0]
+    assert not [message for message in info if "build/" in message or "dist/" in message]
+    assert not any(message.startswith("the code scan found no use beyond") for message in info)
+
+
+def test_unused_declarations_are_only_info_when_part_of_the_plugin_was_not_read():
+    declared = {"system.env:read": {"declared": "ask", "findings": [], "basis": "declared_only"}}
+    [issue] = compare_declarations(_report(declared, status="partial"))
+    assert (issue.severity, issue.code) == ("info", "declared_unused")
+    unread = [{"type": "not_analyzed", "reason": "test_source", "file": "a_test.py", "line": None}]
+    [issue] = compare_declarations(_report(declared, blind_spots=unread))
+    assert issue.severity == "info"
+    [issue] = compare_declarations(_report(declared, blind_spots=[{"type": "code_exec"}]))
+    assert issue.severity == "warning"
+
+
+def test_summary_location_matches_the_reported_basis():
+    findings = [_finding("suffix_match", 1), _finding("resolved_call", 7)]
+    report = _report({"system.env:read": {"declared": None, "findings": findings, "basis": "resolved_call"}})
+    [row] = summarize_permissions(report)["rows"]
+    assert (row["basis"], row["line"]) == ("resolved_call", 7)
+
+
+def test_cli_rejects_permissions_on_every_sdk_decorator(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "from plugin.sdk.plugin import lifecycle, before_entry\n"
+        "class P:\n"
+        "    @lifecycle(id='startup', permissions=['system.env:read'])\n"
+        "    async def a(self): ...\n"
+        "    @before_entry(target='x', permissions=['system.env:read'])\n"
+        "    async def b(self): ...\n",
+        "[permissions.require]\n",
+    )
+    errors = _issues(plugin_dir, "error")
+    assert any(message.startswith("@lifecycle in worker.py:4: the plugin SDK does not accept permissions=") for message in errors)
+    assert any(message.startswith("@before_entry in worker.py:6: the plugin SDK does not accept permissions=") for message in errors)
+    # Subset checks stay limited to components that narrow.
+    assert not any("permissions= lists" in message for message in errors)

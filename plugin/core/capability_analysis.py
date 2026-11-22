@@ -1056,13 +1056,16 @@ def _read_manifest(root: Path) -> dict | None:
 
 
 def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
-    """What the Python scan does not read: vendor/ and non-Python code files.
+    """What the Python scan does not read: vendor/, non-Python code files and
+    test-named Python files (tests/, test_*.py, *_test.py, conftest.py).
 
     Bounded by _MAX_TREE_ENTRIES; ``truncated`` tells the walk stopped early.
     Also part of the cached report's source revision, so adding or removing
     such files refreshes the report.
     """
-    inventory: dict = {"vendor": [], "non_python": [], "truncated": False, "unreadable": False}
+    inventory: dict = {
+        "vendor": [], "non_python": [], "test_source": [], "truncated": False, "unreadable": False,
+    }
     try:
         visited = 0
         def unreadable(_error: OSError) -> None:
@@ -1092,24 +1095,36 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
                 if visited > _MAX_TREE_ENTRIES:
                     inventory["truncated"] = True
                     return inventory
+                relative = (base / name).relative_to(root)
                 if Path(name).suffix.lower() in _NON_PYTHON_CODE_SUFFIXES:
-                    inventory["non_python"].append((Path(current) / name).relative_to(root).as_posix())
+                    inventory["non_python"].append(relative.as_posix())
+                elif name.lower().endswith(".py") and _is_test_source(relative):
+                    # Same files iter_capability_sources leaves out; they may
+                    # still ship and be imported at runtime.
+                    inventory["test_source"].append(relative.as_posix())
     except OSError:
         inventory["unreadable"] = True
     return inventory
 
 
-def _skipped_parts(root: Path, stop: Event | None) -> list[dict]:
-    """Blind-spot rows for vendor/ and non-Python code files, bounded."""
+def _skipped_parts(
+    root: Path, stop: Event | None, include: Callable[[Path], bool] | None = None
+) -> list[dict]:
+    """Blind-spot rows for vendor/, non-Python code and test-named files, bounded.
+
+    ``include`` drops files the caller does not compare (see
+    read_capability_sources).
+    """
     inventory = skipped_inventory(root, stop)
     skipped: list[dict] = []
     skipped.extend(
         {"reason": "vendor", "file": relative} for relative in inventory["vendor"][:_MAX_NON_PYTHON_REPORTED]
     )
-    skipped.extend(
-        {"reason": "non_python", "file": relative}
-        for relative in inventory["non_python"][:_MAX_NON_PYTHON_REPORTED]
-    )
+    for reason in ("non_python", "test_source"):
+        files = inventory[reason]
+        if include is not None:
+            files = [relative for relative in files if include(Path(relative))]
+        skipped.extend({"reason": reason, "file": relative} for relative in files[:_MAX_NON_PYTHON_REPORTED])
     if inventory["truncated"]:
         skipped.append({"reason": "budget_exceeded", "file": None})
     if inventory["unreadable"]:
@@ -1126,7 +1141,7 @@ def read_capability_sources(
     """Read a bounded snapshot and close source handles before parsing.
 
     ``include`` (given a plugin-relative path) filters files before they
-    count toward the file and size budgets.
+    count toward the file and size budgets, and in the list of unscanned files.
     """
     sources = CapabilitySources()
     paths = iter_capability_sources(root)
@@ -1157,7 +1172,7 @@ def read_capability_sources(
     except OSError:
         sources.warnings.append({"code": "source_unreadable"})
     sources.manifest = _read_manifest(root)
-    sources.skipped = _skipped_parts(root, stop)
+    sources.skipped = _skipped_parts(root, stop, include)
     return sources
 
 
@@ -1325,12 +1340,17 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
     Transition: a plugin without any [permissions] table gets a warning
     instead of that error, saying it will become an error later.
     Declared but not found: a warning, since dynamic use is invisible to the
-    scan. Blind spots are reported separately (see ``blind_spot_issues``).
+    scan; only info when part of the plugin was not read (partial scan or
+    unscanned files), as the use may be there. Blind spots are reported
+    separately.
     """
     if report.get("declarations") == "invalid":
         return []
     issues: list[PermissionIssue] = []
     status = report.get("status")
+    unread = status == "partial" or any(
+        spot.get("type") == "not_analyzed" for spot in report.get("blind_spots") or []
+    )
     # Ids whose entry is itself invalid already have an error of their own.
     invalid = set(report.get("invalid_declarations") or [])
     for permission, item in (report.get("permissions") or {}).items():
@@ -1362,7 +1382,8 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
                 )
             )
         elif item.get("declared") is not None and not findings and status != "unavailable":
-            issues.append(PermissionIssue("warning", "declared_unused", {"permission": permission}))
+            severity = "info" if unread else "warning"
+            issues.append(PermissionIssue(severity, "declared_unused", {"permission": permission}))
     return issues
 
 
@@ -1400,7 +1421,11 @@ def summarize_permissions(report: dict) -> dict:
         if item.get("declared"):
             declared.append({"permission": permission, "source": "declared", "level": item["declared"]})
         elif item.get("findings"):
-            first = item["findings"][0]
+            # Point at a row of the reported (strongest) basis.
+            first = next(
+                (row for row in item["findings"] if row.get("basis") == item.get("basis")),
+                item["findings"][0],
+            )
             detected.append(
                 {
                     "permission": permission,

@@ -336,7 +336,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-必要なだけ自由にカスタムセクションを定義できます。
+必要なだけ自由にカスタムセクションを定義できます。ただし `permissions` は使えません。トップレベルの `[permissions]` テーブルは権限宣言用に予約されています（上記参照）。すでに `[permissions]` を独自の設定に使っているプラグインはセクション名を変更してください。変更しないと `neko-plugin check` が無効な権限宣言としてエラーを報告します。
 
 ---
 

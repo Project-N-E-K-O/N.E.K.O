@@ -337,7 +337,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-You can define as many custom sections as you want, named however you like.
+You can define as many custom sections as you want, named however you like, except `permissions`: the top-level `[permissions]` table is reserved for permission declarations (see above). A plugin that already uses `[permissions]` for its own settings should rename that section, otherwise `neko-plugin check` reports it as an invalid declaration.
 
 ---
 
