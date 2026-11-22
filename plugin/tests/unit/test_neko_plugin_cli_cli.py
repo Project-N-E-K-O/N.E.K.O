@@ -3504,7 +3504,7 @@ def test_link_scan_skips_paths_git_ignores(
     # Not hidden either: a local build would still package it.
     assert (
         f"[WARNING] 1 symbolic link(s) in gitignored paths ({Path('node_modules/.pnpm/pkg')}): "
-        "Market CI will not see them, but a local neko-plugin build would copy their targets"
+        "Market CI will not see them, but a local neko-plugin build may copy their targets"
     ) in captured.out
 
 
@@ -3749,13 +3749,13 @@ def test_every_cli_git_call_ignores_an_inherited_repository_location(
         subprocess.run(["git", *args], cwd=outer, check=True, capture_output=True)
     monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(outer))
-    # A `git -c` wrapper and its newer numbered form.
-    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'neko.leaked'='outer'")
+    # Configuration passed through the environment is not a repository
+    # location: CI uses it for credentials and safe.directory, so it stays.
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "neko.leaked")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "outer")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "neko.fromenv")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "kept")
 
-    assert publish_cmd._git_config_values(plugin_dir, "neko.leaked") == []
+    assert publish_cmd._git_config_values(plugin_dir, "neko.fromenv") == ["kept"]
     assert Path(publish_cmd._git(plugin_dir, "rev-parse", "--show-toplevel")).resolve() == plugin_dir.resolve()
     init_cmd._run_git(["config", "neko.test", "init"], cwd=plugin_dir)
     project._run_git(["config", "neko.test2", "project"], cwd=plugin_dir)
@@ -3831,3 +3831,28 @@ def test_ignored_link_warning_skips_what_the_build_excludes(
     issues = []
     validate_cmd._check_symlink_tree(plugin_dir, issues, ignored_paths=ignored_paths, build_rules=rules)
     assert [severity for severity, _ in issues] == ["warning"]
+
+
+def test_link_scan_keeps_going_when_an_ignored_link_cannot_be_followed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # e.g. an ignored link into a directory the user cannot enter: is_dir()
+    # raises. The scan must still reach and report the tracked link.
+    plugin_dir = _plugin_with_ignored_links(tmp_path, monkeypatch, junction=False)
+    ignored_link = plugin_dir / "node_modules" / ".pnpm" / "pkg"
+    real_is_dir = Path.is_dir
+
+    def is_dir(self):
+        if self == ignored_link:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 1
+    captured = capsys.readouterr()
+    assert f"plugin source must not contain symbolic links: {Path('assets/pkg')}\n" in captured.err
+    assert "could not be scanned" not in captured.out
+    assert f"[WARNING] 1 symbolic link(s) in gitignored paths ({Path('node_modules/.pnpm/pkg')})" in captured.out

@@ -4,28 +4,26 @@ from __future__ import annotations
 
 import os
 
-# Inherited from a git hook or wrapper (``git -c ...`` included), these point
-# git at another repository, or another configuration, than the one around
-# ``cwd``. Every git call drops them, so the checks and the commands that act
-# (tag, push, remote) see the same repository. The list is what
-# ``git rev-parse --local-env-vars`` prints (git 2.43); without
-# GIT_CONFIG_COUNT git reads no GIT_CONFIG_KEY_<n> / _VALUE_<n>.
+# Inherited from a git hook or wrapper, these point git at another
+# repository (or that repository's files) than the one around ``cwd``. Every
+# git call drops them, so the checks and the commands that act (tag, push,
+# remote) see the same repository.
+#
+# Configuration passed through the environment (GIT_CONFIG_COUNT with
+# GIT_CONFIG_KEY_<n> / _VALUE_<n>, GIT_CONFIG_PARAMETERS, GIT_CONFIG) is kept
+# on purpose: CI uses it for credentials and safe.directory. So are the
+# behaviour switches GIT_NO_REPLACE_OBJECTS and GIT_REPLACE_REF_BASE.
 REPOSITORY_ENV_VARS = (
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_CONFIG",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_CONFIG_COUNT",
-    "GIT_OBJECT_DIRECTORY",
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_IMPLICIT_WORK_TREE",
-    "GIT_GRAFT_FILE",
-    "GIT_INDEX_FILE",
-    "GIT_NO_REPLACE_OBJECTS",
-    "GIT_REPLACE_REF_BASE",
     "GIT_PREFIX",
-    "GIT_SHALLOW_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
 )
 
 

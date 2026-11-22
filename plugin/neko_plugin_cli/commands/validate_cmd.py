@@ -1535,6 +1535,10 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
             issues.append(("warning", f".gitignore should include {pattern}"))
 
 
+# Start of the error for links in the plugin source (other commands match it).
+SYMLINK_ERROR = "plugin source must not contain symbolic links"
+
+
 def _build_rules_or_defaults(pyproject_toml: dict[str, object] | None) -> BuildRuleSet:
     try:
         return load_build_rules(pyproject_toml)
@@ -1597,11 +1601,19 @@ def _check_symlink_tree(
                     path = base / name
                     if not (base_ignored or path in ignored):
                         links.append(path)
-                    elif not should_skip_path(
-                        path.relative_to(plugin_dir), is_dir=path.is_dir(), rules=rules
-                    ):
-                        # is_dir() follows the link, as the build's walk does.
-                        ignored_links.append(path)
+                    else:
+                        try:
+                            # Follows the link, as the build's walk does.
+                            link_is_dir = path.is_dir()
+                        except OSError:
+                            # e.g. a target in a directory we cannot enter:
+                            # count it as a file link, and keep scanning.
+                            link_is_dir = False
+                        # A directory link is judged as a subtree, like the
+                        # pruning above.
+                        link_rules = tree_rules if link_is_dir else rules
+                        if not should_skip_path(path.relative_to(plugin_dir), is_dir=link_is_dir, rules=link_rules):
+                            ignored_links.append(path)
             directories[:] = [name for name in directories if name not in linked]
     except OSError as exc:
         # Still report the links found before the failure.
@@ -1612,12 +1624,12 @@ def _check_symlink_tree(
                 "warning",
                 f"{len(ignored_links)} symbolic link(s) in gitignored paths "
                 f"({_shown_paths(plugin_dir, ignored_links)}): Market CI will not see them, "
-                "but a local neko-plugin build would copy their targets",
+                "but a local neko-plugin build may copy their targets",
             )
         )
     if links:
         issues.append(
-            ("error", f"plugin source must not contain symbolic links: {_shown_paths(plugin_dir, links)}")
+            ("error", f"{SYMLINK_ERROR}: {_shown_paths(plugin_dir, links)}")
         )
 
 

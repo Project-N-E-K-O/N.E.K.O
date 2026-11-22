@@ -22,7 +22,7 @@ from ..plugin_import_alias import PLUGIN_ID_ENV, PLUGIN_SOURCE_ENV
 from ..repo_state import committed_file_sizes, git_output, ignored_untracked_paths, worktree_dirty_paths
 from ..templates import agent_kit
 from ._resolve import parse_github_repository_remote, resolve_plugin_dir_candidate
-from .validate_cmd import collect_advisory_issues, validate_plugin_dir
+from .validate_cmd import SYMLINK_ERROR, collect_advisory_issues, validate_plugin_dir
 
 
 Issue = tuple[str, str]
@@ -87,7 +87,7 @@ def handle_check(args: argparse.Namespace) -> int:
         )
         # Only when it matters: some link was reported as an error.
         if ignored_paths is None and any(
-            message.startswith("plugin source must not contain symbolic links") for _, message in issues
+            message.startswith(SYMLINK_ERROR) for _, message in issues
         ):
             issues.append(
                 ("warning", "could not read gitignored paths from git, so links inside them are reported as errors")
