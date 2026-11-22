@@ -352,3 +352,45 @@ async def test_proactive_callback_refusal_on_a_separate_vision_route_is_not_reco
     client.script = [_refusal()]
     await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
     assert not lv.chat_refuses_images(CHAT)
+
+
+@pytest.mark.parametrize("extra", [
+    {"turn_image_user_flags": [False, True]},       # a screenshot sampled with the frames
+    {"turn_source": "screen", "turn_source_count": 1},  # an attachment after the frames
+])
+async def test_user_pictures_among_live_frames_are_reported(extra):
+    import asyncio
+
+    lv.mark_chat_image_refused(CHAT, "t")
+    client = _session()
+    client.script = [[_text("嗯。"), _text("", "stop")]]
+    await client.stream_text("看这个", turn_images=[_png_b64(4, 4), _png_b64(5, 5)], **extra)
+    await asyncio.sleep(0)
+    assert {"code": "CHAT_MODEL_IMAGE_SKIPPED"} in _statuses(client)
+
+
+async def test_refusal_record_applies_without_an_image_choice():
+    from utils.image_history import image_count
+
+    lv.mark_chat_image_refused(CHAT, "t")
+    client = _session()
+    client._image_choice = None
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [[_text("好。"), _text("", "stop")]]
+    await client.stream_text("看看")
+    assert image_count(client.requests[0][-1].content) == 0
+
+
+async def test_proactive_callback_refusal_cleans_history_images():
+    from main_logic.omni_offline_client._shared import HumanMessage
+    from utils.image_history import image_count
+
+    client = _session()
+    old = HumanMessage(content=[
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + _png_b64(4, 4)}},
+        {"type": "text", "text": "以前的图"},
+    ])
+    client._conversation_history.append(old)
+    client.script = [_refusal()]
+    await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
+    assert image_count(old.content) == 0

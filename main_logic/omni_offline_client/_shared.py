@@ -322,3 +322,16 @@ def _note_legacy_vision(client, where: str) -> None:
         return
     from utils.legacy_vision import note_legacy_vision_use
     note_legacy_vision_use(choice, where)
+
+
+def _chat_route_config(client) -> dict:
+    """The chat model's settings, as ``utils.legacy_vision`` keys a refusal by."""
+    choice = getattr(client, "_image_choice", None)
+    if choice is not None:
+        return choice.conversation
+    return {
+        "model": getattr(client, "model", None),
+        "base_url": getattr(client, "base_url", None),
+        "api_key": getattr(client, "api_key", None),
+        "provider_type": getattr(client, "provider_type", None),
+    }

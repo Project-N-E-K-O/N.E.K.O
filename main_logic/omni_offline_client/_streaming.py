@@ -28,6 +28,7 @@ from main_logic.proactive_delivery import (
 from ._turn_context import _mark as _mark_turn_context
 from ._shared import (
     _cancelled_turn_end,
+    _chat_route_config,
     _find_by_identity,
     _note_legacy_vision,
     _same_route,
@@ -1213,29 +1214,38 @@ class _StreamingMixin:
             # proactive screenshot must not go out (no await since append).
             self._strip_auto_captures_missed_by_revocation(user_message)
         if has_images and not (getattr(self, "vision_model", "") or ""):
-            _choice = getattr(self, "_image_choice", None)
-            if _choice is not None:
-                from utils.legacy_vision import chat_refuses_images
-                if chat_refuses_images(_choice.conversation):
-                    # The chat model already rejected images this run: send the
-                    # text (with image receipts) rather than another refused
-                    # request. No await since append.
-                    _dropped = self._drop_history_image_pixels(only=user_message)
-                    if _dropped:
-                        logger.info(
-                            "🖼️ Not sending %d image(s): the chat model cannot read images",
-                            _dropped,
+            from utils.legacy_vision import chat_refuses_images
+            if chat_refuses_images(_chat_route_config(self)):
+                # The chat model already rejected images this run: send the
+                # text (with image receipts) rather than another refused
+                # request. No await since append.
+                _dropped = self._drop_history_image_pixels(only=user_message)
+                if _dropped:
+                    logger.info(
+                        "🖼️ Not sending %d image(s): the chat model cannot read images",
+                        _dropped,
+                    )
+                    # Pictures the user supplied: the attachment queue, a
+                    # screenshot sampled with the live frames, or an attachment
+                    # appended after this turn's channelled frames.
+                    _user_supplied = bool(
+                        attachment_images
+                        or any(turn_image_user_flags or ())
+                        or (
+                            turn_source_count is not None
+                            and len(own_images) > turn_source_count
                         )
-                        if attachment_images and self.on_status_message:
-                            # Pictures the user attached themselves must not vanish
-                            # silently (sampled live frames do, every voice turn).
-                            # Scheduled: nothing may await between append and here.
-                            _notice = asyncio.ensure_future(self.on_status_message(
-                                json.dumps({"code": "CHAT_MODEL_IMAGE_SKIPPED"})
-                            ))
-                            _notice.add_done_callback(
-                                lambda t: t.cancelled() or t.exception()
-                            )
+                    )
+                    if _user_supplied and self.on_status_message:
+                        # Pictures the user attached themselves must not vanish
+                        # silently (sampled live frames do, every voice turn).
+                        # Scheduled: nothing may await between append and here.
+                        _notice = asyncio.ensure_future(self.on_status_message(
+                            json.dumps({"code": "CHAT_MODEL_IMAGE_SKIPPED"})
+                        ))
+                        _notice.add_done_callback(
+                            lambda t: t.cancelled() or t.exception()
+                        )
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history
@@ -2556,16 +2566,7 @@ class _StreamingMixin:
                         # Share it with the other image paths (screenshots,
                         # proactive chat), which then skip or go text-only.
                         from utils.legacy_vision import mark_chat_image_refused
-                        _choice = getattr(self, "_image_choice", None)
-                        mark_chat_image_refused(
-                            _choice.conversation if _choice is not None else {
-                                "model": self.model,
-                                "base_url": getattr(self, "base_url", None),
-                                "api_key": getattr(self, "api_key", None),
-                                "provider_type": getattr(self, "provider_type", None),
-                            },
-                            "offline chat",
-                        )
+                        mark_chat_image_refused(_chat_route_config(self), "offline chat")
                         _drop_pixels = getattr(self, "_drop_history_image_pixels", None)
                         if _drop_pixels is not None:
                             _dropped = _drop_pixels()
