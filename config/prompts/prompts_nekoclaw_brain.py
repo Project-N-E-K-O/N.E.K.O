@@ -18,8 +18,8 @@
   took over the plugin rules of the analyzer's selection prompt and adds the
   hand-over to a task agent and the answer that nothing can do it, which the
   same request decides.
-* ``TASK_BRAIN_COARSE_SCREEN_PROMPT``: the coarse screen, the analyzer's
-  text unchanged.
+* ``TASK_BRAIN_COARSE_SCREEN_PROMPT``: the coarse screen's catalog and rules;
+  the request is supplied separately as a user message.
 * ``TURN_CHECK_PROMPT``: the check of a turn in which she called no task tool.
 * Receipts and query answers: short lines returned to the main dialogue model
   as tool results.
@@ -66,7 +66,7 @@ TASK_BRAIN_SELECT_PROMPT = {
 - 严格匹配：plugin_id 和 entry_id 是代码标识符，必须从上面的列表中原样复制（区分大小写、逐字符匹配），不要发明、缩写或改写。找不到完全匹配就用 route="task_agent"。
 - route="plugin" 时 entry_id 必填。
 - 入口有 args(...) 信息时，plugin_args 用那些字段名，只包含 schema 中列出的字段。
-- 入口 schema 需要用户文本字段（例如 command/message/query/objective）时，必须复制 USER_SAID 原文；不要翻译、摘要、改写或补全。
+- 仅当 schema 要求原话时逐字复制 USER_SAID。搜索 query 等参数按字段语义从 TASK 生成并解析指代，不把催问或工具名当作搜索主题。
 - PREFERENCES 适用时照办。
 - 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑。
 只返回 JSON 对象，不含其他内容。""",
@@ -100,7 +100,7 @@ TASK_BRAIN_SELECT_PROMPT = {
 - 嚴格比對：plugin_id 和 entry_id 是程式識別碼，必須從上面的清單原樣複製（區分大小寫、逐字元比對），不要發明、縮寫或改寫。找不到完全相符的就用 route="task_agent"。
 - route="plugin" 時 entry_id 必填。
 - 入口有 args(...) 資訊時，plugin_args 用那些欄位名，只包含 schema 裡列出的欄位。
-- 入口 schema 需要使用者文字欄位（例如 command/message/query/objective）時，必須照抄 USER_SAID 原文；不要翻譯、摘要、改寫或補齊。
+- 僅當 schema 要求原話時逐字複製 USER_SAID。搜尋 query 等參數依欄位語意從 TASK 產生並解析指代，不把催問或工具名稱當成搜尋主題。
 - PREFERENCES 適用時照辦。
 - 標了 [KEYWORD MATCH] 的外掛已經通過關鍵字預篩，優先考慮。
 只回傳 JSON 物件，不含其他內容。""",
@@ -134,7 +134,7 @@ VERY IMPORTANT:
 - STRICT MATCHING: plugin_id and entry_id are code identifiers. Copy them EXACTLY (case-sensitive, character-for-character) from the list above. Do NOT invent, abbreviate or rephrase them. If no exact match exists, use route="task_agent".
 - route="plugin" requires entry_id.
 - If the entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
-- When the entry schema needs a user-text field (e.g. command/message/query/objective), copy USER_SAID verbatim; do not translate, summarize, rewrite or complete it.
+- Copy USER_SAID verbatim only when the schema requires original wording. Derive search query and other arguments from TASK by field meaning, resolving references; reminders and tool names are not search subjects.
 - Follow PREFERENCES where they apply.
 - Plugins marked [KEYWORD MATCH] passed a keyword pre-filter; consider them first.
 Return only the JSON object, nothing else.""",
@@ -168,7 +168,7 @@ Return only the JSON object, nothing else.""",
 - 厳密一致：plugin_id と entry_id はコード識別子です。上の一覧からそのまま写してください（大文字小文字を区別、1 文字ずつ一致）。作り出したり、省略したり、言い換えたりしないでください。完全一致がなければ route="task_agent" にします。
 - route="plugin" のとき entry_id は必須です。
 - エントリに args(...) があれば、plugin_args にはそのフィールド名を使い、schema にあるフィールドだけを入れます。
-- エントリの schema がユーザーのテキスト（command/message/query/objective など）を求めるときは、USER_SAID を原文のまま写します。翻訳、要約、書き換え、補完はしません。
+- schema が原文を要求する場合のみ USER_SAID をそのままコピーします。検索 query などの引数はフィールドの意味に従い TASK から生成して指示対象を解決します。催促やツール名を検索対象にしないでください。
 - PREFERENCES が当てはまるときは従います。
 - [KEYWORD MATCH] の付いたプラグインはキーワードの事前選別を通っています。優先して検討してください。
 JSON オブジェクトだけを返してください。""",
@@ -202,7 +202,7 @@ JSON オブジェクトだけを返してください。""",
 - 엄격한 일치: plugin_id와 entry_id는 코드 식별자입니다. 위 목록에서 그대로 복사하세요(대소문자 구분, 글자 단위 일치). 지어내거나 줄이거나 바꿔 쓰지 마세요. 정확히 일치하는 것이 없으면 route="task_agent"로 합니다.
 - route="plugin"이면 entry_id가 필수입니다.
 - 엔트리에 args(...) 정보가 있으면 plugin_args에 그 필드 이름을 쓰고, schema에 있는 필드만 넣습니다.
-- 엔트리 schema가 사용자 텍스트 필드(command/message/query/objective 등)를 요구하면 USER_SAID를 원문 그대로 복사합니다. 번역, 요약, 바꿔 쓰기, 보완을 하지 마세요.
+- schema가 원문을 요구할 때만 USER_SAID를 그대로 복사하세요. 검색 query 등 인수는 필드 의미에 따라 TASK에서 생성하고 지시 대상을 해석하세요. 재촉이나 도구 이름을 검색 주제로 삼지 마세요.
 - PREFERENCES가 해당되면 따릅니다.
 - [KEYWORD MATCH]가 붙은 플러그인은 키워드 사전 선별을 통과했습니다. 먼저 검토하세요.
 JSON 객체만 반환하세요.""",
@@ -236,7 +236,7 @@ JSON 객체만 반환하세요.""",
 - СТРОГОЕ СОВПАДЕНИЕ: plugin_id и entry_id — идентификаторы в коде. Копируйте их ТОЧНО (с учётом регистра, символ в символ) из списка выше. НЕ выдумывайте, не сокращайте и не перефразируйте. Если точного совпадения нет, используйте route="task_agent".
 - Для route="plugin" обязателен entry_id.
 - Если у точки входа есть args(...), используйте эти имена полей в plugin_args и только поля из схемы.
-- Если схеме нужно текстовое поле пользователя (например command/message/query/objective), копируйте USER_SAID дословно; не переводите, не сокращайте, не переписывайте и не дополняйте.
+- Копируйте USER_SAID дословно, только если схема требует исходную формулировку. Формируйте поисковый query и другие параметры из TASK по смыслу полей, уточняя, к чему относятся отсылки; напоминания и имена инструментов не являются темой поиска.
 - Следуйте PREFERENCES там, где они применимы.
 - Плагины с пометкой [KEYWORD MATCH] прошли отбор по ключевым словам; рассмотрите их первыми.
 Верните только объект JSON, больше ничего.""",
@@ -270,7 +270,7 @@ MUY IMPORTANTE:
 - COINCIDENCIA ESTRICTA: plugin_id y entry_id son identificadores de código. Cópialos EXACTAMENTE (distinguiendo mayúsculas, carácter por carácter) de la lista. NO los inventes, abrevies ni reformules. Si no hay coincidencia exacta, usa route="task_agent".
 - route="plugin" exige entry_id.
 - Si la entrada tiene args(...), usa esos nombres de campo en plugin_args y solo los campos del schema.
-- Cuando el schema pide un campo de texto del usuario (p. ej. command/message/query/objective), copia USER_SAID tal cual; no lo traduzcas, resumas, reescribas ni completes.
+- Copia USER_SAID literalmente solo si el schema requiere las palabras originales. Genera query y otros parámetros según el significado de los campos a partir de TASK, resolviendo referencias; los recordatorios y nombres de herramientas no son temas de búsqueda.
 - Sigue PREFERENCES cuando correspondan.
 - Los plugins marcados con [KEYWORD MATCH] pasaron un prefiltro de palabras clave; considéralos primero.
 Devuelve solo el objeto JSON, nada más.""",
@@ -304,7 +304,7 @@ MUITO IMPORTANTE:
 - CORRESPONDÊNCIA ESTRITA: plugin_id e entry_id são identificadores de código. Copie-os EXATAMENTE (diferenciando maiúsculas, caractere por caractere) da lista. NÃO invente, abrevie nem reformule. Se não houver correspondência exata, use route="task_agent".
 - route="plugin" exige entry_id.
 - Se a entrada tiver args(...), use esses nomes de campo em plugin_args e apenas os campos do schema.
-- Quando o schema pedir um campo de texto do usuário (ex.: command/message/query/objective), copie USER_SAID literalmente; não traduza, resuma, reescreva nem complete.
+- Copie USER_SAID literalmente só quando o schema exigir as palavras originais. Gere query e outros parâmetros a partir de TASK conforme o significado dos campos, resolvendo referências; lembretes e nomes de ferramentas não são temas de busca.
 - Siga PREFERENCES quando se aplicarem.
 - Plugins marcados com [KEYWORD MATCH] passaram por um pré-filtro de palavras-chave; considere-os primeiro.
 Retorne apenas o objeto JSON, nada mais.""",
@@ -352,16 +352,14 @@ PLUGIN_SHORT_DESCRIPTION_USER_TEMPLATE = "Plugin: {plugin_id}\nDescription: {des
 # =====================================================================
 # Used when the descriptions of all plugins exceed the two-stage threshold,
 # and once in the first round when nothing matches locally and no task agent can
-# be started. The text is the analyzer's coarse-screening prompt, moved here
-# unchanged when the analyzer was removed.
+# be started. The system prompt contains only the catalog and screening rules;
+# the request is supplied separately as a user message.
 
 TASK_BRAIN_COARSE_SCREEN_PROMPT = {
     'zh': """你是一个agentic automation assessment agent, 粗筛阶段。根据用户请求，从以下插件列表中选出所有可能相关的插件ID。
 
 可用插件（id: 简短描述）：
 {plugin_summaries}
-
-用户请求：{user_text}
 
 指令：返回一个 JSON 数组，包含所有可能相关的插件ID。如果没有相关插件，返回空数组 []。
 只返回 JSON 数组，不要其他内容。""",
@@ -371,8 +369,6 @@ TASK_BRAIN_COARSE_SCREEN_PROMPT = {
 可用外掛（id: 簡短描述）：
 {plugin_summaries}
 
-使用者請求：{user_text}
-
 指令：回傳一個 JSON 陣列，包含所有可能相關的外掛 ID。如果沒有相關的外掛，就回傳空陣列 []。
 只回傳 JSON 陣列，不要其他內容。""",
 
@@ -380,8 +376,6 @@ TASK_BRAIN_COARSE_SCREEN_PROMPT = {
 
 Available plugins (id: brief description):
 {plugin_summaries}
-
-User request: {user_text}
 
 Instructions: Return a JSON array of all possibly relevant plugin IDs. If none are relevant, return [].
 Return ONLY the JSON array, nothing else.""",
@@ -391,8 +385,6 @@ Return ONLY the JSON array, nothing else.""",
 利用可能なプラグイン（id: 簡潔な説明）：
 {plugin_summaries}
 
-ユーザーリクエスト：{user_text}
-
 指示：関連する可能性のあるすべてのプラグインIDを含むJSON配列を返してください。該当なしの場合は空配列 [] を返してください。
 JSON配列のみ返してください。""",
 
@@ -400,8 +392,6 @@ JSON配列のみ返してください。""",
 
 사용 가능한 플러그인 (id: 간단한 설명):
 {plugin_summaries}
-
-사용자 요청: {user_text}
 
 지침: 관련 가능성이 있는 모든 플러그인 ID를 포함하는 JSON 배열을 반환하세요. 해당 없으면 빈 배열 []을 반환하세요.
 JSON 배열만 반환하세요.""",
@@ -411,8 +401,6 @@ JSON 배열만 반환하세요.""",
 Доступные плагины (id: краткое описание):
 {plugin_summaries}
 
-Запрос пользователя: {user_text}
-
 Инструкции: Верните JSON-массив всех возможно релевантных ID плагинов. Если нет релевантных, верните [].
 Верните ТОЛЬКО JSON-массив, ничего больше.""",
     'es': """Eres un agentic automation assessment agent en etapa de filtrado grueso. Dada la solicitud del usuario, selecciona TODOS los IDs de plugins posiblemente relevantes de la lista siguiente.
@@ -420,16 +408,12 @@ JSON 배열만 반환하세요.""",
 Plugins disponibles (id: descripción breve):
 {plugin_summaries}
 
-Solicitud del usuario: {user_text}
-
 Instrucciones: Devuelve un array JSON con todos los IDs de plugins posiblemente relevantes. Si ninguno es relevante, devuelve [].
 Devuelve SOLO el array JSON, nada más.""",
     'pt': """Você é um agentic automation assessment agent na etapa de triagem grosseira. Dada a solicitação do usuário, selecione TODOS os IDs de plugins possivelmente relevantes da lista abaixo.
 
 Plugins disponíveis (id: breve descrição):
 {plugin_summaries}
-
-Solicitação do usuário: {user_text}
 
 Instruções: Retorne um array JSON com todos os IDs de plugins possivelmente relevantes. Se nenhum for relevante, retorne [].
 Retorne SOMENTE o array JSON, nada mais.""",

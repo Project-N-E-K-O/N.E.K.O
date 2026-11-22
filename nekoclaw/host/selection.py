@@ -15,10 +15,11 @@
 """Which plugin entries are visible, and the local half of the two-stage filter.
 
 Ported from ``brain/plugin_filter.py`` and the selection helpers of
-``brain/task_executor.py``; the rules are unchanged on purpose, because plugin
-authors were promised that how an entry gets selected stays the same
-(RFC #3683). ``tests/unit/nekoclaw/test_contract_plugin_selection.py`` runs the
-same expectations against both implementations.
+``brain/task_executor.py``; visibility rules and filtering widths retain the
+analyzer's contract (RFC #3683), guarded by
+``tests/unit/nekoclaw/test_contract_plugin_selection.py``. The description
+projection additionally preserves schema field descriptions within a per-field
+token limit.
 
 Everything here is local and makes no model call:
 
@@ -33,6 +34,7 @@ with the commissions on the ledger and are not part of plugin selection.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import Counter
@@ -118,10 +120,14 @@ def _schema_hint(entry: dict[str, Any]) -> str:
     props = schema.get("properties", {})
     if not isinstance(props, dict) or not props:
         return ""
+    from config import AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS
+    from utils.tokenize import truncate_to_tokens
+
     fields = []
     for name, definition in list(props.items())[:8]:
         field_type = definition.get("type", "any") if isinstance(definition, dict) else "any"
         enum_hint = ""
+        description_hint = ""
         if isinstance(definition, dict):
             enum_values = definition.get("enum")
             if isinstance(enum_values, list) and enum_values:
@@ -132,7 +138,11 @@ def _schema_hint(entry: dict[str, Any]) -> str:
                     enum_hint = f" enum=[{inner}|... +{len(enum_values) - 12} more]"
                 else:
                     enum_hint = f" enum=[{inner}]"
-        fields.append(f"{name}:{field_type}{enum_hint}")
+            description = definition.get("description")
+            if isinstance(description, str) and description.strip():
+                description = truncate_to_tokens(description.strip(), AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS)
+                description_hint = " description=" + json.dumps(description, ensure_ascii=False)
+        fields.append(f"{name}:{field_type}{enum_hint}{description_hint}")
     required = schema.get("required", [])
     required_hint = f" required={required}" if required else ""
     return f" args({', '.join(fields)}{required_hint})"

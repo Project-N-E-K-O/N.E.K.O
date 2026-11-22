@@ -161,7 +161,8 @@ class Triage:
     choice: str | None = None
     keyword_hit_ids: list[str] = field(default_factory=list)
     candidate_ids: list[str] = field(default_factory=list)
-    # What the coarse screen returned, when this round had to run it.
+    # Cached coarse candidates, including the visible catalog after a failed
+    # screen. The second round reuses these instead of asking twice.
     coarse_ids: list[str] | None = None
     model_calls: int = 0
 
@@ -826,7 +827,15 @@ class LexicalDecisionModel:
             return Triage(kind="unsure")
         # Nothing matched by its words and there is no task agent to fall back
         # on. Before saying it cannot be done, let the small model look once.
-        coarse = await self._coarse_screen(match_text, plugins, request.lang)
+        try:
+            coarse = await self._coarse_screen(match_text, plugins, request.lang)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - failure is not an empty selection
+            logger.warning("coarse screen failed, keeping every plugin: %s", type(exc).__name__)
+            # Let the fine model decide, and cache this fallback so a large
+            # catalog does not pay for the failed screen a second time.
+            coarse = [str(plugin["id"]) for plugin in plugins if plugin.get("id")]
         known = {str(plugin.get("id")) for plugin in plugins}
         picked = [plugin_id for plugin_id in coarse if plugin_id in known]
         if picked:
@@ -849,21 +858,19 @@ class LexicalDecisionModel:
             summaries.append(f"- {plugin_id}: {short}")
         system = _loc(TASK_BRAIN_COARSE_SCREEN_PROMPT, lang).format(
             plugin_summaries="\n".join(summaries),
-            user_text=user_text,
         )
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user_text}]
-        try:
-            from utils.file_utils import robust_json_loads
+        from utils.file_utils import robust_json_loads
 
-            raw = await self._llm.complete(TIER_COARSE, messages)
-            ids = robust_json_loads(_strip_fences(raw))
-            if isinstance(ids, list):
-                return [str(item) for item in ids if isinstance(item, (str, int))]
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - keyword and BM25 matches still stand
-            logger.warning("coarse screen failed: %s", type(exc).__name__)
-        return []
+        raw = await self._llm.complete(TIER_COARSE, messages)
+        ids = robust_json_loads(_strip_fences(raw))
+        if isinstance(ids, list) and all(
+            isinstance(item, (str, int)) and not isinstance(item, bool) for item in ids
+        ):
+            return [str(item) for item in ids]
+        # Both callers distinguish an explicit [] from a screen that could
+        # not decide. Exceptions, including cancellation, stay distinguishable.
+        raise ValueError("Plugin coarse screening did not return an ID array")
 
     # -- turn check -------------------------------------------------------
 
@@ -959,11 +966,11 @@ class LexicalDecisionModel:
                     coarse_ids = list(triage.coarse_ids)
                     kept, _ = await asyncio.to_thread(stage1_filter, match_text, all_plugins)
                 else:
+                    calls += 1
                     (kept, _), coarse_ids = await asyncio.gather(
                         asyncio.to_thread(stage1_filter, match_text, all_plugins),
                         self._coarse_screen(match_text, all_plugins, request.lang),
                     )
-                    calls += 1
                 selected = {plugin.get("id") for plugin in kept} | set(coarse_ids) | set(hits)
                 shown = [plugin for plugin in all_plugins if plugin.get("id") in selected]
                 lines = build_desc_lines(shown)
