@@ -1479,7 +1479,9 @@ class KnowledgeService:
             if self._stopping:
                 self._finish_job(job, "failed", "knowledge_stopping")
                 await self._persist_job(job)
-            else:
+            elif job.state == "queued":
+                # Explicit cancellation may finish while the first durable
+                # record is being written; do not revive its queue entry.
                 self._job_queue.append(job.job_id)
                 self._job_queued.set()
             return {"ok": True, **job.to_json()}
@@ -2218,6 +2220,9 @@ class KnowledgeService:
             if record is None or record.pack_sha256 != job.staged_sha256:
                 raise KnowledgePackError("pack_changed")
             return await self.export_pack(job.pack_id, format_version=job.export_format, _retry_version=job.export_version)
+        # A new retry has its own arrival, reserved before frozen-input I/O so
+        # a later pack removal can supersede both JSON and ZIP retries.
+        arrived_at = self._reserve_arrival()
         options = {"kind": job.kind, "origin": job.origin, "enabled": job.initial_enabled, "frozen_input": job.frozen_input}
         if job.archive_sha256:
             path = self.artifact_path(job.archive_sha256)
@@ -2226,7 +2231,7 @@ class KnowledgeService:
             digest, _size = await self._thread(hash_file, path, DEFAULT_LIMITS.max_archive_bytes)
             if digest != job.archive_sha256:
                 raise KnowledgePackError("artifact_hash_mismatch")
-            return await self.import_pack(path, subscription=job.subscription, _options=options)
+            return await self.import_pack(path, subscription=job.subscription, _options=options, _arrived_at=arrived_at)
         try:
             raw = await self._thread(_read_bounded, self.root / "jobs" / (job.job_id + ".pack.json"))
         except FileNotFoundError as exc:
@@ -2235,7 +2240,7 @@ class KnowledgeService:
         expected = job.subscription.artifact_sha256 if job.subscription is not None else job.staged_sha256
         if pack_sha256(raw) != expected:
             raise KnowledgePackError("pack_file_mismatch")
-        return await self.import_pack(raw, subscription=job.subscription, _options=options)
+        return await self.import_pack(raw, subscription=job.subscription, _options=options, _arrived_at=arrived_at)
 
     def _finish_job(self, job: ImportJob, state: str, reason: str = "") -> None:
         job.state = state
@@ -2429,7 +2434,7 @@ class KnowledgeService:
                     chunk_options["fit"] = fit
                 if job.seed_vectors:
                     chunk_options["seed_vectors"] = job.seed_vectors
-                self._store.replace_pack(
+                actual_chunks = self._store.replace_pack(
                     pack,
                     pack_sha256=sha,
                     disabled_keys=record.disabled_titles,
@@ -2438,6 +2443,10 @@ class KnowledgeService:
                     **chunk_options,
                 )
                 indexed = True
+                # A tokenizer changed during planning must not publish a
+                # registry count that differs from the committed index.
+                if actual_chunks != chunks:
+                    raise KnowledgeUnavailable("knowledge_error")
                 registry = self._registry.with_pack(record)
                 save_registry(self.root, registry)
                 job.chunks_total = chunks
@@ -2509,7 +2518,21 @@ class KnowledgeService:
                 # admission or encoding relies on it.
                 self._pending_chunk_reconcile = True
         except Exception as exc:
-            # Startup reconcile repairs the index from the registry anyway.
+            current = self._registry.packs.get(pack_id)
+            try:
+                matches_registry = (current is not None
+                                    and self._store.pack_versions().get(pack_id) == current.pack_sha256)
+            except Exception:
+                # A failed version probe cannot prove the old index intact,
+                # and must not replace the original rollback diagnostic.
+                matches_registry = False
+            if not matches_registry:
+                if current is not None and pack_id not in self._broken_packs:
+                    self._broken_packs = (*self._broken_packs, pack_id)
+            # Even an intact registered version may have changed row counts
+            # before the failure; repair counters without needlessly marking
+            # that usable index broken or disabling the unchanged fast path.
+            self._pending_chunk_reconcile = True
             logger.warning("[Knowledge] could not restore index after a failed import (%s)", type(exc).__name__)
 
     # ── vectors ─────────────────────────────────────────────────────
