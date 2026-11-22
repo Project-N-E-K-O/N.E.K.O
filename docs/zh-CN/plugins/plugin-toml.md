@@ -84,7 +84,7 @@ short_description = "Note management with AI-powered organization."
 keywords = ["笔记", "note", "记录", "备忘", "memo", "メモ"]
 ```
 
-宿主完成加载后，Agent（猫爪，NekoClaw）按这些字段筛选插件：
+宿主完成加载后，Agent（喵能力，NekoPower）按这些字段筛选插件：
 
 - `description` — 完整描述，同时用于插件元数据和精选。
 - `short_description` — 粗筛读的短描述，最多读 150 token。**请写上。** 缺失且 `description` 超过这 150 token 时，宿主会在后台让小模型按 `description` 写一份，存在数据目录的 `nekoclaw/plugin_short_descriptions.json`：写成功的话每个插件、每版描述一次模型请求。写出来超过 150 token 的截到 150 保存；请求失败的不保存，10 分钟后再试，每试一次又是一次请求；同一版 `description` 一天最多试 3 次（重启也算在内），改了 `description` 重新计。保存之前改用 `description` 的开头部分。

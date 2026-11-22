@@ -657,8 +657,9 @@ async def test_auto_native_requires_a_fresh_decision_and_explicit_rules_survive_
     assert known.allow and not known.asked
     assert (await gate.check("c", "plugin_entry", scope=GrantScope("registered-plugin"))).allow
     assert not ask.asked
+    # A category left on auto that is not a plugin's tools is asked for at every call.
     for _ in range(2):
-        assert (await gate.check_native("c", "other", detail={"tool": "read"})).asked
+        assert (await gate.check_native("c", "outside_read", detail={"tool": "read"})).asked
     assert [q.options for _, q in ask.asked] == [("once", "deny")] * 2
     assert not (await gate.check_native("c", "outside_write", detail={})).allow
     assert (await gate.check_native("c", "run_command", detail={})).allow
@@ -667,6 +668,34 @@ async def test_auto_native_requires_a_fresh_decision_and_explicit_rules_survive_
     reloaded = PermissionStore(path)
     assert await reloaded.native_mode("run_command") == "auto"
     assert await reloaded.mode("outside_write") == "deny" and await reloaded.mode("mcp_server", "private") == "deny"
+
+
+async def test_dsh_plugin_tools_are_allowed_on_auto_and_follow_what_the_user_sets(tmp_path):
+    """The tools a dsh plugin brought: confirmed at install, so not asked for unless the user says so."""
+    store = PermissionStore(tmp_path / "permissions.json")
+    ask = Asker("once")
+    gate = PermissionGate(store, ask)
+    assert await store.native_mode("other") == "allow"
+    for _ in range(5):
+        decision = await gate.check_native("c", "other", detail={"tool": "plugin_tool"})
+        assert decision.allow and not decision.asked
+    assert not ask.asked
+    # Asked at every call once the user sets it so, with no way to allow for longer.
+    await store.set_mode("other", "always_ask")
+    for _ in range(2):
+        decision = await gate.check_native("c", "other", detail={"tool": "plugin_tool"})
+        assert decision.allow and decision.asked
+    assert [q.options for _, q in ask.asked] == [("once", "deny")] * 2
+    await store.set_mode("other", "deny")
+    refused = await gate.check_native("c", "other", detail={"tool": "plugin_tool"})
+    assert not refused.allow and not refused.asked and len(ask.asked) == 2
+    # Back on auto it is allowed again, and nothing else on auto came along.
+    await store.set_mode("other", "auto")
+    assert (await gate.check_native("c", "other", detail={"tool": "plugin_tool"})).allow
+    assert len(ask.asked) == 2
+    assert await store.native_mode("run_command") == "auto"
+    assert await store.native_mode("outside_read") == "auto"
+    assert await store.native_mode("outside_write") == "auto"
 
 
 async def test_command_session_consent_stays_with_shell_directory_recipient_and_runtime(store, tmp_path):

@@ -4,7 +4,7 @@
 
 **Configuration:** `TOOL_SERVER_PORT`
 
-The agent server is an internal loopback service. It owns the NekoClaw host (task brain, task agents, capability gateway), the task view shown in the HUD, the built-in keyboard-and-mouse and browser tools, and the embedded plugin service. The main server exposes the supported browser-facing subset under `/api/agent`; callers outside the local process group should use that proxy instead of these routes.
+The agent server is an internal loopback service. It owns the NekoPower host (task brain, task agents, capability gateway), the task view shown in the HUD, the built-in keyboard-and-mouse and browser tools, and the embedded plugin service. The main server exposes the supported browser-facing subset under `/api/agent`; callers outside the local process group should use that proxy instead of these routes.
 
 The agent server also exchanges asynchronous session and task events with the main server over ZeroMQ. HTTP is therefore the control/query plane, while ZeroMQ is the event plane; the service does not use ZeroMQ *instead of* HTTP.
 
@@ -37,7 +37,7 @@ The task object returned by `/tasks` is described under "Task object" in [Agent 
 
 `/api/agent/tasks/{task_id}/complete` and `/notify_config_changed` are process-internal. `/admin/control` and the `/nekoclaw/*` routes must not be exposed to an untrusted network.
 
-## NekoClaw routes
+## NekoPower routes
 
 These three routes are called by the main server on the same machine, on behalf of the main dialogue model. They are not proxied to the browser.
 
