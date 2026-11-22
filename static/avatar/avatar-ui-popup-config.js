@@ -185,6 +185,11 @@ const _mmdPopupConfig = {
     },
     getMouseTrackingState: function() {
         return this.cursorFollow ? this.cursorFollow.enabled : false;
+    },
+    // Same show-time refresh as Live2D / VRM: a setting changed in another
+    // window must not leave a stale checkbox here.
+    overrides: {
+        _onPopupShow: createSettingsPopupShowSync('mmd')
     }
 };
 

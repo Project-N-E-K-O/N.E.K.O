@@ -1623,3 +1623,10 @@ test('settings popup re-sync reads the switch like the mask module (only false i
         assert.equal(cb.checked, expected, String(value));
     }
 });
+
+test('settings popup re-sync is installed for every avatar type (Live2D, VRM, MMD)', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup-config.js'), 'utf8');
+    for (const prefix of ['live2d', 'vrm', 'mmd']) {
+        assert.ok(src.includes(`_onPopupShow: createSettingsPopupShowSync('${prefix}')`), prefix);
+    }
+});
