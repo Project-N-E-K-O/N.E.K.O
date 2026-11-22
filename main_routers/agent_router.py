@@ -89,6 +89,64 @@ def _remote_backend_block() -> JSONResponse | None:
     return None
 
 
+class _Unconfirmed:
+    """The switches of the sessions that commands wrote and the agent process has not answered for yet.
+
+    A command writes the session's copy of a switch before it is sent
+    on, and puts it back when it was not taken. Commands are not held
+    back for one another (one that takes seconds would make the next
+    time out in the page), so several may have written the same switch:
+    kept here, for each switch, are what it was before the first of
+    them (``base``) and what each of them wrote. One that was taken
+    makes its value the base. One that was not takes its own entry out,
+    and the switch goes back to the base once none is left: never to a
+    value another command only tried, and not over a value another
+    command wrote and was answered for (that value is the base by then).
+    """
+
+    def __init__(self) -> None:
+        # (id of the manager, switch) -> [base, {command: what it wrote}]
+        self._switches: dict[tuple[int, str], list] = {}
+
+    def write(self, mgr, command: object, flags: dict) -> None:
+        now = getattr(mgr, "agent_flags", {}) or {}
+        for key, value in flags.items():
+            entry = self._switches.setdefault((id(mgr), key), [bool(now.get(key, False)), {}])
+            entry[1][command] = value
+        mgr.update_agent_flags(flags)
+
+    def written_elsewhere(self, mgr, flags: dict) -> None:
+        """Note switches that were written by another way than a command (the flags route, a character switch).
+
+        What was written is what the switch is from then: a command
+        that is not taken afterwards goes back to that, not to what
+        was there before it.
+        """
+        for key, value in flags.items():
+            entry = self._switches.get((id(mgr), key))
+            if entry is not None:
+                entry[0] = bool(value)
+
+    def settle(self, mgr, command: object, *, taken: bool) -> None:
+        back: dict = {}
+        for (owner, key), entry in list(self._switches.items()):
+            if owner != id(mgr) or command not in entry[1]:
+                continue
+            wrote = entry[1].pop(command)
+            if taken:
+                entry[0] = wrote
+            elif not entry[1]:
+                # No other command is under way for it: back to what it was before them.
+                back[key] = entry[0]
+            if not entry[1]:
+                del self._switches[(owner, key)]
+        if back:
+            mgr.update_agent_flags(back)
+
+
+_unconfirmed = _Unconfirmed()
+
+
 async def force_disable_agent_for_character_switch(current_lanlan: str, previous_lanlan: str | None = None) -> bool:
     """Force-disable the agent (cat paw) after a character switch so stale global tool-service state cannot leak into the new character."""
     names = {
@@ -101,6 +159,7 @@ async def force_disable_agent_for_character_switch(current_lanlan: str, previous
         mgr = session_manager.get(name)
         if mgr:
             mgr.update_agent_flags(dict(_AGENT_OFF_FLAGS))
+            _unconfirmed.written_elsewhere(mgr, _AGENT_OFF_FLAGS)
 
     if not current_lanlan:
         return False
@@ -213,6 +272,7 @@ async def update_agent_flags(request: Request):
             return JSONResponse({"success": False, "error": "lanlan not found"}, status_code=404)
         # Update core flags first
         mgr.update_agent_flags(flags)
+        _unconfirmed.written_elsewhere(mgr, flags)
         # Forward to tool server for Computer-Use/Browser-Use/Plugin flags
         try:
             forward_payload = {}
@@ -232,12 +292,14 @@ async def update_agent_flags(request: Request):
                     raise Exception(f"tool_server responded {r.status_code}")
         except Exception as e:
             # On failure, reset flags in core to safe state (include user_plugin flag)
-            mgr.update_agent_flags({
+            off = {
                 'agent_enabled': False,
                 'computer_use_enabled': False,
                 'browser_use_enabled': False,
                 'user_plugin_enabled': False,
-            })
+            }
+            mgr.update_agent_flags(off)
+            _unconfirmed.written_elsewhere(mgr, off)
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
         return {"success": True, "is_free_version": _config_manager.is_agent_free()}
     except Exception as e:
@@ -278,52 +340,6 @@ async def get_computer_use_native_capture_available():
     if blocked is not None:
         return blocked
     return {"success": True, "available": native_wayland_capture_available()}
-
-
-class _Unconfirmed:
-    """The switches of the sessions that commands wrote and the agent process has not answered for yet.
-
-    A command writes the session's copy of a switch before it is sent
-    on, and puts it back when it was not taken. Commands are not held
-    back for one another (one that takes seconds would make the next
-    time out in the page), so several may have written the same switch:
-    kept here, for each switch, are what it was before the first of
-    them (``base``) and what each of them wrote. One that was taken
-    makes its value the base. One that was not takes its own entry out,
-    and the switch goes back to the base once none is left: never to a
-    value another command only tried, and not over a value another
-    command wrote and was answered for (that value is the base by then).
-    """
-
-    def __init__(self) -> None:
-        # (id of the manager, switch) -> [base, {command: what it wrote}]
-        self._switches: dict[tuple[int, str], list] = {}
-
-    def write(self, mgr, command: object, flags: dict) -> None:
-        now = getattr(mgr, "agent_flags", {}) or {}
-        for key, value in flags.items():
-            entry = self._switches.setdefault((id(mgr), key), [bool(now.get(key, False)), {}])
-            entry[1][command] = value
-        mgr.update_agent_flags(flags)
-
-    def settle(self, mgr, command: object, *, taken: bool) -> None:
-        back: dict = {}
-        for (owner, key), entry in list(self._switches.items()):
-            if owner != id(mgr) or command not in entry[1]:
-                continue
-            wrote = entry[1].pop(command)
-            if taken:
-                entry[0] = wrote
-            elif not entry[1]:
-                # No other command is under way for it: back to what it was before them.
-                back[key] = entry[0]
-            if not entry[1]:
-                del self._switches[(owner, key)]
-        if back:
-            mgr.update_agent_flags(back)
-
-
-_unconfirmed = _Unconfirmed()
 
 
 @router.post('/command')

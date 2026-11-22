@@ -398,3 +398,63 @@ async def test_a_switch_another_command_was_answered_for_is_not_taken_back_by_on
     assert manager.agent_flags == {"agent_enabled": True, "browser_use_enabled": True}
     # Nothing is kept of commands that are over.
     assert agent_router._unconfirmed._switches == {}
+
+
+@pytest.mark.asyncio
+async def test_a_command_that_failed_does_not_undo_what_the_flags_route_wrote_meanwhile(monkeypatch):
+    """The browser was on; a command to switch it off is under way; the flags route switches it off and is taken."""
+    import asyncio
+
+    import httpx
+
+    from main_routers import agent_router
+
+    class Manager:
+        def __init__(self) -> None:
+            self.agent_flags: dict = {"agent_enabled": True, "browser_use_enabled": True}
+
+        def update_agent_flags(self, flags: dict) -> None:
+            self.agent_flags.update(flags)
+
+    class Config:
+        def get_character_data(self):
+            return (None, "Lan", None, None, None, None, None, None, None)
+
+        async def aget_character_data(self):
+            return self.get_character_data()
+
+        def is_agent_free(self) -> bool:
+            return False
+
+    manager = Manager()
+
+    async def agent(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/agent/command"):
+            await asyncio.sleep(0.05)
+            return httpx.Response(500, json={"success": False})
+        return httpx.Response(200, json={"success": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(agent))
+    monkeypatch.setattr(agent_router, "_remote_backend_block", lambda: None)
+    monkeypatch.setattr(agent_router, "get_session_manager", lambda: {"Lan": manager})
+    monkeypatch.setattr(agent_router, "get_config_manager", lambda: Config())
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: client)
+
+    class Asked:
+        def __init__(self, body: dict) -> None:
+            self.body = body
+
+        async def json(self) -> dict:
+            return self.body
+
+    async def by_flags() -> object:
+        await asyncio.sleep(0.01)
+        return await agent_router.update_agent_flags(Asked({"flags": {"browser_use_enabled": False}}))
+
+    command, flags = await asyncio.gather(
+        agent_router.post_agent_command(Asked({"command": "set_flag", "key": "browser_use_enabled", "value": False})),
+        by_flags(),
+    )
+    assert command.status_code == 502 and flags["success"] is True
+    assert manager.agent_flags["browser_use_enabled"] is False
+    assert agent_router._unconfirmed._switches == {}
