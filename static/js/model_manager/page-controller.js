@@ -4499,6 +4499,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         textSpan.setAttribute('data-text', text);
     }
 
+    // Find the option for a freshly uploaded VMD. The upload response's
+    // file_path is built from the same raw file name as the list URL that
+    // loadMMDAnimations() stores in option.value (escaping happens only at
+    // load time), so an exact string match is unambiguous even when a
+    // built-in animation shares the file name. An exact match wins; only when
+    // there is none are both sides compared in NFC, because some file systems
+    // (HFS+) list non-ASCII names decomposed (NFD). Exact-first keeps the right
+    // file when a directory holds both spellings (allowed on Linux).
+    function findUploadedMMDAnimationOption(options, uploadResult) {
+        const filePath = uploadResult && typeof uploadResult.file_path === 'string'
+            ? uploadResult.file_path
+            : '';
+        if (!filePath) return null;
+        const candidates = Array.from(options || []).filter(opt => opt && typeof opt.value === 'string');
+        const exact = candidates.find(opt => opt.value === filePath);
+        if (exact) return exact;
+        const normalizedPath = filePath.normalize('NFC');
+        return candidates.find(opt => opt.value.normalize('NFC') === normalizedPath) || null;
+    }
+
     async function loadMMDAnimations() {
         try {
             const data = await RequestHelper.fetchJson('/api/model/mmd/animations');
@@ -8301,14 +8321,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                     // 恢复选择状态
                     if (mmdAnimationSelect) {
                         // 优先选择新上传的动画，否则恢复之前的选择
-                        const newFilename = result.filename || file.name;
-                        const newOption = Array.from(mmdAnimationSelect.options).find(opt => {
-                            const optFilename = opt.getAttribute('data-filename') || opt.textContent;
-                            return optFilename === newFilename;
-                        });
+                        const newOption = findUploadedMMDAnimationOption(mmdAnimationSelect.options, result);
                         
                         if (newOption) {
                             mmdAnimationSelect.value = newOption.value;
+                            // Selecting without a change event keeps the upload from auto-playing,
+                            // so enable the play button here; it plays the selected value. Without
+                            // a loaded model, playback cannot work; loading the model enables it.
+                            if (playMmdAnimationBtn && window.mmdManager && window.mmdManager.currentModel) {
+                                playMmdAnimationBtn.disabled = false;
+                            }
                         } else if (savedAnimUrl) {
                             const optionExists = Array.from(mmdAnimationSelect.options).some(opt => opt.value === savedAnimUrl);
                             if (optionExists) {
