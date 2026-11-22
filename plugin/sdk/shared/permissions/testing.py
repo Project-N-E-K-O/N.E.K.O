@@ -32,6 +32,11 @@ class FakePermissions:
     False for every id, as the host's master switch does. ``answers`` is what ``request()`` resolves an id
     to, as if the user had answered; without one it returns the current state.
     Unknown ids raise ``ValueError`` so a typo fails the test.
+
+    ``request()`` exists only here for now: the ``ctx.permissions`` of a real
+    plugin process has ``get`` and ``on_change`` but no ``request`` yet, so a
+    plugin that calls it passes against the fake and fails with
+    ``AttributeError`` in a real process.
     """
 
     def __init__(

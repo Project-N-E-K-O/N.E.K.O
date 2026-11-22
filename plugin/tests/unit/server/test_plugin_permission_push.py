@@ -63,6 +63,7 @@ def store(monkeypatch, manager):
     monkeypatch.setattr(permission_service, "_removals", {})
     monkeypatch.setattr(permission_service, "_reloads", 0)
     monkeypatch.setattr(permission_push, "_send_failures", {})
+    monkeypatch.setattr(permission_service, "_read_failures", {})
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", None)
     return store
@@ -877,6 +878,7 @@ def test_the_first_read_is_remembered_even_though_it_loads_the_store(monkeypatch
     monkeypatch.setattr(permission_service, "_removals", {})
     monkeypatch.setattr(permission_service, "_reloads", 0)
     monkeypatch.setattr(permission_push, "_send_failures", {})
+    monkeypatch.setattr(permission_service, "_read_failures", {})
     monkeypatch.setattr(
         plugin_permissions, "_change_listeners", [permission_service._on_store_change]
     )
@@ -987,3 +989,64 @@ async def test_repeated_send_failures_are_logged_sparingly(monkeypatch, store, h
     host.fail = None
     assert await permission_push.push_permissions("demo")
     assert any(level == "info" and "again" in line for level, line in log.lines)
+
+
+async def test_a_stopped_plugin_starts_over_with_no_send_failures(monkeypatch, store, hosts):
+    log = Log()
+    monkeypatch.setattr(permission_push, "logger", log)
+    host = hosts["demo"] = Host(fail=RuntimeError("downlink stuck"))
+    for _ in range(3):
+        assert await permission_push.push_permissions("demo") is False
+    host.alive = False
+    assert await permission_push.push_permissions("demo") is False
+    assert "demo" not in permission_push._send_failures
+    # A new process: its first failure is an error again, a first success
+    # is not reported as a recovery.
+    hosts["demo"] = Host()
+    assert await permission_push.push_permissions("demo")
+    assert not any(level == "info" for level, _ in log.lines)
+    hosts["demo"] = Host(fail=RuntimeError("downlink stuck"))
+    log.lines.clear()
+    assert await permission_push.push_permissions("demo") is False
+    assert [level for level, _ in log.lines] == ["error"] and "failures_in_a_row=1" in log.lines[0][1]
+
+
+def test_repeated_read_failures_are_logged_sparingly(monkeypatch, store):
+    log = Log()
+    monkeypatch.setattr(permission_service, "logger", log)
+    readable = permission_service.permission_record
+    _unreadable(monkeypatch)
+    for _ in range(12):
+        assert permission_service.permission_snapshot("demo")["read_failed"]
+    errors = [line for level, line in log.lines if level == "error"]
+    assert len(errors) == 2 and "failures_in_a_row=10" in errors[1]
+    monkeypatch.setattr(permission_service, "permission_record", readable)
+    assert not permission_service.permission_snapshot("demo").get("read_failed")
+    assert any(level == "info" and "again" in line for level, line in log.lines)
+    assert "demo" not in permission_service._read_failures
+
+
+async def test_starting_on_another_loop_drops_the_old_loops_state(monkeypatch, store, hosts):
+    monkeypatch.setattr(plugin_permissions, "_change_listeners", [])
+    service = permission_push.PermissionPushService()
+    old_loop = asyncio.new_event_loop()
+    try:
+        stale_timer = old_loop.call_later(60, lambda: None)
+        stale_task = old_loop.create_future()  # never completes on the old loop
+        service._loop = old_loop
+        service._timers["demo"] = stale_timer
+        service._inflight["demo"] = stale_task
+        service._rerun.add("demo")
+        permission_push._send_failures["demo"] = 4
+        service.start()
+        assert stale_timer.cancelled()
+        assert not service._timers and not service._inflight and not service._rerun
+        assert not permission_push._send_failures
+        host = hosts["demo"] = Host()
+        store.decide("demo", MEMORY_READ, "granted")
+        service.notify(frozenset({"demo"}))
+        await _until(lambda: host.permissions.get(MEMORY_READ).status == "granted")
+        await service.stop()
+    finally:
+        stale_task.cancel()
+        old_loop.close()

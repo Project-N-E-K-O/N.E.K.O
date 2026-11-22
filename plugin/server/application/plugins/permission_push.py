@@ -109,9 +109,11 @@ async def _deliver(plugin_id: str, host: Any | None = None) -> tuple[str, bool]:
         _send_failures.pop(plugin_id, None)
         return NOT_RUNNING, False
     try:
-        if not host.is_alive():
-            return NOT_RUNNING, False
+        alive = host.is_alive()
     except Exception:
+        alive = False
+    if not alive:
+        _send_failures.pop(plugin_id, None)
         return NOT_RUNNING, False
     snapshot = await asyncio.to_thread(permission_snapshot, plugin_id)
     read_failed = bool(snapshot.get("read_failed"))
@@ -161,6 +163,10 @@ class PermissionPushService:
         loop = asyncio.get_running_loop()
         if self._task is not None and not self._task.done() and self._loop is loop:
             return
+        if self._loop is not None and self._loop is not loop:
+            # Restarted on another loop without stop(): tasks and timers of the
+            # old loop never run here, so nothing may wait on them.
+            self._drop_loop_state()
         with self._lock:
             self._loop = loop
             self._wakeup = asyncio.Event()
@@ -175,18 +181,24 @@ class PermissionPushService:
             self._pending.clear()
             self._fresh.clear()
             self._all = False
-        for timer in self._timers.values():
-            timer.cancel()
-        self._timers.clear()
         tasks = [t for t in (task, *self._inflight.values()) if t is not None and not t.done()]
-        self._inflight.clear()
-        self._rerun.clear()
-        self._busy_retries.clear()
-        self._read_retry_delay.clear()
+        self._drop_loop_state()
         for pending in tasks:
             pending.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _drop_loop_state(self) -> None:
+        """Forget the per-loop bookkeeping (timers are cancelled, in-flight
+        tasks only forgotten) and the send-failure counts."""
+        for timer in self._timers.values():
+            timer.cancel()
+        self._timers.clear()
+        self._inflight.clear()
+        self._rerun.clear()
+        self._busy_retries.clear()
+        self._read_retry_delay.clear()
+        _send_failures.clear()
 
     def notify(self, plugin_ids: frozenset[str] | None, *, fresh: bool = True) -> None:
         """Store change listener: may run on any thread, only schedules.

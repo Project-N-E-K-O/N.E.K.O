@@ -331,6 +331,10 @@ _last_records: dict[str, tuple[int, dict]] = {}
 # put the older record back into ``_last_records``.
 _removals: dict[str, int] = {}
 _reloads = 0
+# Consecutive failed reads per plugin: the first is logged as an error, then
+# one line per READ_FAILURE_LOG_EVERY more (the push service retries them).
+READ_FAILURE_LOG_EVERY = 10
+_read_failures: dict[str, int] = {}
 
 
 def _invalidate_last_records(plugin_ids: frozenset[str] | None) -> None:
@@ -460,12 +464,22 @@ def permission_snapshot(plugin_id: str) -> dict:
         read_failed = True
         with _snapshot_lock:
             record = copy.deepcopy(_last_records.get(plugin_id, (0, None))[1])
-        logger.error(
-            "plugin permissions could not be read for the plugin process: plugin_id={}, error={}, using={}",
-            plugin_id,
-            code or type(exc).__name__,
-            "last read" if record is not None else "nothing (enforced permissions count as denied)",
-        )
+            failures = _read_failures.get(plugin_id, 0) + 1
+            _read_failures[plugin_id] = failures
+        if failures == 1 or failures % READ_FAILURE_LOG_EVERY == 0:
+            logger.error(
+                "plugin permissions could not be read for the plugin process: plugin_id={}, error={}, using={}, "
+                "failures_in_a_row={}",
+                plugin_id,
+                code or type(exc).__name__,
+                "last read" if record is not None else "nothing (enforced permissions count as denied)",
+                failures,
+            )
+    else:
+        with _snapshot_lock:
+            recovered = _read_failures.pop(plugin_id, None)
+        if recovered:
+            logger.info("plugin permissions can be read again: plugin_id={}", plugin_id)
     try:
         checks_off = checks_disabled()
     except Exception as exc:
