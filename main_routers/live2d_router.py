@@ -48,7 +48,6 @@ from contextlib import suppress
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import (
     _is_within,
-    _model_dir_relative_to_roots,
     _resolve_workshop_search_dirs,
     find_model_directory,
     find_models,
