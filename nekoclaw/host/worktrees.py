@@ -1170,8 +1170,10 @@ class WorktreeManager:
         for other in (start, head, files_tree):
             if other is None:
                 continue
+            # Only what the index holds: a path it no longer has (git rm
+            # --cached) loses nothing, the file being where it was.
             listed = await self._git(
-                path, "diff-tree", "-r", "-z", "--name-only", "--no-renames", staged, other,
+                path, "diff-tree", "-r", "-z", "--name-only", "--no-renames", "--diff-filter=a", staged, other,
                 timeout=settings.WORKTREE_GIT_WORK_SECONDS,
             )
             names = {name for name in listed.stdout.split(b"\0") if name}

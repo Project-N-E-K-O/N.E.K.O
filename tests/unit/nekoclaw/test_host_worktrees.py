@@ -3520,3 +3520,17 @@ async def test_no_preparing_over_a_version_only_staged(
     assert read(tree.path / "a.txt") == b"worktree\n"
     git(tree.path, "add", "b.txt")  # unstaged by staging the file as it is
     assert "<<<<<<<" in read((await manager.prepare_conflicts(tree, conflict)).path / "a.txt").decode()
+
+
+async def test_a_file_no_longer_tracked_does_not_stop_preparing(
+    repo: Path, manager: WorktreeManager, base: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    write(repo / "a.txt", "project\n")
+    git(tree.path, "rm", "--cached", "-q", "b.txt")  # still on disk: nothing only in the index
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    prepared = await manager.prepare_conflicts(tree, conflict)
+    assert "<<<<<<<" in read(prepared.path / "a.txt").decode()
+    assert exists(prepared.path / "b.txt")
