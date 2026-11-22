@@ -3347,3 +3347,58 @@ async def test_an_index_with_unmerged_entries_is_a_change(repo: Path, manager: W
     entries = f"0 {zero}\ta.txt\n100644 {blob} 1\ta.txt\n100644 {blob} 2\ta.txt\n100644 {blob} 3\ta.txt\n"
     git(tree.path, "update-index", "--index-info", input=entries.encode())  # its file as it was
     assert await manager.has_changes(tree)
+
+
+async def test_a_directory_put_there_while_making_is_not_removed(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    target = base / "w1"
+    real = worktrees._claim_directory
+
+    def raced(path: Path) -> bool:
+        write(path / "theirs.txt", "made by another meanwhile\n")
+        return real(path)
+
+    monkeypatch.setattr(worktrees, "_claim_directory", raced)
+    with pytest.raises(WorktreeError):
+        await manager.create(repo, target)
+    assert read(target / "theirs.txt") == b"made by another meanwhile\n"
+    assert "w1" not in registered(repo)
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_a_landing_cancelled_while_copying_leaves_no_copies(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    import threading
+    import time
+
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n")
+    before = digest(repo)
+    real = worktrees._back_up
+    copying = threading.Event()
+    where: list[Path] = []
+    finished = []
+
+    def slow(root: Path, names: list[str], backup: Path) -> Any:
+        where.append(backup)
+        copying.set()
+        time.sleep(0.5)
+        saved = real(root, names, backup)
+        finished.append(True)
+        return saved
+
+    monkeypatch.setattr(worktrees, "_back_up", slow)
+    landing = asyncio.ensure_future(manager.merge_back(tree))
+    assert await asyncio.to_thread(copying.wait, 30)
+    landing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await landing
+    assert finished  # the copy ran to its end before the copies went
+    for _ in range(100):  # removed in the background once the copy is done
+        if not exists(where[0]):
+            break
+        await asyncio.sleep(0.05)
+    assert not exists(where[0])
+    assert digest(repo) == before

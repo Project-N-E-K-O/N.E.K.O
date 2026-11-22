@@ -431,7 +431,9 @@ class WorktreeManager:
         disk = await self.check_disk(target, await self._checkout_size(repo_root, commit))
         if not disk.enough:
             raise WorktreeUnavailable(DISK_SPACE, f"{disk.free} bytes free, {disk.needed} needed")
-        existed = await asyncio.to_thread(target.exists)
+        # Made here, at once (not merely found missing): a directory another
+        # put there meanwhile is not taken for this one when cleaning up.
+        existed = not await asyncio.to_thread(_claim_directory, target)
         try:
             await self._git(repo_root, "update-ref", ref, commit)
             await self._git(
@@ -1234,7 +1236,11 @@ class WorktreeManager:
         keep = False
         try:
             try:
-                saved = await asyncio.to_thread(_back_up, root, [change.path for change in files], backup)
+                # Waited for to the end: what a copy still writes could not
+                # be removed below (Windows), and would be left unreported.
+                saved = await _to_the_end(
+                    asyncio.to_thread(_back_up, root, [change.path for change in files], backup)
+                )
             except OSError as error:
                 return MergeResult("failed", detail=f"the files to change could not be copied aside: {error}", **counted)
             try:
@@ -1577,6 +1583,16 @@ def _in_the_way(root: Path, written: list[str], held: set[str], nested: set[str]
 def _put_index_back(copy: Path, index: Path) -> None:
     """Put a worktree's index file back from its copy."""
     shutil.copy2(copy, index)
+
+
+def _claim_directory(target: Path) -> bool:
+    """Make the directory a worktree goes in; return False when one was there already (empty, as it may be)."""
+    os.makedirs(_fs(target.parent), exist_ok=True)
+    try:
+        os.mkdir(_fs(target))
+    except FileExistsError:
+        return False
+    return True
 
 
 def _remove_index(index: Path) -> None:
