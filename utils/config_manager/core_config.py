@@ -1997,6 +1997,14 @@ class CoreConfigMixin:
             prefix = prefix_by_type.get(target_model_type, target_model_type)
             provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
             if provider == 'custom':
+                if (
+                    target_model_type == 'agent_small'
+                    and str(core_config.get('AGENT_SMALL_MODEL_URL') or '').strip()
+                    == str(core_config.get('EMOTION_MODEL_URL') or '').strip()
+                ):
+                    # The endpoint was left blank and inherited from the recognition
+                    # tier: its protocol comes along with it.
+                    return _resolved_provider_type_for_model('emotion', seen)
                 return 'openai_compatible'
             if provider == 'follow_conversation':
                 if target_model_type == 'conversation':

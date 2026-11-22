@@ -234,3 +234,31 @@ def test_named_provider_with_a_foreign_url_never_gets_the_recognition_key(config
     small = config_manager.get_model_api_config('agent_small')
     assert small['base_url'] == 'https://my.test/v1'
     assert small['api_key'] != 'sk-emotion-custom'
+
+
+def test_inherited_recognition_endpoint_keeps_its_protocol(config_manager):
+    # Codex P2: custom with a blank URL inherits an Anthropic recognition endpoint; the
+    # request must use the Messages protocol that endpoint speaks.
+    from utils.config_manager import get_assist_api_profiles
+
+    claude_url = get_assist_api_profiles()['claude']['OPENROUTER_URL']
+    _write_core_config(config_manager, {
+        **BASE, 'enableCustomApi': True, 'assistApiKeyClaude': 'sk-claude-test',
+        'emotionModelProvider': 'claude', 'emotionModelUrl': claude_url,
+        'agentSmallModelProvider': 'custom', 'agentSmallModelUrl': '', 'agentSmallModelId': '',
+    })
+    small = config_manager.get_model_api_config('agent_small')
+    assert small['base_url'] == claude_url
+    assert small['provider_type'] == 'anthropic'
+
+
+def test_custom_small_familiar_with_its_own_endpoint_speaks_openai(config_manager):
+    from utils.config_manager import get_assist_api_profiles
+
+    claude_url = get_assist_api_profiles()['claude']['OPENROUTER_URL']
+    _write_core_config(config_manager, {
+        **BASE, 'enableCustomApi': True, 'assistApiKeyClaude': 'sk-claude-test',
+        'emotionModelProvider': 'claude', 'emotionModelUrl': claude_url,
+        **SMALL_CUSTOM,
+    })
+    assert config_manager.get_model_api_config('agent_small')['provider_type'] == 'openai_compatible'
