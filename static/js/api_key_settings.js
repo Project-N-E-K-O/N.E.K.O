@@ -3464,6 +3464,7 @@ function updateAssistApiKeyInputAvailability() {
 
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
+    updateLegacyVisionNotice();
     const enableCustomApi = document.getElementById('enableCustomApi');
     const coreApiSelect = document.getElementById('coreApiSelect');
     const assistApiSelect = document.getElementById('assistApiSelect');
@@ -3556,7 +3557,9 @@ const LEGACY_VISION_FOLLOW_PROVIDERS = ['follow_assist', 'follow_core', 'follow_
 let _legacyVisionRoute = null;
 
 function legacyVisionRoute(data) {
-    if (!data || !data.enableCustomApi) return null;
+    // The saved destination is kept even while custom models are off: turning
+    // them on makes it live again (see updateLegacyVisionNotice).
+    if (!data) return null;
     const provider = String(data.visionModelProvider || '').trim();
     if (LEGACY_VISION_FOLLOW_PROVIDERS.includes(provider)) return null;
     const model = String(data.visionModelId || '').trim();
@@ -3575,8 +3578,11 @@ function updateLegacyVisionNotice() {
     const text = document.getElementById('legacyVisionNoticeText');
     const button = document.getElementById('legacyVisionStopBtn');
     if (!box || !text) return;
-    const route = _legacyVisionRoute;
+    const enableCustomApi = document.getElementById('enableCustomApi');
+    const route = enableCustomApi && enableCustomApi.checked ? _legacyVisionRoute : null;
     box.hidden = !route;
+    // .field-row sets display:flex, which would override the hidden attribute.
+    box.style.display = route ? '' : 'none';
     if (!route) return;
     const params = { model: route.model || '?', url: route.url || '?' };
     if (_clearLegacyVisionOnSave) {

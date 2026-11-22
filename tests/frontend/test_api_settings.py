@@ -2359,11 +2359,21 @@ def test_legacy_vision_destination_is_visible_and_can_be_stopped(mock_page: Page
     mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     notice = mock_page.locator("#legacyVisionNotice")
-    # Checked on the element itself: the card may be collapsed either way.
-    assert mock_page.evaluate("document.getElementById('legacyVisionNotice').hidden") is (not shown)
-    if not shown:
-        return
     mock_page.evaluate("document.getElementById('custom-api-options').style.display = 'block'; toggleModelConfig('conversation')")
+    expect(mock_page.locator("#conversationModelUrl")).to_be_visible()
+    # Real visibility, not just the hidden attribute (.field-row sets display:flex).
+    if not shown:
+        expect(notice).not_to_be_visible()
+        return
+    expect(notice).to_be_visible()
+    # Turning custom models off hides it; turning them on again shows it.
+    mock_page.evaluate("document.getElementById('enableCustomApi').checked = false; toggleCustomApi(true)")
+    assert mock_page.evaluate("getComputedStyle(document.getElementById('legacyVisionNotice')).display") == "none"
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi(true);
+        document.getElementById('custom-api-options').style.display = 'block';
+    }""")
     expect(notice).to_be_visible()
     expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("llava")
     expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("127.0.0.1:11434")
@@ -2379,3 +2389,33 @@ def test_legacy_vision_destination_is_visible_and_can_be_stopped(mock_page: Page
     }""")
     assert payload["visionModelId"] == "" and payload["visionModelUrl"] == ""
     assert payload["enableCustomApi"] is True
+
+
+
+@pytest.mark.frontend
+def test_legacy_vision_notice_appears_when_custom_models_are_turned_on(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=False,
+            visionModelProvider="custom",
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    assert mock_page.evaluate("getComputedStyle(document.getElementById('legacyVisionNotice')).display") == "none"
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi(true);
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    expect(mock_page.locator("#legacyVisionNotice")).to_be_visible()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("llava")
