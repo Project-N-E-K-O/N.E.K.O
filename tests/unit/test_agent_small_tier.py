@@ -283,3 +283,27 @@ def test_stale_fields_under_a_follow_choice_never_reach_the_region_scan(config_m
     assert cfg['AGENT_SMALL_MODEL_URL'] == ''
     assert cfg['AGENT_SMALL_MODEL_API_KEY'] == ''
     assert ConfigManager._config_needs_region(cfg) is False
+
+
+@pytest.mark.parametrize('small', [
+    # The settings page saves blank fields as '' rather than omitting them.
+    {'agentSmallModelUrl': '', 'agentSmallModelId': '', 'agentSmallModelApiKey': ''},
+    {'agentSmallModelUrl': '', 'agentSmallModelId': 'my-model', 'agentSmallModelApiKey': ''},
+    {'agentSmallModelUrl': 'https://emotion.custom.test/v1', 'agentSmallModelId': '', 'agentSmallModelApiKey': ''},
+    {'agentSmallModelUrl': 'https://emotion.custom.test/v1/', 'agentSmallModelId': '', 'agentSmallModelApiKey': ''},
+])
+def test_blank_key_on_the_recognition_endpoint_uses_the_recognition_key(config_manager, small):
+    _write_core_config(config_manager, {
+        **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM, 'agentSmallModelProvider': 'custom', **small,
+    })
+    result = config_manager.get_model_api_config('agent_small')
+    assert result['base_url'].rstrip('/') == 'https://emotion.custom.test/v1'
+    assert result['api_key'] == 'sk-emotion-custom'
+
+
+def test_blank_key_on_a_different_endpoint_stays_blank(config_manager):
+    _write_core_config(config_manager, {
+        **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM, 'agentSmallModelProvider': 'custom',
+        'agentSmallModelUrl': 'https://my.test/v1', 'agentSmallModelId': '', 'agentSmallModelApiKey': '',
+    })
+    assert config_manager.get_model_api_config('agent_small')['api_key'] == ''

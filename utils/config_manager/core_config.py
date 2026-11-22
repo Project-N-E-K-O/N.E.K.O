@@ -1729,6 +1729,20 @@ class CoreConfigMixin:
                     elif cfg_key is not None:
                         config[apikey_key] = cfg_key
 
+            # The small familiar tier pointed at the recognition endpoint (left blank or
+            # typed as the same endpoint) with no key of its own uses the recognition key:
+            # the settings page saves a blank key field as '' and that must not leave the
+            # inherited endpoint unauthenticated. A different endpoint never gets it.
+            if str(config.get('agentSmallModelProvider') or '') not in ('', 'follow_emotion', 'follow_agent'):
+                _small_url = str(config.get('AGENT_SMALL_MODEL_URL') or '').strip()
+                _emotion_url = str(config.get('EMOTION_MODEL_URL') or '').strip()
+                if (
+                    _small_url
+                    and not str(config.get('AGENT_SMALL_MODEL_API_KEY') or '').strip()
+                    and same_endpoint(_small_url, _emotion_url)
+                ):
+                    config['AGENT_SMALL_MODEL_API_KEY'] = config.get('EMOTION_MODEL_API_KEY', '')
+
             # TTS Voice ID serves as fallback for character voice_id.
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
@@ -2003,10 +2017,9 @@ class CoreConfigMixin:
             prefix = prefix_by_type.get(target_model_type, target_model_type)
             provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
             if provider == 'custom':
-                if (
-                    target_model_type == 'agent_small'
-                    and str(core_config.get('AGENT_SMALL_MODEL_URL') or '').strip()
-                    == str(core_config.get('EMOTION_MODEL_URL') or '').strip()
+                if target_model_type == 'agent_small' and same_endpoint(
+                    str(core_config.get('AGENT_SMALL_MODEL_URL') or '').strip(),
+                    str(core_config.get('EMOTION_MODEL_URL') or '').strip(),
                 ):
                     # The endpoint was left blank and inherited from the recognition
                     # tier: its protocol comes along with it.
