@@ -47,7 +47,7 @@ from contextlib import suppress
 
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import (
-    _is_within,
+    _model_dir_relative_to_roots,
     _resolve_workshop_search_dirs,
     find_model_directory,
     find_models,
@@ -374,21 +374,6 @@ def _upsert_model(
         'source': source,
         'item_id': item_id
     })
-
-
-def _model_dir_relative_to_roots(model_dir: str, roots) -> str | None:
-    """
-    Path of *model_dir* relative to the first of *roots* that contains it,
-    with forward slashes; None when no root contains it.
-    """
-    model_dir_real = os.path.realpath(model_dir)
-    for root in roots:
-        if not root:
-            continue
-        root_real = os.path.realpath(root)
-        if model_dir_real != root_real and _is_within(root_real, model_dir_real):
-            return os.path.relpath(model_dir_real, root_real).replace(os.sep, '/')
-    return None
 
 
 def _locate_model_config(model_dir: str):

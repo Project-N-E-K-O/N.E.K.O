@@ -1047,6 +1047,19 @@ def test_model_files_by_name_fallback_keeps_both_levels_of_user_mods_urls(librar
         assert client.get(foxtrot).status_code == 200
 
 
+def test_find_model_config_file_keeps_the_mod_folder_in_user_mods_urls(libraries, monkeypatch):
+    # Same setup as above: skip the Workshop pass so the /user_mods branch is reached.
+    monkeypatch.setattr(frontend_utils, "_resolve_workshop_search_dirs", lambda: [])
+    _write_model(libraries.a / "mods" / "Delta", "live2d", "Delta")
+    # A mod folder that is itself the model folder, named differently from the model.
+    _write_model(libraries.a / "pack", "live2d", "Kilo")
+    _write_model(libraries.a / "Foxtrot", "live2d", "Foxtrot")
+    assert frontend_utils.find_model_config_file("Delta") == "/user_mods/mods/Delta/Delta.model3.json"
+    assert frontend_utils.find_model_config_file("Kilo") == "/user_mods/pack/Kilo.model3.json"
+    # A model folder directly in the mod root keeps its old URL.
+    assert frontend_utils.find_model_config_file("Foxtrot") == "/user_mods/Foxtrot/Foxtrot.model3.json"
+
+
 def test_model_files_urls_for_ordinary_layouts_are_unchanged(libraries):
     # By item id, flat and nested.
     _write_model(libraries.a / "100", "live2d", "Alpha")
