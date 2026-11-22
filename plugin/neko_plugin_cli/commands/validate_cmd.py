@@ -1283,16 +1283,14 @@ def _check_permission_usage(
     scripts left out of the package (build/, dist/, [tool.neko.build]
     excludes) never run in the plugin.
     """
-    sources = read_capability_sources(plugin_dir)
     try:
         rules = load_build_rules(pyproject)
     except (TypeError, ValueError):
         rules = load_build_rules(None)
-    sources.files = [
-        (relative, text)
-        for relative, text in sources.files
-        if not should_skip_path(Path(relative), is_dir=False, rules=rules)
-    ]
+    # Filter before reading so excluded files do not use up the scan budget.
+    sources = read_capability_sources(
+        plugin_dir, include=lambda relative: not should_skip_path(relative, is_dir=False, rules=rules)
+    )
     report = analyze_capabilities(plugin_dir, declarations=declarations, sources=sources)
     found = compare_declarations(report)
     issues.extend(_permission_issue(issue) for issue in found)

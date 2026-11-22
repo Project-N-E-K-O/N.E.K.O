@@ -1352,3 +1352,13 @@ def test_an_entry_with_any_error_is_invalid():
     assert ("error", "hosts_type") in _codes(issues)
     assert declarations.ids() == frozenset()
     assert declarations.invalid == {"system.network:connect"}
+
+
+def test_excluded_files_do_not_use_up_the_scan_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "MAX_FILES", 2)
+    plugin_dir = _plugin(tmp_path, "import subprocess\nsubprocess.run(['ls'])\n", "[permissions]\n")
+    (plugin_dir / "build").mkdir()
+    for index in range(5):
+        (plugin_dir / "build" / f"a{index}.py").write_text("x = 1\n", encoding="utf-8")
+    errors = _issues(plugin_dir, "error")
+    assert [message for message in errors if "system.process:spawn" in message]

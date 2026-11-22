@@ -10,7 +10,7 @@ import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from plugin.core.permission_declarations import (
     PermissionDeclarations,
@@ -1117,11 +1117,23 @@ def _skipped_parts(root: Path, stop: Event | None) -> list[dict]:
     return skipped
 
 
-def read_capability_sources(root: Path, *, stop: Event | None = None) -> CapabilitySources:
-    """Read a bounded snapshot and close source handles before parsing."""
+def read_capability_sources(
+    root: Path,
+    *,
+    stop: Event | None = None,
+    include: Callable[[Path], bool] | None = None,
+) -> CapabilitySources:
+    """Read a bounded snapshot and close source handles before parsing.
+
+    ``include`` (given a plugin-relative path) filters files before they
+    count toward the file and size budgets.
+    """
     sources = CapabilitySources()
+    paths = iter_capability_sources(root)
+    if include is not None:
+        paths = (path for path in paths if include(path.relative_to(root)))
     try:
-        for index, path in enumerate(iter_capability_sources(root)):
+        for index, path in enumerate(paths):
             if stop is not None and stop.is_set():
                 break
             if index >= MAX_FILES or sources.size >= MAX_SOURCE_BYTES:
