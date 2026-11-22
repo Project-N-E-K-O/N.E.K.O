@@ -284,15 +284,22 @@ def test_source_resolver_failure_imports_without_source(manager):
 
 
 @pytest.mark.parametrize(
-    "content",
+    ("content", "code"),
     [
-        "{broken",
-        json.dumps({"schema_version": 2, "plugins": {}}),
-        json.dumps({"schema_version": 1, "plugins": {"x": []}}),
-        json.dumps({"schema_version": 1, "plugins": {"x": {"permissions": []}}}),
+        ("{broken", "PLUGIN_PERMISSIONS_CORRUPT"),
+        (json.dumps([1]), "PLUGIN_PERMISSIONS_CORRUPT"),
+        (json.dumps({"plugins": {}}), "PLUGIN_PERMISSIONS_CORRUPT"),
+        (json.dumps({"schema_version": 0, "plugins": {}}), "PLUGIN_PERMISSIONS_CORRUPT"),
+        (json.dumps({"schema_version": True, "plugins": {}}), "PLUGIN_PERMISSIONS_CORRUPT"),
+        (json.dumps({"schema_version": 1, "plugins": {"x": []}}), "PLUGIN_PERMISSIONS_CORRUPT"),
+        (
+            json.dumps({"schema_version": 1, "plugins": {"x": {"permissions": []}}}),
+            "PLUGIN_PERMISSIONS_CORRUPT",
+        ),
+        (json.dumps({"schema_version": 2, "plugins": {}}), "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"),
     ],
 )
-def test_unreadable_store_raises_and_is_never_overwritten(manager, content):
+def test_unreadable_store_raises_and_is_never_overwritten(manager, content, code):
     manager.root.mkdir(parents=True)
     _new_file(manager).write_text(content, encoding="utf-8")
     store = PluginPermissionStore(manager)
@@ -300,9 +307,112 @@ def test_unreadable_store_raises_and_is_never_overwritten(manager, content):
     for call in (lambda: store.read("x"), lambda: store.decide("x", MEMORY_READ, "granted")):
         with pytest.raises(ServerDomainError) as captured:
             call()
-        assert captured.value.code == "PLUGIN_PERMISSIONS_READ_FAILED"
+        assert captured.value.code == code
+        assert captured.value.status_code == 500
+        assert captured.value.details["retryable"] is False
+        assert captured.value.details["file"] == "plugin_permissions.json"
     assert _new_file(manager).read_text(encoding="utf-8") == content
     assert manager.saves == 0
+
+
+def test_newer_store_version_reports_found_and_supported_versions(manager):
+    manager.root.mkdir(parents=True)
+    _new_file(manager).write_text(
+        json.dumps({"schema_version": 7, "plugins": {}}), encoding="utf-8"
+    )
+
+    with pytest.raises(ServerDomainError) as captured:
+        PluginPermissionStore(manager).read("x")
+
+    assert captured.value.details["schema_version"] == 7
+    assert captured.value.details["supported_schema_version"] == 1
+
+
+def test_store_io_error_is_a_retryable_read_failure(manager):
+    manager.root.mkdir(parents=True)
+    _new_file(manager).mkdir()  # reading a directory raises an OSError
+
+    with pytest.raises(ServerDomainError) as captured:
+        PluginPermissionStore(manager).read("x")
+
+    assert captured.value.code == "PLUGIN_PERMISSIONS_READ_FAILED"
+    assert captured.value.status_code == 503
+    assert captured.value.details == {"file": "plugin_permissions.json", "retryable": True}
+
+
+# ---------------------------------------------------------------------------
+# Read API
+# ---------------------------------------------------------------------------
+
+
+async def _get(path: str):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from plugin.server.routes import plugin_permissions as routes
+
+    app = FastAPI()
+    app.include_router(routes.router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+        return await client.get(path)
+
+
+@pytest.fixture
+def api_store(monkeypatch, manager):
+    store = PluginPermissionStore(manager, source_resolver=lambda _pid: None)
+    monkeypatch.setattr(permission_service, "permission_store", store)
+    monkeypatch.setattr(permission_service, "current_source", lambda _pid: None)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_read_api_returns_the_plugin_record(api_store):
+    api_store.decide("demo", MEMORY_READ, "granted")
+
+    response = await _get("/plugin-permissions/plugins/demo")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["plugin_id"] == "demo"
+    assert body["permissions"][MEMORY_READ]["state"] == "granted"
+    assert body["source_confirmed"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "status", "code"),
+    [
+        ("{broken", 500, "PLUGIN_PERMISSIONS_CORRUPT"),
+        (json.dumps({"schema_version": 9, "plugins": {}}), 500, "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"),
+    ],
+)
+async def test_read_api_reports_unreadable_store_with_a_stable_code(
+    api_store, manager, content, status, code
+):
+    manager.root.mkdir(parents=True)
+    _new_file(manager).write_text(content, encoding="utf-8")
+
+    response = await _get("/plugin-permissions/plugins/demo")
+
+    assert response.status_code == status
+    assert response.headers["X-Error-Code"] == code
+    detail = response.json()["detail"]
+    assert detail["code"] == code
+    assert detail["message"]
+    assert detail["details"]["retryable"] is False
+    assert _new_file(manager).read_text(encoding="utf-8") == content
+
+
+@pytest.mark.asyncio
+async def test_read_api_reports_io_failure_as_retryable(api_store, manager):
+    manager.root.mkdir(parents=True)
+    _new_file(manager).mkdir()
+
+    response = await _get("/plugin-permissions/plugins/demo")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "PLUGIN_PERMISSIONS_READ_FAILED"
+    assert response.json()["detail"]["details"]["retryable"] is True
 
 
 def test_write_failure_raises_and_keeps_previous_state(manager):

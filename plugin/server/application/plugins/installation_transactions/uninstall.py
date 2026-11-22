@@ -29,6 +29,9 @@ from plugin.server.application.plugins.permission_service import (
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.plugin_permissions import (
+    READ_ERROR_CODES as PERMISSION_READ_ERROR_CODES,
+)
 from plugin.server.infrastructure.autostart_approvals import (
     clear_autostart_pending,
     is_autostart_approved,
@@ -803,7 +806,7 @@ async def _forget_permissions_precommit(plugin_id: str) -> dict | None:
     try:
         return await asyncio.to_thread(forget_permissions, plugin_id)
     except ServerDomainError as exc:
-        if exc.code == "PLUGIN_PERMISSIONS_READ_FAILED":
+        if exc.code in PERMISSION_READ_ERROR_CODES:
             logger.error(
                 "uninstall could not read plugin permissions; grants of {} were "
                 "not cleared",

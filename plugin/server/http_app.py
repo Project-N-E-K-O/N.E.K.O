@@ -364,6 +364,11 @@ def build_plugin_server_app(
     )
 
     app.include_router(plugin_consent_router)
+    from plugin.server.routes.plugin_permissions import (
+        router as plugin_permissions_router,
+    )
+
+    app.include_router(plugin_permissions_router)
     from plugin.server.routes.plugin_audit import router as plugin_audit_router
 
     app.include_router(plugin_audit_router)

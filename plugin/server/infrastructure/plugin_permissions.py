@@ -117,13 +117,37 @@ class PluginSource:
 SourceResolver = Callable[[str], "PluginSource | None"]
 
 
-def _read_failed(message: str) -> ServerDomainError:
-    return ServerDomainError("PLUGIN_PERMISSIONS_READ_FAILED", message, 503)
+# Stable error codes for a store that cannot be read. Callers (and API
+# clients) can rely on these; see ``READ_ERROR_CODES``.
+READ_FAILED = "PLUGIN_PERMISSIONS_READ_FAILED"  # I/O error, may be transient
+CORRUPT = "PLUGIN_PERMISSIONS_CORRUPT"  # content is not a valid store
+UNSUPPORTED_VERSION = "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"  # written by a newer version
+READ_ERROR_CODES = frozenset({READ_FAILED, CORRUPT, UNSUPPORTED_VERSION})
+WRITE_FAILED = "PLUGIN_PERMISSIONS_WRITE_FAILED"
+
+
+def _read_failed(message: str, *, file: str = FILENAME) -> ServerDomainError:
+    return ServerDomainError(
+        READ_FAILED, message, 503, details={"file": file, "retryable": True}
+    )
+
+
+class _UnsupportedVersion(ValueError):
+    def __init__(self, found: int):
+        super().__init__("Unsupported permission document version")
+        self.found = found
 
 
 def _validate_document(raw: Any) -> dict:
-    if not isinstance(raw, dict) or raw.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError("Unsupported permission document")
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid permission document")
+    version = raw.get("schema_version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise ValueError("Invalid permission document version")
+    if version > SCHEMA_VERSION:
+        raise _UnsupportedVersion(version)
+    if version != SCHEMA_VERSION:
+        raise ValueError("Invalid permission document version")
     plugins = raw.get("plugins")
     if not isinstance(plugins, dict):
         raise ValueError("Invalid permission document")
@@ -133,6 +157,30 @@ def _validate_document(raw: Any) -> dict:
         ):
             raise ValueError("Invalid permission record")
     return raw
+
+
+def _load_error(exc: Exception) -> ServerDomainError:
+    if isinstance(exc, _UnsupportedVersion):
+        return ServerDomainError(
+            UNSUPPORTED_VERSION,
+            "Plugin permission records were saved by a newer version of N.E.K.O "
+            "and cannot be read by this version",
+            500,
+            details={
+                "file": FILENAME,
+                "schema_version": exc.found,
+                "supported_schema_version": SCHEMA_VERSION,
+                "retryable": False,
+            },
+        )
+    if isinstance(exc, OSError):
+        return _read_failed("Plugin permission records could not be read")
+    return ServerDomainError(
+        CORRUPT,
+        "Plugin permission records are damaged and cannot be read",
+        500,
+        details={"file": FILENAME, "retryable": False},
+    )
 
 
 class PluginPermissionStore:
@@ -172,7 +220,7 @@ class PluginPermissionStore:
                 "plugin permission store could not be read: error={}",
                 type(exc).__name__,
             )
-            raise _read_failed("Plugin permission records could not be read") from exc
+            raise _load_error(exc) from exc
         if document is None:
             document = self._initial_document(path.with_name(LEGACY_FILENAME))
             try:
@@ -207,7 +255,9 @@ class PluginPermissionStore:
                 "legacy plugin consents could not be read: error={}",
                 type(exc).__name__,
             )
-            raise _read_failed("Legacy plugin consent records could not be read") from exc
+            raise _read_failed(
+                "Legacy plugin consent records could not be read", file=LEGACY_FILENAME
+            ) from exc
         except (ValueError, UnicodeError) as exc:
             logger.error(
                 "legacy plugin consents are not valid JSON and were not imported: error={}",
@@ -300,7 +350,7 @@ class PluginPermissionStore:
                 type(exc).__name__,
             )
             raise ServerDomainError(
-                "PLUGIN_PERMISSIONS_WRITE_FAILED",
+                WRITE_FAILED,
                 "Plugin permission records could not be saved",
                 503,
             ) from exc

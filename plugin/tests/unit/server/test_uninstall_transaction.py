@@ -1558,3 +1558,26 @@ async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
     view = permission_service.permission_record("demo")
     assert view["source"] == {"channel": "market", "fingerprint": "mk-demo"}
     assert "plugin_sdk.main_agent.memory:read" in view["permissions"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code",
+    ["PLUGIN_PERMISSIONS_CORRUPT", "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"],
+)
+async def test_uninstall_proceeds_when_permission_store_is_damaged_or_newer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, code: str
+) -> None:
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+
+    def _fail(*_args: object) -> None:
+        raise ServerDomainError(code, "Plugin permission records cannot be read", 500)
+
+    monkeypatch.setattr(uninstall_module, "forget_permissions", _fail)
+    monkeypatch.setattr(uninstall_module, "load_permissions", _fail)
+
+    result = await uninstall_plugin("demo")
+
+    assert result.deleted_from_disk is True
