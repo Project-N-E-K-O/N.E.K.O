@@ -264,6 +264,23 @@ def test_persona_rewrite_chain_back_to_old_text_is_not_replayed(tmp_path):
     assert handler(NAME, second) is False
     assert path.read_bytes() == before
 
+    # History trimmed past the old row (cap 5): the never-trimmed stamp still says
+    # a save at or after this event landed, so replay keeps the current text.
+    path = _seed_persona(tmp_path, "A", version_history=[], text_rewritten_at="2026-11-22T10:07:00")
+    before = path.read_bytes()
+    stamped = _rewrite_payload(
+        "A", "B", history_reason="manual_edit", replaced_at="2026-11-22T10:01:00",
+        rewritten_at="2026-11-22T10:01:00",
+    )
+    assert handler(NAME, stamped) is False
+    assert path.read_bytes() == before
+
+    # Lost save: the stamp is older than the event, so the rewrite comes back and is stamped.
+    path = _seed_persona(tmp_path, "A", text_rewritten_at="2026-11-22T09:00:00")
+    assert handler(NAME, stamped) is True
+    entry = _read_json(path)["master"]["facts"][0]
+    assert entry["text"] == "B" and entry["text_rewritten_at"] == "2026-11-22T10:01:00"
+
     # Promotion merge: its reflection id already in merged_from_ids means it landed.
     path = _seed_persona(tmp_path, "A", merged_from_ids=["ref_1"])
     before = path.read_bytes()
@@ -377,6 +394,20 @@ def test_reflection_merge_archive_replay_three_states(tmp_path):
     rows = _read_json(path)
     assert [r["id"] for r in rows] == ["r_keep"]
     assert rows[0]["text"] == "merged" and rows[0]["embedding"] is None
+
+    # Crash in a merge that kept the survivor's wording: drop is still archived.
+    same = {
+        **payload, "merged_keep_text": "keep before",
+        "merged_keep_text_sha256": _sha("keep before"),
+        "merged_keep_previous_text_sha256": _sha("keep before"),
+        "from": "pending", "entry_snapshot": {"id": "r_drop", "text": "drop"},
+    }
+    path = _seed_reflections(tmp_path, [
+        {"id": "r_keep", "text": "keep before"},
+        {"id": "r_drop", "text": "drop"},
+    ])
+    assert handler(NAME, same) is True
+    assert _read_json(path) == [{"id": "r_keep", "text": "keep before"}]
 
     # Merge landed (drop gone) and the survivor was edited afterwards: survivor untouched.
     path = _seed_reflections(tmp_path, [{"id": "r_keep", "text": "edited afterwards"}])

@@ -850,6 +850,9 @@ class FactsMixin:
                 'previous_text_sha256': hashlib.sha256(
                     str(target_entry.get('text') or '').encode('utf-8'),
                 ).hexdigest(),
+                # Persisted on the entry by the same save; replay compares
+                # the two to tell a lost save from a later change.
+                'rewritten_at': now_iso,
                 'reinforcement': float(merged_reinforcement),
                 'disputation': float(merged_disputation),
                 # Both clocks bumped — the merge IS a fresh signal on this
@@ -913,6 +916,7 @@ class FactsMixin:
                 # to the log, so any crash from here onward is
                 # replay-recoverable.
                 target_entry['text'] = merged_text
+                target_entry['text_rewritten_at'] = now_iso
                 target_entry['reinforcement'] = float(merged_reinforcement)
                 target_entry['disputation'] = float(merged_disputation)
                 target_entry['rein_last_signal_at'] = now_iso
@@ -1225,6 +1229,7 @@ class FactsMixin:
                 'previous_text_sha256': hashlib.sha256(
                     str(entry.get('text') or '').encode('utf-8'),
                 ).hexdigest(),
+                'rewritten_at': now_iso,
                 'history_reason': 'manual_edit',
                 'replaced_at': now_iso,
                 'source': 'manual_edit',
@@ -1235,6 +1240,7 @@ class FactsMixin:
 
             def _sync_mutate(_view):
                 entry['text'] = cleaned
+                entry['text_rewritten_at'] = now_iso
                 entry['version_history'] = updated_history
                 self._invalidate_token_count_cache(entry)
                 self._invalidate_embedding_cache(entry)
@@ -1320,6 +1326,7 @@ class FactsMixin:
                     'previous_text_sha256': hashlib.sha256(
                         str(keep_entry.get('text') or '').encode('utf-8'),
                     ).hexdigest(),
+                    'rewritten_at': now_iso,
                     'history_reason': 'manual_merge',
                     'replaced_at': now_iso,
                     'source': 'manual_merge',
@@ -1330,6 +1337,7 @@ class FactsMixin:
 
                 def _sync_mutate_edit(_view):
                     keep_entry['text'] = cleaned
+                    keep_entry['text_rewritten_at'] = now_iso
                     keep_entry['version_history'] = updated_history
                     self._invalidate_token_count_cache(keep_entry)
                     self._invalidate_embedding_cache(keep_entry)
@@ -1478,6 +1486,7 @@ class FactsMixin:
                 'previous_text_sha256': hashlib.sha256(
                     str(entry.get('text') or '').encode('utf-8'),
                 ).hexdigest(),
+                'rewritten_at': now_iso,
                 'source': 'manual_restore',
             }
             if current_text and current_text != restored_text:
@@ -1489,6 +1498,7 @@ class FactsMixin:
 
             def _sync_mutate(_view):
                 entry['text'] = restored_text
+                entry['text_rewritten_at'] = now_iso
                 entry['version_history'] = new_history
                 self._invalidate_token_count_cache(entry)
                 self._invalidate_embedding_cache(entry)

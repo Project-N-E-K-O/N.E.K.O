@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime
 from typing import Callable
 
 from memory.event_log import (
@@ -112,10 +113,15 @@ def _persona_rewrite_landed(entry: dict, payload: dict) -> bool:
     """Whether the view shows this rewrite's save already landed.
 
     The text alone cannot tell: a later change can bring the replaced text
-    back. The row the same save wrote can: the version-history row it added
-    (unique ``replaced_at``), or for a promotion merge its reflection id in
-    ``merged_from_ids``.
+    back. What the same save wrote can: the entry's ``text_rewritten_at``
+    stamp at or after the event's ``rewritten_at`` (never trimmed, unlike
+    the version history). Events without the stamp fall back to the
+    version-history row the save added (unique ``replaced_at``), or for a
+    promotion merge its reflection id in ``merged_from_ids``.
     """
+    stamp = payload.get('rewritten_at')
+    if isinstance(stamp, str) and stamp:
+        return _not_before(entry.get('text_rewritten_at'), stamp)
     reason = payload.get('history_reason')
     replaced_at = payload.get('replaced_at')
     if reason and replaced_at:
@@ -129,6 +135,17 @@ def _persona_rewrite_landed(entry: dict, payload: dict) -> bool:
     if isinstance(merged, list) and merged:
         return set(merged) <= set(entry.get('merged_from_ids') or [])
     return False
+
+
+def _not_before(mark, stamp: str) -> bool:
+    """Whether the persisted ``mark`` is at or after ``stamp`` (ISO local times)."""
+    if not isinstance(mark, str) or not mark:
+        return False
+    try:
+        from memory.temporal import to_naive_local
+        return to_naive_local(datetime.fromisoformat(mark)) >= to_naive_local(datetime.fromisoformat(stamp))
+    except (ValueError, TypeError, OverflowError, OSError):
+        return mark == stamp
 
 
 def _status_change_landed(row: dict, payload: dict, to_status: str) -> bool:
@@ -169,6 +186,8 @@ def _replay_persona_rewrite(persona_manager, entry: dict, payload: dict) -> None
         })
         entry['version_history'] = history[-PERSONA_VERSION_HISTORY_MAX:]
     entry['text'] = new_text
+    if payload.get('rewritten_at'):
+        entry['text_rewritten_at'] = payload['rewritten_at']
     for hook, keys in (
         ('_invalidate_token_count_cache',
          ('token_count', 'token_count_text_sha256', 'token_count_tokenizer')),
@@ -573,7 +592,13 @@ def make_reflection_archive_handler(reflection_engine):
                     text_key='merged_keep_text',
                     previous_key='merged_keep_previous_text_sha256',
                 )
-                if survivor is None or keep_state != _REWRITE_PENDING:
+                # A merge that kept the survivor's wording has equal before and
+                # after hashes, so "already at the merged text" is its untouched state.
+                unchanged_wording = (
+                    keep_state == _REWRITE_APPLIED
+                    and payload.get('merged_keep_previous_text_sha256') == merged_keep_sha
+                )
+                if survivor is None or not (keep_state == _REWRITE_PENDING or unchanged_wording):
                     _log_skipped_rewrite(
                         name, 'reflection.merge', merged_keep_id,
                         keep_state if keep_state == _REWRITE_UNVERIFIABLE else _REWRITE_SUPERSEDED,
@@ -586,7 +611,7 @@ def make_reflection_archive_handler(reflection_engine):
                 ):
                     _log_skipped_rewrite(name, 'reflection.merge', rid, _REWRITE_SUPERSEDED)
                     return False
-                survivor_rewrite = payload['merged_keep_text']
+                survivor_rewrite = payload.get('merged_keep_text')
 
         # Step 1+2: shard self-heal (write entry into the named shard
         # if missing). Skipped if the event lacks the snapshot fields
