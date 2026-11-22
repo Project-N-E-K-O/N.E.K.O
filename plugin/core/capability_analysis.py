@@ -757,6 +757,11 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             # A context alone starts nothing; only what is created on it.
             "multiprocessing.get_context().Process",
             "multiprocessing.get_context().Pool",
+            # Managers run a server process.
+            "multiprocessing.Manager",
+            "multiprocessing.get_context().Manager",
+            "multiprocessing.managers.SyncManager().start",
+            "multiprocessing.managers.BaseManager().start",
             "concurrent.futures.ProcessPoolExecutor",
             "concurrent.futures.process.ProcessPoolExecutor",
             "os.fork",

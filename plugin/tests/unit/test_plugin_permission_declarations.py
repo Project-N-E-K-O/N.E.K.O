@@ -1450,6 +1450,10 @@ def test_cli_rejects_permissions_on_every_sdk_decorator(tmp_path):
         ("from multiprocessing.pool import Pool\nPool(2)", "system.process:spawn"),
         ("import multiprocessing as mp\nmp.get_context('spawn').Process(target=print).start()", "system.process:spawn"),
         ("import multiprocessing as mp\nctx = mp.get_context('spawn')\nctx.Pool(2)", "system.process:spawn"),
+        ("import multiprocessing\nmultiprocessing.Manager()", "system.process:spawn"),
+        ("import multiprocessing as mp\nmp.get_context('spawn').Manager()", "system.process:spawn"),
+        ("import multiprocessing as mp\nctx = mp.get_context('spawn')\nctx.Manager()", "system.process:spawn"),
+        ("from multiprocessing.managers import SyncManager\nSyncManager().start()", "system.process:spawn"),
         ("from concurrent.futures import ProcessPoolExecutor\nProcessPoolExecutor().submit(print)", "system.process:spawn"),
         ("import os\nos.fork()", "system.process:spawn"),
         ("import os\nos.forkpty()", "system.process:spawn"),
@@ -1487,3 +1491,13 @@ def test_choosing_a_multiprocessing_context_alone_is_not_direct_evidence(tmp_pat
 def test_urlretrieve_is_network_and_file_write_evidence(tmp_path):
     report = _scan(tmp_path, "from urllib.request import urlretrieve\nurlretrieve('https://a', 'f')")
     assert _bases(report) == {"system.network:connect": "resolved_call", "system.fs:write": "resolved_call"}
+
+
+def test_urlretrieve_with_only_network_declared_warns_about_the_file_write(tmp_path):
+    report = _scan(
+        tmp_path,
+        "from urllib.request import urlretrieve\nurlretrieve('https://a', 'f')",
+        '[permissions.require]\n"system.network:connect" = { reason = "x" }\n',
+    )
+    found = {(issue.code, issue.params["permission"]) for issue in compare_declarations(report)}
+    assert found == {("used_undeclared_possible", "system.fs:write")}
