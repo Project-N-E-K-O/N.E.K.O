@@ -1373,7 +1373,9 @@ STAR_MAP_LABEL_TIMEOUT_SECONDS = 45
 
 # ---- Memory: Browser Phase 3 (Snapshots & Manual Deep Conflict Check) ----
 MEMORY_BROWSER_SNAPSHOT_MAX_KEEP = 10
-"""每个角色在记忆浏览器中最多保留的轻快照数量（滚动淘汰最旧）。"""
+"""每个角色在记忆浏览器中最多保留的手动轻快照数量（滚动淘汰最旧）。"""
+MEMORY_BROWSER_AUTO_SNAPSHOT_MAX_KEEP = 3
+"""每个角色最多保留的自动快照（合并前/恢复前）数量，与手动快照分开滚动淘汰。"""
 DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS = 2800
 """开发者模式手动深度矛盾裁决 LLM 输入总 token 上限。"""
 DEEP_CONFLICT_CHECK_MAX_TOKENS = 900
