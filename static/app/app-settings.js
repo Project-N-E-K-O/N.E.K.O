@@ -2907,8 +2907,17 @@
                     // at least as new as ours, and the server has not since
                     // confirmed a newer value for the key: a stale window's
                     // unrelated save can carry an old value under the same
-                    // token this window holds.
-                    if (_keyTokenPredatesServerFloor(key, mergeToken)) {
+                    // token this window holds. A sender that has seen a newer
+                    // server revision for the key than this window carries a
+                    // server-merged value under the same old token: that
+                    // value is newer, not a stale copy.
+                    const senderServerRevision = meta.serverKeyRevisions[key];
+                    const senderKnowsNewerServer =
+                        Number.isInteger(senderServerRevision)
+                        && Number.isInteger(_knownServerKeyRevisions[key])
+                        && senderServerRevision > _knownServerKeyRevisions[key];
+                    if (!senderKnowsNewerServer
+                        && _keyTokenPredatesServerFloor(key, mergeToken)) {
                         if (incoming === settings) incoming = Object.assign({}, settings);
                         delete incoming[key];
                         continue;

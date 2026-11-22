@@ -792,6 +792,99 @@ _HARNESS = textwrap.dedent(
       assert(a.S[key] === true && e.S[key] === true, 'all windows keep the newer value');
     }
 
+    // The other side of staleCopyBelowServerFloor: a sender that merged a
+    // newer server value than this window has seen carries it under the same
+    // old token (a server merge does not replace the per-key token). That
+    // value is newer and must be applied, and this window's floor must rise
+    // to the sender's server revision.
+    async function senderNewerServerValue(key) {
+      const a = makeWindow('A');
+      const x = makeWindow('X');
+      const w = makeWindow('W');
+      await settle();
+      for (const win of [a, x, w]) win.deliver();
+      if (a.S[key] === true) {
+        a.S[key] = false;
+        a.mod.saveSettings();
+        await settle();
+      }
+      a.S[key] = true;
+      a.mod.saveSettings();
+      await settle();
+      a.S.focusModeEnabled = !a.S.focusModeEnabled;
+      a.mod.saveSettings();
+      await settle();
+      const token = JSON.parse(store.get('project_neko_settings'))
+        ._sharedWriteMeta.knownKeyWrites[key];
+      assert(token && Number.isInteger(token.confirmedRevision),
+        'precondition: A\\'s token carries its confirmed revision');
+      x.deliver();
+      w.deliver();
+      a.deliver();
+      await settle();
+      assert(x.S[key] === true && w.S[key] === true, 'precondition: X and W have A\\'s value');
+      // Another device turns it off; B1 merges it and X, W receive it.
+      serverSettings = Object.assign({}, serverSettings, { [key]: false });
+      serverRevision += 1;
+      const b1 = makeWindow('B1');
+      await settle();
+      x.deliver();
+      w.deliver();
+      await settle();
+      assert(x.S[key] === false && w.S[key] === false, 'precondition: X and W take the "off"');
+      // The device turns it back on; B2 merges it. W receives it, X misses it.
+      serverSettings = Object.assign({}, serverSettings, { [key]: true });
+      serverRevision += 1;
+      const onRevision = serverRevision;
+      const b2 = makeWindow('B2');
+      await settle();
+      w.deliver();
+      x.inbox.length = 0;
+      await settle();
+      assert(w.S[key] === true, 'precondition: W takes the newer "on"');
+      // W saves something unrelated; its POST stays in flight, so only the
+      // snapshot (old token, newer server revision) reaches X.
+      w.holdPosts = true;
+      w.S.focusModeEnabled = !w.S.focusModeEnabled;
+      w.mod.saveSettings();
+      await settle();
+      const meta = JSON.parse(store.get('project_neko_settings'))._sharedWriteMeta;
+      assert(meta.changedKeys.indexOf(key) === -1
+        && meta.knownKeyWrites[key] && meta.knownKeyWrites[key].writeId === token.writeId
+        && meta.serverKeyRevisions[key] === onRevision,
+        'precondition: W\\'s snapshot carries the old token and the newer server revision: '
+          + JSON.stringify(meta));
+      x.deliver();
+      await settle();
+      assert(x.S[key] === true,
+        'a newer server value carried under the old token must be applied');
+      // X's floor rose with it: a stale "off" copy whose token was confirmed
+      // at the "off" revision (below the new floor, equal to X's old one) is
+      // dropped. Without the floor rise it would be applied.
+      x.fire({ key: 'project_neko_settings', newValue: JSON.stringify(Object.assign(
+        JSON.parse(store.get('project_neko_settings')),
+        { [key]: false },
+        { _sharedWriteMeta: Object.assign({}, meta, {
+          writerId: 'window-stale', writeId: meta.writeId + 1,
+          changedKeys: ['focusModeEnabled'],
+          knownKeyWrites: Object.assign({}, meta.knownKeyWrites, {
+            [key]: Object.assign({}, token, { confirmedRevision: onRevision - 1 }),
+          }),
+          serverKeyRevisions: Object.assign({}, meta.serverKeyRevisions,
+            { [key]: onRevision - 1 }),
+        }) }
+      )) });
+      await settle();
+      assert(x.S[key] === true,
+        'X\\'s floor rose to the sender\\'s revision: an older copy is dropped');
+      w.releasePosts();
+      await settle();
+      for (const win of [a, x, w, b1, b2]) win.deliver();
+      await settle();
+      assert([a, x, w, b1, b2].every((win) => win.S[key] === true)
+        && serverSettings[key] === true, 'all windows and the server stay on "on"');
+    }
+
     async function main() {
       if (__MODE__ === 'single') {
         await singleWindow();
@@ -813,6 +906,12 @@ _HARNESS = textwrap.dedent(
       }
       if (typeof __MODE__ === 'string' && __MODE__.indexOf('stale:') === 0) {
         await staleSwitchCopy(__MODE__.slice('stale:'.length));
+        console.log('HARNESS_OK');
+        process.exitCode = 0;
+        return;
+      }
+      if (typeof __MODE__ === 'string' && __MODE__.indexOf('sender-newer:') === 0) {
+        await senderNewerServerValue(__MODE__.slice('sender-newer:'.length));
         console.log('HARNESS_OK');
         process.exitCode = 0;
         return;
@@ -1208,6 +1307,17 @@ def test_delayed_conflict_does_not_overwrite_newer_server_value_harness():
     result = _run("delayed-412")
     assert result.returncode == 0, (
         "delayed 412 below server floor harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+@pytest.mark.parametrize("key", ["mergeMessagesEnabled", "proactiveVisionEnabled"])
+def test_sender_newer_server_value_is_applied_harness(key):
+    result = _run("sender-newer:" + key)
+    assert result.returncode == 0, (
+        f"sender newer server {key} harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
