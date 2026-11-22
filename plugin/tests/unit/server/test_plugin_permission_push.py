@@ -62,6 +62,7 @@ def store(monkeypatch, manager):
     monkeypatch.setattr(permission_service, "permission_store", store)
     monkeypatch.setattr(permission_service, "current_source", lambda _pid: None)
     monkeypatch.setattr(permission_service, "_last_records", {})
+    monkeypatch.setattr(permission_service, "_removals", {})
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", None)
     return store
@@ -250,6 +251,27 @@ def test_removed_grants_are_not_reused_after_a_read_failure(monkeypatch, store):
     store.decide("demo", MEMORY_READ, "granted")
     assert _states("demo").get(MEMORY_READ).status == "granted"
     permission_service.forget_permissions("demo")
+    monkeypatch.setattr(permission_service, "logger", Log())
+    _unreadable(monkeypatch)
+    assert _states("demo").get(MEMORY_READ).status == "denied"
+
+
+@pytest.mark.parametrize("removal", ["forget", "restore_none"])
+def test_a_read_started_before_removal_does_not_bring_grants_back(monkeypatch, store, removal):
+    store.decide("demo", MEMORY_READ, "granted")
+    real_record = permission_service.permission_record
+
+    def record_then_remove(plugin_id):
+        record = real_record(plugin_id)  # read before the removal ...
+        if removal == "forget":
+            permission_service.forget_permissions(plugin_id)
+        else:
+            permission_service.restore_permissions(plugin_id, None)
+        return record  # ... finishes after it
+
+    monkeypatch.setattr(permission_service, "permission_record", record_then_remove)
+    permission_service.permission_snapshot("demo")
+    assert "demo" not in permission_service._last_records
     monkeypatch.setattr(permission_service, "logger", Log())
     _unreadable(monkeypatch)
     assert _states("demo").get(MEMORY_READ).status == "denied"

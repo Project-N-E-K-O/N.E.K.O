@@ -247,3 +247,33 @@ def test_a_callback_returning_a_coroutine_is_closed_and_logged():
     perms.on_change(lambda permission, state: later())
     perms.apply(_snapshot(2, **{MEMORY: "granted"}))
     assert any(level == "error" and "synchronous" in line for level, line in log.lines)
+
+
+def test_a_context_from_before_permissions_is_wrapped_and_falls_back():
+    from types import SimpleNamespace
+
+    from plugin.sdk.shared.core import context as context_module
+    from plugin.sdk.shared.core.context import SdkContext, ensure_sdk_context
+
+    old = SimpleNamespace(
+        plugin_id="old", metadata={}, logger=None, config_path=None, bus=None, images=None, models=None,
+    )
+    for name in context_module._SDK_CONTEXT_METHOD_NAMES:
+        setattr(old, name, lambda: None)
+    context = ensure_sdk_context(old)
+    assert isinstance(context, SdkContext) and context.plugin_id == "old"
+    assert context.permissions is context.permissions
+    assert context.permissions.get(MEMORY) == PermissionState("denied", enforced=True)
+
+
+def test_a_context_with_permissions_is_used_as_is():
+    from types import SimpleNamespace
+
+    from plugin.sdk.shared.core import context as context_module
+    from plugin.sdk.shared.core.context import ensure_sdk_context
+
+    current = SimpleNamespace(**{name: None for name in context_module._SDK_CONTEXT_ATTR_NAMES})
+    current.permissions = PluginPermissions()
+    for name in context_module._SDK_CONTEXT_METHOD_NAMES:
+        setattr(current, name, lambda: None)
+    assert ensure_sdk_context(current) is current

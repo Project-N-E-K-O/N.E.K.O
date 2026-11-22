@@ -324,12 +324,16 @@ _snapshot_revision = itertools.count(1)
 # Last record read successfully per plugin, with the revision of the snapshot
 # that read it: a later read failure keeps using it.
 _last_records: dict[str, tuple[int, dict]] = {}
+# Bumped whenever a plugin's grants are removed: a read that started before
+# the removal must not put the removed record back into ``_last_records``.
+_removals: dict[str, int] = {}
 
 
 def _forget_last_record(plugin_id: str) -> None:
     """A plugin whose grants were removed must not fall back to them."""
     with _snapshot_lock:
         _last_records.pop(plugin_id, None)
+        _removals[plugin_id] = _removals.get(plugin_id, 0) + 1
 
 
 def _resolve_state(permission: str, record: dict | None, *, checks_off: bool) -> PermissionState:
@@ -378,11 +382,16 @@ def permission_snapshot(plugin_id: str) -> dict:
     # outranks one that may have read the data from before it.
     with _snapshot_lock:
         revision = next(_snapshot_revision)
+        removals = _removals.get(plugin_id, 0)
     try:
         record: dict | None = permission_record(plugin_id)
         with _snapshot_lock:
-            # Snapshots read concurrently: only a newer read replaces an older one.
-            if _last_records.get(plugin_id, (0, None))[0] < revision:
+            # Snapshots read concurrently: only a newer read replaces an older
+            # one, and none started before the grants were removed.
+            if (
+                _removals.get(plugin_id, 0) == removals
+                and _last_records.get(plugin_id, (0, None))[0] < revision
+            ):
                 _last_records[plugin_id] = (revision, copy.deepcopy(record))
     except Exception as exc:
         code = getattr(exc, "code", None)
