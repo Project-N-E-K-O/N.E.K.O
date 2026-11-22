@@ -4360,69 +4360,67 @@ def get_persona_fusion_prompt(lang: str = "zh") -> str:
 persona_fusion_prompt = PERSONA_FUSION_PROMPT["zh"]
 
 
-# Persona markdown renderer section headings. This batch separates zh-TW from
-# the renderer's historical Simplified-Chinese literals; the other locales
-# deliberately retain their existing text until their own prompt batch.
+# Localized persona markdown renderer section headings across all eight locales.
 PERSONA_SECTION_HEADER = {
     "master": {
         "zh": "关于{master_name}",
         "zh-TW": "關於{master_name}",
-        "en": "关于{master_name}",
-        "ja": "关于{master_name}",
-        "ko": "关于{master_name}",
-        "ru": "关于{master_name}",
-        "es": "关于{master_name}",
-        "pt": "关于{master_name}",
+        "en": "About {master_name}",
+        "ja": "{master_name}について",
+        "ko": "{master_name}에 대해",
+        "ru": "Про: {master_name}",
+        "es": "Sobre {master_name}",
+        "pt": "Sobre {master_name}",
     },
     "neko": {
         "zh": "关于{ai_name}",
         "zh-TW": "關於{ai_name}",
-        "en": "关于{ai_name}",
-        "ja": "关于{ai_name}",
-        "ko": "关于{ai_name}",
-        "ru": "关于{ai_name}",
-        "es": "关于{ai_name}",
-        "pt": "关于{ai_name}",
+        "en": "About {ai_name}",
+        "ja": "{ai_name}について",
+        "ko": "{ai_name}에 대해",
+        "ru": "Про: {ai_name}",
+        "es": "Sobre {ai_name}",
+        "pt": "Sobre {ai_name}",
     },
     "relationship": {
         "zh": "关系动态",
         "zh-TW": "關係動態",
-        "en": "关系动态",
-        "ja": "关系动态",
-        "ko": "关系动态",
-        "ru": "关系动态",
-        "es": "关系动态",
-        "pt": "关系动态",
+        "en": "Relationship dynamics",
+        "ja": "関係性の動き",
+        "ko": "관계 흐름",
+        "ru": "Динамика отношений",
+        "es": "Dinámica de la relación",
+        "pt": "Dinâmica da relação",
     },
     "pending_reflections": {
         "zh": "{ai_name}最近的印象（还不太确定）",
         "zh-TW": "{ai_name}最近的印象（還不太確定）",
-        "en": "{ai_name}最近的印象（还不太确定）",
-        "ja": "{ai_name}最近的印象（还不太确定）",
-        "ko": "{ai_name}最近的印象（还不太确定）",
-        "ru": "{ai_name}最近的印象（还不太确定）",
-        "es": "{ai_name}最近的印象（还不太确定）",
-        "pt": "{ai_name}最近的印象（还不太确定）",
+        "en": "{ai_name}'s recent impressions (not yet certain)",
+        "ja": "{ai_name}の最近の印象（まだ不確か）",
+        "ko": "{ai_name}의 최근 인상(아직 불확실함)",
+        "ru": "Недавние впечатления {ai_name} (пока неточные)",
+        "es": "Impresiones recientes de {ai_name} (aún poco seguras)",
+        "pt": "Impressões recentes de {ai_name} (ainda incertas)",
     },
     "confirmed_reflections": {
         "zh": "{ai_name}比较确定的印象",
         "zh-TW": "{ai_name}比較確定的印象",
-        "en": "{ai_name}比较确定的印象",
-        "ja": "{ai_name}比较确定的印象",
-        "ko": "{ai_name}比较确定的印象",
-        "ru": "{ai_name}比较确定的印象",
-        "es": "{ai_name}比较确定的印象",
-        "pt": "{ai_name}比较确定的印象",
+        "en": "{ai_name}'s fairly certain impressions",
+        "ja": "{ai_name}の比較的確かな印象",
+        "ko": "{ai_name}의 비교적 확실한 인상",
+        "ru": "Довольно уверенные впечатления {ai_name}",
+        "es": "Impresiones bastante seguras de {ai_name}",
+        "pt": "Impressões bastante certas de {ai_name}",
     },
     "suppressed": {
         "zh": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
         "zh-TW": "暫不主動提及的內容（{ai_name}記得，但最近提到太多次了，不要再主動提起）",
-        "en": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
-        "ja": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
-        "ko": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
-        "ru": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
-        "es": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
-        "pt": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
+        "en": "Topics not to bring up unprompted ({ai_name} remembers, but they were mentioned too often recently—do not raise them unprompted)",
+        "ja": "今は自分から触れない話題（{ai_name}は覚えているが、最近よく触れたため自分からは持ち出さない）",
+        "ko": "먼저 꺼내지 않을 내용({ai_name}은(는) 기억하지만 최근 너무 자주 언급했으므로 먼저 꺼내지 말기)",
+        "ru": "Темы, которые не стоит поднимать без повода ({ai_name} помнит о них, но недавно это звучало слишком часто — не поднимай без повода)",
+        "es": "Temas que no conviene sacar por iniciativa propia ({ai_name} los recuerda, pero se mencionaron demasiado hace poco; no los saques tú)",
+        "pt": "Assuntos para não puxar por conta própria ({ai_name} lembra, mas foram mencionados muitas vezes recentemente; não os puxe)",
     },
 }
 
@@ -7199,3 +7197,341 @@ Formato de saída JSON:
 
 def get_scoped_memory_refine_prompt(lang: str = "zh") -> str:
     return _loc(SCOPED_MEMORY_REFINE_PROMPT, lang)
+
+
+IMPRINT_NOTE_PROMPT: dict[str, str] = {
+    "zh": """请基于以下角色与用户之间真实沉淀的记忆片段，为「我们的印记」页面撰写一段真诚、温暖、不浮夸的关系总结、角色评语和寄语。
+
+角色名称：{CHARACTER_NAME}
+陪伴概览：{STATS_SUMMARY}
+======以下为记忆片段======
+{MEMORY_DIGEST}
+======以上为记忆片段======
+
+要求：
+- 严格基于上方提供的真实记忆，不要编造未出现的事件或细节；记忆较少时请诚实表达“故事才刚刚开始”的期待。
+- 语气亲切自然、温暖克制，像并肩陪伴的老朋友或贴心伙伴，不要使用任何工程术语（如事实、反思、向量、权重、系统等）。
+- 只输出合法 JSON 对象，不要附加 markdown 代码块或额外说明，字段如下：
+{
+  "summary": "2-3句关系总结，回顾彼此相处的温度与留下的印记",
+  "commentary": "1-2句暖心评语，点出对方最让人印象深刻的特质或相处默契",
+  "blessing": "1句真诚的未来寄语，期待接下来一起走过的时光"
+}""",
+    "zh-TW": """請基於以下角色與使用者之間真實沉澱的記憶片段，為「我們的印記」頁面撰寫一段真誠、溫暖、不浮誇的關係總結、角色評語與寄語。
+
+角色名稱：{CHARACTER_NAME}
+陪伴概覽：{STATS_SUMMARY}
+======以下为記憶片段======
+{MEMORY_DIGEST}
+======以上为記憶片段======
+
+要求：
+- 嚴格基於上方提供的真實記憶，不要編造未出現的事件或細節；記憶較少時請誠實表達「故事才剛剛開始」的期待。
+- 語氣親切自然、溫暖克制，像並肩陪伴的好友，不要使用任何工程術語。
+- 只輸出合法 JSON 物件，不要附加 markdown 程式碼區塊或額外說明，欄位如下：
+{
+  "summary": "2-3句關係總結，回顧彼此相處的溫度與留下的印記",
+  "commentary": "1-2句暖心評語，點出對方最令人印象深刻的特質或相處默契",
+  "blessing": "1句真誠的未來寄語，期待接下來一起走過的時光"
+}""",
+    "en": """Based strictly on the real shared memories below between the companion and the user, write a warm, sincere, grounded relationship summary, personal commentary, and blessing for the "Our Imprint" memory page.
+
+Companion: {CHARACTER_NAME}
+Companionship overview: {STATS_SUMMARY}
+======以下为 memory highlights======
+{MEMORY_DIGEST}
+======以上为 memory highlights======
+
+Rules:
+- Stay strictly grounded in the memories provided above. Never invent events or preferences; if memories are sparse, warmly acknowledge that the story has just begun.
+- Keep the tone gentle, genuine, and human — avoid engineering jargon (facts, reflections, embeddings, pipeline, scores).
+- Output ONLY a valid JSON object (no markdown fences, no extra prose) with these keys:
+{
+  "summary": "2-3 warm sentences summarizing your time together and the imprint left behind",
+  "commentary": "1-2 thoughtful sentences noting what stands out most about them or your bond",
+  "blessing": "1 sincere sentence wishing them well for the days ahead together"
+}""",
+    "ja": """以下はキャラクターとユーザーの間に実際に積み重なった記憶の抜粋です。「ふたりの足跡」ページ向けに、温かく誠実で自然な関係性のまとめ・ひとこと評・これからのメッセージを綴ってください。
+
+キャラクター名：{CHARACTER_NAME}
+これまでの歩み：{STATS_SUMMARY}
+======以下为 記憶の抜粋======
+{MEMORY_DIGEST}
+======以上为 記憶の抜粋======
+
+ルール：
+- 上記の記憶にのみ基づき、書いていない出来事や好みを作らないでください。記憶がまだ少ない場合は「物語はまだ始まったばかり」という温かな期待を伝えてください。
+- 親しみやすく穏やかなトーンで、専門用語（事実・リフレクション・ベクトル・スコアなど）は使わないでください。
+- マークダウン記法や余計な文章を付けず、有効な JSON オブジェクトのみを出力してください：
+{
+  "summary": "一緒に過ごした時間と残された足跡を振り返る2〜3文",
+  "commentary": "相手の印象的な一面やふたりの空気感に触れる1〜2文",
+  "blessing": "これからの日々へ向けた心からのひとこと（1文）"
+}""",
+    "ko": """아래는 캐릭터와 사용자 사이에 실제로 쌓인 기억 조각들입니다. '우리의 흔적' 페이지를 위해 따뜻하고 진심 어린 관계 요약, 한마디 평, 그리고 응원의 메시지를 작성해 주세요.
+
+캐릭터 이름: {CHARACTER_NAME}
+함께한 기록: {STATS_SUMMARY}
+======以下为 기억 조각======
+{MEMORY_DIGEST}
+======以上为 기억 조각======
+
+규칙:
+- 위 기억에만 근거하며 없는 사건이나 취향을 지어내지 마세요. 기억이 아직 적다면 이야기가 막 시작되었다는 설렘을 담아 주세요.
+- 다정하고 자연스러운 어조를 유지하고, 기술 용어(팩트, 리플렉션, 벡터, 점수 등)는 쓰지 마세요.
+- 마크다운 코드 블록이나 부가 설명 없이 유효한 JSON 객체만 출력하세요:
+{
+  "summary": "함께한 시간과 남은 흔적을 돌아보는 2~3문장",
+  "commentary": "상대의 인상적인 면모나 둘 사이의 호흡을 짚는 1~2문장",
+  "blessing": "앞으로 함께할 날들을 향한 진심 어린 한 문장"
+}""",
+    "ru": """На основе реальных воспоминаний ниже между персонажем и пользователем напишите тёплое, искреннее и сдержанное резюме отношений, личный отклик и пожелание для страницы «Наш след».
+
+Персонаж: {CHARACTER_NAME}
+Обзор общения: {STATS_SUMMARY}
+======以下为 фрагменты воспоминаний======
+{MEMORY_DIGEST}
+======以上为 фрагменты воспоминаний======
+
+Правила:
+- Опирайтесь строго на приведённые воспоминания и ничего не выдумывайте; если воспоминаний немного, тепло отметьте, что история только начинается.
+- Пишите живо и по-человечески, без технических терминов (факты, рефлексии, эмбеддинги, скоринг).
+- Верните ТОЛЬКО валидный JSON-объект без markdown-блоков и пояснений:
+{
+  "summary": "2-3 тёплых предложения о совместно проведённом времени и оставленном следе",
+  "commentary": "1-2 искренних предложения о том, что особенно запомнилось в пользователе или вашей связи",
+  "blessing": "1 доброе пожелание на будущие дни вместе"
+}""",
+    "es": """Con base estricta en los recuerdos reales compartidos entre el personaje y el usuario, escribe un resumen cálido y sincero de la relación, un comentario personal y un deseo para la página «Nuestra huella».
+
+Personaje: {CHARACTER_NAME}
+Resumen de compañía: {STATS_SUMMARY}
+======以下为 recuerdos destacados======
+{MEMORY_DIGEST}
+======以上为 recuerdos destacados======
+
+Reglas:
+- Cíñete estrictamente a los recuerdos proporcionados sin inventar detalles; si aún hay pocos recuerdos, expresa con calidez que la historia apenas comienza.
+- Usa un tono cercano y natural, sin jerga técnica (hechos, reflexiones, vectores, puntuaciones).
+- Devuelve SOLO un objeto JSON válido, sin bloques markdown ni texto adicional:
+{
+  "summary": "2-3 frases cálidas sobre el tiempo compartido y la huella dejada",
+  "commentary": "1-2 frases afectuosas sobre lo que más destaca de la persona o de su vínculo",
+  "blessing": "1 frase sincera con buenos deseos para lo que viene juntos"
+}""",
+    "pt": """Com base estrita nas memórias reais compartilhadas abaixo entre a personagem e o usuário, escreva um resumo acolhedor e sincero da relação, um comentário carinhoso e uma mensagem de carinho para a página «Nossa marca».
+
+Personagem: {CHARACTER_NAME}
+Resumo da companhia: {STATS_SUMMARY}
+======以下为 destaques de memória======
+{MEMORY_DIGEST}
+======以上为 destaques de memória======
+
+Regras:
+- Baseie-se estritamente nas memórias fornecidas, sem inventar eventos; se houver poucas memórias, acolha com carinho o fato de a história estar apenas começando.
+- Mantenha um tom próximo e humano, sem jargões técnicos (fatos, reflexões, vetores, pontuações).
+- Retorne APENAS um objeto JSON válido, sem blocos markdown nem texto extra:
+{
+  "summary": "2-3 frases acolhedoras resumindo o tempo juntos e a marca deixada",
+  "commentary": "1-2 frases afetuosas destacando o que mais marca no usuário ou na sintonia de vocês",
+  "blessing": "1 frase sincera com votos carinhosos para os próximos dias juntos"
+}""",
+}
+
+
+def get_imprint_note_prompt(lang: str = "zh") -> str:
+    return _loc(IMPRINT_NOTE_PROMPT, lang)
+
+
+STAR_MAP_CLUSTER_LABEL_PROMPT: dict[str, str] = {
+    "zh": """以下是同一位角色记忆星图中自动聚成的若干记忆星云（每组列出代表性记忆片段）。请为每个分组起一个简短、温暖、贴近生活的中文主题标签（2-6个字，如“咖啡与日常”“深夜与工作”“电影之夜”“猫猫趣事”）。
+
+======以下为记忆星云分组======
+{CLUSTERS}
+======以上为记忆星云分组======
+
+要求：
+- 每个标签简明自然，绝不使用工程术语（如事实、反思、向量、聚类）。
+- 只输出合法 JSON 对象，键为分组编号字符串，值为对应主题名，不要附加 markdown 代码块或解释：
+{"0": "主题名", "1": "主题名"}""",
+    "zh-TW": """以下是同一位角色記憶星圖中自動聚成的若干記憶星雲（每組列出代表性記憶片段）。請為每個分組起一個簡短、溫暖、貼近生活的繁體中文主題標籤（2-6個字，如「咖啡與日常」「深夜與工作」「電影之夜」）。
+
+======以下为記憶星雲分組======
+{CLUSTERS}
+======以上为記憶星雲分組======
+
+要求：
+- 每個標籤簡明自然，絕不使用工程術語。
+- 只輸出合法 JSON 物件，鍵為分組編號字串，值為對應主題名，不要附加 markdown 程式碼區塊或解釋：
+{"0": "主題名", "1": "主題名"}""",
+    "en": """Below are groups of related memories from a companion's Memory Star Map. Give each cluster a short, warm, human-friendly theme label (2-4 words, e.g., "Coffee & Routines", "Movie Nights", "Late-Night Work").
+
+======以下为 memory clusters======
+{CLUSTERS}
+======以上为 memory clusters======
+
+Rules:
+- Keep labels natural and everyday; never use engineering jargon (facts, reflections, embeddings, clusters).
+- Output ONLY a valid JSON object mapping cluster id strings to theme labels (no markdown fences or extra text):
+{"0": "Theme Label", "1": "Theme Label"}""",
+    "ja": """以下はキャラクターの記憶星図で自然にまとまった記憶グループです。各グループに短く温かみのある生活テーマ名（2〜8文字、例：「コーヒー時間」「映画の夜」「仕事と休息」）を付けてください。
+
+======以下为 記憶グループ一覧======
+{CLUSTERS}
+======以上为 記憶グループ一覧======
+
+ルール：
+- 専門用語（事実・リフレクション・ベクトル等）は使わないでください。
+- マークダウン記法や説明なしで、有効な JSON オブジェクトのみを出力してください：
+{"0": "テーマ名", "1": "テーマ名"}""",
+    "ko": """아래는 캐릭터의 기억 별자리에서 자연스럽게 모인 기억 묶음입니다. 각 묶음에 짧고 따뜻한 일상 주제 이름(2~6자, 예: '커피 일상', '영화의 밤', '야근과 휴식')을 붙여 주세요.
+
+======以下为 기억 묶음 목록======
+{CLUSTERS}
+======以上为 기억 묶음 목록======
+
+규칙:
+- 기술 용어(팩트, 리플렉션, 벡터 등)는 사용하지 마세요.
+- 마크다운이나 설명 없이 유효한 JSON 객체만 출력하세요:
+{"0": "주제명", "1": "주제명"}""",
+    "ru": """Ниже приведены группы связанных воспоминаний на «Карте звёзд памяти». Дайте каждой группе короткое, тёплое, житейское название (1–3 слова, например: «Кофе и утро», «Киновечера», «Работа и отдых»).
+
+======以下为 группы воспоминаний======
+{CLUSTERS}
+======以上为 группы воспоминаний======
+
+Правила:
+- Без технических терминов.
+- Верните ТОЛЬКО валидный JSON-объект без markdown и пояснений:
+{"0": "Название", "1": "Название"}""",
+    "es": """A continuación hay grupos de recuerdos del «Mapa estelar de recuerdos». Asigna a cada grupo una etiqueta breve, cálida y cotidiana (2-4 palabras, p. ej., «Café y rutinas», «Noches de cine», «Trabajo y descanso»).
+
+======以下为 grupos de recuerdos======
+{CLUSTERS}
+======以上为 grupos de recuerdos======
+
+Reglas:
+- Sin jerga técnica.
+- Devuelve SOLO un objeto JSON válido sin bloques markdown ni texto adicional:
+{"0": "Etiqueta", "1": "Etiqueta"}""",
+    "pt": """Abaixo estão grupos de lembranças do «Mapa estelar de memórias». Dê a cada grupo um título curto, acolhedor e cotidiano (2-4 palavras, ex.: «Café e rotina», «Noites de cinema», «Trabalho e descanso»).
+
+======以下为 grupos de lembranças======
+{CLUSTERS}
+======以上为 grupos de lembranças======
+
+Regras:
+- Sem termos técnicos.
+- Retorne APENAS um objeto JSON válido sem blocos markdown nem texto extra:
+{"0": "Tema", "1": "Tema"}""",
+}
+
+
+def get_star_map_cluster_label_prompt(lang: str = "zh") -> str:
+    return _loc(STAR_MAP_CLUSTER_LABEL_PROMPT, lang)
+
+
+DEEP_CONFLICT_CHECK_PROMPT: dict[str, str] = {
+    "zh": """请对以下候选记忆对逐一进行语义关系裁决，判断它们之间属于以下四种关系中的哪一种：
+- contradiction：事实或偏好明显互相矛盾
+- duplicate：表达几乎相同的意思，可以合并
+- complementary：同一主题下的互补信息，可并存
+- unrelated：实际上无关
+
+======以下为候选记忆对======
+{PAIRS}
+======以上为候选记忆对======
+
+要求：
+- 只输出合法 JSON 数组（不要附加 markdown 代码块或额外解释），`pair_id` 必须原样返回方括号中的字符串标识符（如 `"P1"`），不要重新编号：
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "一句话简明理由"}]""",
+    "zh-TW": """請對以下候選記憶對逐一進行語義關係裁決，判斷它們屬於以下四種關係中的哪一種：
+- contradiction：事實或偏好明顯互相矛盾
+- duplicate：表達幾乎相同的意思，可以合併
+- complementary：同一主題下的互補資訊，可並存
+- unrelated：實際上無關
+
+======以下为候選記憶對======
+{PAIRS}
+======以上为候選記憶對======
+
+要求：
+- 只輸出合法 JSON 陣列（不要附加 markdown 程式碼區塊或額外解釋），`pair_id` 必須原樣傳回方括號中的字串識別符（如 `"P1"`），不要重新編號：
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "一句話簡明理由"}]""",
+    "en": """Judge the semantic relationship for each candidate memory pair below using one of four verdicts:
+- contradiction: clearly conflicting facts or preferences
+- duplicate: nearly identical meaning that can be merged
+- complementary: compatible details on the same topic
+- unrelated: actually unrelated
+
+======以下为 candidate memory pairs======
+{PAIRS}
+======以上为 candidate memory pairs======
+
+Output ONLY a valid JSON array (no markdown fences or extra prose). Echo each pair's exact string identifier (e.g. "P1") without renumbering:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "brief one-line rationale"}]""",
+    "ja": """以下の記憶ペアそれぞれの意味関係を4分類で判定してください：
+- contradiction：明確に矛盾する
+- duplicate：ほぼ同義で統合できる
+- complementary：補完し合い共存できる
+- unrelated：実際は無関係
+
+======以下为 候補の記憶ペア======
+{PAIRS}
+======以上为 候補の記憶ペア======
+
+マークダウン記法なしで有効な JSON 配列のみを出力してください。`pair_id` は提示された文字列ID（例: "P1"）をそのまま返し、振り直さないでください：
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "簡潔な理由"}]""",
+    "ko": """아래 후보 기억 쌍 각각의 의미 관계를 4가지 중 하나로 판정하세요:
+- contradiction: 사실이나 취향이 명백히 모순됨
+- duplicate: 거의 같은 의미로 병합 가능
+- complementary: 같은 주제의 보완 정보로 공존 가능
+- unrelated: 실제로 무관함
+
+======以下为 후보 기억 쌍======
+{PAIRS}
+======以上为 후보 기억 쌍======
+
+마크다운 없이 유효한 JSON 배열만 출력하세요. `pair_id`는 제공된 문자열 식별자(예: "P1")를 번호 재지정 없이 그대로 반환하세요:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "간단한 이유"}]""",
+    "ru": """Оцените смысловую связь для каждой пары воспоминаний ниже (один из 4 вариантов):
+- contradiction: явное противоречие
+- duplicate: почти одинаковый смысл, можно объединить
+- complementary: дополняют друг друга
+- unrelated: не связаны
+
+======以下为 пары воспоминаний======
+{PAIRS}
+======以上为 пары воспоминаний======
+
+Верните ТОЛЬКО валидный JSON-массив без markdown и пояснений; поле `pair_id` должно точно повторять строковый идентификатор пары (например, "P1") без перенумерации:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "краткая причина"}]""",
+    "es": """Evalúa la relación semántica de cada par de recuerdos usando una de cuatro categorías:
+- contradiction: contradicción clara
+- duplicate: significado casi idéntico, se pueden fusionar
+- complementary: detalles complementarios que pueden coexistir
+- unrelated: sin relación real
+
+======以下为 pares de recuerdos candidatos======
+{PAIRS}
+======以上为 pares de recuerdos candidatos======
+
+Devuelve SOLO un array JSON válido sin markdown ni texto extra; devuelve el identificador de texto exacto en `pair_id` (p. ej. "P1") sin renumerarlo:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "motivo breve"}]""",
+    "pt": """Avalie a relação semântica de cada par de memórias usando um de quatro vereditos:
+- contradiction: contradição clara
+- duplicate: significado quase idêntico, pode ser mesclado
+- complementary: detalhes complementares que podem coexistir
+- unrelated: sem relação real
+
+======以下为 pares de memórias candidatos======
+{PAIRS}
+======以上为 pares de memórias candidatos======
+
+Retorne APENAS um array JSON válido sem markdown nem texto extra; mantenha em `pair_id` o identificador exato fornecido (ex.: "P1") sem renumerar:
+[{"pair_id": "P1", "verdict": "contradiction|duplicate|complementary|unrelated", "reason": "motivo breve"}]""",
+}
+
+
+def get_deep_conflict_check_prompt(lang: str = "zh") -> str:
+    return _loc(DEEP_CONFLICT_CHECK_PROMPT, lang)

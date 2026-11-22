@@ -38,10 +38,11 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
+from .mmd_router import _file_check
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.config_manager import get_steam_workshop_path
+from utils.config_manager import get_steam_workshop_library_roots, get_steam_workshop_path
 from utils.frontend_utils import _resolve_workshop_search_dir
 from utils.url_utils import is_utf8_text
 from utils.logger_config import get_module_logger
@@ -128,6 +129,14 @@ async def _handle_vrm_file_upload(
                 })
             builtin_dir = get_config_manager().project_root / 'static' / 'vrm'
             if _vrm_model_stem_exists(model_name, (builtin_dir, target_dir)):
+                unreachable = _uncheckable_vrm_link_taking_name(model_name, (builtin_dir, target_dir), target_dir)
+                if unreachable is not None:
+                    # The model list skips this entry, so it is not in the delete dialog either.
+                    return JSONResponse(status_code=400, content={
+                        "success": False,
+                        "error": f"{file_type_name} {filename} 与用户 VRM 文件夹中无法访问的条目 {unreachable.name} 同名"
+                                 f"（可能是指向无权限位置或文件夹外的链接），请在该文件夹中手动删除这个条目后再上传"
+                    })
                 return JSONResponse(status_code=400, content={
                     "success": False,
                     "error": f"{file_type_name} {filename} 已存在，请先删除或重命名现有模型"
@@ -241,11 +250,17 @@ async def upload_vrm_animation(file: UploadFile = File(...)):
 
 
 def _iter_vrm_model_files(vrm_dir: Path):
-    """Yield model files using the upload endpoint's case-insensitive extension rule."""
+    """Yield model files using the upload endpoint's case-insensitive extension rule.
+
+    Like the MMD ``_iter_model_files``, a path whose type cannot be checked (e.g.
+    a link into an unreadable folder raises PermissionError on Python 3.11) is
+    still yielded, so the "a model with this name exists" checks keep its
+    mappings; callers that need a real file check it with ``_file_check``.
+    """
     if vrm_dir.exists():
         # Mapping identities are stems; keep the same representative as model lookup.
         for path in sorted(vrm_dir.iterdir(), key=lambda p: (p.stem, p.suffix != '.vrm', p.name)):
-            if path.suffix.lower() == '.vrm' and path.is_file():
+            if path.suffix.lower() == '.vrm' and _file_check(path) is not False:
                 yield path
 
 
@@ -259,12 +274,17 @@ async def get_vrm_models():
         models = []
         seen_urls = set()  # Use a set to deduplicate by URL.
         skipped = 0  # Non-UTF-8 names cannot be quoted or serialized (#3230).
+        unchecked = 0  # Paths whose type cannot be checked (e.g. EACCES on Python 3.11).
 
         # 1. Find project VRM files (static/vrm/).
         project_root = config_mgr.project_root
         static_vrm_dir = project_root / "static" / "vrm"
         if static_vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(static_vrm_dir):
+                # Type cannot be checked: leave it out so the other models still list.
+                if not _file_check(vrm_file):
+                    unchecked += 1
+                    continue
                 if not is_utf8_text(vrm_file.name):
                     skipped += 1
                     continue
@@ -289,6 +309,10 @@ async def get_vrm_models():
         vrm_dir = config_mgr.vrm_dir
         if vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(vrm_dir):
+                # Type cannot be checked: leave it out so the other models still list.
+                if not _file_check(vrm_file):
+                    unchecked += 1
+                    continue
                 if not is_utf8_text(vrm_file.name):
                     skipped += 1
                     continue
@@ -374,6 +398,8 @@ async def get_vrm_models():
 
         if skipped:
             logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VRM 模型")
+        if unchecked:
+            logger.warning(f"跳过 {unchecked} 个无法检查类型的 VRM 模型路径")
         return JSONResponse(content={
             "success": True,
             "models": models
@@ -462,7 +488,11 @@ def get_vrm_animations():
                 
                 # Imported user animations remain standard .vrma; builtins use .vrma.gz, decompressed uniformly
                 # by the frontend on first playback. Both transport formats must appear in the animation selector.
-                animation_files = list(anim_dir.glob('*.vrma')) + list(anim_dir.glob('*.vrma.gz'))
+                # Match extensions in any letter case like the upload check; glob('*.vrma')
+                # would miss 'Foo.VRMA' on case-sensitive file systems.
+                entries = list(anim_dir.iterdir())
+                animation_files = [p for p in entries if p.name.lower().endswith('.vrma')] \
+                    + [p for p in entries if p.name.lower().endswith('.vrma.gz')]
                 for anim_file in animation_files:
                     try:
                         # Internal guided-movement assets need movement playback options and are excluded from ordinary animation selectors.
@@ -484,7 +514,7 @@ def get_vrm_animations():
                         
                         # Remove absolute paths; return only public URLs and relative information.
                         display_name = anim_file.name[:-len('.vrma.gz')] \
-                            if anim_file.name.endswith('.vrma.gz') else anim_file.stem
+                            if anim_file.name.lower().endswith('.vrma.gz') else anim_file.stem
                         animations.append({
                             "name": display_name,
                             "filename": anim_file.name,
@@ -498,7 +528,7 @@ def get_vrm_animations():
                         continue
                 
                 # Also support .vrm files as animations in certain cases.
-                for anim_file in anim_dir.glob('*.vrm'):
+                for anim_file in (p for p in entries if p.suffix.lower() == '.vrm'):
                     try:
                         if not anim_file.exists() or not anim_file.is_file():
                             continue
@@ -576,10 +606,15 @@ async def delete_vrm_model(request: Request):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
         if not _is_vrm_basename(filename):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型路径"})
-        target = (vrm_dir / filename).resolve()
+        entry = vrm_dir / filename
+        target = entry.resolve()
         if not target.is_relative_to(vrm_dir.resolve()):
             return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
-        if not target.is_file():
+        found = _file_check(target)
+        if entry.is_symlink() and (found or _is_unverifiable_vrm_link(entry)):
+            # Remove the link itself, never its target.
+            target = entry
+        elif not found:
             return JSONResponse(status_code=404, content={"success": False, "error": "模型文件不存在"})
 
         target.unlink()
@@ -721,22 +756,32 @@ def _workshop_roots() -> list[Path]:
     subscribed items (the same folders /models lists); the configured root
     (user_mod_folder, cached or default folder) is the fallback mount when
     Steam is unavailable. Both are searched so a mapping can be saved in either
-    case without a Steam query.
+    case without a Steam query. Items installed in other Steam libraries live
+    under those libraries' roots, which /workshop also serves; they come last.
     """
-    roots = []
+    candidates = []
     for getter in (get_steam_workshop_path, _resolve_workshop_search_dir):
         try:
-            root = getter()
+            candidates.append(getter())
         except Exception as e:
             logger.warning(f"获取创意工坊目录失败: {e}")
-            continue
+    try:
+        candidates.extend(get_steam_workshop_library_roots())
+    except Exception as e:
+        logger.warning(f"获取Steam创意工坊库目录失败: {e}")
+    roots = []
+    for root in candidates:
         if not root:
             continue
         try:
             resolved = Path(root).resolve()
         except (OSError, RuntimeError):  # Python 3.11 raises RuntimeError on symlink loops
             continue
-        if resolved.is_dir() and resolved not in roots:
+        try:
+            is_dir = resolved.is_dir()
+        except OSError:  # e.g. a registered library that lost its access permission
+            continue
+        if is_dir and resolved not in roots:
             roots.append(resolved)
     return roots
 
@@ -780,7 +825,13 @@ def _resolved_child_dir(path: Path, parent: Path) -> Path | None:
     return None
 
 
-def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
+def _find_vrm_model_file(vrm_dir: Path, model_name: str, *, keep_links: bool = False) -> Path | None:
+    """Resolved model file, or with ``keep_links`` the matching link itself.
+
+    Deletion passes ``keep_links``: ``Path.unlink`` on the link does not follow
+    it, so deleting never removes the file it points to (which may be another
+    listed model, or one reached through an unsearchable ``locked/..``).
+    """
     canonical_path = vrm_dir / f"{model_name}.vrm"
     def candidates():
         yield canonical_path
@@ -795,9 +846,41 @@ def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
         if not resolved.is_relative_to(vrm_dir.resolve()):
             logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
             raise ValueError("路径越界")
-        if resolved.suffix.lower() == '.vrm' and resolved.is_file():
-            return resolved
+        # Type cannot be checked: try the next candidate instead of failing the lookup.
+        if resolved.suffix.lower() == '.vrm' and _file_check(resolved):
+            return candidate if keep_links and candidate.is_symlink() else resolved
     return None
+
+
+def _is_unverifiable_vrm_link(path: Path) -> bool:
+    """A link whose target type cannot be checked (e.g. it points into an unreadable folder).
+
+    The upload's "already exists" check counts such an entry while the model
+    lookup skips it, so deletion removes the link itself: ``Path.unlink`` does
+    not follow links, so nothing the link points to is touched.
+    """
+    try:
+        return path.is_symlink() and _file_check(path) is None
+    except OSError:
+        return False
+
+
+def _find_unverifiable_vrm_link(vrm_dir: Path, model_name: str) -> Path | None:
+    return next((path for path in _iter_vrm_model_files(vrm_dir)
+                 if path.stem == model_name and _is_unverifiable_vrm_link(path)), None)
+
+
+def _uncheckable_vrm_link_taking_name(model_name: str, directories, user_dir: Path) -> Path | None:
+    """The uncheckable link in ``user_dir`` that alone takes ``model_name`` for uploads.
+
+    None when a checkable model with this name exists: that one is listed and
+    can be deleted from the UI, so the usual "already exists" message applies.
+    """
+    matches = [path for directory in directories for path in _iter_vrm_model_files(directory)
+               if path.stem.casefold() == model_name.casefold()]
+    if any(_file_check(path) for path in matches):
+        return None
+    return next((path for path in matches if path.parent == user_dir and _is_unverifiable_vrm_link(path)), None)
 
 
 def _is_vrm_basename(filename: str) -> bool:
@@ -877,9 +960,12 @@ async def delete_vrm_model(model_name: str):
 
         # Allow deleting VRM models only under the user directory.
         try:
-            vrm_path = _find_vrm_model_file(vrm_dir, model_name)
+            vrm_path = _find_vrm_model_file(vrm_dir, model_name, keep_links=True)
         except ValueError as e:
             return JSONResponse(status_code=400, content={"success": False, "error": str(e)})
+        if vrm_path is None:
+            # Only when no checkable model matches; this is the link, not its target.
+            vrm_path = _find_unverifiable_vrm_link(vrm_dir, model_name)
         if vrm_path is None:
             return JSONResponse(status_code=404, content={"success": False, "error": f"未在用户目录中找到模型 {model_name}，可能是内置模型，无法删除"})
 

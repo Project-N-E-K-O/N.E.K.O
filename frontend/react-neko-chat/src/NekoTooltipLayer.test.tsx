@@ -8,6 +8,28 @@ afterEach(() => {
 });
 
 describe('NekoTooltipLayer', () => {
+  it('inherits the capture mask of an anchor inside a masked region, and only then (#3474)', () => {
+    render(
+      <>
+        <div data-neko-capture-mask="choices">
+          <button type="button" data-neko-tooltip="Synthetic option text">A</button>
+        </div>
+        <button type="button" data-neko-tooltip="Open history">History</button>
+        <NekoTooltipLayer />
+      </>,
+    );
+
+    const masked = screen.getByRole('button', { name: 'A' });
+    act(() => masked.focus());
+    expect(screen.getByRole('tooltip')).toHaveAttribute('data-neko-capture-mask', 'choices');
+    act(() => masked.blur());
+
+    const plain = screen.getByRole('button', { name: 'History' });
+    act(() => plain.focus());
+    expect(screen.getByRole('tooltip')).not.toHaveAttribute('data-neko-capture-mask');
+    act(() => plain.blur());
+  });
+
   it('shows custom tooltip copy for keyboard focus without a native title', () => {
     render(
       <>

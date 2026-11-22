@@ -194,7 +194,7 @@ class MemoryRefineEngine:
         round-3 on PR #1412): exceptions used to be treated as "transient,
         don't count", to avoid blaming specific entries for one-off network/IO
         hiccups. But when the "transient" issue is actually **persistent** —
-        the correction model snapshot is offline and keeps timing out,
+        the summary model snapshot is offline and keeps timing out,
         cloudsave stuck in maintenance, a read-only FS — that uncounted path
         becomes an infinite retry storm, slamming the same poison cluster into
         the LLM every 30min forever. A budget of
@@ -464,11 +464,11 @@ class MemoryRefineEngine:
         )
 
         # Refinement resembles persona correction: irreversible split/merge/modify/discard operations
-        # directly persist persona/reflection changes, warranting the correction tier,
-        # thinking, and a long timeout. Match PersonaManager.resolve_corrections
+        # directly persist persona/reflection changes, warranting thinking
+        # and a long timeout. Match PersonaManager.resolve_corrections
         # call configuration.
         set_call_type("memory_refine")
-        api_config = await self._cm.aget_model_api_config('correction')
+        api_config = await self._cm.aget_model_api_config('summary')
         # Enable thinking explicitly, as for correction; see memory.thinking_llm for budgets and fallback.
         resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (refine clusters bounded upstream).
             api_config, prompt,

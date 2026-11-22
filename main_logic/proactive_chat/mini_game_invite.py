@@ -1028,34 +1028,158 @@ async def _push_mini_game_invite_resolved(
         )
 
 
-# Match ASCII / Cyrillic keywords with word-boundary regex; other scripts (CJK / Hiragana /
-# Katakana / Hangul) use substrings. Python `\b` tests \w boundaries, but East Asian characters
-# are also \w, lacking internal boundaries; word-boundary matching misses 我好啊.
-# Cyrillic and Latin are letter-based, so \b works. Codex P1: prevent English false matches
-# such as yes in yesterday and no in no idea.
-_LETTER_ONLY_KW_RE = re.compile(r"^[A-Za-z0-9\s'\-Ѐ-ӿ]+$")
+# Match ASCII / accented Latin / Greek / Cyrillic keywords with letter-boundary
+# lookarounds; other scripts (CJK / Hiragana / Katakana / Hangul) use clause-anchored
+# matching so embedded substrings in ordinary sentences do not trigger false positives.
+_LETTER_ONLY_KW_RE = re.compile(r"^[0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ\s'\-]+$")
+_LETTER_BOUNDARY_CLASS = "0-9A-Za-zÀ-ɏͰ-ϿЀ-ӿ"
+_PUNCT_CLAUSE_SPLIT_RE = re.compile(
+    r"[,，.。!！?？;；:：、…~～\-—()（）\[\]【】「」『』\"']+"
+)
+_CJK_PREFIX_RE = re.compile(
+    r"^(?:但是|但|可是|不过|不過|嗯|唔|呃|哦|噢|啊|那|就|我们|我們|我|咱们|咱們|咱|先|还是|還是|"
+    r"现在|現在|今天|这次|這次|好吧|行吧|好啊|好的|行啊|来吧|來吧|うん|うーん|いや|でも|"
+    r"じゃあ|それ|ちょっと|また|もう|あとで|いま|응|어|음|아니|나는|나도|나|난|지금|좀|일단)*+$"
+)
+_CJK_SUFFIX_RE = re.compile(
+    r"^(?:吧|呀|啊|呢|啦|哦|嘛|呗|唄|咯|喔|哈|呵|了|的|儿|兒|玩|说|說|再说|再說|"
+    r"再玩|再聊|再看|一会|一會|一下|~|等下|等会|等會|一起玩|谢谢|謝謝|よ|ね|な|わ|さ|ぞ|ぜ|"
+    r"だ|です|ます|かな|かも|か|する|요|네|지|야|만|에|은|는|다|가)*+$"
+)
 
 
 _KEYWORD_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
+_ZH_ALL_KEYWORDS = frozenset(
+    kw
+    for locale in ("zh", "zh-TW")
+    for bucket in MINI_GAME_INVITE_KEYWORDS.get(locale, {}).values()
+    for kw in bucket
+)
+_ZH_ACCEPT_KEYWORDS = frozenset(
+    kw
+    for locale in ("zh", "zh-TW")
+    for kw in MINI_GAME_INVITE_KEYWORDS.get(locale, {}).get("accept", ())
+)
+_ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS = frozenset({"好啊", "行啊", "来吧", "來吧"})
+_ZH_MODAL_CLAUSE_BREAK_RE = re.compile(r"^(?:[儿兒])?[吧呀啊呢啦哦嘛呗唄咯喔哈呵]")
+_ZH_LE_CLAUSE_BREAK_KEYWORDS = frozenset(
+    {"不玩", "不想", "不要", "没空", "沒空", "算了", "拒绝", "拒絕"}
+)
+_ZH_HAODE_CONTINUATION_RE = re.compile(r"^(?:我们|我們|我|咱们|咱們|咱|来|來|一起)")
+_ZH_DECLINE_OBJECT_RE = re.compile(
+    r"^(?:玩(?:这个|這個|那个|那個)?(?:小游戏|小遊戲|游戏|遊戲)?"
+    r"|(?:这个|這個|那个|那個)(?:小游戏|小遊戲|游戏|遊戲)?"
+    r"|(?:小游戏|小遊戲|游戏|遊戲))"
+)
+
+
+def _cjk_affixes_match(keyword: str, prefix: str, suffix: str) -> bool:
+    if not _CJK_PREFIX_RE.fullmatch(prefix):
+        return False
+    # Allow emphatic keyword reduplication (e.g. "不要不要", "不行不行", "算了算了").
+    if len(keyword) >= 2:
+        while suffix.startswith(keyword):
+            suffix = suffix[len(keyword):]
+    # Never treat a question ending in 吗/嗎 as affirmative consent
+    # (e.g. "一起玩需要下载吗", "好啊需要下载吗", "好的我们要下载吗").
+    if keyword in _ZH_ACCEPT_KEYWORDS and suffix.endswith(("吗", "嗎")):
+        return False
+    # Clause-initial Chinese accept phrases ending in a particle
+    # (never noun modifiers like "好的衣服" or noun compounds like "来吧台坐坐")
+    # accept trailing continuations; decline/later priority still wins when
+    # another clause declines or defers.
+    if keyword in _ZH_CLAUSE_OPEN_ACCEPT_KEYWORDS:
+        if keyword in {"来吧", "來吧"} and suffix.startswith(("台", "臺")):
+            return False
+        return True
+    if keyword == "好的" and _ZH_HAODE_CONTINUATION_RE.match(suffix):
+        return True
+    # Refusals and deferrals can name the game or object before trailing particles.
+    if keyword == "算了":
+        suffix = suffix.removeprefix("不玩")
+    if keyword in {"算了", "不玩", "不想", "没空", "沒空", "不要"}:
+        suffix = _ZH_DECLINE_OBJECT_RE.sub("", suffix)
+    elif keyword in {"等下", "等会", "等會", "回头", "回頭", "稍后", "稍後", "晚点", "晚點"}:
+        suffix = suffix.removeprefix("再看看")
+    # A Chinese clause-closing modal particle after the keyword starts a fresh clause
+    # (e.g. "好的呀我来", "算了吧我不玩", "等下吧我在忙").
+    if keyword in _ZH_ALL_KEYWORDS and _ZH_MODAL_CLAUSE_BREAK_RE.match(suffix):
+        return True
+    # Unambiguous Chinese decline keywords closed by "了" can be followed by any
+    # continuation (e.g. "不玩了谢谢", "不要了我在忙").
+    if keyword in _ZH_LE_CLAUSE_BREAK_KEYWORDS and suffix.startswith("了"):
+        return True
+    if not _CJK_SUFFIX_RE.fullmatch(suffix):
+        return False
+    # Korean "그래" only takes polite "요" ("그래요") as an affirmative reply;
+    # other Hangul suffixes form distinct discourse connectors or predicates
+    # (e.g. "그래서", "그래도", "그래야").
+    if keyword == "그래" and suffix and suffix != "요":
+        return False
+    return True
+
+
+def _match_east_asian_candidate(keyword: str, candidate: str) -> bool:
+    # A conversational reply has only short particles around the keyword.
+    # Bound the text inspected for each possible keyword position.
+    if len(candidate) > len(keyword) + 64:
+        return False
+    if candidate == keyword:
+        return True
+    start = 0
+    while True:
+        idx = candidate.find(keyword, start)
+        if idx < 0:
+            break
+        prefix = candidate[:idx]
+        suffix = candidate[idx + len(keyword):]
+        if _cjk_affixes_match(keyword, prefix, suffix):
+            return True
+        start = idx + 1
+    return False
 
 
 def _keyword_matches(keyword: str, norm_text: str) -> bool:
-    """Locale-aware substring/word-boundary match.
+    """Locale-aware boundary matching for mini-game invite keywords.
 
-    Keywords made of ASCII / digits / Cyrillic / spaces / apostrophes / hyphens
-    go through a word-boundary regex (``\\b...\\b``); other scripts (CJK /
-    Hiragana / Katakana / Hangul) use substring matching — Python's regex counts
-    those characters as \\w, so adding \\b would cause misses (in "我好啊" there
-    is no boundary before '好')."""  # noqa: DOCSTRING_CJK
+    Keywords made of Latin / accented Latin / Greek / Cyrillic / digits /
+    spaces / apostrophes / hyphens use explicit letter-class boundary
+    lookarounds; East Asian script keywords (CJK / Hiragana / Katakana /
+    Hangul) require clause-anchored matching with bounded conversational
+    prefixes and particles so embedded substrings in ordinary sentences do not
+    trigger false positives.
+    """
     if not keyword or not norm_text:
         return False
     if _LETTER_ONLY_KW_RE.fullmatch(keyword):
         pattern = _KEYWORD_PATTERN_CACHE.get(keyword)
         if pattern is None:
-            pattern = re.compile(r'\b' + re.escape(keyword) + r'\b', re.IGNORECASE)
+            pattern = re.compile(
+                rf"(?<![{_LETTER_BOUNDARY_CLASS}])"
+                + re.escape(keyword)
+                + rf"(?![{_LETTER_BOUNDARY_CLASS}])",
+                re.IGNORECASE,
+            )
             _KEYWORD_PATTERN_CACHE[keyword] = pattern
         return bool(pattern.search(norm_text))
-    return keyword in norm_text
+    kw_tokens = keyword.split()
+    kw_token_count = len(kw_tokens)
+    for punct_clause in _PUNCT_CLAUSE_SPLIT_RE.split(norm_text):
+        tokens = punct_clause.split()
+        if not tokens:
+            continue
+        if kw_token_count <= 1:
+            for token in tokens:
+                if _match_east_asian_candidate(keyword, token):
+                    return True
+        else:
+            if len(tokens) < kw_token_count:
+                continue
+            for idx in range(len(tokens) - kw_token_count + 1):
+                span = " ".join(tokens[idx : idx + kw_token_count])
+                if _match_east_asian_candidate(keyword, span):
+                    return True
+    return False
 
 
 def _match_mini_game_invite_keyword(text: str) -> str | None:

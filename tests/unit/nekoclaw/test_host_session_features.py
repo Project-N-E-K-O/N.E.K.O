@@ -707,6 +707,7 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
     hosts, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    release, wait = _gate()
     started: list[str] = []
     went_wrong = _WentWrong()
 
@@ -728,7 +729,8 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
             [
                 [call("subagent", {"description": "count", "prompt": "count the jpgs"}), _used(300, 10), finish("tool_calls")],
                 [once_the_task_agent_it_started_has_used_its_share, call("glob", {"pattern": "*.none"}, "call-2"), _used(20, 10), finish("tool_calls")],
-                [call("report", {"status": "ready", "summary": "sorted"}, "call-9"), _used(330, 10), finish("tool_calls")],
+                # Hold the parent's final report until its child finishes so finishing does not cancel the child.
+                [wait, call("report", {"status": "ready", "summary": "sorted"}, "call-9"), _used(330, 10), finish("tool_calls")],
             ]
         ),
         "count the jpgs": ScriptedLLM(
@@ -775,6 +777,7 @@ async def test_when_the_one_that_started_a_task_agent_asks_first_the_task_agent_
 
     # Allowed, both go on.
     assert (await went_wrong.unless(wait_status(host, child.id, "done"))).result_summary == "counted 12 of them"
+    release.set()
     assert (await went_wrong.unless(wait_status(host, first.id, "done"))).result_summary == "sorted"
     await went_wrong.unless(_let_go(host))
     assert len(scripts["count the jpgs"].requests) == 2
@@ -1122,8 +1125,10 @@ def _words(count: int, prefix: str) -> str:
 
 
 async def _small_window() -> dict[str, Any]:
-    # A window small enough that a few long answers are something to sum up.
-    return {"model": "fake-model", "api_key": "test-key", "context_window": 16_000, "max_output_tokens": 2_000}
+    # A window small enough that a few long answers are something to sum up, and large enough
+    # that they are not summed up before the test asks for it: the session of a project is told
+    # of its role and of the presets, some 500 tokens the window has to hold besides.
+    return {"model": "fake-model", "api_key": "test-key", "context_window": 17_000, "max_output_tokens": 2_000}
 
 
 def _long_work(summary: str, context: int = 9_000) -> list[list[Any]]:
@@ -1218,7 +1223,7 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     read_brief = host.space.brief
     reads = []
 
-    async def workspace_brief(project):
+    async def workspace_brief(project, **_kwargs):
         reads.append(project)
         if len(reads) == 2:
             if brief_result == "empty":
@@ -5731,3 +5736,447 @@ async def test_a_commission_that_was_queued_when_nekoclaw_went_off_is_begun_when
     whole = json.dumps(scripts["check the mail"].requests[0], ensure_ascii=False)
     assert "check the mail" in whole and "the other account" not in whole
     assert await outbox(host, "correction") == []
+
+
+async def test_with_summing_up_idle_sessions_switched_off_for_the_model_no_session_is_summed_up(hosts, tmp_path, monkeypatch):
+    """The user's switch for the task agent model: off, no timer is set, and one that was set does nothing."""
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- the CSV export is added and reported"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary, *_long_work("columns added"), summary])
+    scripts = {"add a CSV export": export}
+    host = _host(hosts, tmp_path, _scripts_by_session(scripts), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    model = await _small_window()
+
+    # Set while it is on, then switched off before the time comes: the timer comes due and asks nothing.
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    assert len(export.requests) == 5
+    await host.model_capabilities.set_idle_compact_on(model.get("base_url"), model["model"], False)
+    # The time has come by every other measure: it is the switch that turns it away.
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    assert await manager._idle_compact(first.id) is False
+    assert len(export.requests) == 5 and manager._compacting == {}
+    assert (await host.ledger.get_session(first.id)).compacted_at is None
+
+    # Off, a session that is let go gets no timer at all.
+    manager._drop_idle_timer(first.id)
+    await manager._schedule_idle_compact(first.id)
+    assert manager._idle_timers == {}
+
+    # On again, it is summed up as before.
+    await host.model_capabilities.set_idle_compact_on(model.get("base_url"), model["model"], True)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.05)
+    await manager._schedule_idle_compact(first.id)
+    await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
+    await _idle_work_over(host)
+    assert (await host.ledger.get_session(first.id)).compacted_at is not None
+
+
+async def test_the_user_changes_where_a_project_works_and_the_next_commission_starts_there(hosts, tmp_path):
+    """Its record, its line in the index and its own session say the new place; nothing is moved."""
+    from nekoclaw.host.service import ProjectBusy
+
+    release, wait = _gate()
+    export = ScriptedLLM([[wait, *_report("ready", "export added")], _report("ready", "columns added")])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}))
+    await host.space.touch_project("Budget app")
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "working")
+    # Where it works is written when its session is opened, a moment after the commission is taken up.
+    old = None
+    for _ in range(500):
+        session = await host.ledger.get_session(first.id)
+        old = session.workdir if session is not None else None
+        if old:
+            break
+        await asyncio.sleep(0.02)
+    assert old, "the session never got a working directory"
+    (Path(old) / "notes.txt").write_text("kept", encoding="utf-8")
+    new = tmp_path / "code" / "budget-app"
+    new.mkdir(parents=True)
+
+    # Not while something is at work in it: that goes on where it began.
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    release.set()
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+
+    changed = await host.set_project_workdir("Budget app", str(new))
+    assert changed["workdir"] == str(new) and changed["name"] == "Budget app"
+    assert (await host.space.get_project("Budget app")).workdir == str(new)
+    assert f"files in {new}" in await host.space.read_index()
+    assert (await host.ledger.get_session(first.id)).workdir == str(new)
+    # What was in the old place stays there.
+    assert (Path(old) / "notes.txt").read_text(encoding="utf-8") == "kept"
+
+    second = (await _dispatch(host, "add two columns to the export of the budget app")).commissions[0]
+    await wait_status(host, second.id, "done")
+    assert (await host.ledger.get(second.id)).session_id == first.id
+    assert (await host.ledger.get(second.id)).workdir == str(new)
+
+
+async def test_a_directory_that_will_not_do_and_a_project_that_is_not_there_change_nothing(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app", workdir=str(tmp_path))
+    own = host.paths.root()
+    own.mkdir(parents=True, exist_ok=True)
+    for directory, code in (
+        ("code/budget-app", "not_absolute"),
+        ("", "not_absolute"),
+        (str(tmp_path / "missing"), "not_a_directory"),
+        # Where the host keeps the ledger and the task agent space, anything inside it, and anything that holds it.
+        (str(own), "host_directory"),
+        (str(host.paths.space().root), "host_directory"),
+        (str(own.parent), "host_directory"),
+    ):
+        Path(directory).mkdir(parents=True, exist_ok=True) if code == "host_directory" else None
+        with pytest.raises(ValueError, match=code):
+            await host.set_project_workdir("Budget app", directory)
+    assert (await host.space.get_project("Budget app")).workdir == str(tmp_path)
+
+    elsewhere = tmp_path.parent / f"{tmp_path.name}-elsewhere"
+    elsewhere.mkdir()
+    with pytest.raises(LookupError):
+        await host.set_project_workdir("No such project", str(elsewhere))
+    with pytest.raises(ValueError):
+        await host.set_project_workdir("../outside", str(elsewhere))
+
+
+async def test_where_a_project_works_is_the_projects_and_not_one_characters(hosts, tmp_path):
+    """Changed for the sessions of every character, and not while any of them has something under way."""
+    from nekoclaw.host.service import ProjectBusy
+
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    mei, _ = await host.ledger.project_session("Mei", "Budget app")
+    new = tmp_path / "code"
+    new.mkdir()
+
+    # Another character's session is open with a run under way.
+    await host.ledger.update_session(mei.id, status="running")
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    await host.ledger.update_session(mei.id, status="idle")
+
+    # A commission that still waits, older than the last few of its session.
+    waiting, _ = await host.ledger.create(
+        lanlan_name="Mei", title="first", dispatch_text="first", source="dispatch", session_id=mei.id, project="Budget app",
+    )
+    for number in range(4):
+        later, _ = await host.ledger.create(
+            lanlan_name="Mei", title=f"later {number}", dispatch_text="later", source="dispatch", session_id=mei.id,
+            project="Budget app",
+        )
+        assert (await host.ledger.transition(later.id, "cancelled")).applied
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    assert (await host.ledger.transition(waiting.id, "cancelled")).applied
+
+    changed = await host.set_project_workdir("Budget app", str(new))
+    assert changed["workdir"] == str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir == str(new)
+    assert (await host.ledger.get_session(mei.id)).workdir == str(new)
+
+
+async def test_a_commission_that_began_after_the_look_stops_the_change_of_where_its_project_works(hosts, tmp_path):
+    """Looked at once more where the sessions are written: nothing is half changed."""
+    from nekoclaw.host.service import ProjectBusy
+
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    mei, _ = await host.ledger.project_session("Mei", "Budget app")
+    new = tmp_path / "code"
+    new.mkdir()
+
+    looked = host._project_busy
+
+    async def then_it_begins(project: str) -> str | None:
+        answer = await looked(project)
+        # Nothing was under way when it was looked at; a moment later Mei's session has a run.
+        await host.ledger.update_session(mei.id, status="running")
+        return answer
+
+    host._project_busy = then_it_begins
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir != str(new)
+    assert (await host.ledger.get_session(mei.id)).workdir != str(new)
+
+    # The same for a commission that was filed since the look.
+    await host.ledger.update_session(mei.id, status="idle")
+    filed: list[str] = []
+
+    async def then_it_is_filed(project: str) -> str | None:
+        answer = await looked(project)
+        commission, _ = await host.ledger.create(
+            lanlan_name="Mei", title="just now", dispatch_text="just now", source="dispatch", project="Budget app",
+        )
+        filed.append(commission.id)
+        return answer
+
+    host._project_busy = then_it_is_filed
+    with pytest.raises(ProjectBusy, match="at_work"):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir != str(new)
+    # Once it is over, the change is taken.
+    assert (await host.ledger.transition(filed[0], "cancelled")).applied
+    host._project_busy = looked
+    assert (await host.set_project_workdir("Budget app", str(new)))["workdir"] == str(new)
+    assert (await host.ledger.get_session(mei.id)).workdir == str(new)
+
+
+async def test_two_changes_of_where_a_project_works_asked_for_at_once_leave_one_directory(hosts, tmp_path):
+    """Its record and its sessions say the same place, whichever of the two came last."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    # The record is written a moment after the sessions: slowed for the first, the second would come between.
+    write = host.space.set_project_workdir
+
+    async def slowly(name: str, workdir: str) -> Any:
+        if workdir == str(first):
+            await asyncio.sleep(0.05)
+        return await write(name, workdir)
+
+    host.space.set_project_workdir = slowly
+    await asyncio.gather(
+        host.set_project_workdir("Budget app", str(first)), host.set_project_workdir("Budget app", str(second)),
+    )
+    record = (await host.space.get_project("Budget app")).workdir
+    assert record in (str(first), str(second))
+    assert (await host.ledger.get_session(lan.id)).workdir == record
+
+
+@pytest.mark.parametrize("how", ["raises", "is gone"])
+async def test_a_change_of_where_a_project_works_that_is_not_recorded_is_not_half_taken(hosts, tmp_path, how):
+    """The sessions are written first; when the project's record then cannot be, they go back."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    old = tmp_path / "old"
+    old.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(old))
+    lan, _ = await host.ledger.project_session("Lan", "Budget app", workdir=str(old))
+    mei, _ = await host.ledger.project_session("Mei", "Budget app")
+    new = tmp_path / "new"
+    new.mkdir()
+
+    async def fails(name: str, workdir: str) -> Any:
+        if how == "raises":
+            raise OSError("the record cannot be written")
+        return None
+
+    host.space.set_project_workdir = fails
+    with pytest.raises(OSError if how == "raises" else LookupError):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.ledger.get_session(lan.id)).workdir == str(old)
+    assert (await host.ledger.get_session(mei.id)).workdir != str(new)
+    assert (await host.space.get_project("Budget app")).workdir == str(old)
+
+
+async def test_a_change_of_where_a_project_works_is_carried_through_when_whoever_asked_goes_away(hosts, tmp_path):
+    """Its two writes are both made, though the request was given up between them."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    new = tmp_path / "new"
+    new.mkdir()
+
+    write = host.space.set_project_workdir
+    reached = asyncio.Event()
+    go_on = asyncio.Event()
+
+    async def held(name: str, workdir: str) -> Any:
+        reached.set()
+        await go_on.wait()
+        return await write(name, workdir)
+
+    host.space.set_project_workdir = held
+    asked = asyncio.ensure_future(host.set_project_workdir("Budget app", str(new)))
+    waiting = asyncio.ensure_future(reached.wait())
+    try:
+        done, _ = await asyncio.wait({asked, waiting}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+        # Ended before it came to write the record: what it raised is told here, not waited for.
+        assert asked not in done, asked.exception() if asked.done() and not asked.cancelled() else "ended early"
+        assert waiting in done, "the change never came to write the record"
+    except BaseException:
+        go_on.set()
+        raise
+    finally:
+        waiting.cancel()
+    # The sessions say the new place already; the record does not yet. The request is given up here.
+    asked.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asked
+    go_on.set()
+    for _ in range(200):
+        if not host._changes:
+            break
+        await asyncio.sleep(0.01)
+    assert (await host.space.get_project("Budget app")).workdir == str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir == str(new)
+
+
+async def test_no_change_of_where_a_project_works_comes_between_the_two_writes_of_a_new_task_agent(hosts, tmp_path):
+    """A task agent made for the user: its project's record and its session say the same place."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    make = host.ledger.project_session
+    changing: list[asyncio.Future] = []
+
+    async def then_a_change_is_asked_for(lanlan_name: str, project: str, **values: Any) -> Any:
+        # The project is on record, its session not yet: a change asked for now waits for it.
+        changing.append(asyncio.ensure_future(host.set_project_workdir(project, str(second))))
+        await asyncio.sleep(0.05)
+        return await make(lanlan_name, project, **values)
+
+    host.ledger.project_session = then_a_change_is_asked_for
+    made = await host.open_session("Lan", "Budget app", workdir=str(first))
+    await changing[0]
+    record = (await host.space.get_project("Budget app")).workdir
+    assert record == str(second)
+    assert (await host.ledger.get_session(made["session_id"])).workdir == record
+
+
+@pytest.mark.parametrize("error", [asyncio.CancelledError, RuntimeError])
+async def test_a_record_that_was_written_before_its_write_failed_keeps_the_sessions_where_they_were_put(hosts, tmp_path, error):
+    """A write given up after the record was on disk did change it: the sessions are not put back."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    new = tmp_path / "new"
+    new.mkdir()
+    write = host.space.set_project_workdir
+
+    async def written_then_fails(name: str, workdir: str) -> Any:
+        await write(name, workdir)
+        raise error("after the record was written")
+
+    host.space.set_project_workdir = written_then_fails
+    with pytest.raises(error):
+        await host._change_project_workdir("Budget app", new)
+    assert (await host.space.get_project("Budget app")).workdir == str(new)
+    assert (await host.ledger.get_session(lan.id)).workdir == str(new)
+
+
+async def test_a_session_that_began_work_before_the_change_was_undone_stays_where_it_began(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    old = tmp_path / "old"
+    old.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(old))
+    lan, _ = await host.ledger.project_session("Lan", "Budget app", workdir=str(old))
+    mei, _ = await host.ledger.project_session("Mei", "Budget app", workdir=str(old))
+    kim, _ = await host.ledger.project_session("Kim", "Budget app", workdir=str(old))
+    new = tmp_path / "new"
+    new.mkdir()
+
+    async def fails_after_work_began(name: str, workdir: str) -> Any:
+        # Mei's session has a run by now, and a commission was filed for Kim's: both began in the new place.
+        await host.ledger.update_session(mei.id, status="running")
+        await host.ledger.create(
+            lanlan_name="Kim", title="just now", dispatch_text="just now", source="dispatch", session_id=kim.id,
+            project="Budget app",
+        )
+        raise OSError("the record cannot be written")
+
+    host.space.set_project_workdir = fails_after_work_began
+    with pytest.raises(OSError):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.ledger.get_session(lan.id)).workdir == str(old)
+    assert (await host.ledger.get_session(mei.id)).workdir == str(new)
+    assert (await host.ledger.get_session(kim.id)).workdir == str(new)
+
+
+async def test_a_change_of_where_a_project_works_is_settled_before_the_host_shuts_down(hosts, tmp_path):
+    """The ledger is closed after it: a change whose record cannot be written still puts the sessions back."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    old = tmp_path / "old"
+    old.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(old))
+    lan, _ = await host.ledger.project_session("Lan", "Budget app", workdir=str(old))
+    new = tmp_path / "new"
+    new.mkdir()
+    reached = asyncio.Event()
+    put_back: list[str] = []
+    restore = host.ledger.restore_project
+
+    async def noted(before: dict, workdir: str) -> Any:
+        left = await restore(before, workdir)
+        put_back.append(workdir)
+        return left
+
+    async def fails_slowly(name: str, workdir: str) -> Any:
+        reached.set()
+        await asyncio.sleep(0.1)
+        raise OSError("the record cannot be written")
+
+    host.ledger.restore_project = noted
+    host.space.set_project_workdir = fails_slowly
+    asked = asyncio.ensure_future(host.set_project_workdir("Budget app", str(new)))
+    await asyncio.wait_for(reached.wait(), timeout=10)
+    await host.shutdown()
+    # Over by the time the host is shut down, with the sessions put back while the ledger was open.
+    assert asked.done() and isinstance(asked.exception(), OSError)
+    assert put_back == [str(new)]
+
+
+async def test_no_change_of_where_a_project_works_begins_in_a_host_that_is_shutting_down(hosts, tmp_path):
+    from nekoclaw.host.service import HostShuttingDown
+
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    await host.space.touch_project("Budget app")
+    lan, _ = await host.ledger.project_session("Lan", "Budget app")
+    new = tmp_path / "new"
+    new.mkdir()
+    moved: list[str] = []
+    move = host.ledger.move_project
+
+    async def noted(project: str, workdir: str) -> Any:
+        moved.append(workdir)
+        return await move(project, workdir)
+
+    host.ledger.move_project = noted
+    await host.shutdown()
+    with pytest.raises(HostShuttingDown, match="shutting down"):
+        await host.set_project_workdir("Budget app", str(new))
+    # Nothing of it was begun: no change is under way, the sessions were not written, nor the record.
+    assert not host._changes and moved == []
+    assert (await host.space.get_project("Budget app")).workdir != str(new)
+
+
+async def test_a_record_that_cannot_be_read_after_its_write_failed_leaves_the_sessions_where_they_were_put(hosts, tmp_path):
+    """Not known whether it was written: the sessions are not put back under a record that may say the new place."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    old = tmp_path / "old"
+    old.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(old))
+    lan, _ = await host.ledger.project_session("Lan", "Budget app", workdir=str(old))
+    new = tmp_path / "new"
+    new.mkdir()
+
+    async def fails_and_leaves_it_unreadable(name: str, workdir: str) -> Any:
+        record = host.paths.space().project_dir(name) / "project.json"
+        record.write_text("{ not json", encoding="utf-8")
+        raise OSError("the record cannot be written")
+
+    host.space.set_project_workdir = fails_and_leaves_it_unreadable
+    with pytest.raises(OSError):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.space.read_project("Budget app"))[1] is False
+    assert (await host.ledger.get_session(lan.id)).workdir == str(new)

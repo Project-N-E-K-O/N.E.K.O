@@ -50,9 +50,16 @@ Content-Type: application/json
 
 ```text
 recent.json
+theater_runs.json
 settings.json
 facts.json
 facts_archive.json
+subject_forget_tombstones.json
+external_import_state.json
+pinned_facts.json
+habitual_phrase_overrides.json
+prompt_locale.json
+scoped_prompt_locales.json
 persona.json
 persona_corrections.json
 reflections.json

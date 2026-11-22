@@ -45,6 +45,10 @@ class FakeDecisionLLM:
         self.gate: asyncio.Event | None = None
         # Answers for short descriptions (strings or exceptions), in order.
         self.short: list[Any] = []
+        # Answers of whether a commission is a side question, like ``fine``
+        # (the last one repeats); kept apart from what the other tests count.
+        self.side: list[Any] = [{"side_question": True}]
+        self.side_calls: list[list[dict[str, Any]]] = []
         self.short_calls: list[list[dict[str, Any]]] = []
         # Answers of the task agent space's own calls (the review of a
         # finished commission, the summary of an archived project): dicts,
@@ -71,6 +75,12 @@ class FakeDecisionLLM:
             if isinstance(answer, BaseException):
                 raise answer
             return answer
+        if tier == "side_question":
+            self.side_calls.append([dict(message) for message in messages])
+            answer = self.side[min(len(self.side_calls) - 1, len(self.side) - 1)]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
         if tier in self.space:
             # Made in the background after a commission ended; kept apart
             # like the short descriptions. Answers nothing usable unless a
@@ -108,6 +118,15 @@ async def no_model() -> None:
     return None
 
 
+def _copy_news_head() -> str:
+    from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FORKED_WORK
+
+    return TASK_AGENT_FORKED_WORK.split("{items}")[0][:60]
+
+
+_COPY_NEWS = _copy_news_head()
+
+
 class _ScriptOfTheCommission:
     """A session's model that answers from the script of the commission the session is at work on."""
 
@@ -123,6 +142,11 @@ class _ScriptOfTheCommission:
             if message.get("role") == "system":
                 continue
             text = json.dumps(message.get("content"), ensure_ascii=False)
+            if _COPY_NEWS in text and "Commission " not in text:
+                # What copies of the session did, told to it while it is at
+                # another commission: it quotes their words, and is no
+                # commission's.
+                continue
             found = [key for key in self._scripts if key in text]
             if found:
                 # The one named first: a commission's opening message begins with

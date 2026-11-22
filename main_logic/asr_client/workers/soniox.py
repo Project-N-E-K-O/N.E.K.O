@@ -757,7 +757,9 @@ async def soniox_asr_worker(
                 if action == "reconnect":
                     has_wire_audio = provider_wire_audio_bytes > 0
                     evidence = delivery_evidence(request_queue)
-                    if evidence.protected and (has_wire_audio or evidence.attempted):
+                    if evidence.protected and (
+                        has_wire_audio or (bool(replay_audio) and evidence.attempted)
+                    ):
                         await emit_error(
                             "ASR_SONIOX_PROTECTED_REPLAY_DISABLED",
                             "Protected audio cannot be replayed after a transport attempt",

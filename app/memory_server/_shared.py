@@ -34,6 +34,6 @@ def validate_lanlan_name(name: str) -> str:
     result = validate_character_name(name, allow_dots=True, max_length=50)
     if result.code in {"empty", "too_long_length"}:
         raise HTTPException(status_code=400, detail="Invalid lanlan_name length")
-    if result.code is not None:
+    if result.code not in {None, "reserved_route_name"}:
         raise HTTPException(status_code=400, detail="Invalid characters in lanlan_name")
     return result.normalized

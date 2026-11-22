@@ -3256,3 +3256,148 @@ def test_f0176_prune_used_topics_drops_nonfinite_in_memory_record(tmp_path):
     assert today[0]["used_at"] == pytest.approx(now)
     assert len(pool._used_topics["妮可"]) == 1
 
+
+def test_future_used_at_timestamps_are_ignored_until_clock_recovers():
+    """F0175: future used_at from clock rollback must not stall the 4h trigger gap or daily quota."""
+    pool = TopicHookPool(
+        auto_schedule=False,
+        daily_topic_limit=1,
+        min_trigger_gap_seconds=4 * 3600,
+    )
+    now = 1_776_000_000.0
+    with pool._used_topics_lock:
+        pool._used_topics["妮可"] = [
+            {
+                "used_at": now + 3600.0,  # same-day future timestamp
+                "weight": 1.0,
+                "hook_id": "future-same-day",
+                "interest": "同日未来话题",
+                "keywords": ["未来"],
+            },
+            {
+                "used_at": now + 8 * 3600.0,  # cross-day future timestamp
+                "weight": 1.0,
+                "hook_id": "future-next-day",
+                "interest": "跨日未来话题",
+                "keywords": ["跨日"],
+            },
+        ]
+
+    assert pool._recent_used_topics("妮可", now=now) == []
+    assert pool._seconds_until_next_topic_trigger("妮可", now=now) == 0.0
+    assert pool._daily_quota_reached("妮可", now=now) is False
+    assert pool._daily_quota_reached("妮可", now=now + 3600.0) is True
+
+
+def test_load_used_topics_skips_overflow_and_non_finite_timestamps(tmp_path):
+    """F0175: huge persisted integer or non-finite used_at must not break pool init."""
+    from main_logic.topic.pipeline import _coerce_used_at, _topic_fingerprint
+
+    assert _coerce_used_at({"used_at": 10**310}) is None
+    assert _coerce_used_at({"used_at": float("inf")}) is None
+    assert _coerce_used_at({"used_at": float("nan")}) is None
+
+    signal_path = tmp_path / "topic_signals.json"
+    used_topics_path = tmp_path / "topic_signals.used_topics.json"
+    valid_ts = time.time() - 60.0
+    payload = {
+        "version": 1,
+        "characters": {
+            "妮可": [
+                {"used_at": 10**310, "hook_id_hash": "overflow"},
+                {"used_at": "inf", "hook_id_hash": "inf"},
+                {"used_at": "nan", "hook_id_hash": "nan"},
+                {"used_at": valid_ts, "hook_id_hash": "valid"},
+            ]
+        },
+    }
+    used_topics_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    pool = TopicHookPool(auto_schedule=False, signal_store_path=signal_path)
+    assert [record["hook_id_hash"] for record in pool._used_topics["妮可"]] == [
+        _topic_fingerprint("valid"),
+    ]
+    assert pool._used_topics["妮可"][0]["used_at"] == pytest.approx(valid_ts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate_kind", ["quota", "recent", "gap", "clear"])
+async def test_run_trigger_rechecks_usage_gates_after_deepen_when_clock_catches_up(
+    monkeypatch, gate_kind,
+):
+    """After _deepen_material awaits, quota/dedup/gap must be rechecked if clock caught up."""
+    from main_logic.topic import pipeline as topic_pipeline
+
+    base = datetime(2026, 6, 15, 12, 0).timestamp()
+    clock = {"now": base}
+    patch_module_clock(monkeypatch, topic_pipeline, time=lambda: clock["now"])
+
+    triggered = []
+    retry_calls = []
+    delay_calls = []
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        triggered.append(material["interest"])
+        return True
+
+    async def fake_deepen(self, name, material, lang):
+        if gate_kind != "clear":
+            clock["now"] = base + 15.0
+
+    monkeypatch.setattr(TopicHookPool, "_deepen_material", fake_deepen)
+
+    pool = TopicHookPool(
+        auto_schedule=False,
+        topic_trigger=fake_trigger,
+        daily_topic_limit=1 if gate_kind == "quota" else 5,
+        min_trigger_gap_seconds=4 * 3600 if gate_kind == "gap" else 0.0,
+        min_user_turns_for_topic=1,
+    )
+    pool._reschedule_trigger_retry = lambda name, mat, lang: retry_calls.append(mat["hook_id"])
+    pool._reschedule_trigger_after_delay = (
+        lambda name, mat, lang, delay: delay_calls.append(delay)
+    )
+
+    with pool._used_topics_lock:
+        pool._used_topics["妮可"] = [
+            {
+                "used_at": base + 10.0,
+                "weight": 1.0,
+                "hook_id": "same-hook" if gate_kind == "recent" else "other-hook",
+                "interest": "同主题" if gate_kind == "recent" else "别的话题",
+                "keywords": ["同词"] if gate_kind == "recent" else ["他词"],
+            }
+        ]
+
+    material = {
+        "hook_id": "same-hook",
+        "status": "pending",
+        "interest": "同主题",
+        "keywords": ["同词"],
+    }
+    pool._materials["妮可"] = [material]
+
+    await pool._run_trigger_when_available("妮可", material, "zh-CN")
+
+    if gate_kind == "quota":
+        assert triggered == []
+        assert retry_calls == ["same-hook"]
+        assert delay_calls == []
+        assert material["status"] == "pending"
+    elif gate_kind == "recent":
+        assert triggered == []
+        assert retry_calls == []
+        assert delay_calls == []
+        assert material["status"] == "skipped"
+        assert pool._materials["妮可"] == []
+    elif gate_kind == "gap":
+        assert triggered == []
+        assert retry_calls == []
+        assert len(delay_calls) == 1
+        assert delay_calls[0] == pytest.approx(4 * 3600 - 5.0)
+        assert material["status"] == "pending"
+    else:
+        assert triggered == ["同主题"]
+        assert retry_calls == []
+        assert delay_calls == []
+        assert material["status"] == "used"

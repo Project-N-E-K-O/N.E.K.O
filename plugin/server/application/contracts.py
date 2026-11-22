@@ -58,6 +58,9 @@ MetricRecord = dict[str, object]
 class GlobalMetricsSummary(TypedDict):
     total_cpu_percent: float
     total_memory_mb: float
+    # Sum of the per-plugin USS values that are actually known. ``None`` when no
+    # plugin reported USS, which is different from a real total of 0 MiB.
+    total_memory_uss_mb: float | None
     total_memory_percent: float
     total_threads: int
     active_plugins: int

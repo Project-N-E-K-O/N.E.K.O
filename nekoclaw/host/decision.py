@@ -74,6 +74,9 @@ from nekoclaw.host.selection import (
 logger = logging.getLogger(__name__)
 
 TIER_COARSE = "coarse"
+# Whether a commission is a side question (``LexicalDecisionModel.side_question``):
+# on the small tier, like the coarse screen.
+TIER_SIDE_QUESTION = "side_question"
 TIER_FINE = "fine"
 # The turn check: the small model again, with a budget of its own.
 TIER_TURN_CHECK = "turn_check"
@@ -87,11 +90,16 @@ TIER_SHORT_DESCRIPTION = "short_description"
 TIER_REVIEW = "review"
 TIER_ARCHIVE = "archive"
 TIER_CONSOLIDATE = "consolidate"
-_SUMMARY_TIERS = frozenset({TIER_FINE, TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE})
+# The form of a new session, filled in for the user from what they wrote of
+# it (``NekoClawHost.draft_session``): one call when the user asks for it, on
+# the summary model, metered under a name of its own.
+TIER_SESSION_DRAFT = "session_draft"
+_SUMMARY_TIERS = frozenset({TIER_FINE, TIER_REVIEW, TIER_ARCHIVE, TIER_CONSOLIDATE, TIER_SESSION_DRAFT})
 _CALL_TYPES = {
     TIER_REVIEW: "task_agent_review",
     TIER_ARCHIVE: "task_agent_archive",
     TIER_CONSOLIDATE: "task_agent_consolidate",
+    TIER_SESSION_DRAFT: "task_agent_session_draft",
 }
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
@@ -193,7 +201,7 @@ class DecisionLLM(Protocol):
     """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``)."""
+        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``, ``TIER_CONSOLIDATE``, ``TIER_SESSION_DRAFT``)."""
 
 
 class DecisionModel(Protocol):
@@ -234,8 +242,8 @@ class ConfiguredDecisionLLM:
 
     The coarse screen, the turn check and short descriptions run on the small
     latency-sensitive tier (``emotion``); the fine selection, the reviews of
-    finished commissions, the summaries of archived projects and the tidying
-    of the task agent space on the ``summary`` tier. Endpoints come from the user's configuration as they
+    finished commissions, the summaries of archived projects, the tidying
+    of the task agent space and the form of a new session on the ``summary`` tier. Endpoints come from the user's configuration as they
     are, ``http://`` addresses included.
     """
 
@@ -247,6 +255,7 @@ class ConfiguredDecisionLLM:
         from utils.llm_client import create_chat_llm_async
 
         from config.nekoclaw_settings import (
+            SESSION_DRAFT_MODEL_SLOT,
             SPACE_ARCHIVE_MODEL_SLOT,
             SPACE_CONSOLIDATE_MODEL_SLOT,
             TASK_AGENT_REVIEW_MODEL_SLOT,
@@ -258,6 +267,7 @@ class ConfiguredDecisionLLM:
             TIER_REVIEW: TASK_AGENT_REVIEW_MODEL_SLOT,
             TIER_ARCHIVE: SPACE_ARCHIVE_MODEL_SLOT,
             TIER_CONSOLIDATE: SPACE_CONSOLIDATE_MODEL_SLOT,
+            TIER_SESSION_DRAFT: SESSION_DRAFT_MODEL_SLOT,
         }.get(tier, "summary" if tier in _SUMMARY_TIERS else "emotion")
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
@@ -284,19 +294,24 @@ class ConfiguredDecisionLLM:
         # task agent space asks is counted apart.
         set_call_type(_CALL_TYPES.get(tier, "agent"))
         from config.nekoclaw_settings import (
+            SESSION_DRAFT_OUTPUT_MAX_TOKENS,
             SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
             SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
             TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
             TURN_CHECK_OUTPUT_MAX_TOKENS,
         )
 
+        from config.nekoclaw_settings import SIDE_QUESTION_OUTPUT_MAX_TOKENS
+
         budget = {
             TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
+            TIER_SIDE_QUESTION: SIDE_QUESTION_OUTPUT_MAX_TOKENS,
             TIER_TURN_CHECK: TURN_CHECK_OUTPUT_MAX_TOKENS,
             TIER_SHORT_DESCRIPTION: AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
             TIER_REVIEW: TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
             TIER_ARCHIVE: SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
             TIER_CONSOLIDATE: SPACE_CONSOLIDATE_OUTPUT_MAX_TOKENS,
+            TIER_SESSION_DRAFT: SESSION_DRAFT_OUTPUT_MAX_TOKENS,
         }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)
@@ -729,6 +744,49 @@ class LexicalDecisionModel:
 
     def __init__(self, llm: DecisionLLM) -> None:
         self._llm = llm
+
+    async def side_question(self, dispatch_text: str, user_text: str, waiting_for: str = "") -> bool | None:
+        """Say whether a commission is a side question: answered by looking, with nothing changed. None when it cannot be told.
+
+        One request on the small tier (``TIER_SIDE_QUESTION``). Asked only
+        where it decides something: a commission of a project whose session
+        another one holds, which a side question need not wait for
+        (``TaskAgentManager._carry_on_in_copy``). Anything else, an answer
+        that cannot be read included, is work, and waits for the session.
+        ``waiting_for`` is the question the session waits for the user to
+        answer, if it does: a request that goes on with it is work.
+        """
+        from config.nekoclaw_settings import DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS
+        from config.prompts.prompts_nekoclaw_brain import TASK_BRAIN_SIDE_QUESTION_PROMPT, build_side_question_request
+        from utils.tokenize import count_tokens
+
+        if count_tokens(dispatch_text) > DISPATCH_TEXT_MAX_TOKENS or count_tokens(user_text) > DISPATCH_USER_TEXT_MAX_TOKENS:
+            # Too long to be shown whole, and what is cut off (the end, where
+            # what was said since stands) may well be work: not told, and
+            # it waits for the session, with no request made.
+            return None
+        messages = [
+            {"role": "system", "content": TASK_BRAIN_SIDE_QUESTION_PROMPT},
+            {
+                "role": "user",
+                "content": build_side_question_request(
+                    task=dispatch_text,
+                    user_said=user_text,
+                    # (Cut already: ``TASK_AGENT_FORK_PENDING_QUESTION_MAX_TOKENS``.)
+                    waiting_for=waiting_for,
+                ),
+            },
+        ]
+        try:
+            raw = await self._llm.complete(TIER_SIDE_QUESTION, messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - not told: it waits, as work does
+            logger.warning("telling whether a commission is a side question failed: %s", type(exc).__name__)
+            return None
+        decision = parse_json_object(raw or "")
+        verdict = decision.get("side_question") if decision is not None else None
+        return verdict if isinstance(verdict, bool) else None
 
     # -- first round ------------------------------------------------------
 

@@ -25,6 +25,7 @@ from plugin.utils.github_release import (
 from ..core.build_rules import VENDOR_SYNC_GLOBS
 from ..core.lint import ruff_command
 from ..core.plugin_source import load_plugin_source
+from ..git_env import git_env
 from ..paths import CliDefaults
 from ..repo_action_migration import ActionFileStatus, migrate_github_actions
 from ..repo_state import git_output, worktree_dirty_paths
@@ -511,14 +512,19 @@ def _ensure_standard_release_workflow(
         if change.relative_path == Path(".github/workflows/release.yml")
     )
     if release_change.status is not ActionFileStatus.CURRENT:
+        upgrade = (
+            f"neko-plugin setup-repo {release_cmd._plugin_dir_argument(plugin_dir, '')} "
+            "--upgrade-github-actions"
+        )
+        fill_in = release_cmd._placeholder_path(plugin_dir)
         raise RuntimeError(
             _tri(
-                "standard release workflow is not current; run "
-                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
-                "标准发布工作流不是当前版本；请运行 "
-                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
-                "標準リリースワークフローが最新ではありません。次を実行してください："
-                f"neko-plugin setup-repo {plugin_dir} --upgrade-github-actions",
+                f"standard release workflow is not current; run {upgrade}"
+                + (f" (plugin directory: {fill_in})" if fill_in else ""),
+                f"标准发布工作流不是当前版本；请运行 {upgrade}"
+                + (f"（插件目录：{fill_in}）" if fill_in else ""),
+                f"標準リリースワークフローが最新ではありません。次を実行してください：{upgrade}"
+                + (f"（プラグインディレクトリ：{fill_in}）" if fill_in else ""),
             )
         )
 
@@ -786,6 +792,7 @@ def _local_tag_commit(plugin_dir: Path, tag: str) -> str | None:
     completed = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
@@ -1042,6 +1049,7 @@ def _git(plugin_dir: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,
@@ -1064,6 +1072,7 @@ def _git_config_values(plugin_dir: Path, key: str) -> list[str]:
     completed = subprocess.run(
         ["git", "config", "--get-all", key],
         cwd=plugin_dir,
+        env=git_env(),
         encoding="utf-8",
         errors="replace",
         stdout=subprocess.PIPE,

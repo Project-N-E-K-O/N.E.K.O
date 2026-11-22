@@ -60,6 +60,41 @@ async def test_host_callbacks_report_what_they_can_serve() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def test_what_a_session_says_it_takes_goes_to_the_host_with_its_report_and_is_no_part_of_the_report(
+    tmp_path: Path,
+) -> None:
+    told: list = []
+    host = HostCallbacks(report=_recording(None, told))
+    report = {"status": "progress", "summary": "The export works."}
+
+    events, llm = await _run(
+        tmp_path,
+        host,
+        [call("report", {**report, "duty": "  the report page and its exports \n"}), finish("tool_calls")],
+        [call("report", report, "c2"), finish("tool_calls")],
+        [call("report", {**report, "duty": ""}, "c3"), finish("tool_calls")],
+    )
+
+    # The host is told, once it is said and only then; the report that is acted on is the same either way.
+    assert [payload.get("duty", "(none)") for _session, payload in told] == [
+        "the report page and its exports", "(none)", "(none)",
+    ]
+    reports = [event for event in events.events if event["type"] == "report"]
+    assert len(reports) == 3 and all("duty" not in event for event in reports)
+    offered = {tool["function"]["name"]: tool["function"] for tool in llm.overrides[0]["tools"]}
+    assert "duty" in offered["report"]["parameters"]["properties"]
+
+
+async def test_a_task_agent_another_one_started_is_not_offered_to_say_what_it_takes(tmp_path: Path) -> None:
+    host = HostCallbacks(report=_recording(None))
+
+    _events, llm = await _run(tmp_path, host, top_level=False)
+
+    offered = {tool["function"]["name"]: tool["function"] for tool in llm.overrides[0]["tools"]}
+    assert "duty" not in offered["report"]["parameters"]["properties"]
+    assert set(offered["report"]["parameters"]["properties"]) == {"status", "summary", "details", "delivery"}
+
+
 async def test_ask_user_question_returns_the_answers_as_compact_json(tmp_path: Path) -> None:
     asked: list = []
     answers = {

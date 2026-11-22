@@ -73,6 +73,9 @@ class ConnectivityTestRequest(BaseModel):
     sub_type: Optional[str] = ""
     voice_id: Optional[str] = ""
     is_free: Optional[bool] = False
+    # provider_scope='decision' only: Bailian workspace ID for providers whose
+    # native decision endpoint lives on a workspace-only host (qwen / qwen_intl).
+    workspace_id: Optional[str] = ""
 
 
 class ConnectivityTestResponse(BaseModel):
@@ -809,13 +812,15 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
     if not assist_provider:
         assist_provider = "free" if core_provider == "free" else "qwen"
 
+    from utils.config_manager import _as_bool
+
     _add("core", core_provider)
     _add("assist", assist_provider)
 
-    if core_cfg.get("enableCustomApi", False):
+    if _as_bool(core_cfg.get("enableCustomApi", False)):
         model_types = [
-            "conversation", "summary", "gameMain", "gameSummary", "correction", "emotion",
-            "decision", "vision", "agent", "omni", "tts",
+            "conversation", "summary", "gameMain", "gameSummary", "emotion",
+            "decision", "vision", "agent", "agentSmall", "omni", "tts",
         ]
         def _add_model_target(model_type: str, provider: str, seen: set[str] | None = None) -> None:
             seen = seen or set()
@@ -963,6 +968,8 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     All requests have a 10-second timeout. The endpoint is async, so it naturally supports concurrent requests without blocking.
     """
     api_key_stripped = (req.api_key or "").strip()
+    decision_fallback = ""
+    decision_url_override_consumed = False
     mode1_sub_type = ""
     profile_protocol = ""
     profile_model = ""
@@ -1024,6 +1031,57 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 profile_protocol=profile_protocol,
                 profile_model=profile_model,
             )
+            profile_decision_url_template = str(profile.get("decision_url_template") or "").strip()
+            regional_url = ""
+            if profile_decision_url_template:
+                from utils.http.url import same_endpoint
+
+                # The page may pass the chat endpoint the key actually resolved to
+                # (e.g. qwen_intl on the US host); only the primary one has a
+                # workspace decision host. An endpoint that is not one of the
+                # provider's own candidates (e.g. a stale saved one after the
+                # candidate list changed) is never requested: it is ignored and
+                # the probe falls back to the provider defaults.
+                regional_url = (req.url or "").strip()
+                if regional_url:
+                    decision_url_override_consumed = True
+                    if not any(
+                        same_endpoint(regional_url, c)
+                        for c in _normalize_provider_url_candidates(profile, "openrouter_url")
+                    ):
+                        regional_url = ""
+            if (
+                is_native_decision_protocol(resolved_protocol)
+                and profile_decision_url_template
+                and not profile_decision_url
+            ):
+                # Same rule as runtime core_config.py: the native endpoint exists only
+                # on the workspace host. Without an ID the runtime decides with the
+                # profile's chat model, so probe exactly that instead of a doomed URL.
+                from utils.decision_client.workspace import (
+                    InvalidWorkspaceIdError,
+                    build_workspace_decision_url,
+                    normalize_workspace_id,
+                )
+
+                try:
+                    workspace_id = normalize_workspace_id(req.workspace_id)
+                except InvalidWorkspaceIdError:
+                    return {"success": False, "error": "业务空间 ID 格式无效", "error_code": "invalid_workspace_id"}
+                region_supported = not regional_url or same_endpoint(regional_url, profile_openrouter_url)
+                if workspace_id and region_supported:
+                    profile_decision_url = build_workspace_decision_url(
+                        profile_decision_url_template, workspace_id
+                    )
+                else:
+                    decision_fallback = "workspace_missing" if region_supported else "region_unsupported"
+                    resolved_protocol = "chat_fallback"
+                    model = str(profile.get("emotion_model") or profile.get("summary_model") or "").strip()
+                    _source_label = f"{profile.get('name', provider_key)}（决策模型·聊天回退）"
+            if regional_url and not is_native_decision_protocol(resolved_protocol):
+                # Chat probes (no workspace, unsupported region, or a chat-model
+                # override) go to the endpoint the key resolved to.
+                profile_openrouter_url = regional_url
             if is_native_decision_protocol(resolved_protocol):
                 url_stripped = profile_decision_url or profile_openrouter_url
                 url_candidates = (
@@ -1035,7 +1093,11 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 mode1_sub_type = resolved_protocol
             else:
                 url_stripped = profile_openrouter_url
-                url_candidates = _normalize_provider_url_candidates(profile, "openrouter_url")
+                url_candidates = (
+                    [profile_openrouter_url]
+                    if regional_url and profile_openrouter_url
+                    else _normalize_provider_url_candidates(profile, "openrouter_url")
+                )
                 provider_type = _normalize_provider_type(profile, url_stripped)
         else:
             return {"success": False, "error": "无效的 provider_scope", "error_code": "missing_params"}
@@ -1057,7 +1119,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 _source_label = assist_profile.get("name", profile.get("name", provider_key)) + "（通过辅助端点验证）"
             else:
                 return {"success": False, "error": f"供应商 {_source_label} 暂不支持连通测试", "error_code": "missing_params"}
-        elif req.url and req.url.strip():
+        elif req.url and req.url.strip() and not decision_url_override_consumed:
             override_url = req.url.strip()
             if scope not in ("assist", "decision") or provider_key != "mimo" or not _is_mimo_token_plan_url(override_url):
                 return {"success": False, "error": "无效的 provider URL override", "error_code": "missing_params"}
@@ -1098,6 +1160,9 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
     except Exception as e:
         logger.exception("[ConnectivityTest] 未预期的异常")
         result = {"success": False, "error": str(e), "error_code": "unknown"}
+    if decision_fallback:
+        # Lets the settings page say "chat model stands in for the decision model".
+        result = {**result, "decision_fallback": decision_fallback}
 
     # Per-result log: provider/custom + success/failure.
     if result.get("success"):

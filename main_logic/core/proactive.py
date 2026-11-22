@@ -1229,6 +1229,7 @@ class ProactiveMixin:
                     if not cb.get(DELIVERY_RETRACTED_KEY)
                 ]
                 if not voice_snapshot:
+                    self.proactive_manager.release_inflight_noop()
                     return False
                 # NOTE: the callback instruction is built AFTER the media-stream
                 # gate + retraction re-filter below (right before inject), so it
@@ -1422,6 +1423,7 @@ class ProactiveMixin:
                     voice_snapshot
                 )
                 if not voice_snapshot:
+                    self.proactive_manager.release_inflight_noop()
                     return False
                 # Callback delivery bypasses prompt_ephemeral(), so it owns the
                 # same external-TTS turn boundary. Rotate before persisting any

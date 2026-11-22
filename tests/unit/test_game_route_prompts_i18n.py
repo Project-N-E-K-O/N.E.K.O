@@ -90,6 +90,19 @@ def test_english_archive_prompts_keep_literal_localized_markers():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("locale", ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"))
+def test_archive_highlighter_system_prompts_have_no_unformatted_placeholders(locale):
+    import re
+    from config.prompts.prompts_minigame_route import GAME_ARCHIVE_MEMORY_HIGHLIGHTER_SYSTEM_PROMPTS
+
+    raw_prompt = GAME_ARCHIVE_MEMORY_HIGHLIGHTER_SYSTEM_PROMPTS[locale]
+    resolved_prompt = get_game_archive_memory_highlighter_system_prompt(locale)
+    for text in (raw_prompt, resolved_prompt):
+        assert "{output_language}" not in text
+        assert not re.search(r"\{[a-z_]+\}", text)
+
+
+@pytest.mark.unit
 def test_game_context_signal_normalizer_accepts_legacy_zh_group_keys():
     normalized = gr_game_context._normalize_game_context_signals({
         "玩家信号": [{

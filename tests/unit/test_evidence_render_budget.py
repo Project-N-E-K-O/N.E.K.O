@@ -591,9 +591,14 @@ async def test_render_persona_independent_from_reflection_budget(tmp_path):
          'sub_zero_days': 0, 'user_fact_reinforce_count': 0},
     ]
 
-    md = await pm.arender_persona_markdown('小天',
-                                            pending_reflections=pending,
-                                            confirmed_reflections=confirmed)
+    with patch(
+        'utils.language_utils.get_global_language', return_value='zh',
+    ), patch(
+        'utils.language_utils.get_global_language_full', return_value='zh-CN',
+    ):
+        md = await pm.arender_persona_markdown('小天',
+                                                pending_reflections=pending,
+                                                confirmed_reflections=confirmed)
 
     # Persona section is present with at least the highest-score entries
     assert '关于主人' in md
@@ -709,9 +714,14 @@ async def test_arender_preserves_reflection_score_order(tmp_path):
         _reflection_dict('c_top', '最高confirmed', rein=9.0),
     ]
 
-    md = await pm.arender_persona_markdown(
-        '小天', pending_reflections=pending, confirmed_reflections=confirmed,
-    )
+    with patch(
+        'utils.language_utils.get_global_language', return_value='zh',
+    ), patch(
+        'utils.language_utils.get_global_language_full', return_value='zh-CN',
+    ):
+        md = await pm.arender_persona_markdown(
+            '小天', pending_reflections=pending, confirmed_reflections=confirmed,
+        )
 
     # Locate the two reflection sections in the output.
     pending_header = '### 小天最近的印象（还不太确定）'
@@ -778,3 +788,44 @@ def test_partition_trimmed_reflections_preserves_order():
     assert [r['id'] for r in conf] == ['c1'], (
         "confirmed must preserve input order AND drop suppressed text"
     )
+
+
+def test_persona_section_header_localized_all_eight_locales():
+    """All 6 PERSONA_SECTION_HEADER sections must be localized across all 8 locales without CJK leaks or forbidden terms."""
+    import re
+    from config.prompts.prompts_memory import PERSONA_SECTION_HEADER, get_persona_section_header
+    from config.prompts.prompts_visit import VISIT_FORBIDDEN_TERMS
+
+    cjk_re = re.compile(r"[\u4e00-\u9fff]")
+    locales = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+    expected_sections = (
+        "master",
+        "neko",
+        "relationship",
+        "pending_reflections",
+        "confirmed_reflections",
+        "suppressed",
+    )
+    assert set(PERSONA_SECTION_HEADER.keys()) == set(expected_sections)
+
+    for section in expected_sections:
+        table = PERSONA_SECTION_HEADER[section]
+        for loc in locales:
+            assert loc in table and table[loc].strip()
+            template = table[loc]
+            if loc not in ("zh", "zh-TW", "ja"):
+                assert not cjk_re.search(template), f"{section}[{loc}] still has CJK: {template!r}"
+            if loc in ("en", "ja", "ko", "ru", "es", "pt"):
+                assert template != table["zh"], f"{section}[{loc}] copies zh verbatim"
+            for term in VISIT_FORBIDDEN_TERMS.get(loc, ()):
+                if loc in ("zh", "zh-TW", "ja", "ko"):
+                    assert term not in template, f"forbidden term {term!r} in {section}[{loc}]"
+                else:
+                    assert not re.search(rf"\b{re.escape(term)}\b", template, re.IGNORECASE), (
+                        f"forbidden term {term!r} in {section}[{loc}]"
+                    )
+            rendered = get_persona_section_header(section, loc, ai_name="Neko", master_name="Alex")
+            if section == "master":
+                assert "Alex" in rendered
+            elif section in ("neko", "pending_reflections", "confirmed_reflections", "suppressed"):
+                assert "Neko" in rendered

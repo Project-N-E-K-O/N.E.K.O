@@ -29,7 +29,7 @@
    Gatekeeper: ``scripts/check_no_temperature.py`` (CI: ``.github/workflows/analyze.yml``).
 
 2. **Models come from tiers; no hardcoded fallbacks**. Every LLM call goes through
-   ``self._config_manager.get_model_api_config('summary'|'correction'|'emotion'|'vision'|...)``
+   ``self._config_manager.get_model_api_config('summary'|'emotion'|'vision'|...)``
    to fetch the ``api_config['model'] / ['base_url'] / ['api_key']`` triple. Do **not**
    write fallbacks like ``api_config.get('model', SETTING_PROPOSER_MODEL)`` — those are
    retired hardcodes (``SETTING_PROPOSER_MODEL`` / ``SETTING_VERIFIER_MODEL`` were
@@ -210,7 +210,7 @@ def _decoded_owner_is_safe(owner: str) -> bool:
     from utils.character_name import validate_character_name
 
     result = validate_character_name(owner, allow_dots=True)
-    return result.ok and result.normalized == owner
+    return result.code in {None, "reserved_route_name"} and result.normalized == owner
 
 
 def _legacy_root_file_owners(memory_dir: str, known: set) -> list:

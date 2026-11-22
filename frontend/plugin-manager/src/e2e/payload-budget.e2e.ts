@@ -44,7 +44,7 @@ test('keeps the complete initial route script and stylesheet payload bounded', a
 
   await page.goto(`${PREVIEW_ORIGIN}/ui/`)
   await expect(page.locator('.app-root')).toBeVisible()
-  await expect(page.locator('.dashboard')).toBeVisible()
+  await expect(page.locator('.power-home')).toBeVisible()
 
   for (const response of [...scriptResponses, ...stylesheetResponses]) {
     expect(response.ok(), `${response.status()} ${response.url()}`).toBe(true)

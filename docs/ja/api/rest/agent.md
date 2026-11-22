@@ -50,7 +50,7 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 
 ### タスクオブジェクト
 
-タスクは、NekoClaw の台帳にある依頼一件を HUD 向けに表したものです。`GET /api/agent/tasks` は `{"tasks":[...]}` を返します。状態スナップショットの `active_tasks` と WebSocket の `agent_task_update` メッセージにも同じオブジェクトが入ります。
+タスクは、NekoPower の台帳にある依頼一件を HUD 向けに表したものです。`GET /api/agent/tasks` は `{"tasks":[...]}` を返します。状態スナップショットの `active_tasks` と WebSocket の `agent_task_update` メッセージにも同じオブジェクトが入ります。
 
 | フィールド | 意味 |
 |---|---|

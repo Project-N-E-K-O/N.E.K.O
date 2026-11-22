@@ -326,30 +326,30 @@ class TestNamedProviderSlotKey:
     def test_custom_provider_keeps_slot_key(self, config_manager):
         """'custom' is user-typed and must never be redirected to the book."""
         _write_core_config(config_manager, _base_config(
-            correctionModelProvider='custom',
-            correctionModelId='my-model',
-            correctionModelUrl='http://localhost:11434/v1',
-            correctionModelApiKey='sk-typed-by-user',
+            summaryModelProvider='custom',
+            summaryModelId='my-model',
+            summaryModelUrl='http://localhost:11434/v1',
+            summaryModelApiKey='sk-typed-by-user',
         ))
         cfg = config_manager.get_core_config()
-        assert cfg['CORRECTION_MODEL_API_KEY'] == 'sk-typed-by-user', (
+        assert cfg['SUMMARY_MODEL_API_KEY'] == 'sk-typed-by-user', (
             "custom 槽的 Key 必须用用户手填值，实际="
-            f"{cfg['CORRECTION_MODEL_API_KEY']!r}"
+            f"{cfg['SUMMARY_MODEL_API_KEY']!r}"
         )
 
     @pytest.mark.unit
     def test_custom_provider_allows_empty_key(self, config_manager):
         """A keyless local endpoint stays keyless (no key-book borrowing)."""
         _write_core_config(config_manager, _base_config(
-            correctionModelProvider='custom',
-            correctionModelId='llama3',
-            correctionModelUrl='http://localhost:11434/v1',
-            correctionModelApiKey='',
+            summaryModelProvider='custom',
+            summaryModelId='llama3',
+            summaryModelUrl='http://localhost:11434/v1',
+            summaryModelApiKey='',
         ))
         cfg = config_manager.get_core_config()
-        assert cfg['CORRECTION_MODEL_API_KEY'] == '', (
+        assert cfg['SUMMARY_MODEL_API_KEY'] == '', (
             "本地无鉴权端点不应被塞进任何 Key，实际="
-            f"{cfg['CORRECTION_MODEL_API_KEY']!r}"
+            f"{cfg['SUMMARY_MODEL_API_KEY']!r}"
         )
 
 

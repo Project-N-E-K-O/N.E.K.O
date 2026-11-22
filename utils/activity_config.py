@@ -399,7 +399,10 @@ def _parse_unit_probability(raw: Any) -> float | None:
         return None
     if not isinstance(raw, (int, float)):
         return None
-    value = float(raw)
+    try:
+        value = float(raw)
+    except (OverflowError, TypeError, ValueError):
+        return None
     # NaN/Inf would slip past the range checks below (NaN comparisons are
     # always False; +Inf > 1 catches it but -Inf < 0 also does, leaving
     # NaN as the real concern). Reject them up front. CodeRabbit Minor: PR #1226.
@@ -422,9 +425,13 @@ def _parse_thresholds(raw: Any) -> dict[str, float]:
             continue  # bool is a subclass of int — exclude explicitly
         if not isinstance(v, (int, float)):
             continue
-        if v <= 0:
+        try:
+            value = float(v)
+        except (OverflowError, TypeError, ValueError):
             continue
-        out[k] = float(v)
+        if not math.isfinite(value) or value <= 0:
+            continue
+        out[k] = value
     return out
 
 
@@ -511,7 +518,13 @@ def _parse_skip_overrides(raw: Any) -> dict[str, float]:
             continue
         if not isinstance(v, (int, float)):
             continue
-        clamped = max(0.0, min(1.0, float(v)))
+        try:
+            value = float(v)
+        except (OverflowError, TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
+            continue
+        clamped = max(0.0, min(1.0, value))
         out[k] = clamped
     return out
 

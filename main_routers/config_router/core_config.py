@@ -29,14 +29,44 @@ from ..shared_state import get_session_manager, get_initialize_character_data
 from utils.file_utils import read_json_async
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.config_manager import ensure_default_yui_voice_for_free_api
+from utils.decision_client.workspace import (
+    InvalidWorkspaceIdError,
+    normalize_workspace_id,
+    safe_workspace_id,
+)
+from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
 
 
 CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 
 CORE_CONFIG_MODEL_TYPES = (
-    'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
-    'decision', 'vision', 'agent', 'omni', 'tts', 'image',
+    'conversation', 'summary', 'gameMain', 'gameSummary', 'emotion',
+    'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts', 'image',
 )
+
+# Model types merged away; their saved fields are dropped on the next save.
+# 'correction' was merged into 'summary' (the summary slot wins, so nothing is
+# carried over). Not listed in CORE_CONFIG_MODEL_TYPES, so GET never returns
+# these fields and a stale key stays unreadable.
+CORE_CONFIG_RETIRED_MODEL_TYPES = ('correction',)
+
+def _drop_retired_model_fields(core_cfg: dict) -> None:
+    """Remove the saved fields of merged-away model types, logging what was dropped.
+
+    Only the provider and model id are logged, never the URL or the key.
+    """
+    for model_type in CORE_CONFIG_RETIRED_MODEL_TYPES:
+        dropped = {
+            suffix: core_cfg.pop(f'{model_type}Model{suffix}', None)
+            for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
+        }
+        if any(value not in (None, '') for value in dropped.values()):
+            logger.info(
+                "Dropped retired %s model slot on save (provider=%r, model=%r); "
+                "its work now uses the summary slot",
+                model_type, dropped['Provider'] or '', dropped['Id'] or '',
+            )
+
 
 CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai',
@@ -50,6 +80,11 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyRequesty',
     'assistApiKeyOpper',
     'assistApiKeyAtlascloud',
+)
+
+# Bailian workspace IDs (core_config.json field names), one per provider region.
+CORE_CONFIG_WORKSPACE_ID_FIELDS = tuple(
+    file_field for file_field, _config_key in ASSIST_WORKSPACE_ID_FIELDS.values()
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
@@ -283,6 +318,11 @@ async def get_core_config_api():
             "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
             "assistApiKeyOpper": core_cfg.get('assistApiKeyOpper', ''),
             "assistApiKeyAtlascloud": core_cfg.get('assistApiKeyAtlascloud', ''),
+            # Bailian workspace IDs are not secrets; an invalid stored value reads as unset.
+            **{
+                file_field: safe_workspace_id(core_cfg.get(file_field, ''))
+                for file_field in CORE_CONFIG_WORKSPACE_ID_FIELDS
+            },
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -591,6 +631,18 @@ async def update_core_config(request: Request):
                 if not isinstance(data[field], str) or len(data[field]) > 200:
                     return {"success": False, "error": "INVALID_MANAGEMENT_CONFIG"}
                 core_cfg[field] = data[field].strip()
+        for field in CORE_CONFIG_WORKSPACE_ID_FIELDS:
+            if field in data:
+                # The ID becomes part of a hostname: reject anything that is not a
+                # single DNS label instead of trying to clean it up.
+                try:
+                    core_cfg[field] = normalize_workspace_id(data[field])
+                except InvalidWorkspaceIdError:
+                    return {
+                        "success": False,
+                        "error": "INVALID_WORKSPACE_ID",
+                        "field": field,
+                    }
         if 'openclawUrl' in data:
             # Frontend forms populate original saved values. If startup migration failed to persist (Windows antivirus may block
             # os.replace), this still receives old 8089; writing unchanged would persist the old port again,
@@ -698,6 +750,7 @@ async def update_core_config(request: Request):
                         apply_core_config_secret_update(core_cfg, data, field)
                     else:
                         core_cfg[field] = data[field]
+        _drop_retired_model_fields(core_cfg)
         # Lazy migration after retiring gptsovitsEnabled, at the save boundary, symmetric with #1842 voice_id:
         # ttsModelProvider=='gptsovits' is the sole GSV-enabled truth; old gptsovitsEnabled remains only
         # pre-#1830 compatibility fallback. Frontend loading pins enabled GSV dropdowns to 'gptsovits', so any submitted
@@ -893,7 +946,7 @@ async def get_api_providers_config():
             "assist_model_defaults": {
                 key: {field: profile.get(field, '') for field in (
                     'CONVERSATION_MODEL', 'VISION_MODEL', 'SUMMARY_MODEL',
-                    'CORRECTION_MODEL', 'EMOTION_MODEL', 'AGENT_MODEL',
+                    'EMOTION_MODEL', 'AGENT_MODEL',
                 )}
                 for key, profile in get_assist_api_profiles().items()
             },

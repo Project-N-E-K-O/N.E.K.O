@@ -317,7 +317,111 @@ def notify_install_committed(result: dict) -> dict:
             logger.warning(
                 "Capability job enqueue failed: error={}", type(exc).__name__
             )
+        # Best-effort and off the event loop: the binding write takes the
+        # storage lock and fsyncs, which must never stall async install paths
+        # or in-flight model streams. A malformed entry must not fail the
+        # committed install either.
+        try:
+            plugin_id = str(installed["target_plugin_id"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Host model auto-bind skipped: install entry lacks target_plugin_id")
+            continue
+        threading.Thread(
+            target=_auto_bind_host_models_safe,
+            args=(plugin_id, str(installed.get("target_dir") or "")),
+            daemon=True,
+            name=f"host-model-autobind-{plugin_id}",
+        ).start()
     return result
+
+
+async def notify_install_committed_async(result: dict) -> dict:
+    """:func:`notify_install_committed`, then persist each installed plugin's
+    install source into its stored permission grants.
+
+    Awaited by the install owner while it still holds the plugin operation
+    lock, so the grants follow the source even if the plugin stays stopped.
+    The store work runs in a worker thread and never raises.
+    """
+    import asyncio
+
+    from plugin.server.application.plugins.permission_service import (
+        reconcile_installed_plugins,
+    )
+
+    notify_install_committed(result)
+    await asyncio.to_thread(reconcile_installed_plugins, result)
+    return result
+
+
+def _auto_bind_host_models_safe(plugin_id: str, target_dir: str) -> None:
+    stop = analysis_service._stop
+    try:
+        # Manifest reads share the operation file lock with uninstall/update,
+        # which move plugin directories: on Windows an open plugin.toml handle
+        # would make those moves fail. The binding write happens after the
+        # lock is released so plugin operations never wait on its fsync.
+        with hold_plugin_operation_file_lock(stop):
+            plugin_id, requirements = _read_auto_bind_requirements(plugin_id, target_dir)
+        _auto_bind_host_models(plugin_id, requirements)
+    except Exception as exc:
+        if stop.is_set():
+            return
+        logger.warning(
+            "Host model auto-bind failed: plugin_id={}, error={}",
+            plugin_id, type(exc).__name__,
+        )
+
+
+def _read_auto_bind_requirements(plugin_id: str, target_dir: str):
+    """Resolve the manifest id and read its model declarations (lock held)."""
+    # target_plugin_id is the directory name; load_model_requirements
+    # demands the manifest's plugin.id. Resolve it the same way the
+    # install gate does, falling back to the directory name.
+    manifest_path: Path | None = None
+    if target_dir:
+        from plugin.server.application.install_source.scanner import PluginDirectoryScanner
+
+        candidate = Path(target_dir) / "plugin.toml"
+        declared = PluginDirectoryScanner._load_plugin_id(Path(target_dir))
+        if declared and declared != plugin_id:
+            logger.info(
+                "Host model auto-bind uses manifest id: dir_id={}, manifest_id={}",
+                plugin_id, declared,
+            )
+            plugin_id = declared
+        elif not declared:
+            logger.warning(
+                "Host model auto-bind: manifest id unreadable, using directory id: plugin_id={}",
+                plugin_id,
+            )
+        if candidate.is_file():
+            manifest_path = candidate
+    if manifest_path is None:
+        return plugin_id, _load_auto_bind_requirements(plugin_id)
+    # The registry may not know this install yet, and the directory
+    # name can differ from plugin.id: pin the manifest actually
+    # installed. ContextVars do not cross threads, so bind in here.
+    from plugin.server.infrastructure.config_access import (
+        ConfigAccessSnapshot,
+        bind_config_access,
+    )
+
+    snapshot = ConfigAccessSnapshot(plugin_id=plugin_id, manifest_path=manifest_path, host=None)
+    with bind_config_access(snapshot):
+        return plugin_id, _load_auto_bind_requirements(plugin_id)
+
+
+def _load_auto_bind_requirements(plugin_id: str):
+    from plugin.server.application.model_config_service import load_model_requirements
+
+    return load_model_requirements(plugin_id)
+
+
+def _auto_bind_host_models(plugin_id: str, requirements) -> None:
+    from plugin.server.application.model_config_service import ModelConfigService
+
+    ModelConfigService().ensure_host_follow_binding(plugin_id, requirements=requirements)
 
 
 def schedule_analysis(plugin_id: str, *, force: bool = False) -> None:

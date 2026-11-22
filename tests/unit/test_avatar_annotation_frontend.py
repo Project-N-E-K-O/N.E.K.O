@@ -253,7 +253,10 @@ def _build_script(tail: str) -> str:
     return (
         _BUILD_TMPL
         .replace("__DETECT__", _fn(src, "detectScreenshotCaptureType"))
-        .replace("__BUILD__", _fn(src, "buildStreamDataMessage"))
+        .replace(
+            "__BUILD__",
+            _fn(src, "resolveStreamFrameCaptureType") + "\n" + _fn(src, "buildStreamDataMessage"),
+        )
         .replace("__TAIL__", tail)
     )
 
@@ -322,6 +325,7 @@ _NATIVE_OK_THEN_SWITCH = (
 _HELPER_TMPL = """
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = {};
 let selected = __SOURCE_ID__;
@@ -368,7 +372,11 @@ def _helper_script(*, source_id: str, stream: str, native: str = _NATIVE_OK) -> 
             _fn(proactive_src, "isProactiveScreenshotBlocked")
             + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
-            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
+            + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
+            + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
 
@@ -409,6 +417,7 @@ def test_proactive_chat_discards_frames_when_remembered_identity_changes(mode: s
 const mode = '__MODE__';
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = {};
 let current = true;
@@ -487,7 +496,11 @@ captureProactiveChatScreenshotWithSource().then((shot) => {
             _fn(proactive_src, "isProactiveScreenshotBlocked")
             + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
-            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
+            + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
+            + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
 
@@ -875,6 +888,9 @@ const stopLiveVisionStreamIfBlocked = async () => false;
 const canSendLiveVisionStreamFrame = () => true;
 const normalizeNativeCaptureDataUrlForStream = async (dataUrl) => dataUrl;
 const buildStreamDataMessage = (_dataUrl, _inputType, sourceId) => ({ source_id: sourceId });
+const beginScreenFrameMaskSession = () => null;
+const buildMaskedStreamDataMessage = async (dataUrl, inputType, sourceId) =>
+  buildStreamDataMessage(dataUrl, inputType, sourceId);
 const safeT = (_key, fallback) => fallback;
 const rememberScreenSourceLabel = () => {};
 const stopScreenSharing = async () => {};
@@ -1011,6 +1027,8 @@ const isNativeFrameProvider = () => false;
 const stopLiveVisionStreamIfBlocked = async () => false;
 const captureCanvasFrame = () => ({ dataUrl: 'data:image/jpeg;base64,OLD' });
 const buildStreamDataMessage = (dataUrl) => ({ dataUrl });
+const beginScreenFrameMaskSession = () => null;
+const buildMaskedStreamDataMessage = async (dataUrl) => buildStreamDataMessage(dataUrl);
 const scheduleScreenCaptureIdleCheck = () => {};
 const safeT = (_key, fallback) => fallback;
 const rememberScreenSourceLabel = () => {};
@@ -1235,6 +1253,7 @@ recaptureWithoutNeko({
 _PROACTIVE_REMEMBERED_TMPL = """
 const isHomeTutorialFeatureSuppressed = () => false;
 const isProactiveVisionEnabledNow = () => true;
+const isVisionConsentHeldNow = () => true;
 const releaseProactiveVisionStream = () => {};
 const results = { calls: [] };
 const S = {
@@ -1289,7 +1308,11 @@ def _proactive_remembered_script(
             _fn(proactive_src, "isProactiveScreenshotBlocked")
             + "\n" + _fn(proactive_src, "declinedProactiveScreenshot")
             + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSourceInternal")
-            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource"),
+            + "\n" + _fn(proactive_src, "captureProactiveChatScreenshotWithSource")
+            + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId")
+            + "\n" + _fn(proactive_src, "maskSelfUiInFrame"),
         )
     )
 
@@ -1436,7 +1459,15 @@ def _frame_script(
         .replace("__AFTER_CAPTURE__", after_capture)
         .replace("__PREPARE__", remembered_capture)
         .replace("__DETECT__", _fn(screen_src, "detectScreenshotCaptureType"))
-        .replace("__BUILD__", _fn(screen_src, "buildStreamDataMessage"))
+        .replace(
+            "__BUILD__",
+            _fn(screen_src, "resolveStreamFrameCaptureType")
+            + "\n" + _fn(screen_src, "buildStreamDataMessage")
+            + "\n" + _fn(screen_src, "buildMaskedStreamDataMessage")
+            + "\n" + _fn(proactive_src, "beginSelfUiMaskSession")
+            + "\n" + _fn(proactive_src, "retargetScopeMaskSession")
+            + "\n" + _fn(proactive_src, "streamCaptureSourceId"),
+        )
         .replace("__FRAME__", _fn(proactive_src, "sendOneProactiveVisionFrame"))
     )
 

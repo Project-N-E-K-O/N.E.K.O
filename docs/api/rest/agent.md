@@ -50,7 +50,7 @@ Preferred mutation entry point. The current commands are:
 
 ### Task object
 
-A task is the HUD's view of one commission in the NekoClaw ledger. `GET /api/agent/tasks` returns `{"tasks":[...]}`; the same object appears in `active_tasks` of the state snapshot and in `agent_task_update` WebSocket messages.
+A task is the HUD's view of one commission in the NekoPower ledger. `GET /api/agent/tasks` returns `{"tasks":[...]}`; the same object appears in `active_tasks` of the state snapshot and in `agent_task_update` WebSocket messages.
 
 | Field | Meaning |
 |---|---|

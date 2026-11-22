@@ -1728,7 +1728,10 @@ async def update_master(request: Request):
         ):
             profile_name = requested_profile_name
             renamed_via_body_fallback = True
-        err = _validate_profile_name(profile_name)
+        err = _validate_profile_name(
+            profile_name,
+            allow_reserved_route=bool(previous_profile_name and not renamed_via_body_fallback),
+        )
         if err:
             return JSONResponse({'success': False, 'error': err}, status_code=400)
         next_master = {

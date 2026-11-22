@@ -868,6 +868,38 @@ async def test_a_task_agent_started_by_another_runs_where_that_one_runs(
     assert (name, note) == (expected, None)
 
 
+async def test_a_task_agent_whose_preset_withholds_tools_runs_in_the_built_in_runtime_though_its_starter_is_in_dsh(
+    hosts, tmp_path
+):
+    # dsh has file and command tools of its own, which the host cannot keep from a session there.
+    def lead(preset: dict[str, Any]) -> ScriptedLLM:
+        return ScriptedLLM(
+            [
+                [call("subagent", {"description": "look", "prompt": "Look at the tests.", **preset}), finish("tool_calls")],
+                [call("wait_agent", {"timeout_ms": 600_000}, "c2"), finish("tool_calls")],
+                _report("ready", "looked at"),
+            ]
+        )
+
+    leads = [lead({"preset": "scout"}), lead({})]
+    child = ScriptedLLM()
+    host = _host(hosts, tmp_path, lambda spec: leads[0] if spec.top_level else child, Installation())
+
+    scouted = await wait_status(host, await _dispatch(host, "check the tests"), "done")
+    leads.pop(0)
+    worked = await wait_status(host, await _dispatch(host, "check the other tests"), "done")
+
+    (scout,) = await host.ledger.select(parent_id=scouted.id)
+    (worker,) = await host.ledger.select(parent_id=worked.id)
+    assert (scouted.runtime, worked.runtime) == (RUNTIME_DSH, RUNTIME_DSH)
+    # The scout where the host keeps the tools from it; a worker where its starter is, as before.
+    assert ((await host.ledger.get_session(scout.session_id)).preset, scout.runtime) == ("scout", RUNTIME_BUILTIN)
+    assert ((await host.ledger.get_session(worker.session_id)).preset, worker.runtime) == ("worker", RUNTIME_DSH)
+    # That is where it belongs: it is not on record as a commission dsh could not take.
+    assert await _fallbacks(host, scout.id) == []
+    assert len(host.fake.builtin.created) == 1
+
+
 @pytest.mark.parametrize(
     ("recorded", "files", "expected"),
     [
@@ -1090,9 +1122,10 @@ async def test_a_ruling_on_a_search_does_not_wait_for_its_call_for_ever_or_outli
     assert len(asked) == 3 and host.task_agents._search_rulings == {}
 
 
-async def test_an_unidentified_dsh_plugin_asks_each_time_unless_the_user_configured_it(hosts, tmp_path):
+async def test_a_dsh_plugin_tool_is_not_asked_for_unless_the_user_configured_it(hosts, tmp_path):
+    """A plugin is confirmed when it is installed; its tools run without a question, five calls as one."""
     host = _host(hosts, tmp_path, ScriptedLLM(), Installation())
-    payload = {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": "w", "default": "allow"}
+    payload = {"tool": "plugin_weather", "category": "other", "arguments": {"city": "Oslo"}, "workdir": "w", "default": "ask"}
     asked = []
 
     async def once(commission_id, question):
@@ -1100,16 +1133,25 @@ async def test_an_unidentified_dsh_plugin_asks_each_time_unless_the_user_configu
         return "once"
 
     host.permissions.set_asker(once)
+    for _ in range(5):
+        assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
+    assert asked == []
+
+    # The user can have every call asked for, with nothing to allow for longer.
+    await host.permission_store.set_mode("other", "always_ask")
     for _ in range(2):
         assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
     assert asked == [("once", "deny")] * 2
 
-    await host.permission_store.set_mode("other", "allow")
-    assert (await host.task_agents._cb_permission("c1", payload))["allow"] is True
     await host.permission_store.set_mode("other", "deny")
     refused = await host.task_agents._cb_permission("c1", payload)
     assert refused["allow"] is False and "settings" in refused["reason"]
     assert len(asked) == 2
+
+    # Another category left on auto is still asked for at each call.
+    command = {"tool": "plugin_shell", "category": "run_command", "command": "dir", "cwd": "w", "workdir": "w", "default": "ask"}
+    await host.task_agents._cb_permission("c1", command)
+    assert len(asked) == 3
 
 
 # ---------------------------------------------------------------------------
