@@ -989,7 +989,7 @@ _BRANCH_ENDING_PROMPT = _LOCAL_WRITING_RULES + "\n\n" + """# Role: Numeric v2 �
 4. condition_selection.mode 为 fixed 时，使用唯一候选并省略 condition_key；为 recommend 时，必须从 condition_candidates 中选择一个原样 key，不能发明或改写。
 5. 结局入幕后不接收玩家输入。summary、opening_scene 和三方状态核对同一时点，开场呈现最终结果、实际代价及关键道具状态。仍需玩家实施或授权的动作由支线过程交付，结局承接结果及当前角色对此的回应，不重演动作，不追加离开、问题或任务，也不因结束而禁言。
 6. ordered_goals 只能有一项，用来声明结局开场已经交付：owner=environment、delivery_type=environment_fact、evidence_mode=semantic、anchors=[]、sources=["opening"]、timing="opening"、dialogue_policy_after="unchanged"。description 要概括 opening_scene 已经展示的完整结局事实，不能安排新的玩家行动、共同决定或后续任务。
-7. character_state 使用主线 character_state_arc 的同一角色槽位和 acting_contract 枚举。global.character_state_arc 是主线规划，来源之后的阶段不是已发生事实；上游依据为 source 与 recent_upstream，新结局按作者方向重新确定，不能照搬原主线后续的离开、交付或禁言状态。结局必须承接上游状态；除非结局事实本身明确发生真正重启或记忆切断，不得让当前角色重新失忆、重新询问已知身份，或把玩家伤情转移给当前角色。scene_boundaries 会原样进入 must_not_happen，必须写成语义明确的负向边界。
+7. character_state 使用主线 character_state_arc 的同一角色槽位和 acting_contract 枚举。global.character_state_arc 是主线规划，来源之后的阶段不是已发生事实；上游依据为 source 与 recent_upstream，新结局按作者方向重新确定，不能照搬原主线后续的离开、交付或禁言状态。结局必须承接上游状态；除非结局事实本身明确发生真正重启或记忆切断，不得让当前角色重新失忆、重新询问已知身份，或把玩家伤情转移给当前角色。scene_boundaries 会原样进入 must_not_happen，必须以“不得”“禁止”或“不能”开头，写成语义明确的负向边界。
 source_completion_facts 解释来源幕完成条件所引用的键；这些是作者声明的离幕结果，不是已经演出的记录。原出口合同见 source.route_gates 中 original_exit.route_id 对应的条目；桥段在 must_deliver 中不重列。
 8. global.key_props 是带来源 node_id 的作者道具生命周期规划，不是已提交的演绎日志；其中可能包含互斥路线及来源幕尚待发生的变化。保留名称、用途及原有来源，结局只承接本条路线前提支持的归属和状态，不能把所有上游规划合并为已发生事实。作者要求的新归属或操作结果应由本条支线过程建立，不能倒写为上游已经成立的记录，也不能为凑齐其他路线的规划补造取得或交接。
 
@@ -1077,7 +1077,7 @@ _BRANCH_PATH_PROMPT = STORY_DESIGN_RULE + "\n\n" + GOAL_METADATA_RULE + "\n\n" +
 12. ordered_goals 每项只写一个可独立核对的交付；同一句中有多个必须全部成立的条件、数量、期限或范围时必须拆分。一次交流若同时要求玩家先表态、当前角色再承接，必须拆成 player/player_action 或 player/semantic_state 与后续 catgirl 目标，不能塞进一个 shared_agreement 复合目标。
 13. 每幕关系最多变化一级，以共同经历和可见反应呈现，不能用 catgirl_situation 直接宣告更大的变化。
 14. global.relationship_arc 提供来源阶段的关系上限、称呼和已知事实。触发状态只在上限内改变距离，长期方向仍是规划。回接时遵守目标的关系上限和认知范围。
-15. global.character_state_arc 是主线规划。沿 source 和 recent_upstream 承接入路支持的状态。character_state 与本幕 opening_scene 同一时点，分别写当前角色、玩家、环境和发声权限。endpoint 的事后状态只用于反推所需行动，不预填到入幕。换场不重置记忆、不转移伤情或持物。continuity_from_previous 只写共同支持的状态，scene_boundaries 写明确的负向边界。
+15. global.character_state_arc 是主线规划。沿 source 和 recent_upstream 承接入路支持的状态。character_state 与本幕 opening_scene 同一时点，分别写当前角色、玩家、环境和发声权限。endpoint 的事后状态只用于反推所需行动，不预填到入幕。换场不重置记忆、不转移伤情或持物。continuity_from_previous 只写共持状态，scene_boundaries 以“不得”“禁止”或“不能”开头。
 source_completion_facts 解释来源幕完成条件的键，原出口合同见 source.route_gates 中 original_exit.route_id 对应的条目；桥段在 must_deliver 中不重列。""" + _BRANCH_REJOIN_EVIDENCE_RULES + """
 16. global.key_props 按 node_id 记录道具规划，可能包含互斥路线，不是已提交的演绎日志。保留原名称、用途与来源，不预定汇流后未知的归属或结果。key_prop_state_changes 只记录本幕实际安排的变化，不新增道具 ID，无变化填空数组。
 17. 照片、录音、信件、报告或其他信息载体若承担剧情证据，必须写明其实际可见或可听内容以及相关主体和动作；不得只给抽象结论，让演绎模型临时编造人物或线索。

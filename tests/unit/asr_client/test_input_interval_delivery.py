@@ -270,3 +270,26 @@ async def test_provider_vad_without_real_boundary_rejects_without_fake_silence_o
     finally:
         await runtime._asr_audio_dispatcher.close()
         runtime._asr_transcript_dispatcher.invalidate_all()
+
+
+def test_partition_spans_separates_tagged_and_explicit_untagged_intervals_and_rejects_gaps():
+    tag1 = AudioDeliveryTag(4, lambda _stage: None)
+    tag2 = AudioDeliveryTag(4, lambda _stage: None)
+    ledger = InputAudioDeliveryLedger()
+    ledger.register(100, 104, tag1)
+    ledger.register_untagged(104, 106)
+    ledger.register_untagged(106, 108)
+    ledger.register(108, 112, tag2)
+
+    segments = ledger.partition_spans((AudioSampleSpan(100, 12),), 12)
+    assert segments == [
+        (0, 4, (AudioDeliverySpan(tag1, 0, 4),)),
+        (4, 4, ()),
+        (8, 4, (AudioDeliverySpan(tag2, 0, 4),)),
+    ]
+
+    with pytest.raises(RuntimeError, match="SOURCE_RANGE_MISSING"):
+        ledger.partition_spans((AudioSampleSpan(100, 14),), 14)
+
+    with pytest.raises(RuntimeError, match="SOURCE_RANGE_MISSING"):
+        ledger.spans((AudioSampleSpan(104, 4),), 4)

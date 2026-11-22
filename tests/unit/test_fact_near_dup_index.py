@@ -2307,3 +2307,30 @@ async def test_retirement_model_review_releases_persistence_lock_and_rechecks_ev
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+def test_get_original_source_evidence_ignores_non_string_and_empty_source_ids(tmp_path):
+    from datetime import datetime
+    from memory.timeindex import TimeIndexedMemory
+    from utils.llm_client import HumanMessage
+
+    with patch('memory.timeindex.get_config_manager', return_value=_cm(str(tmp_path))):
+        ti = TimeIndexedMemory(recent_history_manager=MagicMock())
+        uid = 'a' * 32
+        valid_id = 'sync:' + uid
+        msg = HumanMessage(
+            content='hello',
+            metadata={
+                'recent_memory_id': uid,
+                'recent_memory_time': '1700000000',
+            },
+        )
+        ti.store_conversation_strict('s1', [msg], '小天', datetime(2026, 10, 26))
+
+        assert ti.get_original_source_evidence('小天', []) == {}
+        assert ti.get_original_source_evidence('小天', None) == {}  # type: ignore[arg-type]
+        result = ti.get_original_source_evidence(
+            '小天',
+            [123, None, b'bytes', {'bad': 1}, ['list'], 'not-matching', valid_id],  # type: ignore[list-item]
+        )
+        assert result == {valid_id: ('human', 1700000000)}

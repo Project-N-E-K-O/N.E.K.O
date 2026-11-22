@@ -35,6 +35,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Optional, Tuple, List, Any, Callable, Dict, Iterator, NamedTuple
+from config import CHARACTER_NICKNAME_FIELD_KEYS
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
@@ -2246,11 +2247,12 @@ class TranslationService:
             translate_all = False
             fields_set = set(fields_to_translate)
         
+        nickname_keys_folded = {k.casefold() for k in CHARACTER_NICKNAME_FIELD_KEYS}
         for key, value in result.items():
             should_translate = translate_all or key in fields_set
             
             if should_translate and isinstance(value, str) and value.strip():
-                if key in {'昵称', 'nickname'} and ', ' in value:
+                if str(key).casefold() in nickname_keys_folded and ', ' in value:
                     items = [item.strip() for item in value.split(', ')]
                     translated_items = await asyncio.gather(*[
                         self.translate_text_robust(item, target_lang) for item in items

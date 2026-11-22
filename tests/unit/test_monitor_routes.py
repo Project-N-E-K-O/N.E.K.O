@@ -277,3 +277,64 @@ def test_root_path_prefix_cannot_hide_producer_route(monkeypatch):
         _assert_ws_rejected(prefixed, "/monitor/sync_binary/neko", _session_headers())
         with prefixed.websocket_connect("/monitor/sync/neko", headers={"Authorization": "Bearer route-secret"}):
             pass
+
+
+def test_monitor_page_config_returns_master_metadata_without_csrf_token(client, monkeypatch):
+    class _FakeCM:
+        async def aget_character_data(self):
+            return (
+                "Carbon",
+                "YUI",
+                {"档案名": "Carbon", "Nickname": "Buddy, Pal"},
+                {"YUI": {"_reserved": {"avatar": {"model_type": "live2d", "live2d": {"model_path": "yui-lolita/yui-lolita.model3.json"}}}}},
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+    monkeypatch.setattr(monitor, "_config_manager", _FakeCM())
+    monkeypatch.setattr(monitor, "find_models", lambda: [{"name": "yui-lolita", "path": "/static/yui-lolita/yui-lolita.model3.json"}])
+
+    response = client.get("/api/config/page_config", headers={"Authorization": "Bearer route-secret"})
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+    data = response.json()
+    assert data == {
+        "success": True,
+        "lanlan_name": "YUI",
+        "master_name": "Carbon",
+        "master_profile_name": "Carbon",
+        "master_nickname": "Buddy, Pal",
+        "master_display_name": "Buddy",
+        "model_path": "/static/yui-lolita/yui-lolita.model3.json",
+        "model_type": "live2d",
+        "lighting": None,
+    }
+    assert "autostart_csrf_token" not in data
+
+
+def test_monitor_page_config_error_returns_empty_fields_and_no_csrf_token(client, monkeypatch):
+    class _BrokenCM:
+        async def aget_character_data(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(monitor, "_config_manager", _BrokenCM())
+    response = client.get("/api/config/page_config", headers={"Authorization": "Bearer route-secret"})
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    data = response.json()
+    assert data == {
+        "success": False,
+        "error": "boom",
+        "lanlan_name": "",
+        "master_name": "",
+        "master_profile_name": "",
+        "master_nickname": "",
+        "master_display_name": "",
+        "model_path": "",
+        "model_type": "",
+    }
+    assert "autostart_csrf_token" not in data

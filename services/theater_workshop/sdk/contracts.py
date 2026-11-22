@@ -121,6 +121,17 @@ class BranchGoalContractPayload(StrictPayload):
     dialogue_policy_after: Literal["required", "optional", "forbidden", "unchanged"] = "unchanged"
 
 
+class BranchEndingGoalContractPayload(StrictPayload):
+    owner: Literal["environment"] = "environment"
+    delivery_type: Literal["environment_fact"] = "environment_fact"
+    description: str = Field(min_length=1, max_length=2000)
+    evidence_mode: Literal["semantic"] = "semantic"
+    anchors: list[str] = Field(default_factory=list, max_length=0)
+    sources: list[Literal["opening"]] = Field(default_factory=lambda: ["opening"], min_length=1, max_length=1)
+    timing: Literal["opening"] = "opening"
+    dialogue_policy_after: Literal["unchanged"] = "unchanged"
+
+
 class BranchActingContractPayload(StrictPayload):
     cognition_state: Literal["fresh_boot", "limited", "normal"]
     memory_state: Literal["empty", "partial", "available"]
@@ -148,7 +159,7 @@ class BranchEndingContractPayload(StrictPayload):
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=4000)
     opening_scene: str = Field(min_length=1, max_length=4000)
-    ordered_goals: list[BranchGoalContractPayload] = Field(min_length=1, max_length=6)
+    ordered_goals: list[BranchEndingGoalContractPayload] = Field(min_length=1, max_length=1)
     irreversible_facts: list[str] = Field(min_length=1, max_length=20)
     character_state: BranchCharacterStatePayload
     catgirl_situation: str = Field(min_length=1, max_length=2000)

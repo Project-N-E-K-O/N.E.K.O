@@ -142,6 +142,12 @@ from .character_defaults import (  # noqa: F401
     get_default_mmd_settings,
     DEFAULT_CHARACTERS_CONFIG,
     _VALUE_TRANSLATIONS,
+    CHARACTER_NICKNAME_FIELD_KEYS,
+    CHARACTER_GENDER_FIELD_KEYS,
+    get_character_field_value,
+    get_character_nickname,
+    get_character_gender,
+    resolve_master_display_name,
     get_localized_default_characters,
 )
 

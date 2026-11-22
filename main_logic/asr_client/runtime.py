@@ -1564,6 +1564,49 @@ class IndependentAsrRuntime:
             turn_token,
         )
 
+    def _enqueue_segmented_audio(
+        self,
+        turn_token: VoiceTurnToken,
+        session_ref: Any,
+        payload: bytes,
+        *,
+        sample_rate_hz: int,
+        ranges: tuple[AudioSampleSpan, ...],
+        activate_first: bool,
+    ) -> bool:
+        segments = self._asr_input_delivery.partition_spans(ranges, len(payload) // 2)
+        if activate_first:
+            first_offset, first_count, first_spans = segments[0]
+            first_bytes = payload[first_offset * 2 : (first_offset + first_count) * 2]
+            if not self._asr_audio_dispatcher.activate(
+                turn_token,
+                session_ref,
+                first_bytes,
+                sample_rate_hz=sample_rate_hz,
+                delivery_spans=first_spans,
+            ):
+                return False
+            remaining = segments[1:]
+        else:
+            if not payload:
+                return True
+            remaining = segments
+        for offset, count, seg_spans in remaining:
+            if count <= 0:
+                continue
+            seg_bytes = payload[offset * 2 : (offset + count) * 2]
+            self._asr_audio_sequence += 1
+            if not self._asr_audio_dispatcher.enqueue_audio(
+                turn_token,
+                session_ref,
+                seg_bytes,
+                sample_rate_hz=sample_rate_hz,
+                sequence_no=self._asr_audio_sequence,
+                delivery_spans=seg_spans,
+            ):
+                return False
+        return True
+
     def _activate_asr_audio_dispatcher(
         self,
         lifecycle: VoiceInputLifecycleController,
@@ -1605,12 +1648,13 @@ class IndependentAsrRuntime:
             if buffered_pcm16 is None
             else buffered_spans
         )
-        activated = self._asr_audio_dispatcher.activate(
+        activated = self._enqueue_segmented_audio(
             turn_token,
             session_ref,
             payload,
             sample_rate_hz=16_000,
-            delivery_spans=self._asr_input_delivery.spans(spans, len(payload) // 2),
+            ranges=spans,
+            activate_first=True,
         )
         if activated:
             if spans and spans[-1].end is not None:
@@ -3251,6 +3295,8 @@ class IndependentAsrRuntime:
                 if frame.delivery is not None:
                     self._asr_input_delivery.register(source_start, source_end, frame.delivery)
                     lifecycle.set_audio_discard_observer(self._asr_input_delivery.discard)
+                elif self._asr_input_delivery.enabled:
+                    self._asr_input_delivery.register_untagged(source_start, source_end)
             buffered_before_detection = False
             buffered_for_activation = bool(
                 admission_enabled
@@ -3304,15 +3350,17 @@ class IndependentAsrRuntime:
                         status_code="ASR_AUDIO_ORDERING_FAILED", expected_identity=identity,
                     )
                     return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
-                self._asr_audio_sequence += 1
-                if not self._asr_audio_dispatcher.enqueue_audio(
-                    turn, self._asr_session, payload, sample_rate_hz=sample_rate_hz,
-                    sequence_no=self._asr_audio_sequence,
-                    delivery_spans=self._asr_input_delivery.spans(
-                        decision.audio_spans if decision.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
-                        else (AudioSampleSpan(source_start, len(payload) // 2),),
-                        len(payload) // 2,
+                if not self._enqueue_segmented_audio(
+                    turn,
+                    self._asr_session,
+                    payload,
+                    sample_rate_hz=sample_rate_hz,
+                    ranges=(
+                        decision.audio_spans
+                        if decision.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
+                        else (AudioSampleSpan(source_start, len(payload) // 2),)
                     ),
+                    activate_first=False,
                 ):
                     await self._handle_independent_asr_error(
                         identity.session_epoch, identity.provider or "unknown",
@@ -3695,18 +3743,17 @@ class IndependentAsrRuntime:
                         expected_identity=identity,
                     )
                     return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
-            self._asr_audio_sequence += 1
-            if not self._asr_audio_dispatcher.enqueue_audio(
+            if not self._enqueue_segmented_audio(
                 turn_token,
                 asr_session,
                 payload,
                 sample_rate_hz=sample_rate_hz,
-                sequence_no=self._asr_audio_sequence,
-                delivery_spans=self._asr_input_delivery.spans(
-                    decision.audio_spans if decision.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
-                    else (AudioSampleSpan(source_start, len(payload) // 2),),
-                    len(payload) // 2,
+                ranges=(
+                    decision.audio_spans
+                    if decision.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
+                    else (AudioSampleSpan(source_start, len(payload) // 2),)
                 ),
+                activate_first=False,
             ):
                 await self._handle_independent_asr_error(
                     identity.session_epoch,

@@ -99,9 +99,20 @@
         return role === 'user' ? getCurrentUserName() : getCurrentAssistantName();
     }
 
+    const MASTER_NICKNAME_KEYS = ['昵称', '暱稱', 'Nickname', 'ニックネーム', '닉네임', 'Прозвище', 'Apodo', 'Apelido'];
+
+    function getProfileNickname(profile) {
+        if (!profile || typeof profile !== 'object') return '';
+        for (var i = 0; i < MASTER_NICKNAME_KEYS.length; i += 1) {
+            var val = sanitizeDisplayName(profile[MASTER_NICKNAME_KEYS[i]]);
+            if (val) return val;
+        }
+        return sanitizeDisplayName(profile['nickname']);
+    }
+
     function resolveMasterDisplayNameFromProfile(masterProfile) {
         if (!masterProfile || typeof masterProfile !== 'object') return '';
-        var nickname = sanitizeDisplayName(masterProfile['昵称']);
+        var nickname = getProfileNickname(masterProfile);
         if (nickname) {
             var firstNickname = nickname.split(',')[0].split('，')[0].trim();
             if (firstNickname) return firstNickname;
@@ -130,7 +141,7 @@
                 var masterProfile = data && data['主人'];
                 var displayName = resolveMasterDisplayNameFromProfile(masterProfile);
                 var profileName = masterProfile && sanitizeDisplayName(masterProfile['档案名']);
-                var nickname = masterProfile && sanitizeDisplayName(masterProfile['昵称']);
+                var nickname = masterProfile && getProfileNickname(masterProfile);
 
                 if (displayName) {
                     window.master_display_name = displayName;

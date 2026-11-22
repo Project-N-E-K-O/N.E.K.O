@@ -1646,3 +1646,52 @@ async def test_signal_user_activity_end_gpt_manual_clears_uplink_resampler():
     assert "input_audio_buffer.commit" in types_sent
     assert "response.create" in types_sent
     fake_resampler.clear.assert_called_once()
+
+
+@pytest.mark.unit
+async def test_connect_dispatches_by_api_type_with_custom_model_name():
+    """api_type='openai' with a custom model name must enter GPT dialect and 24kHz uplink."""
+    client = _make_manual_client(
+        model="custom-proxy-voice-v1",
+        api_type="openai",
+        base_url="wss://proxy.example.test/realtime",
+    )
+    assert client._uplink_sample_rate == 24000
+    assert client._supports_native_image is True
+    assert client._is_glm_realtime() is False
+
+    session = await _run_connect_and_capture_session(client)
+    assert session is not None
+    assert session.get("type") == "realtime"
+    assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("api_type", ["qwen", "qwen_intl"])
+async def test_connect_api_type_qwen_ignores_conflicting_model_substrings(api_type):
+    """Explicit qwen/qwen_intl api_type must win over 'gpt'/'glm' substrings in model name."""
+    client = _make_manual_client(
+        model="custom-gpt-glm-alias",
+        api_type=api_type,
+        base_url="wss://dashscope.example.test/realtime",
+    )
+    assert client._uplink_sample_rate == 16000
+    assert client._is_glm_realtime() is False
+
+    session = await _run_connect_and_capture_session(client)
+    assert session is not None
+    assert "repetition_penalty" in session
+    assert session.get("type") != "realtime"
+    assert "beta_fields" not in session
+
+
+@pytest.mark.unit
+async def test_connect_local_freeform_model_does_not_enter_free_dialect():
+    """api_type='local' with 'free' in model name must not enter the 'free' dialect."""
+    client = _make_manual_client(
+        model="freeform-realtime",
+        api_type="local",
+        base_url="wss://custom.example.test/realtime",
+    )
+    with pytest.raises(ValueError, match="Invalid model"):
+        await _run_connect_and_capture_session(client)

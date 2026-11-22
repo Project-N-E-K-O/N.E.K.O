@@ -32,14 +32,22 @@ import json
 import os
 import logging
 from contextlib import asynccontextmanager
-from config import MONITOR_SERVER_PORT, MONITOR_HOST, MONITOR_TOKEN, MONITOR_VIEWER_TOKEN, DEFAULT_LIVE2D_MODEL_NAME
+from config import (
+    MONITOR_SERVER_PORT,
+    MONITOR_HOST,
+    MONITOR_TOKEN,
+    MONITOR_VIEWER_TOKEN,
+    DEFAULT_LIVE2D_MODEL_NAME,
+    get_character_nickname,
+    resolve_master_display_name,
+)
 from app.monitor_auth import (
     MonitorAuthMiddleware,
     install_monitor_log_redaction,
     monitor_auth_enabled,
 )
 from utils.config_manager import get_config_manager, get_reserved
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
@@ -171,18 +179,32 @@ async def get_subtitle():
     return FileResponse(get_resource_path('templates/subtitle.html'))
 
 @app.get("/api/config/page_config")
-async def get_page_config(lanlan_name: str = ""):
-    """Get page config (lanlan_name and model_path)"""
+async def get_page_config(response: Response, lanlan_name: str = ""):
+    """Get page config (lanlan_name, master_* metadata, model_path, model_type, and lighting)."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
     try:
         # Get character data
-        _, her_name, _, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
-        
+        master_name, her_name, master_basic_config, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
+        master_display_name = resolve_master_display_name(master_basic_config, master_name)
+        master_profile_name = (
+            str(master_basic_config.get('档案名', '') or '')
+            if isinstance(master_basic_config, dict)
+            else ""
+        )
+        master_nickname = get_character_nickname(master_basic_config)
+
         # If lanlan_name is provided, use it; otherwise use the current character
         target_name = lanlan_name if lanlan_name else her_name
-        
+        catgirl_config = lanlan_basic_config.get(target_name, {}) if isinstance(lanlan_basic_config, dict) else {}
+        model_type = get_reserved(catgirl_config, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
+        model_type = str(model_type or 'live2d').strip().lower()
+        if model_type == 'vrm':
+            model_type = 'live3d'
+
         # Get the live2d field (compatible with the new _reserved structure)
         live2d_model_path = get_reserved(
-            lanlan_basic_config.get(target_name, {}),
+            catgirl_config,
             'avatar',
             'live2d',
             'model_path',
@@ -202,10 +224,10 @@ async def get_page_config(lanlan_name: str = ""):
             live2d = DEFAULT_LIVE2D_MODEL
         if live2d in LEGACY_DEFAULT_LIVE2D_MODELS:
             live2d = DEFAULT_LIVE2D_MODEL
-        
+
         # Find all models
         models = find_models()
-        
+
         # Find the corresponding model path based on the live2d field
         model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
         if not model_path and live2d != DEFAULT_LIVE2D_MODEL:
@@ -213,15 +235,31 @@ async def get_page_config(lanlan_name: str = ""):
                 (m["path"] for m in models if m["name"] == DEFAULT_LIVE2D_MODEL),
                 find_model_config_file(DEFAULT_LIVE2D_MODEL),
             )
-        
+
         return {
             "success": True,
             "lanlan_name": target_name,
-            "model_path": model_path
+            "master_name": master_name or "",
+            "master_profile_name": master_profile_name,
+            "master_nickname": master_nickname,
+            "master_display_name": master_display_name or "",
+            "model_path": model_path,
+            "model_type": model_type,
+            "lighting": None,
         }
     except Exception as e:
         logger.error(f"获取页面配置失败: {e}")
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": str(e),
+            "lanlan_name": "",
+            "master_name": "",
+            "master_profile_name": "",
+            "master_nickname": "",
+            "master_display_name": "",
+            "model_path": "",
+            "model_type": "",
+        }
 
 @app.get("/api/config/preferences")
 async def get_preferences():

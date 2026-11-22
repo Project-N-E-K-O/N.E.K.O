@@ -359,6 +359,110 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     return bool(_GENAI_AVAILABLE)
 
 
+def _extract_genai_thinking_config(types: Any, extra_body: Any) -> Any:
+    """Translate provider extra_body thinking config into google-genai ThinkingConfig."""
+    if not isinstance(extra_body, dict) or not extra_body:
+        return None
+    inner = extra_body.get("extra_body")
+    google_cfg = inner.get("google") if isinstance(inner, dict) else extra_body.get("google")
+    tc = google_cfg.get("thinking_config") if isinstance(google_cfg, dict) else extra_body.get("thinking_config")
+    if not isinstance(tc, dict) or not tc:
+        return None
+    thinking_cls = getattr(types, "ThinkingConfig", None)
+    if thinking_cls is None:
+        return None
+    kwargs: dict[str, Any] = {}
+    if tc.get("thinking_budget") is not None:
+        kwargs["thinking_budget"] = int(tc["thinking_budget"])
+    if tc.get("thinking_level") is not None:
+        kwargs["thinking_level"] = tc["thinking_level"]
+    if tc.get("include_thoughts") is not None:
+        kwargs["include_thoughts"] = bool(tc["include_thoughts"])
+    if not kwargs:
+        return None
+    try:
+        return thinking_cls(**kwargs)
+    except Exception as exc:
+        logger.debug("genai ThinkingConfig build skipped: %s", exc)
+        return None
+
+
+def _resolve_genai_extra_body(
+    client: Any,
+    *,
+    has_override: bool,
+    override_extra_body: Any,
+) -> Any:
+    """Resolve effective extra_body for a google-genai call iteration."""
+    if has_override:
+        return override_extra_body
+    llm = getattr(client, "llm", None)
+    if llm is not None and hasattr(llm, "extra_body"):
+        llm_eb = llm.extra_body
+        if isinstance(llm_eb, (dict, type(None))):
+            return llm_eb
+    from config.providers import get_extra_body
+
+    return get_extra_body(
+        getattr(client, "model", "") or "",
+        getattr(client, "base_url", None),
+    )
+
+
+def _extract_genai_usage_dict(usage_meta: Any) -> dict[str, int]:
+    """Extract normalized token counts from a google-genai usage_metadata object."""
+    if usage_meta is None:
+        return {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+        }
+    prompt_tokens = int(getattr(usage_meta, "prompt_token_count", 0) or 0)
+    candidates_tokens = int(getattr(usage_meta, "candidates_token_count", 0) or 0)
+    thoughts_tokens = int(getattr(usage_meta, "thoughts_token_count", 0) or 0)
+    completion_tokens = candidates_tokens + thoughts_tokens
+    total_tokens = int(getattr(usage_meta, "total_token_count", 0) or (prompt_tokens + completion_tokens))
+    cached_tokens = int(getattr(usage_meta, "cached_content_token_count", 0) or 0)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cached_tokens": cached_tokens,
+    }
+
+
+def _record_genai_usage(
+    model: str,
+    usage_meta: Any,
+    *,
+    success: bool = True,
+    source: str = "main_logic/omni_offline_client",
+) -> None:
+    """Record one native google-genai API call into TokenTracker."""
+    try:
+        from utils.token_tracker import TokenTracker, _current_call_type
+
+        counts = _extract_genai_usage_dict(usage_meta) if success else {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+        }
+        TokenTracker.get_instance().record(
+            model=model or "unknown",
+            prompt_tokens=counts["prompt_tokens"],
+            completion_tokens=counts["completion_tokens"],
+            total_tokens=counts["total_tokens"],
+            cached_tokens=counts["cached_tokens"],
+            call_type=_current_call_type.get("unknown"),
+            source=source,
+            success=success,
+        )
+    except Exception as exc:
+        logger.debug("genai TokenTracker record skipped: %s", exc)
+
+
 class _GenaiMixin:
     def _ensure_genai_client(self) -> None:
         """Build the genai client if nothing holds one right now.
@@ -398,6 +502,16 @@ class _GenaiMixin:
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tool_rounds, _instruction, request_view = self._turn_request_view(overrides)
         response_generation = overrides.pop("_response_generation", None)
+        has_extra_body_override = "extra_body" in overrides
+        override_extra_body = overrides.pop("extra_body", None)
+        token_limit = overrides.pop("max_completion_tokens", None)
+        if token_limit is None:
+            token_limit = overrides.pop("max_tokens", None)
+        if token_limit is None and self.llm is not None:
+            token_limit = (
+                getattr(self.llm, "max_completion_tokens", None)
+                or getattr(self.llm, "max_tokens", None)
+            )
 
         generation_is_active = _generation_check(self, response_generation)
 
@@ -416,8 +530,8 @@ class _GenaiMixin:
 
         # max_completion_tokens semantics: same intent as OpenAI path.
         gen_config_kw: dict = {}
-        if self.llm is not None and self.llm.max_completion_tokens:
-            gen_config_kw["max_output_tokens"] = int(self.llm.max_completion_tokens)
+        if token_limit:
+            gen_config_kw["max_output_tokens"] = int(token_limit)
         if tools_payload:
             gen_config_kw["tools"] = tools_payload
 
@@ -437,6 +551,14 @@ class _GenaiMixin:
             cfg_kw = dict(gen_config_kw)
             if system_instruction:
                 cfg_kw["system_instruction"] = system_instruction
+            effective_extra_body = _resolve_genai_extra_body(
+                self,
+                has_override=has_extra_body_override,
+                override_extra_body=override_extra_body,
+            )
+            thinking_cfg = _extract_genai_thinking_config(types, effective_extra_body)
+            if thinking_cfg is not None:
+                cfg_kw["thinking_config"] = thinking_cfg
             try:
                 config = types.GenerateContentConfig(**cfg_kw)
             except Exception as e:
@@ -449,6 +571,11 @@ class _GenaiMixin:
                     config=config,
                 )
             except Exception as e:
+                _record_genai_usage(
+                    getattr(self, "model", None) or "unknown",
+                    None,
+                    success=False,
+                )
                 # Never wrap all exceptions as _GenaiToolsUnsupported.
                 # Catching it in _astream_with_tools permanently sets
                 # _genai_tools_unsupported=True, making transient
@@ -493,6 +620,8 @@ class _GenaiMixin:
             # their own words, causing repeats/reversals.
             streamed_text_buffer = ""
             usage_emitted = False
+            last_usage_meta = None
+            stream_errored = False
             # Empty-completion diagnostics: latest finish_reason and prompt_feedback.
             # block_reason expose Gemini SAFETY/RECITATION/MAX_TOKENS.
             # Compatibility routes lose these details, so read directly from raw SDK
@@ -523,8 +652,32 @@ class _GenaiMixin:
                         br = getattr(pf, "block_reason", None)
                         if br:
                             iter_block_reason = str(br)
+                    usage_meta = getattr(chunk, "usage_metadata", None)
+                    if usage_meta is not None:
+                        last_usage_meta = usage_meta
                     candidates = getattr(chunk, "candidates", None) or []
                     if not candidates:
+                        if usage_meta is not None and not usage_emitted:
+                            try:
+                                counts = _extract_genai_usage_dict(usage_meta)
+                                usage_dict = {
+                                    "prompt_tokens": counts["prompt_tokens"],
+                                    "completion_tokens": counts["completion_tokens"],
+                                    "total_tokens": counts["total_tokens"],
+                                }
+                                if usage_dict["prompt_tokens"]:
+                                    self._last_prompt_tokens = usage_dict["prompt_tokens"]
+                                yield LLMStreamChunk(
+                                    content="",
+                                    usage_metadata=usage_dict,
+                                    response_metadata={"token_usage": usage_dict},
+                                )
+                                usage_emitted = True
+                            except Exception as usage_err:
+                                logger.debug(
+                                    "genai usage_metadata emit skipped: %s",
+                                    usage_err,
+                                )
                         continue
                     cand = candidates[0]
                     fr = getattr(cand, "finish_reason", None)
@@ -597,13 +750,13 @@ class _GenaiMixin:
                     # Usage metadata may arrive on the chunk.
                     if not generation_is_active():
                         return
-                    usage_meta = getattr(chunk, "usage_metadata", None)
                     if usage_meta is not None and not usage_emitted:
                         try:
+                            counts = _extract_genai_usage_dict(usage_meta)
                             usage_dict = {
-                                "prompt_tokens": getattr(usage_meta, "prompt_token_count", 0) or 0,
-                                "completion_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
-                                "total_tokens": getattr(usage_meta, "total_token_count", 0) or 0,
+                                "prompt_tokens": counts["prompt_tokens"],
+                                "completion_tokens": counts["completion_tokens"],
+                                "total_tokens": counts["total_tokens"],
                             }
                             # Empty-completion diagnostics: store prompt_tokens on self,
                             # for upper stream_text fallback warnings, symmetric with OpenAI.
@@ -624,6 +777,12 @@ class _GenaiMixin:
                                 usage_err,
                             )
             except Exception as e:
+                stream_errored = True
+                _record_genai_usage(
+                    getattr(self, "model", None) or "unknown",
+                    None,
+                    success=False,
+                )
                 err_msg = str(e).lower()
                 # Match generate_content_stream's own exception handling:
                 # only messages explicitly combining tool/function with not_support/unsupported/
@@ -636,6 +795,13 @@ class _GenaiMixin:
                 ):
                     raise _GenaiToolsUnsupported(f"genai stream rejected tools: {e}") from e
                 raise
+            finally:
+                if not stream_errored and last_usage_meta is not None:
+                    _record_genai_usage(
+                        getattr(self, "model", None) or "unknown",
+                        last_usage_meta,
+                        success=True,
+                    )
 
             if not generation_is_active():
                 return
@@ -832,16 +998,32 @@ class _GenaiMixin:
         )
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
+        final_extra_body = _resolve_genai_extra_body(
+            self,
+            has_override=has_extra_body_override,
+            override_extra_body=override_extra_body,
+        )
+        final_thinking_cfg = _extract_genai_thinking_config(types, final_extra_body)
+        if final_thinking_cfg is not None:
+            final_cfg_kw["thinking_config"] = final_thinking_cfg
         final_config = types.GenerateContentConfig(**final_cfg_kw)
         # Same reason as inside the loop: the forced finalize is reached after
         # the tool iterations, so a switch_model that happened in one of them
         # has already dropped the client.
         self._ensure_genai_client()
-        final_stream = await self._genai_client.aio.models.generate_content_stream(
-            model=self.model,
-            contents=final_contents,
-            config=final_config,
-        )
+        try:
+            final_stream = await self._genai_client.aio.models.generate_content_stream(
+                model=self.model,
+                contents=final_contents,
+                config=final_config,
+            )
+        except Exception:
+            _record_genai_usage(
+                getattr(self, "model", None) or "unknown",
+                None,
+                success=False,
+            )
+            raise
         # Safe to return here: the forced final call carries no tools, and
         # without tools the SDK is lazy, so nothing was sent yet.
         if not generation_is_active():
@@ -850,56 +1032,75 @@ class _GenaiMixin:
         final_block_reason: Optional[str] = None
         final_prompt_tokens: Optional[int] = None
         final_had_text = False
+        final_last_usage_meta = None
+        final_stream_errored = False
         # Match OpenAI by retaining unreleased tool images for forced finalization too.
         tool_frames_published = False
-        async for chunk in final_stream:
-            if not tool_frames_published:
-                tool_frames_published = True
-                self._publish_pending_tool_frames(
-                    tool_bus_frames, turn_id=tool_frames_turn_id
-                )
-            if not generation_is_active():
-                # Answered, then cancelled: see the tool-loop stream above.
-                yield _answered_chunk()
-                return
-            # Collect block_reason/finish_reason/prompt_tokens symmetrically with normal genai,
-            # or safety/recitation/max-token suppression during forced finalization
-            # makes upper diagnostics cite the previous tool iteration's
-            # stale finish reason.
-            pf = getattr(chunk, "prompt_feedback", None)
-            if pf is not None:
-                br = getattr(pf, "block_reason", None)
-                if br:
-                    final_block_reason = str(br)
-            usage_meta = getattr(chunk, "usage_metadata", None)
-            if usage_meta is not None:
-                pt = getattr(usage_meta, "prompt_token_count", 0) or 0
-                if pt:
-                    final_prompt_tokens = pt
-            candidates = getattr(chunk, "candidates", None) or []
-            if not candidates:
-                continue
-            cand = candidates[0]
-            fr = getattr(cand, "finish_reason", None)
-            if fr:
-                final_finish_reason = str(fr)
-            cand_content = getattr(cand, "content", None)
-            for part in (getattr(cand_content, "parts", None) or []):
+        try:
+            async for chunk in final_stream:
+                if not tool_frames_published:
+                    tool_frames_published = True
+                    self._publish_pending_tool_frames(
+                        tool_bus_frames, turn_id=tool_frames_turn_id
+                    )
                 if not generation_is_active():
+                    # Answered, then cancelled: see the tool-loop stream above.
+                    yield _answered_chunk()
                     return
-                if getattr(part, "thought", False):
+                # Collect block_reason/finish_reason/prompt_tokens symmetrically with normal genai,
+                # or safety/recitation/max-token suppression during forced finalization
+                # makes upper diagnostics cite the previous tool iteration's
+                # stale finish reason.
+                pf = getattr(chunk, "prompt_feedback", None)
+                if pf is not None:
+                    br = getattr(pf, "block_reason", None)
+                    if br:
+                        final_block_reason = str(br)
+                usage_meta = getattr(chunk, "usage_metadata", None)
+                if usage_meta is not None:
+                    final_last_usage_meta = usage_meta
+                    pt = getattr(usage_meta, "prompt_token_count", 0) or 0
+                    if pt:
+                        final_prompt_tokens = pt
+                candidates = getattr(chunk, "candidates", None) or []
+                if not candidates:
                     continue
-                text = getattr(part, "text", None) or ""
-                if text:
-                    if tool_leak_filter is not None:
-                        text = self._filter_tool_leak_content(
-                            text, tool_leak_filter, provider=tool_leak_provider,
-                        )
-                    final_had_text = True
-                    chunk_out = LLMStreamChunk(content=text)
-                    if tool_leak_filter is not None:
-                        setattr(chunk_out, "_tool_leak_filtered", True)
-                    yield chunk_out
+                cand = candidates[0]
+                fr = getattr(cand, "finish_reason", None)
+                if fr:
+                    final_finish_reason = str(fr)
+                cand_content = getattr(cand, "content", None)
+                for part in (getattr(cand_content, "parts", None) or []):
+                    if not generation_is_active():
+                        return
+                    if getattr(part, "thought", False):
+                        continue
+                    text = getattr(part, "text", None) or ""
+                    if text:
+                        if tool_leak_filter is not None:
+                            text = self._filter_tool_leak_content(
+                                text, tool_leak_filter, provider=tool_leak_provider,
+                            )
+                        final_had_text = True
+                        chunk_out = LLMStreamChunk(content=text)
+                        if tool_leak_filter is not None:
+                            setattr(chunk_out, "_tool_leak_filtered", True)
+                        yield chunk_out
+        except Exception:
+            final_stream_errored = True
+            _record_genai_usage(
+                getattr(self, "model", None) or "unknown",
+                None,
+                success=False,
+            )
+            raise
+        finally:
+            if not final_stream_errored and final_last_usage_meta is not None:
+                _record_genai_usage(
+                    getattr(self, "model", None) or "unknown",
+                    final_last_usage_meta,
+                    success=True,
+                )
         # Persist this forced-finalize call's own diagnostics, including prompt_tokens.
         # Keep prompt_tokens local and assign unconditionally after streaming; blocked/missing usage writes None,
         # never prior iteration values that contaminate INFO/LLM_NO_RESPONSE diagnostics.

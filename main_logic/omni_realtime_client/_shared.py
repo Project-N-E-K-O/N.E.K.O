@@ -188,6 +188,8 @@ _REALTIME_DIALECT_ALIASES = {
     "gpt": "gpt",
     "qwen_intl": "qwen",
 }
+KNOWN_REALTIME_DIALECTS = frozenset({"glm", "qwen", "gpt", "step", "free", "grok", "gemini"})
+_MODEL_FALLBACK_DIALECTS = ("glm", "qwen", "gpt", "step", "grok")
 
 
 # Maximum lifetime of outstanding cancellation obligations. The cancelled round owes a terminal event, but Gemini has no
@@ -246,3 +248,49 @@ def canonical_realtime_dialect(api_type: object) -> str:
 
     raw = str(api_type or "").strip().lower()
     return _REALTIME_DIALECT_ALIASES.get(raw, raw)
+
+
+def resolve_effective_realtime_api_type(
+    api_type: object,
+    model: object,
+    *,
+    base_url: object = None,
+    livestream_mode: bool = False,
+) -> str:
+    """Resolve effective api_type, inferring 'free' only on known Lanlan/livestream routes."""
+
+    effective = str(api_type or "").strip()
+    model_lower = str(model or "").lower()
+    base_url_lower = str(base_url or "").lower()
+    known_lanlan_free_route = (
+        "lanlan.tech" in base_url_lower
+        or "lanlan.app" in base_url_lower
+        or bool(livestream_mode)
+    )
+    if not effective and "free" in model_lower and known_lanlan_free_route:
+        return "free"
+    return effective
+
+
+def resolve_realtime_dialect(
+    api_type: object,
+    model: object,
+    *,
+    base_url: object = None,
+    livestream_mode: bool = False,
+) -> str:
+    """Resolve wire dialect from api_type, falling back to model name only when unset or local."""
+
+    effective = resolve_effective_realtime_api_type(
+        api_type, model, base_url=base_url, livestream_mode=livestream_mode,
+    )
+    dialect = canonical_realtime_dialect(effective)
+    if dialect in KNOWN_REALTIME_DIALECTS:
+        return dialect
+    if dialect not in ("", "local"):
+        return dialect
+    model_lower = str(model or "").lower()
+    for candidate in _MODEL_FALLBACK_DIALECTS:
+        if candidate in model_lower:
+            return candidate
+    return ""
