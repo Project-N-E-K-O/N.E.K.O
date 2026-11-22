@@ -80,6 +80,30 @@ def set_steamworks(steamworks: Optional[Any]) -> None:
         _steamworks_generation += 1
 
 
+def get_steamworks_generation() -> int:
+    """Return the current install/reset generation.
+
+    An initializer that keeps its own copy of the handle reads this before
+    running the SDK init and passes it to ``publish_if_generation_unchanged``.
+    """
+    return _steamworks_generation
+
+
+def publish_if_generation_unchanged(generation: int, publish: Callable[[], None]) -> bool:
+    """Run ``publish`` under the state lock only if no install/reset happened since ``generation``.
+
+    Lets the initializer update its own module-level copy of the handle with
+    the same guard ``ensure_steamworks`` applies to the shared cache, so a
+    late init that finishes after shutdown/reset leaves no stale handle behind.
+    Returns whether ``publish`` ran.
+    """
+    with _steamworks_lock:
+        if _steamworks_generation != generation:
+            return False
+        publish()
+        return True
+
+
 def can_probe_steamworks() -> bool:
     """Whether this process owns a Steamworks probe (a live handle or a registered initializer).
 

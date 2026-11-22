@@ -277,15 +277,31 @@ def initialize_steamworks(*, quiet: bool = False):
 def ensure_steamworks_initialized():
     """Retry Steamworks initialization after Steam is opened post-startup."""
     global steamworks
+    from utils.steam_state import (
+        get_steamworks_generation,
+        publish_if_generation_unchanged,
+    )
+
     if steamworks is not None:
         return steamworks
 
+    generation = get_steamworks_generation()
     logger.debug("尝试重新初始化 Steamworks...")
-    steamworks = initialize_steamworks(quiet=True)
-    # ensure_steamworks() publishes the returned handle under its generation guard.
-    if steamworks is not None:
+    handle = initialize_steamworks(quiet=True)
+
+    def _publish() -> None:
+        global steamworks
+        steamworks = handle
+
+    # A shutdown/reset during init bumps the generation. Dropping the result
+    # then keeps it out of this module global; otherwise the next retry would
+    # return it from the check above and ensure_steamworks() would install it.
+    # ensure_steamworks() applies the same guard to the shared cache.
+    if not publish_if_generation_unchanged(generation, _publish):
+        return None
+    if handle is not None:
         get_default_steam_info()
-    return steamworks
+    return handle
 
 
 def get_default_steam_info():
