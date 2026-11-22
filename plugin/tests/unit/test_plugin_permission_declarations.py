@@ -1102,3 +1102,45 @@ def test_cli_only_counts_module_level_sdk_imports_for_decorators(tmp_path):
         "[permissions]\n",
     )
     assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
+
+
+# --- review round 6: decorators resolve in their own scope ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "source,line",
+    [
+        # SDK import in the class body, used by a method decorator there.
+        ("class P:\n    from plugin.sdk.plugin import hook\n    @hook(permissions=[])\n    def a(self): ...\n", 4),
+        # Function-local SDK import with an alias.
+        (
+            "def register():\n    from plugin.sdk.plugin import plugin_entry as entry\n"
+            "    @entry(id='a', permissions=[])\n    def a(): ...\n    return a\n",
+            4,
+        ),
+    ],
+)
+def test_cli_resolves_sdk_decorators_in_their_scope(tmp_path, source, line):
+    plugin_dir = _plugin(tmp_path, source, "[permissions]\n")
+    errors = _issues(plugin_dir, "error")
+    assert any(f"worker.py:{line}:" in message and "does not accept permissions=" in message for message in errors)
+
+
+def test_cli_local_helper_shadows_a_module_level_sdk_import(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "from plugin.sdk.plugin import hook\n"
+        "def build():\n    from .helpers import hook\n    @hook(permissions=['local-cache'])\n    def a(): ...\n    return a\n",
+        "[permissions]\n",
+    )
+    assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
+
+
+def test_cli_class_body_imports_are_not_visible_in_methods(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "class P:\n    from plugin.sdk.plugin import hook\n"
+        "    def make(self):\n        @hook(permissions=[])\n        def a(): ...\n        return a\n",
+        "[permissions]\n",
+    )
+    assert not [message for message in _issues(plugin_dir) if "permissions=" in message]

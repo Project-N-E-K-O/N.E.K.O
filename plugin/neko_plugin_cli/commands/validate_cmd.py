@@ -1337,32 +1337,80 @@ def _is_sdk_module(module: str) -> bool:
     return module == "plugin.sdk" or module.startswith("plugin.sdk.")
 
 
-def _sdk_imported_names(tree: ast.Module) -> dict[str, str]:
-    """Local name -> qualified symbol for imports from the plugin SDK."""
-    names: dict[str, str] = {}
-    for node in _module_level_nodes(tree):
-        if isinstance(node, ast.ImportFrom) and not node.level and node.module:
-            for item in node.names:
-                qualified = f"{node.module}.{item.name}"
-                if _is_sdk_module(qualified):
-                    names[item.asname or item.name] = qualified
-        elif isinstance(node, ast.Import):
-            for item in node.names:
-                if item.asname and _is_sdk_module(item.name):
-                    names[item.asname] = item.name
-                elif not item.asname and item.name.split(".")[0] == "plugin" and _is_sdk_module(item.name):
-                    names["plugin"] = "plugin"
-    return names
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
 
-def _module_level_nodes(tree: ast.Module):
-    """Nodes in module scope (inside if / try blocks too), not in functions or classes."""
-    stack = list(tree.body)
+def _scope_nodes(body):
+    """Nodes evaluated in one scope; nested function / class bodies excluded."""
+    stack = list(body)
     while stack:
         node = stack.pop()
         yield node
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        if isinstance(node, _SCOPE_NODES):
+            # Decorators, defaults and bases are evaluated in this scope.
+            if not isinstance(node, ast.Lambda):
+                stack.extend(node.decorator_list)
+            if isinstance(node, ast.ClassDef):
+                stack.extend(node.bases)
+            else:
+                stack.extend(node.args.defaults)
+        else:
             stack.extend(ast.iter_child_nodes(node))
+
+
+def _scope_bindings(body) -> dict[str, str | None]:
+    """Names bound in one scope: SDK imports -> qualified symbol, others -> None."""
+    names: dict[str, str | None] = {}
+    for node in _scope_nodes(body):
+        if isinstance(node, ast.ImportFrom):
+            for item in node.names:
+                qualified = f"{node.module}.{item.name}" if node.module and not node.level else ""
+                names[item.asname or item.name] = qualified if _is_sdk_module(qualified) else None
+        elif isinstance(node, ast.Import):
+            for item in node.names:
+                if item.asname:
+                    names[item.asname] = item.name if _is_sdk_module(item.name) else None
+                else:
+                    root = item.name.split(".")[0]
+                    names[root] = "plugin" if root == "plugin" and _is_sdk_module(item.name) else names.get(root)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names[node.name] = None
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for item in ast.walk(target):
+                    if isinstance(item, ast.Name):
+                        names[item.id] = None
+    return names
+
+
+def _sdk_decorators(tree: ast.Module) -> dict[int, str]:
+    """id(decorator) -> SDK symbol name, resolving each name in the scope the
+    decorator is evaluated in (local, then enclosing functions, then module;
+    class bodies are not visible to nested functions)."""
+    found: dict[int, str] = {}
+
+    def visit(body, chain, is_class):
+        local = _scope_bindings(body)
+        visible = [local, *chain]
+        for node in _scope_nodes(body):
+            if not isinstance(node, _SCOPE_NODES) or isinstance(node, ast.Lambda):
+                continue
+            for decorator in node.decorator_list:
+                name = _sdk_decorator_name(decorator, _lookup(visible))
+                if name:
+                    found[id(decorator)] = name
+            inner_chain = chain if is_class else visible
+            visit(node.body, inner_chain, isinstance(node, ast.ClassDef))
+
+    def _lookup(scopes):
+        merged: dict[str, str | None] = {}
+        for scope in reversed(scopes):
+            merged.update(scope)
+        return {key: value for key, value in merged.items() if value}
+
+    visit(tree.body, [], False)
+    return found
 
 
 def _sdk_decorator_name(decorator: ast.expr, sdk_names: dict[str, str]) -> str | None:
@@ -1393,13 +1441,13 @@ def _check_python_decorators(
         if tree is None:
             continue
         _check_deprecated_push_message_calls(tree, relative, issues)
-        sdk_names = _sdk_imported_names(tree)
+        sdk_decorators = _sdk_decorators(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
                 name = _decorator_name(decorator)
-                sdk_name = _sdk_decorator_name(decorator, sdk_names)
+                sdk_name = sdk_decorators.get(id(decorator))
                 if sdk_name in _PERMISSION_NARROWING_DECORATORS:
                     _check_permission_narrowing(
                         decorator, f"@{sdk_name} in {relative}:{node.lineno}", declared, issues
