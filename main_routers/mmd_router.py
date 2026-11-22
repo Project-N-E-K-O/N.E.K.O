@@ -567,7 +567,9 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
             })
 
         pmx_file = pmx_candidates[0]
-        rel_path = pmx_file.relative_to(mmd_dir)
+        # target_dir is resolved; resolve mmd_dir too, or a link or relative part
+        # in mmd_dir makes relative_to raise and the import cleanup delete the model.
+        rel_path = pmx_file.relative_to(mmd_dir.resolve())
         model_url = f"{MMD_USER_PATH}/{rel_path.as_posix()}"
         file_count = sum(1 for path in target_dir.rglob('*') if _file_check(path))
 
@@ -682,7 +684,13 @@ async def get_mmd_models():
             # Find incomplete top-level model directories lacking PMX/PMD.
             # Usually failed-import residue; list so users can delete.
             for item in mmd_dir.iterdir():
-                if item.is_dir() and item.name.lower() not in RESERVED_DIRS and item.name not in found_top_dirs:
+                try:
+                    is_dir = item.is_dir()
+                except OSError:
+                    # Type cannot be checked (e.g. EACCES on Python 3.11): not
+                    # offered as residue, and the rest of the list still loads.
+                    continue
+                if is_dir and item.name.lower() not in RESERVED_DIRS and item.name not in found_top_dirs:
                     if not is_utf8_text(item.name):
                         skipped += 1
                         continue
@@ -935,7 +943,8 @@ async def update_emotion_mapping(request: Request):
 
 
 def _count_and_rmtree(path: Path) -> int:
-    count = sum(1 for f in path.rglob('*') if f.is_file())
+    # An entry whose type cannot be checked is not counted and does not stop the delete.
+    count = sum(1 for f in path.rglob('*') if _file_check(f))
     shutil.rmtree(path)
     return count
 

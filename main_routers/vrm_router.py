@@ -38,6 +38,7 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
+from .mmd_router import _file_check
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async, read_json_async
@@ -241,11 +242,17 @@ async def upload_vrm_animation(file: UploadFile = File(...)):
 
 
 def _iter_vrm_model_files(vrm_dir: Path):
-    """Yield model files using the upload endpoint's case-insensitive extension rule."""
+    """Yield model files using the upload endpoint's case-insensitive extension rule.
+
+    Like the MMD ``_iter_model_files``, a path whose type cannot be checked (e.g.
+    a link into an unreadable folder raises PermissionError on Python 3.11) is
+    still yielded, so the "a model with this name exists" checks keep its
+    mappings; callers that need a real file check it with ``_file_check``.
+    """
     if vrm_dir.exists():
         # Mapping identities are stems; keep the same representative as model lookup.
         for path in sorted(vrm_dir.iterdir(), key=lambda p: (p.stem, p.suffix != '.vrm', p.name)):
-            if path.suffix.lower() == '.vrm' and path.is_file():
+            if path.suffix.lower() == '.vrm' and _file_check(path) is not False:
                 yield path
 
 
@@ -265,6 +272,9 @@ async def get_vrm_models():
         static_vrm_dir = project_root / "static" / "vrm"
         if static_vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(static_vrm_dir):
+                # Type cannot be checked: leave it out so the other models still list.
+                if not _file_check(vrm_file):
+                    continue
                 if not is_utf8_text(vrm_file.name):
                     skipped += 1
                     continue
@@ -289,6 +299,9 @@ async def get_vrm_models():
         vrm_dir = config_mgr.vrm_dir
         if vrm_dir.exists():
             for vrm_file in _iter_vrm_model_files(vrm_dir):
+                # Type cannot be checked: leave it out so the other models still list.
+                if not _file_check(vrm_file):
+                    continue
                 if not is_utf8_text(vrm_file.name):
                     skipped += 1
                     continue
@@ -809,7 +822,8 @@ def _find_vrm_model_file(vrm_dir: Path, model_name: str) -> Path | None:
         if not resolved.is_relative_to(vrm_dir.resolve()):
             logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
             raise ValueError("路径越界")
-        if resolved.suffix.lower() == '.vrm' and resolved.is_file():
+        # Type cannot be checked: try the next candidate instead of failing the lookup.
+        if resolved.suffix.lower() == '.vrm' and _file_check(resolved):
             return resolved
     return None
 
