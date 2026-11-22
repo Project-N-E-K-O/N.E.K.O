@@ -75,7 +75,8 @@ def _git_version() -> tuple[int, int, int] | None:
 
 
 # What needs a real git of the version the module asks for skips below it
-# (make_repo is where every such test begins); the rest still runs.
+# (in make_repo and the manager fixture, where every such test begins); the
+# rest still runs.
 REAL_GIT_TOO_OLD = (_git_version() or (0, 0, 0)) < worktrees.settings.WORKTREE_GIT_MIN_VERSION
 
 WINDOWS = sys.platform == "win32"
@@ -214,6 +215,10 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def manager() -> WorktreeManager:
+    # Every test that asks a manager about a real repository needs a git
+    # the module takes; the version floor itself is tested with a fake one.
+    if REAL_GIT_TOO_OLD:
+        pytest.skip(f"git {_git_version()} is older than the module needs")
     return WorktreeManager()
 
 
