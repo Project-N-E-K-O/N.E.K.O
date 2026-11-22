@@ -377,8 +377,6 @@ type HostedApi = {
   permissions = ["state:read", "document:parse"]
   ```
 
-  `neko-plugin check` currently still warns that `document:parse` is not a recognized UI permission ([#3809](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3809)). The runtime accepts it; this warning does not fail the check and can be ignored.
-
   Call it directly from a real user event handler, such as a file input's `onChange`, a click, or a drop. The Hosted UI runtime marks synchronous calls from those handlers as user initiated; a call made after unrelated asynchronous work is rejected.
 - `api.refresh()` fetches the latest context and re-renders the surface.
 - If an action has `refresh_context=false`, it will not refresh automatically.

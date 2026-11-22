@@ -19,7 +19,11 @@ on has ended, it
 
 * writes a **review** of it with one call of the summary model: what was
   asked, what was done, how it ended. The same call names the entries worth
-  keeping and the project the commission belongs to. At most one review is
+  keeping and the project the commission belongs to, and writes the card of
+  the session it was worked on in anew (its title, what it takes, a summary,
+  what its project is for): a line the user wrote is left as it is, and a
+  commission worked on in a copy of a session writes none. A card that is
+  missing or wrong costs the review nothing. At most one review is
   made per commission. One that is done or was stopped is reviewed right
   away; a failed one only when it was left failed for a day, because a failed
   commission is often taken up again and the review would miss how it ended.
@@ -60,9 +64,18 @@ from typing import Any
 
 from nekoclaw.host import call_audit
 from nekoclaw.host.decision import TIER_ARCHIVE, TIER_CONSOLIDATE, TIER_REVIEW
-from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger, LedgerEvent
+from nekoclaw.host.ledger import ACTIVE_STATUSES, CARD_FIELDS, ENDED_STATUSES, Commission, Ledger, LedgerEvent, Session
 from nekoclaw.host.paths import DEFAULT_PROJECT, SYSTEM_SNAPSHOT_NAME, TRANSCRIPT_NAME, safe_segment
-from nekoclaw.host.space import ENTRY_EXPIRED, ENTRY_PENDING, ENTRY_TYPES, Layer, Project, SpaceError, TaskAgentSpace
+from nekoclaw.host.space import (
+    ENTRY_EXPIRED,
+    ENTRY_PENDING,
+    ENTRY_TYPES,
+    Layer,
+    Project,
+    SpaceError,
+    TaskAgentSpace,
+    redact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -539,6 +552,10 @@ class SpaceKeeper:
         # project's record; this is for when the record cannot be written
         # either, so that the model is still asked once and not once a round.
         self._summaries: dict[str, tuple[float, int, str, str]] = {}
+        # Commissions under review whose project could not be read when
+        # the model was shown its description: what the model writes of it
+        # is not kept. One review is under way at a time.
+        self._about_unread: set[str] = set()
 
     # -- listening --------------------------------------------------------
 
@@ -707,7 +724,10 @@ class SpaceKeeper:
                     logger.warning("keeping the review of %s failed (%s)", commission_id, type(exc).__name__)
                     return {"status": "failed", "reason": type(exc).__name__}
 
-            return await self._conclude(commission, reviewed)
+            try:
+                return await self._conclude(commission, reviewed)
+            finally:
+                self._about_unread.discard(commission_id)
 
     async def _conclude(self, commission: Commission, outcome_of: Callable[[], Any]) -> str:
         """Write down what became of a commission's review, if the commission is still as it was read.
@@ -760,6 +780,7 @@ class SpaceKeeper:
             DISPATCH_TEXT_MAX_TOKENS,
             DISPATCH_USER_TEXT_MAX_TOKENS,
             SPACE_ENTRY_TITLE_MAX_TOKENS,
+            TASK_AGENT_REVIEW_CARD_MAX_TOKENS,
             TASK_AGENT_REVIEW_FILED_MAX_TOKENS,
             TASK_AGENT_REVIEW_INDEX_MAX_TOKENS,
             TASK_AGENT_REVIEW_INPUT_MAX_TOKENS,
@@ -803,6 +824,7 @@ class SpaceKeeper:
             status=commission.status,
             result=truncate_to_tokens(commission.result_summary or nothing, TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS),
             project=nothing if project == DEFAULT_PROJECT else project,
+            card=truncate_to_tokens(await self._card_shown(commission), TASK_AGENT_REVIEW_CARD_MAX_TOKENS),
             process=process or nothing,
             filed=truncate_to_tokens("\n".join(filed), TASK_AGENT_REVIEW_FILED_MAX_TOKENS) or nothing,
             projects=truncate_to_tokens("\n".join(projects), TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS) or nothing,
@@ -821,6 +843,110 @@ class SpaceKeeper:
             {"role": "system", "content": system},
             {"role": "user", "content": truncate_to_tokens(user, max(room, 0))},
         ]
+
+    async def _carded(self, commission: Commission) -> Session | None:
+        """Return the session whose card the review of a commission writes; None when it writes none.
+
+        The session the commission was worked on in. Not a copy of a
+        session: a copy answers and is done with, and what was carried on
+        in one says nothing of what the session itself takes.
+        """
+        session = await self._ledger.get_session(commission.session_id)
+        if session is None or session.kind == "fork":
+            return None
+        return session
+
+    async def _card_shown(self, commission: Commission) -> str:
+        """Return the card of a commission's session as the review is shown it, with what its project is for."""
+        from config.prompts import prompts_nekoclaw_space as texts
+
+        try:
+            session = await self._carded(commission)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the review is written all the same, without a card
+            # What goes wrong before the model is asked would be put down
+            # as a review that failed, and a commission is reviewed once.
+            logger.warning("the card of a session could not be read for its review (%s)", type(exc).__name__)
+            session = None
+        if session is None:
+            return texts.TASK_AGENT_REVIEW_NO_CARD
+        nothing = texts.TASK_AGENT_REVIEW_NOTHING
+        about, about_by = "", ""
+        project = commission.project or DEFAULT_PROJECT
+        if project != DEFAULT_PROJECT:
+            try:
+                found, read = await self._space.read_project(project)
+            except (SpaceError, OSError, ValueError):
+                found, read = None, False
+            if not read:
+                # The model is shown no description, and what it writes of
+                # one is then not written (``_keep_card``): it would replace
+                # words it never read. A record that cannot be read just now
+                # raises nothing: the project shows without a description.
+                self._about_unread.add(commission.id)
+            elif found is not None:
+                about, about_by = found.description, found.description_by
+        # A line the user wrote, or the session said of itself, is not a
+        # review's to write (``Ledger.write_card``): the model is told so,
+        # and spends nothing on a line that would be dropped.
+
+        def shown(text: str, by: str) -> str:
+            return (text or nothing) + (texts.TASK_AGENT_REVIEW_CARD_KEPT if by in ("user", "self") else "")
+
+        return texts.TASK_AGENT_REVIEW_CARD.format(
+            title=shown(session.title, session.title_by),
+            duty=shown(session.duty, session.duty_by),
+            summary=shown(session.summary, session.summary_by),
+            description=shown(about, about_by),
+        )
+
+    async def _keep_card(self, commission: Commission, data: dict[str, Any], project: str) -> list[str]:
+        """Write the card a review answered with; returns the lines that were written.
+
+        The title, what the session takes and its summary go to the
+        session's card (``Ledger.write_card``), and what the project is
+        for to the project's record (``TaskAgentSpace.describe_project``),
+        each as written by a review: a line the user wrote stays as it
+        is, and so does what the session said it takes. A line the model left empty, or gave as something other than
+        a text, is left alone. A card that is missing or is not an object
+        writes nothing; the review itself is kept all the same.
+        """
+        card = data.get("card")
+        if not isinstance(card, dict):
+            return []
+        session = await self._carded(commission)
+        if session is None:
+            return []
+        lines = {
+            name: redact(card[name])
+            for name in CARD_FIELDS
+            if isinstance(card.get(name), str) and card[name].strip()
+        }
+        written: list[str] = []
+        if lines:
+            _kept, done = await self._ledger.write_card(session.id, by="review", **lines)
+            written.extend(done)
+        about = card.get("description")
+        # Only of the project the commission was filed under from the start,
+        # which is the one whose description the model was shown. One the
+        # review itself files it under (``_target_project``) it saw nothing
+        # of: what it wrote would replace words it never read. (A project
+        # the review makes gets its description there.)
+        if (
+            isinstance(about, str)
+            and about.strip()
+            and commission.project == project
+            and commission.id not in self._about_unread
+        ):
+            try:
+                if await self._space.describe_project(project, about, by="review") is not None:
+                    written.append("description")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the lines of the card that were written stay on record
+                logger.warning("what a project is for could not be written from a review (%s)", type(exc).__name__)
+        return written
 
     async def _target_project(self, commission: Commission, data: dict[str, Any]) -> str:
         """Return the project a review is kept under, making the project it names when that is new.
@@ -861,6 +987,7 @@ class SpaceKeeper:
             at=commission.ended_at,
             unless_archived=True,
             unless_new=commission.status == "cancelled",
+            description_by="review",
         )
         return project.name if project is not None else current
 
@@ -958,6 +1085,17 @@ class SpaceKeeper:
             still.update((layer, name) for name in there)
         waiting = len(still)
         outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
+        # The card of its session, from the same answer. Whatever goes
+        # wrong with it, the review is written and stays.
+        try:
+            carded = await self._keep_card(commission, data, project)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the review is kept without it
+            logger.warning("the card a review wrote could not be kept (%s)", type(exc).__name__)
+            carded = []
+        if carded:
+            outcome["card"] = carded
         if waiting:
             # Made by the review and not in effect yet: pending entries, in no index and not among its entries.
             outcome["waiting"] = waiting

@@ -46,7 +46,14 @@ from .workshop_router import get_subscribed_workshop_items
 from contextlib import suppress
 
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.frontend_utils import _is_within, find_models, find_model_directory, find_workshop_item_by_id
+from utils.frontend_utils import (
+    _is_within,
+    _resolve_workshop_search_dirs,
+    find_model_directory,
+    find_models,
+    find_workshop_item_by_id,
+    find_workshop_item_model_file,
+)
 from utils.logger_config import get_module_logger
 from utils.url_utils import drop_non_utf8_entries, encode_url_path, is_utf8_text
 from utils.workshop_utils import get_workshop_path
@@ -145,8 +152,38 @@ def _resolve_model_url_to_file_path(path: str, config_manager) -> Path | None:
     if parts[0] == "static":
         return Path("static") / Path(*parts[1:]) if len(parts) > 1 else None
     if parts[0] == "workshop":
-        workshop_root = get_workshop_path()
-        return Path(workshop_root) / Path(*parts[1:]) if workshop_root and len(parts) > 1 else None
+        roots = _workshop_url_roots()
+        if not roots or len(parts) <= 1:
+            return None
+        relative = Path(*parts[1:])
+        # /workshop serves every Steam library; use the one that holds the file.
+        found = _find_workshop_url_file(relative, roots)
+        return found if found is not None else Path(roots[0]) / relative
+    return None
+
+
+def _workshop_url_roots() -> list[str]:
+    """Directories a /workshop URL can resolve to: the configured root, then the other Steam libraries."""
+    roots = []
+    primary = get_workshop_path()
+    if primary:
+        roots.append(str(primary))
+    for root in _resolve_workshop_search_dirs():
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _find_workshop_url_file(relative: Path, roots: list[str]) -> Path | None:
+    """First existing file ``root/relative`` whose real path stays inside its root."""
+    for root in roots:
+        try:
+            root_real = Path(root).resolve()
+            candidate = (Path(root) / relative).resolve()
+            if candidate.is_relative_to(root_real) and candidate.is_file():
+                return candidate
+        except (OSError, RuntimeError, ValueError):
+            continue
     return None
 
 
@@ -160,13 +197,17 @@ def _resolve_sync_model_file(path: str, config_manager) -> Path | None:
     parts = normalized.split("/")
     if not normalized or ":" in normalized or any(part in {".", ".."} for part in parts):
         return None
+    if parts[0] == "workshop":
+        # Every Steam library /workshop serves; each candidate stays inside its own root.
+        if len(parts) <= 1:
+            return None
+        return _find_workshop_url_file(Path(*parts[1:]), _workshop_url_roots())
     direct = _resolve_model_url_to_file_path(path, config_manager)
     if direct is not None:
         roots = {
             'user_live2d': getattr(config_manager, 'readable_live2d_dir', None) or getattr(config_manager, 'live2d_dir', None),
             'user_live2d_local': getattr(config_manager, 'live2d_dir', None),
             'static': 'static',
-            'workshop': get_workshop_path(),
         }
         root = roots.get(parts[0])
         if root is None:
@@ -339,7 +380,7 @@ def _is_inside_model_dir(model_dir_real: str, path: str) -> bool:
     """
     Whether the real path of *path* (links resolved) stays inside *model_dir_real*,
     the real path of the model folder, checked with ``utils.frontend_utils._is_within``
-    (the same boundary rule the Workshop model-file lookup in #3912 uses): links
+    (the same boundary rule as ``find_workshop_item_model_file``): links
     pointing inside the folder keep working, entries whose real path leaves it are
     skipped. Skipped entries are logged so a missing motion or expression can be traced.
     """
@@ -966,12 +1007,8 @@ def get_model_config_by_id(model_id: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
+        # Find .model3.json (directly in the item first, then nested), inside the item only.
+        model_json_path = find_workshop_item_model_file(model_dir)
         
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
@@ -1017,12 +1054,8 @@ async def update_model_config_by_id(model_id: str, request: Request):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
+        # Find .model3.json (directly in the item first, then nested), inside the item only.
+        model_json_path = find_workshop_item_model_file(model_dir)
         
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
@@ -1075,6 +1108,9 @@ def get_model_files_by_id(model_id: str):
             logger.debug(f"通过model_id {model_id} 查找模型目录: {model_dir}")
         except Exception as e:
             logger.warning(f"通过model_id查找失败: {e}")
+        # Any directory the by-id lookup returned (/workshop or its /static fallback)
+        # uses the shared model choice; only the by-name fallback below keeps the old rule.
+        found_by_item_id = bool(model_dir and os.path.exists(model_dir))
         
         # If model_id yields no valid directory, fall back treating it as model_name.
         if not model_dir or not os.path.exists(model_dir):
@@ -1094,7 +1130,18 @@ def get_model_files_by_id(model_id: str):
             logger.warning(f"模型目录不存在: {model_dir}")
             return {"success": False, "error": "模型不存在"}
 
-        actual_model_dir, model_config_file, model_name_subdir = _locate_model_config(model_dir)
+        if found_by_item_id:
+            # Same file the by-id config routes and the model URL use, so motion and
+            # expression paths saved through those routes belong to this model.
+            chosen = find_workshop_item_model_file(model_dir)
+            if chosen:
+                actual_model_dir, model_config_file = os.path.split(chosen)
+                subdir = os.path.relpath(actual_model_dir, model_dir)
+                model_name_subdir = None if subdir == os.curdir else subdir.replace(os.sep, '/')
+            else:
+                actual_model_dir, model_config_file, model_name_subdir = None, None, None
+        else:
+            actual_model_dir, model_config_file, model_name_subdir = _locate_model_config(model_dir)
 
         if not model_config_file:
             logger.warning(f"未找到模型 {model_id} 的 .model3.json 文件: {model_dir}")
@@ -1156,7 +1203,13 @@ def get_model_files_by_id(model_id: str):
                     # Model directly in item directory: workshop/{item_id}/{model_name}.model3.json.
                     model_config_url = encode_url_path(f"{url_prefix}/{model_id}/{model_config_file}")
             else:
-                model_config_url = encode_url_path(f"{url_prefix}/{model_config_file}")
+                # Other prefixes serve the folder that holds model_dir, so the URL keeps
+                # the model folder name and any subfolder the config file sits in.
+                model_folder = os.path.basename(os.path.normpath(model_dir))
+                if model_name_subdir:
+                    model_config_url = encode_url_path(f"{url_prefix}/{model_folder}/{model_name_subdir}/{model_config_file}")
+                else:
+                    model_config_url = encode_url_path(f"{url_prefix}/{model_folder}/{model_config_file}")
             logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url} (模型子目录: {model_name_subdir})")
         
         logger.debug(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
@@ -1655,7 +1708,18 @@ def get_user_models():
             config_mgr.ensure_vrm_directory()
             vrm_dir = config_mgr.vrm_dir
             if vrm_dir.exists():
-                for vrm_file in vrm_dir.glob('*.vrm'):
+                for vrm_file in vrm_dir.iterdir():
+                    # Any letter case, like the VRM upload check ('Foo.VRM'); folders
+                    # and dangling links are skipped as in the VRM model list.
+                    if vrm_file.suffix.lower() != '.vrm':
+                        continue
+                    try:
+                        if not vrm_file.is_file():
+                            continue
+                    except OSError:
+                        # Type cannot be checked (e.g. EACCES on Python 3.11): skip
+                        # this entry and keep scanning the rest.
+                        continue
                     user_models.append({
                         'name': vrm_file.stem,
                         'path': f'/user_vrm/{vrm_file.name}',
