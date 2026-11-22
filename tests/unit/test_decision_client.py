@@ -1371,7 +1371,7 @@ async def test_memory_recall_reranker_uses_native_decision_and_ranks_by_score():
 
 @pytest.mark.asyncio
 @pytest.mark.unit
-async def test_memory_recall_reranker_keeps_summary_tier_for_non_native_providers():
+async def test_memory_recall_reranker_uses_emotion_tier_for_non_native_providers():
     from memory.recall import MemoryRecallReranker
 
     async def _get_cfg(tier: str):
@@ -1382,10 +1382,10 @@ async def test_memory_recall_reranker_keeps_summary_tier_for_non_native_provider
                 "api_key": "free-access",
                 "decision_protocol": "chat_fallback",
             }
-        if tier == "summary":
+        if tier == "emotion":
             return {
-                "model": "user-custom-summary-model",
-                "base_url": "https://local-summary.example/v1",
+                "model": "user-custom-emotion-model",
+                "base_url": "https://local-emotion.example/v1",
                 "api_key": "sk-local",
                 "provider_type": "openai_compatible",
             }
@@ -1414,8 +1414,8 @@ async def test_memory_recall_reranker_keeps_summary_tier_for_non_native_provider
         )
 
     assert [r["id"] for r in ranked] == ["m2", "m1"]
-    assert mock_create_llm.await_args.args[0] == "user-custom-summary-model"
-    assert mock_create_llm.await_args.args[1] == "https://local-summary.example/v1"
+    assert mock_create_llm.await_args.args[0] == "user-custom-emotion-model"
+    assert mock_create_llm.await_args.args[1] == "https://local-emotion.example/v1"
 
 
 @pytest.mark.asyncio
