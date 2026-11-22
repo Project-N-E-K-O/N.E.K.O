@@ -40,15 +40,19 @@ def _is_json_content_type(value: str | None) -> bool:
 
 
 def _request_origin_allowed(request: Request) -> bool:
+    from utils.instance_access import _same_origin
+
     if request.scope.get("neko.instance_identity"):
         # Authorized remote instance sessions: accept the instance's own and
         # pinned public origins, mirroring other cookie-authenticated routes.
-        from utils.instance_access import _same_origin
-
         return _same_origin(request)
     # Same-origin, loopback-to-loopback, or a configured trusted origin;
     # requests without Origin/Referer (native clients) pass here.
-    return is_http_browser_origin_allowed(request.scope)
+    if is_http_browser_origin_allowed(request.scope):
+        return True
+    # An explicit Origin naming this deployment's own entry: the pinned public
+    # origin, or an https page on this Host behind a TLS-terminating proxy.
+    return bool(request.headers.get("origin")) and _same_origin(request)
 
 
 async def require_same_origin_json_mutation(request: Request) -> None:

@@ -318,6 +318,27 @@ async def test_remote_instance_session_accepts_pinned_public_origin(app, save_re
     assert len(save_recorder.calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_https_page_behind_tls_proxy_is_same_origin(app, save_recorder, monkeypatch):
+    """TLS ends at a declared proxy that forwards plain HTTP with the same Host."""
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "1")
+    monkeypatch.delenv("NEKO_INSTANCE_PUBLIC_ORIGIN", raising=False)
+    async with _client(app, base_url="http://neko.example") as client:
+        ok = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "Origin": "https://neko.example", "Sec-Fetch-Site": "same-origin"},
+        )
+        foreign = await client.post(
+            SETTINGS_PATH,
+            content=_BODY,
+            headers={**_JSON, "Origin": "https://other.example"},
+        )
+    assert ok.status_code == 200, ok.text
+    assert foreign.status_code == 403
+    assert len(save_recorder.calls) == 1
+
+
 def test_json_content_type_parser():
     assert config_shared._is_json_content_type("application/json")
     assert config_shared._is_json_content_type("Application/JSON; charset=UTF-8")
