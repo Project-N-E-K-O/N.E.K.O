@@ -215,7 +215,7 @@
         try {
             if (window.parent && window.parent !== window) {
                 window.parent.postMessage(
-                    { action: 'memory_edited', catgirl_name: characterName },
+                    { type: 'memory_edited', catgirl_name: characterName },
                     window.location.origin
                 );
             }

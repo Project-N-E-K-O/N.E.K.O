@@ -1545,3 +1545,73 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
         )
         assert restored is not None and restored["text"] == "版本二"
 
+    # 7. Lineage story and DAG resolve promoted reflections moved into reflection_archive/ shards
+    from memory.analytics.lineage import abuild_full_lineage_graph, build_memory_lineage_story
+
+    _write_json(
+        char_dir / "facts.json",
+        [
+            {
+                "id": "f_old_tea",
+                "entity": "master",
+                "text": "冬天晚上常泡一杯焙茶暖手",
+                "created_at": "2026-01-10T20:00:00",
+            }
+        ],
+    )
+    _write_json(char_dir / "reflections.json", [])
+    _write_json(
+        char_dir / "reflection_archive" / "2026-02-01_a1b2c3d4.json",
+        [
+            {
+                "id": "r_archived_tea",
+                "entity": "master",
+                "text": "冬天喜欢喝焙茶",
+                "status": "promoted",
+                "source_fact_ids": ["f_old_tea"],
+                "created_at": "2026-01-11T10:00:00",
+            }
+        ],
+    )
+    _write_json(
+        char_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {
+                        "id": "p_tea",
+                        "text": "冬天晚上习惯喝焙茶暖手",
+                        "source": "reflection",
+                        "source_id": "r_archived_tea",
+                        "created_at": "2026-01-12T10:00:00",
+                    }
+                ]
+            }
+        },
+    )
+
+    story = build_memory_lineage_story(
+        char_name,
+        kind="persona",
+        entry_id="p_tea",
+        memory_dir=cm.memory_dir,
+    )
+    assert story is not None
+    assert story["steps"]["facts_inferred"] is False
+    assert [f["id"] for f in story["steps"]["facts"]] == ["f_old_tea"]
+    assert len(story["steps"]["reflections"]) == 1
+    assert story["steps"]["reflections"][0]["id"] == "r_archived_tea"
+    assert story["steps"]["reflections"][0]["archived"] is True
+
+    dag = await abuild_full_lineage_graph(char_name, memory_dir=cm.memory_dir)
+    dag_node_ids = {n["id"] for n in dag["nodes"]}
+    assert "reflection:r_archived_tea" in dag_node_ids
+    assert any(
+        e["source"] == "fact:f_old_tea" and e["target"] == "reflection:r_archived_tea"
+        for e in dag["edges"]
+    )
+    assert any(
+        e["source"] == "reflection:r_archived_tea" and e["target"] == "persona:p_tea"
+        for e in dag["edges"]
+    )
+

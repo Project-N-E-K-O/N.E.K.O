@@ -175,6 +175,50 @@ def _overlap_score(a: set[str], b: set[str]) -> float:
     return inter / min(len(a), len(b))
 
 
+def _load_archived_reflections_by_id(
+    char_dir: Path,
+    needed_ids: set[str],
+) -> dict[str, dict[str, Any]]:
+    """On-demand lookup of specific reflection IDs in sharded and legacy archives."""
+    if not needed_ids:
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    remaining = set(needed_ids)
+
+    try:
+        from memory.archive_shards import REFLECTION_ARCHIVE_DIRNAME, _list_shard_files
+        archive_dir = char_dir / REFLECTION_ARCHIVE_DIRNAME
+        shard_files = _list_shard_files(str(archive_dir))
+        for fn, _date_str, _uuid8 in reversed(shard_files):
+            if not remaining:
+                break
+            entries = _read_json_safe(archive_dir / fn, [])
+            if not isinstance(entries, list):
+                continue
+            for r in entries:
+                if not isinstance(r, dict):
+                    continue
+                rid = str(r.get("id") or "")
+                if rid in remaining:
+                    found[rid] = r
+                    remaining.discard(rid)
+    except Exception as exc:
+        logger.debug("[MemoryLineage] archived reflection shard scan skipped: %s", exc)
+
+    if remaining:
+        legacy = _read_json_safe(char_dir / "reflections_archive.json", [])
+        if isinstance(legacy, list):
+            for r in legacy:
+                if not isinstance(r, dict):
+                    continue
+                rid = str(r.get("id") or "")
+                if rid in remaining:
+                    found[rid] = r
+                    remaining.discard(rid)
+
+    return found
+
+
 def build_memory_lineage_story(
     character_name: str,
     *,
@@ -216,7 +260,7 @@ def build_memory_lineage_story(
     # 1. Locate target memory
     target: dict[str, Any] | None = None
     target_entity = "master"
-    linked_reflections: list[dict[str, Any]] = []
+    linked_reflections: list[tuple[dict[str, Any], bool]] = []
     linked_fact_ids: list[str] = []
     version_history: list[dict[str, Any]] = []
 
@@ -250,20 +294,31 @@ def build_memory_lineage_story(
         for mid in target.get("merged_from_ids") or []:
             if mid and str(mid) not in candidate_rids:
                 candidate_rids.append(str(mid))
+        missing_rids = {rid for rid in candidate_rids if rid not in refl_by_id}
+        archived_refl_by_id = _load_archived_reflections_by_id(char_dir, missing_rids)
         for rid in candidate_rids:
             r = refl_by_id.get(rid)
+            is_archived_refl = False
+            if r is None:
+                r = archived_refl_by_id.get(rid)
+                is_archived_refl = r is not None
             if r is not None:
-                linked_reflections.append(r)
+                linked_reflections.append((r, is_archived_refl))
                 for sid in r.get("source_fact_ids") or []:
                     if sid and str(sid) not in linked_fact_ids:
                         linked_fact_ids.append(str(sid))
 
     elif kind == "reflection":
         target = refl_by_id.get(entry_id)
+        is_archived_target = False
+        if target is None:
+            archived_hits = _load_archived_reflections_by_id(char_dir, {entry_id})
+            target = archived_hits.get(entry_id)
+            is_archived_target = target is not None
         if target is None:
             return None
         target_entity = str(target.get("entity") or "master")
-        linked_reflections.append(target)
+        linked_reflections.append((target, is_archived_target))
         for sid in target.get("source_fact_ids") or []:
             if sid and str(sid) not in linked_fact_ids:
                 linked_fact_ids.append(str(sid))
@@ -277,7 +332,7 @@ def build_memory_lineage_story(
         linked_fact_ids.append(entry_id)
         for r in reflections_raw:
             if isinstance(r, dict) and entry_id in (r.get("source_fact_ids") or []):
-                linked_reflections.append(r)
+                linked_reflections.append((r, False))
     else:
         return None
 
@@ -378,8 +433,9 @@ def build_memory_lineage_story(
             "text": str(r.get("text") or "").strip(),
             "status": str(r.get("status") or ""),
             "created_at": r.get("created_at"),
+            "archived": is_archived_refl,
         }
-        for r in linked_reflections[:3]
+        for r, is_archived_refl in linked_reflections[:3]
     ]
 
     return {
@@ -529,32 +585,37 @@ def build_full_lineage_graph(
             if mid:
                 referenced_refl_ids.add(str(mid))
 
-    # Lane 3: reflections (prioritize those linked to persona, then recent active)
-    refl_by_id: dict[str, dict[str, Any]] = {}
+    # Lane 3: reflections (prioritize those linked to persona, including archived shards, then recent active)
+    refl_by_id: dict[str, tuple[dict[str, Any], bool]] = {}
     for r in reflections_raw:
         if isinstance(r, dict) and r.get("id") and str(r.get("text") or "").strip():
-            refl_by_id[str(r["id"])] = r
+            refl_by_id[str(r["id"])] = (r, False)
+    missing_refl_ids = {rid for rid in referenced_refl_ids if rid not in refl_by_id}
+    if missing_refl_ids:
+        for rid, r in _load_archived_reflections_by_id(char_dir, missing_refl_ids).items():
+            if str(r.get("text") or "").strip():
+                refl_by_id[rid] = (r, True)
 
-    selected_refls: list[dict[str, Any]] = []
+    selected_refls: list[tuple[dict[str, Any], bool]] = []
     seen_r: set[str] = set()
     for rid in referenced_refl_ids:
-        r = refl_by_id.get(rid)
-        if r is not None and rid not in seen_r:
-            selected_refls.append(r)
+        pair = refl_by_id.get(rid)
+        if pair is not None and rid not in seen_r:
+            selected_refls.append(pair)
             seen_r.add(rid)
     remaining_refls = [
-        r for rid, r in refl_by_id.items()
-        if rid not in seen_r and str(r.get("status") or "") not in ("archived", "denied")
+        (r, is_archived) for rid, (r, is_archived) in refl_by_id.items()
+        if rid not in seen_r and not is_archived and str(r.get("status") or "") not in ("archived", "denied")
     ]
-    remaining_refls.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
-    for r in remaining_refls:
+    remaining_refls.sort(key=lambda pair: str(pair[0].get("created_at") or ""), reverse=True)
+    for pair in remaining_refls:
         if len(selected_refls) >= max_nodes_per_lane:
             break
-        selected_refls.append(r)
-        seen_r.add(str(r["id"]))
+        selected_refls.append(pair)
+        seen_r.add(str(pair[0]["id"]))
 
     referenced_fact_ids: set[str] = set()
-    for r in selected_refls:
+    for r, is_archived in selected_refls:
         rid = str(r["id"])
         r_nid = f"reflection:{rid}"
         _add_node({
@@ -565,6 +626,7 @@ def build_full_lineage_graph(
             "entity": str(r.get("entity") or "master"),
             "label": str(r.get("text") or "").strip()[:100],
             "status": str(r.get("status") or "pending"),
+            "archived": is_archived,
             "created_at": r.get("created_at"),
         })
         for fid in r.get("source_fact_ids") or []:
@@ -636,7 +698,7 @@ def build_full_lineage_graph(
         })
 
     # Edges: fact -> reflection
-    for r in selected_refls:
+    for r, _is_archived in selected_refls:
         r_nid = f"reflection:{r['id']}"
         for fid in r.get("source_fact_ids") or []:
             fid_s = str(fid or "")
