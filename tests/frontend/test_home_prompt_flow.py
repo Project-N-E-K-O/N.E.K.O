@@ -8934,6 +8934,79 @@ def test_plugin_dashboard_light_resistance_temporarily_reveals_system_cursor(
 
 
 @pytest.mark.frontend
+def test_plugin_dashboard_light_resistance_maps_screen_and_viewport_coordinates(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.dispatchDesktopPluginDashboardInterruptAck = () => {};
+            director.notifyPluginDashboardSystemCursorTemporaryReveal = () => {};
+            director.screenPointToLocalPoint = (point) => ({
+                x: point.x - 1000,
+                y: point.y - 600,
+            });
+            director.playLightResistance = async (x, y, options) => {
+                calls.push({ x, y, options });
+            };
+
+            await director.handlePluginDashboardInterruptRequest(null, {
+                windowRef: null,
+                targetOrigin: window.location.origin,
+            }, {
+                requestId: 'interrupt-screen-1',
+                sessionId: 'session-1',
+                detail: {
+                    kind: 'interrupt_resist_light',
+                    x: 40,
+                    y: 50,
+                    screenX: 1240,
+                    screenY: 850,
+                    viewportWidth: 800,
+                    viewportHeight: 600,
+                },
+            });
+
+            director.screenPointToLocalPoint = null;
+            await director.handlePluginDashboardInterruptRequest(null, {
+                windowRef: null,
+                targetOrigin: window.location.origin,
+            }, {
+                requestId: 'interrupt-viewport-2',
+                sessionId: 'session-1',
+                detail: {
+                    kind: 'interrupt_resist_light',
+                    x: 400,
+                    y: 300,
+                    viewportWidth: 800,
+                    viewportHeight: 600,
+                },
+            });
+            return {
+                calls,
+                innerWidth: window.innerWidth,
+                innerHeight: window.innerHeight,
+            };
+        }
+        """
+    )
+
+    assert len(result["calls"]) == 2
+    assert result["calls"][0]["x"] == 240
+    assert result["calls"][0]["y"] == 250
+    assert result["calls"][1]["x"] == pytest.approx(0.5 * result["innerWidth"])
+    assert result["calls"][1]["y"] == pytest.approx(0.5 * result["innerHeight"])
+
+
+@pytest.mark.frontend
 def test_avatar_floating_cursor_reaction_waits_for_meaningful_real_mouse_move(
     mock_page: Page,
 ):

@@ -205,6 +205,10 @@
     this.stableTimer = null;
   };
 
+  BackendLink.prototype.markStopped = function () {
+    this.stopped = true;
+  };
+
   BackendLink.prototype.close = function () {
     this.stopped = true;
     this.terminal = true;

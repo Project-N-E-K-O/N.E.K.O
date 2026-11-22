@@ -111,14 +111,20 @@
     'leaderboards',
   ]));
   const RUNTIME_EVENT_PATTERN = /^[a-z][a-z0-9:-]{0,63}$/;
-  // Every one of these goes through requireActiveRuntimeRoute(), which needs a
-  // route only the runtime API can start -- so a grant without runtime is
-  // permanently unusable. Declared once because both the manifest-time check and
-  // the post-negotiation check below have to mean exactly the same set.
+  // Declared for manifest validation (aligned with the manifest schema): all of
+  // these capabilities require `runtime` to be requested alongside them.
   // `speech-output` is deliberately absent: speech.speak() is accepted pre-route.
   const RUNTIME_DEPENDENT_CAPABILITIES = Object.freeze([
     'memory', 'context-read', 'leaderboard-server', 'voice-input', 'media-timeline',
     'vision',
+  ]);
+  // Capabilities whose entire runtime surface requires an active runtime route
+  // and therefore cannot be used when the host withholds optional `runtime`.
+  // `context-read` (`context.read`), `memory` (`configureConsent` /
+  // `presentation.memoryConsent`), and `media-timeline` (pre-route `media.request`
+  // actions) remain usable before a route starts.
+  const ROUTE_ONLY_CAPABILITIES = Object.freeze([
+    'leaderboard-server', 'voice-input', 'vision',
   ]);
   const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results', 'commands']);
   const CONTRACT_SCHEMA_TYPES = Object.freeze([
@@ -2166,14 +2172,14 @@
       && supportedByTransport(transport, capability)
     ));
     // The manifest rule ("these need runtime") is checked against what the
-    // manifest REQUESTS. A host may legitimately withhold an OPTIONAL runtime,
-    // and a dependent grant is then permanently unusable: the game would connect
-    // reporting `memory` as granted while memory.submit() can never pass its
-    // active-route guard. Drop those grants so a required one fails through the
-    // existing path below instead of connecting into a dead end.
+    // manifest REQUESTS. A host may legitimately withhold an OPTIONAL runtime;
+    // route-only capabilities (`ROUTE_ONLY_CAPABILITIES`) are then permanently
+    // unusable because none of their APIs work pre-route, whereas
+    // `context-read`, `memory` consent/presentation, and pre-route
+    // `media-timeline` calls still function without an active route.
     const runtimeGranted = granted.includes('runtime');
     const usableGranted = runtimeGranted ? granted : granted.filter(
-      (capability) => !RUNTIME_DEPENDENT_CAPABILITIES.includes(capability),
+      (capability) => !ROUTE_ONLY_CAPABILITIES.includes(capability),
     );
     const missingRequired = manifest.requiredCapabilities.filter(
       (capability) => !usableGranted.includes(capability),
@@ -3794,7 +3800,7 @@
     }
 
     const capabilities = Object.freeze({
-      granted: Object.freeze([...granted]),
+      granted: Object.freeze([...grantedSet]),
       unavailable: Object.freeze(requested.filter((capability) => !grantedSet.has(capability))),
       has: (capability) => !disposed && !disposing && grantedSet.has(String(capability || '')),
       require: (capability) => {

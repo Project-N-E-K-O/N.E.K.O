@@ -359,6 +359,58 @@ class SocialHubPresenceBrowserTests(unittest.TestCase):
         self.page.wait_for_function('!nekoSocialHub._state.presenceSaving')
         self.assertEqual(self.presence_updates, ['away'])
 
+    def test_standalone_window_bootstraps_dark_theme_and_localechange(self):
+        for route in self.pending:
+            route.abort()
+        self.pending.clear()
+        self.reads = 0
+        self.page.add_init_script("localStorage.setItem('neko-dark-mode', 'true');")
+        self.page.route(
+            '**/api/config/page_config*',
+            lambda route: route.fulfill(
+                status=200,
+                content_type='application/json',
+                body=json.dumps({'ok': True, 'lanlan_name': 'Neko'}),
+            ),
+        )
+        en_locale = (ROOT / 'static/locales/en.json').read_text(encoding='utf-8')
+        self.page.route(
+            '**/static/locales/en.json*',
+            lambda route: route.fulfill(
+                status=200,
+                content_type='application/json',
+                body=en_locale,
+            ),
+        )
+        html = (ROOT / 'templates/social_hub.html').read_text(encoding='utf-8').replace('{{ static_asset_version }}', 'test')
+        self.page.route('**/social_hub', lambda route: route.fulfill(body=html, content_type='text/html; charset=utf-8'))
+        self.page.goto('http://neko.test/social_hub?lang=en')
+        self.page.wait_for_function('window.nekoSocialHub && !nekoSocialHub._state.loading')
+        self.assertEqual(
+            self.page.evaluate('document.documentElement.dataset.theme'),
+            'dark',
+        )
+        en_data = json.loads(en_locale)
+        self.page.evaluate(
+            """(enData) => {
+                window.i18n = { language: 'en' };
+                window.t = (key) => {
+                    return key.split('.').reduce((acc, part) => (acc && typeof acc === 'object' ? acc[part] : undefined), enData) || key;
+                };
+                window.dispatchEvent(new CustomEvent('localechange'));
+            }""",
+            en_data,
+        )
+        self.assertEqual(
+            self.page.locator('.neko-social-hub-panel').get_attribute('aria-label'),
+            en_data['visit']['socialHub']['windowTitle'],
+        )
+        self.assertEqual(
+            self.page.evaluate('document.title'),
+            en_data['visit']['socialHub']['windowTitle'],
+        )
+        self.assertEqual(self.errors, [])
+
     def test_animation_completion_keeps_menu_attached_to_current_anchor(self):
         self.page.emulate_media(reduced_motion='no-preference')
         self.open_menu()

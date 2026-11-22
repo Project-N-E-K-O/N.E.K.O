@@ -3,16 +3,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { usePackageManager } from './usePackageManager'
 import {
+  analyzePluginBundle,
   buildPluginCli,
   getPluginCliPackages,
   getPluginCliPlugins,
+  inspectPluginPackage,
   installPluginPackage,
   planPluginInstall,
+  verifyPluginPackage,
   type PluginCliInstallPlanResponse,
   type PluginCliInstallResponse,
   type PluginCliPluginRef,
 } from '@/api/pluginCli'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import en from '@/i18n/locales/en-US'
+import es from '@/i18n/locales/es'
+import ja from '@/i18n/locales/ja'
+import ko from '@/i18n/locales/ko'
+import pt from '@/i18n/locales/pt'
+import ru from '@/i18n/locales/ru'
+import zhCN from '@/i18n/locales/zh-CN'
+import zhTW from '@/i18n/locales/zh-TW'
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -421,5 +432,206 @@ describe('usePackageManager safe installation flow', () => {
 
     expect(ElMessage.error).toHaveBeenCalledWith('package.install.rollbackIncomplete')
     expect(ElMessage.error).not.toHaveBeenCalledWith('package.install.rollbackCompleted')
+  })
+})
+
+describe('usePackageManager i18n messages', () => {
+  it('uses i18n keys for build, inspect, verify, and analyze messages', async () => {
+    const otherRef: PluginCliPluginRef = {
+      root_id: 'builtin',
+      directory_name: 'other_plugin',
+      plugin_id: 'other_plugin',
+      label: 'Other Plugin',
+    }
+    vi.mocked(getPluginCliPlugins).mockResolvedValue({
+      count: 2,
+      plugins: [],
+      plugin_refs: [pluginRef, otherRef],
+    })
+    const selectedFromList = ref<string[]>([])
+    const manager = usePackageManager({
+      externalSelectedPluginIds: computed(() => selectedFromList.value),
+    })
+    await manager.refreshPluginSources()
+    manager.clearSelection()
+
+    await manager.handleBuild()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith('package.messages.selectPluginToBuild')
+
+    manager.buildMode.value = 'bundle'
+    selectedFromList.value = ['demo_plugin']
+    await Promise.resolve()
+    await manager.handleBuild()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith('package.messages.bundleRequiresTwoPlugins')
+
+    selectedFromList.value = ['demo_plugin', 'other_plugin']
+    await Promise.resolve()
+    vi.mocked(buildPluginCli).mockRejectedValueOnce(new Error('bundle boom'))
+    await manager.handleBuild()
+    expect(ElMessage.error).toHaveBeenLastCalledWith(
+      'package.messages.bundleBuildFailedWithError{"error":"Error: bundle boom"}',
+    )
+
+    vi.mocked(buildPluginCli).mockResolvedValueOnce({
+      built: [],
+      built_count: 1,
+      failed: [],
+      failed_count: 0,
+      ok: true,
+    })
+    await manager.handleBuild()
+    expect(ElMessage.success).toHaveBeenLastCalledWith('package.messages.bundleBuildCompleted')
+
+    vi.mocked(buildPluginCli).mockResolvedValueOnce({
+      built: [],
+      built_count: 0,
+      failed: [{ plugin: 'a', error: 'err' }],
+      failed_count: 2,
+      ok: false,
+    })
+    await manager.handleBuild()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith(
+      'package.messages.bundleBuildPartialFailed{"count":2}',
+    )
+
+    manager.buildMode.value = 'all'
+    vi.mocked(buildPluginCli).mockRejectedValueOnce(new Error('all boom'))
+    await manager.handleBuild()
+    expect(ElMessage.error).toHaveBeenLastCalledWith(
+      'package.messages.buildFailedWithError{"error":"Error: all boom"}',
+    )
+
+    vi.mocked(buildPluginCli).mockResolvedValueOnce({
+      built: [],
+      built_count: 3,
+      failed: [],
+      failed_count: 0,
+      ok: true,
+    })
+    await manager.handleBuild()
+    expect(ElMessage.success).toHaveBeenLastCalledWith(
+      'package.messages.buildCompleted{"built":3}',
+    )
+
+    vi.mocked(buildPluginCli).mockResolvedValueOnce({
+      built: [],
+      built_count: 2,
+      failed: [{ plugin: 'x', error: 'e' }],
+      failed_count: 1,
+      ok: false,
+    })
+    await manager.handleBuild()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith(
+      'package.messages.buildCompletedWithFailures{"built":2,"failed":1}',
+    )
+
+    manager.buildMode.value = 'selected'
+    selectedFromList.value = ['demo_plugin']
+    await Promise.resolve()
+    vi.mocked(buildPluginCli).mockResolvedValueOnce({
+      built: [{
+        plugin_id: 'demo_plugin',
+        package_type: 'plugin',
+        plugin_ids: ['demo_plugin'],
+        package_path: '/packages/demo.neko-plugin',
+        profile_files: [],
+        staged_files: [],
+        payload_hash: 'h',
+        package_size_bytes: 1,
+        staged_file_count: 0,
+        profile_file_count: 0,
+      }],
+      built_count: 1,
+      failed: [],
+      failed_count: 0,
+      ok: true,
+    })
+    await manager.handleBuild()
+    expect(ElMessage.success).toHaveBeenLastCalledWith(
+      'package.messages.buildCompleted{"built":1}',
+    )
+
+    vi.mocked(buildPluginCli).mockRejectedValueOnce(new Error('single boom'))
+    await manager.handleBuild()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith(
+      'package.messages.buildCompletedWithFailures{"built":0,"failed":1}',
+    )
+
+    manager.packageRef.value.package = '   '
+    await manager.handleInspect()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith('package.install.packageRequired')
+
+    manager.packageRef.value.package = 'demo.neko-plugin'
+    vi.mocked(inspectPluginPackage).mockResolvedValueOnce({
+      package_path: 'demo.neko-plugin',
+      package_type: 'plugin',
+      package_id: 'demo_plugin',
+      metadata_found: true,
+      payload_hash: 'h',
+      payload_hash_verified: true,
+      contents: [],
+      profile_files: [],
+      plugins: [],
+      manifest_summary: {},
+    } as any)
+    await manager.handleInspect()
+    expect(ElMessage.success).toHaveBeenLastCalledWith('package.messages.inspectCompleted')
+
+    manager.packageRef.value.package = ''
+    await manager.handleVerify()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith('package.install.packageRequired')
+
+    manager.packageRef.value.package = 'demo.neko-plugin'
+    vi.mocked(verifyPluginPackage).mockResolvedValueOnce({ ok: true } as any)
+    await manager.handleVerify()
+    expect(ElMessage.success).toHaveBeenLastCalledWith('package.messages.verifyPassed')
+
+    vi.mocked(verifyPluginPackage).mockResolvedValueOnce({ ok: false } as any)
+    await manager.handleVerify()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith('package.messages.verifyFailed')
+
+    manager.analyzeForm.value.plugins = []
+    await manager.handleAnalyze()
+    expect(ElMessage.warning).toHaveBeenLastCalledWith('package.messages.selectAtLeastOnePlugin')
+
+    manager.analyzeForm.value.plugins = ['demo_plugin']
+    vi.mocked(analyzePluginBundle).mockResolvedValueOnce({ ok: true } as any)
+    await manager.handleAnalyze()
+    expect(ElMessage.success).toHaveBeenLastCalledWith('package.messages.analyzeCompleted')
+
+    vi.mocked(analyzePluginBundle).mockRejectedValueOnce(new Error('analyze boom'))
+    await manager.handleAnalyze()
+    expect(ElMessage.error).toHaveBeenLastCalledWith(
+      'package.messages.analyzeFailedWithError{"error":"Error: analyze boom"}',
+    )
+  })
+
+  it('defines common.retry and all package.messages keys across all 8 locales', () => {
+    const locales = { 'en-US': en, es, ja, ko, pt, ru, 'zh-CN': zhCN, 'zh-TW': zhTW }
+    const expectedKeys = [
+      'selectPluginToBuild',
+      'bundleRequiresTwoPlugins',
+      'bundleBuildFailedWithError',
+      'bundleBuildCompleted',
+      'bundleBuildPartialFailed',
+      'buildFailedWithError',
+      'buildCompletedWithFailures',
+      'buildCompleted',
+      'inspectCompleted',
+      'verifyPassed',
+      'verifyFailed',
+      'selectAtLeastOnePlugin',
+      'analyzeCompleted',
+      'analyzeFailedWithError',
+    ] as const
+    for (const [name, pack] of Object.entries(locales)) {
+      expect(typeof pack.common.retry, `${name} common.retry`).toBe('string')
+      expect(pack.common.retry.length, `${name} common.retry`).toBeGreaterThan(0)
+      for (const key of expectedKeys) {
+        const val = pack.package.messages[key]
+        expect(typeof val, `${name} package.messages.${key}`).toBe('string')
+        expect(val.length, `${name} package.messages.${key}`).toBeGreaterThan(0)
+      }
+    }
   })
 })

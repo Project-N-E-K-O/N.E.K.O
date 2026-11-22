@@ -701,6 +701,42 @@ async function main() {
     .then(() => null, (error) => error);
   await new Promise((resolve) => setImmediate(resolve));
   adapter.dispose();
+
+  const prevPassiveCalls = calls.length;
+  let passiveGuardAttempts = 0;
+  const origFetch = windowMock.fetch;
+  windowMock.fetch = async (url, options = {}) => {
+    if (url.endsWith('/api/game/soccer/passive-guard')) {
+      calls.push({ url, options });
+      passiveGuardAttempts += 1;
+      return passiveGuardAttempts === 1
+        ? response(403, { error_code: 'csrf_validation_failed' })
+        : response(200, { ok: true, triggered: false });
+    }
+    return origFetch(url, options);
+  };
+  const passiveAdapter = await window.createSoccerNekoAdapter();
+  connectSoccerHost(passiveAdapter);
+  const prevRefreshCount = refreshCount;
+  const passiveResponse = await passiveAdapter.evaluatePassiveGuard({ event: { type: 'goal', team: 'self' } });
+  assert(passiveResponse.ok === true, 'evaluatePassiveGuard did not succeed after CSRF retry');
+  assert(refreshCount === prevRefreshCount + 1, 'evaluatePassiveGuard did not refresh CSRF token on 403');
+  const passiveCalls = calls.slice(prevPassiveCalls);
+  assert(passiveCalls.length === 2, `expected 2 passive-guard calls with CSRF retry, got ${passiveCalls.length}`);
+  assert(passiveCalls[0].options.credentials === 'same-origin', 'evaluatePassiveGuard omitted same-origin credentials');
+  assert(passiveCalls[0].options.headers['X-CSRF-Token'] === 'fresh-token', 'evaluatePassiveGuard omitted X-CSRF-Token');
+  assert(JSON.parse(passiveCalls[0].options.body)._csrf_token === 'fresh-token', 'evaluatePassiveGuard omitted _csrf_token');
+
+  const oversizedPassiveErr = await passiveAdapter.evaluatePassiveGuard(
+    { blob: 'x'.repeat(256 * 1024 + 10) },
+    { maxRequestBytes: 2 * 1024 * 1024 },
+  ).then(() => null, (err) => err);
+  assert(
+    oversizedPassiveErr?.code === 'invalid_payload',
+    `expected invalid_payload for oversized passive guard request, got ${oversizedPassiveErr?.code}`,
+  );
+  windowMock.fetch = origFetch;
+  passiveAdapter.dispose();
   const disposedError = await disposedRequest;
   assert(disposedError?.code === 'disposed', `expected disposed error, got ${disposedError?.code}`);
   assert(!listeners.get('error')?.size, 'window error listener was not removed');

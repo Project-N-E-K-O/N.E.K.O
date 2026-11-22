@@ -13,6 +13,7 @@ import {
 const repoRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 const repoRealRoot = realpathSync(repoRoot)
 const hostedUiGlobalsPath = join(repoRoot, 'plugin/sdk/hosted-ui/globals.d.ts')
+const hostedUiIndexPath = join(repoRoot, 'plugin/sdk/hosted-ui/index.d.ts')
 const maxPluginTomlBytes = 1024 * 1024
 const maxRelativeImportDepth = 64
 const importResolutionCache = new Map()
@@ -32,8 +33,10 @@ const HOSTED_UI_GLOBAL_NAMES = [
   'Tip', 'Warning', 'Steps', 'Step', 'Tabs', 'useI18n',
   'useState', 'useReducer', 'useEffect', 'useLayoutEffect', 'useMemo', 'useCallback', 'useRef', 'useElementSize',
   'useScrollIntoView', 'useScrollToBottom', 'useClipboard', 'useLocalState',
-  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'showToast', 'useToast', 'useConfirm',
+  'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'showToast', 'useToast', 'useConfirm', 'render',
 ]
+const HOSTED_UI_GLOBAL_NAME_SET = new Set(HOSTED_UI_GLOBAL_NAMES)
+let cachedHostedUiExportedTypes = null
 const sourceTextCache = new Map()
 
 function formatError(error) {
@@ -451,10 +454,11 @@ function parseTomlSurfaces(text) {
 }
 
 function inferMode(entry) {
-  if (!entry) return 'auto'
-  if (entry.endsWith('.tsx') || entry.endsWith('.jsx')) return 'hosted-tsx'
-  if (entry.endsWith('.md') || entry.endsWith('.mdx')) return 'markdown'
-  if (entry.endsWith('.html') || entry.endsWith('.htm')) return 'static'
+  const normalized = typeof entry === 'string' ? entry.trim().toLowerCase() : ''
+  if (!normalized) return 'auto'
+  if (normalized.endsWith('.tsx') || normalized.endsWith('.jsx')) return 'hosted-tsx'
+  if (normalized.endsWith('.md') || normalized.endsWith('.mdx')) return 'markdown'
+  if (normalized.endsWith('.html') || normalized.endsWith('.htm')) return 'static'
   return 'static'
 }
 
@@ -532,6 +536,68 @@ function assertNoDynamicImport(sourcePath, source) {
     ts.forEachChild(node, visit)
   }
   visit(sourceFile)
+}
+
+function getHostedUiExportedTypes() {
+  if (cachedHostedUiExportedTypes) return cachedHostedUiExportedTypes
+  const source = readSourceFile(hostedUiIndexPath)
+  const sourceFile = sourceFileFor(hostedUiIndexPath, source)
+  const names = []
+  for (const statement of sourceFile.statements) {
+    const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined
+    const isExported = Boolean(modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+    if (!isExported) continue
+    if (
+      (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement))
+      && statement.name
+    ) {
+      names.push(statement.name.text)
+    }
+  }
+  cachedHostedUiExportedTypes = names
+  return names
+}
+
+function collectHostedUiImportAliases(sourcePath, source, exportedTypeSet) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  const aliasedTypeImports = []
+  const namespaceImports = []
+  const valueAliasDecls = []
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue
+    const specifier = moduleSpecifierText(statement.moduleSpecifier)
+    if (specifier !== '@neko/plugin-ui' && specifier !== 'neko:ui') continue
+    const clause = statement.importClause
+    if (!clause) continue
+    if (clause.name && !clause.isTypeOnly && clause.name.text !== 'NekoUi') {
+      valueAliasDecls.push(`const ${clause.name.text} = NekoUi;`)
+    }
+    const bindings = clause.namedBindings
+    if (!bindings) continue
+    if (ts.isNamespaceImport(bindings)) {
+      const ns = bindings.name.text
+      if (ns !== 'NekoUi') {
+        namespaceImports.push(
+          clause.isTypeOnly
+            ? `import type * as ${ns} from "@neko/plugin-ui";`
+            : `import * as ${ns} from "@neko/plugin-ui";`,
+        )
+      }
+    } else if (ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        if (!element.propertyName) continue
+        const orig = element.propertyName.text
+        const local = element.name.text
+        if (local === orig) continue
+        if (exportedTypeSet.has(orig)) {
+          aliasedTypeImports.push(`${orig} as ${local}`)
+        } else if (!clause.isTypeOnly && !element.isTypeOnly && HOSTED_UI_GLOBAL_NAME_SET.has(orig)) {
+          valueAliasDecls.push(`const ${local} = NekoUi.${orig};`)
+        }
+      }
+    }
+  }
+  return { aliasedTypeImports, namespaceImports, valueAliasDecls }
 }
 
 function stripHostedUiImports(sourcePath, source) {
@@ -727,14 +793,30 @@ function createCheckFile(entryPath, tempDir, surface, tomlPath) {
   const resolvedEntryPath = assertPathInsideRepo(entryPath, 'Hosted TSX entry')
   const pluginRoot = dirname(tomlPath)
   const source = readSourceFile(resolvedEntryPath)
+  const exportedTypes = getHostedUiExportedTypes()
+  const exportedTypeSet = new Set(exportedTypes)
+  const { aliasedTypeImports, namespaceImports, valueAliasDecls } = collectHostedUiImportAliases(
+    resolvedEntryPath,
+    source,
+    exportedTypeSet,
+  )
   const stripped = stripHostedUiImports(resolvedEntryPath, source)
   const checkPath = tempPathForSource(resolvedEntryPath, tempDir)
   const prefixLines = 6
+  const typeImportSpecifiers = Array.from(new Set([...exportedTypes, ...aliasedTypeImports]))
+  const typeImportLine = [
+    `import type { ${typeImportSpecifiers.join(', ')} } from "@neko/plugin-ui";`,
+    ...namespaceImports,
+  ].join(' ')
+  const valueDestructureLine = [
+    `const { ${HOSTED_UI_GLOBAL_NAMES.join(', ')} } = NekoUi;`,
+    ...valueAliasDecls,
+  ].join(' ')
   copyRelativeDependencies(resolvedEntryPath, tempDir, pluginRoot)
   mkdirForFile(checkPath, 'hosted TSX check')
   writeTextFile(
     checkPath,
-    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nimport type { PluginSurfaceProps, HostedAction, JsonSchema, HostedApi } from "@neko/plugin-ui";\nconst { ${HOSTED_UI_GLOBAL_NAMES.join(', ')} } = NekoUi;\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
+    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\n${typeImportLine}\n${valueDestructureLine}\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
     'hosted TSX check file',
   )
   return {
@@ -820,8 +902,9 @@ function main() {
       // these surfaces, so they shouldn't be able to fail the check.
       if (surfaces.pluginUiDisabled) continue
       for (const surface of surfaces) {
-        const entry = surface.entry
-        const mode = surface.mode || inferMode(entry)
+        const entry = typeof surface.entry === 'string' ? surface.entry.trim() : ''
+        const rawMode = typeof surface.mode === 'string' ? surface.mode.trim().toLowerCase() : ''
+        const mode = rawMode || inferMode(entry)
         if (!entry || mode !== 'hosted-tsx') continue
         const label = surfaceLabel(surface)
         const entryPath = resolve(pluginDir, entry)

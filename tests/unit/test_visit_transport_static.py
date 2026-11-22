@@ -455,6 +455,31 @@ def test_stop_unpublishes_leaves_reports_left_and_closes():
     assert out["trackEnded"] == "ended"
 
 
+def test_stop_emits_closed_when_server_closes_1000_before_leave_settles():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        let resolveExit;
+        h.trtc.exitRoom = () => new Promise((r) => { resolveExit = r; });
+        h.posted.length = 0;
+        h.ws.serverSend({ type: 'stop', reason: 'route_end' });
+        await settle();
+        h.ws.serverClose(1000, 'done');
+        await settle();
+        resolveExit();
+        await advance(100);
+        return {
+          closedMsgs: h.posted.filter((m) => m.t === 'closed'),
+          cleanupMsgs: h.posted.filter((m) => m.t === 'cleanup_done'),
+          sockets: h.sockets.length,
+        };
+        """
+    )
+    assert out["closedMsgs"] == [{"t": "closed", "code": 1000}]
+    assert len(out["cleanupMsgs"]) == 1
+    assert out["sockets"] == 1
+
+
 def test_unknown_or_foreign_template_free_files():
     # Only the nine registered scripts belong in the directory; additions require matching template/test updates.
     names = sorted(p.name for p in TRANSPORT_DIR.glob("*.js"))

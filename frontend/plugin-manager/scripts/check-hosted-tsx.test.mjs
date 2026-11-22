@@ -698,3 +698,87 @@ test('skips regex literals with braces and commas when scanning exports', () => 
     assert.match(result.stdout, /Hosted TSX check passed/)
   })
 })
+
+test('supports all exported hosted-ui types, aliased type imports, and render helper', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'all-hosted-ui-types')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { Page, render, type HostedI18n } from '@neko/plugin-ui'
+import type {
+  AsyncState,
+  CommonProps,
+  DataTableColumn,
+  FormState,
+  LocalStateSetter,
+  ParsedHostedDocument,
+  PluginDisplayApi,
+  PluginDisplayMode,
+  PluginDisplayResult,
+  PluginDisplayState,
+  PluginSurfaceProps,
+  RefObject,
+  StateSetter,
+  ToastPromiseMessages,
+  UiOption,
+  UploadedFileInfo,
+} from '@neko/plugin-ui'
+import type { AsyncState as AliasedAsync } from '@neko/plugin-ui'
+
+export default function Panel(props: PluginSurfaceProps) {
+  const i18n: HostedI18n = props.i18n
+  const common: CommonProps = { className: i18n.locale }
+  const col: DataTableColumn = { key: 'name', label: 'Name' }
+  const opt: UiOption = { value: 'a', label: 'A' }
+  const fileInfo: UploadedFileInfo = { name: 'a.txt', size: 1, type: 'text/plain' }
+  const mode: PluginDisplayMode = 'normal'
+  const state: PluginDisplayState = { mode, supportedModes: ['focus'] }
+  const result: PluginDisplayResult = { status: 'applied', state }
+  const displayApi: PluginDisplayApi = props.api.display
+  const parsed: ParsedHostedDocument | null = null
+  const asyncState: AsyncState<string> = { loading: false, error: null, data: 'ok', reload: () => {} }
+  const aliased: AliasedAsync<number> = { loading: false, error: null, data: 1, reload: () => {} }
+  const formState: FormState<{ name: string }> | null = null
+  const refObj: RefObject<number> = { current: 1 }
+  const setter: StateSetter<number> | null = null
+  const localSetter: LocalStateSetter<number> | null = null
+  const toastMsgs: ToastPromiseMessages<string> = { loading: 'loading' }
+  void [common, col, opt, fileInfo, result, displayApi, parsed, asyncState, aliased, formState, refObj, setter, localSetter, toastMsgs, render]
+  return <Page title={i18n.locale} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed/)
+  })
+})
+
+test('normalizes case and whitespace for hosted-tsx mode and entry suffix', () => {
+  for (const [name, fields, entry] of [
+    ['mixed-case-mode', { mode: 'Hosted-TSX' }, 'main.tsx'],
+    ['padded-mode', { mode: '  hosted-tsx  ' }, 'main.tsx'],
+    ['uppercase-suffix', {}, 'Panel.TSX'],
+    ['padded-uppercase-suffix', { mode: '   ' }, '  Panel.JSX  '],
+  ]) {
+    withFixture((root) => {
+      const pluginDir = join(root, name)
+      writePluginToml(pluginDir, entry, fields)
+      writeFixtureFile(
+        join(pluginDir, entry.trim()),
+        `export function Panel() {
+  return <Page title="missing default" />
+}
+`,
+      )
+
+      const result = runCheck(pluginDir)
+
+      assert.equal(result.status, 1, `expected failure for ${name}, stdout=${result.stdout}`)
+      assert.match(result.stderr, /Hosted TSX must export a default function component/)
+    })
+  }
+})
