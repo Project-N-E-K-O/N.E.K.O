@@ -135,6 +135,10 @@ async def test_tool_images_stay_on_the_chat_model():
     client = _session()
     assert await client.prepare_for_tool_images() is True
     client.switch_model.assert_not_awaited()
+    # Once the chat model is known to reject images, the tool result keeps
+    # its text and the picture is not sent.
+    lv.mark_chat_image_refused(CHAT, "t")
+    assert await client.prepare_for_tool_images() is False
 
 
 async def test_tool_images_use_a_separate_vision_config():

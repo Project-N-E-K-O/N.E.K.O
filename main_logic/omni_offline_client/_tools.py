@@ -747,8 +747,13 @@ class _ToolingMixin(_TurnContextMixin):
         vision_model = getattr(self, "vision_model", "") or ""
         if not vision_model:
             # Images go to the chat model, which is expected to read them. Only
-            # a client built without an image choice has nothing that can.
-            return getattr(self, "_image_choice", None) is not None
+            # a client built without an image choice has nothing that can, and
+            # a chat model known to reject images (this run) cannot either.
+            choice = getattr(self, "_image_choice", None)
+            if choice is None:
+                return False
+            from utils.legacy_vision import chat_refuses_images
+            return not chat_refuses_images(choice.conversation)
         # Identical model IDs count as already vision-selected only with matching URL/key/protocol
         # routing too. Different vision routes still require switching below.
         if vision_model == self.model and _same_route(
