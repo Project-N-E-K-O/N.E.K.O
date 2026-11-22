@@ -1626,6 +1626,20 @@
                             }
                         );
                     const nextEtag = _responseEtag(response);
+                    // A 412 that arrives late can carry a snapshot older than
+                    // the revision this window has since taken from a server
+                    // merge in another window. Keep the newer ETag, revision
+                    // and values, and just retry with them.
+                    if (response.status === 412
+                        && Number.isInteger(data.revision)
+                        && Number.isInteger(_conversationSettingsRevision)
+                        && data.revision < _conversationSettingsRevision) {
+                        if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
+                            continue;
+                        }
+                        console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+                        return;
+                    }
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
                     if (Number.isInteger(data.revision)) {
                         _conversationSettingsRevision = data.revision;

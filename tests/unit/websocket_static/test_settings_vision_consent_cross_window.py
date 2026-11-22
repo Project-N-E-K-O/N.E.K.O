@@ -56,6 +56,7 @@ _HARNESS = textwrap.dedent(
       const inbox = [];
       const consent = [];
       const postBodies = [];
+      const postIfMatch = [];
       let win = null;
       const sandbox = {
         // One shared clock that always moves forward, as in a real profile
@@ -92,6 +93,7 @@ _HARNESS = textwrap.dedent(
           if (opts && opts.method === 'POST') {
             const body = JSON.parse(opts.body);
             postBodies.push(body);
+            postIfMatch.push((opts.headers && opts.headers['If-Match']) || null);
             // The server applies a POST when it arrives, with If-Match CAS.
             // A held window's POSTs stay in flight until released.
             const arrive = () => {
@@ -179,6 +181,7 @@ _HARNESS = textwrap.dedent(
         inbox,
         consent,
         postBodies,
+        postIfMatch,
         S: sandbox.window.appState,
         mod: sandbox.window.appSettings,
         P: sandbox.window.appProactive,
@@ -792,6 +795,80 @@ _HARNESS = textwrap.dedent(
       assert(a.S[key] === true && e.S[key] === true, 'all windows keep the newer value');
     }
 
+    // A late 412 whose snapshot is older than the revision this window has
+    // since taken from another window's server merge must not roll the
+    // window back: not its ETag or revision, and not a key it never touched
+    // (so nothing preserves it in the merge). D's POST conflicts with
+    // revision 1 ("on"), the response is late; meanwhile the server moves to
+    // revision 2 ("off") and E merges it, which D receives. The late 412 is
+    // ignored and the retry goes out with revision 2's ETag.
+    async function staleConflictSnapshot() {
+      const key = 'mergeMessagesEnabled';
+      // A second key E's merge changes, so that the merge is written out.
+      const other = 'proactiveMusicEnabled';
+      const d = makeWindow('D');
+      await settle();
+      assert(d.S[key] === false, 'precondition: D starts with the server value');
+      const otherBefore = !!d.S[other];
+      serverSettings = Object.assign({}, serverSettings, { [key]: true, [other]: otherBefore });
+      serverRevision += 1;
+      const staleEtag = '"conversation-settings-' + serverRevision + '"';
+      d.holdResponses = true;
+      d.S.focusModeEnabled = !d.S.focusModeEnabled;
+      const focusWanted = d.S.focusModeEnabled;
+      d.mod.saveSettings();
+      await settle();
+      assert(d.heldPosts.length === 1, 'precondition: D\\'s conflict response is held');
+      serverSettings = Object.assign({}, serverSettings, { [key]: false, [other]: !otherBefore });
+      serverRevision += 1;
+      const newRevision = serverRevision;
+      const newEtag = '"conversation-settings-' + newRevision + '"';
+      const e = makeWindow('E');
+      // E's own boot writeback stays out of the way until D is done.
+      e.holdPosts = true;
+      await settle();
+      const merged = JSON.parse(store.get('project_neko_settings'));
+      assert(merged._sharedWriteMeta.serverRevision === newRevision,
+        'precondition: E merged revision ' + newRevision);
+      e.inbox.length = 0;
+      d.deliver();
+      await settle();
+      assert(d.S[key] === false && d.S[other] === !otherBefore,
+        'precondition: D holds the newer server values');
+      d.releasePosts();
+      await settle();
+      const writesByD = e.inbox
+        .filter((ev) => ev.key === 'project_neko_settings')
+        .map((ev) => JSON.parse(ev.newValue));
+      assert(writesByD.every((s) => s[key] === false && s[other] === !otherBefore),
+        'D must not take the older 412 values: '
+          + JSON.stringify(writesByD.map((s) => [s[key], s[other]])));
+      assert(writesByD.every((s) => !s._sharedWriteMeta
+          || !Number.isInteger(s._sharedWriteMeta.serverRevision)
+          || s._sharedWriteMeta.serverRevision >= newRevision),
+        'D must not advertise the older revision: '
+          + JSON.stringify(writesByD.map((s) => s._sharedWriteMeta
+            && s._sharedWriteMeta.serverRevision)));
+      assert(d.postIfMatch.indexOf(staleEtag) === -1,
+        'D must not retry with the older ETag: ' + JSON.stringify(d.postIfMatch));
+      assert(d.postIfMatch.length === 2 && d.postIfMatch[1] === newEtag,
+        'D retries once, with the newer ETag: ' + JSON.stringify(d.postIfMatch));
+      assert(d.S[key] === false && d.S[other] === !otherBefore
+        && serverSettings[key] === false && serverSettings[other] === !otherBefore,
+        'D and the server keep the newer values');
+      assert(serverSettings.focusModeEnabled === focusWanted,
+        'D\\'s own edit is still saved');
+      e.releasePosts();
+      await settle();
+      e.deliver();
+      d.deliver();
+      await settle();
+      assert(d.S[key] === false && e.S[key] === false
+        && d.S[other] === !otherBefore && e.S[other] === !otherBefore
+        && d.S.focusModeEnabled === focusWanted && e.S.focusModeEnabled === focusWanted,
+        'both windows converge on the newer values and D\\'s edit');
+    }
+
     // The other side of staleCopyBelowServerFloor: a sender that merged a
     // newer server value than this window has seen carries it under the same
     // old token (a server merge does not replace the per-key token). That
@@ -912,6 +989,12 @@ _HARNESS = textwrap.dedent(
       }
       if (typeof __MODE__ === 'string' && __MODE__.indexOf('sender-newer:') === 0) {
         await senderNewerServerValue(__MODE__.slice('sender-newer:'.length));
+        console.log('HARNESS_OK');
+        process.exitCode = 0;
+        return;
+      }
+      if (__MODE__ === 'stale-412') {
+        await staleConflictSnapshot();
         console.log('HARNESS_OK');
         process.exitCode = 0;
         return;
@@ -1307,6 +1390,16 @@ def test_delayed_conflict_does_not_overwrite_newer_server_value_harness():
     result = _run("delayed-412")
     assert result.returncode == 0, (
         "delayed 412 below server floor harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_late_older_conflict_snapshot_does_not_roll_back_harness():
+    result = _run("stale-412")
+    assert result.returncode == 0, (
+        "late older 412 snapshot harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
