@@ -889,11 +889,19 @@ _MAX_NON_PYTHON_REPORTED = 20
 _MAX_MANIFEST_BYTES = 1024 * 1024
 
 
+# Reading these off a function (subprocess.run.__name__) does not use it.
+_METADATA_ATTRIBUTES = frozenset({"__name__", "__qualname__", "__doc__", "__module__"})
+
+
 def _matches(name: str, patterns) -> bool:
-    return any(
-        name == pattern or name.startswith((pattern + ".", pattern + "("))
-        for pattern in patterns
-    )
+    for pattern in patterns:
+        if name == pattern or name.startswith(pattern + "("):
+            return True
+        if name.startswith(pattern + "."):
+            attribute = re.split(r"[.(]", name[len(pattern) + 1:], maxsplit=1)[0]
+            if attribute not in _METADATA_ATTRIBUTES:
+                return True
+    return False
 
 
 def _origin_name(reference: _Reference) -> str | None:
@@ -1075,13 +1083,18 @@ def _read_manifest(root: Path) -> dict | None:
         return None
 
 
-def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
+def skipped_inventory(
+    root: Path,
+    stop: Event | None = None,
+    include: Callable[[Path, bool], bool] | None = None,
+) -> dict:
     """What the Python scan does not read: vendor/, non-Python code files and
     test-named Python files (tests/, test_*.py, *_test.py, conftest.py).
 
     Bounded by _MAX_TREE_ENTRIES; ``truncated`` tells the walk stopped early.
     Also part of the cached report's source revision, so adding or removing
-    such files refreshes the report.
+    such files refreshes the report. ``include`` (see read_capability_sources)
+    prunes directories it rejects before they count toward the bound.
     """
     inventory: dict = {
         "vendor": [], "non_python": [], "test_source": [], "truncated": False, "unreadable": False,
@@ -1109,6 +1122,7 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
                 for name in directories
                 if name not in _NON_PYTHON_SKIPPED_DIRS
                 and not is_vendor_sync_path((base / name).relative_to(root))
+                and (include is None or include((base / name).relative_to(root), True))
             )
             for name in sorted(files):
                 visited += 1
@@ -1135,7 +1149,7 @@ def _skipped_parts(
     ``include`` drops paths the caller does not compare (see
     read_capability_sources).
     """
-    inventory = skipped_inventory(root, stop)
+    inventory = skipped_inventory(root, stop, include)
     skipped: list[dict] = []
     for reason, is_dir in (("vendor", True), ("non_python", False), ("test_source", False)):
         files = inventory[reason]
@@ -1399,7 +1413,7 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
                     },
                 )
             )
-        elif item.get("declared") is not None and not findings and status != "unavailable":
+        elif item.get("declared") is not None and not findings and (status != "unavailable" or unread):
             severity = "info" if unread else "warning"
             issues.append(PermissionIssue(severity, "declared_unused", {"permission": permission}))
     return issues

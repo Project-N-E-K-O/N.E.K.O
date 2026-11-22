@@ -617,14 +617,39 @@ def test_cli_reports_declaration_errors_in_every_locale(tmp_path):
     _assert_all_locales(error)
 
 
-def test_release_check_blocks_on_undeclared_use(tmp_path, capsys):
-    plugin_dir = _plugin(tmp_path, "import subprocess\nsubprocess.run(['ls'])\n", "[permissions]\n")
-    exit_code = neko_plugin_cli.main(
+def _release_ready(plugin_dir: Path) -> Path:
+    """Add what check -r requires besides permissions, so only they decide."""
+    (plugin_dir / "README.md").write_text("# Demo\n", encoding="utf-8")
+    (plugin_dir / "tests").mkdir(exist_ok=True)
+    (plugin_dir / "tests" / "test_smoke.py").write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    (plugin_dir / ".vscode").mkdir(exist_ok=True)
+    (plugin_dir / ".vscode" / "settings.json").write_text("{}\n", encoding="utf-8")
+    (plugin_dir / ".vscode" / "tasks.json").write_text("{}\n", encoding="utf-8")
+    (plugin_dir / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (plugin_dir / ".github" / "workflows" / "verify.yml").write_text("name: verify\n", encoding="utf-8")
+    (plugin_dir / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    return plugin_dir
+
+
+def _release_check(tmp_path: Path, plugin_dir: Path) -> int:
+    return neko_plugin_cli.main(
         ["check", "-r", str(plugin_dir), "--skip-tests", "--target-dir", str(tmp_path / "target")]
     )
-    assert exit_code == 1
+
+
+@pytest.mark.parametrize("declared,expected", [(False, 1), (True, 0)])
+def test_release_check_blocks_on_undeclared_use(tmp_path, capsys, declared, expected):
+    permissions = (
+        '[permissions.require]\n"system.process:spawn" = { reason = "Run a tool" }\n'
+        if declared
+        else "[permissions]\n"
+    )
+    plugin_dir = _release_ready(_plugin(tmp_path, "import subprocess\nsubprocess.run(['ls'])\n", permissions))
+    exit_code = _release_check(tmp_path, plugin_dir)
     captured = capsys.readouterr()
-    assert "[ERROR] the code uses system.process:spawn (worker.py:2)" in captured.err
+    assert exit_code == expected, captured.err
+    assert ("[ERROR] the code uses system.process:spawn (worker.py:2)" in captured.err) is not declared
+    assert "[ERROR]" not in captured.err or not declared
 
 
 def test_release_check_does_not_block_on_warnings_or_blind_spots(tmp_path, capsys):
@@ -1501,3 +1526,66 @@ def test_urlretrieve_with_only_network_declared_warns_about_the_file_write(tmp_p
     )
     found = {(issue.code, issue.params["permission"]) for issue in compare_declarations(report)}
     assert found == {("used_undeclared_possible", "system.fs:write")}
+
+
+def test_reading_metadata_off_a_function_is_not_using_it(tmp_path):
+    report = _scan(tmp_path, "import subprocess\nNAME = subprocess.run.__name__.lower()\n")
+    # Naming the function stays a weak hint; it is not a call of it.
+    assert _bases(report) == {"system.process:spawn": "resolved_name"}
+    assert not [issue for issue in compare_declarations(report) if issue.severity == "error"]
+
+
+def test_unused_declarations_are_reported_when_the_only_python_file_is_unscanned(tmp_path):
+    (tmp_path / "net_test.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "plugin.toml").write_text('[permissions.ask]\n"system.env:read" = { reason = "x" }\n', encoding="utf-8")
+    report = analyze_capabilities(tmp_path)
+    assert report["status"] == "unavailable"
+    [issue] = compare_declarations(report)
+    assert (issue.severity, issue.code) == ("info", "declared_unused")
+    no_files = _report({"system.env:read": {"declared": "ask", "findings": [], "basis": "declared_only"}}, status="unavailable")
+    assert compare_declarations(no_files) == []
+
+
+def test_excluded_subtrees_do_not_use_up_the_unscanned_list_bound(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "_MAX_TREE_ENTRIES", 10)
+    plugin_dir = _plugin(tmp_path, "x = 1\n", "[permissions.require]\n")
+    (plugin_dir / "build").mkdir()
+    for index in range(20):
+        (plugin_dir / "build" / f"a{index}.js").write_text("1\n", encoding="utf-8")
+    (plugin_dir / "ui").mkdir()
+    (plugin_dir / "ui" / "panel.js").write_text("1\n", encoding="utf-8")
+    info = _issues(plugin_dir, "info")
+    blind = [message for message in info if "(not scanned" in message.splitlines()[0]]
+    assert [message.split(": ", 1)[0] for message in blind] == ["ui/panel.js"]
+
+
+def test_cli_rejects_permissions_on_sdk_class_decorators(tmp_path):
+    plugin_dir = _plugin(tmp_path, "x = 1\n", "[permissions.require]\n")
+    (plugin_dir / "__init__.py").write_text(
+        "from plugin.sdk.plugin import neko_plugin\n\n@neko_plugin(permissions=[])\nclass DemoPlugin: pass\n",
+        encoding="utf-8",
+    )
+    errors = _issues(plugin_dir, "error")
+    assert any(message.startswith("@neko_plugin in __init__.py:4: the plugin SDK does not accept permissions=") for message in errors)
+
+
+def test_type_checking_imports_do_not_bind_decorators(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "from typing import TYPE_CHECKING\n"
+        "from .local import hook\n"
+        "if TYPE_CHECKING:\n"
+        "    from plugin.sdk.plugin import hook\n"
+        "else:\n"
+        "    pass\n"
+        "class P:\n"
+        "    @hook(permissions=['system.env:read'])\n"
+        "    async def a(self): ...\n",
+        "[permissions.require]\n",
+    )
+    assert not [message for message in _issues(plugin_dir, "error") if "permissions=" in message]
+    (plugin_dir / "worker.py").write_text(
+        (plugin_dir / "worker.py").read_text(encoding="utf-8").replace("if TYPE_CHECKING:", "if not TYPE_CHECKING:"),
+        encoding="utf-8",
+    )
+    assert [message for message in _issues(plugin_dir, "error") if "does not accept permissions=" in message]

@@ -1377,7 +1377,11 @@ def _scope_nodes(body):
     while stack:
         node = stack.pop()
         yield node
-        if isinstance(node, _SCOPE_NODES):
+        if isinstance(node, ast.If) and _is_type_checking(node.test):
+            # The body never runs; only the test and the else branch do.
+            stack.append(node.test)
+            stack.extend(node.orelse)
+        elif isinstance(node, _SCOPE_NODES):
             # Decorators, defaults and bases are evaluated in this scope.
             if not isinstance(node, ast.Lambda):
                 stack.extend(node.decorator_list)
@@ -1387,6 +1391,12 @@ def _scope_nodes(body):
                 stack.extend(node.args.defaults)
         else:
             stack.extend(ast.iter_child_nodes(node))
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
 
 
 def _scope_bindings(body, parameters=()) -> list[tuple[tuple[int, int], str, str | None]]:
@@ -1526,6 +1536,15 @@ def _check_python_decorators(
         _check_deprecated_push_message_calls(tree, relative, issues)
         sdk_decorators = _sdk_decorators(tree)
         for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                # Class decorators (@neko_plugin) take no permissions= either.
+                for decorator in node.decorator_list:
+                    sdk_name = sdk_decorators.get(id(decorator))
+                    if sdk_name is not None:
+                        _check_permission_narrowing(
+                            decorator, f"@{sdk_name} in {relative}:{node.lineno}", declared, issues, narrows=False
+                        )
+                continue
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
