@@ -580,6 +580,7 @@ class PromotionMergeMixin:
             if memory_subject is not None else target_entity
         )
         same_entity_persona: list[tuple[str, dict]] = []
+        prompt_persona_markers: dict[str, tuple[str, int, str]] = {}
         if target_section and isinstance(persona_view, dict):
             section = persona_view.get(target_section)
             if isinstance(section, dict):
@@ -595,6 +596,19 @@ class PromotionMergeMixin:
                         # from the merge prompt. Legacy memory_subject=None matches only
                         # unstamped legacy entries, failing closed in both directions.
                         same_entity_persona.append((target_section, e))
+                        eid = e.get('id')
+                        if eid is not None:
+                            vh = e.get('version_history')
+                            last_ts = (
+                                str(vh[-1].get('replaced_at') or '')
+                                if isinstance(vh, list) and vh and isinstance(vh[-1], dict)
+                                else ''
+                            )
+                            prompt_persona_markers[str(eid)] = (
+                                str(e.get('text') or ''),
+                                len(vh) if isinstance(vh, list) else 0,
+                                last_ts,
+                            )
         all_reflections = await self._aload_reflections_full(lanlan_name)
         same_entity_reflections = [
             r for r in all_reflections
@@ -852,6 +866,9 @@ class PromotionMergeMixin:
                     )
                 ):
                     return 'no_longer_eligible'
+                expected_marker = prompt_persona_markers.get(
+                    str(target_entry.get('id') or target_entry_id)
+                )
                 merge_outcome = await self._persona_manager.amerge_into(
                     lanlan_name, target_entry_id, merged_text,
                     reflection_evidence={
@@ -865,7 +882,21 @@ class PromotionMergeMixin:
                     source_reflection_id=current3['id'],
                     merged_from_ids=[current3['id']],
                     source_provenance=current3,
+                    expected_target_text=(
+                        expected_marker[0] if expected_marker is not None else None
+                    ),
+                    expected_target_version=(
+                        (expected_marker[1], expected_marker[2])
+                        if expected_marker is not None else None
+                    ),
                 )
+            if merge_outcome == 'stale_target':
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                    f"{target_entry_id} changed during LLM await; discarding "
+                    f"stale merge_into for retry"
+                )
+                return 'skip_retry_pending'
             if merge_outcome == 'not_found':
                 logger.warning(
                     f"[Promote] {lanlan_name}/{R['id']}: amerge_into reported "

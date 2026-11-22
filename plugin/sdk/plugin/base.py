@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover
 
 from plugin._types.entry_metadata import (
     ENTRY_PROJECTION_SHAPED_FIELDS,
+    check_schema_depth,
     detached_copy,
     unhandled_entry_contract_fields,
 )
@@ -64,6 +65,43 @@ def _entry_listing(entry_id: str, meta: object, *, enabled: bool, dynamic: bool)
     }
     listing.update(unhandled_entry_contract_fields(meta, ENTRY_PROJECTION_SHAPED_FIELDS))
     return listing
+
+
+def _dynamic_entry_registration(
+    plugin_id: str, entry_id: str, meta: object, *, enabled: bool = True
+) -> dict[str, object]:
+    """The ``ENTRY_UPDATE`` register message for a dynamic entry (built, not sent)."""
+    meta_dict: dict[str, object] = {
+        "id": getattr(meta, "id", entry_id),
+        "name": getattr(meta, "name", entry_id),
+        "description": getattr(meta, "description", ""),
+        "input_schema": dict(getattr(meta, "input_schema", None) or {}),
+        "kind": getattr(meta, "kind", "action"),
+        "auto_start": bool(getattr(meta, "auto_start", False)),
+        "enabled": enabled,
+        "metadata": dict(getattr(meta, "metadata", None) or {}),
+    }
+    llm_fields = getattr(meta, "llm_result_fields", None)
+    if llm_fields:
+        meta_dict["llm_result_fields"] = list(llm_fields)
+    # Forward control fields with registration so the host uses declared budgets and result schemas.
+    for name in ("timeout", "model_validate", "persist"):
+        value = getattr(meta, name, None)
+        if value is not None:
+            meta_dict[name] = value
+    llm_schema = getattr(meta, "llm_result_schema", None)
+    if isinstance(llm_schema, Mapping):
+        meta_dict["llm_result_schema"] = dict(llm_schema)
+    # Any contract field not shaped above travels as-is, so a field added to
+    # ENTRY_CONTRACT_FIELDS reaches the host without editing this payload.
+    meta_dict.update(unhandled_entry_contract_fields(meta, ENTRY_PROJECTION_SHAPED_FIELDS))
+    return {
+        "type": "ENTRY_UPDATE",
+        "action": "register",
+        "plugin_id": plugin_id,
+        "entry_id": entry_id,
+        "meta": meta_dict,
+    }
 
 
 class PluginMeta(_SharedPluginMeta):
@@ -320,37 +358,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         })
 
     def _notify_dynamic_entry_registered(self, entry_id: str, meta: EventMeta, *, enabled: bool = True) -> None:
-        meta_dict: dict[str, object] = {
-            "id": getattr(meta, "id", entry_id),
-            "name": getattr(meta, "name", entry_id),
-            "description": getattr(meta, "description", ""),
-            "input_schema": dict(getattr(meta, "input_schema", None) or {}),
-            "kind": getattr(meta, "kind", "action"),
-            "auto_start": bool(getattr(meta, "auto_start", False)),
-            "enabled": enabled,
-            "metadata": dict(getattr(meta, "metadata", None) or {}),
-        }
-        llm_fields = getattr(meta, "llm_result_fields", None)
-        if llm_fields:
-            meta_dict["llm_result_fields"] = list(llm_fields)
-        # Forward control fields with registration so the host uses declared budgets and result schemas.
-        for name in ("timeout", "model_validate", "persist"):
-            value = getattr(meta, name, None)
-            if value is not None:
-                meta_dict[name] = value
-        llm_schema = getattr(meta, "llm_result_schema", None)
-        if isinstance(llm_schema, Mapping):
-            meta_dict["llm_result_schema"] = dict(llm_schema)
-        # Any contract field not shaped above travels as-is, so a field added to
-        # ENTRY_CONTRACT_FIELDS reaches the host without editing this payload.
-        meta_dict.update(unhandled_entry_contract_fields(meta, ENTRY_PROJECTION_SHAPED_FIELDS))
-        self._notify_host_comm({
-            "type": "ENTRY_UPDATE",
-            "action": "register",
-            "plugin_id": self.plugin_id,
-            "entry_id": entry_id,
-            "meta": meta_dict,
-        })
+        self._notify_host_comm(_dynamic_entry_registration(self.plugin_id, entry_id, meta, enabled=enabled))
 
     def _notify_dynamic_entry_unregistered(self, entry_id: str) -> None:
         self._notify_host_comm({
@@ -428,6 +436,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
             raise TypeError("handler must be callable")
         if output_schema is not None and not isinstance(output_schema, Mapping):
             raise TypeError("output_schema must be a JSON schema mapping or None")
+        if output_schema is not None:
+            check_schema_depth(output_schema, "output_schema")
         if not isinstance(entry_id, str) or not entry_id.strip():
             raise ValueError("entry_id must be a non-empty string")
         if timeout is not None:
@@ -454,8 +464,11 @@ class NekoPluginBase(_SharedNekoPluginBase):
         )
         if timeout is not None:
             meta.extra["timeout"] = timeout
+        # Build the host message before touching local state: if building it
+        # fails, nothing is half-registered and the same id can be retried.
+        registration = _dynamic_entry_registration(self.plugin_id, entry_id, meta, enabled=True)
         self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
-        self._notify_dynamic_entry_registered(entry_id, meta, enabled=True)
+        self._notify_host_comm(registration)
         return True
 
     def unregister_dynamic_entry(self, entry_id: str) -> bool:

@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, ClassVar, Dict, Optional, TypeVar
 
-from plugin._types.entry_metadata import entry_contract_fields
+from plugin._types.entry_metadata import MAX_SCHEMA_DEPTH, entry_contract_fields, schema_depth_exceeds
 from plugin._types.exceptions import PluginExecutionError
 from plugin.core.call_registry import CallLink, current_delivery_link
 from plugin.core.capability_policy import policy_enabled
@@ -978,6 +978,14 @@ class PluginCommunicationResourceManager:
             if action == "register":
                 if not meta_dict:
                     self.logger.warning("ENTRY_UPDATE register missing meta: {}", msg)
+                    return
+                # Same bound the SDK enforces at registration: every later copy
+                # or projection of the schema (GET /plugins, previews) recurses.
+                if schema_depth_exceeds(meta_dict.get("output_schema")):
+                    self.logger.warning(
+                        "ENTRY_UPDATE register rejected: output_schema nests deeper than {} levels: entry_id={}, plugin_id={}",
+                        MAX_SCHEMA_DEPTH, entry_id, plugin_id,
+                    )
                     return
                 ipc_metadata = {
                     **(meta_dict.get("metadata") if isinstance(meta_dict.get("metadata"), dict) else {}),
