@@ -31,7 +31,7 @@ You do not need to write code. Pick an AI coding agent, copy one message to it, 
 
    ![Filling in the model API on first open](/images/plugins/onboarding/neko-api-setup-en.png)
 
-   1. Pick a core API provider.
+   1. Pick a Voice Model Provider.
    2. Enter your API key.
    3. Click "Save Settings".
 

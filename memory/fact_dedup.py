@@ -1125,7 +1125,11 @@ class FactDedupResolver:
             return 0
 
         applied, processed_keys = await self._aapply_decisions(
-            name, batch, results, shown_reversed=shown_reversed,
+            name,
+            batch,
+            results,
+            shown_reversed=shown_reversed,
+            prompt_texts=batch_texts,
         )
 
         # CodeRabbit: LLM lists whose decisions consume no pairs, all actions rejected
@@ -1238,7 +1242,9 @@ class FactDedupResolver:
 
     async def _aapply_decisions(
         self, name: str, batch: list[dict], results: list[dict],
-        *, shown_reversed: frozenset[int] | set[int] = frozenset(),
+        *,
+        shown_reversed: frozenset[int] | set[int] = frozenset(),
+        prompt_texts: list[tuple[str, str]] | None = None,
     ) -> tuple[int, set[tuple]]:
         """Translate LLM decisions into facts.json mutations.
 
@@ -1360,6 +1366,17 @@ class FactDedupResolver:
                 # so it doesn't keep blocking subsequent batches.
                 processed_pairs.add(pair_key)
                 continue
+            if prompt_texts is not None and 0 <= idx < len(prompt_texts):
+                shown_cand_text, shown_exist_text = prompt_texts[idx]
+                live_cand_text = cand.get('text', '') or ''
+                live_exist_text = existing.get('text', '') or ''
+                if live_cand_text != shown_cand_text or live_exist_text != shown_exist_text:
+                    logger.info(
+                        "[FactDedup] %s: 跳过陈旧决策 cand=%s exist=%s (推理期间事实文本已被修改)",
+                        name, cand_id, exist_id,
+                    )
+                    processed_pairs.add(pair_key)
+                    continue
             cand_identity = _fact_scoped_identity(cand)
             exist_identity = _fact_scoped_identity(existing)
             if cand_identity is None or exist_identity is None:
