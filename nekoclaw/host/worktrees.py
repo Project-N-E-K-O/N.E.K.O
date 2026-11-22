@@ -370,7 +370,6 @@ class WorktreeManager:
         self._no_hooks = str(Path(tempfile.gettempdir()) / f"nekoclaw-no-hooks-{uuid.uuid4().hex}")
         self._version: tuple[int, int, int] | None | Literal[False] = False
         self._locks: dict[str, asyncio.Lock] = {}
-        self._lock_keys: dict[str, str] = {}
         self._making: set[str] = set()
 
     # -- public ----------------------------------------------------------------
@@ -489,9 +488,22 @@ class WorktreeManager:
     async def merge_back(self, worktree: Worktree, landing: Landing | None = None) -> MergeResult:
         """Land what was done in ``worktree``; see ``MergeResult`` for the outcomes. Raises GitError when git fails."""
         async with await self._lock(worktree.repo_root):
+            # Its own conflict markers would land as text.
+            unfinished = await self._unfinished(worktree.path)
+            if unfinished:
+                return MergeResult("failed", detail=f"{unfinished} in the worktree; finish or abort it first")
             start = await self._start(worktree)
             result = await self._snapshot(worktree.path, "nekoclaw: worktree result", start)
             return await (landing or WorkingFiles()).land(self, worktree, result)
+
+    async def _unfinished(self, root: Path) -> str | None:
+        """Return what git operation is half done in ``root`` (or that its index has unmerged entries), or None."""
+        git_dir = (await self._git(root, "rev-parse", "--absolute-git-dir")).lines()[0]
+        operation = await asyncio.to_thread(_operation_in_progress, Path(git_dir))
+        if operation:
+            return f"a {operation} is in progress"
+        unmerged = await self._git(root, "ls-files", "-z", "--unmerged")
+        return "unmerged files are" if unmerged.stdout else None
 
     async def _put_start_back(self, worktree: Worktree, start: str, error: BaseException) -> None:
         """Set a worktree's start ref back to ``start`` even when cancelled meanwhile; say so on ``error`` if it fails."""
@@ -551,6 +563,14 @@ class WorktreeManager:
             half_done = await self._commit_tree(
                 worktree.path, conflict.merged_tree, conflict.current, "nekoclaw: conflicts to resolve"
             )
+            # What its own HEAD and index were (staged work included), to put
+            # back as they were should preparing fail.
+            own_head = await self._try_resolve(worktree.path, "HEAD")
+            index = Path(
+                (await self._git(worktree.path, "rev-parse", "--path-format=absolute", "--git-path", "index")).lines()[0]
+            )
+            saved = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="nekoclaw-index-"))
+            had_index = await asyncio.to_thread(_copy_index, index, saved / "index")
             try:
                 # The host's own worktree, not the user's checkout.
                 await self._git(
@@ -580,6 +600,10 @@ class WorktreeManager:
                     )
                     if not back.ok:
                         error.add_note(f"the worktree could not be put back: {_failure('checkout', back.stderr)}")
+                    if own_head:
+                        await self._git(worktree.path, "update-ref", "--no-deref", "HEAD", own_head)
+                    if had_index:
+                        await asyncio.to_thread(shutil.copy2, saved / "index", index)
                     await self._put_start_back(worktree, start, error)
 
                 putting = asyncio.ensure_future(put_back())
@@ -589,6 +613,8 @@ class WorktreeManager:
                 if cancelled and not isinstance(error, asyncio.CancelledError):
                     raise _cancelled_after(error) from error
                 raise
+            finally:
+                await _to_the_end(asyncio.to_thread(shutil.rmtree, saved, True))
         return replace(worktree, start=conflict.current)
 
     async def has_changes(self, worktree: Worktree) -> bool:
@@ -1232,11 +1258,9 @@ class WorktreeManager:
 
     async def _lock(self, repo_root: Path) -> asyncio.Lock:
         """Return the lock of the repository ``repo_root`` is a checkout of (its common git directory)."""
-        where = os.path.normcase(str(repo_root))
-        key = self._lock_keys.get(where)
-        if key is None:
-            common = (await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
-            key = self._lock_keys[where] = os.path.normcase(os.path.abspath(common))
+        # Asked each time: a checkout can be made one of another repository.
+        common = (await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0]
+        key = os.path.normcase(os.path.abspath(common))
         lock = self._locks.get(key)
         if lock is None:
             lock = self._locks[key] = asyncio.Lock()
@@ -1335,7 +1359,8 @@ class _Run:
         return self.stdout.decode("utf-8", "surrogateescape")
 
     def lines(self) -> list[str]:
-        return [line for line in self.decode().splitlines() if line]
+        """Return the output's lines; only a line feed ends one (a path may hold U+2028 and the like)."""
+        return [line.rstrip("\r") for line in self.decode().split("\n") if line.rstrip("\r")]
 
 
 def parse_git_version(text: str) -> tuple[int, int, int] | None:

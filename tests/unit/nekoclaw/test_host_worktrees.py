@@ -22,6 +22,7 @@ of the machine (``_isolated_git``), so the results do not depend on it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -82,6 +83,9 @@ def _isolated_git(tmp_path: Path, monkeypatch: Any) -> None:
     # Attribute files too: the system's, and the user's default one.
     monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "1")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # And no template of the machine's (an exclude file there would hide files).
+    (tmp_path / "git-template").mkdir()
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmp_path / "git-template"))
     # The same isolation the manager gives its own git calls.
     for name in (*worktrees._REDIRECTING_ENV, *USER):
         monkeypatch.delenv(name, raising=False)
@@ -462,6 +466,7 @@ async def test_worktree_holds_uncommitted_and_new_files_not_ignored(repo: Path, 
 async def test_worktree_does_not_run_the_users_hooks(repo: Path, manager: WorktreeManager, base: Path, tmp_path: Path) -> None:
     marker = tmp_path / "hook-ran"
     hook = repo / ".git" / "hooks" / "post-checkout"
+    hook.parent.mkdir(exist_ok=True)
     hook.write_text(f"#!/bin/sh\necho ran > '{marker.as_posix()}'\n", encoding="utf-8", newline="\n")
     hook.chmod(0o755)
     tree = await manager.create(repo, base / "w1")
@@ -2437,8 +2442,11 @@ async def test_killing_the_tree_takes_what_git_started(monkeypatch: Any) -> None
     assert any("sleep(30)" in " ".join(child.cmdline()) for child in children)
     await asyncio.to_thread(worktrees._kill_tree, process.pid)
     await asyncio.wait_for(process.communicate(), 10)  # its pipes close: nothing holds them now
-    gone = await asyncio.to_thread(psutil.wait_procs, children, 10)
-    assert not gone[1]
+    _gone, alive = await asyncio.to_thread(psutil.wait_procs, children, 10)
+    # Killed; one nobody reaps (a container without an init) stays a zombie.
+    for child in alive:
+        with contextlib.suppress(psutil.NoSuchProcess):
+            assert child.status() == psutil.STATUS_ZOMBIE
 
 
 @pytest.mark.parametrize(
@@ -2694,3 +2702,58 @@ async def test_a_submodule_link_staged_in_a_worktree_is_refused_and_kept(
     assert digest(repo) == before
     report = await manager.reconcile(repo, base, [])
     assert [path.name for path, _why in report.failed] == ["w1"] and exists(tree.path / "embedded" / "inside.txt")
+
+
+# -- review round 22 -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("how", ["cherry-pick", "unmerged"])
+async def test_no_landing_while_the_worktree_is_mid_operation(
+    repo: Path, manager: WorktreeManager, base: Path, how: str
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "worktree\n<<<<<<< HEAD\n")
+    if how == "cherry-pick":
+        git_dir = Path(git(tree.path, "rev-parse", "--absolute-git-dir").strip())
+        (git_dir / "CHERRY_PICK_HEAD").write_text(tree.start, encoding="utf-8")
+    else:
+        ours = git(tree.path, "hash-object", "-w", "--stdin", input=b"ours\n").strip()
+        theirs = git(tree.path, "hash-object", "-w", "--stdin", input=b"theirs\n").strip()
+        entries = f"0 {'0' * 40}\tx.txt\n100644 {ours} 2\tx.txt\n100644 {theirs} 3\tx.txt\n"
+        git(tree.path, "update-index", "--index-info", input=entries.encode())
+    before = digest(repo)
+    result = await manager.merge_back(tree)
+    assert result.status == "failed" and "in the worktree" in result.detail
+    assert digest(repo) == before
+
+
+async def test_a_failed_preparing_puts_the_worktrees_own_head_and_index_back(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "a.txt", "staged\n")
+    git(tree.path, "add", "a.txt")
+    write(tree.path / "a.txt", "working\n")
+    write(repo / "a.txt", "project\n")
+    conflict = await manager.merge_back(tree)
+    assert conflict.status == "conflict"
+    head = git(tree.path, "rev-parse", "HEAD").strip()
+    original = manager._git
+
+    async def ref_locked(cwd: Path, *args: str, **kwargs: Any) -> Any:
+        if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start"):
+            raise worktrees.GitError(args, 128, b"cannot lock ref")
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "_git", ref_locked)
+    with pytest.raises(worktrees.GitError):
+        await manager.prepare_conflicts(tree, conflict)
+    monkeypatch.setattr(manager, "_git", original)
+    assert git(tree.path, "rev-parse", "HEAD").strip() == head
+    assert git(tree.path, "show", ":a.txt") == "staged\n"
+    assert read(tree.path / "a.txt") == b"working\n"
+
+
+def test_output_lines_end_at_line_feeds_only() -> None:
+    run = worktrees._Run(0, "C:/a\u2028b\nnext\r\n\n".encode(), b"")
+    assert run.lines() == ["C:/a\u2028b", "next"]
