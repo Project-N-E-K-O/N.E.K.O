@@ -227,7 +227,7 @@ function createPickerContext({ translations = null, fetchImpl = null } = {}) {
     MODEL_TYPES.forEach(modelType => select(`${modelType}ModelProvider`, 'follow_assist'));
     select('gameMainModelProvider', 'follow_conversation');
     select('gameSummaryModelProvider', 'follow_summary');
-    select('agentSmallModelProvider', 'follow_agent');
+    select('agentSmallModelProvider', 'follow_emotion');
     select('omniModelProvider', 'follow_core');
     select('coreApiSelect', 'qwen');
     select('assistApiSelect', 'openrouter');
@@ -351,15 +351,25 @@ test('game slots mirror or follow the text slots and ignore their own input in f
     assert.equal(context.resolveSlotModelState('gameSummary').defaultModelId, 'qwen3.8-flash');
 });
 
-test('the small familiar slot mirrors the familiar slot by default and has its own tier otherwise', () => {
+test('the small familiar slot mirrors the recognition slot by default, the familiar slot on request, and has the small tier otherwise', () => {
     const { context, setSlot } = createPickerContext();
-    setSlot('agent', 'custom', 'my-agent-model');
+    setSlot('emotion', 'custom', 'my-small-model');
     assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
-        defaultModelId: 'my-agent-model', acceptsTypedModelId: false, fixedModelProvider: '',
+        defaultModelId: 'my-small-model', acceptsTypedModelId: false, fixedModelProvider: '',
     });
 
+    setSlot('agent', 'custom', 'my-agent-model');
+    setSlot('agentSmall', 'follow_agent');
+    assert.equal(context.resolveSlotModelState('agentSmall').defaultModelId, 'my-agent-model');
+
     setSlot('agentSmall', 'follow_assist', 'ignored');
-    assert.equal(context.resolveSlotModelState('agentSmall').defaultModelId, 'google/gemini-3.8-flash');
+    assert.equal(context.resolveSlotModelState('agentSmall').defaultModelId, 'qwen/qwen3.5-9b');
+
+    // custom with a blank model ID runs the recognition model resolved for the emotion slot.
+    setSlot('agentSmall', 'custom', '');
+    assert.deepEqual(plain(context.resolveSlotModelState('agentSmall')), {
+        defaultModelId: 'my-small-model', acceptsTypedModelId: true, fixedModelProvider: '',
+    });
 });
 
 test('game slots keep the fixed-model marker of the text slot they mirror', () => {

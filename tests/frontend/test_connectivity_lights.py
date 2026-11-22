@@ -170,7 +170,7 @@ def test_provider_switch_key_reresolution(mock_page: Page, running_server: str):
     assert game_defaults == {
         "gameMain": "follow_conversation",
         "gameSummary": "follow_summary",
-        "agentSmall": "follow_agent",
+        "agentSmall": "follow_emotion",
     }
 
     game_fold_state = mock_page.evaluate("""() => {

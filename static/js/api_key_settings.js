@@ -56,18 +56,20 @@ const MODEL_DEFAULT_PROVIDER = {
     omni: 'follow_core',
     gameMain: 'follow_conversation',
     gameSummary: 'follow_summary',
-    agentSmall: 'follow_agent',
+    agentSmall: 'follow_emotion',
 };
 // follow_<source> 下拉值 → 被跟随的槽位；照搬后端 get_core_config 的 follow_* 规则。
 const FOLLOW_SOURCE_BY_PROVIDER = Object.freeze({
     follow_conversation: 'conversation',
     follow_summary: 'summary',
+    follow_emotion: 'emotion',
     follow_agent: 'agent',
 });
-// 被跟随的槽位 → 默认跟随它的槽位（源槽位改动时要同步刷新）。
+// 被跟随的槽位 → 可以跟随它的槽位（源槽位改动时要同步刷新）。
 const MODEL_FOLLOWER_BY_SOURCE = Object.freeze({
     conversation: 'gameMain',
     summary: 'gameSummary',
+    emotion: 'agentSmall',
     agent: 'agentSmall',
 });
 function followedModelType(provider) {
@@ -97,7 +99,7 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
     decision: 'decision_model',
     vision: 'vision_model',
     agent: 'agent_model',
-    agentSmall: 'agent_model',
+    agentSmall: 'emotion_model',
     omni: 'core_model',
 };
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
@@ -1572,6 +1574,12 @@ function populateModelProviderDropdowns() {
         } else if (mt === 'agentSmall') {
             appendModelProviderOption(
                 sel,
+                'follow_emotion',
+                'api.customModelProviderFollowEmotion',
+                '跟随识别模型'
+            );
+            appendModelProviderOption(
+                sel,
                 'follow_agent',
                 'api.customModelProviderFollowAgent',
                 '跟随使魔模型'
@@ -2022,7 +2030,7 @@ const MODEL_TIER_BY_TYPE = {
     decision: 'decision',
     vision: 'vision',
     agent: 'agent',
-    agentSmall: 'agent',
+    agentSmall: 'emotion',
 };
 const MODEL_PICKER_UNAVAILABLE_TEXT = {
     noProvider: ['api.modelPicker.unavailable.noProvider', '请先选择服务商'],
@@ -2094,7 +2102,7 @@ function getAssistProfileTierModelId(providerKey, tier) {
 }
 
 function getAssistDefaultTierModelId(providerKey, tier) {
-    // 后端 AGENT_MODEL 缺省时回退到 VISION_MODEL（使魔模型·小的档位默认值就是使魔模型）
+    // 后端 AGENT_MODEL 缺省时回退到 VISION_MODEL
     return getAssistProfileTierModelId(providerKey, tier)
         || (tier === 'agent' ? getAssistProfileTierModelId(providerKey, 'vision') : '');
 }
@@ -2243,7 +2251,11 @@ function resolveSlotModelState(modelType, visited = new Set()) {
         };
     }
 
-    // custom 留空时后端沿用快照里的值；小游戏槽那份是内置常量，不展示
+    // custom 留空时后端沿用快照里的值；小游戏槽那份是内置常量，不展示；
+    // 使魔模型·小那份是刚解析出的识别模型（后端在处理这一格前用识别模型补齐）
+    if (modelType === 'agentSmall') {
+        return { ...mirrorSlotModelState('emotion', visited), acceptsTypedModelId: true };
+    }
     return {
         defaultModelId: isGameSlot ? '' : getAssistTierModelId(tier),
         acceptsTypedModelId: true,
@@ -2668,7 +2680,7 @@ function initModelIdPickers() {
             const input = document.getElementById(`${modelType}${suffix}`);
             if (input) input.addEventListener('input', () => {
                 const affected = [modelType];
-                Object.values(MODEL_FOLLOWER_BY_SOURCE).forEach(followerType => {
+                [...new Set(Object.values(MODEL_FOLLOWER_BY_SOURCE))].forEach(followerType => {
                     const select = document.getElementById(`${followerType}ModelProvider`);
                     if (select && select.value === `follow_${modelType}`) affected.push(followerType);
                 });
@@ -4045,6 +4057,9 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         if (providerMode === 'follow_summary') {
             return params.summaryModelUrl || resolveUrl('summary', params.summaryModelProvider, visited);
         }
+        if (providerMode === 'follow_emotion') {
+            return params.emotionModelUrl || resolveUrl('emotion', params.emotionModelProvider, visited);
+        }
         if (providerMode === 'follow_agent') {
             return params.agentModelUrl || resolveUrl('agent', params.agentModelProvider, visited);
         }
@@ -4087,6 +4102,12 @@ function refreshAutoResolvedModelUrlsForSave(params) {
             return inherited !== undefined && inherited !== null
                 ? inherited
                 : resolveModel('summary', params.summaryModelProvider, visited);
+        }
+        if (providerMode === 'follow_emotion') {
+            const inherited = snapshotModelId('emotion');
+            return inherited !== undefined && inherited !== null
+                ? inherited
+                : resolveModel('emotion', params.emotionModelProvider, visited);
         }
         if (providerMode === 'follow_agent') {
             const inherited = snapshotModelId('agent');

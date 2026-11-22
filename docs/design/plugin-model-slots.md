@@ -70,8 +70,9 @@ and stores no `base_url`, `model` or `api_key`; those belong to the main app's
 in `plugin/server/domain/model_config.py`. Plugins and task agents are one
 thing in the main app, so plugins draw only on the familiar tiers: today
 `agent` (the familiar model that task agents, keyboard-and-mouse control and
-the browser use) and `agent_small` (the small familiar model, which follows
-`agent` unless the user configures it separately). A further tier is one more
+the browser use) and `agent_small` (the small familiar model, which is the
+main app's recognition (small) model unless the user configures it
+separately). A further tier is one more
 row there (plus the `HostApi` literal). The chat, memory and voice tiers stay the main app's
 own and are not followable. Each value is the `model_type` passed to
 `get_model_api_config`. At
