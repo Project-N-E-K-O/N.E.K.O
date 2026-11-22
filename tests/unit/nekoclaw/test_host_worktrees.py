@@ -3704,3 +3704,44 @@ def test_putting_back_makes_an_empty_directory_a_file_replaced_again(tmp_path: P
     assert worktrees._restore(root, saved) == []
     assert (root / "pkg").is_dir() and not os.listdir(root / "pkg")
     assert not exists(root / "new.txt")  # what was not there is not there again
+
+
+async def test_no_merge_driver_runs_when_a_path_and_its_rule_come_from_different_sides(
+    repo: Path, manager: WorktreeManager, base: Path, tmp_path: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    marker = tmp_path / "driver-ran"
+    script = tmp_path / "driver.py"
+    write(script, f"import pathlib, sys\npathlib.Path({str(marker)!r}).write_text('ran')\nsys.exit(1)\n")
+    git(repo, "config", "merge.evil.driver", f'"{PYTHON}" "{script}" %O %A %B')
+    # The worktree renames a.txt to c.txt and changes it; the project changes
+    # a.txt and gives c.txt a rule naming the driver. Neither side has both.
+    os.rename(tree.path / "a.txt", tree.path / "c.txt")
+    write(tree.path / "c.txt", read(tree.path / "c.txt") + b"from the worktree\n")
+    write(repo / "a.txt", read(repo / "a.txt") + b"from the project\n")
+    write(repo / ".gitattributes", "c.txt merge=evil\n")
+    before = digest(repo)
+    with pytest.raises(WorktreeUnavailable) as raised:
+        await manager.merge_back(tree)
+    assert raised.value.reason == worktrees.MERGE_DRIVERS
+    assert not exists(marker)  # refused before merging, not after
+    assert digest(repo) == before
+
+
+async def test_no_filter_runs_in_a_renormalizing_merge_when_a_path_and_its_rule_come_from_different_sides(
+    repo: Path, manager: WorktreeManager, base: Path, tmp_path: Path
+) -> None:
+    tree = await manager.create(repo, base / "w1")
+    marker = tmp_path / "filter-ran"
+    script = tmp_path / "filter.py"
+    write(script, f"import pathlib, sys\npathlib.Path({str(marker)!r}).write_text('ran')\nsys.stdout.write(sys.stdin.read())\n")
+    git(repo, "config", "merge.renormalize", "true")
+    git(repo, "config", "filter.crypt.clean", f'"{PYTHON}" "{script}"')
+    os.rename(tree.path / "a.txt", tree.path / "c.txt")
+    write(tree.path / "c.txt", read(tree.path / "c.txt") + b"from the worktree\n")
+    write(repo / "a.txt", read(repo / "a.txt") + b"from the project\n")
+    write(repo / ".gitattributes", "c.txt filter=crypt\n")
+    with pytest.raises(WorktreeUnavailable) as raised:
+        await manager.merge_back(tree)
+    assert raised.value.reason == worktrees.CONTENT_FILTERS
+    assert not exists(marker)  # refused before merging, not after

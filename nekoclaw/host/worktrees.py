@@ -989,7 +989,9 @@ class WorktreeManager:
         staged = await self._git(root, "ls-files", "-z", "--stage")
         return any(entry.startswith(b"160000 ") for entry in staged.stdout.split(b"\0"))
 
-    async def _programs(self, root: Path, names: list[bytes], source: str | None = None) -> tuple[str, str] | None:
+    async def _programs(
+        self, root: Path, names: list[bytes], source: str | None = None, filters: bool = True
+    ) -> tuple[str, str] | None:
         """Return why git would run a program the user configured on these paths, or None.
 
         That is a content filter (``filter`` attribute: Git LFS, git-crypt,
@@ -997,8 +999,9 @@ class WorktreeManager:
         or ``merge.default``, naming a ``merge.<name>.driver``). A snapshot, a merge or a checkout would run it;
         the host does not run the user's programs, and what one makes in a
         worktree need not match the project. With ``source`` the attributes
-        are read from that tree, as a checkout of it would. Returns a reason
-        key and what it applies to.
+        are read from that tree, as a checkout of it would. With ``filters``
+        False only merge drivers are asked about. Returns a reason key and
+        what it applies to.
         """
         # git runs a program only for a name a driver is configured for (one
         # configured under a built-in name is found before git's own); for any
@@ -1021,7 +1024,7 @@ class WorktreeManager:
         ambiguous = await self._git(
             root, "config", "-z", "--name-only", "--get-regexp", r"^filter\.(unspecified|unset|set)\.", check=False
         )
-        if ambiguous.stdout.strip(b"\0"):
+        if filters and ambiguous.stdout.strip(b"\0"):
             return CONTENT_FILTERS, "a content filter is configured under a name check-attr cannot tell from none"
         checked = await self._git(
             root,
@@ -1037,7 +1040,7 @@ class WorktreeManager:
         fields = checked.stdout.split(b"\0")
         for index in range(0, len(fields) - 2, 3):
             path, attribute, value = fields[index : index + 3]
-            if attribute == b"filter" and value not in (b"unspecified", b"unset"):
+            if filters and attribute == b"filter" and value not in (b"unspecified", b"unset"):
                 return CONTENT_FILTERS, f"{_decode(path)} goes through a content filter (Git LFS, git-crypt, ...)"
             if attribute == b"merge" and value in theirs:
                 return MERGE_DRIVERS, f"{_decode(path)} is merged by the program {_decode(value)}"
@@ -1212,6 +1215,26 @@ class WorktreeManager:
         # A large file landed earlier is the project's now too: kept, not
         # taken for deleted on this side either.
         current = await self._snapshot(root, "nekoclaw: project before landing", base)
+        # merge-tree runs a merge driver as it merges, before the merged tree
+        # can be looked at: a path and the rule naming a driver for it may
+        # each come from a different side (renamed on one, given a rule on
+        # the other). Every path either side changed is asked about under
+        # the base's, each side's and the working files' attributes first.
+        changed: set[bytes] = set()
+        for side in (current.commit, result.commit):
+            listed = await self._git(
+                root, "diff-tree", "-r", "-z", "--name-only", "--no-renames", base, side,
+                timeout=settings.WORKTREE_GIT_WORK_SECONDS,
+            )
+            changed.update(name for name in listed.stdout.split(b"\0") if name)
+        if changed:
+            # It runs content filters only to renormalize (merge.renormalize).
+            renormalize = await self._git(root, "config", "--type=bool", "--get", "merge.renormalize", check=False)
+            filters = renormalize.lines()[:1] == ["true"]
+            for source in (base, current.commit, result.commit, None):
+                programs = await self._programs(root, sorted(changed), source=source, filters=filters)
+                if programs:
+                    raise WorktreeUnavailable(*programs)
         merged = await self._git(
             root,
             "merge-tree",
