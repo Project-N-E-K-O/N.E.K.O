@@ -498,8 +498,9 @@ def _find_invalid_emotion_mapping_reference(data, config_dir: str, model_root_re
     Check an emotion-mapping request (``{"motions": {group: [path, ...]}, "expressions": {...}}``).
     Return a short reason when a present section (an explicit ``null`` included) is not
     ``{group: [str, ...]}`` or a path would point outside the model folder; else None.
-    The whole request is also stored as ``EmotionMapping``, so every value is checked,
-    not only the ones written to FileReferences.
+    The whole request is also stored as ``EmotionMapping``, so every path under these two
+    sections is checked, not only the ones written to FileReferences; other top-level
+    keys are stored as sent and are not interpreted as paths here.
     """
     if not isinstance(data, dict):
         return "request is not an object"
@@ -786,7 +787,8 @@ def get_emotion_mapping(model_name: str):
 
         # Prefer EmotionMapping; derive from FileReferences if absent.
         emotion_mapping = config_data.get('EmotionMapping') if isinstance(config_data, dict) else None
-        if not emotion_mapping:
+        # A stored mapping that is not an object (a corrupted file) is ignored like a missing one.
+        if not isinstance(emotion_mapping, dict) or not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
             # Unexpected shapes on disk are skipped, never a 500.
             file_refs = config_data.get('FileReferences') if isinstance(config_data, dict) else None

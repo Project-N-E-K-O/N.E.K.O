@@ -22,7 +22,8 @@ def is_unsafe_model_ref(file_path: str, config_dir: str, model_root_real: str) -
     so the percent-decoded form is checked as well. Links resolving inside the
     model folder are fine. URL parsing drops tabs / newlines and strips surrounding
     spaces, so control characters are refused and the space-stripped form is checked too;
-    ``?`` / ``#`` would end the path part of the URL, so they are refused as well.
+    ``?`` / ``#`` would end the path part of the URL, so they are refused as well, and so
+    is an empty reference that names no file.
     """
     decoded = unquote(file_path)
     for candidate in {file_path, decoded, file_path.strip(' '), decoded.strip(' ')}:
@@ -30,7 +31,8 @@ def is_unsafe_model_ref(file_path: str, config_dir: str, model_root_real: str) -
             return True
         normalized = candidate.replace('\\', '/')
         posix = pathlib.PurePosixPath(normalized)
-        if posix.is_absolute() or ".." in posix.parts:
+        # An empty reference (``""``, ``"."``) names the config folder itself, not a file.
+        if posix.is_absolute() or ".." in posix.parts or not posix.parts:
             return True
         # Same rule as the router's directory-listing check, without its "skipped entry"
         # log: this checks client-submitted values.

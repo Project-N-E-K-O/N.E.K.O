@@ -696,3 +696,26 @@ def test_get_emotion_mapping_tolerates_unexpected_shapes_on_disk(model_dir, conf
     result = live2d_router.get_emotion_mapping("m")
     assert _status(result) == 200
     assert result["config"] == expected
+
+
+@pytest.mark.parametrize("ref", ["", ".", "./", " "])
+def test_empty_references_are_refused(monkeypatch, tmp_path, model_dir, ref):
+    _write(model_dir / "m.model3.json", _INSIDE_CONFIG)
+    config = model_dir / "m.model3.json"
+    before = config.read_bytes()
+    result = asyncio.run(live2d_router.update_emotion_mapping(
+        "m", _FakeRequest({"motions": {"happy": [ref]}, "expressions": {}})))
+    assert _status(result) == 400
+    result = asyncio.run(live2d_router.update_model_config(
+        "m", _FakeRequest({"FileReferences": {"Motions": {"Idle": [{"File": ref}]}}})))
+    assert _status(result) == 400
+    assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("stored", [[1], "x", 3])
+def test_non_object_stored_mapping_falls_back_to_derived(model_dir, stored):
+    config = {"Version": 3, "EmotionMapping": stored,
+              "FileReferences": {"Motions": {"Idle": [{"File": "motions/idle.motion3.json"}]}, "Expressions": []}}
+    _write(model_dir / "m.model3.json", config)
+    assert live2d_router.get_emotion_mapping("m")["config"] == {
+        "motions": {"Idle": ["motions/idle.motion3.json"]}, "expressions": {}}

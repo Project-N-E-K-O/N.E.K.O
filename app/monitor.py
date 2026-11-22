@@ -261,7 +261,8 @@ def get_emotion_mapping(model_name: str):
 
         # Prefer EmotionMapping; if absent, derive from FileReferences
         emotion_mapping = config_data.get('EmotionMapping') if isinstance(config_data, dict) else None
-        if not emotion_mapping:
+        # A stored mapping that is not an object (a corrupted file) is ignored like a missing one.
+        if not isinstance(emotion_mapping, dict) or not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
             # Unexpected shapes on disk are skipped, never a 500.
             file_refs = config_data.get('FileReferences') if isinstance(config_data, dict) else None

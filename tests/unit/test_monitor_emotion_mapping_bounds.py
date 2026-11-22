@@ -81,3 +81,10 @@ def test_unexpected_shapes_on_disk_do_not_500(model_dir, config, expected):
     result = monitor.get_emotion_mapping("m")
     assert getattr(result, "status_code", 200) == 200
     assert result["config"] == expected
+
+
+def test_non_object_stored_mapping_falls_back_to_derived(model_dir):
+    _write(model_dir / "m.model3.json", {"EmotionMapping": [1], "FileReferences": {
+        "Motions": {"Idle": [{"File": "motions/idle.motion3.json"}]}}})
+    assert monitor.get_emotion_mapping("m")["config"] == {
+        "motions": {"Idle": ["motions/idle.motion3.json"]}, "expressions": {}}
