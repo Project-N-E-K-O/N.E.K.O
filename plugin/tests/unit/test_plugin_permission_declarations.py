@@ -1449,6 +1449,7 @@ def test_cli_rejects_permissions_on_every_sdk_decorator(tmp_path):
         ("import multiprocessing\nmultiprocessing.Pool(2).map(print, [1])", "system.process:spawn"),
         ("from multiprocessing.pool import Pool\nPool(2)", "system.process:spawn"),
         ("import multiprocessing as mp\nmp.get_context('spawn').Process(target=print).start()", "system.process:spawn"),
+        ("import multiprocessing as mp\nctx = mp.get_context('spawn')\nctx.Pool(2)", "system.process:spawn"),
         ("from concurrent.futures import ProcessPoolExecutor\nProcessPoolExecutor().submit(print)", "system.process:spawn"),
         ("import os\nos.fork()", "system.process:spawn"),
         ("import os\nos.forkpty()", "system.process:spawn"),
@@ -1471,3 +1472,18 @@ def test_process_pool_executor_is_still_a_context_loss_blind_spot(tmp_path):
 def test_importing_multiprocessing_alone_is_a_weak_hint(tmp_path):
     report = _scan(tmp_path, "import multiprocessing\nN = multiprocessing.cpu_count()")
     assert _bases(report) == {"system.process:spawn": "import_only"}
+
+
+def test_choosing_a_multiprocessing_context_alone_is_not_direct_evidence(tmp_path):
+    report = _scan(
+        tmp_path,
+        "import multiprocessing as mp\nctx = mp.get_context('spawn')\nlock = ctx.Lock()\n",
+        '[permissions.require]\n"system.env:read" = { reason = "x" }\n',
+    )
+    assert _bases(report)["system.process:spawn"] == "import_only"
+    assert not [issue for issue in compare_declarations(report) if issue.severity == "error"]
+
+
+def test_urlretrieve_is_network_and_file_write_evidence(tmp_path):
+    report = _scan(tmp_path, "from urllib.request import urlretrieve\nurlretrieve('https://a', 'f')")
+    assert _bases(report) == {"system.network:connect": "resolved_call", "system.fs:write": "resolved_call"}

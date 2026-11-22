@@ -754,7 +754,9 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "multiprocessing.Process",
             "multiprocessing.Pool",
             "multiprocessing.pool.Pool",
-            "multiprocessing.get_context",
+            # A context alone starts nothing; only what is created on it.
+            "multiprocessing.get_context().Process",
+            "multiprocessing.get_context().Pool",
             "concurrent.futures.ProcessPoolExecutor",
             "concurrent.futures.process.ProcessPoolExecutor",
             "os.fork",
@@ -796,6 +798,8 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "shutil.copytree",
             "shutil.move",
             "shutil.rmtree",
+            # Saves the download to a file (a temporary one without a name).
+            "urllib.request.urlretrieve",
             "pathlib.Path().write_text",
             "pathlib.Path().write_bytes",
             "pathlib.Path().mkdir",
