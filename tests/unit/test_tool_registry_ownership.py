@@ -15,6 +15,7 @@ the name, then resume.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -222,6 +223,71 @@ async def test_register_does_not_overwrite_tool_another_source_registered_meanwh
         "role": "Alpha",
         "error": "tool 'x' already owned by source 'plugin:b' (cross-source overwrite refused)",
     }]
+    # No role accepted plugin:a's registration: its ledger record is withdrawn,
+    # so it neither replays over plugin:b nor blocks plugin:b's own refresh.
+    assert "x" not in {name for _, name in tr._remote_tool_ledger}
+    refresh = await tr.register_tool(
+        tr.ToolRegisterRequest(
+            name="x", description="v2", callback_url="http://127.0.0.1:9002/cb", source="plugin:b",
+        )
+    )
+    assert refresh["ok"] is True
+    assert mgr.tool_registry.get("x").metadata["source"] == "plugin:b"
+    assert tr._remote_tool_ledger[(None, "x")].tool.metadata["source"] == "plugin:b"
+
+
+@pytest.mark.asyncio
+async def test_global_register_refused_in_one_role_keeps_record_for_accepting_roles(monkeypatch):
+    tr._remote_tool_ledger.clear()
+    alpha = _PausingMgr("Alpha")
+    beta = _PausingMgr("Beta")
+    beta.release.set()
+    monkeypatch.setattr(tr, "get_session_manager", lambda: {"Alpha": alpha, "Beta": beta})
+    try:
+        pending = asyncio.create_task(
+            tr.register_tool(
+                tr.ToolRegisterRequest(
+                    name="x", description="", callback_url="http://127.0.0.1:9001/cb", source="plugin:a",
+                )
+            )
+        )
+        await alpha.paused.wait()
+        theirs = _tool("x", "plugin:b")
+        alpha.tool_registry.register(theirs)
+        alpha.release.set()
+        result = await pending
+
+        assert result["ok"] is True
+        assert result["affected_roles"] == ["Beta"]
+        assert alpha.tool_registry.get("x") is theirs
+        entry = tr._remote_tool_ledger[(None, "x")]
+        assert entry.tool.metadata["source"] == "plugin:a"
+        assert entry.excluded_roles == {"Alpha"}
+        # A rebuilt Alpha does not get plugin:a's tool replayed over plugin:b's slot.
+        fresh = SimpleNamespace(tool_registry=ToolRegistry())
+        assert tr.replay_remote_tools(fresh, "Alpha") == []
+        assert tr.replay_remote_tools(SimpleNamespace(tool_registry=ToolRegistry()), "Beta") == ["x"]
+    finally:
+        tr._remote_tool_ledger.clear()
+
+
+@pytest.mark.asyncio
+async def test_register_whose_sync_fails_keeps_its_ledger_record(mgr, monkeypatch):
+    class _SyncFails(_PausingMgr):
+        async def register_tool_and_sync(self, tool, *, replace=True, owner_check=None):
+            self.tool_registry.register(tool, replace=replace, owner_check=owner_check)
+            raise RuntimeError("session.update failed")
+
+    broken = _SyncFails("Alpha")
+    monkeypatch.setattr(tr, "get_session_manager", lambda: {"Alpha": broken})
+    result = await tr.register_tool(
+        tr.ToolRegisterRequest(
+            name="x", description="", callback_url="http://127.0.0.1:9001/cb", source="plugin:a",
+        )
+    )
+    assert result["ok"] is False
+    assert broken.tool_registry.get("x").metadata["source"] == "plugin:a"
+    assert (None, "x") in tr._remote_tool_ledger
 
 
 @pytest.mark.asyncio
