@@ -446,6 +446,9 @@ async def update_core_config(request: Request):
                 "success": False,
                 "error": "core_config.json 读取失败（文件可能已损坏），为避免覆盖现有配置，本次未保存",
             }
+        # Everything below (connectivity targets included) reads the current tier names;
+        # a partial update must see a file restored with the old ones the same way.
+        migrate_renamed_tier_fields(existing_core_cfg)
         core_cfg = deepcopy(existing_core_cfg)
 
         def _incoming_provider(field, error_message):

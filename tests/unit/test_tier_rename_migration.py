@@ -199,6 +199,30 @@ def test_save_from_a_page_opened_before_the_upgrade(config_manager, core_config_
 
 
 @pytest.mark.unit
+def test_partial_save_resolves_connectivity_for_slots_saved_under_old_names(
+    config_manager, core_config_router, monkeypatch,
+):
+    # CodeRabbit: a file restored with the old names, then a save that leaves the model
+    # slots out. The provider-URL check must still see the slots under the new names.
+    _write_core_config(config_manager, dict(_OLD_SLOTS, emotionModelProvider='openai', summaryModelProvider='glm'))
+    seen = {}
+
+    async def _capture(core_cfg, *args, **kwargs):
+        seen.update(core_cfg)
+
+    monkeypatch.setattr(core_config_router, '_auto_resolve_provider_urls_for_save', _capture)
+
+    response = asyncio.run(core_config_router.update_core_config(_FakeRequest({
+        'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True,
+    })))
+
+    assert response['success'] is True
+    assert seen['recognitionModelProvider'] == 'openai'
+    assert seen['memoryModelProvider'] == 'glm'
+    assert _no_old_names(seen)
+
+
+@pytest.mark.unit
 def test_a_provider_file_with_old_field_names_is_read_under_the_new_ones(tmp_path, monkeypatch):
     # Greptile: the connectivity probe and the settings page read the raw profile, not
     # the converted one, so the old names must be normalized where the file is loaded.
