@@ -295,6 +295,18 @@
     function _knownServerKeyRevisionsSnapshot() {
         return Object.assign({}, _knownServerKeyRevisions);
     }
+    // Whether another window's per-key write token for `key` was confirmed
+    // by the server at a revision older than one this window already knows
+    // for that key: the server has since superseded that write, so the value
+    // it travels with is stale whatever its token order. Shared by the
+    // storage listener's per-key checks and _unseenSharedRevocationToken.
+    function _keyTokenPredatesServerFloor(key, token) {
+        const localServerRevision = _knownServerKeyRevisions[key];
+        return !!(token
+            && Number.isInteger(token.confirmedRevision)
+            && Number.isInteger(localServerRevision)
+            && token.confirmedRevision < localServerRevision);
+    }
     function _confirmSharedKeyWrites(
         payload,
         serverSettings,
@@ -1254,10 +1266,10 @@
         if (!_sharedWriteTokenOutranks(token, _knownSharedKeyWrites[key])) return null;
         // Same server-floor check as the listener: a write the server has
         // since superseded is not a pending revocation.
-        const keyToken = meta.knownKeyWrites[key];
-        if (keyToken && Number.isInteger(keyToken.confirmedRevision)
-            && Number.isInteger(_knownServerKeyRevisions[key])
-            && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return null;
+        if (_keyTokenPredatesServerFloor(
+            key,
+            meta.knownKeyWrites[key]
+        )) return null;
         return token;
     }
 
@@ -2799,18 +2811,10 @@
                         key
                     )) continue;
                     const localToken = _knownSharedKeyWrites[key];
-                    const incomingToken = meta.knownKeyWrites[key];
-                    const localServerRevision =
-                        _knownServerKeyRevisions[key];
-                    const incomingPredatesServerFloor =
-                        Number.isInteger(localServerRevision)
-                        && incomingToken
-                        && Number.isInteger(
-                            incomingToken.confirmedRevision
-                        )
-                        && incomingToken.confirmedRevision
-                            < localServerRevision;
-                    if (incomingPredatesServerFloor
+                    if (_keyTokenPredatesServerFloor(
+                        key,
+                        meta.knownKeyWrites[key]
+                    )
                         || (localToken
                             && !_sharedWriteTokenOutranks(meta, localToken)
                             && !_sharedWriteTokensEqual(meta, localToken))) {
@@ -2858,7 +2862,15 @@
                     // The merge envelope may be newer while this particular
                     // field still predates an explicit write already accepted
                     // here. Apply only when the sender's per-key provenance is
-                    // at least as new as ours.
+                    // at least as new as ours, and the server has not since
+                    // confirmed a newer value for the key: a stale window's
+                    // unrelated save can carry an old value under the same
+                    // token this window holds.
+                    if (_keyTokenPredatesServerFloor(key, mergeToken)) {
+                        if (incoming === settings) incoming = Object.assign({}, settings);
+                        delete incoming[key];
+                        continue;
+                    }
                     if (localToken
                         && !_sharedWriteTokenOutranks(mergeToken, localToken)
                         && !(mergeToken
