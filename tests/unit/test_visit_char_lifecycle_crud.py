@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -153,6 +154,55 @@ async def test_case_only_rename_keeps_character_identity(env):
     status, body = await _rename(cm, "Old", "OLD")
     assert status == 200 and body["success"]
     assert _uid(cm, "OLD") == uid
+
+
+@pytest.mark.parametrize("mode", ["both", "meta_only"])
+async def test_case_only_rename_migrates_card_face_and_meta_without_conflict_backup(env, mode):
+    cm, _, _ = env
+    uid = _uid(cm, "Old")
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    old_meta = cm.card_face_meta_path("Old")
+    new_meta = cm.card_face_meta_path("OLD")
+    meta_bytes = b'{"author":"tester"}'
+    old_meta.write_bytes(meta_bytes)
+    if not new_meta.exists():
+        # Exercise the same-entry branch on case-sensitive Linux CI as well as macOS/Windows.
+        os.link(old_meta, new_meta)
+
+    old_face = cm.card_faces_dir / "Old.png"
+    new_face = cm.card_faces_dir / "OLD.png"
+    face_bytes = b"fake-png-bytes"
+    if mode == "both":
+        old_face.write_bytes(face_bytes)
+        if not new_face.exists():
+            os.link(old_face, new_face)
+
+    status, body = await _rename(cm, "Old", "OLD")
+    assert status == 200 and body["success"] is True
+    assert _uid(cm, "OLD") == uid
+
+    names = set(os.listdir(cm.card_faces_dir))
+    assert not any("conflict-" in name for name in names)
+    assert new_meta.name in names
+    assert old_meta.name not in names or new_meta.samefile(old_meta)
+    assert new_meta.read_bytes() == meta_bytes
+    if mode == "both":
+        assert new_face.name in names
+        assert new_face.read_bytes() == face_bytes
+
+
+async def test_rename_keeps_conflict_backup_for_distinct_existing_card_face(env):
+    cm, _, _ = env
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    (cm.card_faces_dir / "Old.png").write_bytes(b"old-face")
+    (cm.card_faces_dir / "New.png").write_bytes(b"preexisting-new-face")
+
+    status, body = await _rename(cm, "Old", "New")
+    assert status == 200 and body["success"] is True
+    assert (cm.card_faces_dir / "New.png").read_bytes() == b"old-face"
+    backups = [p for p in cm.card_faces_dir.iterdir() if p.name.startswith("New.png.conflict-") and p.name.endswith(".bak")]
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"preexisting-new-face"
 
 
 async def test_rename_refuses_shared_source_memory_before_release(tmp_path):

@@ -73,10 +73,12 @@ from utils.character_memory import (
     find_character_name_collision,
     find_character_shared_memory_owner,
     list_character_memory_paths,
+    paths_refer_to_same_entry,
     rename_character_memory_storage,
     release_character_recent_transaction,
     rollback_character_recent_delete,
     rollback_character_recent_rename,
+    two_step_samefile_rename,
 )
 from utils.config_manager import (
     ensure_catgirl_character_id,
@@ -1186,6 +1188,27 @@ async def _visit_name_refusal(config_manager, name: str, label: str):
                          'error': f'这个名字的串门数据还在整理（同名角色刚被删除或改名），请稍后再使用这个{label}'}, status_code=409)
 
 
+def _migrate_renamed_card_file_sync(
+    old_path: Path,
+    new_path: Path,
+    backup_path: Path,
+) -> str:
+    """Migrate a character cover or metadata file without self-backing-up same-entry case renames."""
+    if not old_path.exists():
+        return "none"
+    if paths_refer_to_same_entry(old_path, new_path):
+        if old_path.name != new_path.name:
+            two_step_samefile_rename(old_path, new_path)
+            return "samefile"
+        return "none"
+    if new_path.exists():
+        new_path.rename(backup_path)
+        old_path.rename(new_path)
+        return "backup_and_rename"
+    old_path.rename(new_path)
+    return "rename"
+
+
 async def _rename_catgirl_transaction(
     _config_manager, session_manager, characters, old_name: str, new_name: str, is_current_catgirl: bool,
     *, sync_commit=None,
@@ -1401,19 +1424,22 @@ async def _rename_catgirl_transaction(
             # Migrate cover PNG and sidecar JSON within the same transaction.
             from datetime import datetime as _dt
             _ts = _dt.now().strftime('%Y%m%d%H%M%S')
-            if old_face.exists():
-                if new_face.exists():
-                    backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
-                    await _await_thread_mutation(new_face.rename, backup_face)
-                    logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
-                await _await_thread_mutation(old_face.rename, new_face)
+            backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
+            face_outcome = await _await_thread_mutation(
+                _migrate_renamed_card_file_sync, old_face, new_face, backup_face,
+            )
+            if face_outcome == "backup_and_rename":
+                logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
+            if face_outcome != "none":
                 logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
-            if old_meta.exists():
-                if new_meta.exists():
-                    backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
-                    await _await_thread_mutation(new_meta.rename, backup_meta)
-                    logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
-                await _await_thread_mutation(old_meta.rename, new_meta)
+
+            backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
+            meta_outcome = await _await_thread_mutation(
+                _migrate_renamed_card_file_sync, old_meta, new_meta, backup_meta,
+            )
+            if meta_outcome == "backup_and_rename":
+                logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
+            if meta_outcome != "none":
                 logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
             memory_server_reloaded = await notify_memory_server_reload(

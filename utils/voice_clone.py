@@ -577,9 +577,9 @@ class QwenVoiceCloneClient:
                 json={"model": "voice-enrollment", "input": {"action": action, **fields}},
                 timeout=60,
             )
-            if response.status_code in (408, 504):
+            if response.status_code == 408 or response.status_code >= 500:
                 raise QwenVoiceCloneError(
-                    f"音色注册超时 (ResponseTimeout: HTTP {response.status_code})"
+                    f"音色注册超时，远端状态未知 (ResponseTimeout: HTTP {response.status_code})"
                 )
             if response.status_code == 415:
                 raise QwenVoiceCloneError("无法下载音频文件 (Download audio failed: HTTP 415)")

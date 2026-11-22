@@ -6744,6 +6744,17 @@ async def test_the_rollback_actually_re_retires_the_absent_name(tmp_path):
         assert all("Back" not in store._retired for store in stores)
 
 
+def _seed_source_character_registry(cm, name: str = "Source") -> None:
+    cm.save_characters(
+        {
+            "当前猫娘": name,
+            "猫娘": {name: {"_reserved": {"character_id": "character_" + "1" * 32}}},
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+
 @pytest.mark.unit
 def test_a_failed_rename_restores_the_cache_lifecycle(tmp_path):
     """A raise partway through must not strand either name.
@@ -6758,6 +6769,7 @@ def test_a_failed_rename_restores_the_cache_lifecycle(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     with _isolated_sidecar_stores(tmp_path) as stores:
         # The target name was deleted earlier, so it is retired.
         character_memory.retire_character_runtime_caches("Target")
@@ -6947,6 +6959,7 @@ def test_a_rename_fences_the_target_against_its_deleted_identity(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     def detected(path):
@@ -7080,6 +7093,7 @@ def test_the_rename_fence_covers_the_whole_merge(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     def detected(path):
@@ -7184,6 +7198,7 @@ def test_a_failed_rename_releases_the_write_fence(tmp_path):
     from utils.character_memory import is_character_write_fenced
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
@@ -7245,6 +7260,7 @@ def test_a_late_source_write_does_not_leave_the_old_directory_behind(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
@@ -7928,6 +7944,77 @@ def test_f0064_rename_refuses_shared_source_directory(tmp_path):
     moved = character_memory.rename_character_memory_storage(cm, "other", "OtherNew")
     assert moved["runtime_dir"] == memory_root / "OtherNew"
     assert (memory_root / "OtherNew" / "facts.json").read_text(encoding="utf-8") == '["other-fact"]'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("failure_mode", ["corrupt_json", "unreadable", "missing"])
+def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable(
+    tmp_path, monkeypatch, failure_mode
+):
+    """Both rename and delete refuse to proceed when authoritative character config cannot be read."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True)
+    (neko_upper / "facts.json").write_text('["shared-fact"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        neko_lower.symlink_to(neko_upper, target_is_directory=True)
+    assert neko_lower.samefile(neko_upper)
+
+    config_path = Path(cm.get_runtime_config_path("characters.json"))
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+        cm._characters_dirty = False
+
+    if failure_mode == "corrupt_json":
+        config_path.write_text("{corrupt", encoding="utf-8")
+    elif failure_mode == "missing":
+        config_path.unlink()
+    else:
+        def _deny_load(*_args, **_kwargs):
+            raise PermissionError("characters.json unreadable")
+
+        monkeypatch.setattr(cm, "load_characters", _deny_load)
+
+    with pytest.raises((OSError, ValueError)):
+        character_memory.rename_character_memory_storage(cm, "neko", "NewNeko")
+    assert not (memory_root / "NewNeko").exists()
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+
+    with pytest.raises((OSError, ValueError)):
+        character_memory.delete_character_memory_storage(cm, "neko")
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+    # Recent file locks must not be leaked on fail-closed refusal: acquiring again succeeds immediately.
+    acquired = threading.Event()
+
+    def _acquire():
+        with character_memory.recent_file_locks(
+            character_memory.list_character_recent_paths(cm, "neko"),
+        ):
+            acquired.set()
+
+    locker = threading.Thread(target=_acquire, daemon=True)
+    locker.start()
+    assert acquired.wait(1.0)
+    locker.join(1.0)
+
 
 
 

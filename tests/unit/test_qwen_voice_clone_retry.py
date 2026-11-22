@@ -152,6 +152,9 @@ async def test_download_failed_still_retries_up_to_max_retries(monkeypatch):
     ("mode", "expected_marker"),
     [
         ("http_408", "超时"),
+        ("http_500_json", "超时"),
+        ("http_502_html", "超时"),
+        ("http_503_html", "超时"),
         ("http_504", "超时"),
         ("transport_timeout", "超时"),
         ("json_timeout", "超时"),
@@ -168,12 +171,18 @@ def test_create_voice_preserves_direct_link_chinese_classification_markers(monke
     def post(endpoint, *, headers, json, timeout):
         if mode == "http_408":
             return httpx.Response(408, text="timeout")
+        if mode == "http_500_json":
+            return httpx.Response(500, json={"code": "InternalError", "message": "server error"})
+        if mode == "http_502_html":
+            return httpx.Response(502, text="<html><body>502 Bad Gateway</body></html>")
+        if mode == "http_503_html":
+            return httpx.Response(503, text="<html><body>503 Service Unavailable</body></html>")
         if mode == "http_504":
             return httpx.Response(504, text="gateway timeout")
         if mode == "transport_timeout":
             raise httpx.ReadTimeout("read timed out")
         if mode == "json_timeout":
-            return httpx.Response(500, json={"code": "ResponseTimeout", "message": "upstream timeout"})
+            return httpx.Response(200, json={"code": "ResponseTimeout", "message": "upstream timeout"})
         if mode == "http_415":
             return httpx.Response(415, text="unsupported media")
         return httpx.Response(400, json={"code": "Audio.DownloadFailed", "message": "Download audio failed"})
@@ -252,4 +261,59 @@ async def test_clone_voice_retries_http_415_and_reconciles_http_504(monkeypatch)
     assert adopted_id == "v-504-reconciled"
     assert adopted_req is None
     assert calls.count("create_voice") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "body"),
+    [
+        (502, "<html><body>502 Bad Gateway</body></html>"),
+        (503, "<html><body>503 Service Unavailable</body></html>"),
+        (500, '{"code": "InternalError", "message": "server error"}'),
+    ],
+)
+@pytest.mark.parametrize("remote_created", [True, False])
+async def test_clone_voice_reconciles_gateway_5xx_without_duplicate_create(
+    monkeypatch, status_code, body, remote_created
+):
+    """Gateway 5xx / HTML responses enter read-only reconciliation and never blindly repeat create_voice."""
+    import httpx
+
+    client = _make_client()
+    audio_url = "https://example.test/audio.wav"
+    model = "cosyvoice-v3-plus"
+    calls = []
+
+    async def upload(*args):
+        return audio_url
+
+    def post(endpoint, *, headers, json, timeout):
+        fields = json["input"]
+        action = fields["action"]
+        calls.append(action)
+        if action == "create_voice":
+            return httpx.Response(status_code, text=body)
+        if action == "list_voice":
+            rows = []
+            if calls.count("list_voice") == 2 and remote_created:
+                rows.append({"voice_id": "v-5xx-reconciled", "status": "OK"})
+            return httpx.Response(200, json={"output": {"voice_list": rows}})
+        assert action == "query_voice"
+        return httpx.Response(
+            200,
+            json={"output": {"resource_link": audio_url, "target_model": model, "status": "OK"}},
+        )
+
+    monkeypatch.setattr(client, "upload_file", upload)
+    monkeypatch.setattr(httpx, "post", post)
+    result = client.clone_voice(
+        io.BytesIO(b"audio"), "sample.wav", "neko01", [], target_model=model,
+    )
+    if remote_created:
+        assert await result == ("v-5xx-reconciled", audio_url, None)
+    else:
+        with pytest.raises(QwenVoiceCloneError, match="已停止重试"):
+            await result
+    assert calls.count("create_voice") == 1
+    assert calls.count("list_voice") == 2
 

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import shutil
@@ -390,11 +391,35 @@ def _paths_refer_to_same_entry(source_path: Path, target_path: Path) -> bool:
         return False
 
 
-def _iter_registered_catgirl_names(config_manager) -> list[str]:
+def _iter_registered_catgirl_names(
+    config_manager,
+    *,
+    require_authoritative: bool = False,
+) -> list[str]:
     """Return configured character names if ``config_manager.load_characters`` is available."""
     load_characters = getattr(config_manager, "load_characters", None)
     if not callable(load_characters):
         return []
+    if require_authoritative:
+        accepts_authoritative = False
+        try:
+            params = inspect.signature(load_characters).parameters.values()
+            accepts_authoritative = any(
+                param.name == "require_authoritative"
+                or param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params
+            )
+        except (TypeError, ValueError):
+            accepts_authoritative = False
+        characters = (
+            load_characters(require_authoritative=True)
+            if accepts_authoritative
+            else load_characters()
+        )
+        if not isinstance(characters, dict) or not isinstance(characters.get("猫娘"), dict):
+            raise ValueError("character_config_not_authoritative: invalid catgirl registry")
+        catgirls = characters["猫娘"]
+        return [name for name in catgirls.keys() if isinstance(name, str) and name]
     try:
         characters = load_characters()
     except Exception:
@@ -423,7 +448,7 @@ def _find_shared_memory_source(
     names = (
         [str(name) for name in existing_names if isinstance(name, str) and name]
         if existing_names is not None
-        else _iter_registered_catgirl_names(config_manager)
+        else _iter_registered_catgirl_names(config_manager, require_authoritative=True)
     )
     roots = iter_character_memory_roots(config_manager)
     source_paths = list_character_memory_paths(config_manager, character_name)
@@ -523,6 +548,10 @@ def _two_step_samefile_rename(source_path: Path, target_path: Path) -> bool:
             )
         raise
     return True
+
+
+paths_refer_to_same_entry = _paths_refer_to_same_entry
+two_step_samefile_rename = _two_step_samefile_rename
 
 
 def _move_path(source_path: Path, target_path: Path) -> bool:
@@ -724,7 +753,15 @@ def rename_character_memory_storage(
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     roots = iter_character_memory_roots(config_manager)
     if old_name != new_name:
-        shared_source = _find_shared_memory_source(config_manager, old_name)
+        registered_names = _iter_registered_catgirl_names(
+            config_manager,
+            require_authoritative=True,
+        )
+        shared_source = _find_shared_memory_source(
+            config_manager,
+            old_name,
+            existing_names=registered_names,
+        )
         if shared_source is not None:
             shared_path, co_owner = shared_source
             raise FileExistsError(
@@ -735,13 +772,14 @@ def rename_character_memory_storage(
             config_manager,
             new_name,
             exclude_names=(old_name,),
+            existing_names=registered_names,
         )
         if colliding_name is not None:
             raise FileExistsError(
                 f"Refusing to rename memory storage {old_name!r} -> {new_name!r}: "
                 f"target path {runtime_target_dir} collides with existing character {colliding_name!r}"
             )
-        for other_name in _iter_registered_catgirl_names(config_manager):
+        for other_name in registered_names:
             if other_name == old_name:
                 continue
             for base_dir in dict.fromkeys([runtime_target_dir.parent, *roots]):
@@ -1066,9 +1104,16 @@ def _find_co_owner_for_memory_path(
     config_manager,
     character_name: str,
     entry_path: Path,
+    *,
+    existing_names: Iterable[str] | None = None,
 ) -> str | None:
     """Return another configured character name sharing ``entry_path`` on disk."""
-    for other_name in _iter_registered_catgirl_names(config_manager):
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else _iter_registered_catgirl_names(config_manager, require_authoritative=True)
+    )
+    for other_name in names:
         if other_name == character_name:
             continue
         for other_path in list_character_memory_paths(config_manager, other_name):
@@ -1081,10 +1126,17 @@ def _is_recent_path_shared_with_other(
     config_manager,
     character_name: str,
     recent_path: Path,
+    *,
+    existing_names: Iterable[str] | None = None,
 ) -> bool:
     """Return True if another configured character owns a co-located recent path."""
     recent_key = os.path.normcase(os.path.abspath(os.fspath(recent_path)))
-    for other_name in _iter_registered_catgirl_names(config_manager):
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else _iter_registered_catgirl_names(config_manager, require_authoritative=True)
+    )
+    for other_name in names:
         if other_name == character_name:
             continue
         for other_recent in list_character_recent_paths(config_manager, other_name):
@@ -1104,6 +1156,10 @@ def delete_character_memory_storage(
     keep_recent_locks: bool = False,
     recent_transaction: dict[str, Any] | None = None,
 ) -> list[Path] | tuple[list[Path], dict[str, Any]]:
+    registered_names = _iter_registered_catgirl_names(
+        config_manager,
+        require_authoritative=True,
+    )
     transaction = recent_transaction or begin_character_recent_transaction(
         config_manager, character_name,
     )
@@ -1111,7 +1167,12 @@ def delete_character_memory_storage(
     unshared_recent_candidates = [
         recent_path
         for recent_path in recent_candidates
-        if not _is_recent_path_shared_with_other(config_manager, character_name, recent_path)
+        if not _is_recent_path_shared_with_other(
+            config_manager,
+            character_name,
+            recent_path,
+            existing_names=registered_names,
+        )
     ]
     redirect_snapshot, deletion_scope, deletion_snapshot = (
         fence_recent_deletions_and_clear_redirects(unshared_recent_candidates)
@@ -1125,7 +1186,12 @@ def delete_character_memory_storage(
         }
         removed_paths: list[Path] = []
         for entry_path in list_character_memory_paths(config_manager, character_name):
-            co_owner = _find_co_owner_for_memory_path(config_manager, character_name, entry_path)
+            co_owner = _find_co_owner_for_memory_path(
+                config_manager,
+                character_name,
+                entry_path,
+                existing_names=registered_names,
+            )
             if co_owner is not None:
                 logger.warning(
                     "[CharacterMemory] skipping deletion of %s for %r because it is shared with character %r",
