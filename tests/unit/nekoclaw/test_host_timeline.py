@@ -285,7 +285,7 @@ async def test_a_child_started_and_returned(ledger):
     parent = await _working(ledger, main)
     child_session = await _session(ledger, "kid", kind="child")
     child = await _working(ledger, child_session, "part", source="task_agent", parent_id=parent.id, name="agent-1")
-    await ledger.append_event(parent.id, "subagent_started", {"name": "agent-1", "commission_id": child.id})
+    await ledger.append_event(parent.id, "subagent_started", {"name": "agent-1", "commission_id": child.id, "preset": "scout"})
     assert (await ledger.transition(child.id, "failed", reason="no luck")).applied
 
     entries = await _all(ledger)
@@ -297,6 +297,7 @@ async def test_a_child_started_and_returned(ledger):
     [started] = _of(entries, "child_started")
     assert (started["commission_id"], started["text"]) == (parent.id, "agent-1")
     assert started["peer"] == {"type": "session", "session_id": child_session.id, "commission_id": child.id}
+    assert started["detail"] == {"preset": "scout"}
     [returned] = _of(entries, "child_returned")
     assert (returned["commission_id"], returned["detail"], returned["text"]) == (child.id, {"outcome": "failed"}, "no luck")
     assert returned["peer"] == {"type": "session", "session_id": main.id, "commission_id": parent.id}
@@ -460,7 +461,7 @@ async def test_a_malformed_record_does_not_stop_the_timeline(ledger):
     await _raw_event(ledger, commission.id, "told", "[1]")
     await _raw_event(ledger, commission.id, "status", "not json")
     await ledger.append_event(commission.id, "told", {"text": 5})
-    await ledger.append_event(commission.id, "subagent_started", {"name": ["x"], "commission_id": [1]})
+    await ledger.append_event(commission.id, "subagent_started", {"name": ["x"], "commission_id": [1], "preset": 5})
     await ledger.append_event(commission.id, "queued", {"ahead": True, "behind": [1]})
     await ledger.append_event(commission.id, "queued", {"ahead": "3"})
     await ledger.append_event(commission.id, "carried_on_in_copy", {"session_id": 7, "of": [main.id]})
@@ -477,6 +478,7 @@ async def test_a_malformed_record_does_not_stop_the_timeline(ledger):
     nobody = {"type": "session", "session_id": None, "commission_id": None}
     first, second = _of(entries, "child_started")
     assert first["peer"] == second["peer"] == nobody and second["text"] == ""
+    assert first["detail"] == second["detail"] == {"preset": None}
     assert [entry["text"] for entry in _of(entries, "told")] == ["", ""]
     [unreadable] = _of(entries, "ended")
     assert unreadable["detail"] == {"outcome": ""}

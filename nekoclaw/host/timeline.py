@@ -323,6 +323,8 @@ def _event_entry(
         child = payload.get("commission_id")
         kind, text = "child_started", _text(payload.get("name"))
         peer = _session(sessions.get(child) if isinstance(child, str) else None, child)
+        # Its preset (the role it was started in), when one was chosen.
+        detail = {"preset": _text(payload.get("preset")) or None}
     elif kind == "carried_on_in_copy":
         kind, peer = "into_copy", _session(payload.get("of"))
         detail = {"copy_session_id": payload.get("session_id") if isinstance(payload.get("session_id"), str) else None}

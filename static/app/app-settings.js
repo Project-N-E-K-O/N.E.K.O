@@ -1194,8 +1194,39 @@
         }
     }
 
-    // Another window may have turned privacy mode on before its storage event
-    // reached this window. Returns that revocation's write token, or null.
+    // Whether a server-merge snapshot's value for `key` (the key is in
+    // meta.serverAuthoritativeKeys and meta.serverRevision is set) is older
+    // than what this window already holds: an older server revision, an
+    // explicit local write the server has not confirmed yet, or one it
+    // confirmed at a later revision. The storage listener drops such values;
+    // sharedSwitchRevokedElsewhere uses the same rule.
+    function _serverSnapshotIsOlderForKey(meta, key) {
+        const localToken = _knownSharedKeyWrites[key];
+        const mergeToken = meta.knownKeyWrites[key];
+        let confirmedRevision = localToken
+            && Number.isInteger(localToken.confirmedRevision)
+            ? localToken.confirmedRevision
+            : null;
+        if (_sharedWriteTokensEqual(localToken, mergeToken)
+            && Number.isInteger(mergeToken.confirmedRevision)) {
+            confirmedRevision = Math.max(
+                Number.isInteger(confirmedRevision) ? confirmedRevision : 0,
+                mergeToken.confirmedRevision
+            );
+        }
+        const localServerRevision = _knownServerKeyRevisions[key];
+        return !!((Number.isInteger(_conversationSettingsRevision)
+                && meta.serverRevision < _conversationSettingsRevision)
+            || (localToken && !Number.isInteger(confirmedRevision))
+            || (Number.isInteger(confirmedRevision)
+                && meta.serverRevision < confirmedRevision)
+            || (Number.isInteger(localServerRevision)
+                && meta.serverRevision < localServerRevision));
+    }
+
+    // Another window may have turned a shared switch off (for screen consent:
+    // turned privacy mode on) before its storage event reached this window.
+    // Returns that write's token, or null.
     // Read-only. Only a revocation carrying the key's own write token counts
     // (the explicit write, or the knownKeyWrites token that window's later
     // unrelated saves keep carrying) and only when it is newer than what this
@@ -1206,8 +1237,7 @@
     // the revoking window's own event, arriving next, settles the same way.
     // An incidental stale "false" another window copied along in an
     // unrelated save is not a choice and is ignored.
-    function _unseenVisionRevocationToken() {
-        const key = 'proactiveVisionEnabled';
+    function _unseenSharedRevocationToken(key) {
         let stored = null;
         try {
             const raw = localStorage.getItem('project_neko_settings');
@@ -1229,6 +1259,34 @@
             && Number.isInteger(_knownServerKeyRevisions[key])
             && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return null;
         return token;
+    }
+
+    function _unseenVisionRevocationToken() {
+        return _unseenSharedRevocationToken('proactiveVisionEnabled');
+    }
+
+    // Whether another window turned this shared boolean setting off and this
+    // window has not received that write yet: an explicit write carrying the
+    // key's newer write token, or a server value another window merged (the
+    // key is server-authoritative in that snapshot and not older than what
+    // this window holds, the storage listener's rule). A stale "false" copied
+    // along in an unrelated save is neither and does not count.
+    function sharedSwitchRevokedElsewhere(key) {
+        if (_SHARED_SETTINGS_KEYS.indexOf(key) === -1) return false;
+        if (_unseenSharedRevocationToken(key)) return true;
+        let stored = null;
+        try {
+            const raw = localStorage.getItem('project_neko_settings');
+            stored = raw ? JSON.parse(raw) : null;
+        } catch (_) {
+            return false;
+        }
+        if (!stored || stored[key] !== false) return false;
+        const meta = _readSharedWriteMeta(stored);
+        if (!meta || meta.writerId === _SHARED_WRITER_ID) return false;
+        if (!Number.isInteger(meta.serverRevision)
+            || meta.serverAuthoritativeKeys.indexOf(key) === -1) return false;
+        return !_serverSnapshotIsOlderForKey(meta, key);
     }
 
     // Live screen consent this window reports to the backend and acts on
@@ -2789,36 +2847,7 @@
                         Number.isInteger(meta.serverRevision)
                         && meta.serverAuthoritativeKeys.indexOf(key) !== -1;
                     if (serverAuthoritative) {
-                        let confirmedRevision = localToken
-                            && Number.isInteger(localToken.confirmedRevision)
-                            ? localToken.confirmedRevision
-                            : null;
-                        if (_sharedWriteTokensEqual(localToken, mergeToken)
-                            && Number.isInteger(
-                                mergeToken.confirmedRevision
-                            )) {
-                            confirmedRevision = Math.max(
-                                Number.isInteger(confirmedRevision)
-                                    ? confirmedRevision
-                                    : 0,
-                                mergeToken.confirmedRevision
-                            );
-                        }
-                        const localServerRevision =
-                            _knownServerKeyRevisions[key];
-                        const serverSnapshotIsOlder =
-                            (Number.isInteger(_conversationSettingsRevision)
-                                && meta.serverRevision
-                                    < _conversationSettingsRevision)
-                            || (localToken
-                                && !Number.isInteger(confirmedRevision))
-                            || (Number.isInteger(confirmedRevision)
-                                && meta.serverRevision
-                                    < confirmedRevision)
-                            || (Number.isInteger(localServerRevision)
-                                && meta.serverRevision
-                                    < localServerRevision);
-                        if (serverSnapshotIsOlder) {
+                        if (_serverSnapshotIsOlderForKey(meta, key)) {
                             if (incoming === settings) {
                                 incoming = Object.assign({}, settings);
                             }
@@ -2841,6 +2870,7 @@
                 }
             }
             const pendingKeysToReassert = [];
+            const supersededPendingKeys = [];
             if (meta) {
                 // Keep this as for...of: static listener-contract tests slice
                 // at the first callback terminator.
@@ -2856,13 +2886,26 @@
                             || _sharedWriteTokenOutranks(meta, localToken)
                             || (meta.writeId === localToken.writeId
                                 && meta.writerId === localToken.writerId));
-                    if (incomingCanSupersede) continue;
+                    if (incomingCanSupersede) {
+                        // The other window's newer edit replaces this
+                        // window's unsaved one, so it is no longer this
+                        // window's to send: the baseline rolls to it below.
+                        // Left pending, the next unrelated save would send the
+                        // received value out as this window's explicit write.
+                        if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+                            supersededPendingKeys.push(key);
+                        }
+                        continue;
+                    }
                     if (!Object.prototype.hasOwnProperty.call(settings, key)) continue;
                     if (Object.prototype.hasOwnProperty.call(incoming, key)) {
                         if (incoming === settings) incoming = Object.assign({}, settings);
                         delete incoming[key];
                     }
                     pendingKeysToReassert.push(key);
+                }
+                for (const key of supersededPendingKeys) {
+                    _pendingSettingsKeys.delete(key);
                 }
             }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
@@ -2928,14 +2971,26 @@
             // pending settings GET skips it as user-owned. A received value
             // laundered into user intent that way can pin a whole window to a
             // stale ASR route and POST it back over the server's. Keys this
-            // window really did touch stay dirty and keep their authority.
+            // window really did touch stay dirty and keep their authority:
+            // _dirtySettingsKeys is not changed here.
+            // The roll covers dirty keys too. An edit this window already
+            // saved (dirty, no longer pending) does not make a later value
+            // from another window this window's own: without the roll, the next
+            // unrelated save re-marks the key pending and sends the received
+            // value out as a fresh explicit write (new write token, kept over
+            // the server value on a 412), overwriting a newer change the other
+            // window made in the meantime. An unsaved change here (still
+            // pending) was dropped from `incoming` above and is reasserted
+            // (unless a newer explicit write from the other window superseded
+            // it), so it is not rolled: the same rule as the save-time adoption
+            // (_adoptUnseenVisionRevocation), where this window's unsaved value
+            // stays and a value it merely received is never sent out as its own.
             // for...of rather than a forEach callback on purpose: the
             // callback's closing punctuation would truncate the listener slice
             // that test_cross_window_asr_flip_marks_hydration_and_asr_dirty
             // extracts by string split.
             if (_settingsBaseline) {
                 for (const key of _SHARED_SETTINGS_KEYS) {
-                    if (_dirtySettingsKeys.has(key)) continue;
                     if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
                     _settingsBaseline[key] = S[key];
                 }
@@ -3129,6 +3184,7 @@
 
     mod.saveSettings = saveSettings;
     mod.visionConsentForBackend = visionConsentForBackend;
+    mod.sharedSwitchRevokedElsewhere = sharedSwitchRevokedElsewhere;
     mod.loadSettings = loadSettings;
     mod.syncSettingsToServer = syncSettingsToServer;
     mod.getConversationSettings = getConversationSettings;

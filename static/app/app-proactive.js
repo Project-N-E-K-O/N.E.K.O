@@ -152,6 +152,24 @@
         return true;
     }
 
+    // Switch rule for the trigger gate (canTriggerProactively). Unlike
+    // isSwitchOnNow it ignores a stale "false" another window copied along in
+    // an unrelated save: the listener rejects that copy, so no later event
+    // would correct it, and a failed trigger check stops scheduling until the
+    // next save. Only this window's value or another window's explicit
+    // write (with its write token, appSettings.sharedSwitchRevokedElsewhere)
+    // turns it off. Without appSettings, falls back to isSwitchOnNow.
+    function isTriggerSwitchOnNow(key) {
+        if (!S[key]) return false;
+        var settingsApi = window.appSettings;
+        if (settingsApi && typeof settingsApi.sharedSwitchRevokedElsewhere === 'function') {
+            try {
+                return !settingsApi.sharedSwitchRevokedElsewhere(key);
+            } catch (_) { }
+        }
+        return isSwitchOnNow(key);
+    }
+
     // Screen consent alone, shared by text-chat vision and stream acquisition;
     // the speech gate above may add conditions on top of it. Both this
     // window's value and the latest saved setting must allow it, so a
@@ -171,6 +189,7 @@
         return canProactiveVisionRunDuringSpeech();
     }
     mod.holdsProactiveVisionStream = holdsProactiveVisionStream;
+    mod.isVisionConsentHeldNow = isVisionConsentHeldNow;
     mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
 
     // Also bumped when Proactive Chat or its Screen Share option takes vision
@@ -838,8 +857,9 @@
             return false;
         }
 
-        // 必须开启主动搭话
-        if (!S.proactiveChatEnabled) {
+        // 必须开启主动搭话。Another window may have turned it off before its
+        // storage event reached this one (see isTriggerSwitchOnNow).
+        if (!isTriggerSwitchOnNow('proactiveChatEnabled')) {
             return false;
         }
 
@@ -856,7 +876,10 @@
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
-            return isProactiveVisionEnabledNow();
+            // Screen consent and the Screen Share option, each turned off by
+            // this window or explicitly by another one (isTriggerSwitchOnNow).
+            return isTriggerSwitchOnNow('proactiveVisionEnabled')
+                && isTriggerSwitchOnNow('proactiveVisionChatEnabled');
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
@@ -2495,8 +2518,12 @@
         return (!stream && !sourceId) ? 'screen' : null;
     }
 
+    // Screen consent from both sides (isVisionConsentHeldNow): the latest
+    // saved setting, so another window's revocation counts before its storage
+    // event arrives, and this window's own value, so a revocation here counts
+    // even if its local save failed or a stale window copied "allowed" back.
     function isProactiveScreenshotBlocked() {
-        return isHomeTutorialFeatureSuppressed() || !isProactiveVisionEnabledNow();
+        return isHomeTutorialFeatureSuppressed() || !isVisionConsentHeldNow();
     }
 
     function declinedProactiveScreenshot() {

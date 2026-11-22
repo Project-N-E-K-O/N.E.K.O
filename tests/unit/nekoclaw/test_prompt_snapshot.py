@@ -151,10 +151,23 @@ def test_subagent_tools_need_all_four_host_callbacks() -> None:
 
 
 def test_tool_definitions_are_exactly_those_in_config() -> None:
+    from config.prompts.prompts_nekoclaw_tools import REPORT_DUTY_PARAMETER
+
     tools, _system, schemas = _build("win32", "C:\\w", frozenset(HOST_CALLS), images=True)
     catalog = {**DSH_TOOL_SCHEMAS, **NEKOCLAW_TOOL_SCHEMAS}
+    # A session that is not another task agent's says what it takes with its report: one more
+    # parameter, after the others, and nothing else of the definition changed.
+    plain = catalog["report"]
+    with_duty = {
+        **plain,
+        "parameters": {**plain["parameters"], "properties": {**plain["parameters"]["properties"], "duty": REPORT_DUTY_PARAMETER}},
+    }
     for schema in schemas:
-        assert schema == catalog[schema["name"]]
+        assert schema == (with_duty if schema["name"] == "report" else catalog[schema["name"]])
+    reported = next(schema for schema in schemas if schema["name"] == "report")
+    assert list(reported["parameters"]["properties"]) == [*plain["parameters"]["properties"], "duty"]
+    # The catalog itself is as it was: a task agent another one started is offered report without it.
+    assert "duty" not in catalog["report"]["parameters"]["properties"]
     # Nothing in config is left without an implementation (bash is the POSIX twin of pwsh).
     assert set(catalog) - {tool.name for tool in tools} == {"bash"}
     blob = json.dumps(catalog)
