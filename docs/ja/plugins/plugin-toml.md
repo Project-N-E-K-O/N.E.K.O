@@ -277,6 +277,49 @@ UI が不要なら、このセクションは書かなくてかまいません�
 
 ---
 
+### `[permissions]` — ユーザーに求める権限
+
+```toml
+[permissions.require]
+"system.network:connect" = { reason = "天気サービスに問い合わせる", hosts = ["api.example.com"] }
+
+[permissions.ask]
+"plugin_sdk.main_agent.memory:read" = { reason = { ja = "普段住んでいる都市の天気を出す", en = "Use your home city for the forecast" } }
+"plugin_sdk.models:invoke" = { reason = "天気を一文のお知らせにする" }
+```
+
+> **現在の状態：** 宣言は今のところ `neko-plugin check` / `check -r` でコードと比較するためだけに使われます。インストール時の `require` 権限の確認と、初回使用時の `ask` 権限の確認は今後のリリースで有効になる予定で、まだ動作していません。
+
+- `require`：これがないとプラグインが動きません。今後、ユーザーはインストール時に同意を求められます。
+- `ask`：今後、プラグインが初めて実際に使うときにユーザーに確認します。
+- どの項目にも `reason` が必要です。ユーザーはこの権限の横でこれを読むので、ユーザー向けに書いてください。文字列 1 つか「言語コード = テキスト」のテーブルにできます。書かなかった言語は、書いた言語のどれかにフォールバックします。
+- `ask` 項目をユーザーが使っていないときにも使う場合は、`background = true` と `background_reason` を書きます。
+- `hosts`（`system.network:connect` のみ）は参考としてユーザーに表示されます。
+
+権限 ID：
+
+| ID | 意味 |
+|---|---|
+| `plugin_sdk.main_agent.memory:read` | 記憶を読む |
+| `plugin_sdk.main_agent.conversations:read` | 会話を読む |
+| `plugin_sdk.main_agent.messages:push` | N.E.K.O にメッセージ・カード・返信の添付を送る |
+| `plugin_sdk.models:invoke` | AI モデルを呼び出す |
+| `system.network:connect` | ネットワークに接続する |
+| `system.fs:read` / `system.fs:write` | プラグイン自身のデータディレクトリ以外のファイルを読む / 書く |
+| `system.process:spawn` | 他のプログラムを起動する |
+| `system.env:read` | 環境変数を読む |
+
+`neko-plugin check` と `check -r` は、宣言とプラグインの Python コードのスキャン結果を比べます：
+
+- コードが明らかに使っているのに宣言されていない権限は error で、`check -r`（つまりマーケットの CI）を通りません。reason 付きで宣言を追加してください。今のところ `[permissions]` テーブル自体がないプラグインには warning を出し、今後のリリースで error になります。
+- スキャンで確定できない使用の可能性（レシーバーを解決できない、import のみ、プラグイン自身のデータかもしれないファイルパス）は warning です。
+- 宣言されているのにスキャンで使用が見つからないものは warning です。動的な使い方なら問題ありません。
+- スキャンで見通せないコード（動的 import、名前を計算する `getattr`、`eval`/`exec`、`ctypes`、スレッド、`vendor/`、Python 以外のファイル）は info として表示されます。「何も見つからない」はプラグインが無害だと証明されたという意味ではありません。
+
+このトップレベルのテーブルは、`[[plugin.ui.panel]]` / `[[plugin.ui.guide]]` の `permissions` リストとは別物です。
+
+---
+
 ### カスタムセクション — プラグイン固有の設定
 
 ```toml
@@ -293,7 +336,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-必要なだけ自由にカスタムセクションを定義できます。
+必要なだけ自由にカスタムセクションを定義できます。ただし `permissions` は使えません。トップレベルの `[permissions]` テーブルは権限宣言用に予約されています（上記参照）。すでに `[permissions]` を独自の設定に使っているプラグインはセクション名を変更してください。変更しないと `neko-plugin check` が無効な権限宣言としてエラーを報告します。
 
 ---
 

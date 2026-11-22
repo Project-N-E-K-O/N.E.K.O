@@ -273,6 +273,49 @@ permissions = ["state:read"]
 
 ---
 
+### `[permissions]` — 插件需要用户给的权限
+
+```toml
+[permissions.require]
+"system.network:connect" = { reason = "查询天气服务", hosts = ["api.example.com"] }
+
+[permissions.ask]
+"plugin_sdk.main_agent.memory:read" = { reason = { zh-CN = "按你常住的城市给出天气", en = "Use your home city for the forecast" } }
+"plugin_sdk.models:invoke" = { reason = "把天气写成一句提醒" }
+```
+
+> **当前状态：** 目前声明只用于 `neko-plugin check` / `check -r` 和代码做比对。安装时确认 `require` 权限、首次使用时询问 `ask` 权限，会在后续版本启用，现在还没有生效。
+
+- `require`：没有它插件就不能工作，将来用户会在安装时确认同意。
+- `ask`：将来插件第一次真正用到时再问用户。
+- 每一项都要写 `reason`。用户会在这项权限旁边看到它，请写给用户看。可以是一个字符串，也可以是“语言代码 = 文字”的表；没写的语言会回退到你写了的某一种。
+- `ask` 项如果在用户没在使用时也要用，可以加 `background = true`，同时写 `background_reason`。
+- `hosts`（只用于 `system.network:connect`）只展示给用户参考。
+
+权限 id：
+
+| id | 含义 |
+|---|---|
+| `plugin_sdk.main_agent.memory:read` | 读记忆 |
+| `plugin_sdk.main_agent.conversations:read` | 读对话 |
+| `plugin_sdk.main_agent.messages:push` | 向 N.E.K.O 推送消息、卡片或给回复附加内容 |
+| `plugin_sdk.models:invoke` | 调用 AI 模型 |
+| `system.network:connect` | 联网 |
+| `system.fs:read` / `system.fs:write` | 读 / 写插件自己数据目录以外的文件 |
+| `system.process:spawn` | 启动其他程序 |
+| `system.env:read` | 读环境变量 |
+
+`neko-plugin check` 和 `check -r` 会把声明和对插件 Python 代码的扫描结果做比对：
+
+- 代码明确用到、但没有声明的权限是 error，`check -r`（也就是市场 CI）过不了。补上声明并写 reason 即可。目前完全没有 `[permissions]` 表的插件先给 warning，以后的版本会改成 error。
+- 扫描不能确定的可能用法（接收者解析不出来、只有 import、文件路径可能是插件自己的数据）是 warning。
+- 声明了但扫描没发现用到的，是 warning；动态用法扫不到是正常的。
+- 扫描看不透的代码（动态 import、名字是算出来的 `getattr`、`eval`/`exec`、`ctypes`、线程、`vendor/`、非 Python 文件）以 info 列出。“没发现”不代表证明了插件无害。
+
+这个顶层表和 `[[plugin.ui.panel]]` / `[[plugin.ui.guide]]` 里的 `permissions` 列表是两回事。
+
+---
+
 ### `[plugin_runtime]` 之后的自定义段 — 你的业务配置
 
 ```toml
@@ -289,7 +332,7 @@ notes_cfg = cfg.get("notes", {})
 max_per_page = notes_cfg.get("max_per_page", 20)
 ```
 
-你可以定义任意多个自定义段，想叫什么名字都行。
+你可以定义任意多个自定义段，名字随意，但 `permissions` 除外：顶层的 `[permissions]` 表保留给权限声明（见上文）。已经用 `[permissions]` 存放自己业务配置的插件需要给这一段改名，否则 `neko-plugin check` 会把它当作无效的权限声明报错。
 
 ---
 
