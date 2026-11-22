@@ -16,9 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import sys
 import threading
+import unicodedata
+import uuid
+from collections.abc import Iterable
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -378,12 +382,112 @@ def character_memory_exists(config_manager, character_name: str) -> bool:
     return bool(list_character_memory_paths(config_manager, character_name))
 
 
+def _paths_refer_to_same_entry(source_path: Path, target_path: Path) -> bool:
+    """Return True when two paths resolve to the same existing filesystem entry."""
+    try:
+        return os.path.samefile(source_path, target_path)
+    except OSError:
+        return False
+
+
+def _iter_registered_catgirl_names(config_manager) -> list[str]:
+    """Return configured character names if ``config_manager.load_characters`` is available."""
+    load_characters = getattr(config_manager, "load_characters", None)
+    if not callable(load_characters):
+        return []
+    try:
+        characters = load_characters()
+    except Exception:
+        return []
+    if not isinstance(characters, dict):
+        return []
+    catgirls = characters.get("猫娘")
+    if not isinstance(catgirls, dict):
+        return []
+    return [name for name in catgirls.keys() if isinstance(name, str) and name]
+
+
+def _normalize_collision_key(name: str) -> str:
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def find_character_name_collision(
+    config_manager,
+    candidate_name: str,
+    *,
+    exclude_names: Iterable[str] = (),
+    existing_names: Iterable[str] | None = None,
+) -> str | None:
+    """Return the first configured character name colliding with ``candidate_name``.
+
+    Detects exact duplicates, case-folded collisions (e.g. ``neko`` vs ``Neko``),
+    Unicode NFC/NFD equivalents, and filesystem ``os.path.samefile`` aliases under
+    active character memory roots.
+    """
+    candidate = str(candidate_name or "").strip()
+    if not candidate:
+        return None
+    excluded = {str(name) for name in exclude_names if name}
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else _iter_registered_catgirl_names(config_manager)
+    )
+    candidate_key = _normalize_collision_key(candidate)
+    roots = iter_character_memory_roots(config_manager) if config_manager is not None else []
+    for existing_name in names:
+        if existing_name in excluded:
+            continue
+        if _normalize_collision_key(existing_name) == candidate_key:
+            return existing_name
+        for base_dir in roots:
+            if _paths_refer_to_same_entry(base_dir / existing_name, base_dir / candidate):
+                return existing_name
+    return None
+
+
+def _two_step_samefile_rename(source_path: Path, target_path: Path) -> bool:
+    """Rename ``source_path`` to ``target_path`` via a sibling temporary path.
+
+    Required on case-insensitive or Unicode-normalizing filesystems (Windows NTFS,
+    macOS APFS) when changing only casing or Unicode normalization form.
+    """
+    parent_dir = source_path.parent
+    temp_path = parent_dir / f".neko_rename_{uuid.uuid4().hex}_{source_path.name}"
+    while temp_path.exists():
+        temp_path = parent_dir / f".neko_rename_{uuid.uuid4().hex}_{source_path.name}"
+
+    os.replace(str(source_path), str(temp_path))
+    try:
+        os.replace(str(temp_path), str(target_path))
+    except BaseException:
+        try:
+            if temp_path.exists() and not source_path.exists():
+                os.replace(str(temp_path), str(source_path))
+        except OSError:
+            logger.warning(
+                "[CharacterMemory] failed to roll back intermediate rename %s -> %s",
+                temp_path,
+                source_path,
+                exc_info=True,
+            )
+        raise
+    return True
+
+
 def _move_path(source_path: Path, target_path: Path) -> bool:
     if not source_path.exists():
         return False
 
     if source_path.is_dir():
         return _merge_directories(source_path, target_path)
+
+    if _paths_refer_to_same_entry(source_path, target_path):
+        if _paths_refer_to_same_entry(source_path.parent, target_path.parent):
+            if source_path.name == target_path.name:
+                return False
+            return _two_step_samefile_rename(source_path, target_path)
+        return False
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists():
@@ -398,6 +502,13 @@ def _move_path(source_path: Path, target_path: Path) -> bool:
 
 def _merge_directories(source_dir: Path, target_dir: Path) -> bool:
     if not source_dir.exists():
+        return False
+
+    if _paths_refer_to_same_entry(source_dir, target_dir):
+        if _paths_refer_to_same_entry(source_dir.parent, target_dir.parent):
+            if source_dir.name == target_dir.name:
+                return False
+            return _two_step_samefile_rename(source_dir, target_dir)
         return False
 
     if not target_dir.exists():
@@ -562,6 +673,16 @@ def rename_character_memory_storage(
 ) -> dict[str, Any]:
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     roots = iter_character_memory_roots(config_manager)
+    if old_name != new_name:
+        for other_name in _iter_registered_catgirl_names(config_manager):
+            if other_name in (old_name, new_name):
+                continue
+            for base_dir in dict.fromkeys([runtime_target_dir.parent, *roots]):
+                if _paths_refer_to_same_entry(base_dir / other_name, runtime_target_dir):
+                    raise FileExistsError(
+                        f"Refusing to rename memory storage {old_name!r} -> {new_name!r}: "
+                        f"target path {runtime_target_dir} collides with existing character {other_name!r}"
+                    )
     pending_sources = list_character_recent_paths(config_manager, old_name)
     target_recent_paths = list_character_recent_paths(config_manager, new_name)
     target_recent = runtime_target_dir / "recent.json"
@@ -655,8 +776,17 @@ def rename_character_memory_storage(
         ) or changed
 
         target_pending = get_recent_pending_unlocked(target_recent)
+        if old_name != new_name:
+            target_pending = [
+                _rewrite_pending_message_character_name(message, old_name, new_name)
+                for message in target_pending
+            ]
+        target_pending_key = os.path.normcase(os.path.abspath(os.fspath(target_recent)))
         for source_recent in pending_sources:
-            if source_recent == target_recent:
+            if (
+                source_recent == target_recent
+                or os.path.normcase(os.path.abspath(os.fspath(source_recent))) == target_pending_key
+            ):
                 continue
             source_pending = get_recent_pending_unlocked(source_recent)
             set_recent_pending_unlocked(source_recent, [])
@@ -865,6 +995,40 @@ async def asave_characters_with_recent_activation(
         return False
 
 
+def _find_co_owner_for_memory_path(
+    config_manager,
+    character_name: str,
+    entry_path: Path,
+) -> str | None:
+    """Return another configured character name sharing ``entry_path`` on disk."""
+    for other_name in _iter_registered_catgirl_names(config_manager):
+        if other_name == character_name:
+            continue
+        for other_path in list_character_memory_paths(config_manager, other_name):
+            if _paths_refer_to_same_entry(other_path, entry_path):
+                return other_name
+    return None
+
+
+def _is_recent_path_shared_with_other(
+    config_manager,
+    character_name: str,
+    recent_path: Path,
+) -> bool:
+    """Return True if another configured character owns a co-located recent path."""
+    recent_key = os.path.normcase(os.path.abspath(os.fspath(recent_path)))
+    for other_name in _iter_registered_catgirl_names(config_manager):
+        if other_name == character_name:
+            continue
+        for other_recent in list_character_recent_paths(config_manager, other_name):
+            if _paths_refer_to_same_entry(other_recent, recent_path):
+                return True
+            other_key = os.path.normcase(os.path.abspath(os.fspath(other_recent)))
+            if other_key == recent_key and character_memory_exists(config_manager, other_name):
+                return True
+    return False
+
+
 def delete_character_memory_storage(
     config_manager,
     character_name: str,
@@ -877,25 +1041,39 @@ def delete_character_memory_storage(
         config_manager, character_name,
     )
     recent_candidates = transaction["recent_paths"]
+    unshared_recent_candidates = [
+        recent_path
+        for recent_path in recent_candidates
+        if not _is_recent_path_shared_with_other(config_manager, character_name, recent_path)
+    ]
     redirect_snapshot, deletion_scope, deletion_snapshot = (
-        fence_recent_deletions_and_clear_redirects(recent_candidates)
+        fence_recent_deletions_and_clear_redirects(unshared_recent_candidates)
     )
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
         retire_character_runtime_caches(character_name)
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
-            for path in recent_candidates
+            for path in unshared_recent_candidates
         }
         removed_paths: list[Path] = []
         for entry_path in list_character_memory_paths(config_manager, character_name):
+            co_owner = _find_co_owner_for_memory_path(config_manager, character_name, entry_path)
+            if co_owner is not None:
+                logger.warning(
+                    "[CharacterMemory] skipping deletion of %s for %r because it is shared with character %r",
+                    entry_path,
+                    character_name,
+                    co_owner,
+                )
+                continue
             if entry_path.is_dir():
                 shutil.rmtree(entry_path)
             else:
                 entry_path.unlink()
             removed_paths.append(entry_path)
 
-        for recent_path in recent_candidates:
+        for recent_path in unshared_recent_candidates:
             set_recent_pending_unlocked(recent_path, [])
         transaction.update({
             "pending_snapshot": pending_snapshot,

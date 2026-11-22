@@ -42,18 +42,22 @@ class StorageMixin:
         Runs only once at first instantiation. Old files are deleted after migration.
         """
         try:
-            legacy_files = list(self._storage_dir.glob("token_usage_*.json"))
-            if not legacy_files:
+            if not any(self._storage_dir.glob("token_usage_*.json")):
                 return
 
-            logger.info(f"Token tracker: migrating {len(legacy_files)} legacy per-instance files")
-
             with _file_lock(self._lock_file_path):
+                legacy_files = sorted(self._storage_dir.glob("token_usage_*.json"))
+                if not legacy_files:
+                    return
+
+                logger.info(f"Token tracker: migrating {len(legacy_files)} legacy per-instance files")
+
                 # Read the existing merged file, if any.
                 existing = self._load_file(self._storage_path)
                 if not existing:
                     existing = self._empty_file_data()
 
+                migrated_files: list[Path] = []
                 for p in legacy_files:
                     try:
                         data = self._load_file(p)
@@ -64,10 +68,12 @@ class StorageMixin:
                                 else:
                                     _merge_day_stats(existing["daily_stats"][day_key], day_val)
                             existing["recent_records"].extend(data.get("recent_records", []))
-                        # Migration complete: delete the old file.
-                        p.unlink(missing_ok=True)
+                        migrated_files.append(p)
                     except Exception as e:
                         logger.debug(f"Token tracker: failed to migrate {p.name}: {e}")
+
+                if not migrated_files:
+                    return
 
                 # Deduplicate recent_records.
                 existing["recent_records"] = self._dedupe_records(existing["recent_records"])
@@ -75,6 +81,13 @@ class StorageMixin:
 
                 self._storage_dir.mkdir(parents=True, exist_ok=True)
                 atomic_write_json(self._storage_path, existing)
+
+                # Migration complete: delete the old files only after atomic write succeeds.
+                for p in migrated_files:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception as e:
+                        logger.debug(f"Token tracker: failed to remove migrated file {p.name}: {e}")
 
             logger.info("Token tracker: legacy file migration complete")
         except Exception as e:

@@ -618,6 +618,53 @@ class QwenVoiceCloneClient:
         except Exception as e:
             raise QwenVoiceCloneError(str(e)) from e
 
+    def _list_voices_by_prefix(self, prefix: str) -> list[dict]:
+        """List existing DashScope voices matching ``prefix`` (sync call)."""
+        import dashscope
+        from dashscope.audio.tts_v2 import VoiceEnrollmentService
+
+        rows: list[dict] = []
+        page_size = 100
+        with DASHSCOPE_GLOBAL_LOCK:
+            dashscope.api_key = self.api_key
+            configure_dashscope_sdk_urls(
+                dashscope, self.dashscope_base_url, websocket_path="inference"
+            )
+            service = VoiceEnrollmentService()
+            for page_index in range(10):
+                page = service.list_voices(
+                    prefix=prefix,
+                    page_index=page_index,
+                    page_size=page_size,
+                )
+                if not isinstance(page, list):
+                    break
+                rows.extend(row for row in page if isinstance(row, dict))
+                if len(page) < page_size:
+                    break
+        return rows
+
+    @staticmethod
+    def _pick_reconciled_voice_id(
+        rows: list[dict],
+        baseline_voice_ids: set[str],
+        target_model: str | None = None,
+    ) -> str | None:
+        """Select a newly created remote voice ID absent from ``baseline_voice_ids``."""
+        candidates: list[dict] = []
+        for row in rows:
+            voice_id = row.get("voice_id")
+            if not isinstance(voice_id, str) or not voice_id or voice_id in baseline_voice_ids:
+                continue
+            row_model = row.get("target_model")
+            if target_model and isinstance(row_model, str) and row_model and row_model != target_model:
+                continue
+            candidates.append(row)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda r: str(r.get("gmt_create") or ""))
+        return str(candidates[-1]["voice_id"])
+
     # ------------------------------------------------------------------
     # Combined convenience method: upload + create, with retries
     # ------------------------------------------------------------------
@@ -636,6 +683,17 @@ class QwenVoiceCloneClient:
             QwenVoiceCloneError
         """
         tmp_url = await self.upload_file(audio_buffer, filename, mime_type)
+
+        baseline_voice_ids: set[str] | None = None
+        try:
+            baseline_rows = await asyncio.to_thread(self._list_voices_by_prefix, prefix)
+            baseline_voice_ids = {
+                str(row["voice_id"])
+                for row in baseline_rows
+                if isinstance(row, dict) and row.get("voice_id")
+            }
+        except Exception as e:
+            logger.warning("音色注册前查询基线列表失败，超时后将禁止盲目重试: %s", e)
 
         last_error: Exception | None = None
         for attempt in range(self.MAX_RETRIES):
@@ -658,23 +716,57 @@ class QwenVoiceCloneClient:
                                  ["responsetimeout", "response timeout", "timeout"])
                 is_download_failed = ("download audio failed" in error_detail.lower() or "415" in error_detail)
 
-                if (is_timeout or is_download_failed) and attempt < self.MAX_RETRIES - 1:
-                    label = '超时' if is_timeout else '文件下载失败'
-                    logger.warning("检测到%s错误，等待 %d 秒后重试...", label, self.RETRY_DELAY)
-                    await asyncio.sleep(self.RETRY_DELAY)
-                    continue
-
-                # Final attempt or non-retryable error
                 if is_timeout:
+                    if baseline_voice_ids is None:
+                        raise QwenVoiceCloneError(
+                            '音色注册超时，无法确认远端是否已创建音色，已停止重试'
+                        ) from e
+
+                    await asyncio.sleep(self.RETRY_DELAY)
+                    try:
+                        reconciled_rows = await asyncio.to_thread(
+                            self._list_voices_by_prefix,
+                            prefix,
+                        )
+                    except Exception as list_err:
+                        raise QwenVoiceCloneError(
+                            '音色注册超时，且查询远端音色状态失败，已停止重试以避免重复创建'
+                        ) from list_err
+
+                    adopted_voice_id = self._pick_reconciled_voice_id(
+                        reconciled_rows,
+                        baseline_voice_ids,
+                        target_model=target_model,
+                    )
+                    if adopted_voice_id:
+                        logger.info(
+                            "音色注册超时后在远端发现已创建音色，直接采用: voice_id=%s",
+                            adopted_voice_id,
+                        )
+                        return adopted_voice_id, tmp_url, None
+
+                    if attempt < self.MAX_RETRIES - 1:
+                        logger.warning(
+                            "检测到超时错误且远端未创建新音色，准备重试 (%d/%d)...",
+                            attempt + 1,
+                            self.MAX_RETRIES,
+                        )
+                        continue
+
                     raise QwenVoiceCloneError(
                         f'音色注册超时，已尝试{self.MAX_RETRIES}次'
                     ) from e
-                elif is_download_failed:
+
+                if is_download_failed and attempt < self.MAX_RETRIES - 1:
+                    logger.warning("检测到文件下载失败错误，等待 %d 秒后重试...", self.RETRY_DELAY)
+                    await asyncio.sleep(self.RETRY_DELAY)
+                    continue
+
+                if is_download_failed:
                     raise QwenVoiceCloneError(
                         f'音色注册失败: 无法下载音频文件，已尝试{self.MAX_RETRIES}次'
                     ) from e
-                else:
-                    raise
+                raise
 
         # Unreachable in theory, but guard defensively
         raise last_error or QwenVoiceCloneError("音色注册失败: 未知错误")  # type: ignore[misc]

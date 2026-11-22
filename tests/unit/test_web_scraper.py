@@ -1941,3 +1941,64 @@ async def test_fetch_tieba_content_reports_all_source_failure(monkeypatch):
     assert result["tieba"]["posts"] == []
     assert result["tieba"]["topics"] == []
     assert "blocked" in result["error"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_weibo_trending_isolates_auth_cookies_from_shared_client_and_fallback(
+    monkeypatch,
+):
+    """B19-001: Weibo auth Set-Cookie must not leak into shared fallback or subsequent unauth calls."""
+    import httpx
+
+    seen_requests: list[tuple[str, str | None]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen_requests.append((str(request.url), request.headers.get("Cookie")))
+        if "s.weibo.com" in str(request.url):
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": "https://passport.weibo.com/login",
+                    "Set-Cookie": "SUBP=secret_session; Path=/",
+                },
+            )
+        if "passport.weibo.com" in str(request.url):
+            return httpx.Response(
+                200,
+                headers={"Set-Cookie": "XSRF=secret_xsrf; Path=/"},
+                text="<html>login</html>",
+            )
+        return httpx.Response(
+            200,
+            json={"ok": 1, "data": {"realtime": [{"word": "热搜话题", "raw_hot": 100, "rank": 1}]}},
+        )
+
+    transport = httpx.MockTransport(handle)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(trending_content.asyncio, "sleep", lambda *_a, **_k: _noop_coro())
+    async with real_async_client(transport=transport, follow_redirects=True) as shared_client:
+        monkeypatch.setattr(trending_content, "get_external_http_client", lambda: shared_client)
+        monkeypatch.setattr(
+            trending_content,
+            "_get_platform_cookies",
+            lambda _platform: {"SUB": "user_sub_cookie"},
+        )
+        monkeypatch.setattr(
+            trending_content.httpx,
+            "AsyncClient",
+            lambda **kwargs: real_async_client(transport=transport, **kwargs),
+        )
+
+        result = await trending_content.fetch_weibo_trending(limit=1)
+
+        assert result["success"] is True
+        assert len(shared_client.cookies) == 0
+        fallback_calls = [req for req in seen_requests if "hotSearch" in req[0]]
+        assert len(fallback_calls) == 1
+        assert fallback_calls[0][1] is None
+
+
+async def _noop_coro():
+    return None
+

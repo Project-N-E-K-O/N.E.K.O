@@ -343,6 +343,30 @@ class ReportingMixin:
         except Exception as e:
             logger.debug(f"Token tracker: failed to load unsent queue: {e}")
 
+    def _persist_unsent_payload(
+        self,
+        daily: dict,
+        records: list,
+        batch_seq: str | None,
+    ) -> None:
+        """Persist a snapshot of unsent telemetry data and batch_seq to disk."""
+        if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
+            return
+        try:
+            if not daily:
+                # No data: clean leftover files.
+                self._unsent_queue_path.unlink(missing_ok=True)
+                return
+            data = {
+                "daily": copy.deepcopy(daily),
+                "records": list(records[-200:]),
+                "batch_seq": batch_seq,
+                "saved_at": time.time(),
+            }
+            atomic_write_json(self._unsent_queue_path, data)
+        except Exception as e:
+            logger.debug(f"Token tracker: failed to persist unsent queue: {e}")
+
     def _save_unsent_queue(self):
         """Persist currently unsent remote data to disk.
 
@@ -356,21 +380,11 @@ class ReportingMixin:
         """
         if _DO_NOT_TRACK or not _TELEMETRY_SERVER_URL:
             return
-        try:
-            with self._lock:
-                if not self._unsent_daily:
-                    # No data: clean leftover files.
-                    self._unsent_queue_path.unlink(missing_ok=True)
-                    return
-                data = {
-                    "daily": copy.deepcopy(self._unsent_daily),
-                    "records": list(self._unsent_records[-200:]),
-                    "batch_seq": self._pending_batch_seq,
-                    "saved_at": time.time(),
-                }
-            atomic_write_json(self._unsent_queue_path, data)
-        except Exception as e:
-            logger.debug(f"Token tracker: failed to persist unsent queue: {e}")
+        with self._lock:
+            daily = copy.deepcopy(self._unsent_daily)
+            records = list(self._unsent_records[-200:])
+            batch_seq = self._pending_batch_seq
+        self._persist_unsent_payload(daily, records, batch_seq)
 
     def submit_save(self, *, report_timeout: float | None = None) -> Future:
         """Queue a save even when shutdown has no asynchronous wait budget left.
@@ -538,6 +552,10 @@ class ReportingMixin:
         # Track whether daily/records accompany this send; needed to clear stale
         # batch_seq after instrument-only failure (see except comments).
         had_unsent_payload = bool(send_daily or send_records)
+        # Persist the active batch_seq alongside daily/records before sending the HTTP request
+        # so a mid-request crash retains the exact idempotency key on restart.
+        if send_daily:
+            self._persist_unsent_payload(send_daily, send_records, batch_seq)
 
         # Snapshot instruments only for fresh windows; retries preserve them for later.
         instruments_snapshot: dict = {}

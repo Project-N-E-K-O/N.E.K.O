@@ -33,7 +33,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
 
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_bytes, atomic_write_json
 from utils.logger_config import get_module_logger
 
 # ==========================================
@@ -130,7 +130,7 @@ def _read_encryption_key(platform: str, key_file: Path) -> bytes:
 
 
 def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
-    key_file.write_bytes(key)
+    atomic_write_bytes(key_file, key)
 
     if sys.platform != 'win32':
         os.chmod(key_file, 0o600)
@@ -181,8 +181,7 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
             encrypted_data = fernet.encrypt(cookie_json.encode('utf-8'))
             
             # Save encrypted data
-            with open(cookie_file, 'wb') as f:
-                f.write(encrypted_data)
+            atomic_write_bytes(cookie_file, encrypted_data)
             
             # Set cookie-file permissions
             if sys.platform != 'win32':

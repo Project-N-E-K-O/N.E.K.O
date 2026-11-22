@@ -2918,8 +2918,13 @@ class AvatarToolStore:
     ) -> None:
         directory.mkdir(mode=0o700)
         for filename, data in resources.items():
-            (directory / filename).write_bytes(data)
+            resource_path = directory / filename
+            with resource_path.open("wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
         atomic_write_json(directory / "record.json", record, ensure_ascii=False, indent=2)
+        _fsync_directory(directory, strict=True)
         self._read_record_from_directory(
             record["id"],
             directory,
@@ -2992,6 +2997,7 @@ class AvatarToolStore:
                         status_code=409,
                     )
                 os.replace(temporary, final)
+                _fsync_directory(self.root, strict=True)
             except BaseException:
                 self._cleanup_failed_staging(temporary)
                 raise
@@ -3182,6 +3188,7 @@ class AvatarToolStore:
                     status_code=409,
                 )
             os.replace(updating, final)
+            _fsync_directory(self.root, strict=True)
         except BaseException:
             self._cleanup_failed_staging(updating)
             if published_backup:

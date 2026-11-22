@@ -7619,3 +7619,127 @@ def test_characters_cache_sees_rewrite_that_keeps_the_same_mtime(tmp_path):
     assert os.path.getmtime(config_path) == before.st_mtime
 
     assert set(cm.load_characters()["猫娘"]) == {"A", "Bee"}
+
+
+@pytest.mark.unit
+def test_f0064_samefile_case_only_rename_and_collision_guards(tmp_path, monkeypatch):
+    """F0064: case-only rename uses two-step rename, rewrites pending, and guards co-owned deletes/renames."""
+    import utils.character_memory as character_memory
+    import utils.recent_file as recent_file
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "neko",
+            "猫娘": {
+                "neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_dir = memory_root / "neko"
+    neko_dir.mkdir(parents=True)
+    (neko_dir / "facts.json").write_text('["fact"]', encoding="utf-8")
+    recent_path = neko_dir / "recent.json"
+    recent_path.write_text(
+        json.dumps([{"type": "human", "data": {"content": "neko说：hi", "speaker": "neko"}}]),
+        encoding="utf-8",
+    )
+
+    # 1. find_character_name_collision detects casefold & Unicode equivalents, respecting exclude_names.
+    assert character_memory.find_character_name_collision(cm, "Neko") == "neko"
+    assert character_memory.find_character_name_collision(cm, "Neko", exclude_names=("neko",)) is None
+    assert (
+        character_memory.find_character_name_collision(
+            None, "Cafe\u0301", existing_names=["Caf\u00e9"]
+        )
+        == "Caf\u00e9"
+    )
+
+    # 2. Same-path _merge_directories(d, d) is an idempotent no-op.
+    assert character_memory._merge_directories(neko_dir, neko_dir) is False
+    assert (neko_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+
+    # 3. Cross-character collision: renaming "other" -> "Neko" when "neko" owns memory/neko must raise.
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other"]', encoding="utf-8")
+    if os.path.exists(memory_root / "Neko") and os.path.samefile(neko_dir, memory_root / "Neko"):
+        with pytest.raises(FileExistsError, match="collides with existing character"):
+            character_memory.rename_character_memory_storage(cm, "other", "Neko")
+        assert (neko_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+    else:
+        # On case-sensitive Linux, simulate samefile collision explicitly.
+        real_samefile = os.path.samefile
+
+        def fake_samefile(a, b):
+            if {Path(a).name, Path(b).name} == {"neko", "Neko"}:
+                return True
+            return real_samefile(a, b)
+
+        with patch.object(character_memory.os.path, "samefile", fake_samefile):
+            with pytest.raises(FileExistsError, match="collides with existing character"):
+                character_memory.rename_character_memory_storage(cm, "other", "Neko")
+
+    # 4. Same-character case-only rename "neko" -> "Neko" succeeds and rewrites pending speaker names.
+    recent_file.set_recent_pending_unlocked(
+        recent_path,
+        [{"type": "human", "data": {"speaker": "neko", "content": "neko说：pending"}}],
+    )
+    result = character_memory.rename_character_memory_storage(cm, "neko", "Neko")
+    target_dir = result["runtime_dir"]
+    assert target_dir.name == "Neko"
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+    target_recent = target_dir / "recent.json"
+    rewritten_disk = json.loads(target_recent.read_text(encoding="utf-8"))
+    assert rewritten_disk[0]["data"]["speaker"] == "Neko"
+    assert rewritten_disk[0]["data"]["content"] == "Neko说：hi"
+    rewritten_pending = recent_file.get_recent_pending_unlocked(target_recent)
+    assert rewritten_pending == [
+        {"type": "human", "data": {"speaker": "Neko", "content": "Neko说：pending"}}
+    ]
+    recent_file.set_recent_pending_unlocked(target_recent, [])
+
+    # 5. Mocked os.path.samefile two-step rename verification (covers case-sensitive Linux CI as well).
+    two_step_src = tmp_path / "case_mock" / "alpha"
+    two_step_dst = tmp_path / "case_mock" / "Alpha"
+    two_step_src.mkdir(parents=True)
+    (two_step_src / "data.txt").write_text("ok", encoding="utf-8")
+    real_samefile = os.path.samefile
+
+    def mock_samefile_for_alpha(a, b):
+        if {Path(a), Path(b)} == {two_step_src, two_step_dst}:
+            return True
+        return real_samefile(a, b)
+
+    with patch.object(character_memory.os.path, "samefile", mock_samefile_for_alpha):
+        assert character_memory._merge_directories(two_step_src, two_step_dst) is True
+    assert two_step_dst.exists()
+    assert (two_step_dst / "data.txt").read_text(encoding="utf-8") == "ok"
+
+    # 6. delete_character_memory_storage must NOT delete directory co-owned by another live character.
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "3" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    if os.path.exists(memory_root / "neko") and os.path.samefile(memory_root / "neko", target_dir):
+        removed = character_memory.delete_character_memory_storage(cm, "neko")
+        assert removed == []
+        assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+    else:
+        with patch.object(character_memory.os.path, "samefile", lambda a, b: {Path(a).name, Path(b).name} == {"neko", "Neko"}):
+            removed = character_memory.delete_character_memory_storage(cm, "neko")
+            assert removed == []
+            assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+

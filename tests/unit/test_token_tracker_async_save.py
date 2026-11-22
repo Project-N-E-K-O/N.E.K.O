@@ -186,3 +186,145 @@ async def test_cancelled_wait_does_not_cancel_a_queued_save(tracker_factory, mon
         if submitted:
             await asyncio.gather(asyncio.wrap_future(submitted[0]), return_exceptions=True)
     assert json.loads(tracker._storage_path.read_text())["recent_records"][0]["tt"] == 3
+
+
+def test_batch_seq_persisted_before_http_request_survives_mid_request_crash(tracker_factory, monkeypatch):
+    """F0546: batch_seq must already be on disk when urlopen runs so crashes keep the same batch_id."""
+    import hashlib
+    from contextlib import contextmanager
+    from utils.token_tracker import reporting
+
+    tracker = tracker_factory()
+    tracker.record("test-model", 10, 5, 15)
+
+    observed_on_disk_at_urlopen = []
+    sent_bodies = []
+
+    class SimulatedCrashError(BaseException):
+        pass
+
+    def crash_during_urlopen(request, *, timeout):
+        body = request.data
+        if request.get_header("Content-encoding") == "gzip":
+            body = gzip.decompress(body)
+        sent_bodies.append(json.loads(body))
+        # Read .telemetry_unsent.json at the exact moment urlopen starts (before returning/raising).
+        assert tracker._unsent_queue_path.exists()
+        observed_on_disk_at_urlopen.append(
+            json.loads(tracker._unsent_queue_path.read_text(encoding="utf-8"))
+        )
+        raise SimulatedCrashError("SIGKILL simulation")
+
+    monkeypatch.setattr(reporting.urllib.request, "urlopen", crash_during_urlopen)
+    with pytest.raises(SimulatedCrashError):
+        tracker.save()
+
+    assert len(observed_on_disk_at_urlopen) == 1
+    persisted = observed_on_disk_at_urlopen[0]
+    persisted_seq = persisted["batch_seq"]
+    assert isinstance(persisted_seq, str) and persisted_seq
+    expected_batch_id = hashlib.sha256(
+        json.dumps(
+            {"device_id": "test-device", "batch_seq": persisted_seq},
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:32]
+    assert sent_bodies[0]["batch_id"] == expected_batch_id
+    assert persisted["records"][0]["tt"] == 15
+
+    # Simulate process restart from disk and retry.
+    restored = tracker_factory()
+    assert restored._pending_batch_seq == persisted_seq
+
+    @contextmanager
+    def successful(request, *, timeout):
+        body = request.data
+        if request.get_header("Content-encoding") == "gzip":
+            body = gzip.decompress(body)
+        sent_bodies.append(json.loads(body))
+        yield SimpleNamespace(status=200)
+
+    monkeypatch.setattr(reporting.urllib.request, "urlopen", successful)
+    restored.save()
+    assert sent_bodies[1]["batch_id"] == sent_bodies[0]["batch_id"]
+    assert not restored._unsent_queue_path.exists()
+
+
+def test_instrument_only_report_does_not_persist_stale_batch_seq_and_below_interval_keeps_null(
+    tracker_factory, monkeypatch
+):
+    """F0546: instrument-only windows keep unsent file absent and below-interval saves batch_seq=None."""
+    from utils import instrument
+    from utils.token_tracker import reporting
+
+    tracker = tracker_factory()
+    monkeypatch.setattr(instrument, "has_data", lambda: True)
+    monkeypatch.setattr(instrument, "snapshot", lambda: {"counters": {"ui_click": 2}})
+
+    def failing_urlopen(request, *, timeout):
+        assert not tracker._unsent_queue_path.exists()
+        raise TimeoutError("offline")
+
+    monkeypatch.setattr(reporting.urllib.request, "urlopen", failing_urlopen)
+    tracker.save()
+    assert tracker._pending_batch_seq is None
+    assert not tracker._unsent_queue_path.exists()
+
+    # Below-interval write persists daily with batch_seq=None so next window stays fresh.
+    tracker._report_interval = float("inf")
+    tracker.record("test-model", 1, 1, 2)
+    tracker.save()
+    queued = json.loads(tracker._unsent_queue_path.read_text(encoding="utf-8"))
+    assert queued["batch_seq"] is None
+
+
+def test_legacy_migration_preserves_source_files_on_atomic_write_failure_and_recovers(
+    tracker_factory, monkeypatch
+):
+    """F0549: legacy token_usage_*.json files must survive failed atomic_write_json and migrate on retry."""
+    from utils.token_tracker import storage
+
+    tracker = tracker_factory()
+    atexit.unregister(tracker._atexit_save)
+    storage_dir = tracker._storage_dir
+
+    legacy_a = storage_dir / "token_usage_proc1.json"
+    legacy_b = storage_dir / "token_usage_proc2.json"
+    legacy_a.write_text(
+        json.dumps({
+            "version": 1,
+            "daily_stats": {"2026-11-01": {"total_tokens": 10, "call_count": 1}},
+            "recent_records": [{"ts": "2026-11-01T00:00:00", "m": "m1", "tt": 10}],
+        }),
+        encoding="utf-8",
+    )
+    legacy_b.write_text(
+        json.dumps({
+            "version": 1,
+            "daily_stats": {"2026-11-01": {"total_tokens": 20, "call_count": 2}},
+            "recent_records": [{"ts": "2026-11-01T00:01:00", "m": "m1", "tt": 20}],
+        }),
+        encoding="utf-8",
+    )
+
+    real_atomic_write_json = storage.atomic_write_json
+
+    def failing_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(storage, "atomic_write_json", failing_write)
+    failed_tracker = tracker_factory()
+    assert legacy_a.exists()
+    assert legacy_b.exists()
+    assert not failed_tracker._storage_path.exists()
+
+    monkeypatch.setattr(storage, "atomic_write_json", real_atomic_write_json)
+    recovered_tracker = tracker_factory()
+    assert not legacy_a.exists()
+    assert not legacy_b.exists()
+    merged = json.loads(recovered_tracker._storage_path.read_text(encoding="utf-8"))
+    assert merged["daily_stats"]["2026-11-01"]["total_tokens"] == 30
+    assert merged["daily_stats"]["2026-11-01"]["call_count"] == 3
+    assert len(merged["recent_records"]) == 2
+
