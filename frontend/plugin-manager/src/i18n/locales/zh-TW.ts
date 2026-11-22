@@ -741,7 +741,8 @@ export default {
       exitFocus: '退出專注',
       exitFocusHint: '退出專注模式（Esc）',
       controlError: '外掛介面控制項錯誤',
-      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。'
+      hostedRuntimePending: '前端容器已識別到該 Surface。TSX/Markdown/Auto 渲染器會在後續階段接入。',
+      parseDocumentConfirm: '是否允許外掛「{plugin}」解析文件「{file}」？'
     }
   },
   package: {

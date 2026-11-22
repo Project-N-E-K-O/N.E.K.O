@@ -36,7 +36,7 @@
       :title="pluginId"
       :data-load-generation="iframeGeneration"
       class="plugin-iframe"
-      sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
+      sandbox="allow-scripts allow-forms allow-popups allow-modals"
       allow="fullscreen"
       @load="onIframeLoad"
       @error="onIframeError"
@@ -84,15 +84,20 @@ const iframeGeneration = ref(0)
 const pendingSurfaceMessages: unknown[] = []
 const maxPendingSurfaceMessages = 100
 let currentRequestId = 0
-const expectedOrigin = window.location.origin
+// Static plugin iframes run without `allow-same-origin`, so they have an opaque
+// origin reported as `'null'`. Inbound messages verify `event.source` +
+// `event.origin === 'null'`; outbound messages use `'*'` guarded by
+// `iframeRef.value?.contentWindow`.
+const expectedOrigin = 'null'
+const outboundTargetOrigin = '*'
 const displayTarget = ref<HTMLElement | null>(null)
 const display = usePluginDisplayFrame({
   target: displayTarget,
   active: () => hasUI.value && !loading.value && !error.value,
   identity: () => `${props.pluginId}:${iframeGeneration.value}`,
   name: () => props.pluginId,
-  connect: (connectionId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-connect', connectionId }, expectedOrigin),
-  notify: (state, documentId, connectionId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-state', documentId, connectionId, state }, expectedOrigin),
+  connect: (connectionId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-connect', connectionId }, outboundTargetOrigin),
+  notify: (state, documentId, connectionId) => iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-state', documentId, connectionId, state }, outboundTargetOrigin),
 })
 
 const uiUrl = computed(() => {
@@ -186,7 +191,7 @@ function handleMessage(event: MessageEvent) {
   // 处理来自插件 UI 的消息
   const data = event.data
   if (data && typeof data === 'object' && display.handleMessage(data, message => {
-    iframeRef.value?.contentWindow?.postMessage(message, expectedOrigin)
+    iframeRef.value?.contentWindow?.postMessage(message, outboundTargetOrigin)
   })) return
   if (data && typeof data === 'object' && data.type === 'plugin-ui-message') {
     emit('message', data.payload)
@@ -217,21 +222,21 @@ function sendMessage(payload: any) {
   iframeRef.value.contentWindow.postMessage({
     type: 'neko-host-message',
     payload
-  }, expectedOrigin)
+  }, outboundTargetOrigin)
 }
 
 function flushSurfaceMessages() {
   const target = iframeRef.value?.contentWindow
   if (!target || !iframeReady.value) return
   for (const message of pendingSurfaceMessages.splice(0)) {
-    target.postMessage(message, expectedOrigin)
+    target.postMessage(message, outboundTargetOrigin)
   }
 }
 
 function sendSurfaceMessage(message: unknown) {
   const target = iframeRef.value?.contentWindow
   if (target && iframeReady.value) {
-    target.postMessage(message, expectedOrigin)
+    target.postMessage(message, outboundTargetOrigin)
     return
   }
   // A hidden compatibility iframe may still be checking /ui-info while the

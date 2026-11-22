@@ -1765,8 +1765,8 @@ Object.assign(window.Jukebox, {
     const audioUrl = Jukebox.resolveJukeboxFileUrl(song.audio);
 
     player.list.add([{
-      name: song.name,
-      artist: song.artist,
+      name: Jukebox.escapeHtml(song.name || ''),
+      artist: Jukebox.escapeHtml(song.artist || ''),
       url: audioUrl,
       cover: ''
     }]);
@@ -3027,13 +3027,17 @@ Object.assign(window.Jukebox, {
   },
 
   escapeHtml: function(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    if (text === null || text === undefined) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   },
 
   escapeAttr: function(text) {
-    return Jukebox.escapeHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return Jukebox.escapeHtml(text);
   },
 
   escapeJsAttr: function(text) {

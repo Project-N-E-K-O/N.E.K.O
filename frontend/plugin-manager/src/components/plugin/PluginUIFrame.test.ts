@@ -51,10 +51,10 @@ async function mountFrame(locale = 'zh-CN', { dispatchIframeLoad = true } = {}) 
   return {
     container,
     iframe,
-    dispatch(payload: Record<string, unknown>) {
+    dispatch(payload: Record<string, unknown>, origin = 'null') {
       window.dispatchEvent(new MessageEvent('message', {
         data: { type: 'neko-study-open-surface', payload },
-        origin: window.location.origin,
+        origin,
         source: iframe.contentWindow,
       }))
     },
@@ -79,10 +79,25 @@ describe('PluginUIFrame open-surface bridge', () => {
     vi.restoreAllMocks()
   })
 
-  it('preserves native modal dialogs for legacy static plugin UIs', async () => {
+  it('sandboxes static plugin iframes without allow-same-origin while preserving modals', async () => {
+    const frame = await mountFrame()
+    const tokens = frame.iframe.getAttribute('sandbox')?.split(/\s+/) || []
+
+    expect(tokens).toContain('allow-scripts')
+    expect(tokens).toContain('allow-modals')
+    expect(tokens).not.toContain('allow-same-origin')
+    frame.unmount()
+  })
+
+  it('rejects non-opaque origins for sandboxed static iframes', async () => {
     const frame = await mountFrame()
 
-    expect(frame.iframe.getAttribute('sandbox')?.split(/\s+/)).toContain('allow-modals')
+    frame.dispatch({ surfaceId: 'practice' }, window.location.origin)
+    frame.dispatch({ surfaceId: 'practice' }, 'https://evil.example')
+    expect(frame.openSurface).not.toHaveBeenCalled()
+
+    frame.dispatch({ surfaceId: 'practice' }, 'null')
+    expect(frame.openSurface).toHaveBeenCalledTimes(1)
     frame.unmount()
   })
 

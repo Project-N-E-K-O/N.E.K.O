@@ -50,7 +50,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { usePluginStartGate } from '@/composables/usePluginStartGate'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
-import { openExternalUrl } from '@/utils/openExternal'
+import { isSafeAppRoute, isSafeSameTabUrl, openExternalUrl } from '@/utils/openExternal'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { formatHttpError } from '@/utils/request'
 import { PLUGIN_DETAIL_REFRESH_HOSTED_PANELS_KEY } from '@/views/pluginDetailHostedPanelRefresh'
@@ -149,12 +149,20 @@ async function handleOpenUi() {
   // 系统浏览器，避免落到嵌入 webview 里没有关闭按钮把用户困住。
   if (target) {
     if (action.kind === 'route') {
+      if (!isSafeAppRoute(target)) {
+        ElMessage.warning(uiActionLabel.value)
+        return
+      }
       await router.push(target)
       return
     }
     if (openInNewTab) {
       openExternalUrl(target)
     } else {
+      if (!isSafeSameTabUrl(target)) {
+        ElMessage.warning(uiActionLabel.value)
+        return
+      }
       window.open(target, '_self')
     }
     return

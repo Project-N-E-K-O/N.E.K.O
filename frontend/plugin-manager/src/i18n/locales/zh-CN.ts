@@ -741,7 +741,8 @@ export default {
       exitFocus: '退出专注',
       exitFocusHint: '退出专注模式（Esc）',
       controlError: '插件界面控件错误',
-      hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。'
+      hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。',
+      parseDocumentConfirm: '是否允许插件“{plugin}”解析文档“{file}”？'
     }
   },
   package: {

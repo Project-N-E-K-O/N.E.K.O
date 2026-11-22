@@ -37,10 +37,39 @@ function safeAuthorName(item) {
     return String(raw) || (window.t ? window.t('steam.unknownAuthor') : '未知作者');
 }
 
+function renderSubscriptionsEmptyState(subscriptionsList, text) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'empty-state';
+    const p = document.createElement('p');
+    p.textContent = String(text ?? '');
+    wrapper.appendChild(p);
+    subscriptionsList.replaceChildren(wrapper);
+}
+
+function sanitizeWorkshopPreviewUrl(url, fallback = '../static/icons/Steam_icon_logo.png') {
+    const raw = typeof url === 'string' ? url.trim() : '';
+    if (!raw || /[\u0000-\u001f\u007f]/.test(raw)) return fallback;
+    if ((raw.startsWith('/') && !raw.startsWith('//')) || raw.startsWith('./') || raw.startsWith('../')) {
+        return encodeURI(raw);
+    }
+    try {
+        const parsed = new URL(raw);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+            return parsed.toString();
+        }
+    } catch {
+        return fallback;
+    }
+    return fallback;
+}
+
 // 加载订阅物品
 function loadSubscriptions() {
     const subscriptionsList = document.getElementById('subscriptions-list');
-    subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.loadingSubscriptions') : '正在加载您的订阅物品...'}</p></div>`;
+    renderSubscriptionsEmptyState(
+        subscriptionsList,
+        window.t ? window.t('steam.loadingSubscriptions') : '正在加载您的订阅物品...'
+    );
 
     // 调用后端API获取订阅物品列表
     fetch('/api/steam/workshop/subscribed-items')
@@ -52,7 +81,9 @@ function loadSubscriptions() {
         })
         .then(data => {
             if (!data.success) {
-                subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.fetchFailed') : 'Failed to fetch subscribed items'}: ${data.error || (window.t ? window.t('common.unknownError') : 'Unknown error')}</p></div>`;
+                const fetchFailedLabel = window.t ? window.t('steam.fetchFailed') : 'Failed to fetch subscribed items';
+                const errorDetail = data.error || (window.t ? window.t('common.unknownError') : 'Unknown error');
+                renderSubscriptionsEmptyState(subscriptionsList, `${fetchFailedLabel}: ${errorDetail}`);
                 // 如果有消息提示，显示给用户
                 if (data.message) {
                     showMessage(data.message, 'error');
@@ -104,7 +135,9 @@ function loadSubscriptions() {
         })
         .catch(error => {
             console.error('获取订阅物品失败:', error);
-            subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.fetchFailed') : '获取订阅物品失败'}: ${error.message}</p></div>`;
+            const fetchFailedLabel = window.t ? window.t('steam.fetchFailed') : '获取订阅物品失败';
+            const errorDetail = error?.message || String(error || '');
+            renderSubscriptionsEmptyState(subscriptionsList, `${fetchFailedLabel}: ${errorDetail}`);
             showMessage(window.t ? window.t('steam.cannotConnectToServer') : '无法连接到服务器，请稍后重试', 'error');
         });
 }
@@ -114,7 +147,10 @@ function renderSubscriptionsPage() {
     const subscriptionsList = document.getElementById('subscriptions-list');
 
     if (allSubscriptions.length === 0) {
-        subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.noSubscriptions') : 'You haven\'t subscribed to any workshop items yet'}</p></div>`;
+        renderSubscriptionsEmptyState(
+            subscriptionsList,
+            window.t ? window.t('steam.noSubscriptions') : 'You haven\'t subscribed to any workshop items yet'
+        );
         return;
     }
 
@@ -136,7 +172,7 @@ function renderSubscriptionsPage() {
             subscribedDate: item.timeAdded ? new Date(item.timeAdded * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             lastUpdated: item.timeUpdated ? new Date(item.timeUpdated * 1000).toLocaleDateString() : (window.t ? window.t('steam.unknownDate') : '未知日期'),
             size: formatFileSize(item.fileSizeOnDisk || item.fileSize || 0),
-            previewUrl: encodeURI(item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png'),
+            previewUrl: sanitizeWorkshopPreviewUrl(item.previewUrl || item.previewImageUrl),
             state: item.state || {},
             // 添加安装路径信息
             installedFolder: item.installedFolder || '',
@@ -165,7 +201,7 @@ function renderSubscriptionsPage() {
         return `
             <div class="workshop-card">
                 <div class="card-header">
-                    <img src="${formattedItem.previewUrl}" alt="${formattedItem.name}" class="card-image" onerror="this.src='../static/icons/Steam_icon_logo.png'">
+                    <img src="${escapeHtml(formattedItem.previewUrl)}" alt="${formattedItem.name}" class="card-image" onerror="this.src='../static/icons/Steam_icon_logo.png'">
                     <div class="status-badge ${statusClass}">
                         <svg class="badge-bg" viewBox="-5 -5 115 115">
                             <path d="M6.104,38.038 C1.841,45.421 1.841,54.579 6.104,61.962 L18.785,83.923 C23.048,91.306 30.979,95.885 39.505,95.885 L64.865,95.885 C73.391,95.885 81.322,91.306 85.585,83.923 L98.266,61.962 C102.529,54.579 102.529,45.421 98.266,38.038 L85.585,16.077 C81.322,8.694 73.391,4.115 64.865,4.115 L39.505,4.115 C30.979,4.115 23.048,8.694 18.785,16.077 Z"
@@ -173,7 +209,7 @@ function renderSubscriptionsPage() {
                                   stroke="#dcf4ff"
                                   stroke-width="8" />
                         </svg>
-                        <div class="badge-text">${statusText}</div>
+                        <div class="badge-text">${escapeHtml(statusText)}</div>
                     </div>
                 </div>
                 <div class="card-content">
@@ -198,11 +234,11 @@ function renderSubscriptionsPage() {
             }
                     <div class="card-actions">
                         ${formattedItem.voiceReferenceAvailable ? `
-                        <button class="button button-primary" onclick="openWorkshopVoiceClone('${formattedItem.id}')" title="${formattedItem.voiceReferenceDisplayName || ''}" style="margin-bottom: 8px;">
+                        <button class="button button-primary" data-item-id="${escapeHtml(formattedItem.id)}" onclick="openWorkshopVoiceClone(this.dataset.itemId)" title="${formattedItem.voiceReferenceDisplayName || ''}" style="margin-bottom: 8px;">
                             ${window.t ? window.t('steam.openVoiceClone') : '在语音克隆页打开'}
                         </button>` : ''}
-                        <button class="button button-primary" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="addWorkshopCharacterCardFromSubscription(this)" style="margin-bottom: 8px;">${window.t ? window.t('steam.workshopAddCharacterCard') : '加入角色卡'}</button>
-                        <button class="button button-danger" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
+                        <button class="button button-primary" data-item-id="${escapeHtml(formattedItem.id)}" data-item-name="${formattedItem.name}" onclick="addWorkshopCharacterCardFromSubscription(this)" style="margin-bottom: 8px;">${window.t ? window.t('steam.workshopAddCharacterCard') : '加入角色卡'}</button>
+                        <button class="button button-danger" data-item-id="${escapeHtml(formattedItem.id)}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
                     </div>
                 </div>
             </div>
@@ -520,19 +556,21 @@ function viewItemDetails(itemId) {
             }
 
             const item = data.item;
+            const rawTitle = item.title || '';
             const formattedItem = {
-                id: item.publishedFileId.toString(),
-                name: item.title,
+                id: String(item.publishedFileId),
+                rawName: rawTitle,
+                name: escapeHtml(rawTitle),
                 author: escapeHtml(safeAuthorName(item)),
                 rawAuthor: safeAuthorName(item),
                 subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
                 lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
                 size: formatFileSize(item.fileSize),
-                previewUrl: item.previewUrl || item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
+                previewUrl: sanitizeWorkshopPreviewUrl(item.previewUrl || item.previewImageUrl),
                 description: escapeHtml(item.description || (window.t ? window.t('steam.noDescription') : '暂无描述')),
                 downloadCount: 'N/A',
                 rating: 'N/A',
-                tags: [window.t ? window.t('steam.defaultTagMod') : '模组'], // 默认标签，实际应用中应该从API获取
+                tags: Array.isArray(item.tags) && item.tags.length > 0 ? item.tags : [window.t ? window.t('steam.defaultTagMod') : '模组'],
                 state: item.state || {} // 添加state属性，确保后续代码可以正常访问
             };
 
@@ -552,11 +590,11 @@ function viewItemDetails(itemId) {
             const authorInitial = escapeHtml(String(formattedItem.rawAuthor).substring(0, 2).toUpperCase());
 
             // 更新模态框内容
-            document.getElementById('modalTitle').textContent = formattedItem.name;
+            document.getElementById('modalTitle').textContent = formattedItem.rawName;
 
             const detailContent = document.getElementById('itemDetailContent');
             detailContent.innerHTML = `
-            <img src="${formattedItem.previewUrl}" alt="${formattedItem.name}" class="item-preview-large" onerror="this.src='../static/icons/Steam_icon_logo.png'">
+            <img src="${escapeHtml(formattedItem.previewUrl)}" alt="${formattedItem.name}" class="item-preview-large" onerror="this.src='../static/icons/Steam_icon_logo.png'">
 
             <div class="item-info-grid">
                 <p class="item-info-item">
@@ -571,7 +609,7 @@ function viewItemDetails(itemId) {
                 <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.size') : '大小:'}</span> ${formattedItem.size}</p>
                 <p class="item-info-item">
                     <span class="item-info-label">${window.t ? window.t('steam.status_label') : '状态:'}</span>
-                    <span class="status-badge ${statusClass}">${statusText}</span>
+                    <span class="status-badge ${statusClass}">${escapeHtml(statusText)}</span>
                 </p>
                 <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.download_count') : '下载次数:'}</span> ${formattedItem.downloadCount}</p>
                 ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ?
@@ -591,7 +629,7 @@ function viewItemDetails(itemId) {
                 <h4>${window.t ? window.t('steam.tags') : '标签'}</h4>
                 <div class="tags-container">
                     ${formattedItem.tags.map(tag => `
-                        <div class="tag">${tag}</div>
+                        <div class="tag">${escapeHtml(tag)}</div>
                     `).join('')}
                 </div>
             </div>

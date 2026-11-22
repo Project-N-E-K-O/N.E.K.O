@@ -27,7 +27,7 @@
       :src="surfaceUrl"
       :title="surfaceTitle"
       class="hosted-surface-frame__iframe"
-      sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
+      sandbox="allow-scripts allow-forms allow-popups allow-modals"
       allow="fullscreen"
       @load="handleLoad"
       @error="handleError"
@@ -149,6 +149,10 @@ let currentLoadId = 0
 let sourceController: AbortController | null = null
 let hostedRequestGeneration = 0
 let componentMounted = false
+let parseDocumentConfirmPending = false
+let parseDocumentConfirmToken = 0
+let pendingParseDocumentConfirmRequestId: string | null = null
+let pendingParseDocumentConfirmCancelled = false
 const hostedDocumentControllers = new Map<string, AbortController>()
 const hostedActionControllers = new Map<string, AbortController>()
 const contextControllers = new Set<AbortController>()
@@ -171,6 +175,10 @@ function readContextInOrder() {
 }
 
 function abortAllHostedRequests(reason: string) {
+  parseDocumentConfirmToken += 1
+  parseDocumentConfirmPending = false
+  pendingParseDocumentConfirmRequestId = null
+  pendingParseDocumentConfirmCancelled = false
   for (const controller of contextControllers) controller.abort(reason)
   contextControllers.clear()
   contextQueue = Promise.resolve()
@@ -214,39 +222,14 @@ const surfaceUrl = computed(() => {
   return ''
 })
 
-// PR #1480 review-fix 1.30: trust boundary for postMessage between this
-// component and the embedded iframe. Two iframe modes coexist:
-//
-//   - ``surface.mode === 'static'``: iframe loads ``surfaceUrl`` (an http(s)
-//     URL or a same-origin path). The trusted origin is parsed from that URL
-//     and resolved against ``window.location.origin`` for relative paths.
-//
-//   - ``hosted-tsx`` / ``markdown``: iframe is loaded via ``srcdoc=...``. The
-//     spec mandates these iframes report ``event.origin === 'null'`` (an opaque
-//     origin), so we accept the literal string ``'null'`` as the trusted
-//     origin sentinel for srcdoc iframes.
-//
-// ``handleMessage`` rejects any message whose ``event.origin`` does not match
-// this value, and ``handleHostedRequest`` posts responses with this origin
-// rather than ``'*'``. The fallback to ``'*'`` is intentional and only used
-// for the srcdoc case where the standard requires ``'*'`` because the child
-// is in an opaque origin and cannot be addressed by name; in that branch the
-// inbound origin check (combined with ``event.source ===
-// iframeRef.value.contentWindow``) is what enforces the trust boundary.
-const trustedIframeOrigin = computed(() => {
-  if (props.surface.mode === 'static') {
-    const url = surfaceUrl.value
-    if (!url) return window.location.origin
-    try {
-      return new URL(url, window.location.origin).origin
-    } catch {
-      return window.location.origin
-    }
-  }
-  // srcdoc iframes (hosted-tsx / markdown). Per HTML spec the resulting origin
-  // is opaque and is reported as the literal string 'null'.
-  return 'null'
-})
+// Both embedded iframe modes run in an opaque origin (reported as `'null'`):
+//   - ``surface.mode === 'static'``: sandboxed without ``allow-same-origin``.
+//   - ``hosted-tsx`` / ``markdown``: loaded via ``srcdoc``.
+// ``handleMessage`` enforces ``event.source === iframeRef.value?.contentWindow``
+// and ``event.origin === 'null'``. Outbound ``postMessage`` calls target ``'*'``
+// (guarded by ``iframeRef.value?.contentWindow``) because HTML's postMessage
+// targetOrigin algorithm rejects `'null'` for opaque-origin frames.
+const trustedIframeOrigin = computed(() => 'null')
 
 const loadPhaseTitle = computed(() => {
   if (loadPhase.value === 'resources') return t('plugins.ui.loadingResources')
@@ -355,8 +338,9 @@ function handleError() {
 function flushStaticSurfaceMessages() {
   const target = iframeRef.value?.contentWindow
   if (!target || !staticSurfaceReady.value) return
+  const targetOrigin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
   for (const message of pendingStaticSurfaceMessages.splice(0)) {
-    target.postMessage(message, trustedIframeOrigin.value)
+    target.postMessage(message, targetOrigin)
   }
 }
 
@@ -364,7 +348,8 @@ function sendSurfaceMessage(message: unknown) {
   if (props.surface.mode !== 'static') return
   const target = iframeRef.value?.contentWindow
   if (target && staticSurfaceReady.value) {
-    target.postMessage(message, trustedIframeOrigin.value)
+    const targetOrigin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
+    target.postMessage(message, targetOrigin)
     return
   }
   if (pendingStaticSurfaceMessages.length >= maxPendingStaticSurfaceMessages) {
@@ -541,6 +526,9 @@ function handleMessage(event: MessageEvent) {
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-cancel') {
     const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+    if (requestId && requestId === pendingParseDocumentConfirmRequestId) {
+      pendingParseDocumentConfirmCancelled = true
+    }
     hostedDocumentControllers.get(requestId)?.abort('client-cancelled')
     hostedActionControllers.get(requestId)?.abort('client-cancelled')
     return
@@ -662,6 +650,42 @@ async function handleHostedRequest(data: any) {
       const expectedMime = HOSTED_DOCUMENT_MIME_BY_EXTENSION[extension as keyof typeof HOSTED_DOCUMENT_MIME_BY_EXTENSION]
       if (!expectedMime || (file.type && ![expectedMime, 'application/octet-stream'].includes(file.type))) {
         respond({ ok: false, error: 'Only PDF and DOCX documents are supported.', code: 'unsupported_document' })
+        return
+      }
+      if (parseDocumentConfirmPending) {
+        respond({
+          ok: false,
+          error: 'Document parsing confirmation is already pending.',
+          code: 'document_parse_permission_denied',
+        })
+        return
+      }
+      const safeFileName = String(file.name || '').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 255)
+      const confirmToken = ++parseDocumentConfirmToken
+      parseDocumentConfirmPending = true
+      pendingParseDocumentConfirmRequestId = requestId
+      pendingParseDocumentConfirmCancelled = false
+      try {
+        await ElMessageBox.confirm(
+          t('plugins.ui.parseDocumentConfirm', { plugin: props.pluginId, file: safeFileName }),
+          t('common.confirm'),
+          { type: 'warning' },
+        )
+      } catch {
+        respond({
+          ok: false,
+          error: 'Document parsing was cancelled by the user.',
+          code: 'document_parse_permission_denied',
+        })
+        return
+      } finally {
+        if (parseDocumentConfirmToken === confirmToken) {
+          parseDocumentConfirmPending = false
+          pendingParseDocumentConfirmRequestId = null
+        }
+      }
+      if (!isCurrentRequest() || (pendingParseDocumentConfirmCancelled && (pendingParseDocumentConfirmCancelled = false, true))) {
+        pendingParseDocumentConfirmCancelled = false
         return
       }
       const requestedTimeoutMs = Number(data.timeoutMs)

@@ -129,6 +129,18 @@ original upstream release or its pre-import patch history.
   `webrtc-adapter`) under their own permissive licenses.
 - Loaded the same way as `trtc.js`, only for `transport: 'livekit'`.
 
+## dompurify
+
+- File: `purify.js`
+- Source: <https://github.com/cure53/DOMPurify>
+- Version: `3.4.17`, pinned in parity with `frontend/plugin-manager/package-lock.json`.
+  The file is byte-for-byte `package/dist/purify.js` of the npm release.
+- Release: <https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz>
+- SHA-256: `a7b6dc750251c79c95592d6abf8908bcecb51319b0b5c4194b82222566ed29b9`
+- Local changes: none.
+- License: Dual-licensed under Apache-2.0 OR MPL-2.0; full text is in
+  [DOMPURIFY.LICENSE](licenses/DOMPURIFY.LICENSE).
+
 ## Distribution and updates
 
 Keep these notices, the `licenses` directory, and the `/*! ... */` license
