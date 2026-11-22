@@ -2990,7 +2990,7 @@ async def test_a_put_back_checkout_that_never_answers_does_not_stop_the_rest(
         if args[:2] == ("update-ref", f"{REF_PREFIX}w1/start") and args[2] == conflict.current:
             raise worktrees.GitError(args, 128, b"cannot lock ref")
         if args[:1] == ("checkout",) and args[-1] == conflict.result:
-            raise worktrees.GitError(args, None, "no answer within 600 seconds")
+            raise worktrees.GitError(args, None, b"no answer within 600 seconds")
         return await original(cwd, *args, **kwargs)
 
     monkeypatch.setattr(manager, "_git", stuck)
@@ -2998,7 +2998,7 @@ async def test_a_put_back_checkout_that_never_answers_does_not_stop_the_rest(
         await manager.prepare_conflicts(tree, conflict)
     monkeypatch.setattr(manager, "_git", original)
     notes = " ".join(getattr(raised.value, "__notes__", []))
-    assert "the worktree could not be put back" in notes
+    assert "the worktree could not be put back: git checkout --force timed out" in notes
     assert git(tree.path, "show", ":a.txt") == "staged\n"
     assert git(tree.path, "rev-parse", "HEAD").strip() == head
     assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.base
