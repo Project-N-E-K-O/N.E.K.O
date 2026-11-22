@@ -44,7 +44,7 @@
 }
 ```
 
-提交的其他 `.model3.json` 字段会被忽略；该接口不能替换完整模型配置。
+提交的其他 `.model3.json` 字段会被忽略；该接口不能替换完整模型配置。提交的每个 `File` 引用都必须是模型目录内的相对路径，否则返回 HTTP `400`，不写入任何内容。
 
 `GET /api/live2d/emotion_mapping/{model_name}` 返回已存储的 `EmotionMapping`，不存在时从 `FileReferences` 推导 `{ "motions": {...}, "expressions": {...} }`。`POST` 接受后一种结构，标准化安全相对路径，同时写入标准 Cubism 引用和兼容字段 `EmotionMapping`，并忽略保留组 `常驻` 中的动作。
 
@@ -54,6 +54,8 @@
 - `model_parameters` 从 `.cdi3.json` 读取参数和参数组元数据，不读取实时运行值。
 - `save_model_parameters` 需要 `{ "parameters": { ... } }`，且 `parameters` 必须是对象。
 - `parameters.json` 不存在或不是对象时，`load_model_parameters` 返回空对象。
+- 这些接口以及 `model_config` / `emotion_mapping` 只读写位于模型目录内的文件。实际位置在模型目录外的 `.model3.json`、`.cdi3.json`、`parameters.json` 会以 HTTP `403` 拒绝，既不读也不写。
+- `model_files` 列表有层级和条目数上限，超过上限的模型目录返回 `success: false`，不返回列表。
 
 ## 导入与修改
 

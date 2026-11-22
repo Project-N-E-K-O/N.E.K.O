@@ -44,7 +44,7 @@ The configuration `POST` routes accept a JSON object shaped like Cubism configur
 }
 ```
 
-Other submitted `.model3.json` fields are ignored. This is not an endpoint for replacing the full model configuration.
+Other submitted `.model3.json` fields are ignored. This is not an endpoint for replacing the full model configuration. Every submitted `File` reference must be a relative path inside the model folder; otherwise the request returns HTTP `400` and nothing is written.
 
 `GET /api/live2d/emotion_mapping/{model_name}` returns the stored `EmotionMapping`, or derives `{ "motions": {...}, "expressions": {...} }` from `FileReferences`. `POST` accepts that latter shape. It normalizes safe relative paths, writes both the standard Cubism references and the compatibility `EmotionMapping`, and ignores motions in the reserved `常驻` group.
 
@@ -54,6 +54,8 @@ Other submitted `.model3.json` fields are ignored. This is not an endpoint for r
 - `model_parameters` reads parameter and group metadata from the model's `.cdi3.json`. It does not read live runtime values.
 - `save_model_parameters` expects `{ "parameters": { ... } }`; `parameters` must be an object.
 - `load_model_parameters` returns an empty object when `parameters.json` does not exist or is not an object.
+- These endpoints and the `model_config` / `emotion_mapping` endpoints only read and write files located inside the model folder. A `.model3.json`, `.cdi3.json` or `parameters.json` that resolves outside it is refused with HTTP `403` and is neither read nor written.
+- The `model_files` listing has a depth and entry limit; a model folder beyond it returns `success: false` instead of a list.
 
 ## Import and mutation
 

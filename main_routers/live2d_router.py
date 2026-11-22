@@ -424,6 +424,118 @@ def _locate_model_config(model_dir: str):
     return None, None, None
 
 
+# Error body for a config file whose real path leaves the model folder: refused, never read or written.
+_OUTSIDE_MODEL_DIR_ERROR = {"success": False, "error": "模型配置文件不在模型目录内"}
+
+
+def _find_model_root_file(model_dir: str, suffix: str) -> tuple[str | None, bool]:
+    """
+    Return ``(path, escaped)`` for the first file directly in *model_dir* whose name
+    ends with *suffix* and whose real path stays inside *model_dir*.
+
+    Candidates leaving the folder are skipped. ``escaped`` is True when nothing
+    inside was found but at least one candidate was skipped for leaving the folder,
+    so callers can refuse with a 4xx instead of reporting the file as missing.
+    """
+    model_dir_real = os.path.realpath(model_dir)
+    escaped = False
+    for file in os.listdir(model_dir):
+        if not file.endswith(suffix):
+            continue
+        path = os.path.join(model_dir, file)
+        if _is_inside_model_dir(model_dir_real, path):
+            return path, False
+        escaped = True
+    return None, escaped
+
+
+def _is_unsafe_model_ref(file_path: str) -> bool:
+    """Whether a model-relative file reference is absolute, has a drive or climbs out with ``..``."""
+    normalized = file_path.replace('\\', '/')
+    posix = pathlib.PurePosixPath(normalized)
+    return posix.is_absolute() or ".." in posix.parts or bool(pathlib.PureWindowsPath(normalized).drive)
+
+
+def _find_unsafe_file_reference(file_refs) -> str | None:
+    """
+    Return the first ``File`` entry under ``Motions`` / ``Expressions`` of a request's
+    ``FileReferences`` that would point outside the model folder, or None.
+    Only string ``File`` values are checked; other shapes are stored as before.
+    """
+    if not isinstance(file_refs, dict):
+        return None
+    entries = []
+    motions = file_refs.get('Motions')
+    if isinstance(motions, dict):
+        for items in motions.values():
+            if isinstance(items, list):
+                entries.extend(items)
+    expressions = file_refs.get('Expressions')
+    if isinstance(expressions, list):
+        entries.extend(expressions)
+    for item in entries:
+        file_path = item.get('File') if isinstance(item, dict) else None
+        if isinstance(file_path, str) and _is_unsafe_model_ref(file_path):
+            return file_path
+    return None
+
+
+# Upper bounds for the motion / expression listing walk. Links between inside folders
+# are followed (alias folders are listed twice), so stacked aliases can grow the walk
+# exponentially; real models stay far below both limits.
+_MODEL_SCAN_MAX_DEPTH = 32
+_MODEL_SCAN_MAX_ENTRIES = 10000
+_MODEL_SCAN_LIMIT_ERROR = "模型目录层级或条目数量超过上限"
+
+
+class _ModelScanLimitExceeded(Exception):
+    """The listing walk exceeded ``_MODEL_SCAN_MAX_DEPTH`` or ``_MODEL_SCAN_MAX_ENTRIES``."""
+
+
+def _search_model_files(model_root_real: str, start_dir: str, target_ext: str) -> list[str]:
+    """
+    List files ending with *target_ext* under *start_dir*, as slash-separated paths
+    relative to *start_dir*.
+
+    Entries whose real path leaves *model_root_real* are skipped. Links back to a
+    directory on the current recursion chain (e.g. ``loop -> .``) are not entered;
+    links to other inside directories are still listed, so alias folders show up
+    twice. Raises ``_ModelScanLimitExceeded`` once the walk goes deeper than
+    ``_MODEL_SCAN_MAX_DEPTH`` or visits more than ``_MODEL_SCAN_MAX_ENTRIES`` entries.
+    """
+    result: list[str] = []
+    visited = 0
+
+    def walk(directory: str, ancestors: tuple[str, ...]) -> None:
+        nonlocal visited
+        if len(ancestors) > _MODEL_SCAN_MAX_DEPTH:
+            raise _ModelScanLimitExceeded(f"depth > {_MODEL_SCAN_MAX_DEPTH}")
+        try:
+            chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
+            for item in os.listdir(directory):
+                visited += 1
+                if visited > _MODEL_SCAN_MAX_ENTRIES:
+                    raise _ModelScanLimitExceeded(f"entries > {_MODEL_SCAN_MAX_ENTRIES}")
+                item_path = os.path.join(directory, item)
+                if not _is_inside_model_dir(model_root_real, item_path):
+                    continue
+                if os.path.isfile(item_path):
+                    if item.endswith(target_ext):
+                        # Normalize forward slashes across platforms.
+                        result.append(os.path.relpath(item_path, start_dir).replace('\\', '/'))
+                elif os.path.isdir(item_path):
+                    if os.path.normcase(os.path.realpath(item_path)) in chain:
+                        continue
+                    walk(item_path, chain)
+        except _ModelScanLimitExceeded:
+            raise
+        except Exception as e:
+            logger.warning(f"搜索目录 {directory} 时出错: {e}")
+
+    walk(start_dir, ())
+    return result
+
+
 @router.get("/models")
 async def get_live2d_models(simple: bool = False):
     """
@@ -525,13 +637,11 @@ def get_model_config(model_name: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+        # Find .model3.json; a file whose real path leaves the model folder is refused.
+        model_json_path, escaped = _find_model_root_file(model_dir, '.model3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
@@ -571,16 +681,18 @@ async def update_model_config(model_name: str, request: Request):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+        # Find .model3.json; a file whose real path leaves the model folder is refused.
+        model_json_path, escaped = _find_model_root_file(model_dir, '.model3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
+        # References from the request must stay inside the model folder; refuse before any read or write.
+        if _find_unsafe_file_reference(data.get('FileReferences') if isinstance(data, dict) else None) is not None:
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用超出模型目录"})
+
         # Safety: modify Motions/Expressions only.
         # Lock entire read/modify/write; write-only locks let both requests read same base,
         # then last writer overwrites whole file, silently losing earlier edits.
@@ -613,13 +725,11 @@ def get_emotion_mapping(model_name: str):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+        # Find .model3.json; a file whose real path leaves the model folder is refused.
+        model_json_path, escaped = _find_model_root_file(model_dir, '.model3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
@@ -687,13 +797,11 @@ async def update_emotion_mapping(model_name: str, request: Request):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Find .model3.json.
-        model_json_path = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_json_path = os.path.join(model_dir, file)
-                break
-        
+        # Find .model3.json; a file whose real path leaves the model folder is refused.
+        model_json_path, escaped = _find_model_root_file(model_dir, '.model3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
 
@@ -717,11 +825,9 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 for file_path in files or []:
                     if not isinstance(file_path, str):
                         continue
-                    normalized = file_path.replace('\\', '/')
-                    p = pathlib.PurePosixPath(normalized)
-                    if p.is_absolute() or ".." in p.parts:
+                    if _is_unsafe_model_ref(file_path):
                         continue
-                    normalized = str(p)
+                    normalized = str(pathlib.PurePosixPath(file_path.replace('\\', '/')))
 
                     items.append({"File": normalized})
                 motions_output[group_name] = items
@@ -748,11 +854,9 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 for file_path in files or []:
                     if not isinstance(file_path, str):
                         continue
-                    normalized = file_path.replace('\\', '/')
-                    p = pathlib.PurePosixPath(normalized)
-                    if p.is_absolute() or ".." in p.parts:
+                    if _is_unsafe_model_ref(file_path):
                         continue
-                    normalized = str(p)
+                    normalized = str(pathlib.PurePosixPath(file_path.replace('\\', '/')))
 
                     base = os.path.basename(normalized)
                     base_no_ext = base.replace('.exp3.json', '')
@@ -799,49 +903,13 @@ def get_model_files(model_name: str):
 
         # Listings stay inside the model folder: entries whose real path leaves it are skipped.
         model_root_real = os.path.realpath(model_dir)
-        model_dir = actual_model_dir
-        motion_files = []
-        expression_files = []
+        try:
+            motion_files = _search_model_files(model_root_real, actual_model_dir, '.motion3.json')
+            expression_files = _search_model_files(model_root_real, actual_model_dir, '.exp3.json')
+        except _ModelScanLimitExceeded as e:
+            logger.warning("模型 %s 文件扫描超过上限，已停止: %s", model_name, e)
+            return {"success": False, "error": _MODEL_SCAN_LIMIT_ERROR}
 
-        # Recursively search all subfolders.
-        def search_files_recursive(directory, target_ext, result_list, ancestors=()):
-            """
-            Recursively search for files with the given extension.
-            args:
-            - directory: directory to search
-            - target_ext: target file extension
-            - result_list: list to store results
-            """
-            try:
-                # Real paths of the directories on the current recursion chain. A link back
-                # to one of them (e.g. ``loop -> .``) is not entered; links to other inside
-                # directories are still listed, so alias folders keep showing up twice.
-                chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
-                for item in os.listdir(directory):
-                    item_path = os.path.join(directory, item)
-                    if not _is_inside_model_dir(model_root_real, item_path):
-                        continue
-                    if os.path.isfile(item_path):
-                        if item.endswith(target_ext):
-                            # Calculate path relative to model root.
-                            relative_path = os.path.relpath(item_path, model_dir)
-                            # Normalize forward slashes across platforms.
-                            relative_path = relative_path.replace('\\', '/')
-                            result_list.append(relative_path)
-                    elif os.path.isdir(item_path):
-                        if os.path.normcase(os.path.realpath(item_path)) in chain:
-                            continue
-                        # Search subdirectories recursively.
-                        search_files_recursive(item_path, target_ext, result_list, chain)
-            except Exception as e:
-                logger.warning(f"搜索目录 {directory} 时出错: {e}")
-        
-        # Search motion files.
-        search_files_recursive(model_dir, '.motion3.json', motion_files)
-        
-        # Search expression files.
-        search_files_recursive(model_dir, '.exp3.json', expression_files)
-        
         logger.debug(f"模型 {model_name} 文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
         return {
             "success": True, 
@@ -871,13 +939,11 @@ def get_model_parameters(model_name: str):
         if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
-        # Find .cdi3.json.
-        cdi3_file = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.cdi3.json'):
-                cdi3_file = os.path.join(model_dir, file)
-                break
-        
+        # Find .cdi3.json; a file whose real path leaves the model folder is refused.
+        cdi3_file, escaped = _find_model_root_file(model_dir, '.cdi3.json')
+        if escaped:
+            return JSONResponse(status_code=403, content=_OUTSIDE_MODEL_DIR_ERROR)
+
         if not cdi3_file or not os.path.exists(cdi3_file):
             return {"success": False, "error": "未找到.cdi3.json文件"}
         
@@ -938,8 +1004,10 @@ async def save_model_parameters(model_name: str, request: Request):
         if not isinstance(parameters, dict):
             return JSONResponse(status_code=400, content={"success": False, "error": "参数格式错误"})
         
-        # Save parameters.json.
+        # Save parameters.json; an existing entry whose real path leaves the model folder is refused.
         parameters_file = os.path.join(model_dir, 'parameters.json')
+        if os.path.lexists(parameters_file) and not _is_inside_model_dir(os.path.realpath(model_dir), parameters_file):
+            return JSONResponse(status_code=403, content={"success": False, "error": "参数文件不在模型目录内"})
         await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
         
         logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
@@ -971,7 +1039,14 @@ def load_model_parameters(model_name: str):
         
         if not os.path.exists(parameters_file):
             return {"success": True, "parameters": {}}  # Missing file returns empty parameters.
-        
+
+        # A parameters.json whose real path leaves the model folder is refused, not read.
+        if not _is_inside_model_dir(os.path.realpath(model_dir), parameters_file):
+            return JSONResponse(
+                status_code=403,
+                content={"success": False, "error": "参数文件不在模型目录内", "parameters": {}},
+            )
+
         with open(parameters_file, 'r', encoding='utf-8') as f:
             parameters = json.load(f)
         
@@ -1060,6 +1135,10 @@ async def update_model_config_by_id(model_id: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
+        # References from the request must stay inside the model folder; refuse before any read or write.
+        if _find_unsafe_file_reference(data.get('FileReferences') if isinstance(data, dict) else None) is not None:
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件引用超出模型目录"})
+
         # Safety: modify Motions/Expressions only, locking entire read/modify/write,
         # symmetric with update_model_config. Resolved-file lock keys let by-name/by-ID
         # routes share one lock for the same Workshop model.
@@ -1149,48 +1228,13 @@ def get_model_files_by_id(model_id: str):
         
         # Listings stay inside the model folder: entries whose real path leaves it are skipped.
         model_root_real = os.path.realpath(model_dir)
-        motion_files = []
-        expression_files = []
-        
-        # Recursively search all subfolders.
-        def search_files_recursive(directory, target_ext, result_list, ancestors=()):
-            """
-            Recursively search for files with the given extension.
-            args:
-            - directory: directory path to search
-            - target_ext: target file extension (e.g. '.motion3.json')
-            - result_list: list to store the found file paths
-            """
-            try:
-                # Real paths of the directories on the current recursion chain. A link back
-                # to one of them (e.g. ``loop -> .``) is not entered; links to other inside
-                # directories are still listed, so alias folders keep showing up twice.
-                chain = ancestors + (os.path.normcase(os.path.realpath(directory)),)
-                for item in os.listdir(directory):
-                    item_path = os.path.join(directory, item)
-                    if not _is_inside_model_dir(model_root_real, item_path):
-                        continue
-                    if os.path.isfile(item_path):
-                        if item.endswith(target_ext):
-                            # Calculate path relative to model root.
-                            relative_path = os.path.relpath(item_path, actual_model_dir)
-                            # Normalize forward slashes across platforms.
-                            relative_path = relative_path.replace('\\', '/')
-                            result_list.append(relative_path)
-                    elif os.path.isdir(item_path):
-                        if os.path.normcase(os.path.realpath(item_path)) in chain:
-                            continue
-                        # Search subdirectories recursively.
-                        search_files_recursive(item_path, target_ext, result_list, chain)
-            except Exception as e:
-                logger.warning(f"搜索目录 {directory} 时出错: {e}")
-        
-        # Search motion files.
-        search_files_recursive(actual_model_dir, '.motion3.json', motion_files)
+        try:
+            motion_files = _search_model_files(model_root_real, actual_model_dir, '.motion3.json')
+            expression_files = _search_model_files(model_root_real, actual_model_dir, '.exp3.json')
+        except _ModelScanLimitExceeded as e:
+            logger.warning("模型 %s 文件扫描超过上限，已停止: %s", model_id, e)
+            return {"success": False, "error": _MODEL_SCAN_LIMIT_ERROR}
 
-        # Search expression files.
-        search_files_recursive(actual_model_dir, '.exp3.json', expression_files)
-        
         # Build model-config URL.
         model_config_url = None
         if url_prefix:
