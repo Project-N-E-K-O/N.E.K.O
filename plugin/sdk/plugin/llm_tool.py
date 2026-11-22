@@ -300,14 +300,15 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 # ``error`` codes:
 #   host side  -- "invalid_request", "main_server_unavailable" (no HTTP
 #                 answer), "main_server_error" (HTTP status >= 400 or
-#                 a non-JSON answer),
+#                 an answer that is not a JSON object),
 #                 "rejected" (register: no role accepted the tool),
 #                 "partial_failure" (unregister: some roles failed).
 #   SDK side   -- "timeout" (the host did not answer within
 #                 ``request_timeout``; the outcome on main_server is unknown),
 #                 "host_unavailable" (the request could not reach the host or
 #                 the host failed to handle it), "not_registered"
-#                 (unregister: this plugin has no tool by that name).
+#                 (unregister: nothing local and main_server removed
+#                 nothing of this plugin's under that name).
 
 
 class LlmToolRoleFailure(TypedDict, total=False):
@@ -356,7 +357,7 @@ def _result_role_records(value: object) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
     return [
-        {str(k): str(v) for k, v in item.items()}
+        {str(k): str(v) for k, v in item.items() if v is not None}
         for item in value
         if isinstance(item, dict)
     ]

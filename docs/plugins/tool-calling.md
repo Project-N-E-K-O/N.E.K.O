@@ -486,7 +486,7 @@ result = await self.register_llm_tool_async(
     description="...",
     parameters={"type": "object", "properties": {...}},
     handler=my_async_callable,
-    request_timeout=15.0,  # seconds to wait for the host (default 15)
+    request_timeout=30.0,  # seconds to wait for the host (default 30)
 )
 if not result["ok"]:
     self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
@@ -510,10 +510,10 @@ returns what `main_server` answered:
 `error` codes: `rejected` (register: no role accepted, e.g. the name is
 owned by another source), `partial_failure` (unregister: some roles
 failed), `main_server_unavailable` (no HTTP answer), `main_server_error`
-(HTTP status >= 400, e.g. unknown role, or a non-JSON answer), `timeout` (no answer from the
+(HTTP status >= 400, e.g. unknown role, or an answer that is not a JSON object), `timeout` (no answer from the
 host within `request_timeout`), `host_unavailable` (the request could
-not reach the host), `not_registered` (unregister: this plugin has no
-tool by that name; the host is not contacted), `invalid_request`.
+not reach the host), `not_registered` (unregister: main_server removed nothing
+of this plugin's under that name), `invalid_request`.
 
 Local state follows `ok`, so the plugin and the host agree:
 
@@ -530,15 +530,26 @@ Local state follows `ok`, so the plugin and the host agree:
   another source's tool of the same name.
 - `timeout` means the outcome on `main_server` is unknown. After a
   register timeout, registering the same name again converges (a
-  same-source registration replaces the old one); stopping the plugin
-  clears everything either way.
+  same-source registration replaces the old one); to drop the tool
+  instead, call `unregister_llm_tool_async(name)`: a name the plugin no
+  longer holds locally is still sent to the host, for every role, so a
+  leftover on `main_server` is removed. Stopping the plugin clears
+  everything either way.
+- Async calls for the same name run one at a time, in call order, each
+  waiting for the previous one's answer. For example,
+  `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))`
+  ends with `t` gone everywhere. Different names do not wait for each
+  other. `request_timeout` covers each call's own request, not the time
+  spent waiting behind earlier calls for the same name.
 
-Argument errors raise exactly like the sync calls (`ValueError`,
-`TypeError`, `EntryConflictError`; also `ValueError` for a bad
-`request_timeout`). Host and `main_server` failures never raise. Pick
-one style per tool name: the sync and async calls travel on different
-IPC channels, so mixing them for the same name has no ordering
-guarantee.
+Argument errors raise like the sync calls (`ValueError`, `TypeError`,
+`EntryConflictError`). The async calls also raise `ValueError` for a bad
+`request_timeout` and, for register, a `timeout` outside (0, 300]
+(`main_server`'s limit; the sync call keeps passing it through as
+before). Host and `main_server` failures never raise. Pick one style per
+tool name: the sync calls are not part of the per-name ordering and
+travel on a different IPC channel, so mixing them for the same name has
+no ordering guarantee.
 
 ### Returning errors
 

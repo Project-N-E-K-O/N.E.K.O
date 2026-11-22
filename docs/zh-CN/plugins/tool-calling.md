@@ -420,7 +420,7 @@ result = await self.register_llm_tool_async(
     description="...",
     parameters={"type": "object", "properties": {...}},
     handler=my_async_callable,
-    request_timeout=15.0,  # 等 host 回复的秒数（默认 15）
+    request_timeout=30.0,  # 等 host 回复的秒数（默认 30）
 )
 if not result["ok"]:
     self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
@@ -442,9 +442,9 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 
 `error` 错误码：`rejected`（注册：没有 role 接受，例如名字已被其他 source 占用）、
 `partial_failure`（注销：部分 role 失败）、`main_server_unavailable`（没拿到 HTTP 回复）、
-`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在；或回复不是 JSON）、`timeout`（`request_timeout`
-内 host 没回复）、`host_unavailable`（请求没送到 host）、`not_registered`（注销：本插件没有
-这个名字的工具，不会联系 host）、`invalid_request`。
+`main_server_error`（HTTP 状态码 >= 400，例如 role 不存在；或回复不是 JSON 对象）、`timeout`（`request_timeout`
+内 host 没回复）、`host_unavailable`（请求没送到 host）、`not_registered`（注销：main_server 上没有
+删掉本插件这个名字的任何工具）、`invalid_request`。
 
 本地状态跟着 `ok` 走，插件和 host 两边一致：
 
@@ -455,11 +455,16 @@ host 走和通知相同的 `main_server` 调用，把 `main_server` 的答复带
 - host 注销时总带上 `expected_source=plugin:{plugin_id}`（plugin_id 取自插件连接本身），
   插件不可能删掉其他 source 的同名工具。
 - `timeout` 表示 `main_server` 上的结果未知。注册超时后再注册同名即可收敛（同 source 注册
-  会覆盖旧的）；插件停止时无论如何都会全部清掉。
+  会覆盖旧的）；如果不想要这个工具了，直接调 `unregister_llm_tool_async(name)`：本地已经没有的
+  名字也会发给 host、按全部 role 注销，`main_server` 上的残留会被删掉。插件停止时无论如何都会全部清掉。
+- 同一个名字的 async 调用按调用顺序逐个执行，每个都等上一个的答复。例如
+  `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))` 结束后 `t` 在各处都不存在。
+  不同名字之间互不等待。`request_timeout` 只管本次调用自己的请求，不含排在同名前面调用后面等待的时间。
 
-参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`；
-`request_timeout` 不合法也抛 `ValueError`）。host 和 `main_server` 的失败不抛异常。
-同一个工具名只用一种写法：同步和 async 调用走不同的 IPC 通道，混用没有顺序保证。
+参数错误和同步版本一样抛异常（`ValueError`、`TypeError`、`EntryConflictError`）。async 版本
+另外在 `request_timeout` 不合法、或注册时 `timeout` 不在 (0, 300] 内（`main_server` 的上限；同步版本
+照旧原样传过去）时抛 `ValueError`。host 和 `main_server` 的失败不抛异常。同一个工具名只用一种写法：
+同步调用不参与按名字的排队，且走不同的 IPC 通道，混用没有顺序保证。
 
 ### 错误返回
 

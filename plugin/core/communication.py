@@ -1078,7 +1078,7 @@ class PluginCommunicationResourceManager:
 
             fields = parse_register_request(msg)
             if fields is None:
-                self.logger.warning("LLM_TOOL_REGISTER missing name: {}", msg)
+                self.logger.warning("LLM_TOOL_REGISTER missing or invalid name: {}", msg.get("name"))
                 return
 
             await register_remote_tool(plugin_id=self.plugin_id, **fields)
@@ -1107,7 +1107,7 @@ class PluginCommunicationResourceManager:
 
             fields = parse_unregister_request(msg)
             if fields is None:
-                self.logger.warning("LLM_TOOL_UNREGISTER missing name: {}", msg)
+                self.logger.warning("LLM_TOOL_UNREGISTER missing or invalid name: {}", msg.get("name"))
                 return
 
             await unregister_remote_tool(plugin_id=self.plugin_id, **fields)

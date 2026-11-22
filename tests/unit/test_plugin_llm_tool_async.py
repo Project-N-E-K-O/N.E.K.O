@@ -238,6 +238,7 @@ async def test_register_async_host_unavailable_rolls_back():
     assert result["ok"] is False
     assert result["error"] == "host_unavailable"
     assert "BUSY" in (result["message"] or "")
+    assert "busy" in (result["message"] or "")  # str(exc) is carried too
     assert plugin.list_llm_tools() == []
 
 
@@ -295,6 +296,25 @@ async def test_register_async_duplicate_name_raises_like_sync_api():
     assert host.calls == []
     # The existing registration is untouched.
     assert [t["name"] for t in plugin.list_llm_tools()] == ["tool_a"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -1, 300.5, float("inf"), float("nan"), True, "5"])
+async def test_register_async_rejects_bad_tool_timeout_before_claiming(bad):
+    plugin, _ = _make_plugin()
+    host = _FakeHost(reply={"ok": True})
+    _install_host(plugin, host)
+
+    with pytest.raises(ValueError):
+        await plugin.register_llm_tool_async(**_register_kwargs(timeout=bad))
+    assert host.calls == []
+    assert plugin.list_llm_tools() == []
+
+
+def test_sync_register_keeps_accepting_any_positive_tool_timeout():
+    """The range check is new-API only; the sync call is unchanged."""
+    plugin, _ = _make_plugin()
+    assert plugin.register_llm_tool(**_register_kwargs(timeout=301.0)) is True
 
 
 @pytest.mark.asyncio
@@ -429,9 +449,14 @@ async def test_unregister_async_failure_keeps_local(reply, exc, error):
 
 
 @pytest.mark.asyncio
-async def test_unregister_async_unknown_name_does_not_contact_host():
+async def test_unregister_async_unknown_name_asks_host_for_every_role():
+    """Nothing local and nothing of ours on main_server: not_registered,
+    but only after the host confirmed it."""
     plugin, _ = _make_plugin()
-    host = _FakeHost(reply={"ok": True})
+    host = _FakeHost(reply={
+        "ok": True, "removed": False, "affected_roles": [], "failed_roles": [],
+        "refused_roles": [{"role": "Lanlan", "owned_by": "plugin:other"}],
+    })
     _install_host(plugin, host)
 
     result = await plugin.unregister_llm_tool_async("nope")
@@ -439,7 +464,159 @@ async def test_unregister_async_unknown_name_does_not_contact_host():
     assert result["ok"] is False
     assert result["error"] == "not_registered"
     assert result["removed"] is False
+    assert result["refused_roles"] == [{"role": "Lanlan", "owned_by": "plugin:other"}]
+    (call,) = host.calls
+    assert call["request_type"] == "LLM_TOOL_UNREGISTER_REQUEST"
+    assert call["request_data"]["name"] == "nope"
+    assert call["request_data"]["role"] is None  # role unknown: all roles
+
+
+@pytest.mark.asyncio
+async def test_unregister_async_removes_remote_leftover_after_register_timeout():
+    """A register timed out (local rolled back) but main_server kept the
+    tool: unregister_llm_tool_async must still be able to remove it."""
+    plugin, _ = _make_plugin()
+    _install_host(plugin, _FakeHost(exc=TimeoutError("late")))
+    timed_out = await plugin.register_llm_tool_async(**_register_kwargs())
+    assert timed_out["error"] == "timeout" and plugin.list_llm_tools() == []
+
+    host = _FakeHost(reply={
+        "ok": True, "removed": True, "affected_roles": ["Lanlan"], "failed_roles": [], "refused_roles": [],
+    })
+    _install_host(plugin, host)
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is True
+    assert result["removed"] is True
+    assert result["error"] is None
+    assert host.calls[0]["request_data"]["role"] is None
+
+
+@pytest.mark.asyncio
+async def test_unregister_async_unknown_name_failure_is_passed_through():
+    plugin, _ = _make_plugin()
+    _install_host(plugin, _FakeHost(exc=TimeoutError("late")))
+
+    result = await plugin.unregister_llm_tool_async("nope")
+
+    assert result["ok"] is False
+    assert result["error"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_unregister_async_rejects_invalid_name_without_contacting_host():
+    plugin, _ = _make_plugin()
+    host = _FakeHost(reply={"ok": True})
+    _install_host(plugin, host)
+
+    with pytest.raises(ValueError):
+        await plugin.unregister_llm_tool_async("../other")
     assert host.calls == []
+
+
+# ---------------------------------------------------------------------------
+# SDK: same-name async calls are serialised
+# ---------------------------------------------------------------------------
+
+
+class _StatefulHost:
+    """Fake host + main_server that keeps the remote tool set, answers each
+    request after a per-call delay (taken in call order) and runs requests
+    concurrently, like the real RPC dispatcher does."""
+
+    def __init__(self, delays):
+        self.remote: set[str] = set()
+        self.delays = list(delays)
+        self.order: list[str] = []
+
+    async def __call__(self, *, request_type, request_data, **_):
+        name = request_data["name"]
+        self.order.append(request_type)
+        await asyncio.sleep(self.delays.pop(0) if self.delays else 0.01)
+        if request_type == "LLM_TOOL_REGISTER_REQUEST":
+            self.remote.add(name)
+            return {"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}
+        removed = name in self.remote
+        self.remote.discard(name)
+        return {"ok": True, "removed": removed, "affected_roles": ["Lanlan"] if removed else [],
+                "failed_roles": [], "refused_roles": []}
+
+
+def _local_names(plugin) -> set[str]:
+    return {t["name"] for t in plugin.list_llm_tools()}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_register_and_unregister_end_consistent():
+    """gather(register, unregister): register is slow at main_server and
+    unregister fast. Without per-name ordering both return ok=True while
+    main_server keeps the tool and the plugin has no handler."""
+    plugin, _ = _make_plugin()
+    host = _StatefulHost(delays=[0.05, 0.0])
+    _install_host(plugin, host)
+
+    registered, unregistered = await asyncio.gather(
+        plugin.register_llm_tool_async(**_register_kwargs()),
+        plugin.unregister_llm_tool_async("tool_a"),
+    )
+
+    assert registered["ok"] is True
+    assert unregistered["ok"] is True and unregistered["removed"] is True
+    assert host.remote == set()
+    assert _local_names(plugin) == set()
+    assert not _entry_registered(plugin, "tool_a")
+    assert plugin._llm_tool_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_late_unregister_does_not_remove_a_newer_registration():
+    """Two overlapping unregisters, and the plugin registers the name again
+    after the first returned. The delayed second unregister must not
+    delete the new registration."""
+    plugin, _ = _make_plugin()
+    # Call order: initial register, unregister 1, unregister 2 (slow), register 2.
+    host = _StatefulHost(delays=[0.0, 0.0, 0.05, 0.0])
+    _install_host(plugin, host)
+    assert (await plugin.register_llm_tool_async(**_register_kwargs()))["ok"] is True
+
+    first = asyncio.create_task(plugin.unregister_llm_tool_async("tool_a"))
+    second = asyncio.create_task(plugin.unregister_llm_tool_async("tool_a"))
+    assert (await first)["ok"] is True
+    again = await plugin.register_llm_tool_async(**_register_kwargs())
+    late = await second
+
+    assert again["ok"] is True
+    assert late["error"] == "not_registered"  # ran before the new register
+    assert host.remote == {"tool_a"}
+    assert _local_names(plugin) == {"tool_a"}
+    assert _entry_registered(plugin, "tool_a")
+    assert host.order == [
+        "LLM_TOOL_REGISTER_REQUEST", "LLM_TOOL_UNREGISTER_REQUEST",
+        "LLM_TOOL_UNREGISTER_REQUEST", "LLM_TOOL_REGISTER_REQUEST",
+    ]
+    assert plugin._llm_tool_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_different_names_are_not_serialised():
+    plugin, _ = _make_plugin()
+    gate = asyncio.Event()
+    seen: list[str] = []
+
+    async def host(*, request_data, **_):
+        seen.append(request_data["name"])
+        if request_data["name"] == "slow":
+            await gate.wait()
+        return {"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}
+
+    _install_host(plugin, host)
+    slow = asyncio.create_task(plugin.register_llm_tool_async(**_register_kwargs("slow")))
+    await asyncio.sleep(0)
+    fast = await asyncio.wait_for(plugin.register_llm_tool_async(**_register_kwargs("fast")), 1.0)
+    assert fast["ok"] is True
+    gate.set()
+    assert (await slow)["ok"] is True
+    assert _local_names(plugin) == {"slow", "fast"}
 
 
 # ---------------------------------------------------------------------------
@@ -594,14 +771,31 @@ async def test_host_register_main_server_http_error(monkeypatch, registry):
     assert not registry.has_plugin_tool(PLUGIN_ID, "tool_a")
 
 
-class _NonJsonResp(_FakeResp):
+class _RawResp:
+    """A 200 answer as httpx would give it: ``json()`` parses ``text``."""
+
+    status_code = 200
+
+    def __init__(self, text: str, content_type: str | None):
+        self.text = text
+        self.headers = {} if content_type is None else {"content-type": content_type}
+
     def json(self):
-        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        import json as _json
+
+        return _json.loads(self.text)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("op", ["register", "unregister"])
-async def test_host_non_json_answer_is_main_server_error(monkeypatch, registry, op):
+@pytest.mark.parametrize("text,content_type", [
+    ("<html>oops</html>", "text/html"),
+    ("<html>oops</html>", None),
+    ("not json", "application/json"),
+    ('["a list"]', "application/json"),
+    ("null", "application/json"),
+])
+async def test_host_unreadable_answer_is_main_server_error(monkeypatch, registry, op, text, content_type):
     from plugin.server.messaging.handlers.llm_tools import (
         handle_llm_tool_register,
         handle_llm_tool_unregister,
@@ -610,7 +804,7 @@ async def test_host_non_json_answer_is_main_server_error(monkeypatch, registry, 
     class _Server(_FakeMainServer):
         async def post(self, url, json=None, **_):
             self.posts.append((url, json))
-            return _NonJsonResp("<html>", 200)
+            return _RawResp(text, content_type)
 
     await _seed_tracking(registry)
     _use_main_server(monkeypatch, registry, _Server())
@@ -623,6 +817,35 @@ async def test_host_non_json_answer_is_main_server_error(monkeypatch, registry, 
     assert result["error"] == "main_server_error"
     # Neither path drops existing tracking on an unreadable answer.
     assert registry.has_plugin_tool(PLUGIN_ID, "tool_a")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["register", "unregister"])
+@pytest.mark.parametrize("name", ["../other_plugin/x", "a/b", "", None, "x" * 65])
+async def test_host_rejects_invalid_tool_names(monkeypatch, registry, op, name):
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
+
+    server = _use_main_server(monkeypatch, registry, _FakeMainServer({"ok": True}))
+    request = dict(_REGISTER_REQUEST if op == "register" else _UNREGISTER_REQUEST, name=name)
+    handler = handle_llm_tool_register if op == "register" else handle_llm_tool_unregister
+
+    result = await handler(_rpc_ctx(), request)
+
+    assert result["ok"] is False
+    assert result["error"] == "invalid_request"
+    assert server.posts == []
+
+
+def test_role_records_drop_null_values():
+    from plugin.sdk.plugin.llm_tool import build_register_result
+
+    result = build_register_result(
+        {"failed_roles": [{"role": "A", "error": None}, "junk"]}, ok=True,
+    )
+    assert result["failed_roles"] == [{"role": "A"}]
 
 
 @pytest.mark.asyncio

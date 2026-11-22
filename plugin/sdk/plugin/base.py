@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+import contextlib
+import math
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 try:
@@ -49,9 +52,13 @@ from .llm_tool import (
 DEFAULT_PLUGIN_VERSION = _DEFAULT_PLUGIN_VERSION
 
 # How long register_llm_tool_async / unregister_llm_tool_async wait for the
-# host by default. The host's own main_server call uses a 10s read timeout
-# (see ``plugin/server/messaging/llm_tool_registry.py``); leave headroom.
-DEFAULT_LLM_TOOL_REQUEST_TIMEOUT = 15.0
+# host by default. The host's main_server call can spend up to 10s waiting for
+# a pooled connection, 2s connecting and 10s reading (see
+# ``plugin/server/messaging/llm_tool_registry.py``); stay above that sum so a
+# slow but successful registration is not reported as a timeout.
+DEFAULT_LLM_TOOL_REQUEST_TIMEOUT = 30.0
+# main_server's ToolRegisterRequest bound for a tool's own per-call timeout.
+_LLM_TOOL_MAX_TIMEOUT_SECONDS = 300.0
 # Host-reported RPC error codes that mean "no answer in time".
 _LLM_TOOL_TIMEOUT_CODES = frozenset({"DEADLINE_EXCEEDED", "OPERATION_TIMEOUT", "TRANSPORT_TIMEOUT"})
 
@@ -143,6 +150,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
         # tagged methods. Manual calls to ``register_llm_tool`` are
         # tracked separately via ``self._llm_tools``.
         self._llm_tools_auto_registered: bool = False
+        # name -> [lock, users]: serialises register_llm_tool_async /
+        # unregister_llm_tool_async for one name from the local read to the
+        # local update after the host answered. Dropped when unused.
+        self._llm_tool_locks: dict[str, list[Any]] = {}
         # Auto-register every method tagged with ``@llm_tool``. Doing
         # this at the end of ``super().__init__()`` means subclasses
         # don't need to remember to call anything — the decorator alone
@@ -667,6 +678,41 @@ class NekoPluginBase(_SharedNekoPluginBase):
             reply_tail=reply_tail,
         )
 
+    @contextlib.asynccontextmanager
+    async def _llm_tool_name_lock(self, name: str) -> AsyncIterator[None]:
+        """Hold the per-name lock of the async register/unregister calls.
+
+        Without it, two async calls for one name can interleave at the host
+        (both requests are in flight at once) and leave the plugin and
+        main_server disagreeing, e.g. ``gather(register, unregister)`` with
+        both answering ``ok=True`` while main_server keeps the tool and the
+        plugin has no handler. The sync calls are not serialised by it.
+        """
+        entry = self._llm_tool_locks.get(name)
+        if entry is None:
+            entry = [asyncio.Lock(), 0]
+            self._llm_tool_locks[name] = entry
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                yield
+        finally:
+            entry[1] -= 1
+            if entry[1] == 0 and self._llm_tool_locks.get(name) is entry:
+                del self._llm_tool_locks[name]
+
+    @staticmethod
+    def _validate_llm_tool_timeout(timeout: float) -> None:
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= _LLM_TOOL_MAX_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                f"timeout must be a finite number in (0, {_LLM_TOOL_MAX_TIMEOUT_SECONDS:g}] seconds"
+            )
+
     @staticmethod
     def _validate_llm_tool_request_timeout(request_timeout: float) -> float:
         if (
@@ -715,9 +761,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
                     {}, ok=False, error="timeout",
                     message=f"no answer from the host within {request_timeout}s ({code})",
                 )
+            detail = str(exc)
             return build_result(
                 {}, ok=False, error="host_unavailable",
-                message=f"{type(exc).__name__}" + (f" ({code})" if isinstance(code, str) else ""),
+                message=f"{type(exc).__name__}"
+                + (f" ({code})" if isinstance(code, str) else "")
+                + (f": {detail}" if detail else ""),
             )
         if not isinstance(reply, Mapping):
             return build_result({}, ok=False, error="host_unavailable", message="malformed host reply")
@@ -822,33 +871,44 @@ class NekoPluginBase(_SharedNekoPluginBase):
         (same-source registration replaces), and stopping the plugin
         clears it.
 
-        Raises ``ValueError`` for invalid names or ``request_timeout``,
+        Async calls for the same name run one at a time, in call order
+        (each waits for the previous one's answer; ``request_timeout``
+        covers this call's own request, not that wait), so for example
+        ``gather(register_llm_tool_async("t", ...),
+        unregister_llm_tool_async("t"))`` ends with ``t`` gone everywhere.
+        The sync calls do not take part in that ordering: use one style
+        per tool name.
+
+        Raises ``ValueError`` for invalid names, ``request_timeout`` or a
+        ``timeout`` outside (0, 300] (main_server's bound),
         ``TypeError`` for a non-callable handler and
         ``EntryConflictError`` when the name is already registered
-        locally -- exactly like :meth:`register_llm_tool`. Host and
-        main_server failures never raise; they come back in the result.
+        locally -- like :meth:`register_llm_tool`. Host and main_server
+        failures never raise; they come back in the result.
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
+        self._validate_llm_tool_timeout(timeout)
         meta = self._build_llm_tool_meta(
             name=name, description=description, parameters=parameters,
             timeout=timeout, role=role, reply_tail=reply_tail,
         )
-        self._claim_llm_tool_locally(meta, handler)
-        try:
-            result = await self._request_llm_tool_change(
-                request_type="LLM_TOOL_REGISTER_REQUEST",
-                payload=meta.to_ipc_payload(plugin_id=self.plugin_id),
-                request_timeout=request_timeout,
-                build_result=build_register_result,
-            )
-        except BaseException:
-            # Cancelled while waiting: the outcome is unknown, so do not
-            # leave a local tool the caller never got a result for.
-            self._release_llm_tool_locally(meta)
-            raise
-        if not result["ok"]:
-            self._release_llm_tool_locally(meta)
-        return result
+        async with self._llm_tool_name_lock(meta.name):
+            self._claim_llm_tool_locally(meta, handler)
+            try:
+                result = await self._request_llm_tool_change(
+                    request_type="LLM_TOOL_REGISTER_REQUEST",
+                    payload=meta.to_ipc_payload(plugin_id=self.plugin_id),
+                    request_timeout=request_timeout,
+                    build_result=build_register_result,
+                )
+            except BaseException:
+                # Cancelled while waiting: the outcome is unknown, so do not
+                # leave a local tool the caller never got a result for.
+                self._release_llm_tool_locally(meta)
+                raise
+            if not result["ok"]:
+                self._release_llm_tool_locally(meta)
+            return result
 
     async def unregister_llm_tool_async(
         self,
@@ -868,28 +928,40 @@ class NekoPluginBase(_SharedNekoPluginBase):
         ``ok=True``. On failure (some roles failed, timeout, host or
         main_server unavailable) the tool stays registered locally, as it
         does on the host, so the model's calls still reach a handler and
-        calling this again retries. A name this plugin has not
-        registered returns ``ok=False, error="not_registered"`` without
-        contacting the host.
+        calling this again retries.
 
-        Raises ``ValueError`` for an invalid ``request_timeout``.
+        A name that is not registered locally is still sent to the host,
+        for every role: after a register ``timeout`` main_server may hold
+        the tool although the plugin rolled it back, and this is how the
+        plugin removes it. If main_server removed nothing of this
+        plugin's, the result is ``ok=False, error="not_registered"``.
+
+        Async calls for the same name run one at a time, in call order;
+        see :meth:`register_llm_tool_async`.
+
+        Raises ``ValueError`` for an invalid name or ``request_timeout``.
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
-        meta = self._llm_tools.get(name)
-        if meta is None:
-            return build_unregister_result(
-                {}, ok=False, error="not_registered",
-                message=f"no LLM tool named {name!r} is registered by this plugin",
+        validate_tool_name(name)
+        async with self._llm_tool_name_lock(name):
+            meta = self._llm_tools.get(name)
+            result = await self._request_llm_tool_change(
+                request_type="LLM_TOOL_UNREGISTER_REQUEST",
+                # Without a local record the role is unknown: all roles.
+                payload={"plugin_id": self.plugin_id, "name": name, "role": meta.role if meta else None},
+                request_timeout=request_timeout,
+                build_result=build_unregister_result,
             )
-        result = await self._request_llm_tool_change(
-            request_type="LLM_TOOL_UNREGISTER_REQUEST",
-            payload={"plugin_id": self.plugin_id, "name": name, "role": meta.role},
-            request_timeout=request_timeout,
-            build_result=build_unregister_result,
-        )
-        if result["ok"]:
-            self._release_llm_tool_locally(meta)
-        return result
+            if meta is not None:
+                if result["ok"]:
+                    self._release_llm_tool_locally(meta)
+                return result
+            if result["ok"] and not result["removed"]:
+                return build_unregister_result(
+                    result, ok=False, error="not_registered",
+                    message=f"no LLM tool named {name!r} is registered by this plugin",
+                )
+            return result
 
     def list_llm_tools(self) -> list[dict[str, Any]]:
         """Return the LLM tools this plugin currently has registered."""

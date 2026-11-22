@@ -37,7 +37,7 @@ from plugin.utils.http_imports import ensure_httpx
 async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) -> object:
     fields = parse_register_request(request)
     if fields is None:
-        return _register_result({}, ok=False, error="invalid_request", message="missing tool name")
+        return _register_result({}, ok=False, error="invalid_request", message="missing or invalid tool name")
     httpx = await ensure_httpx()
     try:
         body = await register_remote_tool(plugin_id=ctx.from_plugin, **fields)
@@ -57,7 +57,7 @@ async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) 
 async def handle_llm_tool_unregister(ctx: RpcContext, request: dict[str, object]) -> object:
     fields = parse_unregister_request(request)
     if fields is None:
-        return _unregister_result({}, ok=False, error="invalid_request", message="missing tool name")
+        return _unregister_result({}, ok=False, error="invalid_request", message="missing or invalid tool name")
     httpx = await ensure_httpx()
     try:
         body = await unregister_remote_tool(plugin_id=ctx.from_plugin, **fields)
