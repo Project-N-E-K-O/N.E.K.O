@@ -92,6 +92,7 @@
             </div>
             <el-select
               :model-value="browser.settings.executable ?? ''"
+              :empty-values="[null, undefined]"
               class="wide"
               :disabled="saving"
               :aria-label="t('power.runtime.builtin.which')"
