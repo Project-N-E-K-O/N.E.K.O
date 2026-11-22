@@ -31,6 +31,23 @@ PERMISSION_IDS: tuple[str, ...] = (
     "system.env:read",
 )
 
+# Legacy capability names -> permission ids.
+LEGACY_PERMISSION_NAMES: dict[str, str] = {
+    "conversations.read": "plugin_sdk.main_agent.conversations:read",
+    "memory.read": "plugin_sdk.main_agent.memory:read",
+    "messages.push": "plugin_sdk.main_agent.messages:push",
+}
+
+
+def normalize_permission(name: object) -> str | None:
+    """Permission id for a new id or a legacy name; None when unknown."""
+    if not isinstance(name, str):
+        return None
+    if name in PERMISSION_IDS:
+        return name
+    return LEGACY_PERMISSION_NAMES.get(name)
+
+
 SECTIONS: tuple[str, ...] = ("require", "ask")
 NETWORK_PERMISSION = "system.network:connect"
 _ENTRY_KEYS = frozenset({"reason", "background", "background_reason", "hosts"})

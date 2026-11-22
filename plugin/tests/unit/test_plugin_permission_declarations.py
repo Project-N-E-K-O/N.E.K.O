@@ -658,3 +658,56 @@ def test_every_issue_code_has_a_message_in_all_locales():
 def test_permission_ids_cover_the_legacy_capabilities():
     assert set(capability_analysis.LEGACY_CAPABILITY_PERMISSIONS.values()) <= set(PERMISSION_IDS)
     assert len(PERMISSION_IDS) == len(set(PERMISSION_IDS)) == 9
+
+
+# --- consent comparison across names ----------------------------------------------
+
+
+def test_normalize_permission_maps_legacy_names():
+    from plugin.core.permission_declarations import LEGACY_PERMISSION_NAMES, normalize_permission
+
+    for legacy, permission in LEGACY_PERMISSION_NAMES.items():
+        assert normalize_permission(legacy) == permission
+        assert normalize_permission(permission) == permission
+    assert normalize_permission("camera.read") is None
+    assert normalize_permission(None) is None
+
+
+@pytest.mark.parametrize(
+    "reported",
+    [
+        ["memory.read", "messages.push"],
+        ["plugin_sdk.main_agent.memory:read", "plugin_sdk.main_agent.messages:push"],
+        ["memory.read", "plugin_sdk.main_agent.messages:push"],
+    ],
+)
+def test_legacy_approvals_cover_reports_in_either_naming(reported):
+    from plugin.server.domain.consent_policy import derive_consent
+
+    record = {"decision": "approved", "approved_capabilities": ["memory.read", "messages.push"]}
+    view = derive_consent(record, {"status": "completed", "capabilities": reported})
+    assert (view.state, view.unconfirmed, view.upgraded) == ("clear", [], False)
+
+
+def test_a_really_new_permission_still_needs_confirmation():
+    from plugin.server.domain.consent_policy import derive_consent
+
+    record = {"decision": "approved", "approved_capabilities": ["memory.read"]}
+    report = {"status": "completed", "capabilities": ["plugin_sdk.main_agent.memory:read", "conversations.read"]}
+    view = derive_consent(record, report)
+    assert (view.state, view.unconfirmed, view.upgraded) == ("confirm", ["conversations.read"], True)
+
+
+def test_analyzer_upgrade_does_not_ask_approved_plugins_again(tmp_path):
+    """The re-scan after the version bump reports the same legacy names."""
+    from plugin.server.domain.consent_policy import derive_consent
+
+    (tmp_path / "main.py").write_text(
+        "import os\nclass P:\n    def go(self):\n        self.ctx.push_message(os.getenv('A'))\n"
+        "        self.ctx.bus.memory.get('x')\n",
+        encoding="utf-8",
+    )
+    report = analyze_capabilities(tmp_path)
+    record = {"decision": "approved", "approved_capabilities": ["memory.read", "messages.push"]}
+    view = derive_consent(record, report)
+    assert (view.state, view.upgraded) == ("clear", False)

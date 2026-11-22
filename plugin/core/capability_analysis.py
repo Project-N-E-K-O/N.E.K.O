@@ -13,6 +13,7 @@ from threading import Event
 from collections.abc import Iterator
 
 from plugin.core.permission_declarations import (
+    LEGACY_PERMISSION_NAMES,
     PermissionDeclarations,
     PermissionIssue,
     parse_permission_declarations,
@@ -478,11 +479,7 @@ def _is_test_source(relative: Path) -> bool:
 
 # Legacy capability names (still used by the consent flow) and the permission
 # id each one is reported under in ``permissions``.
-LEGACY_CAPABILITY_PERMISSIONS = {
-    "conversations.read": "plugin_sdk.main_agent.conversations:read",
-    "memory.read": "plugin_sdk.main_agent.memory:read",
-    "messages.push": "plugin_sdk.main_agent.messages:push",
-}
+LEGACY_CAPABILITY_PERMISSIONS = LEGACY_PERMISSION_NAMES
 assert set(LEGACY_CAPABILITY_PERMISSIONS) == set(CAPABILITIES)
 
 # How a permission finding was established, strongest first.
