@@ -17,8 +17,8 @@ Document shape (``schema_version`` 1)::
           "legacy_denied": true,       # optional, see LEGACY_DENIED
           "permissions": {
             "<permission id>": {
-              "state": "granted" | "denied",
-              "condition": "anytime" | "in_use",
+              "state": "granted" | "denied" | "undecided",
+              "condition": "anytime" | "in_use",   # not on "undecided"
               "legacy_any": true,      # optional
               "scope": "all",
               "decided_at": "<iso>"
@@ -29,7 +29,9 @@ Document shape (``schema_version`` 1)::
       }
     }
 
-A permission missing from ``permissions`` is undecided.
+A permission missing from ``permissions`` is undecided, except on a record
+with ``legacy_denied`` (see LEGACY_DENIED), where an explicit ``undecided``
+entry is stored instead.
 
 On the first load the decisions recorded in the legacy ``plugin_consents.json``
 are imported once. The legacy file is only ever read here, never written.
@@ -70,6 +72,7 @@ LEGACY_PERMISSION_NAMES: dict[str, str] = {
 
 STATE_GRANTED = "granted"
 STATE_DENIED = "denied"
+STATE_UNDECIDED = "undecided"
 STATES = frozenset({STATE_GRANTED, STATE_DENIED})
 
 CONDITION_ANYTIME = "anytime"
@@ -80,7 +83,7 @@ SCOPE_ALL = "all"
 
 # Set on a plugin record imported from a legacy whole-plugin denial: every
 # implicitly declared permission of that plugin counts as denied unless the
-# record holds an explicit decision for it.
+# record holds an explicit entry for it (including an explicit "undecided").
 LEGACY_DENIED = "legacy_denied"
 
 
@@ -311,6 +314,11 @@ class PluginPermissionStore:
     # Public API
     # ------------------------------------------------------------------
 
+    def ensure_loaded(self) -> None:
+        """Load (and on first use import) the store now rather than lazily."""
+        with self._lock:
+            self._load()
+
     def legacy_import(self) -> dict:
         with self._lock:
             self._load()
@@ -334,12 +342,24 @@ class PluginPermissionStore:
         """
         with self._lock:
             manager = self._load()
-            record = self._document["plugins"].get(plugin_id)
-            if record is None or current is None:
-                return copy.deepcopy(record or {})
+            cached = self._document["plugins"].get(plugin_id)
+            if cached is None or current is None:
+                return copy.deepcopy(cached or {})
+            known = PluginSource.from_dict(cached.get("source"))
+            if known == current:
+                return copy.deepcopy(cached)
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
-            if not self._apply_source(record, current):
+            self._apply_source(record, current)
+            if known is None:
+                # First binding is not a source change; a failed write must
+                # not turn a read into an error. The next call retries.
+                try:
+                    self._commit(manager, document)
+                except ServerDomainError:
+                    logger.error(
+                        "plugin source binding was not saved: plugin_id={}", plugin_id
+                    )
                 return copy.deepcopy(record)
             self._commit(manager, document)
             return copy.deepcopy(record)
@@ -406,17 +426,36 @@ class PluginPermissionStore:
             return copy.deepcopy(record)
 
     def clear(self, plugin_id: str, permission_id: str) -> dict:
-        """Return one permission to undecided."""
+        """Return one permission to undecided.
+
+        On a ``legacy_denied`` record a missing entry still means denied, so
+        an explicit ``undecided`` entry is stored instead of deleting it.
+        """
         permission_id = normalize_permission(permission_id)
         with self._lock:
             manager = self._load()
             record = self._document["plugins"].get(plugin_id)
-            if record is None or permission_id not in record.get("permissions", {}):
-                return copy.deepcopy(record or {})
+            if record is None:
+                return {}
+            entry = record.get("permissions", {}).get(permission_id)
+            if record.get(LEGACY_DENIED):
+                if entry is not None and entry.get("state") == STATE_UNDECIDED:
+                    return copy.deepcopy(record)
+            elif entry is None:
+                return copy.deepcopy(record)
             document = copy.deepcopy(self._document)
             record = document["plugins"][plugin_id]
-            del record["permissions"][permission_id]
-            record["updated_at"] = _now()
+            now = _now()
+            permissions = record.setdefault("permissions", {})
+            if record.get(LEGACY_DENIED):
+                permissions[permission_id] = {
+                    "state": STATE_UNDECIDED,
+                    "scope": SCOPE_ALL,
+                    "decided_at": now,
+                }
+            else:
+                del permissions[permission_id]
+            record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
 

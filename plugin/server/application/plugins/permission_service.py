@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.infrastructure.plugin_permissions import (
     CONDITION_IN_USE,
@@ -28,11 +27,22 @@ from plugin.server.infrastructure.plugin_permissions import (
 logger = get_logger("server.plugins.permissions")
 
 
+class _SourceUnknown(Exception):
+    pass
+
+
 def _plugin_directory(plugin_id: str) -> Path | None:
-    with state.acquire_plugins_read_lock():
-        meta = state.plugins.get(plugin_id)
-        path = meta.get("config_path") if isinstance(meta, dict) else None
-    return Path(path).parent if path else None
+    """Directory of the loaded plugin, ``None`` when it is not registered."""
+    from plugin.server.infrastructure.config_paths import (
+        _resolve_registered_plugin_config_path,
+    )
+
+    try:
+        path = _resolve_registered_plugin_config_path(plugin_id)
+    except TimeoutError as exc:
+        # The registry is busy; an unknown source keeps the last known one.
+        raise _SourceUnknown from exc
+    return path.parent if path is not None else None
 
 
 def _source_of(entry) -> PluginSource | None:
@@ -63,18 +73,22 @@ def current_source(plugin_id: str) -> PluginSource | None:
     manager = get_install_source_manager()
     if manager is None or manager.is_degraded or not plugin_id:
         return None
-    directory = _plugin_directory(plugin_id)
+    try:
+        directory = _plugin_directory(plugin_id)
+    except _SourceUnknown:
+        return None
     if directory is not None:
         try:
             entry = manager.entry_for_directory(directory)
         except InstallSourceError:
-            entry = None
-        if entry is not None:
-            # The directory key is exact; an empty plugin_id only means the
-            # metadata was unreadable when the lock entry was written.
-            if entry.plugin_id in ("", plugin_id):
-                return _source_of(entry)
             return None
+        # The directory key is exact; an empty plugin_id only means the
+        # metadata was unreadable when the lock entry was written. A known
+        # directory without an entry must not fall back to another root's
+        # entry with the same plugin_id.
+        if entry is not None and entry.plugin_id in ("", plugin_id):
+            return _source_of(entry)
+        return None
     # LockEntry is keyed by directory, so a plugin_id lookup scans every
     # active entry and only trusts a unique match.
     matches = [
@@ -88,6 +102,11 @@ def current_source(plugin_id: str) -> PluginSource | None:
 
 
 permission_store = PluginPermissionStore(source_resolver=current_source)
+
+
+def load_permissions() -> None:
+    """Load the store now, so a first-use import resolves today's sources."""
+    permission_store.ensure_loaded()
 
 
 def permission_record(plugin_id: str) -> dict:

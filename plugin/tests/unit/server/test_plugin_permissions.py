@@ -625,3 +625,91 @@ def test_current_source_without_fingerprint_is_unknown(install_sources):
     )
     install_sources["manager"] = FakeInstallSources([empty_hash])
     assert permission_service.current_source("demo") is None
+
+
+def test_known_directory_without_lock_entry_is_unknown(install_sources):
+    # Another root holds an active entry with the same plugin id; it must not
+    # be picked when the loaded plugin's own directory has no entry.
+    other_root = _lock_entry(root_id="builtin", channel="builtin", directory_name="demo")
+    install_sources["manager"] = FakeInstallSources([other_root])
+    install_sources["directory"] = Path("/user/plugins/demo")
+
+    assert permission_service.current_source("demo") is None
+
+
+def test_registry_lock_timeout_is_an_unknown_source(monkeypatch):
+    from plugin.server.infrastructure import config_paths
+
+    def busy(_plugin_id):
+        raise TimeoutError("plugins_read")
+
+    monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", busy)
+    # A unique entry exists: without the timeout handling the scan would use it.
+    manager = FakeInstallSources([_lock_entry(channel="manual")])
+    monkeypatch.setattr(install_source_module, "get_install_source_manager", lambda: manager)
+
+    assert permission_service.current_source("demo") is None
+
+
+def test_first_binding_write_failure_still_returns_the_view(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted", source=None)
+    manager.fail = OSError("disk full")
+
+    record = store.sync_source("x", MARKET)
+
+    assert record["source"] == MARKET.to_dict()
+    assert MEMORY_READ in record["permissions"]
+    manager.fail = None
+    assert store.read("x")["source"] is None  # not cached; retried next time
+    assert store.sync_source("x", MARKET)["source"] == MARKET.to_dict()
+    assert store.read("x")["source"] == MARKET.to_dict()
+
+
+def test_source_change_write_failure_is_reported(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted", source=MARKET)
+    manager.fail = OSError("disk full")
+
+    with pytest.raises(ServerDomainError) as captured:
+        store.sync_source("x", MANUAL)
+    assert captured.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+
+
+def test_unchanged_source_does_not_write(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted", source=MARKET)
+    saves = manager.saves
+
+    store.sync_source("x", MARKET)
+
+    assert manager.saves == saves
+
+
+def test_clear_on_legacy_denied_record_stores_an_undecided_exception(manager):
+    _write_legacy(
+        manager,
+        _legacy({"x": {"decision": "denied", "approved_capabilities": []}}),
+    )
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted")
+
+    record = store.clear("x", MEMORY_READ)
+
+    assert record[LEGACY_DENIED] is True
+    assert record["permissions"][MEMORY_READ]["state"] == "undecided"
+    assert CONVERSATIONS_READ not in record["permissions"]  # still implicitly denied
+
+    # Clearing a never-decided permission of a denied plugin also lifts it.
+    record = store.clear("x", CONVERSATIONS_READ)
+    assert record["permissions"][CONVERSATIONS_READ]["state"] == "undecided"
+
+
+def test_clear_on_ordinary_record_deletes_the_entry(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted")
+    saves = manager.saves
+
+    assert store.clear("x", MEMORY_READ)["permissions"] == {}
+    assert store.clear("x", MEMORY_READ)["permissions"] == {}
+    assert manager.saves == saves + 1

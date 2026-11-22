@@ -1450,3 +1450,111 @@ async def test_uninstall_reports_incomplete_permission_rollback(
         await uninstall_plugin("demo")
 
     assert _details_of(captured.value)["permission_rollback"] == "incomplete"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """First store load during uninstall must bind legacy grants to the
+    plugin being removed, not to the built-in copy the registry switches to."""
+    import json
+
+    from plugin.core.state import state
+    from plugin.server.application import install_source as install_source_package
+    from plugin.server.application.plugins import permission_service
+
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    builtin_dir = harness.builtin_root / "demo"
+    builtin_dir.mkdir(parents=True)
+    (builtin_dir / "plugin.toml").write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+
+    from plugin.server.application.install_source.models import SourceDetailMarket
+
+    user_entry = replace(
+        harness.manager.entries["demo"],
+        channel="market",
+        source_detail=SourceDetailMarket(
+            plugin_market_id="mk-demo",
+            version="1",
+            package_url="",
+            package_sha256="",
+            payload_hash=None,
+            channel="stable",
+            published_at="",
+        ),
+    )
+    harness.manager.entries["demo"] = user_entry
+    builtin_entry = replace(
+        user_entry, root_id="builtin", channel="builtin", source_detail=None
+    )
+
+    def _entry_for_directory(directory_path: Path, *, include_removed: bool = False):
+        if Path(directory_path).parent == harness.builtin_root:
+            return builtin_entry
+        entry = harness.manager.entries.get(Path(directory_path).name)
+        if entry is None or (entry.removed and not include_removed):
+            return None
+        return entry
+
+    monkeypatch.setattr(harness.manager, "entry_for_directory", _entry_for_directory)
+    monkeypatch.setattr(
+        install_source_package, "get_install_source_manager", lambda: harness.manager
+    )
+
+    monkeypatch.setitem(
+        state.plugins, "demo", {"id": "demo", "config_path": str(harness.config_path)}
+    )
+
+    original_refresh = harness._refresh_registry
+
+    async def _refresh_to_builtin() -> dict[str, object]:
+        result = await original_refresh()
+        if harness.refresh_calls == 1:
+            with state.acquire_plugins_write_lock():
+                state.plugins["demo"] = {
+                    "id": "demo",
+                    "config_path": str(builtin_dir / "plugin.toml"),
+                }
+        return result
+
+    monkeypatch.setattr(
+        uninstall_module.plugin_registry_service, "refresh_registry", _refresh_to_builtin
+    )
+
+    store = permission_service.permission_store
+    legacy = store._manager_override.get_runtime_config_path("plugin_consents.json")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "plugins": {
+                    "demo": {"decision": "approved", "approved_capabilities": ["memory.read"]}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert not store._manager_override.get_runtime_config_path(
+        "plugin_permissions.json"
+    ).exists()
+
+    def _fail(_plugin_id: str) -> None:
+        raise OSError("override disk full")
+
+    monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+    assert captured.value.stage == "refresh_and_preferences"
+
+    with state.acquire_plugins_write_lock():
+        state.plugins["demo"] = {"id": "demo", "config_path": str(harness.config_path)}
+    view = permission_service.permission_record("demo")
+    assert view["source"] == {"channel": "market", "fingerprint": "mk-demo"}
+    assert "plugin_sdk.main_agent.memory:read" in view["permissions"]

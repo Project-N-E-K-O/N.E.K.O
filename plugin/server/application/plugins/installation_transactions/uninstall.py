@@ -23,6 +23,7 @@ from plugin.server.application.install_source.scanner import PluginDirectoryScan
 from plugin.server.application.plugins.consent_service import forget_plugin
 from plugin.server.application.plugins.permission_service import (
     forget_permissions,
+    load_permissions,
     restore_permissions,
 )
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
@@ -779,6 +780,19 @@ async def _rollback_precommit(
     )
 
 
+async def _load_permissions_before_changes(plugin_id: str) -> None:
+    try:
+        await asyncio.to_thread(load_permissions)
+    except ServerDomainError as exc:
+        # Same policy as the pre-commit cleanup: an unreadable store does not
+        # block the uninstall.
+        logger.error(
+            "uninstall could not load plugin permissions for {}: code={}",
+            plugin_id,
+            exc.code,
+        )
+
+
 async def _forget_permissions_precommit(plugin_id: str) -> dict | None:
     """Clear the plugin's permission grants before the uninstall commits.
 
@@ -892,6 +906,10 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     preference_snapshot = await asyncio.to_thread(
         _snapshot_runtime_preference, plugin_id
     )
+    # Load the permission store while the registry still points at the plugin
+    # being removed: a first-use import binds legacy grants to the current
+    # source, which must be this plugin's, not a built-in restored below.
+    await _load_permissions_before_changes(plugin_id)
     stop_attempted = False
     staged_code: _StagedPluginCode | None = None
     source_update_attempted = False
