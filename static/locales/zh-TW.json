@@ -2838,6 +2838,7 @@
         "starMapLabeling": "正在命名星雲...",
         "starMapLabelSuccess": "星雲主題已更新",
         "starMapLabelFailed": "重新整理星雲主題失敗，請檢查總結模型設定",
+        "starMapLabelCooldown": "操作太頻繁，請 {{seconds}} 秒後再重新整理星雲主題",
         "starMapResetView": "重設視角",
         "starMapClickHint": "點擊任意一顆星，檢視背後的記憶與相連片段",
         "starMapRelatedStars": "與之相連的記憶",

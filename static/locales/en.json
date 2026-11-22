@@ -2838,6 +2838,7 @@
         "starMapLabeling": "Naming constellations...",
         "starMapLabelSuccess": "Constellation themes updated",
         "starMapLabelFailed": "Could not refresh themes — check your summary model configuration",
+        "starMapLabelCooldown": "Please wait {{seconds}}s before refreshing themes again",
         "starMapResetView": "Reset View",
         "starMapClickHint": "Click any star to read the memory and its connected moments",
         "starMapRelatedStars": "Connected Memories",
