@@ -137,6 +137,8 @@ _LLM_TOOL_MAX_REQUEST_TIMEOUT = 60.0
 # "busy" with nothing applied, instead of an almost certain "timeout"
 # whose outcome would be unknown.
 _LLM_TOOL_MIN_SEND_BUDGET = 5.0
+# How often one reported registration id is targeted when it keeps showing up.
+_LLM_TOOL_MAX_REMOVAL_ATTEMPTS = 2
 # Budget of the unregister a failed register sends to clean up after itself.
 _LLM_TOOL_CLEANUP_TIMEOUT = 15.0
 # Register errors after which main_server may hold the tool: every role's
@@ -1115,15 +1117,18 @@ class NekoPluginBase(_SharedNekoPluginBase):
 
         outcomes: list[LlmToolUnregisterResult] = []
         queue = list(dict.fromkeys(r.get("registration_id") or "" for r in held(first)))
-        attempted: set[str] = set()
+        # A registration that is still being written to roles (a timed-out
+        # register main_server keeps executing) can show up again after its
+        # removal: it then gets one more targeted attempt, never more.
+        attempts: dict[str, int] = {}
         removed_ids: set[str] = set()
         error: str | None = None
         message: str | None = None
         while queue:
             rid = queue.pop(0)
-            if rid in attempted:
+            if rid in removed_ids or attempts.get(rid, 0) >= _LLM_TOOL_MAX_REMOVAL_ATTEMPTS:
                 continue
-            attempted.add(rid)
+            attempts[rid] = attempts.get(rid, 0) + 1
             if not rid:
                 error, message = "partial_failure", (
                     f"another registration of {name!r} holds the name but main_server did not "
@@ -1150,10 +1155,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
             if not outcome["ok"]:
                 error, message = outcome["error"] or "partial_failure", outcome["message"]
                 break
-            if all(r.get("registration_id") != rid for r in held(outcome)):
+            reported = [r.get("registration_id") or "" for r in held(outcome)]
+            if rid not in reported:
                 removed_ids.add(rid)
-            # Holders this follow-up revealed (other roles, or new ones).
-            queue.extend(r.get("registration_id") or "" for r in held(outcome))
+            # Holders this answer reports: new ones, other roles, or ones
+            # removed earlier that are back (no longer counted as removed).
+            removed_ids.difference_update(reported)
+            queue.extend(reported)
 
         everything = [first, *outcomes]
         unresolved = {

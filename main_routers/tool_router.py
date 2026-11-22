@@ -932,6 +932,7 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
             refusal = {"role": role_name, "owned_by": existing_source}
             if (
                 req.expected_registration_id is not None
+                and req.expected_source is not None
                 and e.existing.metadata.get("source") == req.expected_source
                 and (req.expected_host_instance_id is None
                      or e.existing.metadata.get("host_instance_id") == req.expected_host_instance_id)

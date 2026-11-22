@@ -479,3 +479,14 @@ async def test_different_registration_reason_needs_the_same_host_instance(mgr):
         expected_registration_id="mine",
     ))
     assert result["refused_roles"] == [{"role": "Alpha", "owned_by": "plugin:a"}]
+
+
+@pytest.mark.asyncio
+async def test_no_reason_without_expected_source_even_if_the_tool_has_no_source(mgr):
+    """Both sides' source would be None: the reason and holder id still need
+    an explicit expected_source, as documented."""
+    mgr.tool_registry.register(ToolDefinition(name="x", description="", metadata={"registration_id": "reg-2"}))
+    mgr.release.set()
+    result = await tr.unregister_tool(tr.ToolUnregisterRequest(name="x", expected_registration_id="reg-1"))
+    assert result["removed"] is False
+    assert result["refused_roles"] == [{"role": "Alpha", "owned_by": "unknown"}]

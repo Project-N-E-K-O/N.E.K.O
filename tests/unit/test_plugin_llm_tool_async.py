@@ -565,6 +565,42 @@ async def test_stale_removal_tries_every_reported_id():
 
 
 @pytest.mark.asyncio
+async def test_stale_removal_retries_a_registration_that_shows_up_again():
+    """C is removed, but a later answer reports C on another role again (a
+    timed-out register still writing roles): it gets one more targeted
+    attempt, and the call is only ok once it is gone."""
+    plugin, _ = await _plugin_with_tool(role=None)
+    host = _ScriptedHost(
+        _held_by(("R1", "C"), ("R2", "D")),
+        _held_by(("R2", "D"), removed=True, affected=["R1"]),   # C removed
+        _held_by(("R3", "C"), removed=True, affected=["R2"]),   # D removed, C back on R3
+        {"ok": True, "removed": True, "affected_roles": ["R3"], "failed_roles": [], "refused_roles": []},
+    )
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is True
+    assert [c["request_data"].get("expected_registration_id") for c in host.calls[1:]] == ["C", "D", "C"]
+    assert all(c["request_data"]["role"] is None for c in host.calls)
+
+
+@pytest.mark.asyncio
+async def test_stale_removal_is_not_ok_when_a_registration_keeps_coming_back():
+    plugin, _ = await _plugin_with_tool(role=None)
+    back = _held_by(("R2", "C"), removed=True)
+    host = _ScriptedHost(_held_by(("R1", "C")), back, back, back)
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert result["ok"] is False and result["error"] == "partial_failure"
+    assert len(host.calls) == 3  # first + two targeted attempts, then gives up
+    assert any(r.get("registration_id") == "C" for r in result["refused_roles"])
+    assert _local_names(plugin) == {"tool_a"}
+
+
+@pytest.mark.asyncio
 async def test_stale_removal_keeps_what_the_first_request_removed():
     """role=None: the first request removed the held registration on R1
     while R2 reported another one. If the follow-up fails, the result still
@@ -621,6 +657,7 @@ async def test_stale_removal_keeps_refusals_reported_by_follow_ups():
 
     assert {"role": "R1", "owned_by": "plugin:other"} in result["refused_roles"]
     assert all(r.get("reason") != "different registration" for r in result["refused_roles"])
+    assert all(c["request_data"]["role"] is None for c in host.calls)
 
 
 def test_concurrent_sync_unregisters_never_raise_and_one_wins():
