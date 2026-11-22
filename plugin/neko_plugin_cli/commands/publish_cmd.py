@@ -571,11 +571,19 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
                 "HEAD がデタッチ状態です。公開するブランチをチェックアウトしてください",
             )
         )
-    # Quoted like init's push step; the messages name the branch itself.
-    set_upstream = (
-        "git push -u origin "
-        + release_cmd._shell_argument(release_cmd._push_refspec(branch), release_cmd._BRANCH_PLACEHOLDER)
-    )
+    # Quoted like init's push step. The messages name the branch itself, but
+    # behind a placeholder a branch starting with + must be typed as its refspec.
+    branch_refspec = release_cmd._push_refspec(branch)
+    branch_argument = release_cmd._shell_argument(branch_refspec, release_cmd._BRANCH_PLACEHOLDER)
+    set_upstream = f"git push -u origin {branch_argument}"
+    if branch_argument == release_cmd._BRANCH_PLACEHOLDER and branch_refspec != branch:
+        up_en, up_zh, up_ja = (
+            f" (branch: {branch_refspec})",
+            f"（分支：{branch_refspec}）",
+            f"（ブランチ：{branch_refspec}）",
+        )
+    else:
+        up_en, up_zh, up_ja = ("", "", "")
     upstream = git_output(
         plugin_dir,
         "rev-parse",
@@ -586,33 +594,35 @@ def _ensure_head_pushed(plugin_dir: Path, *, head: str) -> None:
     if not upstream:
         raise RuntimeError(
             _tri(
-                f"branch {branch} has no upstream; run {set_upstream}",
-                f"分支 {branch} 没有上游分支；请运行 {set_upstream}",
-                f"ブランチ {branch} に上流ブランチがありません。{set_upstream} を実行してください",
+                f"branch {branch} has no upstream; run {set_upstream}{up_en}",
+                f"分支 {branch} 没有上游分支；请运行 {set_upstream}{up_zh}",
+                f"ブランチ {branch} に上流ブランチがありません。{set_upstream}{up_ja} を実行してください",
             )
         )
     remote, _, remote_branch = upstream.partition("/")
     if remote != "origin" or not remote_branch:
         raise RuntimeError(
             _tri(
-                f"branch {branch} tracks {upstream}, not an origin branch; run {set_upstream}",
-                f"分支 {branch} 跟踪的是 {upstream}，不是 origin 上的分支；请运行 {set_upstream}",
-                f"ブランチ {branch} は origin ではなく {upstream} を追跡しています。{set_upstream} を実行してください",
+                f"branch {branch} tracks {upstream}, not an origin branch; run {set_upstream}{up_en}",
+                f"分支 {branch} 跟踪的是 {upstream}，不是 origin 上的分支；请运行 {set_upstream}{up_zh}",
+                f"ブランチ {branch} は origin ではなく {upstream} を追跡しています。{set_upstream}{up_ja} を実行してください",
             )
         )
     output = _git(plugin_dir, "ls-remote", "origin", f"refs/heads/{remote_branch}")
     remote_head = output.split(maxsplit=1)[0] if output else None
     if remote_head != head:
         if remote_branch == branch:
-            refspec, placeholder = release_cmd._push_refspec(branch), release_cmd._BRANCH_PLACEHOLDER
-            notes = (f" (branch: {branch})", f"（分支：{branch}）", f"（ブランチ：{branch}）")
+            refspec, placeholder = branch_refspec, release_cmd._BRANCH_PLACEHOLDER
+            notes = (f" (branch: {refspec})", f"（分支：{refspec}）", f"（ブランチ：{refspec}）")
         else:
             refspec = release_cmd._push_refspec(branch, remote_branch)
             placeholder = _REFSPEC_PLACEHOLDER
+            # Named as typed into the refspec, so a leading + stays spelled out.
+            local, _, remote_side = refspec.partition(":")
             notes = (
-                f" (branch: {branch}, remote branch: {remote_branch})",
-                f"（分支：{branch}，远程分支：{remote_branch}）",
-                f"（ブランチ：{branch}、リモートブランチ：{remote_branch}）",
+                f" (branch: {local}, remote branch: {remote_side})",
+                f"（分支：{local}，远程分支：{remote_side}）",
+                f"（ブランチ：{local}、リモートブランチ：{remote_side}）",
             )
         # One argument even as <branch>:<remote-branch>, so PowerShell keeps it whole.
         argument = release_cmd._shell_argument(refspec, placeholder)

@@ -502,6 +502,17 @@ def test_the_gate_names_what_publish_github_would_refuse(monkeypatch, tmp_path, 
     assert expected in caught.value.message
 
 
+def test_the_gate_names_a_plus_branch_behind_a_placeholder_as_its_refspec(monkeypatch, tmp_path):
+    from plugin.neko_plugin_cli.commands import release_cmd
+
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    # Typed back in, a bare "+a%b" would force-push "a%b".
+    _ready_gate(monkeypatch, tmp_path, branch="+a%b", upstream=None, head_pushed=None)
+    with pytest.raises(ServerDomainError) as caught:
+        tasks._local_gate("p", "github")
+    assert 'run git push -u origin "<branch>" (branch: refs/heads/+a%b)' in caught.value.message
+
+
 def test_the_gate_requires_the_current_release_workflow(monkeypatch, tmp_path):
     _ready_gate(monkeypatch, tmp_path, actions={".github/workflows/release.yml": "UPGRADE"})
     with pytest.raises(ServerDomainError) as caught:

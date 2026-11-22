@@ -243,6 +243,18 @@ def test_push_steps_name_the_branch_behind_a_placeholder(tmp_path, monkeypatch, 
     assert "branch:" not in out
 
 
+def test_push_steps_name_a_plus_branch_behind_a_placeholder_as_its_refspec(tmp_path, monkeypatch, capsys):
+    # Typed back in from the note, a bare "+a%b" would force-push "a%b".
+    monkeypatch.setattr(release_cmd, "_WINDOWS_SHELL", True)
+    plugin_dir = _make_plugin_dir(tmp_path / "plugins")
+    monkeypatch.setattr(init_cmd, "_current_branch", lambda _dir: "+a%b")
+
+    init_cmd._print_push_next_step(plugin_dir)
+    out = capsys.readouterr().out
+    assert 'push -u origin "<branch>"' in out
+    assert "(branch: refs/heads/+a%b)" in out
+
+
 def test_manual_steps_do_not_add_a_directory_note_to_quoted_commands(tmp_path, monkeypatch, capsys):
     plugin_dir = _make_plugin_dir(tmp_path / "plugins")
     monkeypatch.setattr(init_cmd, "_gh_available", lambda: False)

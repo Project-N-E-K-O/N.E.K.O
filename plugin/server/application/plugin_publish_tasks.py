@@ -132,8 +132,13 @@ def _push_blockers(state: RepoState) -> list[str]:
         return ["the repository has no commits yet"]
     if state.detached:
         return ["HEAD is detached; check out the branch to publish from"]
-    # The messages name the branch; the command quotes it like the CLI's.
-    set_upstream = f"git push -u origin {_shell_argument(_push_refspec(branch or ''), _BRANCH_PLACEHOLDER)}"
+    # The messages name the branch; the command quotes it like the CLI's, and
+    # behind a placeholder a branch starting with + is named as its refspec.
+    refspec = _push_refspec(branch or "")
+    argument = _shell_argument(refspec, _BRANCH_PLACEHOLDER)
+    set_upstream = f"git push -u origin {argument}"
+    if argument == _BRANCH_PLACEHOLDER and refspec != branch:
+        set_upstream += f" (branch: {refspec})"
     if state.upstream is None:
         return [f"branch {branch} has no upstream; run {set_upstream}"]
     if not state.upstream.startswith("origin/"):
