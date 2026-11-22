@@ -546,7 +546,9 @@ def _held_by(*holders, removed=False, affected=()):
 async def test_stale_removal_tries_every_reported_id():
     """Two roles held by two different registrations (C, D): removing C
     still reports D, which must then be removed too instead of stopping."""
-    plugin, _ = await _plugin_with_tool()
+    # A global tool (role=None): main_server visits every role, so
+    # refusals and removals can come from several of them.
+    plugin, _ = await _plugin_with_tool(role=None)
     host = _ScriptedHost(
         _held_by(("R2", "C"), ("R3", "D")),
         _held_by(("R3", "D"), removed=True, affected=["R2"]),
@@ -559,6 +561,7 @@ async def test_stale_removal_tries_every_reported_id():
     assert result["ok"] is True and result["refused_roles"] == []
     assert [c["request_data"].get("expected_registration_id") for c in host.calls[1:]] == ["C", "D"]
     assert result["affected_roles"] == ["R2", "R3"]
+    assert all(c["request_data"]["role"] is None for c in host.calls)
 
 
 @pytest.mark.asyncio
@@ -566,7 +569,9 @@ async def test_stale_removal_keeps_what_the_first_request_removed():
     """role=None: the first request removed the held registration on R1
     while R2 reported another one. If the follow-up fails, the result still
     says R1 was removed."""
-    plugin, _ = await _plugin_with_tool()
+    # A global tool (role=None): main_server visits every role, so
+    # refusals and removals can come from several of them.
+    plugin, _ = await _plugin_with_tool(role=None)
     host = _ScriptedHost(
         _held_by(("R2", "stale"), removed=True, affected=["R1"]),
         TimeoutError("late"),
@@ -582,11 +587,14 @@ async def test_stale_removal_keeps_what_the_first_request_removed():
          "registration_id": "stale"},
     ]
     assert _local_names(plugin) == {"tool_a"}
+    assert all(c["request_data"]["role"] is None for c in host.calls)
 
 
 @pytest.mark.asyncio
 async def test_stale_removal_keeps_other_sources_refusals():
-    plugin, _ = await _plugin_with_tool()
+    # A global tool (role=None): main_server visits every role, so
+    # refusals and removals can come from several of them.
+    plugin, _ = await _plugin_with_tool(role=None)
     first = _held_by("stale")
     first["refused_roles"].append({"role": "R9", "owned_by": "plugin:other"})
     host = _ScriptedHost(first, dict(_CLEANED))
@@ -596,6 +604,75 @@ async def test_stale_removal_keeps_other_sources_refusals():
 
     assert result["ok"] is True
     assert result["refused_roles"] == [{"role": "R9", "owned_by": "plugin:other"}]
+    assert all(c["request_data"]["role"] is None for c in host.calls)
+
+
+@pytest.mark.asyncio
+async def test_stale_removal_keeps_refusals_reported_by_follow_ups():
+    """While the follow-up runs, another source takes over R1: that plain
+    refusal only appears in the follow-up's answer and must be reported."""
+    plugin, _ = await _plugin_with_tool(role=None)
+    follow_up = dict(_CLEANED)
+    follow_up["refused_roles"] = [{"role": "R1", "owned_by": "plugin:other"}]
+    host = _ScriptedHost(_held_by(("R1", "stale")), follow_up)
+    _install_host(plugin, host)
+
+    result = await plugin.unregister_llm_tool_async("tool_a")
+
+    assert {"role": "R1", "owned_by": "plugin:other"} in result["refused_roles"]
+    assert all(r.get("reason") != "different registration" for r in result["refused_roles"])
+
+
+def test_concurrent_sync_unregisters_never_raise_and_one_wins():
+    """Before this PR the sync unregister was a single dict.pop; the
+    check-then-delete that replaced it must stay atomic across threads.
+    Deterministic: the first check waits (briefly) for a second thread to
+    reach the same check, which only an unprotected check-then-delete
+    allows; both would then pass and the second delete raise KeyError."""
+    import threading
+
+    plugin, _ = _make_plugin()
+    plugin.register_llm_tool(**_register_kwargs("raced"))
+    second_checking = threading.Event()
+    per_thread = threading.local()
+    order = {"n": 0}
+    order_lock = threading.Lock()
+
+    class _SlowCheck(dict):
+        def get(self, key, default=None):
+            # Each unregister reads the name twice: the lookup, then the
+            # identity check inside the release. Hold the first thread at
+            # its identity check until a second thread reaches its own.
+            per_thread.n = getattr(per_thread, "n", 0) + 1
+            value = super().get(key, default)
+            if key == "raced" and per_thread.n == 2:
+                with order_lock:
+                    order["n"] += 1
+                    first = order["n"] == 1
+                if first:
+                    # Between this check and the delete that follows it.
+                    second_checking.wait(0.5)
+                else:
+                    second_checking.set()
+            return value
+
+    plugin._llm_tools = _SlowCheck(plugin._llm_tools)
+    results: list[object] = []
+
+    def worker():
+        try:
+            results.append(plugin.unregister_llm_tool("raced"))
+        except Exception as exc:  # the regression
+            results.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5.0)
+
+    assert all(isinstance(r, bool) for r in results), results
+    assert sorted(results) == [False, True]
 
 
 @pytest.mark.asyncio
@@ -871,10 +948,10 @@ async def test_register_async_failure_does_not_drop_a_newer_registration():
 # ---------------------------------------------------------------------------
 
 
-async def _plugin_with_tool():
+async def _plugin_with_tool(role="Lanlan"):
     plugin, ctx = _make_plugin()
     _install_host(plugin, _FakeHost(reply={"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}))
-    result = await plugin.register_llm_tool_async(**_register_kwargs())
+    result = await plugin.register_llm_tool_async(**_register_kwargs(role=role))
     assert result["ok"] is True
     _drain(ctx)
     return plugin, ctx

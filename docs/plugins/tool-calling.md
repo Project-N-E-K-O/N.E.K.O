@@ -193,7 +193,10 @@ source; other owners are reported in `refused_roles`) and
 `expected_registration_id` (remove only the registration whose
 `registration_id` `/register` returned; a different registration of the
 name is reported in `refused_roles` with `"reason": "different
-registration"` and that registration's `registration_id`). `/register` accepts an optional `registration_id` and
+registration"` and that registration's `registration_id`; these two
+fields are only added when `expected_source` is given and matches the
+tool's source, and `expected_host_instance_id`, if given, matches too).
+`/register` accepts an optional `registration_id` and
 always returns the one it stored. Without these fields the behaviour is
 unchanged.
 
@@ -556,10 +559,11 @@ Local state follows `ok`, so the plugin and the host agree:
   that registration. So a cleanup or unregister that timed out but is
   still running on `main_server` cannot remove a newer registration of
   the same name; that role is reported in `refused_roles` with
-  `"reason": "different registration"`. The cleanup leaves such a
-  registration alone; `unregister_llm_tool_async` instead removes it too,
-  by the id `main_server` reported (never with an unfiltered request),
-  since the plugin asked for the name to be gone. Tools registered through the
+  `"reason": "different registration"`. Such a registration is stale
+  (e.g. a register that timed out and landed late), so both the cleanup
+  and `unregister_llm_tool_async` then remove it too, by the id
+  `main_server` reported (never with an unfiltered request), and report
+  `ok` only once every reported registration is gone. Tools registered through the
   sync call or `@llm_tool`, and names the plugin no longer holds, are
   unregistered without an id (any registration of this plugin), as
   before.

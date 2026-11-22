@@ -183,7 +183,7 @@ main_server からの dispatch も同じ IPC trigger 配管（`@plugin_entry`
 
 任意フィールド：`expected_source`（その source のツールだけを削除し、他の所有者のものは `refused_roles` に入れる）と
 `expected_registration_id`（`/register` が返した `registration_id` の登録だけを削除し、同じ名前の別の登録は
-`"reason": "different registration"` とその登録の `registration_id` 付きで `refused_roles` に入れる）。`/register` は任意の `registration_id` を
+`"reason": "different registration"` とその登録の `registration_id` 付きで `refused_roles` に入れる。この 2 つのフィールドは、`expected_source` が指定されツールの source と一致し、`expected_host_instance_id` を指定した場合はそれも一致するときだけ付きます）。`/register` は任意の `registration_id` を
 受け付け、実際に保存した ID を常に返します。これらのフィールドがなければ動作は変わりません。
 
 ### `POST /api/tools/clear`
@@ -515,9 +515,9 @@ result = await self.unregister_llm_tool_async("custom_tool")
 - `register_llm_tool_async` の呼び出しごとに専用の登録 ID が付き、その後片付けと後の
   `unregister_llm_tool_async` はその登録だけを削除します。そのため、タイムアウトしたがまだ `main_server` 上で
   実行中の後片付けや解除が、同じ名前の新しい登録を消すことはありません。その role は
-  `"reason": "different registration"` 付きで `refused_roles` に入ります。後片付けはそうした登録に触れませんが、
-  `unregister_llm_tool_async` はプラグインがその名前の削除を求めているため、`main_server` が報告したその登録の ID を指定して
-  それも削除します（ID なしの広い解除は送りません）。同期版や `@llm_tool` で登録したツール、
+  `"reason": "different registration"` 付きで `refused_roles` に入ります。そうした登録は古いもの（例：タイムアウトした登録が
+  後から届いたもの）なので、後片付けと `unregister_llm_tool_async` はどちらも `main_server` が報告した ID を指定して
+  それも削除し（ID なしの広い解除は送りません）、報告された登録がすべて消えてから `ok` を返します。同期版や `@llm_tool` で登録したツール、
   ローカルにもう無い名前は、従来どおり ID なし（このプラグインのどの登録でも）で解除されます。
 - `unregister_llm_tool_async` は `ok` が真のときだけハンドラを外します。それ以外ではホスト側と同様に
   プラグイン側でも登録が残り、まだツールを持つ role は動き続け、再度呼べばリトライになります。

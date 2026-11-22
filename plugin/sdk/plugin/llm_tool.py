@@ -343,9 +343,10 @@ class LlmToolUnregisterResult(TypedDict):
     ``refused_roles`` lists roles where the name belongs to another
     source (left untouched, and not ours to remove), or, with
     ``reason="different registration"``, to another registration of this
-    plugin than the one targeted (the cleanup after a failed register
-    leaves those alone; ``unregister_llm_tool_async`` then removes each one
-    by the ``registration_id`` reported with it)."""
+    plugin than the one targeted. Such a registration is stale; the
+    cleanup after a failed register and ``unregister_llm_tool_async`` then
+    remove each one by the ``registration_id`` reported with it, and
+    ``ok`` requires all of them gone."""
 
     ok: bool
     removed: bool

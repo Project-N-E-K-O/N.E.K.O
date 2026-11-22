@@ -236,6 +236,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
         # on demand and validate against duplicate registrations.
         # The actual handler lives in ``_dynamic_entries[__llm_tool__name]``.
         self._llm_tools: dict[str, LlmToolMeta] = {}
+        # Makes "is this still the current registration?" and its removal one
+        # step: sync calls may run on several threads and do not take the
+        # per-name lock of the async calls.
+        self._llm_tools_lock = threading.Lock()
         # Set to True after the first auto-registration pass so that
         # subsequent lifecycle reloads don't double-register decorator-
         # tagged methods. Manual calls to ``register_llm_tool`` are
@@ -728,16 +732,21 @@ class NekoPluginBase(_SharedNekoPluginBase):
             kind="action",
             timeout=meta.timeout_seconds,
         )
-        self._llm_tools[meta.name] = meta
+        with self._llm_tools_lock:
+            self._llm_tools[meta.name] = meta
 
     def _release_llm_tool_locally(self, meta: "LlmToolMeta") -> bool:
         """Drop ``meta`` from ``_llm_tools`` and remove its dynamic entry,
         but only if that exact registration is still current (a
         concurrent unregister + re-register may have replaced it while an
         async request was in flight). No host notification."""
-        if self._llm_tools.get(meta.name) is not meta:
-            return False
-        del self._llm_tools[meta.name]
+        with self._llm_tools_lock:
+            # Check and removal in one step: of two concurrent releases only
+            # one wins (the other gets False, as with the former dict.pop),
+            # and a newer registration of the name is never removed.
+            if self._llm_tools.get(meta.name) is not meta:
+                return False
+            del self._llm_tools[meta.name]
         self.unregister_dynamic_entry(entry_id_for_tool(meta.name))
         return True
 
@@ -1160,10 +1169,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
             "removed": any(r["removed"] for r in everything),
             "affected_roles": list(dict.fromkeys(x for r in everything for x in r["affected_roles"])),
             "failed_roles": [x for r in everything for x in r["failed_roles"]],
-            # Other sources' refusals as first seen, plus holders not removed.
-            "refused_roles": [
-                r for r in first["refused_roles"] if r.get("reason") != "different registration"
-            ] + list(unresolved.values()),
+            # Plain refusals (another source took the role) from every
+            # answer, deduplicated, plus holders that were not removed.
+            "refused_roles": list({
+                (r.get("role"), r.get("owned_by")): r
+                for result in everything for r in result["refused_roles"]
+                if r.get("reason") != "different registration"
+            }.values()) + list(unresolved.values()),
         }
         return build_unregister_result(merged, ok=error is None, error=error, message=message)
 
