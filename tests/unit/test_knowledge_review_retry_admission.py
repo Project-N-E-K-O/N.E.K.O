@@ -1,4 +1,4 @@
-"""Exercise cancellation during export admission and retry arrival ordering."""
+"""Exercise cancelled import/export admission and retry arrival ordering."""
 
 import asyncio
 import hashlib
@@ -55,6 +55,60 @@ async def test_exports_cancelled_during_initial_persistence_do_not_fill_the_queu
             assert await service.cancel_job(job["job_id"])
             release.set()
             assert (await request)["state"] == "cancelled"
+        assert list(service._job_queue) == []
+        assert not service._job_queued.is_set()
+    finally:
+        release.set()
+        if request is not None:
+            await asyncio.gather(request, return_exceptions=True)
+        await service.stop()
+
+
+@pytest.mark.parametrize("archive_format", ["json", "zip"])
+async def test_imports_cancelled_during_initial_persistence_do_not_fill_the_queue(tmp_path, monkeypatch, archive_format):
+    service = KnowledgeService(tmp_path / "library")
+
+    async def paused_runner():
+        # Keep cancelled IDs observable instead of letting the runner drain them.
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(service, "_job_loop", paused_runner)
+    await service.start()
+    raw = make_archive(tmp_path / "input.zip") if archive_format == "zip" else json.dumps(_pack()).encode()
+    archive_bytes = raw.read_bytes() if archive_format == "zip" else None
+    persist = service._persist_job
+    release = asyncio.Event()
+    request = None
+    try:
+        for _ in range(MAX_PENDING_IMPORTS + 2):
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            async def hold_first_record(job):
+                # The public job already exists, but its owner has not flushed
+                # the initial record or appended its ID to the runnable queue.
+                if job.kind == "pack_import" and job.state == "queued":
+                    entered.set()
+                    await release.wait()
+                await persist(job)
+
+            monkeypatch.setattr(service, "_persist_job", hold_first_record)
+            request = asyncio.create_task(service.import_pack(raw))
+            await asyncio.wait_for(entered.wait(), 2)
+            job = next(job for job in service.list_jobs()
+                       if job["kind"] == "pack_import" and job["state"] == "queued")
+            assert await service.cancel_job(job["job_id"])
+            release.set()
+            result = await request
+            assert result["ok"] and result["state"] == "cancelled"
+            record = json.loads((service.root / "jobs" / (job["job_id"] + ".json")).read_text())
+            assert record["state"] == "cancelled"
+            # Explicit cancellation reclaims staging, retaining the exact JSON
+            # and any original ZIP that a later deliberate retry will read.
+            frozen = service.root / "jobs" / (job["job_id"] + ".pack.json")
+            assert hashlib.sha256(frozen.read_bytes()).hexdigest() == record["staged_sha256"]
+            assert not service._staging_path(job["job_id"]).exists()
+            if archive_format == "zip":
+                assert service.artifact_path(record["archive_sha256"]).read_bytes() == archive_bytes
         assert list(service._job_queue) == []
         assert not service._job_queued.is_set()
     finally:

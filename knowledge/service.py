@@ -1938,8 +1938,11 @@ class KnowledgeService:
             with contextlib.suppress(OSError):
                 await self._persist_job(job)
             return {"ok": True, **job.to_json()}
-        self._job_queue.append(job.job_id)
-        self._job_queued.set()
+        if job.state == "queued":
+            # Explicit cancellation can finish during the initial record write;
+            # its terminal ID must not outlive admission in the runner queue.
+            self._job_queue.append(job.job_id)
+            self._job_queued.set()
         return {"ok": True, **job.to_json()}
 
     async def _parse_thread(
