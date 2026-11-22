@@ -281,6 +281,7 @@ class PluginDispatchService:
                     "success": False,
                     "code": exc.code,
                     "error": exc.message,
+                    "details": exc.details,
                 }
             except Exception as exc:
                 logger.warning(

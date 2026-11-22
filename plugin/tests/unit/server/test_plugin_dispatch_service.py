@@ -504,3 +504,35 @@ async def test_trigger_custom_event_ignores_non_mapping_remote_details(
 
     assert caught.value.code == "PLUGIN_EXECUTION_FAILED"
     assert caught.value.details == {"plugin_id": "alpha", "event_id": "entry"}
+
+
+@pytest.mark.asyncio
+async def test_trigger_custom_event_subscribers_keep_failure_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issues = [{"path": "$.action", "type": "type_mismatch"}]
+    failure = _remote_failure({
+        "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+        "message": "output does not match output_schema",
+        "details": {"plugin_id": "spoofed", "event_id": "spoofed_entry", "issues": issues},
+    })
+    _patch_handlers_and_hosts(
+        monkeypatch,
+        {"alpha:voice_transcript:handle_transcript": _handler("voice_transcript", "handle_transcript")},
+        {"alpha": _Host({}, error=failure)},
+    )
+
+    results = await PluginDispatchService().trigger_custom_event_subscribers(
+        event_type="voice_transcript",
+        args={},
+        timeout=0.25,
+    )
+
+    assert results == [{
+        "plugin_id": "alpha",
+        "event_id": "handle_transcript",
+        "success": False,
+        "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+        "error": failure.args[0],
+        "details": {"plugin_id": "alpha", "event_id": "handle_transcript", "issues": issues},
+    }]
