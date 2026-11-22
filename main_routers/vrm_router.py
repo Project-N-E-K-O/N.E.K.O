@@ -129,6 +129,14 @@ async def _handle_vrm_file_upload(
                 })
             builtin_dir = get_config_manager().project_root / 'static' / 'vrm'
             if _vrm_model_stem_exists(model_name, (builtin_dir, target_dir)):
+                unreachable = _uncheckable_vrm_link_taking_name(model_name, (builtin_dir, target_dir), target_dir)
+                if unreachable is not None:
+                    # The model list skips this entry, so it is not in the delete dialog either.
+                    return JSONResponse(status_code=400, content={
+                        "success": False,
+                        "error": f"{file_type_name} {filename} 与用户 VRM 文件夹中无法访问的条目 {unreachable.name} 同名"
+                                 f"（可能是指向无权限位置或文件夹外的链接），请在该文件夹中手动删除这个条目后再上传"
+                    })
                 return JSONResponse(status_code=400, content={
                     "success": False,
                     "error": f"{file_type_name} {filename} 已存在，请先删除或重命名现有模型"
@@ -853,6 +861,19 @@ def _is_unverifiable_vrm_link(path: Path) -> bool:
 def _find_unverifiable_vrm_link(vrm_dir: Path, model_name: str) -> Path | None:
     return next((path for path in _iter_vrm_model_files(vrm_dir)
                  if path.stem == model_name and _is_unverifiable_vrm_link(path)), None)
+
+
+def _uncheckable_vrm_link_taking_name(model_name: str, directories, user_dir: Path) -> Path | None:
+    """The uncheckable link in ``user_dir`` that alone takes ``model_name`` for uploads.
+
+    None when a checkable model with this name exists: that one is listed and
+    can be deleted from the UI, so the usual "already exists" message applies.
+    """
+    matches = [path for directory in directories for path in _iter_vrm_model_files(directory)
+               if path.stem.casefold() == model_name.casefold()]
+    if any(_file_check(path) for path in matches):
+        return None
+    return next((path for path in matches if path.parent == user_dir and _is_unverifiable_vrm_link(path)), None)
 
 
 def _is_vrm_basename(filename: str) -> bool:

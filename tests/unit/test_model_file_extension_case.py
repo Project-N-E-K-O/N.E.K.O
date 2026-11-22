@@ -587,6 +587,12 @@ def _upload_vrm(client, name):
     return client.post("/api/model/vrm/upload", files={"file": (name, b"glTF-new", "application/octet-stream")})
 
 
+def _assert_names_the_unreachable_entry(error, name="Foo.vrm"):
+    # The model list (and so the delete dialog) skips this entry: the upload
+    # error has to say what it is and that it must be removed by hand.
+    assert "无法访问" in error and f"条目 {name} " in error and "手动删除" in error, error
+
+
 @pytest.mark.parametrize("route", ["name", "url"])
 def test_vrm_delete_removes_an_uncheckable_link_that_blocks_upload(vrm_app, locked_vrm_link, route):
     # Upload counts the uncheckable Foo.vrm as existing ("delete it first"),
@@ -595,7 +601,8 @@ def test_vrm_delete_removes_an_uncheckable_link_that_blocks_upload(vrm_app, lock
 
     with TestClient(vrm_app.app) as client:
         blocked = _upload_vrm(client, "Foo.vrm")
-        assert blocked.status_code == 400 and "已存在" in blocked.json()["error"], blocked.text
+        assert blocked.status_code == 400, blocked.text
+        _assert_names_the_unreachable_entry(blocked.json()["error"])
         if route == "name":
             response = client.delete("/api/model/vrm/model/Foo")
         else:
@@ -616,6 +623,10 @@ def test_vrm_delete_still_refuses_an_uncheckable_link_out_of_the_folder(vrm_app,
     link, target = locked_vrm_link(inside=False)
 
     with TestClient(vrm_app.app) as client:
+        # Deletion keeps refusing it, so the upload error sends the user to remove it by hand.
+        blocked = _upload_vrm(client, "foo.vrm")
+        assert blocked.status_code == 400, blocked.text
+        _assert_names_the_unreachable_entry(blocked.json()["error"])
         if route == "name":
             response = client.delete("/api/model/vrm/model/Foo")
         else:
@@ -644,7 +655,7 @@ def test_vrm_delete_removes_an_uncheckable_link_under_any_user(vrm_app, monkeypa
                         lambda path: None if path.name in {"Foo.vrm", "target.vrm"} else real_check(path))
 
     with TestClient(vrm_app.app) as client:
-        assert "已存在" in _upload_vrm(client, "Foo.vrm").json()["error"]
+        _assert_names_the_unreachable_entry(_upload_vrm(client, "Foo.vrm").json()["error"])
         if route == "name":
             response = client.delete("/api/model/vrm/model/Foo")
         else:
@@ -653,3 +664,24 @@ def test_vrm_delete_removes_an_uncheckable_link_under_any_user(vrm_app, monkeypa
     assert response.status_code == 200, response.text
     assert not link.is_symlink()
     assert target.read_bytes() == b"glTF-target"
+
+
+def test_vrm_upload_keeps_the_usual_error_when_a_listed_model_takes_the_name(vrm_app, monkeypatch):
+    # A checkable Foo.VRM is listed and deletable from the UI: no hint about the link.
+    (vrm_app.vrm_dir / "Foo.VRM").write_bytes(b"glTF")
+    target = vrm_app.vrm_dir / "real" / "target.vrm"
+    target.parent.mkdir()
+    target.write_bytes(b"glTF-target")
+    try:
+        (vrm_app.vrm_dir / "Foo.vrm").symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+    real_check = vrm_router._file_check
+    monkeypatch.setattr(vrm_router, "_file_check",
+                        lambda path: None if path.name in {"Foo.vrm", "target.vrm"} else real_check(path))
+
+    with TestClient(vrm_app.app) as client:
+        response = _upload_vrm(client, "Foo.vrm")
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"] == "VRM模型 Foo.vrm 已存在，请先删除或重命名现有模型"
