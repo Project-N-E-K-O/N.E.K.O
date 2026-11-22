@@ -307,6 +307,48 @@
     };
 })();
 
+// 锤子按钮（id 'agent'）：点一下直接打开喵能力界面，不再弹小面板。
+// 小面板照常建在页面里，只留给新手教程：教程平时自己调 showPopup 打开它，
+// 退路里还会模拟点一下锤子再等面板出现，所以教程运行时这里不拦，照旧弹面板。
+// 面板已经开着（比如教程留下的）时也不拦，让原来的点击把它收起。
+(function () {
+    function isReservedForTutorial() {
+        try {
+            if (window.isInTutorial === true) return true;
+            const manager = window.universalTutorialManager;
+            if (manager && manager.isTutorialRunning === true) return true;
+            if (typeof window.isNekoShortcutBlockedByTutorial === 'function'
+                && window.isNekoShortcutBlockedByTutorial() === true) {
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function isPopupOpen(prefix) {
+        const popup = document.getElementById(`${prefix}-popup-agent`);
+        return !!(popup && popup.style.display === 'flex' && popup.style.opacity === '1');
+    }
+
+    // 返回 true 表示已经打开了喵能力界面、这次点击到此为止。
+    function handleClick(event, prefix) {
+        if (isReservedForTutorial() || isPopupOpen(prefix)) return false;
+        const hud = window.AgentHUD;
+        if (!hud || typeof hud.openPowerWindow !== 'function') return false;
+        if (event) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }
+        hud.openPowerWindow();
+        return true;
+    }
+
+    window.nekoAgentButton = window.nekoAgentButton || {
+        isReservedForTutorial,
+        handleClick
+    };
+})();
+
 Object.assign(AvatarButtonMixin.methods, {
     buttons(ManagerPrototype, prefix, options) {
         ManagerPrototype.getDefaultButtonConfigs = function() {
@@ -506,6 +548,13 @@ Object.assign(AvatarButtonMixin.methods, {
                     }
                 }, true);
                 window.nekoSocialUnlock.registerButton(btn, imgOff, imgOn);
+            }
+
+            if (config.id === 'agent' && window.nekoAgentButton) {
+                // 捕获阶段先处理：打开了喵能力界面就不再走各渲染器弹小面板的监听器。
+                btn.addEventListener('click', (e) => {
+                    window.nekoAgentButton.handleClick(e, prefix);
+                }, true);
             }
 
             // 阻止按钮上的指针事件传播

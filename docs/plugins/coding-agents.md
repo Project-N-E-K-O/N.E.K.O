@@ -111,11 +111,9 @@ You do not need to write code. Pick an AI coding agent, copy one message to it, 
 
 Both routes use the plugin manager. Open it from the N.E.K.O main window:
 
-![Opening Plugin Manager from the N.E.K.O main window](/images/plugins/onboarding/neko-open-plugin-manager-en.png)
-
-1. Hover over the catgirl and click the round paw button that appears.
-2. In the popup, turn on "NekoPower"; plugins are switched on with it. If NekoPower was already on and "User Plugin" had been switched off by itself, turn "User Plugin" on.
-3. Hover over the "User Plugin" row and click the "Management Panel" button that appears — Plugin Manager opens in a new window.
+1. Hover over the catgirl and click the round hammer button (NekoPower) that appears. NekoPower opens in a new window.
+2. If the "NekoPower" switch at the top of its home page is off, turn it on; plugins are switched on with it.
+3. Click "Plugins" in the sidebar on the left.
 
 ## 4. Share it with others
 

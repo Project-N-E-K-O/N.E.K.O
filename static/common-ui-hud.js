@@ -74,6 +74,45 @@ function getPluginDashboardRedirectUrl() {
     return appendPluginDashboardOpenerOrigin(PLUGIN_DASHBOARD_REDIRECT_URL);
 }
 
+var PLUGIN_DASHBOARD_WINDOW_NAME = 'neko_plugin_dashboard';
+
+function buildPluginDashboardWindowFeatures() {
+    const width = Math.min(1280, Math.round(screen.width * 0.8));
+    const height = Math.min(900, Math.round(screen.height * 0.8));
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+    return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+// 锤子按钮：打开喵能力界面（插件服务的 /ui/，和小面板里「管理面板」是同一个窗口）。
+// 窗口已经开着时只把它叫到前面：不重新载入、不改大小，用户可能正在里面看别的页。
+window.AgentHUD.openPowerWindow = function () {
+    const targetUrl = new URL(getPluginDashboardRedirectUrl(), document.baseURI || window.location.href).toString();
+    const features = buildPluginDashboardWindowFeatures();
+    const existingWindow = window._openedWindows && window._openedWindows[PLUGIN_DASHBOARD_WINDOW_NAME];
+    let openedWindow = null;
+    if (typeof window.openOrFocusWindow === 'function') {
+        openedWindow = window.openOrFocusWindow(targetUrl, PLUGIN_DASHBOARD_WINDOW_NAME, features, {
+            navigateOnReuse: false,
+            preserveGeometryOnReuse: true
+        });
+    } else if (existingWindow && !existingWindow.closed) {
+        openedWindow = existingWindow;
+    } else {
+        openedWindow = window.open(targetUrl, PLUGIN_DASHBOARD_WINDOW_NAME, features);
+    }
+    if (openedWindow) {
+        if (!window._openedWindows) {
+            window._openedWindows = {};
+        }
+        window._openedWindows[PLUGIN_DASHBOARD_WINDOW_NAME] = openedWindow;
+        try {
+            openedWindow.focus();
+        } catch (_) {}
+    }
+    return openedWindow;
+};
+
 function appendCacheBuster(url) {
     var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
     return `${url}${separator}v=${Date.now()}`;
@@ -517,11 +556,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                 e.stopPropagation();
                 if (isOpening) return;
                 isOpening = true;
-                const width = Math.min(1280, Math.round(screen.width * 0.8));
-                const height = Math.min(900, Math.round(screen.height * 0.8));
-                const left = Math.max(0, Math.floor((screen.width - width) / 2));
-                const top = Math.max(0, Math.floor((screen.height - height) / 2));
-                const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+                const features = buildPluginDashboardWindowFeatures();
                 const rawUrl = typeof actionConfig.url === 'function'
                     ? actionConfig.url()
                     : actionConfig.url;

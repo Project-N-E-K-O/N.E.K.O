@@ -1758,6 +1758,7 @@ token 数是本地按 `count_tokens` 数的。
 - 用户打开喵能力时，插件开关跟着开（`api_routes.py`、`main_routers/agent_router.py`），给插件存下来的也是「开」。启动时恢复上次的状态不算用户在开：没存过插件开关的跟着开，用户单独关掉的保持关着。
 - 「开没开」的判断没改：仍是总开关开着，而且键鼠、浏览器、插件至少开了一个（6.10 节）。打开时插件总是开的，所以对用户就是一个开关。
 - 主界面锤子按钮弹出的面板这个 PR 没动：教程的好几天都依赖它（[#3907](https://github.com/Project-N-E-K-O/N.E.K.O/issues/3907)）。
+- 之后的小 PR 把锤子改成点一下直接打开喵能力界面（和小面板里「管理面板」同一个窗口；已经开着就只叫到前面，不刷新）。小面板照常建在页面里，只留给新手教程：教程运行时（`window.isInTutorial`、`universalTutorialManager.isTutorialRunning`、`isNekoShortcutBlockedByTutorial()` 任一为真）或面板正开着时，点锤子照旧弹 / 收面板。判断在 `static/avatar/avatar-ui-buttons/methods-buttons.js` 的 `window.nekoAgentButton`，开窗口是 `AgentHUD.openPowerWindow()`（`static/common-ui-hud.js`）。
 
 **首页：使魔面板**
 
