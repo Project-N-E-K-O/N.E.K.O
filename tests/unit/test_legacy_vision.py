@@ -173,3 +173,64 @@ def test_text_only_request_on_the_route_announces_nothing():
     assert calls == ["llava"] and notices == []
     _run(lv.run_image_call(choice, _recording_call(calls), where="t"))
     assert len(notices) == 1
+
+
+def test_chat_refusal_is_remembered_per_route():
+    calls = []
+
+    async def refuse(cfg):
+        calls.append(cfg["model"])
+        raise _StatusError("The model is not a VLM (Vision Language Model). Please use text-only prompts.")
+
+    choice = lv.choose_image_model(CHAT, None)
+    with pytest.raises(_StatusError):
+        _run(lv.run_image_call(choice, refuse, where="t"))
+    assert lv.chat_refuses_images(CHAT)
+    # Later image calls to the same chat route are not sent at all.
+    with pytest.raises(lv.ChatModelImageUnsupported):
+        _run(lv.run_image_call(choice, refuse, where="t"))
+    assert calls == ["text-only"]
+    # Text-only requests still go through.
+    assert _run(lv.run_image_call(choice, _recording_call(calls), where="t", has_image=False)) == "ok"
+    # Another model, endpoint path or key is another route.
+    assert not lv.chat_refuses_images({**CHAT, "model": "vision-chat"})
+    assert not lv.chat_refuses_images({**CHAT, "api_key": "k2"})
+    assert not lv.chat_refuses_images({**CHAT, "base_url": "https://chat.example/V1"})
+    assert lv.chat_refuses_images({**CHAT, "base_url": "https://CHAT.example/v1/"})
+
+
+def test_other_errors_do_not_mark_the_chat_model():
+    async def fail(cfg):
+        raise _StatusError("Invalid API key", status_code=401)
+
+    with pytest.raises(_StatusError):
+        _run(lv.run_image_call(lv.choose_image_model(CHAT, None), fail, where="t"))
+    assert not lv.chat_refuses_images(CHAT)
+
+
+def test_refusal_from_a_separate_vision_config_does_not_mark_the_chat_model():
+    async def refuse(cfg):
+        raise _StatusError("does not support image input")
+
+    with pytest.raises(_StatusError):
+        _run(lv.run_image_call(lv.choose_image_model(CHAT, VISION), refuse, where="t"))
+    assert not lv.chat_refuses_images(CHAT)
+
+
+def test_notice_sink_may_return_a_task():
+    seen = []
+
+    async def deliver(message):
+        seen.append(json.loads(message)["code"])
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        lv.register_notice_sink(lambda message: loop.create_task(deliver(message)))
+        calls = []
+        assert await lv.run_image_call(lv.choose_image_model(CHAT, VISION), _recording_call(calls), where="t") == "ok"
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert calls == ["llava"]
+
+    _run(main())
+    assert seen == [lv.LEGACY_VISION_DEPRECATED_CODE]

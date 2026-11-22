@@ -201,12 +201,17 @@ def _proactive_model_config(conversation_config: dict, vision_config: dict | Non
     """Model settings for one proactive turn, and the image choice behind them.
 
     Screenshots go to the chat model, or to a retired, separately configured
-    vision model until the release removes it (``utils.legacy_vision``).
+    vision model until the release removes it (``utils.legacy_vision``). A chat
+    model known to reject images gets no screenshot.
     """
-    from utils.legacy_vision import choose_image_model
+    from utils.legacy_vision import chat_refuses_images, choose_image_model
 
     image_choice = choose_image_model(conversation_config, vision_config)
     image_config = image_choice.config
+    if not image_choice.using_legacy and chat_refuses_images(conversation_config):
+        # The chat model rejected a screenshot earlier: talk without one, as
+        # proactive chat did before when no vision model was usable.
+        image_config = {}
     model_config = ProactiveModelConfig(
         conversation_model=conversation_config.get("model"),
         conversation_base_url=conversation_config.get("base_url"),

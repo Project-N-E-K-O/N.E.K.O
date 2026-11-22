@@ -10,10 +10,15 @@ route (it may be a local endpoint chosen so screenshots never leave the
 machine, so the chat provider must not start receiving them silently). Each
 use logs a rate-limited deprecation warning, and the frontend is told once
 per app start that the separate vision model will be dropped.
+
+A chat model that rejects an image is remembered (per route, for this run):
+later image calls to it are skipped, and proactive chat goes back to text
+only, as it did before when no vision model was usable.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -22,7 +27,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-from utils.http.url import same_endpoint
+from utils.http.url import endpoint_identity, same_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +137,12 @@ class ImageModelChoice:
         return self.legacy if self.legacy is not None else self.conversation
 
 
+class ChatModelImageUnsupported(Exception):
+    """The chat model is known to reject images; the request was not sent."""
+
+
 _lock = threading.Lock()
+_refusing_routes: set[tuple] = set()
 _last_warned: dict[str, float] = {}
 _frontend_told = False
 _notice_sink: Optional[Callable[[str], Any]] = None
@@ -162,7 +172,8 @@ def _notify_frontend(details: dict) -> None:
         import asyncio
 
         try:
-            task = asyncio.get_running_loop().create_task(result)
+            # ensure_future also accepts a Task/Future a sink may hand back.
+            task = asyncio.ensure_future(result, loop=asyncio.get_running_loop())
         except RuntimeError:
             close = getattr(result, "close", None)
             if callable(close):
@@ -202,6 +213,39 @@ def note_legacy_vision_use(choice: ImageModelChoice, where: str) -> None:
         _notify_frontend({"vision_model": str(legacy.get("model") or "")})
 
 
+def _chat_route(cfg: dict | None) -> tuple:
+    cfg = cfg or {}
+    key = str(cfg.get("api_key") or "")
+    return (
+        str(cfg.get("model") or "").strip(),
+        endpoint_identity(str(cfg.get("base_url") or "")),
+        str(cfg.get("provider_type") or "").strip(),
+        # Same gateway, another credential may unlock other capabilities.
+        hashlib.sha256(key.encode("utf-8")).hexdigest()[:16] if key else "",
+    )
+
+
+def chat_refuses_images(conversation: dict | None) -> bool:
+    """Whether this chat route rejected an image earlier in this run."""
+    with _lock:
+        return _chat_route(conversation) in _refusing_routes
+
+
+def mark_chat_image_refused(conversation: dict | None, where: str) -> None:
+    """Remember that this chat route rejects images (until it is changed)."""
+    route = _chat_route(conversation)
+    with _lock:
+        new = route not in _refusing_routes
+        _refusing_routes.add(route)
+    if new:
+        logger.warning(
+            "%s: the chat model %s cannot read images; image requests to it are skipped "
+            "until the chat model is changed. Switch to a chat model that can read images.",
+            where,
+            route[0],
+        )
+
+
 def choose_image_model(conversation: dict, vision: dict | None) -> ImageModelChoice:
     """Build the choice from already-loaded chat and vision configs."""
     legacy = vision if legacy_vision_differs(conversation, vision) else None
@@ -236,9 +280,17 @@ async def run_image_call(
     ``has_image=False`` marks a text-only request on the same route: it is
     not a use of the retired vision config and announces nothing.
     """
-    if has_image:
+    if has_image and choice.using_legacy:
         note_legacy_vision_use(choice, where)
-    return await call(choice.config)
+        return await call(choice.config)
+    if has_image and chat_refuses_images(choice.conversation):
+        raise ChatModelImageUnsupported(where)
+    try:
+        return await call(choice.config)
+    except Exception as exc:
+        if has_image and is_image_unsupported_error(exc):
+            mark_chat_image_refused(choice.conversation, where)
+        raise
 
 
 def _reset_for_tests() -> None:
@@ -246,5 +298,6 @@ def _reset_for_tests() -> None:
     global _notice_sink, _frontend_told
     with _lock:
         _last_warned.clear()
+        _refusing_routes.clear()
         _frontend_told = False
     _notice_sink = None

@@ -220,3 +220,66 @@ def test_watch_invitation_accepts_a_separate_vision_config(monkeypatch, vision, 
         _tts_worker_supports_completion=lambda *args: True,
     )
     assert preparation.is_available(manager) is available
+
+
+@pytest.mark.asyncio
+async def test_minigame_vision_unavailable_for_a_refusing_chat_model(monkeypatch):
+    from utils import game_vision
+
+    lv.mark_chat_image_refused(CHAT, "t")
+    models = []
+    monkeypatch.setattr(game_vision, "get_config_manager", lambda: _configs(vision=None))
+    monkeypatch.setattr(game_vision, "create_chat_llm_async", _llm_factory(models))
+    with pytest.raises(ValueError, match="vision_unavailable"):
+        await game_vision._invoke(
+            text="x", attachments=[{"type": "image", "label": "", "image_data_url": "data:image/jpeg;base64,AAAA"}],
+            system_prompt="sys", max_completion_tokens=10, timeout=10, is_current=lambda: True,
+        )
+    assert models == []
+
+
+@pytest.mark.parametrize("vision, sees", [(None, False), (VISION, True)])
+def test_proactive_drops_the_screenshot_for_a_refusing_chat_model(vision, sees):
+    from main_logic.proactive_chat.service import _proactive_model_config
+
+    lv.mark_chat_image_refused(CHAT, "t")
+    _choice, config = _proactive_model_config(CHAT, vision)
+    # Like before the vision slot was retired: no usable image model, text only.
+    assert config.has_vision_model is sees
+
+
+@pytest.mark.asyncio
+async def test_proactive_phase2_refusal_marks_the_chat_model(monkeypatch):
+    from main_logic.proactive_chat import generation
+    from main_logic.proactive_chat.service import _proactive_model_config
+    from tests.unit.test_proactive_phase2_generation import _FakeManager, _patch_runtime_guards
+
+    _patch_runtime_guards(monkeypatch)
+
+    class _Refusal(Exception):
+        status_code = 400
+
+    async def make_llm(**_kwargs):
+        raise _Refusal("does not support image input")
+
+    async def run(model_config, use_vision):
+        await generation._generate_phase2_stream(
+            mgr=_FakeManager(), proactive_sid="proactive-sid", lanlan_name="兰兰",
+            messages=[object(), object()], make_llm=make_llm,
+            phase2_use_vision=use_vision, phase2_disable_thinking=True,
+            conversation_model="chat-x", expects_source_tag=True, proactive_lang="zh",
+            master_name="博士", human_text="开始生成", screenshot_b64="abc" if use_vision else None,
+            on_image_refused=generation._chat_image_refusal_hook(model_config),
+        )
+
+    # A separate vision route refusing says nothing about the chat model.
+    _c, legacy_config = _proactive_model_config(CHAT, VISION)
+    assert generation._chat_image_refusal_hook(legacy_config) is None
+    # Same gateway and key, another model: still a separate vision route.
+    _c, same_gateway = _proactive_model_config(CHAT, {**CHAT, "model": "chat-x-vl"})
+    assert generation._chat_image_refusal_hook(same_gateway) is None
+    _c, chat_config = _proactive_model_config(CHAT, None)
+    await run(chat_config, use_vision=False)
+    assert not lv.chat_refuses_images(CHAT)
+    await run(chat_config, use_vision=True)
+    assert lv.chat_refuses_images(CHAT)

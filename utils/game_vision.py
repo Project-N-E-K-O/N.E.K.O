@@ -134,7 +134,11 @@ async def _invoke(*, text, attachments, system_prompt, max_completion_tokens, ti
             # trusted system<=32768 chars, labels<=128 each. No retries or history.
             return await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=content)])  # noqa: LLM_INPUT_BUDGET # hard text/system/label/image caps above; no history
 
-    result = await run_image_call(choice, _call, where="mini-game vision")
+    from utils.legacy_vision import ChatModelImageUnsupported
+    try:
+        result = await run_image_call(choice, _call, where="mini-game vision")
+    except ChatModelImageUnsupported:
+        raise ValueError("vision_unavailable") from None
     content = getattr(result, "content", None)
     if not isinstance(content, str) or not content.strip() or len(content) > 8192:
         raise ValueError("invalid_model_response")
