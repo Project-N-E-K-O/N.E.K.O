@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
 from plugin._types.exceptions import PluginError
-from plugin.core.rpc import RpcClosedError, RpcRemoteError
+from plugin.core.rpc import RpcClosedError, RpcRemoteError, remote_error_details
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.event_contracts import (
@@ -196,7 +196,7 @@ class PluginDispatchService:
             raise ServerDomainError(
                 code=cause.code if isinstance(cause, RpcRemoteError) else "PLUGIN_EXECUTION_FAILED",
                 message=str(exc), status_code=502,
-                details={"plugin_id": to_plugin, "event_id": event_id},
+                details={**remote_error_details(exc), "plugin_id": to_plugin, "event_id": event_id},
             ) from exc
         except RUNTIME_ERRORS as exc:
             logger.error(
