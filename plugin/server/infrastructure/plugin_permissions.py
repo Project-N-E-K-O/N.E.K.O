@@ -426,7 +426,9 @@ class PluginPermissionStore:
           rebound to ``current``.
         """
         with self._lock:
-            manager = self._load_for_write()
+            # Decide on the loaded data first; only a needed write goes
+            # through _load_for_write (which may first save a pending import).
+            self._load()
             cached = self._document["plugins"].get(plugin_id)
             if cached is None or current is None:
                 return copy.deepcopy(cached or {})
@@ -437,15 +439,18 @@ class PluginPermissionStore:
             record = document["plugins"][plugin_id]
             self._apply_source(record, current)
             if known is None:
-                # First binding is not a source change; a failed write must
-                # not turn a read into an error. The next call retries.
+                # First binding is not a source change; a failed write
+                # (including saving a pending import) must not turn a read
+                # into an error. The next call retries.
                 try:
+                    manager = self._load_for_write()
                     self._commit(manager, document)
                 except ServerDomainError:
                     logger.error(
                         "plugin source binding was not saved: plugin_id={}", plugin_id
                     )
                 return copy.deepcopy(record)
+            manager = self._load_for_write()
             self._commit(manager, document)
             return copy.deepcopy(record)
 

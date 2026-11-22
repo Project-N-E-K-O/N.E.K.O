@@ -114,7 +114,8 @@ async def _decide_with_mirror(
 
     Transitional: the permission-store mirror goes with the consent dialog.
     The mirror runs first; if the consent write then fails, the mirror is
-    undone, so a failed request changes neither file.
+    undone, so a failed request leaves this plugin's records in both files
+    unchanged (a first-use import of the legacy file may still be saved).
     """
     undo = await asyncio.to_thread(
         mirror_consent_decision,
@@ -130,12 +131,14 @@ async def _decide_with_mirror(
             await asyncio.to_thread(
                 consent_store.decide, plugin_id, decision, capabilities or [], version
             )
-    except BaseException:
+    except BaseException as exc:
         # serialized_plugin_operation already shields cancellation once the
         # lock is held; BaseException keeps the undo even if that changes.
         try:
             await asyncio.to_thread(undo)
         except Exception as undo_exc:
+            if isinstance(exc, ServerDomainError):
+                exc.details["permission_rollback"] = "incomplete"
             logger.error(
                 "consent write failed and the permission store could not be "
                 "rolled back: plugin_id={}, error={}",

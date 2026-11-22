@@ -147,6 +147,40 @@ def reconcile_permission_source(plugin_id: str) -> None:
         )
 
 
+def _manifest_plugin_id(target_dir: str) -> str | None:
+    import tomllib
+
+    try:
+        with open(Path(target_dir) / "plugin.toml", "rb") as handle:
+            plugin_id = tomllib.load(handle).get("plugin", {}).get("id")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return plugin_id if isinstance(plugin_id, str) and plugin_id else None
+
+
+def reconcile_installed_plugins(result: dict) -> None:
+    """Reconcile every plugin of a committed install result.
+
+    Grants are keyed by the manifest ``plugin.id``, which may differ from the
+    install directory name, so the id is read from each installed manifest.
+    Never raises.
+    """
+    try:
+        unpacked = result.get("unpack", result.get("install", result))
+        installed = list(unpacked.get("installed_plugins", []))
+    except AttributeError:
+        return
+    for entry in installed:
+        target_dir = entry.get("target_dir") if isinstance(entry, dict) else None
+        plugin_id = _manifest_plugin_id(str(target_dir)) if target_dir else None
+        if plugin_id is None:
+            logger.warning(
+                "plugin permission source not reconciled: installed manifest id unavailable"
+            )
+            continue
+        reconcile_permission_source(plugin_id)
+
+
 def mirror_consent_decision(
     plugin_id: str,
     decision: str | None,
@@ -197,5 +231,6 @@ def forget_permissions(plugin_id: str) -> dict | None:
     return permission_store.forget(plugin_id)
 
 
-def restore_permissions(plugin_id: str, record: dict) -> None:
+def restore_permissions(plugin_id: str, record: dict | None) -> None:
+    """Put back an earlier record; ``None`` removes the plugin's record."""
     permission_store.restore(plugin_id, record)

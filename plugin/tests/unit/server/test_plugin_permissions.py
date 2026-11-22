@@ -1203,3 +1203,43 @@ def test_consent_approval_replaces_an_explicit_undecided_entry(manager):
     assert record["permissions"][MEMORY_READ]["legacy_any"] is True
     # A real decision from the permission flow is still kept.
     assert record["permissions"][CONVERSATIONS_READ]["state"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_failed_undo_is_reported_on_the_consent_error(consent_flow, monkeypatch):
+    service, permissions = consent_flow["service"], consent_flow["permissions"]
+    consent_flow["consents"].decide("demo", "approved", ["memory.read"], "1")
+    permissions.read("demo")
+    consent_flow["manager"].fail_name = "plugin_consents.json"
+
+    def _restore_fails(*_args, **_kwargs):
+        raise ServerDomainError("PLUGIN_PERMISSIONS_WRITE_FAILED", "disk full", 503)
+
+    monkeypatch.setattr(permissions, "restore", _restore_fails)
+
+    with pytest.raises(ServerDomainError) as captured:
+        await service.revoke_plugin("demo")
+
+    assert captured.value.code == "PLUGIN_CONSENT_WRITE_FAILED"
+    assert captured.value.details["permission_rollback"] == "incomplete"
+
+
+def test_sync_source_with_a_pending_import_only_fails_a_needed_write(manager):
+    _write_legacy(
+        manager,
+        _legacy({"x": {"decision": "approved", "approved_capabilities": ["memory.read"]}}),
+    )
+    manager.fail = OSError("disk full")
+    store = PluginPermissionStore(manager)
+
+    # Nothing to write: no error even though the import is not saved yet.
+    assert MEMORY_READ in store.sync_source("x", None)["permissions"]
+    assert store.sync_source("nobody", MARKET) == {}
+    # A first binding is logged, not raised.
+    assert store.sync_source("x", MARKET)["source"] == MARKET.to_dict()
+    # A real source change still reports the failed write.
+    manager.fail = None
+    store.sync_source("x", MARKET)
+    manager.fail = OSError("disk full")
+    with pytest.raises(ServerDomainError):
+        store.sync_source("x", MANUAL)

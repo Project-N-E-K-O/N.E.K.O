@@ -1118,7 +1118,7 @@ async def test_committed_installs_persist_each_source_so_old_grants_stay_gone(
         return install_new
 
     from plugin.server.application.plugins.capability_analysis_service import (
-        notify_install_committed,
+        notify_install_committed_async,
     )
 
     # The plugin stays stopped through A -> B -> A. As in the real callers,
@@ -1129,7 +1129,7 @@ async def test_committed_installs_persist_each_source_so_old_grants_stay_gone(
             install_new=installer(source, manifest),
             validate_channel_specific=_async_none,
         )
-        notify_install_committed(
+        await notify_install_committed_async(
             {"installed_plugins": [{"target_plugin_id": "demo", "target_dir": str(target)}]}
         )
         assert store.read("demo")["source"] == source.to_dict()
@@ -1181,3 +1181,36 @@ async def test_replace_rollback_after_a_failed_restart_restores_permission_grant
         )
 
     assert store.read("demo") == before
+
+
+
+@pytest.mark.asyncio
+async def test_committed_install_reconciles_by_manifest_id_not_directory_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.application.plugins.capability_analysis_service import (
+        notify_install_committed_async,
+    )
+    seen: list[str] = []
+    monkeypatch.setattr(
+        permission_service, "current_source", lambda plugin_id: seen.append(plugin_id)
+    )
+    target = tmp_path / "plugins" / "renamed_folder"
+    target.mkdir(parents=True)
+    (target / "plugin.toml").write_text(OLD_PLUGIN_MANIFEST, encoding="utf-8")
+    broken = tmp_path / "plugins" / "broken"
+    broken.mkdir()
+    (broken / "plugin.toml").write_text("not toml [", encoding="utf-8")
+
+    await notify_install_committed_async(
+        {
+            "installed_plugins": [
+                {"target_plugin_id": "renamed_folder", "target_dir": str(target)},
+                {"target_plugin_id": "broken", "target_dir": str(broken)},
+            ]
+        }
+    )
+
+    # Grants are keyed by the manifest id; an unreadable manifest is skipped.
+    assert seen == ["demo"]

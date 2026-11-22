@@ -326,21 +326,31 @@ def notify_install_committed(result: dict) -> dict:
         except (KeyError, TypeError, ValueError):
             logger.warning("Host model auto-bind skipped: install entry lacks target_plugin_id")
             continue
-        # The install source is recorded by now: persist it into the stored
-        # permission grants, so a source change is not missed while the
-        # plugin stays stopped. At most one small write, only when the source
-        # changed; never raises.
-        from plugin.server.application.plugins.permission_service import (
-            reconcile_permission_source,
-        )
-
-        reconcile_permission_source(plugin_id)
         threading.Thread(
             target=_auto_bind_host_models_safe,
             args=(plugin_id, str(installed.get("target_dir") or "")),
             daemon=True,
             name=f"host-model-autobind-{plugin_id}",
         ).start()
+    return result
+
+
+async def notify_install_committed_async(result: dict) -> dict:
+    """:func:`notify_install_committed`, then persist each installed plugin's
+    install source into its stored permission grants.
+
+    Awaited by the install owner while it still holds the plugin operation
+    lock, so the grants follow the source even if the plugin stays stopped.
+    The store work runs in a worker thread and never raises.
+    """
+    import asyncio
+
+    from plugin.server.application.plugins.permission_service import (
+        reconcile_installed_plugins,
+    )
+
+    notify_install_committed(result)
+    await asyncio.to_thread(reconcile_installed_plugins, result)
     return result
 
 
