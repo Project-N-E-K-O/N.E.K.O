@@ -737,9 +737,10 @@ class WorktreeManager:
         """Remove the worktree, its registration and its refs, whatever it holds; fine when already gone.
 
         A directory at its path the repository has no registration for,
-        or whose ``.git`` does not point back to the repository (one put
-        there after the worktree went), is left alone: it is not known to
-        be this worktree.
+        or known to be another put there after the worktree went, is left
+        alone. One whose ``.git`` went and that cannot be told from such
+        another (where the file system gives no birth time) is left too,
+        with its registration and refs, and WorktreeError says so.
         """
         async with await self._lock(worktree.repo_root):
             await self._forget(worktree.repo_root, worktree.path, worktree.id, remove_directory=False)
@@ -1317,7 +1318,8 @@ class WorktreeManager:
         # Another registered worktree of the same name owns the refs.
         theirs = any(known.name == worktree_id and not _same_path(known, path) for known in listed)
         common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
-        if registered and not remove_directory and await asyncio.to_thread(_taken_over, path, common):
+        whose = await asyncio.to_thread(_whose, path, common) if registered and not remove_directory else "ours"
+        if whose == "theirs":
             # Still listed, but what is there now is not that worktree (its
             # .git does not point back here, and it is not the directory
             # the worktree was made in): only the stale registration and
@@ -1326,6 +1328,12 @@ class WorktreeManager:
             if not theirs:
                 await self._delete_refs(repo_root, worktree_id)
             return
+        if whose == "unknown":
+            raise WorktreeError(
+                f"{path} is no longer known to be this worktree (its .git is gone, and which directory it was "
+                f"made in was not noted); it is left, and so are its registration and refs: remove the "
+                f"directory by hand, then remove the worktree again"
+            )
         removed_by_git = False
         if registered:
             removed = await self._git(
@@ -1806,31 +1814,45 @@ def _points_into(path: Path, common_dir: Path) -> bool:
     return _same_path(pointed.parent, common_dir / "worktrees")
 
 
-def _taken_over(path: Path, common_dir: Path) -> bool:
-    """Return whether something is at ``path`` that is not a worktree of this repository.
+def _whose(path: Path, common_dir: Path) -> Literal["ours", "theirs", "unknown"]:
+    """Return whether what is at ``path`` is the worktree registered there.
 
-    One whose ``.git`` went (a removal that stopped half way, or removed by
-    hand) is still the worktree when it is the very directory noted when
-    it was made.
+    "ours" when nothing is there, its ``.git`` points back, or it is the
+    very directory noted when the worktree was made (a removal that stopped
+    half way, or a ``.git`` removed by hand); "theirs" when it is known to
+    be another; "unknown" when nothing tells (no note: no birth time to go
+    by, a reusable inode number alone could name a directory made since).
     """
     if not os.path.lexists(_fs(path)) or _points_into(path, common_dir):
-        return False
-    return not _is_the_noted_directory(path, common_dir)
+        return "ours"
+    return _noted_directory(path, common_dir)
 
 
 _DIRECTORY_NOTE = "nekoclaw-directory"
 
 
 def _directory_identity(path: Path) -> dict[str, int] | None:
-    """Return what tells this directory from one made later at the same path, or None when nothing does."""
+    """Return what tells this directory from one made later at the same path, or None when nothing does.
+
+    An inode number is reused once its directory is gone: it counts only
+    together with when the directory was made.
+    """
     found = os.stat(_fs(path))
-    if not found.st_ino:  # a file system without them
+    birth = _birth_of(found)
+    if not found.st_ino or not birth:
         return None
-    identity = {"dev": found.st_dev, "ino": found.st_ino}
+    return {"dev": found.st_dev, "ino": found.st_ino, "birth": birth}
+
+
+def _birth_of(found: os.stat_result, platform: str = sys.platform) -> int | None:
+    """Return when a file was made, in nanoseconds, or None where the file system does not say."""
     birth = getattr(found, "st_birthtime_ns", None)
     if birth:
-        identity["birth"] = birth
-    return identity
+        return int(birth)
+    if platform == "win32":  # there st_ctime is when it was made (before 3.12 the only name for it)
+        return int(found.st_ctime_ns) or None
+    seconds = getattr(found, "st_birthtime", None)  # macOS and the BSDs before 3.12
+    return int(seconds * 1_000_000_000) if seconds else None
 
 
 def _note_directory(admin: Path, path: Path) -> None:
@@ -1839,19 +1861,19 @@ def _note_directory(admin: Path, path: Path) -> None:
         (admin / _DIRECTORY_NOTE).write_text(json.dumps(identity), encoding="utf-8")
 
 
-def _is_the_noted_directory(path: Path, common_dir: Path) -> bool:
+def _noted_directory(path: Path, common_dir: Path) -> Literal["ours", "theirs", "unknown"]:
     entry = _registration_of(common_dir, path)
     if entry is None:
-        return False
+        return "unknown"
     try:
         noted = json.loads((entry / _DIRECTORY_NOTE).read_text(encoding="utf-8"))
         now = _directory_identity(path)
     except (OSError, ValueError):
-        return False
-    if not isinstance(noted, dict) or now is None:
-        return False
-    shared = set(noted) & set(now)
-    return {"dev", "ino"} <= shared and all(noted[key] == now[key] for key in shared)
+        return "unknown"
+    keys = {"dev", "ino", "birth"}
+    if not isinstance(noted, dict) or not keys <= set(noted) or now is None:
+        return "unknown"
+    return "ours" if all(noted[key] == now[key] for key in keys) else "theirs"
 
 
 def _registration_of(common_dir: Path, path: Path) -> Path | None:

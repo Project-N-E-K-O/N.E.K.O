@@ -3065,15 +3065,23 @@ async def test_a_failed_prepare_leaves_no_index_where_there_was_none(
 async def test_removing_leaves_a_directory_put_where_the_worktree_was(
     repo: Path, manager: WorktreeManager, base: Path
 ) -> None:
-    tree = await manager.create(repo, base / "w1")
-    # Moved away, not deleted: the directory made in its place cannot be
-    # given the same identity. Git still has it registered.
-    os.rename(tree.path, base / "moved")
-    write(tree.path / "keep.txt", "someone else's\n")
-    await manager.remove(tree)
-    assert read(tree.path / "keep.txt") == b"someone else's\n"
-    assert "w1" not in registered(repo)
-    assert not git(repo, "for-each-ref", f"{REF_PREFIX}w1/").strip()
+    for how in ("moved", "deleted"):
+        tree = await manager.create(repo, base / f"w-{how}")
+        noted = worktrees._directory_identity(tree.path) is not None
+        if how == "moved":
+            os.rename(tree.path, base / "moved")
+        else:
+            shutil.rmtree(tree.path)  # its number may well be given to the next
+        write(tree.path / "keep.txt", "someone else's\n")  # git still has it registered
+        if noted:
+            await manager.remove(tree)
+            assert tree.path.name not in registered(repo)
+            assert not git(repo, "for-each-ref", f"{REF_PREFIX}{tree.id}/").strip()
+        else:  # nothing tells it from the worktree: everything stays
+            with pytest.raises(WorktreeError, match="no longer known to be this worktree"):
+                await manager.remove(tree)
+            assert tree.path.name in registered(repo)
+        assert read(tree.path / "keep.txt") == b"someone else's\n"
 
 
 async def test_removing_finishes_before_the_lock_is_let_go(
@@ -3168,6 +3176,11 @@ async def test_removing_again_after_a_removal_stopped_half_way(
     assert not exists(tree.path / ".git") and exists(tree.path / "locked.txt")
     monkeypatch.setattr(worktrees, "_remove_tree", real)
     monkeypatch.setattr(manager, "_git", original)
+    if worktrees._directory_identity(tree.path) is None:  # no birth time: it cannot be told, so it stays
+        with pytest.raises(WorktreeError, match="no longer known to be this worktree"):
+            await manager.remove(tree)
+        assert exists(tree.path / "locked.txt") and "w1" in registered(repo)
+        shutil.rmtree(tree.path)  # by hand, as the message says
     await manager.remove(tree)
     assert not exists(tree.path)
     assert "w1" not in registered(repo)
@@ -3178,6 +3191,11 @@ async def test_removing_a_worktree_whose_git_file_went(repo: Path, manager: Work
     tree = await manager.create(repo, base / "w1")
     write(tree.path / "work.txt", "made there\n")
     os.remove(tree.path / ".git")
+    if worktrees._directory_identity(tree.path) is None:
+        with pytest.raises(WorktreeError, match="no longer known to be this worktree"):
+            await manager.remove(tree)
+        assert exists(tree.path / "work.txt")
+        return
     await manager.remove(tree)
     assert not exists(tree.path)
     assert "w1" not in registered(repo)
@@ -3216,3 +3234,66 @@ async def test_a_prepare_cancelled_while_copying_leaves_no_copies(
     assert not exists(where[0].parent)
     assert read(tree.path / "a.txt") == b"worktree\n"
     assert git(repo, "rev-parse", f"{REF_PREFIX}w1/start").strip() == conflict.base
+
+
+def test_when_a_directory_was_made() -> None:
+    class Linux:  # what os.stat gives there: a change time, no birth time
+        st_ctime_ns = 5
+
+    class Windows:
+        st_ctime_ns = 7  # when it was made, there
+
+    class Newer:
+        st_birthtime_ns = 9
+        st_ctime_ns = 7
+
+    class Mac:
+        st_birthtime = 1.5
+        st_ctime_ns = 7
+
+    assert worktrees._birth_of(Linux(), "linux") is None  # type: ignore[arg-type]
+    assert worktrees._birth_of(Windows(), "win32") == 7  # type: ignore[arg-type]
+    assert worktrees._birth_of(Newer(), "win32") == 9  # type: ignore[arg-type]
+    assert worktrees._birth_of(Mac(), "darwin") == 1_500_000_000  # type: ignore[arg-type]
+
+
+def test_a_directory_without_a_birth_time_is_not_noted(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setattr(worktrees, "_birth_of", lambda found: None)
+    assert worktrees._directory_identity(tmp_path) is None
+
+
+def test_a_noted_directory_is_told_by_its_birth_too(tmp_path: Path, monkeypatch: Any) -> None:
+    common = tmp_path / "common"
+    entry = common / "worktrees" / "w1"
+    entry.mkdir(parents=True)
+    path = tmp_path / "w1"
+    path.mkdir()
+    (entry / "gitdir").write_text(str(path / ".git"), encoding="utf-8")
+    (entry / worktrees._DIRECTORY_NOTE).write_text('{"dev": 1, "ino": 2, "birth": 3}', encoding="utf-8")
+    monkeypatch.setattr(worktrees, "_directory_identity", lambda where: {"dev": 1, "ino": 2, "birth": 3})
+    assert worktrees._whose(path, common) == "ours"
+    monkeypatch.setattr(worktrees, "_directory_identity", lambda where: {"dev": 1, "ino": 2, "birth": 4})
+    assert worktrees._whose(path, common) == "theirs"  # the same number, made later
+    monkeypatch.setattr(worktrees, "_directory_identity", lambda where: None)
+    assert worktrees._whose(path, common) == "unknown"
+    (entry / worktrees._DIRECTORY_NOTE).write_text('{"dev": 1, "ino": 2}', encoding="utf-8")
+    monkeypatch.setattr(worktrees, "_directory_identity", lambda where: {"dev": 1, "ino": 2, "birth": 3})
+    assert worktrees._whose(path, common) == "unknown"  # a note without a birth time tells nothing
+
+
+async def test_removing_leaves_what_nothing_tells_from_the_worktree(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(worktrees, "_birth_of", lambda found: None)  # as on Linux: nothing is noted
+    tree = await manager.create(repo, base / "w1")
+    write(tree.path / "work.txt", "made there\n")
+    os.remove(tree.path / ".git")
+    with pytest.raises(WorktreeError, match="no longer known to be this worktree"):
+        await manager.remove(tree)
+    assert read(tree.path / "work.txt") == b"made there\n"
+    assert "w1" in registered(repo)
+    assert git(repo, "for-each-ref", f"{REF_PREFIX}w1/").strip()
+    shutil.rmtree(tree.path)  # by hand, as it says
+    await manager.remove(tree)
+    assert "w1" not in registered(repo)
+    assert not git(repo, "for-each-ref", f"{REF_PREFIX}w1/").strip()
