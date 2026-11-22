@@ -149,7 +149,6 @@ class CoreConfigMixin:
         'summary': 'SUMMARY_MODEL',
         'gameMain': 'CONVERSATION_MODEL',
         'gameSummary': 'SUMMARY_MODEL',
-        'correction': 'CORRECTION_MODEL',
         'emotion': 'EMOTION_MODEL',
         'decision': 'DECISION_MODEL',
         'vision': 'VISION_MODEL',
@@ -980,7 +979,6 @@ class CoreConfigMixin:
             DEFAULT_OPENROUTER_URL,
             DEFAULT_CONVERSATION_MODEL,
             DEFAULT_SUMMARY_MODEL,
-            DEFAULT_CORRECTION_MODEL,
             DEFAULT_EMOTION_MODEL,
             DEFAULT_DECISION_MODEL,
             DEFAULT_VISION_MODEL,
@@ -991,8 +989,6 @@ class CoreConfigMixin:
             DEFAULT_CONVERSATION_MODEL_API_KEY,
             DEFAULT_SUMMARY_MODEL_URL,
             DEFAULT_SUMMARY_MODEL_API_KEY,
-            DEFAULT_CORRECTION_MODEL_URL,
-            DEFAULT_CORRECTION_MODEL_API_KEY,
             DEFAULT_EMOTION_MODEL_URL,
             DEFAULT_EMOTION_MODEL_API_KEY,
             DEFAULT_DECISION_MODEL_URL,
@@ -1020,7 +1016,6 @@ class CoreConfigMixin:
             'SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
             'GAME_MAIN_MODEL': DEFAULT_CONVERSATION_MODEL,
             'GAME_SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
-            'CORRECTION_MODEL': DEFAULT_CORRECTION_MODEL,
             'EMOTION_MODEL': DEFAULT_EMOTION_MODEL,
             'DECISION_MODEL': DEFAULT_DECISION_MODEL,
             'DECISION_PROTOCOL': '',
@@ -1057,8 +1052,6 @@ class CoreConfigMixin:
             'GAME_MAIN_MODEL_API_KEY': DEFAULT_CONVERSATION_MODEL_API_KEY,
             'GAME_SUMMARY_MODEL_URL': DEFAULT_SUMMARY_MODEL_URL,
             'GAME_SUMMARY_MODEL_API_KEY': DEFAULT_SUMMARY_MODEL_API_KEY,
-            'CORRECTION_MODEL_URL': DEFAULT_CORRECTION_MODEL_URL,
-            'CORRECTION_MODEL_API_KEY': DEFAULT_CORRECTION_MODEL_API_KEY,
             'EMOTION_MODEL_URL': DEFAULT_EMOTION_MODEL_URL,
             'EMOTION_MODEL_API_KEY': DEFAULT_EMOTION_MODEL_API_KEY,
             'DECISION_MODEL_URL': DEFAULT_DECISION_MODEL_URL,
@@ -1354,7 +1347,7 @@ class CoreConfigMixin:
         # Exclude credential ttsModelApiKey; tts_client.py still reads it from persisted
         # configuration, avoiding expanding sensitive fields in general configuration snapshots.
         for _model_provider_prefix in (
-            'conversation', 'summary', 'gameMain', 'gameSummary', 'correction',
+            'conversation', 'summary', 'gameMain', 'gameSummary',
             'emotion', 'decision', 'vision', 'agent', 'omni', 'tts',
         ):
             _raw_provider = str(
@@ -1490,7 +1483,6 @@ class CoreConfigMixin:
                 ('summary',      'SUMMARY_MODEL',      'SUMMARY_MODEL_URL',      'SUMMARY_MODEL_API_KEY'),
                 ('gameMain',     'GAME_MAIN_MODEL',    'GAME_MAIN_MODEL_URL',    'GAME_MAIN_MODEL_API_KEY'),
                 ('gameSummary',  'GAME_SUMMARY_MODEL', 'GAME_SUMMARY_MODEL_URL', 'GAME_SUMMARY_MODEL_API_KEY'),
-                ('correction',   'CORRECTION_MODEL',    'CORRECTION_MODEL_URL',   'CORRECTION_MODEL_API_KEY'),
                 ('emotion',      'EMOTION_MODEL',       'EMOTION_MODEL_URL',      'EMOTION_MODEL_API_KEY'),
                 ('decision',     'DECISION_MODEL',      'DECISION_MODEL_URL',     'DECISION_MODEL_API_KEY'),
                 ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
@@ -1524,7 +1516,7 @@ class CoreConfigMixin:
                 #     forces api_type='local' (TODO unimplemented) -> core_api_type='local' ->
                 #     TTS dispatch reaches dummy_tts_worker -> silence
                 #   - tts: linked values pollute TTS_MODEL_URL and send tts_custom to the wrong provider
-                # Other model types (conversation/summary/correction/emotion/vision/agent)
+                # Other model types (conversation/summary/emotion/vision/agent)
                 # use chat-completion REST without a local branch; skipping URLs would alter their
                 # follow_* routing (see PR #1084 review thread), so skip only for omni/tts.
                 # Note: under follow_*, omni/tts cannot rely on get_model_api_config fallback
@@ -1780,8 +1772,7 @@ class CoreConfigMixin:
 
         Args:
             model_type: model type, one of:
-                - 'summary': summary model (falls back to assist API)
-                - 'correction': correction model (falls back to assist API)
+                - 'summary': memory model, shown as "memory upkeep" (falls back to assist API)
                 - 'emotion': emotion analysis model (falls back to assist API)
                 - 'vision': vision model (falls back to assist API)
                 - 'realtime': realtime speech model (falls back to core API)
@@ -1862,13 +1853,6 @@ class CoreConfigMixin:
                 'custom_key': 'GAME_SUMMARY_MODEL_API_KEY',
                 'default_model': 'GAME_SUMMARY_MODEL',
                 'fallback_type': 'summary',
-            },
-            'correction': {
-                'custom_model': 'CORRECTION_MODEL',
-                'custom_url': 'CORRECTION_MODEL_URL',
-                'custom_key': 'CORRECTION_MODEL_API_KEY',
-                'default_model': 'CORRECTION_MODEL',
-                'fallback_type': 'assist',
             },
             'emotion': {
                 'custom_model': 'EMOTION_MODEL',
@@ -1953,7 +1937,6 @@ class CoreConfigMixin:
                 'summary': 'summary',
                 'game_main': 'gameMain',
                 'game_summary': 'gameSummary',
-                'correction': 'correction',
                 'emotion': 'emotion',
                 'decision': 'decision',
                 'vision': 'vision',

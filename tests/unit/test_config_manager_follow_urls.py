@@ -71,10 +71,10 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
             "conversationModelUrl": "https://api.deepseek.com/v1",
             "conversationModelId": "deepseek-v4-flash",
             "conversationModelApiKey": "sk-deepseek",
-            "correctionModelProvider": "follow_assist",
-            "correctionModelUrl": "https://api.deepseek.com/v1",
-            "correctionModelId": "deepseek-v4-flash",
-            "correctionModelApiKey": "sk-deepseek",
+            "summaryModelProvider": "follow_assist",
+            "summaryModelUrl": "https://api.deepseek.com/v1",
+            "summaryModelId": "deepseek-v4-flash",
+            "summaryModelApiKey": "sk-deepseek",
             "agentModelProvider": "follow_assist",
             "agentModelUrl": "https://api.deepseek.com/v1",
             "agentModelId": "deepseek-v4-flash",
@@ -82,7 +82,7 @@ def test_follow_assist_uses_saved_model_id_for_text_tiers():
         })
 
         assert cm.get_model_api_config("conversation")["model"] == "deepseek-v4-flash"
-        assert cm.get_model_api_config("correction")["model"] == "deepseek-v4-flash"
+        assert cm.get_model_api_config("summary")["model"] == "deepseek-v4-flash"
         assert cm.get_model_api_config("agent")["model"] == "deepseek-v4-flash"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
@@ -133,10 +133,10 @@ def test_follow_core_uses_saved_model_id_for_text_tiers():
             "conversationModelUrl": "https://api.deepseek.com/v1",
             "conversationModelId": "deepseek-v4-flash",
             "conversationModelApiKey": "sk-deepseek",
-            "correctionModelProvider": "follow_core",
-            "correctionModelUrl": "https://api.deepseek.com/v1",
-            "correctionModelId": "deepseek-v4-flash",
-            "correctionModelApiKey": "sk-deepseek",
+            "summaryModelProvider": "follow_core",
+            "summaryModelUrl": "https://api.deepseek.com/v1",
+            "summaryModelId": "deepseek-v4-flash",
+            "summaryModelApiKey": "sk-deepseek",
             "agentModelProvider": "follow_core",
             "agentModelUrl": "https://api.deepseek.com/v1",
             "agentModelId": "deepseek-v4-flash",
@@ -144,7 +144,7 @@ def test_follow_core_uses_saved_model_id_for_text_tiers():
         })
 
         assert cm.get_model_api_config("conversation")["model"] == "deepseek-v4-flash"
-        assert cm.get_model_api_config("correction")["model"] == "deepseek-v4-flash"
+        assert cm.get_model_api_config("summary")["model"] == "deepseek-v4-flash"
         assert cm.get_model_api_config("agent")["model"] == "deepseek-v4-flash"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)

@@ -358,15 +358,15 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             )).map(light => light.dataset.modelType),
             rowPairs: { ...MODEL_CONFIG_ROW_PAIRS },
             conversation: rect(cards[0]),
-            vision: rect(cards[1]),
-            summary: rect(cards[2]),
-            correction: rect(cards[3]),
-            emotion: rect(cards[4]),
-            omni: rect(cards[5]),
-            agent: rect(cards[6]),
-            tts: rect(cards[7]),
-            game: rect(cards[8]),
-            image: rect(cards[9]),
+            summary: rect(cards[1]),
+            vision: rect(cards[2]),
+            emotion: rect(cards[3]),
+            omni: rect(cards[4]),
+            agent: rect(cards[5]),
+            tts: rect(cards[6]),
+            game: rect(cards[7]),
+            image: rect(cards[8]),
+            decision: rect(cards[9]),
         };
     }""")
 
@@ -374,9 +374,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["columns"] == 2
     assert desktop["contentIds"] == [
         "conversation-model-content",
-        "vision-model-content",
         "summary-model-content",
-        "correction-model-content",
+        "vision-model-content",
         "emotion-model-content",
         "omni-model-content",
         "agent-model-content",
@@ -387,9 +386,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
-        "api.visionModelConfig",
         "api.summaryModelConfig",
-        "api.correctionModelConfig",
+        "api.visionModelConfig",
         "api.emotionModelConfig",
         "api.realtimeModelConfig",
         "api.agentApiConfigTitle",
@@ -400,9 +398,8 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
-        "vision",
         "summary",
-        "correction",
+        "vision",
         "emotion",
         "omni",
         "agent",
@@ -412,28 +409,28 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "decision",
     ]
     assert desktop["rowPairs"] == {
-        "conversation": "vision",
-        "vision": "conversation",
-        "summary": "correction",
-        "correction": "summary",
-        "emotion": "omni",
-        "omni": "emotion",
-        "agent": "tts",
-        "tts": "agent",
-        "game": "image",
-        "image": "game",
+        "conversation": "summary",
+        "summary": "conversation",
+        "vision": "emotion",
+        "emotion": "vision",
+        "omni": "agent",
+        "agent": "omni",
+        "tts": "game",
+        "game": "tts",
+        "image": "decision",
+        "decision": "image",
     }
-    assert desktop["conversation"]["top"] == desktop["vision"]["top"]
-    assert desktop["conversation"]["left"] < desktop["vision"]["left"]
-    assert abs(desktop["conversation"]["width"] - desktop["vision"]["width"]) <= 1
-    assert desktop["summary"]["top"] == desktop["correction"]["top"]
-    assert desktop["summary"]["left"] < desktop["correction"]["left"]
-    assert abs(desktop["summary"]["width"] - desktop["correction"]["width"]) <= 1
-    assert desktop["emotion"]["top"] == desktop["omni"]["top"]
-    assert desktop["agent"]["top"] == desktop["tts"]["top"]
-    assert desktop["game"]["top"] > desktop["agent"]["top"]
-    assert desktop["game"]["top"] == desktop["image"]["top"]
-    assert desktop["game"]["left"] < desktop["image"]["left"]
+    assert desktop["conversation"]["top"] == desktop["summary"]["top"]
+    assert desktop["conversation"]["left"] < desktop["summary"]["left"]
+    assert abs(desktop["conversation"]["width"] - desktop["summary"]["width"]) <= 1
+    assert desktop["vision"]["top"] == desktop["emotion"]["top"]
+    assert desktop["vision"]["left"] < desktop["emotion"]["left"]
+    assert abs(desktop["vision"]["width"] - desktop["emotion"]["width"]) <= 1
+    assert desktop["omni"]["top"] == desktop["agent"]["top"]
+    assert desktop["tts"]["top"] == desktop["game"]["top"]
+    assert desktop["tts"]["top"] > desktop["omni"]["top"]
+    assert desktop["image"]["top"] == desktop["decision"]["top"]
+    assert desktop["image"]["left"] < desktop["decision"]["left"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)
@@ -442,12 +439,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
         const content = document.getElementById('conversation-model-content');
         const card = content.closest('.model-config-container').getBoundingClientRect();
-        const partner = document.getElementById('vision-model-content')
+        const partner = document.getElementById('summary-model-content')
             .closest('.model-config-container').getBoundingClientRect();
         const contentRect = content.getBoundingClientRect();
         const header = content.previousElementSibling;
-        const partnerHeader = document.getElementById('vision-model-content').previousElementSibling;
-        const summaryHeader = document.getElementById('summary-model-content').previousElementSibling;
+        const partnerHeader = document.getElementById('summary-model-content').previousElementSibling;
+        const unpairedHeader = document.getElementById('vision-model-content').previousElementSibling;
         const headerStyle = getComputedStyle(header);
         return {
             cardWidth: Math.round(card.width),
@@ -464,7 +461,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             headerTransform: headerStyle.transform,
             headerBackground: headerStyle.backgroundImage,
             partnerOpacity: getComputedStyle(partnerHeader).opacity,
-            summaryOpacity: getComputedStyle(summaryHeader).opacity,
+            unpairedOpacity: getComputedStyle(unpairedHeader).opacity,
             contentBorderTopWidth: getComputedStyle(content).borderTopWidth,
             contentBorderTopColor: getComputedStyle(content).borderTopColor,
         };
@@ -481,19 +478,19 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert expanded["headerTransform"] != "none"
     assert "linear-gradient" in expanded["headerBackground"]
     assert float(expanded["partnerOpacity"]) < 1
-    assert expanded["summaryOpacity"] == "1"
+    assert expanded["unpairedOpacity"] == "1"
     assert expanded["contentBorderTopWidth"] == "3px"
     assert expanded["contentBorderTopColor"] == "rgb(64, 197, 241)"
 
     mock_page.evaluate("""() => {
         toggleModelConfig('conversation');
-        toggleModelConfig('vision');
+        toggleModelConfig('summary');
     }""")
     mock_page.wait_for_timeout(650)
 
     right_expanded = mock_page.evaluate("""() => {
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
-        const content = document.getElementById('vision-model-content').getBoundingClientRect();
+        const content = document.getElementById('summary-model-content').getBoundingClientRect();
         return {
             gridLeft: Math.round(grid.left),
             gridWidth: Math.round(grid.width),
@@ -509,7 +506,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     mock_page.wait_for_timeout(350)
     paired_expansion = mock_page.evaluate("""() => {
         const left = document.getElementById('conversation-model-content').getBoundingClientRect();
-        const right = document.getElementById('vision-model-content').getBoundingClientRect();
+        const right = document.getElementById('summary-model-content').getBoundingClientRect();
         return {
             leftWidth: Math.round(left.width),
             leftRight: Math.round(left.right),
@@ -519,14 +516,14 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     }""")
 
     assert abs(paired_expansion["leftWidth"] - desktop["conversation"]["width"]) <= 1
-    assert abs(paired_expansion["rightWidth"] - desktop["vision"]["width"]) <= 1
+    assert abs(paired_expansion["rightWidth"] - desktop["summary"]["width"]) <= 1
     assert paired_expansion["leftRight"] < paired_expansion["rightLeft"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(80)
     collapsing_pair = mock_page.evaluate("""() => {
         const left = document.getElementById('conversation-model-content');
-        const right = document.getElementById('vision-model-content');
+        const right = document.getElementById('summary-model-content');
         const leftRect = left.getBoundingClientRect();
         const rightRect = right.getBoundingClientRect();
         return {
@@ -541,13 +538,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert collapsing_pair["leftHeight"] > 0
     assert collapsing_pair["isCollapsing"] is True
     assert collapsing_pair["leftRight"] < collapsing_pair["rightLeft"]
-    assert abs(collapsing_pair["rightWidth"] - desktop["vision"]["width"]) <= 1
+    assert abs(collapsing_pair["rightWidth"] - desktop["summary"]["width"]) <= 1
 
     mock_page.wait_for_timeout(600)
     settled_pair = mock_page.evaluate("""() => {
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
         const left = document.getElementById('conversation-model-content');
-        const right = document.getElementById('vision-model-content');
+        const right = document.getElementById('summary-model-content');
         const rightRect = right.getBoundingClientRect();
         return {
             gridLeft: Math.round(grid.left),
