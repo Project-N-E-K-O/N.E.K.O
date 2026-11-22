@@ -74,8 +74,8 @@
 
         const emptyList = () => [];
         // framesFor(sceneId, quality) -> frame[] | Promise<frame[]>
-        // frame = {width,height,data,delayMs}。键是**动画**而不是状态，同一条动画被
-        // 多个状态用到时只取一次；quality 让悬停能用便宜的档位先动起来。
+        // frame = {width,height,data,delayMs}。普通动画按源共享，带修饰节点的状态
+        // 使用独立外观键；quality 让悬停能用便宜的档位先动起来。
         const framesFor = typeof options.framesFor === 'function' ? options.framesFor : emptyList;
         const onPickerClose = typeof options.onPickerClose === 'function' ? options.onPickerClose : () => {};
         // 起拖后 swallow 掉紧随其后的点击（从松手那一刻计时，不是从起拖）
@@ -149,6 +149,7 @@
         let playhead = 0;
         let playTimer = 0;
         let stripDrag = null;
+        let stripPointerId = null;
         let stripBefore = null;
         let stageDrag = null;
         let disposed = false;
@@ -289,7 +290,7 @@
         imageImport.addEventListener('click', () => onImportImages());
         const userImageGrid = document.createElement('div');
         userImageGrid.className = 'st-userimg-grid';
-        userImageGrid.setAttribute('role', 'listbox');
+        userImageGrid.setAttribute('role', 'list');
         userImageGrid.setAttribute('aria-label', t('emoteMaker.stageUserImages'));
         const userImageEmpty = document.createElement('p');
         userImageEmpty.className = 'st-userimg-empty';
@@ -451,7 +452,12 @@
             if (framesBySource.has(key)) return framesBySource.get(key);
             const revision = framesRevision;
             const imageRevision = imageFramesRevision;
-            const result = await framesFor(sceneId, tier);
+            let result;
+            try {
+                result = await framesFor(sceneId, tier);
+            } catch (_) {
+                return []; // Failed previews remain retryable; exports handle the error separately.
+            }
             if (revision !== framesRevision
                     || (String(sceneId).startsWith('images:') && imageRevision !== imageFramesRevision)) return [];
             const list = Array.isArray(result) ? result : [];
@@ -461,7 +467,7 @@
         }
 
         function activeSource(node) {
-            return previewScene || imageSourceKey(node) || committedScene(node);
+            return previewScene || imageSourceKey(node) || committedFrameSource(node);
         }
 
         /** 图片源的 sourceKey（image:<id>），供 framesOf 走图片绘制路径。 */
@@ -509,6 +515,22 @@
             const scene = sceneNodeFor(node);
             const id = scene ? String(scene.params.sceneId || '') : '';
             return id || (ROOT_PREFIX + (node ? node.params.stateKey : ''));
+        }
+
+        function committedFrameSource(node) {
+            const base = committedScene(node);
+            const modifiers = [];
+            const seen = new Set();
+            let current = node;
+            while (current && !seen.has(current.id)) {
+                seen.add(current.id);
+                const link = graph.links.find((entry) => entry.to === current.id);
+                current = link && graph.nodes.find((entry) => entry.id === link.from);
+                if (!current || current.type.startsWith('source.')) break;
+                modifiers.push([current.type, current.params]);
+            }
+            return modifiers.length
+                ? ROOT_PREFIX + node.params.stateKey + '@' + JSON.stringify([base, modifiers]) : base;
         }
 
         function activeFrames(node) {
@@ -868,6 +890,7 @@
         }
 
         function paintTileCanvas(host, frame) {
+            delete host.dataset.thumbRequest;
             const box = host.querySelector('canvas') || (() => {
                 const created = document.createElement('canvas');
                 created.width = 44;
@@ -934,7 +957,7 @@
                 // 先前只给"正在编辑的那一格"取帧，其余七行一直是空白，要点一下才亮
                 const scene = node ? sceneNodeFor(node) : null;
                 const bound = node ? boundImagesFor(node) : null;
-                const sourceScene = node ? committedScene(node) : '';
+                const sourceScene = node ? committedFrameSource(node) : '';
                 if (slice?.length) paintTileCanvas(refs.thumb, slice[0]);
                 else if (refs.thumb.firstChild === null && node && bound?.length) {
                     // 绑了用户图片的格子缩略图走图片源；committedScene 给的是
@@ -942,7 +965,7 @@
                     // 摆第一张：格子里要的是"这格是图"，不是预告片。
                     requestTileThumb(refs.thumb, `image:${bound[0].id}`);
                 } else if (refs.thumb.firstChild === null && node && sourceScene
-                    && sourceScene.indexOf(ROOT_PREFIX) !== 0) {
+                    && (scene || sourceScene.indexOf(ROOT_PREFIX) !== 0)) {
                     // 格子是"这个状态长什么样"：起始手柄指到哪，缩略图就采哪一帧，
                     // 同一条动画不同起点的两格各采各的（缩略图缓存按起点拆开）
                     const startAt = Math.max(0, Number(node.params.startAt) || 0);
@@ -1060,16 +1083,18 @@
             const x = (event.clientX - box.left) / box.width * stripW;
             // 单帧那一格只有起点有意义：终点手柄就挨在旁边，抓住哪个都该挪起点
             stripDrag = range.still || Math.abs(x - range.startPx) <= HANDLE_HIT_PX ? 'start' : 'end';
+            stripPointerId = event.pointerId;
             stripBefore = snapshotGraph();
             stripCanvas.setPointerCapture?.(event.pointerId);
             applyStripDrag(event.clientX);
         });
         stripCanvas.addEventListener('pointermove', (event) => {
-            if (stripDrag) applyStripDrag(event.clientX);
+            if (stripDrag && event.pointerId === stripPointerId) applyStripDrag(event.clientX);
         });
-        const endStripDrag = () => {
-            if (!stripDrag) return;
+        const endStripDrag = (event) => {
+            if (!stripDrag || (event && event.pointerId !== stripPointerId)) return;
             stripDrag = null;
+            stripPointerId = null;
             onCommit(stripBefore, snapshotGraph());
             stripBefore = null;
         };
@@ -1192,6 +1217,7 @@
             paint();
         });
         stage.addEventListener('dblclick', () => {
+            if (formatIsFlat()) return;
             editGraph(() => updateParams({ scalePercent: 100, degrees: 0 }));
             paint();
         });
@@ -1358,6 +1384,11 @@
         }
 
         function animationLabel(sceneId) {
+            if (String(sceneId || '').startsWith(ROOT_PREFIX) && String(sceneId).includes('@')) {
+                const key = String(sceneId).slice(ROOT_PREFIX.length).split('@', 1)[0];
+                const scene = sceneNodeFor(nodeForState(key));
+                sceneId = scene ? scene.params.sceneId : '';
+            }
             if (isDefaultSource(sceneId)) return t('emoteMaker.stageUseDefaults');
             const key = String(sceneId || '');
             if (key.indexOf('images:') === 0) {
@@ -1421,11 +1452,12 @@
             const entries = userImages();
             userImageGrid.replaceChildren(...entries.map((entry) => {
                 const tile = document.createElement('div');
-                tile.className = 'st-pick st-userimg';
-                tile.setAttribute('role', 'option');
-                tile.setAttribute('tabindex', '0');
+                tile.className = 'st-userimg';
+                tile.setAttribute('role', 'listitem');
                 tile.dataset.imageId = entry.id;
-                tile.setAttribute('role', 'option');
+                const bind = document.createElement('button');
+                bind.type = 'button';
+                bind.className = 'st-pick st-userimg-bind';
                 const thumb = document.createElement('span');
                 thumb.className = 'st-pick-thumb';
                 if (entry.thumb) {
@@ -1457,15 +1489,16 @@
                         remove.disabled = false;
                     }
                 });
-                tile.append(thumb, text, remove);
+                bind.append(thumb, text);
+                tile.append(bind, remove);
                 // 点击 = 赋给当前选中的状态格
-                tile.addEventListener('click', (event) => {
-                    if (rowClickGuard ? rowClickGuard.shouldSwallow(event) : tile.dataset.justDragged) return;
+                bind.addEventListener('click', (event) => {
+                    if (rowClickGuard ? rowClickGuard.shouldSwallow(event) : bind.dataset.justDragged) return;
                     clearPreview();
                     editGraph(() => applyImageTo(selectedNode(), entry.id));
                     loadSelected().then(renderUserImages);
                 });
-                holdToDrag(tile, { kind: 'image', id: entry.id, label: entry.label });
+                holdToDrag(bind, { kind: 'image', id: entry.id, label: entry.label });
                 return tile;
             }));
             userImageEmpty.hidden = entries.length > 0;
@@ -1669,8 +1702,6 @@
             // 抽屉展开时台面是定格的，检视窗是唯一能看见"选了哪一帧"的地方。
             const slice = node ? sliceByNode.get(node.id) : null;
             const frames = slice?.length ? slice : activeFrames(node);
-            const ctx = context2d(previewCanvas);
-            if (!ctx) return;
             const box = previewCanvas.getBoundingClientRect();
             const width = Math.max(80, Math.round(box.width || PREVIEW_CARD_W));
             const height = Math.max(80, Math.round(box.height || PREVIEW_CARD_H));
@@ -1681,6 +1712,8 @@
                 previewCanvas.width = Math.round(width * (canvasRatio || dpr()));
                 previewCanvas.height = Math.round(height * (canvasRatio || dpr()));
             }
+            const ctx = context2d(previewCanvas);
+            if (!ctx) return;
             ctx.clearRect(0, 0, width, height);
             if (!frames.length) return;
             const frame = frames[playhead % frames.length];

@@ -625,7 +625,8 @@ def client(tmp_path: Path, monkeypatch):
         router_module, "_template_library_directory",
         lambda: tmp_path / "emote_templates",
     )
-    return TestClient(app, client=("127.0.0.1", 40000), headers={"x-neko-emote-library": "1"})
+    with TestClient(app, client=("127.0.0.1", 40000), headers={"x-neko-emote-library": "1"}) as http:
+        yield http
 
 
 @pytest.mark.parametrize('over_count', [False, True])
@@ -728,6 +729,118 @@ def test_template_upload_body_is_capped_before_route_processing(monkeypatch, kno
     assert response.status_code == 413
     assert response.json()['error_code'] == 'payload_too_large'
 
+
+
+def test_production_app_registers_the_emote_body_limit_and_export_preflight():
+    from app.main_server import app, _emote_template_multipart_preflight
+    from main_routers.emote_template_router import MAX_MULTIPART_BODY_BYTES
+    from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
+
+    guards = [item for item in app.user_middleware
+              if item.cls is InboundBodySizeLimitMiddleware
+              and item.kwargs.get('multipart_path_prefix') == '/api/emote-maker']
+    assert len(guards) == 1
+    assert guards[0].kwargs['multipart_methods'] == ('POST',)
+    assert guards[0].kwargs['max_multipart_body_bytes'] == MAX_MULTIPART_BODY_BYTES
+    assert guards[0].kwargs['multipart_preflight'] is _emote_template_multipart_preflight
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('peer', 'identity', 'header', 'path', 'status'), [
+    ('203.0.113.7', 'authenticated', True, '/api/emote-maker/export/file', 403),
+    ('127.0.0.1', 'authenticated', True, '/api/emote-maker/export/file', 403),
+    ('127.0.0.1', None, False, '/api/emote-maker/export/file', 403),
+    ('203.0.113.7', None, True, '/api/emote-maker/export/file/', 403),
+    ('127.0.0.1', None, True, '/api/emote-maker/export/file', 200),
+    ('203.0.113.7', 'authenticated', True, '/api/emote-maker/library/archive', 200),
+])
+async def test_production_export_preflight_rejects_before_receiving_the_body(
+        peer, identity, header, path, status):
+    from app.main_server import app
+    from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
+
+    options = next(item.kwargs for item in app.user_middleware
+                   if item.cls is InboundBodySizeLimitMiddleware
+                   and item.kwargs.get('multipart_path_prefix') == '/api/emote-maker')
+    received, messages = [], []
+
+    async def receive():
+        received.append(True)
+        return {'type':'http.request', 'body':b'multipart bytes', 'more_body':False}
+
+    async def downstream(scope, read, send):
+        while (await read()).get('more_body'):
+            pass
+        await send({'type':'http.response.start', 'status':200, 'headers':[]})
+        await send({'type':'http.response.body', 'body':b'ok'})
+
+    async def send(message):
+        messages.append(message)
+
+    headers = [(b'content-type', b'multipart/form-data; boundary=test')]
+    if header:
+        headers.append((b'x-neko-emote-export', b'1'))
+    scope = {'type':'http', 'http_version':'1.1', 'scheme':'http', 'method':'POST',
+             'path':path, 'raw_path':path.encode(), 'query_string':b'', 'headers':headers,
+             'client':(peer, 50000), 'server':('127.0.0.1',48911)}
+    if identity:
+        scope['neko.instance_identity'] = identity
+    await InboundBodySizeLimitMiddleware(downstream, **options)(scope, receive, send)
+    assert messages[0]['status'] == status
+    assert len(received) == (0 if status == 403 else 1)
+    if status == 403:
+        assert json.loads(messages[-1]['body']) == {'success':False,'error':'拒绝写入'}
+
+
+def test_texture_removal_does_not_succeed_before_a_failed_publication_can_recover_the_file(store, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, get_ident
+
+    store.save('interrupted', _zip(), [('StageImages/old.png', b'old')])
+    checked, allow_removal, writer_done = Event(), Event(), Event()
+    original_require = store._require_writable
+    original_replace = store_module.os.replace
+    removing_thread = []
+
+    def check_then_wait(key):
+        original_require(key)
+        if removing_thread and get_ident() == removing_thread[0]:
+            checked.set()
+            assert allow_removal.wait(5), 'test did not release the delete'
+
+    def fail_publication_and_rollback(source, target):
+        source, target = Path(source), Path(target)
+        if source.name.startswith(('.uploading-', '.retired-')) and target == store.root / dir_key_for('interrupted'):
+            raise OSError('publication/rollback unavailable')
+        return original_replace(source, target)
+
+    def remove():
+        removing_thread.append(get_ident())
+        store.remove_texture('interrupted', 'StageImages/old.png')
+
+    def write():
+        try:
+            with pytest.raises(EmoteTemplateStoreError):
+                store.save_textures('interrupted', [('StageImages/new.png', b'new')])
+        finally:
+            writer_done.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, '_require_writable', check_then_wait)
+        patch.setattr(store_module.os, 'replace', fail_publication_and_rollback)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            removal = executor.submit(remove)
+            assert checked.wait(2)
+            publication = executor.submit(write)
+            try:
+                writer_done.wait(.2)
+            finally:
+                allow_removal.set()
+            removal.result(timeout=3)
+            publication.result(timeout=3)
+    recovered = EmoteTemplateArchiveStore(store.root)
+    assert recovered.has('interrupted')
+    assert 'StageImages/old.png' not in recovered.texture_paths('interrupted')
 
 def test_router_roundtrip_uses_our_names_and_self_contained_zip(client, tmp_path, monkeypatch):
     from tests.emote_fixtures import spine_zip

@@ -3969,6 +3969,11 @@ body.is-pack-dragging * {
 .st-userimg {
     position: relative;
 }
+.st-userimg-bind {
+    width: 100%;
+    height: 100%;
+    font: inherit;
+}
 .st-userimg-remove {
     position: absolute;
     top: 3px;
@@ -3986,7 +3991,8 @@ body.is-pack-dragging * {
     cursor: pointer;
     opacity: 0;
 }
-.st-userimg:hover .st-userimg-remove {
+.st-userimg:hover .st-userimg-remove,
+.st-userimg:focus-within .st-userimg-remove {
     opacity: 1;
 }
 .st-userimg-remove:hover {

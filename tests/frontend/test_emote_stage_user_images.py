@@ -246,7 +246,7 @@ def test_seeded_image_renders_and_click_assigns(page: Page, running_server: str)
     assert page.evaluate(
         "() => document.querySelector('.st-drawer-count').textContent") == "1"
 
-    page.evaluate("() => document.querySelector('.st-userimg-grid .st-userimg').click()")
+    page.locator('.st-userimg-grid .st-userimg-bind').click()
     assigned = page.evaluate("""() => {
         const graph = window.__STAGE.getGraph();
         const image = graph.nodes.find((n) => n.type === 'source.image');

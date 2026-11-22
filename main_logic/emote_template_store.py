@@ -418,8 +418,8 @@ class EmoteTemplateArchiveStore:
 
     def remove_texture(self, key: str, relative: str) -> None:
         """Remove one texture file from a saved copy."""
-        self._require_writable(key)
         with _replacement_lock:
+            self._require_writable(key)
             textures_dir = self._entry_dir(key) / TEXTURES_DIR
             target = self._safe_child(textures_dir, relative)
             if target.is_file():

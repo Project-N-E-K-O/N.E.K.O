@@ -3953,9 +3953,10 @@
             }
             // 选择框要在气泡藏起来之前就打开。先关掉再调的话，内嵌网页会直接拒绝。
             groupExportPicking = true;
-            const picking = requestExportDirectory();
+            const controller = new AbortController();
+            const picking = requestExportDirectory(controller.signal);
             closeGroupPicker();
-            void exportGroup(group, $('#export-group-open-btn'), picking)
+            void exportGroup(group, $('#export-group-open-btn'), picking, controller)
                 .finally(() => { groupExportPicking = false; });
         });
         return row;
@@ -4095,13 +4096,14 @@
      * 必须在点击处理函数里同步调用：showDirectoryPicker 晚于第一个 await，
      * 或者点到的按钮已经被藏起来，浏览器会直接拒绝，对话框不会出现。
      */
-    function requestExportDirectory() {
+    function requestExportDirectory(signal) {
+        if (signal?.aborted) return Promise.resolve('cancelled');
         const host = window.nekoHost;
         if (host && typeof host.pickDirectory === 'function') {
-            return pickExportDirectoryFromHost();
+            return pickExportDirectoryFromHost(signal);
         }
         if (typeof window.showDirectoryPicker !== 'function') {
-            return pickExportDirectoryFromBackend();
+            return pickExportDirectoryFromBackend(signal);
         }
         let pending;
         try {
@@ -4111,32 +4113,37 @@
             pending = Promise.reject(error);
         }
         return pending.catch((error) => {
-            if (error && error.name === 'AbortError') return 'cancelled';
+            if (signal?.aborted || error?.name === 'AbortError') return 'cancelled';
             console.warn('[emote-maker] 浏览器目录选择失败，改走系统对话框', error);
-            return pickExportDirectoryFromBackend();
+            return pickExportDirectoryFromBackend(signal);
         });
     }
 
-    async function pickExportDirectoryFromHost() {
+    async function pickExportDirectoryFromHost(signal) {
+        if (signal?.aborted) return 'cancelled';
         try {
             const result = await window.nekoHost.pickDirectory({
                 title: t('emoteMaker.groupExportPickFolder'),
             });
-            if (!result || typeof result !== 'object') return pickExportDirectoryFromBackend();
+            if (signal?.aborted) return 'cancelled';
+            if (!result || typeof result !== 'object') return pickExportDirectoryFromBackend(signal);
             if (result.cancelled) return 'cancelled';
             const path = String(result.selected_root || result.path || '').trim();
-            if (!path) return pickExportDirectoryFromBackend();
+            if (!path) return pickExportDirectoryFromBackend(signal);
             return { kind: 'path', path };
         } catch (error) {
+            if (signal?.aborted) return 'cancelled';
             console.warn('[emote-maker] 桌面目录选择失败', error);
-            return pickExportDirectoryFromBackend();
+            return pickExportDirectoryFromBackend(signal);
         }
     }
 
-    async function pickExportDirectoryFromBackend() {
+    async function pickExportDirectoryFromBackend(signal) {
+        if (signal?.aborted) return 'cancelled';
         try {
             const response = await fetch('/api/storage/location/pick-directory', {
                 method: 'POST',
+                signal,
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
@@ -4144,11 +4151,13 @@
                 body: JSON.stringify({ start_path: '' }),
             });
             const payload = await response.json().catch(() => ({}));
+            if (signal?.aborted) return 'cancelled';
             if (payload && payload.cancelled) return 'cancelled';
             const path = String((payload && payload.selected_root) || '').trim();
             if (!response.ok || !payload || payload.ok !== true || !path) return null;
             return { kind: 'path', path };
         } catch (error) {
+            if (signal?.aborted) return 'cancelled';
             console.warn('[emote-maker] 系统目录选择失败', error);
             return null;
         }
@@ -4282,7 +4291,7 @@
     }
 
     /** 导出气泡/按钮真正要导的那一组 —— 由气泡里的行决定，不是"当前下拉选中的那组"。 */
-    async function exportGroup(group, exportTrigger, directoryPick) {
+    async function exportGroup(group, exportTrigger, directoryPick, controller = new AbortController()) {
         if (groupExportBusy || packBusy) return;
         if (!group) return;
         if (!hasSpineRenderer()) {
@@ -4293,7 +4302,6 @@
         }
         groupExportBusy = true;
         groupExportAbort = false;
-        const controller = new AbortController();
         groupExportController = controller;
         setPackBusy(true);
         const trigger = exportTrigger && exportTrigger.nodeType === 1 ? exportTrigger : null;
@@ -4330,7 +4338,7 @@
     async function exportGroupNow(group, directoryPick, signal) {
         const generation = spineRendererGeneration;
         // 点击处已经把选择框打开了。这里再调一次只作为没经过那次点击的退路。
-        const picked = await awaitGroupPreparation(directoryPick || requestExportDirectory(), signal);
+        const picked = await awaitGroupPreparation(directoryPick || requestExportDirectory(signal), signal);
         if (picked === 'cancelled' || groupExportAbort || generation !== spineRendererGeneration) return;
         const savingToFolder = Boolean(picked);
         const planned = planGroupExportFor(
@@ -6094,47 +6102,49 @@
 
     /** 用户图片 → 单帧（按导出边长画到画布中央，透明背景）。 */
     function frameFromStageImage(image, edge) {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             const imageEl = new Image();
             imageEl.onload = () => {
-                const size = Math.max(1, edge || 512);
-                const canvas = document.createElement('canvas');
-                canvas.width = size;
-                canvas.height = size;
-                const ctx = canvas.getContext('2d');
-                const scale = Math.min(size / imageEl.width, size / imageEl.height) || 1;
-                const width = imageEl.width * scale;
-                const height = imageEl.height * scale;
-                ctx.drawImage(imageEl, (size - width) / 2, (size - height) / 2, width, height);
-                const data = ctx.getImageData(0, 0, size, size);
-                resolve([{ width: size, height: size, data: data.data }]);
+                try {
+                    const size = Math.max(1, edge || 512);
+                    const canvas = document.createElement('canvas');
+                    canvas.width = size;
+                    canvas.height = size;
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) throw new Error('stage-image-canvas-unavailable');
+                    const scale = Math.min(size / imageEl.width, size / imageEl.height) || 1;
+                    const width = imageEl.width * scale;
+                    const height = imageEl.height * scale;
+                    ctx.drawImage(imageEl, (size - width) / 2, (size - height) / 2, width, height);
+                    const data = ctx.getImageData(0, 0, size, size);
+                    resolve([{ width: size, height: size, data: data.data }]);
+                } catch (error) {
+                    reject(error);
+                }
             };
-            imageEl.onerror = () => resolve([]);
+            imageEl.onerror = () => reject(new Error('stage-image-decode-failed'));
             imageEl.src = image.dataUrl;
         });
     }
 
     async function framesFromStageImage(image, edge) {
         if (image.extension !== 'gif') return frameFromStageImage(image, edge);
+        const response = await fetchStageGifFrames(dataUrlToBlob(image.dataUrl), edge);
+        const [cell, columns, delays] = JSON.parse(response.headers.get('X-Stage-Image-Frames'));
+        const atlas = await createImageBitmap(await response.blob());
         try {
-            const response = await fetchStageGifFrames(dataUrlToBlob(image.dataUrl), edge);
-            const [cell, columns, delays] = JSON.parse(response.headers.get('X-Stage-Image-Frames'));
-            const atlas = await createImageBitmap(await response.blob());
-            try {
-                const canvas = document.createElement('canvas');
-                canvas.width = canvas.height = cell;
-                const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                return delays.map((delayMs, index) => {
-                    ctx.clearRect(0, 0, cell, cell);
-                    ctx.drawImage(atlas, index % columns * cell, Math.floor(index / columns) * cell,
-                        cell, cell, 0, 0, cell, cell);
-                    return { width: cell, height: cell, data: ctx.getImageData(0, 0, cell, cell).data, delayMs };
-                });
-            } finally {
-                atlas.close();
-            }
-        } catch (_) {
-            return [];
+            const canvas = document.createElement('canvas');
+            canvas.width = canvas.height = cell;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (!ctx) throw new Error('stage-image-canvas-unavailable');
+            return delays.map((delayMs, index) => {
+                ctx.clearRect(0, 0, cell, cell);
+                ctx.drawImage(atlas, index % columns * cell, Math.floor(index / columns) * cell,
+                    cell, cell, 0, 0, cell, cell);
+                return { width: cell, height: cell, data: ctx.getImageData(0, 0, cell, cell).data, delayMs };
+            });
+        } finally {
+            atlas.close();
         }
     }
 
@@ -6285,7 +6295,7 @@
         let sceneId = key;
         let look = { ...currentLookDefaults(), sceneId };
         if (key.indexOf(STAGE_ROOT_PREFIX) === 0) {
-            const stateKey = key.slice(STAGE_ROOT_PREFIX.length);
+            const stateKey = key.slice(STAGE_ROOT_PREFIX.length).split('@', 1)[0];
             const evaluated = model.evaluate(graph, currentLookDefaults());
             const output = evaluated.outputs.find((item) => item.stateKey === stateKey);
             if (!output) return null;
@@ -6350,7 +6360,9 @@
         if (stateStageSession) stateStageSession.dispose();
         if (!state.nodeGraph) state.nodeGraph = model.normalizeGraph(basicGraph());
         forgetStageFrames();
-        stateStageSession = stageModule.create({
+        const sessionTemplateKey = currentTemplateKey();
+        let session;
+        session = stageModule.create({
             model,
             graph: state.nodeGraph,
             t,
@@ -6367,7 +6379,9 @@
                 value: scene.id,
                 label: scene.name || scene.animation?.id || scene.id,
             })),
-            onImportImages: () => { void restoreStageImages().then(() => stageImageInput?.click()); },
+            onImportImages: () => { void restoreStageImages().then(() => {
+                if (stateStageSession === session && currentTemplateKey() === sessionTemplateKey) stageImageInput?.click();
+            }); },
             onRemoveImage: removeStageImage,
             onChange: (next) => {
                 state.nodeGraph = next;
@@ -6387,6 +6401,7 @@
                 rememberHistory(before, after, restoreStageGraph);
             },
             onClose: () => {
+                if (stateStageSession !== session) return;
                 finishClosedStageCaptures();
                 if (stateStageSession) stateStageSession.dispose();
                 stateStageSession = null;
@@ -6396,6 +6411,7 @@
                 renderPackPanel();
             },
         });
+        stateStageSession = session;
         renderPackPanel();
     }
 

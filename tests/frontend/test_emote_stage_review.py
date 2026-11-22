@@ -40,6 +40,91 @@ def test_replacing_one_state_does_not_edit_its_shared_source(page, running_serve
         assert result['talking']['imageIds'] == ['one']
 
 
+
+@pytest.mark.parametrize('foreign_event', ['pointermove', 'pointerup', 'pointercancel', 'lostpointercapture'])
+def test_strip_gestures_ignore_other_pointer_ids(page, running_server, foreign_event):
+    _boot(page, running_server)
+    box = page.locator('.st-strip-canvas').bounding_box()
+    x, y = box['x'], box['y'] + box['height'] / 2
+    page.mouse.move(x + box['width'] * .98, y)
+    page.mouse.down()
+    page.mouse.move(x + box['width'] * .7, y)
+    before = page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params.seconds")
+    page.evaluate('''([event,x,y])=>document.querySelector('.st-strip-canvas').dispatchEvent(
+        new PointerEvent(event,{bubbles:true,pointerId:987,pointerType:'touch',clientX:x,clientY:y}))''',
+        [foreign_event, x + box['width'] * .2, y])
+    assert page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params.seconds") == before
+    page.mouse.move(x + box['width'] * .45, y, steps=4)
+    page.mouse.up()
+    assert page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params.seconds") < before
+
+
+def test_flat_stage_double_click_preserves_saved_layered_pose_and_layered_still_resets(page, running_server):
+    _boot(page, running_server)
+    page.evaluate('''async () => {
+        const graph=__STAGE.getGraph(),node=graph.nodes.find(n=>n.params.stateKey==='idle_image');
+        node.params.scalePercent=135;node.params.degrees=25;
+        __STAGE.setGraph(graph);window.__FLAT=true;await __STAGE.refresh();
+    }''')
+    page.locator('.st-stage').dblclick()
+    pose = page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params")
+    assert (pose['scalePercent'], pose['degrees']) == (135,25)
+    page.evaluate('async()=>{window.__FLAT=false;await __STAGE.refresh();}')
+    page.locator('.st-stage').dblclick()
+    pose = page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params")
+    assert (pose['scalePercent'], pose['degrees']) == (100,0)
+
+
+def test_delayed_thumbnail_cannot_replace_the_authoritative_trimmed_frame_canvas(page, running_server):
+    page.goto(running_server + '/emote_maker', wait_until='networkidle')
+    page.evaluate(REVEAL)
+    page.evaluate(BOOT.replace("            return '';",
+        "            return new Promise(resolve=>{window.reviewOldThumb=resolve;});"), .1)
+    page.wait_for_function("typeof window.reviewOldThumb==='function'")
+    page.locator('.st-tile[data-state="talking_image"]').click()
+    page.wait_for_function("document.querySelector('.st-tile[data-state=\"talking_image\"] .st-tile-thumb canvas')!==null")
+    box = page.locator('.st-strip-canvas').bounding_box()
+    page.mouse.move(box['x'] + 1, box['y'] + box['height'] / 2)
+    page.mouse.down()
+    page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2, steps=4)
+    page.mouse.up()
+    assert page.evaluate('''async () => {
+        const host=document.querySelector('.st-tile[data-state="talking_image"] .st-tile-thumb');
+        const authoritative=host.firstChild;
+        const old=document.createElement('canvas');old.width=old.height=44;
+        const context=old.getContext('2d');context.fillStyle='red';context.fillRect(0,0,44,44);
+        reviewOldThumb(old.toDataURL());
+        await new Promise(requestAnimationFrame);
+        return host.firstChild===authoritative && host.firstChild.tagName==='CANVAS';
+    }''')
+
+
+def test_reduced_motion_preview_is_centered_on_the_first_draw_after_a_dpr_resize(page, running_server):
+    from tests.frontend.test_emote_state_stage import _open_library
+
+    page.add_init_script("Object.defineProperty(window,'devicePixelRatio',{get:()=>2});")
+    page.emulate_media(reduced_motion='reduce')
+    _boot(page, running_server)
+    _open_library(page)
+    result = page.evaluate('''async () => {
+        const canvas=document.querySelector('.st-lib-preview-canvas');
+        canvas.width=canvas.height=1;
+        await __STAGE.refresh();
+        const ctx=canvas.getContext('2d'),data=ctx.getImageData(0,0,canvas.width,canvas.height).data;
+        let left=canvas.width,right=-1,top=canvas.height,bottom=-1;
+        for(let y=0;y<canvas.height;y++)for(let x=0;x<canvas.width;x++){
+            if(!data[(y*canvas.width+x)*4+3])continue;
+            left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);
+        }
+        return {scale:ctx.getTransform().a,width:canvas.width,height:canvas.height,left,right,top,bottom};
+    }''')
+    assert result['scale'] == 2
+    assert (result['left'] + result['right'] + 1) / 2 == pytest.approx(result['width'] / 2, abs=2)
+    assert (result['top'] + result['bottom'] + 1) / 2 == pytest.approx(result['height'] / 2, abs=2)
+    expected_edge = min(result['width'], result['height']) * .9
+    assert result['right'] - result['left'] + 1 == pytest.approx(expected_edge, abs=3)
+    assert result['bottom'] - result['top'] + 1 == pytest.approx(expected_edge, abs=3)
+
 def test_fine_zoom_and_closed_drawer_focus(page, running_server):
     _boot(page, running_server)
     page.locator('.st-stage').focus()

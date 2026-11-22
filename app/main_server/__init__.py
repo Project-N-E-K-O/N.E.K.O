@@ -647,6 +647,14 @@ def _avatar_tool_multipart_preflight(scope):
     return _validate_local_mutation_request(request)
 
 
+def _emote_template_multipart_preflight(scope):
+    if scope.get("path", "").rstrip("/") == "/api/emote-maker/export/file":
+        from main_routers.emote_template_router import _reject_unscoped_export
+
+        return _reject_unscoped_export(Request(scope))
+    return None
+
+
 # Global nonmultipart requests retain 16 MiB Content-Length guards. Custom-prop
 # POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
 # multipart parsing; receive-byte counting covers missing/untrusted Content-Length.
@@ -673,6 +681,7 @@ app.add_middleware(
     multipart_path_prefix="/api/emote-maker",
     multipart_methods=("POST",),
     max_multipart_body_bytes=EMOTE_MAX_MULTIPART_BODY_BYTES,
+    multipart_preflight=_emote_template_multipart_preflight,
 )
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
