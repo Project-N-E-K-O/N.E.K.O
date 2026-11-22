@@ -611,3 +611,31 @@ async def test_galgame_options_generated_when_session_not_taken_over(monkeypatch
     assert data["success"] is True
     assert "fallback" not in data
     assert _option_texts(data) == ["认真听。", "陪着你。", "幻想一下。"]
+
+
+# Example verbal tic each locale names in its "player's own words" sentence.
+_LOCALE_TIC_EXAMPLE = {
+    'zh': '喵', 'zh-TW': '喵', 'en': 'nya', 'ja': 'にゃ', 'ko': '냥',
+    'ru': 'мяу', 'es': 'miau', 'pt': 'miau',
+}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", sorted(_LOCALE_TIC_EXAMPLE))
+def test_galgame_option_prompt_pins_player_voice_in_every_locale(lang):
+    """Options are sent as the player's own message, so every locale must say
+    so and rule out the character's verbal tics; small models otherwise leak
+    the neko's trailing "喵" into the player's lines."""
+    from config.prompts.prompts_galgame import (
+        GALGAME_OPTION_GENERATION_PROMPT,
+        get_galgame_option_generation_prompt,
+    )
+
+    assert lang in GALGAME_OPTION_GENERATION_PROMPT
+    prompt = get_galgame_option_generation_prompt(
+        lang, lanlan_name='NEKO_X', master_name='PLAYER_Y',
+    )
+    assert _LOCALE_TIC_EXAMPLE[lang] in prompt
+    # The voice sentence names the player as speaker and the character as
+    # addressee, on top of the intro and the "last line" sentences.
+    assert prompt.count('PLAYER_Y') >= 5
