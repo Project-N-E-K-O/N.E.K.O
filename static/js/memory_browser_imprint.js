@@ -664,7 +664,7 @@
                     sourceText: text,
                     items: data.related,
                 };
-                renderProfilePanel();
+                updateRelatedBannerSlot();
             }
         } catch (_err) {
             // Best-effort cascade helper
@@ -2159,6 +2159,80 @@
         }
     }
 
+    function renderRelatedBannerSlot() {
+        const slot = el('div', { id: 'memory-related-banner-slot' });
+        if (!relatedCheckContext || !Array.isArray(relatedCheckContext.items) || !relatedCheckContext.items.length) {
+            return slot;
+        }
+        const relBanner = el('section', { className: 'memory-related-banner', id: 'memory-related-check-banner' }, [
+            el('div', { className: 'memory-related-banner-head' }, [
+                el('span', {
+                    textContent: tr(
+                        'memory.relatedCheckTitle',
+                        '发现还有 {{count}} 条相近记忆也提到了相关内容，要不要顺便一起看看？',
+                        { count: relatedCheckContext.items.length }
+                    ),
+                }),
+                el('button', {
+                    type: 'button',
+                    className: 'memory-pill-btn is-sm',
+                    textContent: tr('memory.relatedCheckDismiss', '知道了'),
+                    onClick: function () {
+                        relatedCheckContext = null;
+                        updateRelatedBannerSlot();
+                    },
+                }),
+            ]),
+        ]);
+        const relList = el('div', { className: 'memory-related-list' });
+        relatedCheckContext.items.forEach(function (relItem) {
+            relList.appendChild(el('div', { className: 'memory-related-row' }, [
+                el('span', { className: 'memory-related-text', textContent: relItem.text }),
+                el('div', { className: 'memory-card-actions' }, [
+                    el('button', {
+                        type: 'button',
+                        className: 'memory-pill-btn is-sm',
+                        textContent: tr('memory.actionWhyRemember', '为什么这么记？'),
+                        onClick: function () { openLineageDrawer(relItem); },
+                    }),
+                    el('button', {
+                        type: 'button',
+                        className: 'memory-pill-btn is-danger is-sm',
+                        textContent: tr('memory.actionForget', '遗忘'),
+                        onClick: async function () {
+                            const targetChar = activeCharacter;
+                            const ep = relItem.kind === 'persona'
+                                ? '/api/memory/persona/archive'
+                                : (relItem.kind === 'reflection' ? '/api/memory/reflection/review' : '/api/memory/fact/archive');
+                            const payload = relItem.kind === 'persona'
+                                ? { character_name: targetChar, entity: relItem.entity, entry_id: relItem.id }
+                                : (relItem.kind === 'reflection'
+                                    ? { character_name: targetChar, reflection_id: relItem.id, decision: 'forget' }
+                                    : { character_name: targetChar, fact_id: relItem.id });
+                            const ok = await postMutation(ep, payload, tr('memory.forgottenToast', '已遗忘该条记忆'));
+                            if (ok && targetChar === activeCharacter && relatedCheckContext) {
+                                relatedCheckContext.items = relatedCheckContext.items.filter(function (x) {
+                                    return !(x.kind === relItem.kind && x.id === relItem.id);
+                                });
+                                updateRelatedBannerSlot();
+                            }
+                        },
+                    }),
+                ]),
+            ]));
+        });
+        relBanner.appendChild(relList);
+        slot.appendChild(relBanner);
+        return slot;
+    }
+
+    function updateRelatedBannerSlot() {
+        const existingSlot = document.getElementById('memory-related-banner-slot');
+        if (existingSlot && existingSlot.parentNode) {
+            existingSlot.replaceWith(renderRelatedBannerSlot());
+        }
+    }
+
     function renderProfilePanel() {
         const panel = document.getElementById('memory-panel-profile');
         if (!panel) return;
@@ -2209,66 +2283,7 @@
         }
 
         // 1b. Cascade related-memories review banner (shown after an edit or forget)
-        if (relatedCheckContext && Array.isArray(relatedCheckContext.items) && relatedCheckContext.items.length > 0) {
-            const relBanner = el('section', { className: 'memory-related-banner', id: 'memory-related-check-banner' }, [
-                el('div', { className: 'memory-related-banner-head' }, [
-                    el('span', {
-                        textContent: tr(
-                            'memory.relatedCheckTitle',
-                            '发现还有 {{count}} 条相近记忆也提到了相关内容，要不要顺便一起看看？',
-                            { count: relatedCheckContext.items.length }
-                        ),
-                    }),
-                    el('button', {
-                        type: 'button',
-                        className: 'memory-pill-btn is-sm',
-                        textContent: tr('memory.relatedCheckDismiss', '知道了'),
-                        onClick: function () {
-                            relatedCheckContext = null;
-                            renderProfilePanel();
-                        },
-                    }),
-                ]),
-            ]);
-            const relList = el('div', { className: 'memory-related-list' });
-            relatedCheckContext.items.forEach(function (relItem) {
-                relList.appendChild(el('div', { className: 'memory-related-row' }, [
-                    el('span', { className: 'memory-related-text', textContent: relItem.text }),
-                    el('div', { className: 'memory-card-actions' }, [
-                        el('button', {
-                            type: 'button',
-                            className: 'memory-pill-btn is-sm',
-                            textContent: tr('memory.actionWhyRemember', '为什么这么记？'),
-                            onClick: function () { openLineageDrawer(relItem); },
-                        }),
-                        el('button', {
-                            type: 'button',
-                            className: 'memory-pill-btn is-danger is-sm',
-                            textContent: tr('memory.actionForget', '遗忘'),
-                            onClick: async function () {
-                                const ep = relItem.kind === 'persona'
-                                    ? '/api/memory/persona/archive'
-                                    : (relItem.kind === 'reflection' ? '/api/memory/reflection/review' : '/api/memory/fact/archive');
-                                const payload = relItem.kind === 'persona'
-                                    ? { character_name: activeCharacter, entity: relItem.entity, entry_id: relItem.id }
-                                    : (relItem.kind === 'reflection'
-                                        ? { character_name: activeCharacter, reflection_id: relItem.id, decision: 'forget' }
-                                        : { character_name: activeCharacter, fact_id: relItem.id });
-                                const ok = await postMutation(ep, payload, tr('memory.forgottenToast', '已遗忘该条记忆'));
-                                if (ok && relatedCheckContext) {
-                                    relatedCheckContext.items = relatedCheckContext.items.filter(function (x) {
-                                        return !(x.kind === relItem.kind && x.id === relItem.id);
-                                    });
-                                    renderProfilePanel();
-                                }
-                            },
-                        }),
-                    ]),
-                ]));
-            });
-            relBanner.appendChild(relList);
-            panel.appendChild(relBanner);
-        }
+        panel.appendChild(renderRelatedBannerSlot());
 
         // 2. Pending Attention Box
         const attentionBox = renderPendingAttentionBox(memories);

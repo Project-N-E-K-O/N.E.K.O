@@ -45,12 +45,28 @@ from utils.logger_config import get_module_logger
 from utils.tokenize import count_tokens, truncate_to_tokens
 from utils.token_tracker import set_call_type
 
-from .imprint import _CORE_ENTITIES, _META_ENTITY, _read_json_safe, _text_bigrams
+from memory.introspection import is_permanently_suppressed
+
+from .imprint import (
+    _CORE_ENTITIES,
+    _META_ENTITY,
+    _entry_subject_scope_key,
+    _read_json_safe,
+    _text_bigrams,
+)
 
 try:
-    from memory.embeddings import decode_embedding
+    from memory.embeddings import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+    )
 except ImportError:
-    from memory.embeddings_fallback import decode_embedding
+    from memory.embeddings_fallback import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+    )
 
 logger = get_module_logger(__name__, "Memory")
 
@@ -80,6 +96,33 @@ def _jaccard_sim(a: set[str], b: set[str]) -> float:
     return inter / len(a | b)
 
 
+def _current_embedding_model_id() -> str | None:
+    try:
+        service = get_embedding_service()
+        if service is not None and service.is_available():
+            model_id = service.model_id()
+            return str(model_id) if model_id else None
+    except Exception:
+        return None
+    return None
+
+
+def _decode_valid_entry_vector(
+    entry: dict[str, Any],
+    raw_text: str,
+    current_model_id: str | None,
+) -> list[float] | None:
+    if not current_model_id or not is_cached_embedding_valid(entry, raw_text, current_model_id):
+        return None
+    try:
+        decoded = decode_embedding(entry.get("embedding"))
+        if decoded is not None and len(decoded) > 0:
+            return [float(v) for v in decoded]
+    except Exception:
+        return None
+    return None
+
+
 def _collect_candidate_pairs_sync(
     character_name: str,
     *,
@@ -87,6 +130,7 @@ def _collect_candidate_pairs_sync(
     max_pairs: int = _MAX_CANDIDATE_PAIRS,
 ) -> list[dict[str, Any]]:
     char_dir = memory_dir / character_name
+    current_model_id = _current_embedding_model_id()
     items: list[dict[str, Any]] = []
 
     persona_raw = _read_json_safe(char_dir / "persona.json", {})
@@ -97,24 +141,22 @@ def _collect_candidate_pairs_sync(
             for entry in sec.get("facts") or []:
                 if not isinstance(entry, dict):
                     continue
-                if entry.get("protected") or entry.get("source") == "character_card":
+                if (
+                    entry.get("protected")
+                    or entry.get("source") == "character_card"
+                    or is_permanently_suppressed(entry)
+                ):
                     continue
-                text = str(entry.get("text") or "").strip()
+                raw_text = str(entry.get("text") or "")
+                text = raw_text.strip()
                 eid = str(entry.get("id") or "").strip()
                 if not text or not eid:
                     continue
-                vec = None
-                emb = entry.get("embedding")
-                if emb:
-                    try:
-                        decoded = decode_embedding(emb)
-                        if decoded is not None:
-                            vec = [float(v) for v in decoded]
-                    except Exception:
-                        vec = None
+                vec = _decode_valid_entry_vector(entry, raw_text, current_model_id)
                 items.append({
                     "kind": "persona",
                     "entity": ent,
+                    "scope_key": _entry_subject_scope_key(entry),
                     "id": eid,
                     "text": text,
                     "vec": vec,
@@ -127,27 +169,21 @@ def _collect_candidate_pairs_sync(
             if not isinstance(r, dict):
                 continue
             status = str(r.get("status") or "pending")
-            if status in ("archived", "merged", "denied"):
+            if status in ("archived", "merged", "denied") or is_permanently_suppressed(r):
                 continue
             ent = str(r.get("entity") or "master")
             if ent not in _CORE_ENTITIES:
                 continue
-            text = str(r.get("text") or "").strip()
+            raw_text = str(r.get("text") or "")
+            text = raw_text.strip()
             rid = str(r.get("id") or "").strip()
             if not text or not rid:
                 continue
-            vec = None
-            emb = r.get("embedding")
-            if emb:
-                try:
-                    decoded = decode_embedding(emb)
-                    if decoded is not None:
-                        vec = [float(v) for v in decoded]
-                except Exception:
-                    vec = None
+            vec = _decode_valid_entry_vector(r, raw_text, current_model_id)
             items.append({
                 "kind": "reflection",
                 "entity": ent,
+                "scope_key": _entry_subject_scope_key(r),
                 "id": rid,
                 "text": text,
                 "vec": vec,
@@ -160,7 +196,7 @@ def _collect_candidate_pairs_sync(
         a = items[i]
         for j in range(i + 1, n):
             b = items[j]
-            if a["entity"] != b["entity"]:
+            if a["entity"] != b["entity"] or a["scope_key"] != b["scope_key"]:
                 continue
             if a["vec"] is not None and b["vec"] is not None and len(a["vec"]) == len(b["vec"]):
                 sim = _cosine_sim(a["vec"], b["vec"])

@@ -1654,3 +1654,280 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
         for e in dag["edges"]
     )
 
+
+@pytest.mark.asyncio
+async def test_round13_lock_order_scoped_conflicts_keepsake_archives_provenance_and_dedup_guard(tmp_path: Path):
+    """Regression tests for Round 13 review fixes:
+    1. Snapshot create/restore lock order matches long_term_sync._views_locked (fact -> reflection -> persona).
+    2. Deep conflict candidate collection isolates entries by subject/scope, skips permanently suppressed entries,
+       and validates cached embedding fingerprints before cosine comparison.
+    3. Keepsake ZIP includes archived facts & cold archive shards.
+    4. Manual correction resolution transfers/folds speaker provenance on keep_new and merge.
+    5. FactDedupResolver._aapply_decisions skips stale verdicts when live fact text drifted since prompt build.
+    """
+    import io
+    import zipfile
+    from contextlib import asynccontextmanager
+    from memory._embeddings.schema import embedding_text_sha256, encode_vector_fp16
+    from memory.analytics.deep_conflicts import _collect_candidate_pairs_sync
+    from memory.analytics.export import build_memory_export_zip
+    from memory.analytics.snapshots import acreate_snapshot, arestore_snapshot
+    from memory.fact_dedup import FactDedupResolver
+    from memory.scopes import MemorySubject
+
+    cm = _FakeConfigManager(tmp_path)
+    char_name = "安全猫"
+    char_dir = cm.memory_dir / char_name
+    char_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Lock order: fact_store -> reflection_engine -> persona_manager
+    acquired: list[str] = []
+
+    class _RecordingManager:
+        def __init__(self, label: str, attr: str):
+            self._label = label
+            setattr(self, attr, self._lock)
+
+        @asynccontextmanager
+        async def _lock(self, _name: str):
+            acquired.append(self._label)
+            yield
+
+    fake_fs = _RecordingManager("fact", "_get_persist_alock")
+    fake_re = _RecordingManager("reflection", "_get_alock")
+    fake_pm = _RecordingManager("persona", "_get_alock")
+    _write_json(char_dir / "persona.json", {"master": {"facts": []}})
+    with patch("memory.analytics.snapshots.assert_cloudsave_writable"):
+        snap = await acreate_snapshot(
+            char_name,
+            label="lock-check",
+            config_manager=cm,
+            fact_store=fake_fs,
+            reflection_engine=fake_re,
+            persona_manager=fake_pm,
+        )
+        assert acquired == ["fact", "reflection", "persona"]
+        acquired.clear()
+        await arestore_snapshot(
+            char_name,
+            snap["snapshot_id"],
+            config_manager=cm,
+            fact_store=fake_fs,
+            reflection_engine=fake_re,
+            persona_manager=fake_pm,
+        )
+        assert acquired == ["fact", "reflection", "persona"]
+
+    # 2. Deep conflict candidate pairing: scope isolation, permanent_suppression skip, and embedding cache validation
+    alice_fields = MemorySubject.group_participant("discord", "grp_1", "alice").as_entry_fields()
+    bob_fields = MemorySubject.group_participant("discord", "grp_1", "bob").as_entry_fields()
+    model_id = "test-profile-4d-int8"
+    stale_text = "每周五晚上都会去公园慢跑一圈"
+    cos_text_a = "清晨习惯来一杯冰美式"
+    cos_text_b = "早晨经常摄入咖啡因饮品"
+    vec_x = encode_vector_fp16([1.0, 0.0, 0.0, 0.0])
+    vec_y = encode_vector_fp16([0.0, 1.0, 0.0, 0.0])
+    vec_z = encode_vector_fp16([0.0, 0.0, 1.0, 0.0])
+    _write_json(
+        char_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {
+                        "id": "p_perm",
+                        "text": "平时非常喜欢喝黑咖啡提神",
+                        "source": "reflection",
+                        "permanent_suppression": {"reason": "hollow"},
+                    },
+                    {
+                        "id": "p_temp_cool",
+                        "text": "平时非常喜欢喝黑咖啡提神",
+                        "source": "reflection",
+                        "suppress": {"until": "2099-01-01T00:00:00"},
+                    },
+                    {
+                        "id": "p_stale_a",
+                        "text": stale_text,
+                        "source": "reflection",
+                        "embedding": vec_x,
+                        "embedding_model_id": model_id,
+                        "embedding_text_sha256": "0" * 64,
+                    },
+                    {
+                        "id": "p_stale_b",
+                        "text": stale_text,
+                        "source": "reflection",
+                        "embedding": vec_y,
+                        "embedding_model_id": model_id,
+                        "embedding_text_sha256": "1" * 64,
+                    },
+                    {
+                        "id": "p_cos_a",
+                        "text": cos_text_a,
+                        "source": "reflection",
+                        "embedding": vec_z,
+                        "embedding_model_id": model_id,
+                        "embedding_text_sha256": embedding_text_sha256(cos_text_a),
+                    },
+                    {
+                        "id": "p_cos_b",
+                        "text": cos_text_b,
+                        "source": "reflection",
+                        "embedding": vec_z,
+                        "embedding_model_id": model_id,
+                        "embedding_text_sha256": embedding_text_sha256(cos_text_b),
+                    },
+                ]
+            }
+        },
+    )
+    _write_json(
+        char_dir / "reflections.json",
+        [
+            {"id": "r_a", "entity": "master", **alice_fields, "text": "每天早上都会喝一杯燕麦拿铁", "status": "confirmed"},
+            {"id": "r_b", "entity": "master", **bob_fields, "text": "每天早上都会喝一杯燕麦拿铁", "status": "confirmed"},
+            {"id": "r_p1", "entity": "master", "text": "平时非常喜欢喝黑咖啡提神", "status": "confirmed"},
+            {"id": "r_p2", "entity": "master", "text": "平时非常喜欢喝黑咖啡提神醒脑", "status": "confirmed"},
+            {
+                "id": "r_perm",
+                "entity": "master",
+                "text": "平时非常喜欢喝黑咖啡提神",
+                "status": "confirmed",
+                "permanent_suppression": {"reason": "redundant"},
+            },
+        ],
+    )
+    fake_emb_svc = MagicMock()
+    fake_emb_svc.is_available.return_value = True
+    fake_emb_svc.model_id.return_value = model_id
+    with patch("memory.analytics.deep_conflicts.get_embedding_service", return_value=fake_emb_svc):
+        pairs = _collect_candidate_pairs_sync(char_name, memory_dir=cm.memory_dir, max_pairs=20)
+    pair_ids = {frozenset((p["left"]["id"], p["right"]["id"])) for p in pairs}
+    involved_ids = {eid for pair in pair_ids for eid in pair}
+    assert frozenset(("r_p1", "r_p2")) in pair_ids
+    assert frozenset(("r_a", "r_b")) not in pair_ids
+    assert "p_perm" not in involved_ids
+    assert "r_perm" not in involved_ids
+    assert "p_temp_cool" in involved_ids
+    # Stale orthogonal embeddings fall back to current-text Jaccard and still pair
+    assert frozenset(("p_stale_a", "p_stale_b")) in pair_ids
+    # Valid matching embeddings still pair via cosine despite disjoint text bigrams
+    assert frozenset(("p_cos_a", "p_cos_b")) in pair_ids
+
+    # 3. Keepsake ZIP includes facts_archive.json and cold shards
+    _write_json(char_dir / "facts_archive.json", [{"id": "fa1", "text": "归档事实"}])
+    _write_json(
+        char_dir / "reflection_archive" / "2026-05-01_11223344.json",
+        [{"id": "ra1", "text": "归档反思"}],
+    )
+    ks_bytes, _ = build_memory_export_zip(char_name, mode="keepsake", memory_dir=cm.memory_dir)
+    with zipfile.ZipFile(io.BytesIO(ks_bytes)) as zf:
+        names = set(zf.namelist())
+        assert "raw/facts_archive.json" in names
+        assert "raw/reflection_archive/2026-05-01_11223344.json" in names
+
+    # 4. Manual correction keep_new replaces speaker provenance; merge conservatively clears/folds it
+    _write_json(
+        char_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {
+                        "id": "p_sp1",
+                        "text": "喜欢喝咖啡",
+                        "source": "reflection",
+                        "speaker_id": "spk_high",
+                        "speaker_entity_id": "ent_high",
+                        "speaker_trust": 0.9,
+                    },
+                    {
+                        "id": "p_sp2",
+                        "text": "喜欢看电影",
+                        "source": "reflection",
+                        "speaker_id": "spk_high",
+                        "speaker_entity_id": "ent_high",
+                        "speaker_trust": 0.9,
+                    },
+                ]
+            }
+        },
+    )
+    _write_json(
+        char_dir / "persona_corrections.json",
+        [
+            {
+                "correction_id": "cid_sp_new",
+                "entity": "master",
+                "old_text": "喜欢喝咖啡",
+                "new_text": "改喝抹茶拿铁",
+                "new_speaker_id": "spk_low",
+                "new_speaker_entity_id": "ent_low",
+                "new_speaker_trust": 0.2,
+            },
+            {
+                "correction_id": "cid_sp_merge",
+                "entity": "master",
+                "old_text": "喜欢看电影",
+                "new_text": "也喜欢看纪录片",
+                "new_speaker_id": "spk_other",
+                "new_speaker_entity_id": "ent_other",
+                "new_speaker_trust": 0.3,
+            },
+        ],
+    )
+    with (
+        patch("memory.event_log.get_config_manager", return_value=cm),
+        patch("memory.persona.manager.get_config_manager", return_value=cm),
+        patch("memory.persona.persistence.assert_cloudsave_writable"),
+        patch("memory.persona.corrections.assert_cloudsave_writable"),
+        patch("memory.speaker_trust.same_provenance_source", return_value=False),
+    ):
+        pm = PersonaManager()
+        pm._config_manager = cm
+        await pm.aresolve_correction_manual(
+            char_name, 0, "keep_new", correction_id="cid_sp_new",
+        )
+        await pm.aresolve_correction_manual(
+            char_name, 0, "merge", merged_text="喜欢看电影和纪录片", correction_id="cid_sp_merge",
+        )
+        updated_facts = (await pm.aensure_persona(char_name))["master"]["facts"]
+        p1 = next(e for e in updated_facts if e["id"] == "p_sp1")
+        assert p1["text"] == "改喝抹茶拿铁"
+        assert p1.get("speaker_id") == "spk_low"
+        assert p1.get("speaker_entity_id") == "ent_low"
+        assert p1.get("speaker_trust") == 0.2
+        p2 = next(e for e in updated_facts if e["id"] == "p_sp2")
+        assert p2["text"] == "喜欢看电影和纪录片"
+        assert "speaker_id" not in p2
+        assert "speaker_entity_id" not in p2
+        assert p2.get("speaker_provenance_mixed") is True
+
+    # 5. FactDedupResolver._aapply_decisions skips stale verdict if live fact text changed since prompt
+    _write_json(
+        char_dir / "facts.json",
+        [
+            {"id": "fd_cand", "entity": "master", "text": "用户已手动改写的全新事实"},
+            {"id": "fd_exist", "entity": "master", "text": "原始旧事实"},
+        ],
+    )
+    with (
+        patch("memory.facts.get_config_manager", return_value=cm),
+        patch("memory.facts.assert_cloudsave_writable"),
+    ):
+        fs = FactStore()
+        fs._config_manager = cm
+        resolver = FactDedupResolver(fact_store=fs)
+        resolver._config_manager = cm
+        batch = [{"candidate_id": "fd_cand", "existing_id": "fd_exist"}]
+        results = [{"index": 0, "action": "merge"}]
+        applied, processed = await resolver._aapply_decisions(
+            char_name,
+            batch,
+            results,
+            prompt_texts=[("推理前的旧文案", "原始旧事实")],
+        )
+        assert applied == 0
+        assert len(processed) == 1
+        surviving_ids = {f["id"] for f in await fs.aload_facts(char_name)}
+        assert surviving_ids == {"fd_cand", "fd_exist"}
+

@@ -1379,6 +1379,49 @@ class CorrectionsMixin:
                     entry_obj["applied_correction_ids"] = ids[-32:]
                     entry_obj["applied_correction_id"] = target_cid
 
+                _SPEAKER_PROVENANCE_KEYS = (
+                    "speaker_id",
+                    "speaker_trust",
+                    "speaker_label",
+                    "speaker_entity_id",
+                    "speaker_provenance_mixed",
+                )
+
+                def _build_new_speaker_source() -> dict:
+                    src: dict = {}
+                    raw_sid = item.get("new_speaker_id")
+                    if raw_sid is not None and str(raw_sid).strip():
+                        src["speaker_id"] = str(raw_sid).strip()
+                    raw_trust = item.get("new_speaker_trust")
+                    if isinstance(raw_trust, (int, float)) and not isinstance(raw_trust, bool):
+                        src["speaker_trust"] = float(raw_trust)
+                    raw_label = item.get("new_speaker_label")
+                    if raw_label is not None and str(raw_label).strip():
+                        src["speaker_label"] = str(raw_label).strip()
+                    raw_ent = item.get("new_speaker_entity_id")
+                    if raw_ent is not None and str(raw_ent).strip():
+                        src["speaker_entity_id"] = str(raw_ent).strip()
+                    if item.get("new_speaker_provenance_mixed") is True:
+                        src["speaker_provenance_mixed"] = True
+                    return src
+
+                new_speaker_source = _build_new_speaker_source()
+
+                def _apply_provenance_on_replace(target_entry: dict, mode: str) -> None:
+                    if mode == "keep_new":
+                        for key in _SPEAKER_PROVENANCE_KEYS:
+                            target_entry.pop(key, None)
+                        target_entry.update(new_speaker_source)
+                        return
+                    from memory.speaker_trust import provenance_of_entries
+
+                    folded = provenance_of_entries([target_entry, new_speaker_source])
+                    for key in _SPEAKER_PROVENANCE_KEYS:
+                        target_entry.pop(key, None)
+                    target_entry.update(folded)
+                    if new_speaker_source.get("speaker_provenance_mixed") is True:
+                        target_entry["speaker_provenance_mixed"] = True
+
                 def _make_entry(text_val: str) -> dict:
                     raw = {
                         "id": f"manual_{uuid.uuid4().hex[:8]}",
@@ -1390,6 +1433,8 @@ class CorrectionsMixin:
                         _record_applied_cid(raw, item_cid)
                     if item_subject is not None:
                         raw.update(item_subject.as_entry_fields())
+                    if new_speaker_source:
+                        raw.update(new_speaker_source)
                     return self._normalize_entry(raw)
 
                 already_applied = bool(
@@ -1439,6 +1484,7 @@ class CorrectionsMixin:
                                 })
                                 existing["text"] = replacement_text
                                 existing["version_history"] = prior[-PERSONA_VERSION_HISTORY_MAX:]
+                                _apply_provenance_on_replace(existing, action)
                                 if item_cid:
                                     _record_applied_cid(existing, item_cid)
                                 self._invalidate_token_count_cache(existing)

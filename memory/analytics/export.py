@@ -73,6 +73,8 @@ _KEEPSAKE_RAW_FILES: tuple[str, ...] = (
     "persona.json",
     "reflections.json",
     "facts.json",
+    "facts_archive.json",
+    "reflections_archive.json",
     "persona_corrections.json",
     "user_directives.json",
     "imprint_notes_cache.json",
@@ -214,6 +216,14 @@ def build_memory_export_zip(
                 fpath = char_dir / fname
                 if fpath.is_file():
                     zf.writestr(f"raw/{fname}", fpath.read_bytes())
+            # Include cold archive shards verbatim in user-requested keepsake backups
+            # via cold_store.shard_relatives() (file export is an allowed cold-store use).
+            from memory import cold_store
+            for rel in sorted(cold_store.shard_relatives(str(char_dir))):
+                if cold_store.is_managed_relative(rel):
+                    shard_path = char_dir / rel
+                    if shard_path.is_file():
+                        zf.writestr(f"raw/{rel}", shard_path.read_bytes())
         else:
             # Diagnostics filename uses a fixed non-PII prefix so raw character names
             # (which may contain sensitive identifiers) never leak into download headers.

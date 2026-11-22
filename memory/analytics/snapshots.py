@@ -401,14 +401,15 @@ async def acreate_snapshot(
             dm = None
 
     async with AsyncExitStack() as stack:
-        # Same lock hierarchy as arestore_snapshot (reflection -> persona -> fact persist)
-        # so manual snapshot capture is mutually exclusive with restore and archive writes.
+        # Lock order MUST match long_term_sync._views_locked
+        # (fact_store._get_persist_alock -> reflection_engine._get_alock -> persona_manager._get_alock)
+        # as well as promotion (reflection_engine -> persona_manager) to prevent lock-order deadlocks.
+        if fact_store is not None and hasattr(fact_store, "_get_persist_alock"):
+            await stack.enter_async_context(fact_store._get_persist_alock(character_name))
         if reflection_engine is not None and hasattr(reflection_engine, "_get_alock"):
             await stack.enter_async_context(reflection_engine._get_alock(character_name))
         if persona_manager is not None and hasattr(persona_manager, "_get_alock"):
             await stack.enter_async_context(persona_manager._get_alock(character_name))
-        if fact_store is not None and hasattr(fact_store, "_get_persist_alock"):
-            await stack.enter_async_context(fact_store._get_persist_alock(character_name))
 
         assert_cloudsave_writable(
             cm,
@@ -470,14 +471,15 @@ async def arestore_snapshot(
             dm = None
 
     async with AsyncExitStack() as stack:
-        # Lock order MUST match promotion (reflection_engine -> persona_manager)
-        # to prevent lock-order inversion deadlocks.
+        # Lock order MUST match long_term_sync._views_locked
+        # (fact_store._get_persist_alock -> reflection_engine._get_alock -> persona_manager._get_alock)
+        # as well as promotion (reflection_engine -> persona_manager) to prevent lock-order deadlocks.
+        if fact_store is not None and hasattr(fact_store, "_get_persist_alock"):
+            await stack.enter_async_context(fact_store._get_persist_alock(character_name))
         if reflection_engine is not None and hasattr(reflection_engine, "_get_alock"):
             await stack.enter_async_context(reflection_engine._get_alock(character_name))
         if persona_manager is not None and hasattr(persona_manager, "_get_alock"):
             await stack.enter_async_context(persona_manager._get_alock(character_name))
-        if fact_store is not None and hasattr(fact_store, "_get_persist_alock"):
-            await stack.enter_async_context(fact_store._get_persist_alock(character_name))
 
         # Re-check cloudsave writability AFTER acquiring locks so maintenance mode
         # entered while waiting for locks immediately aborts before modifying files.
