@@ -185,3 +185,12 @@ def test_frontend_is_told_once_per_chat_model():
     other = lv.choose_image_model({**CHAT, "model": "other-chat"}, VISION)
     assert lv.engage_legacy_vision(other, "a")
     assert len(notices) == 2
+
+
+def test_route_case_matters_only_where_urls_ignore_it():
+    tenant_a = {**CHAT, "base_url": "https://gw.example/tenant/A/v1"}
+    lv.engage_legacy_vision(lv.choose_image_model(tenant_a, VISION), "t")
+    # Same route, host case and trailing slash differ: still remembered.
+    assert lv.choose_image_model({**tenant_a, "base_url": "https://GW.example/tenant/A/v1/"}, VISION).using_legacy
+    # Path case differs: another route, tried afresh.
+    assert not lv.choose_image_model({**tenant_a, "base_url": "https://gw.example/tenant/a/v1"}, VISION).using_legacy

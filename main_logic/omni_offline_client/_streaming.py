@@ -332,13 +332,18 @@ class _StreamingMixin:
             await _retire_replaced_clients(self, closers)
         return True
 
-    async def _fall_back_to_legacy_vision(self, exc: BaseException) -> bool:
+    async def _fall_back_to_legacy_vision(
+        self,
+        exc: BaseException,
+        abandon_if: Optional[Callable[[], bool]] = None,
+    ) -> bool:
         """Move this session to the retired vision config after an image refusal.
 
         Returns True when the session now talks to the vision config and the
         failed request is worth sending again; False when ``exc`` is not an
-        image refusal, there is no separate vision config, or the session is
-        already on it.
+        image refusal, there is no separate vision config, the session is
+        already on it, or the switch was dropped because the session closed
+        (or ``abandon_if`` said so) while the vision client was being built.
         """
         choice = getattr(self, "_image_choice", None)
         vision_model = getattr(self, "vision_model", "") or ""
@@ -348,8 +353,17 @@ class _StreamingMixin:
         if not is_image_unsupported_error(exc) or _on_vision_route(self):
             return False
         engage_legacy_vision(choice, "offline chat")
+
+        def _abandon() -> bool:
+            # close() sets llm to None: never install a client on a closed session.
+            if hasattr(self, "llm") and self.llm is None:
+                return True
+            return bool(abandon_if is not None and abandon_if())
+
         try:
-            await self.switch_model(vision_model, use_vision_config=True)
+            switched = await self.switch_model(
+                vision_model, use_vision_config=True, abandon_if=_abandon,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as switch_exc:
@@ -357,6 +371,8 @@ class _StreamingMixin:
                 "Legacy vision fallback: switching to %s failed: %s: %s",
                 vision_model, type(switch_exc).__name__, switch_exc,
             )
+            return False
+        if switched is False:
             return False
         self._legacy_vision_switched = True
         return True
@@ -1414,7 +1430,11 @@ class _StreamingMixin:
                     await self.on_status_message(json.dumps({"code": "NO_USER_MESSAGE"}))
                     status_reported = True
                 return
-            for attempt in range(max_retries):
+            # A while loop rather than range(): the one-time move to a legacy
+            # vision config re-sends the turn without using up a retry.
+            attempt = -1
+            while attempt + 1 < max_retries:
+                attempt += 1
                 # close() alone sets self.llm to None. If it runs during retry sleep after an earlier
                 # APIConnectionError (user changes mode / disconnects / session circuit breaker trips),
                 # stop retrying; otherwise the reroll while below resets _is_responding to True,
@@ -2510,9 +2530,14 @@ class _StreamingMixin:
                             status_reported = True
                         break
                 except Exception as e:
-                    if attempt < max_retries - 1 and await self._fall_back_to_legacy_vision(e):
+                    if await self._fall_back_to_legacy_vision(
+                        e,
+                        abandon_if=lambda: not self._response_generation_is_active(response_generation),
+                    ):
                         # The chat model rejected an image; the session now
-                        # talks to the retired vision config. Send the turn again.
+                        # talks to the retired vision config. Send the turn
+                        # again, without using up an ordinary retry (the move
+                        # happens once per session, so this cannot loop).
                         _hold_in_flight_for_resend()
                         cut_keeps_shown = False
                         if assistant_message_total and discard_callback:
@@ -2526,6 +2551,7 @@ class _StreamingMixin:
                             )
                         assistant_message = ""
                         assistant_message_total = ""
+                        attempt -= 1
                         continue
                     # This path always ends the turn (break below).
                     _release_in_flight()

@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional, TypeVar
 
-from utils.http.url import same_endpoint
+from utils.http.url import endpoint_identity, same_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +93,13 @@ def is_image_unsupported_error(exc: BaseException) -> bool:
     return any(fragment in text for fragment in _IMAGE_REFUSAL_FRAGMENTS)
 
 
-def _route_key(cfg: dict | None) -> tuple[str, str, str]:
+def _route_key(cfg: dict | None) -> tuple:
     cfg = cfg or {}
+    # endpoint_identity folds only the case-insensitive URL parts: two tenant
+    # paths that differ by case are two routes.
     return (
         str(cfg.get("model") or "").strip(),
-        str(cfg.get("base_url") or "").strip().rstrip("/").lower(),
+        endpoint_identity(str(cfg.get("base_url") or "")),
         str(cfg.get("provider_type") or "").strip(),
     )
 
@@ -144,7 +146,7 @@ class ImageModelChoice:
 
 
 _lock = threading.Lock()
-_engaged_routes: set[tuple[str, str, str]] = set()
+_engaged_routes: set[tuple] = set()
 _last_warned: dict[str, float] = {}
 _notice_sink: Optional[Callable[[str], Any]] = None
 

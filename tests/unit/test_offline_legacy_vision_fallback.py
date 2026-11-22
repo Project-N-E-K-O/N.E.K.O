@@ -57,6 +57,14 @@ def _session(vision=VISION):
     return client
 
 
+def _assert_switched_to_llava(client):
+    client.switch_model.assert_awaited_once()
+    args, kwargs = client.switch_model.await_args
+    assert args == ("llava",)
+    assert kwargs["use_vision_config"] is True
+    assert callable(kwargs["abandon_if"])
+
+
 def _statuses(client):
     return [json.loads(call.args[0]) for call in client.on_status_message.await_args_list]
 
@@ -82,7 +90,7 @@ async def test_refusal_moves_to_legacy_vision_and_resends():
 
     await client.stream_text("看看这个")
 
-    client.switch_model.assert_awaited_once_with("llava", use_vision_config=True)
+    _assert_switched_to_llava(client)
     assert len(client.requests) == 2
     assert client.requests[0] == client.requests[1]
     assert _emitted(client) == ["看到了。"]
@@ -144,5 +152,47 @@ async def test_proactive_refusal_engages_fallback_for_the_next_turn():
     await client.prompt_ephemeral("callback with media", images=[_png_b64(4, 4)])
 
     assert len(client.requests) == 1
-    client.switch_model.assert_awaited_once_with("llava", use_vision_config=True)
+    _assert_switched_to_llava(client)
     assert lv.choose_image_model(CHAT, VISION).using_legacy
+
+
+async def test_switch_dropped_when_the_session_closes_meanwhile():
+    """close() during the switch: the vision client is never installed."""
+    client = _session()
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [_refusal(), [_text("不该出现"), _text("", "stop")]]
+
+    async def switch(model, use_vision_config=False, abandon_if=None):
+        client.llm = None  # close() ran while the vision client was being built
+        return not abandon_if()
+
+    client.switch_model = AsyncMock(side_effect=switch)
+    await client.stream_text("看看这个")
+
+    assert len(client.requests) == 1
+    assert not client._legacy_vision_switched
+    assert _emitted(client) == []
+
+
+async def test_fallback_still_happens_after_ordinary_retries(monkeypatch):
+    """Two connection failures, then an image refusal: the move to the vision
+    config does not need a retry of its own."""
+    import asyncio
+    from tests.unit.test_offline_provider_frame_publish import _connection_error
+
+    real_sleep = asyncio.sleep
+
+    async def no_backoff(delay, *args, **kwargs):
+        return await real_sleep(0 if delay >= 1 else delay, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", no_backoff)
+    client = _session()
+    client._pending_images = [_png_b64(4, 4)]
+    client.script = [_connection_error(), _connection_error(), _refusal(),
+                     [_text("看到了。"), _text("", "stop")]]
+
+    await client.stream_text("看看这个")
+
+    assert len(client.requests) == 4
+    _assert_switched_to_llava(client)
+    assert _emitted(client) == ["看到了。"]
