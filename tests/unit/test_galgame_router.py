@@ -613,10 +613,11 @@ async def test_galgame_options_generated_when_session_not_taken_over(monkeypatch
     assert _option_texts(data) == ["认真听。", "陪着你。", "幻想一下。"]
 
 
-# Example verbal tic each locale names in its "player's own words" sentence.
+# Word each locale uses for "the character's verbal tics" in its
+# "player's own words" sentence.
 _LOCALE_TIC_EXAMPLE = {
-    'zh': '喵', 'zh-TW': '喵', 'en': 'nya', 'ja': 'にゃ', 'ko': '냥',
-    'ru': 'мяу', 'es': 'miau', 'pt': 'miau',
+    'zh': '口癖', 'zh-TW': '口頭禪', 'en': 'verbal tics', 'ja': '口癖',
+    'ko': '말버릇', 'ru': 'словечки', 'es': 'muletillas', 'pt': 'bordões',
 }
 
 
@@ -625,7 +626,7 @@ _LOCALE_TIC_EXAMPLE = {
 def test_galgame_option_prompt_pins_player_voice_in_every_locale(lang):
     """Options are sent as the player's own message, so every locale must say
     so and rule out the character's verbal tics; small models otherwise leak
-    the neko's trailing "喵" into the player's lines."""
+    the neko's trailing "meow" into the player's lines."""
     from config.prompts.prompts_galgame import (
         GALGAME_OPTION_GENERATION_PROMPT,
         get_galgame_option_generation_prompt,

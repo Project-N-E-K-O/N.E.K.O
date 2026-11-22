@@ -45,7 +45,7 @@ def normalize_galgame_locale(lang: str | None) -> str:
 GALGAME_OPTION_GENERATION_PROMPT = {
     'zh': """你是一个游戏剧本助手，正在为一名玩家（{master_name}）生成三个不同风格的回复候选，让玩家在与角色（{lanlan_name}）的对话里挑选其中之一发送。
 
-下面会给你一段最近的对话记录，最后一条是 {lanlan_name} 的发言。请站在 {master_name} 的视角，写出三个能自然衔接 {lanlan_name} 最新发言的回复，每个不超过 30 个字，保持口语，不要使用括号描写动作或心理。这三个回复是 {master_name} 本人要发出去的话，所以要用 {master_name} 的口吻对 {lanlan_name} 说；不要写成 {lanlan_name} 对 {master_name} 说的话，也不要带 {lanlan_name} 的口癖或语气词（比如句尾的「喵」）。
+下面会给你一段最近的对话记录，最后一条是 {lanlan_name} 的发言。请站在 {master_name} 的视角，写出三个能自然衔接 {lanlan_name} 最新发言的回复，每个不超过 30 个字，保持口语，不要使用括号描写动作或心理。这三个回复是 {master_name} 本人要发出去的话，所以要用 {master_name} 的口吻对 {lanlan_name} 说；不要写成 {lanlan_name} 对 {master_name} 说的话，也不要带 {lanlan_name} 的口癖或语气词。
 
 三个回复必须严格按下面的风格区分：
 - A：正经严肃。聚焦事实、提问或就事论事的回应，不卖萌、不表白。
@@ -57,7 +57,7 @@ GALGAME_OPTION_GENERATION_PROMPT = {
 
     'zh-TW': """你是一個遊戲劇本助手，正在為一名玩家（{master_name}）生成三個不同風格的回覆候選，讓玩家在跟角色（{lanlan_name}）的對話裡挑一個送出。
 
-下面會給你一段最近的對話紀錄，最後一條是 {lanlan_name} 的發言。請站在 {master_name} 的視角，寫出三個能自然銜接 {lanlan_name} 最新發言的回覆，每個不超過 30 個字，保持口語，不要用括號描寫動作或心理。這三個回覆是 {master_name} 本人要送出的話，所以要用 {master_name} 的口吻對 {lanlan_name} 說；不要寫成 {lanlan_name} 對 {master_name} 說的話，也不要帶 {lanlan_name} 的口頭禪或語助詞（例如句尾的「喵」）。
+下面會給你一段最近的對話紀錄，最後一條是 {lanlan_name} 的發言。請站在 {master_name} 的視角，寫出三個能自然銜接 {lanlan_name} 最新發言的回覆，每個不超過 30 個字，保持口語，不要用括號描寫動作或心理。這三個回覆是 {master_name} 本人要送出的話，所以要用 {master_name} 的口吻對 {lanlan_name} 說；不要寫成 {lanlan_name} 對 {master_name} 說的話，也不要帶 {lanlan_name} 的口頭禪或語助詞。
 
 三個回覆必須嚴格照下面的風格區分：
 - A：正經嚴肅。聚焦事實、提問或就事論事的回應，不賣萌、不告白。
@@ -69,7 +69,7 @@ GALGAME_OPTION_GENERATION_PROMPT = {
 
     'en': """You are writing three reply candidates for the player ({master_name}) to send to the character ({lanlan_name}) in an ongoing conversation.
 
-You will be shown the recent dialogue. The last line is from {lanlan_name}. From {master_name}'s point of view, write three replies that naturally follow {lanlan_name}'s last line. Each reply must stay under 30 words, sound conversational, and avoid bracketed action/inner-monologue notes. {master_name} will send these replies as their own words, so write them in {master_name}'s voice, addressed to {lanlan_name}. Do not write them as lines {lanlan_name} would say to {master_name}, and leave out {lanlan_name}'s verbal tics, such as a trailing "nya" or "meow".
+You will be shown the recent dialogue. The last line is from {lanlan_name}. From {master_name}'s point of view, write three replies that naturally follow {lanlan_name}'s last line. Each reply must stay under 30 words, sound conversational, and avoid bracketed action/inner-monologue notes. {master_name} will send these replies as their own words, so write them in {master_name}'s voice, addressed to {lanlan_name}. Do not write them as lines {lanlan_name} would say to {master_name}, and leave out {lanlan_name}'s verbal tics.
 
 Stick strictly to these three styles:
 - A: Serious and grounded. Stay on topic, ask or answer factually. No flirting, no cute roleplay.
@@ -81,7 +81,7 @@ Output nothing outside the JSON. Do not wrap it in a code block.""",
 
     'ja': """あなたはプレイヤー（{master_name}）が会話相手のキャラクター（{lanlan_name}）に送る返信候補を 3 つ作るシナリオ補助です。
 
-直近の会話が渡されます。最後の発言は {lanlan_name} のものです。{master_name} の視点で、{lanlan_name} の発言にそのまま続けられる返信を 3 つ書いてください。各返信は 30 字以内で、口語のまま、括弧書きの動作・心理描写は使わないでください。返信は {master_name} 本人がそのまま送る言葉なので、{master_name} の口調で {lanlan_name} に向けて書いてください。{lanlan_name} が {master_name} に言うセリフにはせず、{lanlan_name} の口癖や語尾（文末の「にゃ」など）も付けないでください。
+直近の会話が渡されます。最後の発言は {lanlan_name} のものです。{master_name} の視点で、{lanlan_name} の発言にそのまま続けられる返信を 3 つ書いてください。各返信は 30 字以内で、口語のまま、括弧書きの動作・心理描写は使わないでください。返信は {master_name} 本人がそのまま送る言葉なので、{master_name} の口調で {lanlan_name} に向けて書いてください。{lanlan_name} が {master_name} に言うセリフにはせず、{lanlan_name} の口癖や語尾も付けないでください。
 
 3 つの返信は以下のスタイルで厳密に書き分けてください：
 - A：真面目で落ち着いた返答。話題に沿って事実確認や質問・回答に寄せ、媚びたり甘えたりしない。
@@ -93,7 +93,7 @@ JSON 以外の文字、コードブロック囲みは一切禁止です。""",
 
     'ko': """당신은 플레이어({master_name})가 상대 캐릭터({lanlan_name})에게 보낼 답장 후보 세 개를 만드는 시나리오 보조 작가입니다.
 
-최근 대화가 주어집니다. 마지막 줄은 {lanlan_name} 의 발언입니다. {master_name} 시점에서 {lanlan_name} 의 마지막 발언을 자연스럽게 잇는 답장을 세 개 써 주세요. 각 답장은 30 자 이내로, 구어체로 작성하고, 괄호 안 동작/심리 묘사는 사용하지 마세요. 이 답장은 {master_name} 본인이 그대로 보낼 말이므로 {master_name} 의 말투로 {lanlan_name} 에게 하는 말로 쓰세요. {lanlan_name} 이 {master_name} 에게 하는 대사로 쓰지 말고, {lanlan_name} 의 말버릇이나 어미(문장 끝의 "냥" 등)도 붙이지 마세요.
+최근 대화가 주어집니다. 마지막 줄은 {lanlan_name} 의 발언입니다. {master_name} 시점에서 {lanlan_name} 의 마지막 발언을 자연스럽게 잇는 답장을 세 개 써 주세요. 각 답장은 30 자 이내로, 구어체로 작성하고, 괄호 안 동작/심리 묘사는 사용하지 마세요. 이 답장은 {master_name} 본인이 그대로 보낼 말이므로 {master_name} 의 말투로 {lanlan_name} 에게 하는 말로 쓰세요. {lanlan_name} 이 {master_name} 에게 하는 대사로 쓰지 말고, {lanlan_name} 의 말버릇이나 어미도 붙이지 마세요.
 
 세 답장은 아래 스타일을 엄격히 따릅니다:
 - A: 진지하고 차분한 답장. 화제에 충실하게 질문이나 사실 확인 위주, 애교/고백 없음.
@@ -105,7 +105,7 @@ JSON 외의 어떤 문자도 출력하지 말고, 코드 블록으로 감싸지�
 
     'ru': """Ты сценарный помощник: пишешь три варианта ответа, которые игрок ({master_name}) сможет отправить персонажу ({lanlan_name}) в их разговоре.
 
-Тебе дадут недавний фрагмент диалога. Последняя реплика — от {lanlan_name}. От лица {master_name} напиши три ответа, которые естественно продолжают последнюю реплику {lanlan_name}. Каждый ответ — не длиннее 30 слов, разговорный, без описаний действий или мыслей в скобках. Эти ответы {master_name} отправит от своего имени, поэтому пиши их голосом {master_name}, обращаясь к {lanlan_name}. Не пиши их как реплики {lanlan_name}, обращённые к {master_name}, и не добавляй словечки {lanlan_name} вроде «мяу» в конце фразы.
+Тебе дадут недавний фрагмент диалога. Последняя реплика — от {lanlan_name}. От лица {master_name} напиши три ответа, которые естественно продолжают последнюю реплику {lanlan_name}. Каждый ответ — не длиннее 30 слов, разговорный, без описаний действий или мыслей в скобках. Эти ответы {master_name} отправит от своего имени, поэтому пиши их голосом {master_name}, обращаясь к {lanlan_name}. Не пиши их как реплики {lanlan_name}, обращённые к {master_name}, и не добавляй характерные словечки {lanlan_name}.
 
 Жёстко придерживайся стилей:
 - A: серьёзный и собранный. Только по делу — вопросы, факты, спокойная реакция. Без заигрываний и нежностей.
@@ -117,7 +117,7 @@ JSON 외의 어떤 문자도 출력하지 말고, 코드 블록으로 감싸지�
 
     'es': """Eres un asistente de guion: escribes tres candidatos de respuesta para que el jugador ({master_name}) pueda enviarlos al personaje ({lanlan_name}) en una conversación en curso.
 
-Se te mostrará el diálogo reciente. La última línea es de {lanlan_name}. Desde el punto de vista de {master_name}, escribe tres respuestas que continúen de forma natural la última línea de {lanlan_name}. Cada respuesta debe tener menos de 30 palabras, sonar conversacional y evitar notas de acción o monólogo interno entre paréntesis. {master_name} enviará estas respuestas como sus propias palabras, así que escríbelas con la voz de {master_name}, dirigidas a {lanlan_name}. No las escribas como frases que {lanlan_name} le diría a {master_name}, y no añadas las muletillas de {lanlan_name}, como un «miau» al final.
+Se te mostrará el diálogo reciente. La última línea es de {lanlan_name}. Desde el punto de vista de {master_name}, escribe tres respuestas que continúen de forma natural la última línea de {lanlan_name}. Cada respuesta debe tener menos de 30 palabras, sonar conversacional y evitar notas de acción o monólogo interno entre paréntesis. {master_name} enviará estas respuestas como sus propias palabras, así que escríbelas con la voz de {master_name}, dirigidas a {lanlan_name}. No las escribas como frases que {lanlan_name} le diría a {master_name}, y no añadas las muletillas de {lanlan_name}.
 
 Respeta estrictamente estos tres estilos:
 - A: serio y con los pies en la tierra. Mantente en el tema, pregunta o responde de forma factual. Sin coqueteo ni roleplay tierno.
@@ -129,7 +129,7 @@ No devuelvas nada fuera del JSON. No lo envuelvas en un bloque de código.""",
 
     'pt': """Você é um assistente de roteiro: escreve três opções de resposta para o jogador ({master_name}) enviar ao personagem ({lanlan_name}) em uma conversa em andamento.
 
-Você verá o diálogo recente. A última fala é de {lanlan_name}. Do ponto de vista de {master_name}, escreva três respostas que continuem naturalmente a última fala de {lanlan_name}. Cada resposta deve ter menos de 30 palavras, soar conversacional e evitar notas de ação ou monólogo interno entre parênteses. {master_name} vai enviar essas respostas como palavras próprias, então escreva-as com a voz de {master_name}, dirigidas a {lanlan_name}. Não as escreva como falas que {lanlan_name} diria a {master_name}, e não acrescente os bordões de {lanlan_name}, como um "miau" no final.
+Você verá o diálogo recente. A última fala é de {lanlan_name}. Do ponto de vista de {master_name}, escreva três respostas que continuem naturalmente a última fala de {lanlan_name}. Cada resposta deve ter menos de 30 palavras, soar conversacional e evitar notas de ação ou monólogo interno entre parênteses. {master_name} vai enviar essas respostas como palavras próprias, então escreva-as com a voz de {master_name}, dirigidas a {lanlan_name}. Não as escreva como falas que {lanlan_name} diria a {master_name}, e não acrescente os bordões de {lanlan_name}.
 
 Siga estritamente estes três estilos:
 - A: sério e pé no chão. Fique no assunto, pergunte ou responda de modo factual. Sem flerte, sem roleplay fofo.
