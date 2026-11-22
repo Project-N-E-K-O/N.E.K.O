@@ -13,6 +13,8 @@ import contextvars
 from dataclasses import dataclass
 from typing import Any
 
+from plugin.sdk.shared.permissions import normalize_permission
+
 
 @dataclass(frozen=True, slots=True)
 class CallOrigin:
@@ -32,11 +34,12 @@ class CallHop:
 class CallChainView:
     """Where the current invocation came from.
 
-    ``rights`` is the intersection of capabilities approved for every plugin
-    on the chain when the host delivered the call. ``rights_known`` is False
-    when the host did not provide it (outside an invocation, or policy off).
-    ``allows`` is advisory and never widens: False whenever rights are
-    unknown. The host makes the final decision on every use.
+    ``rights`` is the intersection of permissions approved for every plugin
+    on the chain when the host delivered the call: permission ids, plus their
+    earlier capability names for one release. ``rights_known`` is False when
+    the host did not provide it (outside an invocation). ``allows`` takes an
+    id or an earlier name; it is advisory and never widens: False whenever
+    rights are unknown. The host makes the final decision on every use.
     """
 
     plugin_id: str
@@ -50,7 +53,9 @@ class CallChainView:
     rights_known: bool
 
     def allows(self, capability: str) -> bool:
-        return self.rights_known and capability in self.rights
+        if not self.rights_known:
+            return False
+        return capability in self.rights or normalize_permission(capability) in self.rights
 
 
 def self_only_view(plugin_id: str) -> CallChainView:
