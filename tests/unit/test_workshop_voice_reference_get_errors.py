@@ -9,10 +9,11 @@ the status codes and the plain "not found" answers are unchanged.
 
 The 503 text comes from ``GET /subscribed-items``, whose 500 branch used to
 embed ``str(e)`` too. That route now only returns fixed strings, so the 503
-can keep showing them (e.g. the "Steamworks not initialized" message).
+can keep showing them (e.g. the Steamworks-not-initialized message).
 """
 
 import ast
+import errno
 import inspect
 import json
 import os
@@ -189,6 +190,24 @@ async def test_audio_escaping_the_item_folder_is_400_without_path(install_folder
     assert status == 400
     _assert_no_path(body, outside)
     _assert_no_path(body, install_folder)
+    assert json.loads(body)['error'] == '读取参考语音文件失败'
+
+
+@pytest.mark.parametrize('route', sorted(_ROUTES))
+async def test_server_side_os_error_is_500_without_path(install_folder, monkeypatch, route):
+    # Not a problem with the item (that is the PermissionError case above):
+    # a server-side I/O failure answers 500 with the same fixed message.
+    secret = install_folder / WORKSHOP_VOICE_MANIFEST_NAME
+
+    def _io_error(item_dir):
+        raise OSError(errno.EIO, 'Input/output error', str(secret))
+
+    monkeypatch.setattr(voice_refs, 'resolve_voice_reference_serialized', _io_error)
+
+    status, body = await _call(route)
+
+    assert status == 500
+    _assert_no_path(body, secret)
     assert json.loads(body)['error'] == '读取参考语音文件失败'
 
 

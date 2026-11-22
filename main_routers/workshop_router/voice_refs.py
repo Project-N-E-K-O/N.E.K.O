@@ -355,7 +355,7 @@ async def get_workshop_voice_reference(item_id: str):
         item = await _find_subscribed_item_by_id(item_id)
     except SubscribedItemsUnavailable as e:
         # The message is one of the fixed strings returned by /subscribed-items
-        # (e.g. "Steamworks not initialized"), never raw exception text, so it is safe
+        # (e.g. the Steamworks-not-initialized message), never raw exception text, so it is safe
         # to show; see get_subscribed_workshop_items.
         return JSONResponse({
             "success": False,
@@ -395,15 +395,24 @@ async def get_workshop_voice_reference(item_id: str):
             "available": False,
             "error": "读取参考语音清单失败",
         }, status_code=400)
-    except OSError as e:
-        # e.g. PermissionError from _assert_under_base when the audio is a
-        # symlink pointing outside the item folder.
+    except PermissionError as e:
+        # From _assert_under_base when the audio is a symlink pointing outside
+        # the item folder: a problem with the item, hence 400.
         logger.warning(f"读取工坊物品 {item_id!r} 的参考语音文件失败: {e}")
         return JSONResponse({
             "success": False,
             "available": False,
             "error": "读取参考语音文件失败",
         }, status_code=400)
+    except OSError as e:
+        # Any other OSError is a server-side failure (I/O error, out of file
+        # handles, ...): same fixed message, but 500.
+        logger.error(f"读取工坊物品 {item_id!r} 的参考语音文件失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "available": False,
+            "error": "读取参考语音文件失败",
+        }, status_code=500)
 
     if not voice_ref:
         return JSONResponse({
@@ -429,7 +438,7 @@ async def get_workshop_voice_reference_audio(item_id: str):
         item = await _find_subscribed_item_by_id(item_id)
     except SubscribedItemsUnavailable as e:
         # The message is one of the fixed strings returned by /subscribed-items
-        # (e.g. "Steamworks not initialized"), never raw exception text, so it is safe
+        # (e.g. the Steamworks-not-initialized message), never raw exception text, so it is safe
         # to show; see get_subscribed_workshop_items.
         return JSONResponse({
             "success": False,
@@ -464,13 +473,20 @@ async def get_workshop_voice_reference_audio(item_id: str):
             "success": False,
             "error": "读取参考语音清单失败",
         }, status_code=400)
-    except OSError as e:
-        # Same as the manifest route.
+    except PermissionError as e:
+        # Same split as the manifest route: 400 for an audio path escaping
+        # the item folder, 500 for any other OSError.
         logger.warning(f"读取工坊物品 {item_id!r} 的参考语音文件失败: {e}")
         return JSONResponse({
             "success": False,
             "error": "读取参考语音文件失败",
         }, status_code=400)
+    except OSError as e:
+        logger.error(f"读取工坊物品 {item_id!r} 的参考语音文件失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": "读取参考语音文件失败",
+        }, status_code=500)
 
     if not voice_ref:
         return JSONResponse({
