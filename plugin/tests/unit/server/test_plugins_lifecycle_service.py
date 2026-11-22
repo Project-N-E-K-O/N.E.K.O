@@ -556,10 +556,29 @@ async def test_start_plugin_refreshes_registry_before_loading(
         monkeypatch.setattr(module, "scan_plugin_metadata_isolated", metadata_scan)
         monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
 
+        # Permission source is reconciled after the registry refresh; a broken
+        # permission store must not stop the plugin from starting.
+        from plugin.server.application.plugins import permission_service
+        from plugin.server.domain.errors import ServerDomainError as _DomainError
+
+        reconciled: list[tuple[str, int]] = []
+        real_reconcile = module.reconcile_permission_source
+
+        def _reconcile(plugin_id: str) -> None:
+            reconciled.append((plugin_id, len(refresh_calls)))
+            real_reconcile(plugin_id)
+
+        def _broken_store(*_args: object, **_kwargs: object) -> None:
+            raise _DomainError("PLUGIN_PERMISSIONS_CORRUPT", "damaged", 500)
+
+        monkeypatch.setattr(module, "reconcile_permission_source", _reconcile)
+        monkeypatch.setattr(permission_service.permission_store, "sync_source", _broken_store)
+
         service = module.PluginLifecycleService()
         response = await service.start_plugin("refresh_adapter")
 
         assert response["success"] is True
+        assert reconciled == [("refresh_adapter", 1)]
         assert refresh_calls == ["refresh_adapter"]
         assert source_modes == [project]
         assert set(capability_threads) == {

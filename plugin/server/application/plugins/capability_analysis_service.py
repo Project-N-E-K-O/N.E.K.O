@@ -335,6 +335,25 @@ def notify_install_committed(result: dict) -> dict:
     return result
 
 
+async def notify_install_committed_async(result: dict) -> dict:
+    """:func:`notify_install_committed`, then persist each installed plugin's
+    install source into its stored permission grants.
+
+    Awaited by the install owner while it still holds the plugin operation
+    lock, so the grants follow the source even if the plugin stays stopped.
+    The store work runs in a worker thread and never raises.
+    """
+    import asyncio
+
+    from plugin.server.application.plugins.permission_service import (
+        reconcile_installed_plugins,
+    )
+
+    notify_install_committed(result)
+    await asyncio.to_thread(reconcile_installed_plugins, result)
+    return result
+
+
 def _auto_bind_host_models_safe(plugin_id: str, target_dir: str) -> None:
     stop = analysis_service._stop
     try:

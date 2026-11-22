@@ -43,6 +43,9 @@ from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.server.application.plugins.consent_service import denied_plugin_ids
+from plugin.server.application.plugins.permission_service import (
+    reconcile_permission_source,
+)
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
     _HeldPluginOperationLock,
@@ -1141,6 +1144,10 @@ class PluginLifecycleService:
                         plugin_id=current_plugin_id,
                         error_type=str(exc.details.get("error_type", "RegistryRefreshFailed")) if isinstance(exc.details, dict) else "RegistryRefreshFailed",
                     ) from exc
+
+        # Under the operation lock: persist a changed or first-known install
+        # source into the stored permission grants. Never blocks the start.
+        await asyncio.to_thread(reconcile_permission_source, current_plugin_id)
 
         project_dir = await asyncio.to_thread(_project_source_dir_sync, current_plugin_id)
         registered_meta = await asyncio.to_thread(_get_plugin_meta_sync, current_plugin_id)
