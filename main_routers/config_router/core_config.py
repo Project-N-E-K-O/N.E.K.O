@@ -40,9 +40,33 @@ from config.api_profiles import ASSIST_WORKSPACE_ID_FIELDS
 CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 
 CORE_CONFIG_MODEL_TYPES = (
-    'conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion',
+    'conversation', 'summary', 'gameMain', 'gameSummary', 'emotion',
     'decision', 'vision', 'agent', 'omni', 'tts', 'image',
 )
+
+# Model types merged away; their saved fields are dropped on the next save.
+# 'correction' was merged into 'summary' (the summary slot wins, so nothing is
+# carried over). Not listed in CORE_CONFIG_MODEL_TYPES, so GET never returns
+# these fields and a stale key stays unreadable.
+CORE_CONFIG_RETIRED_MODEL_TYPES = ('correction',)
+
+def _drop_retired_model_fields(core_cfg: dict) -> None:
+    """Remove the saved fields of merged-away model types, logging what was dropped.
+
+    Only the provider and model id are logged, never the URL or the key.
+    """
+    for model_type in CORE_CONFIG_RETIRED_MODEL_TYPES:
+        dropped = {
+            suffix: core_cfg.pop(f'{model_type}Model{suffix}', None)
+            for suffix in ('Provider', 'Url', 'Id', 'ApiKey')
+        }
+        if any(value not in (None, '') for value in dropped.values()):
+            logger.info(
+                "Dropped retired %s model slot on save (provider=%r, model=%r); "
+                "its work now uses the summary slot",
+                model_type, dropped['Provider'] or '', dropped['Id'] or '',
+            )
+
 
 CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyQwen', 'assistApiKeyQwenIntl', 'assistApiKeyOpenai',
@@ -726,6 +750,7 @@ async def update_core_config(request: Request):
                         apply_core_config_secret_update(core_cfg, data, field)
                     else:
                         core_cfg[field] = data[field]
+        _drop_retired_model_fields(core_cfg)
         # Lazy migration after retiring gptsovitsEnabled, at the save boundary, symmetric with #1842 voice_id:
         # ttsModelProvider=='gptsovits' is the sole GSV-enabled truth; old gptsovitsEnabled remains only
         # pre-#1830 compatibility fallback. Frontend loading pins enabled GSV dropdowns to 'gptsovits', so any submitted
@@ -921,7 +946,7 @@ async def get_api_providers_config():
             "assist_model_defaults": {
                 key: {field: profile.get(field, '') for field in (
                     'CONVERSATION_MODEL', 'VISION_MODEL', 'SUMMARY_MODEL',
-                    'CORRECTION_MODEL', 'EMOTION_MODEL', 'AGENT_MODEL',
+                    'EMOTION_MODEL', 'AGENT_MODEL',
                 )}
                 for key, profile in get_assist_api_profiles().items()
             },

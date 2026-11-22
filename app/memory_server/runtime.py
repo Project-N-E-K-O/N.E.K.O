@@ -91,6 +91,11 @@ _CHARACTER_WRITE_ROUTES: tuple[tuple[str, frozenset[str]], ...] = (
     # Only PUT writes; GET reads sidecars and bypasses fencing.
     # Callers already treat 409 as retryable (cloud-save maintenance fences also return it).
     ("/prompt-locale/", frozenset({"PUT"})),
+    # Memory Browser character-scoped writers (cache files & safety snapshots).
+    ("/internal/memory/browser/imprint_note/", frozenset({"POST"})),
+    ("/internal/memory/browser/star_map/label_clusters/", frozenset({"POST"})),
+    ("/internal/memory/browser/snapshots/create/", frozenset({"POST"})),
+    ("/internal/memory/browser/snapshots/restore/", frozenset({"POST"})),
 )
 # Group-memory writes use /internal/memory/{lanlan_name}/<op>, ultimately writing the character's
 # FactStore / TimeIndexedMemory. Missing fences neither reject nor drain these requests during deletion,
@@ -1377,8 +1382,14 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         return True
 
 
-def _log_startup_identity() -> None:
+def _log_startup_identity(stage: str = "startup") -> None:
     """One info line identifying this build and where it reads memory from.
+
+    Logged at ``startup`` (before the storage gate, so limited mode has it
+    too) and again at ``continue`` when a limited-mode boot is released and
+    the runtime actually initializes, so the release moment is visible in
+    the log. ``_config_manager`` is a process-wide singleton, so both lines
+    carry the same paths.
 
     The install dir (``sys.executable``'s folder) tells apart launches that
     share the same version and data root, e.g. a Steam install versus a
@@ -1398,15 +1409,16 @@ def _log_startup_identity() -> None:
             os.path.dirname(os.path.abspath(sys.executable)) if sys.executable else "unknown"
         )
         logger.info(
-            "[Memory] N.E.K.O %s frozen=%s install_dir=%s data_root=%s memory_dir=%s",
+            "[Memory] N.E.K.O %s stage=%s frozen=%s install_dir=%s data_root=%s memory_dir=%s",
             APP_VERSION,
+            stage,
             frozen,
             install_dir,
             getattr(_config_manager, "app_docs_dir", None),
             getattr(_config_manager, "memory_dir", None),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[Memory] startup identity log failed: %s", exc)
+        logger.warning("[Memory] startup identity log failed (stage=%s): %s", stage, exc)
 
 
 @app.on_event("startup")
@@ -1448,6 +1460,10 @@ async def continue_storage_startup(payload: ContinueStorageStartupRequest | None
             reason=str(getattr(payload, "reason", "") or "storage_selection_continue_current_session"),
         )
         _memory_storage_blocked_after_init = False
+        if initialized:
+            # Log the identity again when the limited-mode release actually
+            # initializes the runtime, to mark the release moment in the log.
+            _log_startup_identity(stage="continue")
         return {
             "ok": True,
             "initialized": bool(initialized),

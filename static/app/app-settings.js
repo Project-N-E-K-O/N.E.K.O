@@ -295,6 +295,18 @@
     function _knownServerKeyRevisionsSnapshot() {
         return Object.assign({}, _knownServerKeyRevisions);
     }
+    // Whether another window's per-key write token for `key` was confirmed
+    // by the server at a revision older than one this window already knows
+    // for that key: the server has since superseded that write, so the value
+    // it travels with is stale whatever its token order. Shared by the
+    // storage listener's per-key checks and _unseenSharedRevocationToken.
+    function _keyTokenPredatesServerFloor(key, token) {
+        const localServerRevision = _knownServerKeyRevisions[key];
+        return !!(token
+            && Number.isInteger(token.confirmedRevision)
+            && Number.isInteger(localServerRevision)
+            && token.confirmedRevision < localServerRevision);
+    }
     function _confirmSharedKeyWrites(
         payload,
         serverSettings,
@@ -1116,6 +1128,31 @@
         return changedKeys;
     }
 
+    // Whether this window's value for `key` is a write the server confirmed
+    // at a revision older than a server snapshot that now holds a different
+    // value: the server changed the key after that write, so the snapshot's
+    // value is the newer one. Used by the 412 merge so a value received from
+    // another window does not overwrite a newer server value on retry. A
+    // write without a confirmed revision (unconfirmed, or this window's own
+    // edit) cannot be ordered against the server and is left to the caller.
+    function _confirmedValueSupersededOnServer(key, serverSettings, serverRevision) {
+        if (key === 'independentAsrEnabled') return false;
+        if (!serverSettings || typeof serverSettings !== 'object'
+            || !Number.isInteger(serverRevision)) return false;
+        if (!Object.prototype.hasOwnProperty.call(serverSettings, key)) return false;
+        const token = _knownSharedKeyWrites[key];
+        if (!token || !Number.isInteger(token.confirmedRevision)) return false;
+        // A delayed 412 can be older than a server value this window has
+        // since taken from a server merge; only a snapshot newer than both
+        // may replace the current value.
+        const localServerRevision = _knownServerKeyRevisions[key];
+        const floor = Number.isInteger(localServerRevision)
+            ? Math.max(token.confirmedRevision, localServerRevision)
+            : token.confirmedRevision;
+        return serverRevision > floor
+            && serverSettings[key] !== getConversationSettings()[key];
+    }
+
     function _markEtagConfirmedSharedSettings(
         settingsAtSend,
         serverSettings,
@@ -1254,10 +1291,10 @@
         if (!_sharedWriteTokenOutranks(token, _knownSharedKeyWrites[key])) return null;
         // Same server-floor check as the listener: a write the server has
         // since superseded is not a pending revocation.
-        const keyToken = meta.knownKeyWrites[key];
-        if (keyToken && Number.isInteger(keyToken.confirmedRevision)
-            && Number.isInteger(_knownServerKeyRevisions[key])
-            && keyToken.confirmedRevision < _knownServerKeyRevisions[key]) return null;
+        if (_keyTokenPredatesServerFloor(
+            key,
+            meta.knownKeyWrites[key]
+        )) return null;
         return token;
     }
 
@@ -1568,6 +1605,7 @@
                     ? Object.assign({}, _lastOptimizationDecision)
                     : null;
                 const headers = { 'Content-Type': 'application/json' };
+                const revisionAtSend = _conversationSettingsRevision;
                 if (_conversationSettingsEtag) {
                     headers['If-Match'] = _conversationSettingsEtag;
                 }
@@ -1589,6 +1627,34 @@
                             }
                         );
                     const nextEtag = _responseEtag(response);
+                    // A 412 that arrives late can carry a snapshot older than
+                    // the revision this window has since taken from a server
+                    // merge in another window. Keep the newer ETag, revision
+                    // and values, and just retry with them. A snapshot older
+                    // than the revision known when the request was sent is not
+                    // late (the server had reached that revision already): the
+                    // server's revision went back, so adopt it as before.
+                    // A skip still uses up an attempt. Known cost: if the
+                    // revision this window holds was raised while the request
+                    // was in flight, a 412 that is not late is skipped once
+                    // and adopted on the next attempt. That happens with a
+                    // losing ASR decision (its 412 has the If-Match
+                    // revision), or after a rollback when another window
+                    // broadcasts the pre-rollback revision. Only further
+                    // concurrent writes using up every attempt drop the sync;
+                    // the edit stays pending for the next save.
+                    if (response.status === 412
+                        && Number.isInteger(data.revision)
+                        && Number.isInteger(_conversationSettingsRevision)
+                        && data.revision < _conversationSettingsRevision
+                        && !(Number.isInteger(revisionAtSend)
+                            && data.revision < revisionAtSend)) {
+                        if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
+                            continue;
+                        }
+                        console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+                        return;
+                    }
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
                     if (Number.isInteger(data.revision)) {
                         _conversationSettingsRevision = data.revision;
@@ -1603,6 +1669,23 @@
                         _settingsChangedSince(settings, mutationVersionAtSend).forEach((key) => {
                             preservedKeys.add(key);
                         });
+                        // A value received from another window is kept over
+                        // the 412 snapshot only while it may be the newer
+                        // one. When its write was confirmed before a server
+                        // revision that holds a different value, the server
+                        // changed the key since: take the server's value.
+                        // Unsaved local edits stay preserved.
+                        const conflictServerSettings = _serverSettingsForMerge(data);
+                        for (const key of Array.from(preservedKeys)) {
+                            if (_pendingSettingsKeys.has(key)) continue;
+                            if (_confirmedValueSupersededOnServer(
+                                key,
+                                conflictServerSettings,
+                                data.revision
+                            )) {
+                                preservedKeys.delete(key);
+                            }
+                        }
                         _mergeConversationSettingsSnapshot(data, preservedKeys);
                         if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
                             continue;
@@ -2799,18 +2882,10 @@
                         key
                     )) continue;
                     const localToken = _knownSharedKeyWrites[key];
-                    const incomingToken = meta.knownKeyWrites[key];
-                    const localServerRevision =
-                        _knownServerKeyRevisions[key];
-                    const incomingPredatesServerFloor =
-                        Number.isInteger(localServerRevision)
-                        && incomingToken
-                        && Number.isInteger(
-                            incomingToken.confirmedRevision
-                        )
-                        && incomingToken.confirmedRevision
-                            < localServerRevision;
-                    if (incomingPredatesServerFloor
+                    if (_keyTokenPredatesServerFloor(
+                        key,
+                        meta.knownKeyWrites[key]
+                    )
                         || (localToken
                             && !_sharedWriteTokenOutranks(meta, localToken)
                             && !_sharedWriteTokensEqual(meta, localToken))) {
@@ -2858,7 +2933,24 @@
                     // The merge envelope may be newer while this particular
                     // field still predates an explicit write already accepted
                     // here. Apply only when the sender's per-key provenance is
-                    // at least as new as ours.
+                    // at least as new as ours, and the server has not since
+                    // confirmed a newer value for the key: a stale window's
+                    // unrelated save can carry an old value under the same
+                    // token this window holds. A sender that has seen a newer
+                    // server revision for the key than this window carries a
+                    // server-merged value under the same old token: that
+                    // value is newer, not a stale copy.
+                    const senderServerRevision = meta.serverKeyRevisions[key];
+                    const senderKnowsNewerServer =
+                        Number.isInteger(senderServerRevision)
+                        && Number.isInteger(_knownServerKeyRevisions[key])
+                        && senderServerRevision > _knownServerKeyRevisions[key];
+                    if (!senderKnowsNewerServer
+                        && _keyTokenPredatesServerFloor(key, mergeToken)) {
+                        if (incoming === settings) incoming = Object.assign({}, settings);
+                        delete incoming[key];
+                        continue;
+                    }
                     if (localToken
                         && !_sharedWriteTokenOutranks(mergeToken, localToken)
                         && !(mergeToken

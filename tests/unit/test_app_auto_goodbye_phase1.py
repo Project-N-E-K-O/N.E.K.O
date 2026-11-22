@@ -642,7 +642,12 @@ def test_app_auto_goodbye_phase1_harness():
           blockers.setAppState({{ isRecording: false, assistantTurnId: 'turn-1', assistantTurnCompletedId: null }});
           assert(blockers.win.nekoAutoGoodbye.hasActiveConversationState() === true, 'assistant turn should activate conversation guard');
           assert(blockers.win.nekoAutoGoodbye.getIdleBlockReasons().includes('active-conversation'), 'assistant turn should be an active-conversation blocker');
-          blockers.setAppState({{ assistantTurnId: null, assistantTurnCompletedId: null }});
+          blockers.setAppState({{ assistantTurnId: 'turn-1', assistantTurnCompletedId: null, assistantTurnSettledId: 'turn-1' }});
+          assert(blockers.win.nekoAutoGoodbye.hasActiveConversationState() === false, 'cleanly settled voice turn should not activate conversation guard');
+          assert(!blockers.win.nekoAutoGoodbye.getIdleBlockReasons().includes('active-conversation'), 'cleanly settled voice turn should not be an active-conversation blocker');
+          blockers.setAppState({{ assistantTurnId: 'turn-2', assistantTurnCompletedId: null, assistantTurnSettledId: 'turn-1' }});
+          assert(blockers.win.nekoAutoGoodbye.hasActiveConversationState() === true, 'a new turn after a settled one should still activate conversation guard');
+          blockers.setAppState({{ assistantTurnId: null, assistantTurnCompletedId: null, assistantTurnSettledId: null }});
           blockers.setMicStarting(true);
           assert(blockers.win.nekoAutoGoodbye.hasActiveConversationState() === false, 'mic starting alone should not activate the conversation guard');
           assert(!blockers.win.nekoAutoGoodbye.getIdleBlockReasons().includes('active-conversation'), 'mic starting alone should not be an active-conversation blocker');

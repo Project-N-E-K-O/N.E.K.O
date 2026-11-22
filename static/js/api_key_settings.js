@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -62,7 +62,6 @@ const MODEL_CONFIG_EXPANSION_PATHS = {
     summary: ['summary'],
     gameMain: ['game', 'game-main'],
     gameSummary: ['game', 'game-summary'],
-    correction: ['correction'],
     emotion: ['emotion'],
     decision: ['decision'],
     vision: ['vision'],
@@ -75,7 +74,6 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
     summary: 'summary_model',
     gameMain: 'conversation_model',
     gameSummary: 'summary_model',
-    correction: 'correction_model',
     emotion: 'emotion_model',
     decision: 'decision_model',
     vision: 'vision_model',
@@ -1552,22 +1550,22 @@ function populateModelProviderDropdowns() {
                 sel,
                 'follow_summary',
                 'api.customModelProviderFollowSummary',
-                '跟随摘要模型'
+                '跟随记忆整理模型'
             );
         }
 
         // follow_core
-        appendModelProviderOption(sel, 'follow_core', 'api.customModelProviderFollowCore', '跟随核心API');
+        appendModelProviderOption(sel, 'follow_core', 'api.customModelProviderFollowCore', '跟随语音模型供应商');
 
         // follow_assist
-        appendModelProviderOption(sel, 'follow_assist', 'api.customModelProviderFollowAssist', '跟随辅助API');
+        appendModelProviderOption(sel, 'follow_assist', 'api.customModelProviderFollowAssist', '跟随通用模型供应商');
 
         // Each non-free provider from _assistApiProviders
         Object.keys(_assistApiProviders).forEach(pk => {
             if (pk === 'free') return;
             if (isProviderRestricted(pk)) return;
             // 特异 TTS provider（tts_dropdown_only）仅在 TTS 下拉里出现，不污染
-            // conversation/summary/correction/emotion/vision/agent/omni 的下拉。
+            // conversation/summary/emotion/vision/agent/omni 的下拉。
             // 成员由后端 tts_provider_registry 驱动；注册表元数据缺失时 getTtsProviderMeta
             // 用结构信号兜底，前端始终不硬编码 provider key。
             const _spFilter = getTtsProviderMeta(pk);
@@ -1893,7 +1891,7 @@ function updateTtsVoiceFallbackHint() {
     const translated = window.t ? window.t(key) : '';
     hint.textContent = translated && translated !== key
         ? translated
-        : 'Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。';
+        : 'Voice ID 未填写时，没有设置音色的角色将使用语音模型自带的声音。';
     hint.style.display = 'block';
 }
 
@@ -1995,7 +1993,6 @@ const MODEL_TIER_BY_TYPE = {
     summary: 'summary',
     gameMain: 'conversation',
     gameSummary: 'summary',
-    correction: 'correction',
     emotion: 'emotion',
     decision: 'decision',
     vision: 'vision',
@@ -2841,7 +2838,7 @@ async function loadCurrentApiKey() {
                 : {};
             // 设置API Key显示
             if (data.enableCustomApi) {
-                showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '当前使用：自定义API模式', '', true);
+                showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '当前使用：按功能单独指定模型', '', true);
             } else if (data.api_key) {
                 // 免费判定只看 core：assist=free 配付费 core 时 coreApiKey 是真实付费 Key。
                 if (data.api_key === 'free-access' || data.coreApi === 'free') {
@@ -3010,10 +3007,6 @@ async function loadCurrentApiKey() {
             setInputValue('gameSummaryModelUrl', data.gameSummaryModelUrl);
             setInputValue('gameSummaryModelId', data.gameSummaryModelId);
             setSecretInputValue('gameSummaryModelApiKey', data.gameSummaryModelApiKey);
-
-            setInputValue('correctionModelUrl', data.correctionModelUrl);
-            setInputValue('correctionModelId', data.correctionModelId);
-            setSecretInputValue('correctionModelApiKey', data.correctionModelApiKey);
 
             setInputValue('emotionModelUrl', data.emotionModelUrl);
             setInputValue('emotionModelId', data.emotionModelId);
@@ -3450,7 +3443,7 @@ function toggleCustomApi(skipAutoFill) {
     const freeVersionHint = document.getElementById('freeVersionHint');
     if (freeVersionHint) {
         if (isCustomEnabled) {
-            freeVersionHint.textContent = window.t ? window.t('api.customApiEnabledHint') : '（自定义API已启用）';
+            freeVersionHint.textContent = window.t ? window.t('api.customApiEnabledHint') : '（已开启按功能单独指定模型）';
             freeVersionHint.style.color = '#ff6b35';
             freeVersionHint.style.display = 'inline';
         } else if (isFreeVersion) {
@@ -3557,7 +3550,7 @@ function confirmClearCustomApi() {
     const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
     if (customApiToggleBtn) customApiToggleBtn.classList.remove('rotated');
 
-    showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '自定义API配置已清空，请点击「保存设置」按钮以保存更改', 'success');
+    showStatus(window.t ? window.t('api.clearCustomApiSuccess') : '单独指定的模型已清空，请点击「保存设置」保存更改', 'success');
 }
 
 // 打开插件面板的 Plugin API 页：与 HUD「管理面板」同一套应用内窗口逻辑。
@@ -3815,10 +3808,6 @@ async function save_button_down(e) {
     const gameSummaryModelId = getVal('gameSummaryModelId');
     const gameSummaryModelApiKey = getKeyVal('gameSummaryModelApiKey');
 
-    const correctionModelUrl = getVal('correctionModelUrl');
-    const correctionModelId = getVal('correctionModelId');
-    const correctionModelApiKey = getKeyVal('correctionModelApiKey');
-
     const emotionModelUrl = getVal('emotionModelUrl');
     const emotionModelId = getVal('emotionModelId');
     const emotionModelApiKey = getKeyVal('emotionModelApiKey');
@@ -3904,7 +3893,6 @@ async function save_button_down(e) {
         summaryModelUrl, summaryModelId, summaryModelApiKey,
         gameMainModelUrl, gameMainModelId, gameMainModelApiKey,
         gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
-        correctionModelUrl, correctionModelId, correctionModelApiKey,
         emotionModelUrl, emotionModelId, emotionModelApiKey,
         decisionModelUrl, decisionModelId, decisionModelApiKey,
         visionModelUrl, visionModelId, visionModelApiKey,
@@ -4473,16 +4461,16 @@ function positionTooltip(iconElement, tooltipElement) {
 }
 
 const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
-    conversation: 'vision',
-    vision: 'conversation',
-    summary: 'correction',
-    correction: 'summary',
-    emotion: 'omni',
-    omni: 'emotion',
-    agent: 'tts',
-    tts: 'agent',
-    game: 'image',
-    image: 'game',
+    conversation: 'summary',
+    summary: 'conversation',
+    emotion: 'decision',
+    decision: 'emotion',
+    omni: 'tts',
+    tts: 'omni',
+    agent: 'game',
+    game: 'agent',
+    image: 'vision',
+    vision: 'image',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
@@ -4606,7 +4594,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'decision', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'emotion', 'decision', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4712,16 +4700,15 @@ const LightStatus = {
 function getCustomModelDisplayLabel(modelType) {
     const labelMap = {
         conversation: ['api.conversationModelConfig', '文本聊天模型'],
-        summary: ['api.summaryModelConfig', '摘要模型'],
-        gameMain: ['api.gameMainModelConfig', '小游戏主模型配置'],
-        gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
-        correction: ['api.correctionModelConfig', '纠错模型'],
-        emotion: ['api.emotionModelConfig', '情感模型'],
-        decision: ['api.decisionModelConfig', '决策模型'],
+        summary: ['api.summaryModelConfig', '记忆整理（大模型）'],
+        gameMain: ['api.gameMainModelConfig', '小游戏聊天模型'],
+        gameSummary: ['api.gameSummaryModelConfig', '小游戏记忆模型'],
+        emotion: ['api.emotionModelConfig', '识别模型（小模型）'],
+        decision: ['api.decisionModelConfig', '决策模型（小模型）'],
         vision: ['api.visionModelConfig', '视觉聊天模型'],
-        agent: ['api.agentApiConfigTitle', 'Agent API（需支持视觉功能）'],
-        omni: ['api.realtimeModelConfig', '实时全模态模型（Local模式）'],
-        tts: ['api.ttsModelConfig', 'TTS模型'],
+        agent: ['api.agentApiConfigTitle', '使魔模型'],
+        omni: ['api.realtimeModelConfig', '实时语音（本地）'],
+        tts: ['api.ttsModelConfig', '语音合成'],
     };
     const [key, fallback] = labelMap[modelType] || ['', modelType];
     if (!key || !window.t) return fallback;
@@ -5861,7 +5848,7 @@ function initConnectivityLights() {
         coreTestBtn.type = 'button';
         coreTestBtn.className = 'connectivity-mini-test-btn';
         coreTestBtn.textContent = window.t ? window.t('connectivity.testCore', '测试') : '测试';
-        coreTestBtn.title = window.t ? window.t('connectivity.testCoreTooltip', '测试核心 API 连通性') : '测试核心 API 连通性';
+        coreTestBtn.title = window.t ? window.t('connectivity.testCoreTooltip', '测试语音模型供应商连通性') : '测试语音模型供应商连通性';
         coreTestBtn.addEventListener('click', async () => {
             coreTestBtn.disabled = true;
             coreTestBtn.classList.add('testing');
@@ -5923,7 +5910,7 @@ function initConnectivityLights() {
         assistTestBtn.type = 'button';
         assistTestBtn.className = 'connectivity-mini-test-btn';
         assistTestBtn.textContent = window.t ? window.t('connectivity.testAssist', '测试') : '测试';
-        assistTestBtn.title = window.t ? window.t('connectivity.testAssistTooltip', '测试辅助 API 连通性') : '测试辅助 API 连通性';
+        assistTestBtn.title = window.t ? window.t('connectivity.testAssistTooltip', '测试通用模型供应商连通性') : '测试通用模型供应商连通性';
         assistTestBtn.addEventListener('click', async () => {
             assistTestBtn.disabled = true;
             assistTestBtn.classList.add('testing');
@@ -5987,7 +5974,7 @@ function initConnectivityLights() {
         testButton.appendChild(btnLight);
 
         const btnText = document.createElement('span');
-        btnText.textContent = window.t ? window.t('connectivity.testCustom', '测试自定义 API 连通性') : '测试自定义 API 连通性';
+        btnText.textContent = window.t ? window.t('connectivity.testCustom', '测试单独指定的模型') : '测试单独指定的模型';
         btnText.setAttribute('data-i18n', 'connectivity.testCustom');
         testButton.appendChild(btnText);
 

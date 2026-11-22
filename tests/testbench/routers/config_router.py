@@ -245,7 +245,6 @@ async def list_providers() -> dict[str, Any]:
             "suggested_models": {
                 "conversation": profile.get("conversation_model"),
                 "summary": profile.get("summary_model"),
-                "correction": profile.get("correction_model"),
                 "emotion": profile.get("emotion_model"),
                 "vision": profile.get("vision_model"),
                 "agent": profile.get("agent_model"),

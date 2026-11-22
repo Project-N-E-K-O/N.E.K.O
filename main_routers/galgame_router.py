@@ -304,12 +304,13 @@ async def generate_galgame_options(request: Request):
             "reason": "session_takeover",
         })
 
-    summary_config = await config_manager.aget_model_api_config('summary') or {}
-    api_key = (summary_config.get('api_key') or '').strip()
-    model = (summary_config.get('model') or '').strip()
-    base_url = (summary_config.get('base_url') or '').strip()
+    # The user is waiting on these options, so they use the small (emotion) tier.
+    model_config = await config_manager.aget_model_api_config('emotion') or {}
+    api_key = (model_config.get('api_key') or '').strip()
+    model = (model_config.get('model') or '').strip()
+    base_url = (model_config.get('base_url') or '').strip()
     if not model or not base_url:
-        logger.warning("Summary model/base_url not configured; returning fallback options")
+        logger.warning("Emotion model/base_url not configured; returning fallback options")
         return JSONResponse({
             "success": True,
             "options": _fallback_options(lang),
@@ -335,7 +336,7 @@ async def generate_galgame_options(request: Request):
             api_key,
             max_completion_tokens=GALGAME_OPTION_MAX_TOKENS,
             timeout=GALGAME_OPTION_TIMEOUT_SECONDS,
-            provider_type=summary_config.get('provider_type'),
+            provider_type=model_config.get('provider_type'),
         )
         async with llm:
             result = await asyncio.wait_for(
