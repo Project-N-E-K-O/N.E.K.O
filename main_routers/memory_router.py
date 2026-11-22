@@ -2638,7 +2638,10 @@ async def _proxy_memory_browser(
 def _validate_browser_character_or_400(character_name: str) -> JSONResponse | None:
     validation = validate_character_name(character_name, allow_dots=True, max_length=50)
     if not validation.ok:
-        return JSONResponse({"success": False, "error": validation.error or "Invalid character name"}, status_code=400)
+        return JSONResponse(
+            {"success": False, "error": validation.code or "Invalid character name"},
+            status_code=400,
+        )
     return None
 
 

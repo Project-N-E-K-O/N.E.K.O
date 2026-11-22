@@ -1832,8 +1832,10 @@ class TimeIndexedMemory:
     async def a_ensure_fts_table(self, lanlan_name: str) -> None:
         await asyncio.to_thread(self._ensure_fts_table, lanlan_name)
 
-    def index_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
-        """Insert a fact into the FTS5 index.
+    def index_fact(
+        self, lanlan_name: str, fact_id: str, content: str, *, replace: bool = False,
+    ) -> None:
+        """Insert (or replace when ``replace=True``) a fact in the FTS5 index.
 
         What lands in the ``content`` column is the token list from
         ``fts_tokens``, space-joined — never the raw fact text. Nothing
@@ -1849,13 +1851,19 @@ class TimeIndexedMemory:
         indexed_content = " ".join(fts_tokens(content, stop_names))
         try:
             with self.engines[lanlan_name].connect() as conn:
-                # Check for existence first.
-                result = conn.execute(
-                    text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
-                    {"fid": fact_id}
-                )
-                if result.fetchone():
-                    return  # Already indexed.
+                if replace:
+                    conn.execute(
+                        text(f"DELETE FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
+                        {"fid": fact_id}
+                    )
+                else:
+                    # Check for existence first.
+                    result = conn.execute(
+                        text(f"SELECT fact_id FROM {self.FACTS_FTS_TABLE} WHERE fact_id = :fid"),
+                        {"fid": fact_id}
+                    )
+                    if result.fetchone():
+                        return  # Already indexed.
                 conn.execute(
                     text(f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)"),
                     {"fid": fact_id, "content": indexed_content}
@@ -1864,8 +1872,10 @@ class TimeIndexedMemory:
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 索引事实失败: {e}")
 
-    async def aindex_fact(self, lanlan_name: str, fact_id: str, content: str) -> None:
-        await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content)
+    async def aindex_fact(
+        self, lanlan_name: str, fact_id: str, content: str, *, replace: bool = False,
+    ) -> None:
+        await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content, replace=replace)
 
     # ── v1 → v2 index backfill ──────────────────────────────────────────
 

@@ -41,13 +41,14 @@ from .lineage import build_full_lineage_graph
 from .star_map import build_star_map
 
 _REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # OpenAI / Anthropic / Google / generic bearer/API keys
+    # OpenAI / Anthropic / Google / generic bearer/Basic auth & API keys
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"), "[REDACTED_API_KEY]"),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"), "[REDACTED_API_KEY]"),
-    (re.compile(r"(?i)\b(bearer\s+)\S+"), r"\1[REDACTED_TOKEN]"),
+    (re.compile(r"(?i)\b((?:authorization\s*:\s*)?(?:bearer|basic)\s+)[^\s,\"']+"), r"\1[REDACTED_TOKEN]"),
+    # Quoted or unquoted simple/compound credential keys (e.g. "token": "...", access_token=..., openai_api_key: ...)
     (
         re.compile(
-            r"""(?i)\b(api[_-]?key|secret|token|password|passwd|pwd)\s*([:=])\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\])}'"]+)"""
+            r"""(?i)(?<![A-Za-z0-9_])(["']?[A-Za-z0-9_-]*?(?:api[_-]?key|secret|token|password|passwd|pwd)["']?)\s*([:=])\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\])}'"]+)"""
         ),
         r"\1\2[REDACTED]",
     ),
@@ -61,6 +62,13 @@ _REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"/(?:Users|home)/[^/\s\"']+"), "/home/[REDACTED_USER]"),
 )
 
+_SENSITIVE_DICT_KEY_RE = re.compile(
+    r"(?i)(?:^|[_-])(?:api[_-]?key|secret|access[_-]?token|refresh[_-]?token|csrf[_-]?token|auth[_-]?token|token|password|passwd|pwd|authorization|cookie|private[_-]?key)(?:$|[_-])"
+)
+_NON_SENSITIVE_TOKEN_METRIC_RE = re.compile(
+    r"(?i)(?:token[_-]?(?:count|limit|budget|max|min|usage|used|len|length)|(?:max|min|total|input|output|prompt|completion)[_-]?tokens?)$"
+)
+
 _KEEPSAKE_RAW_FILES: tuple[str, ...] = (
     "persona.json",
     "reflections.json",
@@ -69,6 +77,12 @@ _KEEPSAKE_RAW_FILES: tuple[str, ...] = (
     "user_directives.json",
     "imprint_notes_cache.json",
 )
+
+
+def _is_sensitive_dict_key(key: str) -> bool:
+    if _NON_SENSITIVE_TOKEN_METRIC_RE.search(key):
+        return False
+    return bool(_SENSITIVE_DICT_KEY_RE.search(key))
 
 
 def redact_text(text: str) -> str:
@@ -80,13 +94,20 @@ def redact_text(text: str) -> str:
 
 
 def redact_obj(obj: Any) -> Any:
-    """Recursively apply ``redact_text`` across JSON-serializable structures."""
+    """Recursively apply ``redact_text`` and sensitive-key masking across JSON-serializable structures."""
     if isinstance(obj, str):
         return redact_text(obj)
     if isinstance(obj, list):
         return [redact_obj(v) for v in obj]
     if isinstance(obj, dict):
-        return {str(k): redact_obj(v) for k, v in obj.items()}
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            ks = str(k)
+            if _is_sensitive_dict_key(ks) and isinstance(v, str) and v.strip():
+                out[ks] = "[REDACTED]"
+            else:
+                out[ks] = redact_obj(v)
+        return out
     return obj
 
 
@@ -94,6 +115,8 @@ def _render_keepsake_markdown(character_name: str, overview: dict[str, Any]) -> 
     imprint = overview.get("imprint") or {}
     stats = imprint.get("stats") or {}
     warm = imprint.get("warm_summary") or {}
+    cached_note = warm.get("cached_note") if isinstance(warm, dict) else None
+    note = cached_note if isinstance(cached_note, dict) else (warm if isinstance(warm, dict) else {})
     milestones = imprint.get("milestones") or []
     evolution = imprint.get("evolution") or []
     groups = (overview.get("memories") or {}).get("groups") or {}
@@ -109,17 +132,17 @@ def _render_keepsake_markdown(character_name: str, overview: dict[str, Any]) -> 
         "",
     ]
 
-    if warm.get("summary") or warm.get("commentary") or warm.get("blessing"):
+    if note.get("summary") or note.get("commentary") or note.get("blessing"):
         lines.append("## Relationship Note")
         lines.append("")
-        if warm.get("summary"):
-            lines.append(f"> {warm['summary']}")
+        if note.get("summary"):
+            lines.append(f"> {note['summary']}")
             lines.append("")
-        if warm.get("commentary"):
-            lines.append(str(warm["commentary"]))
+        if note.get("commentary"):
+            lines.append(str(note["commentary"]))
             lines.append("")
-        if warm.get("blessing"):
-            lines.append(f"*{warm['blessing']}*")
+        if note.get("blessing"):
+            lines.append(f"*{note['blessing']}*")
             lines.append("")
 
     section_titles = (
@@ -192,7 +215,9 @@ def build_memory_export_zip(
                 if fpath.is_file():
                     zf.writestr(f"raw/{fname}", fpath.read_bytes())
         else:
-            filename = f"{safe_char}_diagnostics_redacted_{stamp}.zip"
+            # Diagnostics filename uses a fixed non-PII prefix so raw character names
+            # (which may contain sensitive identifiers) never leak into download headers.
+            filename = f"neko_memory_diagnostics_redacted_{stamp}.zip"
             star_map = build_star_map(character_name, memory_dir=base)
             lineage_graph = build_full_lineage_graph(
                 character_name,

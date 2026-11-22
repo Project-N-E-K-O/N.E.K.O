@@ -2,6 +2,7 @@
 """Unit tests for Memory Browser Phase 1: analytics imprint, 6-axis diagnostics, and manual corrections."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta
@@ -320,7 +321,7 @@ async def test_manual_persona_reflection_fact_and_directive_mutations(tmp_path: 
         edited = await pm.aedit_persona_entry(char_name, "master", "prom_1", "主人喜欢喝拿铁")
         assert edited is not None
         assert edited["text"] == "主人喜欢喝拿铁"
-        assert "embedding" not in edited
+        assert not edited.get("embedding")
         assert len(edited["version_history"]) == 1
         assert edited["version_history"][0]["text"] == "主人喜欢黑咖啡"
 
@@ -951,3 +952,254 @@ async def test_greptile_regression_guards_replay_stale_sha_and_correction_id(tmp
         archived = json.loads((char_dir / "facts_archive.json").read_text(encoding="utf-8"))
         assert archived and archived[0].get("arbitration_archived_at")
         assert archived[0].get("arbitration_reason") == "manual_forget"
+
+
+@pytest.mark.asyncio
+async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path: Path):
+    """Cover Round-2 fixes: fact/persona/reflection merge atomicity, archive snapshots,
+    permanent suppression metadata, keepsake cached_note, diagnostics redaction,
+    directive TTL renewal, external_import hash+FTS, correction keep_new, and 400 validation."""
+    import io
+    import zipfile
+
+    from main_routers.memory_router import _validate_browser_character_or_400
+    from memory.analytics.export import build_memory_export_zip, redact_obj
+    from memory.analytics.snapshots import acreate_snapshot, arestore_snapshot
+
+    cm = _FakeConfigManager(tmp_path)
+    char_name = "小橘"
+    char_dir = cm.memory_dir / char_name
+    char_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Invalid character name returns HTTP 400 (not AttributeError 500)
+    bad_resp = _validate_browser_character_or_400("bad/name")
+    assert bad_resp is not None and bad_resp.status_code == 400
+    empty_resp = _validate_browser_character_or_400("")
+    assert empty_resp is not None and empty_resp.status_code == 400
+
+    # 2. Snapshot create -> forget fact + archive persona -> restore rolls back BOTH live & archive
+    _write_json(
+        char_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {"id": "p_keep", "text": "喜欢听爵士乐", "source": "reflection"},
+                    {"id": "p_drop", "text": "很喜欢听爵士音乐", "source": "reflection"},
+                    {
+                        "id": "p_retired",
+                        "text": "内省已退役的旧印象",
+                        "source": "reflection",
+                        "permanent_suppression": {"at": "2026-01-01T00:00:00", "reason": "redundant"},
+                    },
+                ]
+            }
+        },
+    )
+    _write_json(
+        char_dir / "reflections.json",
+        [
+            {"id": "r_keep", "entity": "master", "text": "爱去海边", "status": "promoted"},
+            {"id": "r_drop", "entity": "master", "text": "喜欢去海边散步", "status": "promoted"},
+        ],
+    )
+    _write_json(
+        char_dir / "facts.json",
+        [
+            {
+                "id": "f_keep",
+                "entity": "master",
+                "text": "周六买了咖啡豆",
+                "external_import": {"section": "daily", "event_date": "2026-05-01"},
+            },
+            {"id": "f_drop", "entity": "master", "text": "周六买了一包咖啡豆"},
+        ],
+    )
+    _write_json(
+        char_dir / "persona_corrections.json",
+        [
+            {"correction_id": "c_1", "entity": "master", "old_text": "喜欢听爵士乐", "new_text": "现在更喜欢古典乐"},
+            {"old_text": "旧无实体条目", "new_text": "新无实体条目"},
+        ],
+    )
+
+    # Permanent suppression must stay distinct from temporary suppress in overview
+    ov = build_memory_overview(char_name, memory_dir=cm.memory_dir)
+    retired_cards = [c for c in ov["memories"]["suppressed"] if c["id"] == "p_retired"]
+    assert len(retired_cards) == 1
+    assert retired_cards[0]["permanent_suppression"] is True
+    assert retired_cards[0]["suppress"] is False
+
+    ev_log = EventLog(memory_dir=str(cm.memory_dir))
+    fake_timeindex = MagicMock()
+    fake_timeindex.aindex_fact = AsyncMock()
+    fake_timeindex.adelete_fact_from_index = AsyncMock()
+
+    with (
+        patch("memory.persona.manager.get_config_manager", return_value=cm),
+        patch("memory.persona.persistence.assert_cloudsave_writable"),
+        patch("memory.persona.facts.assert_cloudsave_writable"),
+        patch("memory.persona.corrections.assert_cloudsave_writable"),
+        patch("memory.reflection.persistence.assert_cloudsave_writable"),
+        patch("memory.reflection.evidence_flow.assert_cloudsave_writable"),
+        patch("memory.facts.get_config_manager", return_value=cm),
+        patch("memory.facts.assert_cloudsave_writable"),
+        patch("memory.analytics.snapshots.assert_cloudsave_writable"),
+        patch("memory.user_directives.get_config_manager", return_value=cm),
+    ):
+        pm = PersonaManager(event_log=ev_log)
+        pm._config_manager = cm
+        fs = FactStore(time_indexed_memory=fake_timeindex)
+        fs._config_manager = cm
+        re_eng = ReflectionEngine(fact_store=fs, persona_manager=pm, event_log=ev_log)
+        re_eng._config_manager = cm
+
+        # Create safety checkpoint BEFORE mutations
+        snap = await acreate_snapshot(char_name, label="pre-ops", config_manager=cm)
+
+        # Oversized merged_text (>1000 chars) fails WITHOUT archiving drop_id for all 3 kinds
+        too_long = "长" * 1005
+        with pytest.raises(ValueError):
+            await pm.amerge_persona_entries(char_name, "master", "p_keep", "p_drop", too_long)
+        with pytest.raises(ValueError):
+            await re_eng.amerge_reflections(char_name, "r_keep", "r_drop", too_long)
+        with pytest.raises(ValueError):
+            await fs.amerge_facts_manual(char_name, "f_keep", "f_drop", too_long)
+        assert len((await pm.aensure_persona(char_name))["master"]["facts"]) == 3
+        assert len(await re_eng._aload_reflections_full(char_name)) == 2
+        assert len(await fs.aload_facts(char_name)) == 2
+
+        # Daily external_import fact edit preserves date-salted hash & refreshes FTS with replace=True
+        edited_daily = await fs.aedit_fact_manual(char_name, "f_keep", "周六买了埃塞俄比亚豆")
+        expected_daily_hash = hashlib.sha256("2026-05-01\n周六买了埃塞俄比亚豆".encode()).hexdigest()[:16]
+        assert edited_daily is not None and edited_daily["hash"] == expected_daily_hash
+        fake_timeindex.aindex_fact.assert_awaited_with(char_name, "f_keep", "周六买了埃塞俄比亚豆", replace=True)
+
+        # Valid merges across fact, persona, and promoted reflection all succeed
+        merged_fact = await fs.amerge_facts_manual(char_name, "f_keep", "f_drop", "周六买了精品咖啡豆")
+        assert merged_fact is not None and merged_fact["text"] == "周六买了精品咖啡豆"
+        assert [f["id"] for f in await fs.aload_facts(char_name)] == ["f_keep"]
+        assert (char_dir / "facts_archive.json").is_file()
+
+        merged_persona = await pm.amerge_persona_entries(char_name, "master", "p_keep", "p_drop", "很喜欢听爵士乐")
+        assert merged_persona["text"] == "很喜欢听爵士乐"
+        assert (char_dir / "persona_archive").is_dir()
+
+        merged_refl = await re_eng.amerge_reflections(char_name, "r_keep", "r_drop", "喜欢去海边散步")
+        assert merged_refl["text"] == "喜欢去海边散步"
+        assert (char_dir / "reflection_archive").is_dir()
+
+        # Restore checkpoint: forgotten/merged facts & persona/reflection shards must NOT remain duplicated
+        await arestore_snapshot(
+            char_name,
+            snap["snapshot_id"],
+            config_manager=cm,
+            persona_manager=pm,
+            fact_store=fs,
+            reflection_engine=re_eng,
+        )
+        restored_facts = await fs.aload_facts(char_name)
+        assert {f["id"] for f in restored_facts} == {"f_keep", "f_drop"}
+        assert not (char_dir / "facts_archive.json").exists()
+        assert not list((char_dir / "persona_archive").glob("*.json"))
+        assert not list((char_dir / "reflection_archive").glob("*.json"))
+
+        # Snapshot manifest missing `files` list is rejected without deleting live files
+        bad_snap_dir = char_dir / "browser_snapshots" / "snap_bad_manifest"
+        bad_snap_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(bad_snap_dir / "meta.json", {"snapshot_id": "snap_bad_manifest", "label": "corrupt"})
+        with pytest.raises(ValueError):
+            await arestore_snapshot(
+                char_name, "snap_bad_manifest", config_manager=cm, fact_store=fs,
+            )
+        assert (char_dir / "facts.json").is_file()
+
+        # Direct manual correction resolve (keep_new) + legacy entry without entity
+        r1 = await pm.aresolve_correction_manual(char_name, 0, "keep_new", correction_id="c_1")
+        assert r1["remaining_corrections"] == 1
+        r2 = await pm.aresolve_correction_manual(char_name, 0, "keep_new")
+        assert r2["remaining_corrections"] == 0
+
+        # UserDirectives renewal preserves extended TTL (> base 3-day TTL)
+        dm = UserDirectivesManager()
+        base_ts = 1_700_000_000.0
+        for step in range(4):
+            dm.record(char_name, locale="zh", kind="ban_topic", term="考试", now=base_ts + step)
+        before_exp = dm.get_active(char_name, now=base_ts + 5)[0]["expire_at"]
+        renewed = await dm.arecord(char_name, locale="zh", kind="ban_topic", term="考试", now=base_ts + 10)
+        assert renewed["hit_count"] == 5
+        assert renewed["expire_at"] >= before_exp
+
+    # 3. Keepsake OUR_MEMORIES.md renders cached Relationship Note & remains unredacted;
+    #    Diagnostics ZIP scrubs all credential variants + uses non-PII filename
+    phone_char = "13812345678"
+    p_dir = cm.memory_dir / phone_char
+    p_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        p_dir / "imprint_notes_cache.json",
+        {
+            "summary": "你们之间有着默契的陪伴。",
+            "commentary": "从咖啡聊到音乐，记忆越来越深。",
+            "blessing": "愿你们继续同行。",
+            "generated_at": "2026-05-02T10:00:00",
+            "language": "zh-CN",
+        },
+    )
+    _write_json(
+        p_dir / "persona.json",
+        {
+            "master": {
+                "facts": [
+                    {
+                        "id": "p_sec",
+                        "text": (
+                            'Remember "token": "opaque_quoted_tok_111", '
+                            'token="opaque_unquoted_tok_222", '
+                            'access_token=ghp_access_secret_333, '
+                            'refresh_token=rf_secret_444, '
+                            'csrf_token=csrf_secret_555, '
+                            'openai_api_key=oai_secret_666, '
+                            '"access_token": "quoted_compound_777", '
+                            'Authorization: Basic dXNlcjpwYXNzODg4'
+                        ),
+                        "source": "reflection",
+                    }
+                ]
+            }
+        },
+    )
+
+    ks_bytes, ks_name = build_memory_export_zip(phone_char, mode="keepsake", memory_dir=cm.memory_dir)
+    assert phone_char in ks_name
+    with zipfile.ZipFile(io.BytesIO(ks_bytes)) as zf:
+        md = zf.read("OUR_MEMORIES.md").decode("utf-8")
+        assert "## Relationship Note" in md
+        assert "你们之间有着默契的陪伴。" in md
+        assert "愿你们继续同行。" in md
+        assert "opaque_quoted_tok_111" in md  # keepsake intentionally unredacted
+
+    diag_bytes, diag_name = build_memory_export_zip(phone_char, mode="diagnostics", memory_dir=cm.memory_dir)
+    assert phone_char not in diag_name
+    with zipfile.ZipFile(io.BytesIO(diag_bytes)) as zf:
+        all_diag_text = "\n".join(zf.read(n).decode("utf-8", errors="replace") for n in zf.namelist())
+        for secret_val in (
+            "opaque_quoted_tok_111",
+            "opaque_unquoted_tok_222",
+            "ghp_access_secret_333",
+            "rf_secret_444",
+            "csrf_secret_555",
+            "oai_secret_666",
+            "quoted_compound_777",
+            "dXNlcjpwYXNzODg4",
+            phone_char,
+        ):
+            assert secret_val not in all_diag_text
+
+    # Structured credential fields in nested dicts are also redacted while preserving token counts
+    redacted_struct = redact_obj({
+        "access_token": "nested_secret_999",
+        "nested": {"api_key": "nested_key_000", "token_count": 42, "label": "normal text"},
+    })
+    assert redacted_struct["access_token"] == "[REDACTED]"
+    assert redacted_struct["nested"]["api_key"] == "[REDACTED]"
+    assert redacted_struct["nested"]["token_count"] == 42
+    assert redacted_struct["nested"]["label"] == "normal text"

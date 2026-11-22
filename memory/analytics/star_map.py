@@ -51,7 +51,7 @@ from utils.file_utils import atomic_write_json_async
 from utils.language_utils import get_global_language_full, normalize_language_code
 from utils.llm_client import create_chat_llm_async
 from utils.logger_config import get_module_logger
-from utils.tokenize import truncate_to_tokens
+from utils.tokenize import count_tokens, truncate_to_tokens
 from utils.token_tracker import set_call_type
 
 from .imprint import _CORE_ENTITIES, _META_ENTITY, _read_json_safe, _strength_level, _text_bigrams
@@ -528,20 +528,24 @@ async def alabel_star_map_clusters(
         target=f"memory/{character_name}/{_STAR_MAP_CACHE_FILENAME}",
     )
 
-    lines: list[str] = []
-    for c in clusters:
-        cid = c["id"]
-        samples = " ; ".join(str(s) for s in (c.get("samples") or [])[:4])
-        lines.append(f'"{cid}": {samples}')
-    clusters_block = truncate_to_tokens("\n".join(lines), STAR_MAP_LABEL_INPUT_MAX_TOKENS)
-
     raw_lang = language or get_global_language_full()
     full_lang = normalize_language_code(raw_lang, format="full")
     prompt_lang = "zh-TW" if full_lang == "zh-TW" else normalize_language_code(full_lang, format="short")
 
     template = get_star_map_cluster_label_prompt(prompt_lang)
+    # Reserve budget for the entire template (including trailing JSON constraints) first
+    # and truncate ONLY clusters_block so output format instructions are never clipped.
+    template_tokens = count_tokens(template.replace("{CLUSTERS}", ""))
+    clusters_budget = max(64, STAR_MAP_LABEL_INPUT_MAX_TOKENS - template_tokens - 32)
+
+    lines: list[str] = []
+    for c in clusters:
+        cid = c["id"]
+        samples = " ; ".join(str(s) for s in (c.get("samples") or [])[:4])
+        lines.append(f'"{cid}": {samples}')
+    clusters_block = truncate_to_tokens("\n".join(lines), clusters_budget)
+
     prompt = template.replace("{CLUSTERS}", clusters_block)
-    prompt = truncate_to_tokens(prompt, STAR_MAP_LABEL_INPUT_MAX_TOKENS)
 
     api_config = await cm.aget_model_api_config("summary")
     set_call_type("star_map_cluster_labels")

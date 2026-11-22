@@ -29,7 +29,6 @@ import asyncio
 import hashlib
 import json
 import math
-import os
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -502,7 +501,13 @@ def build_memory_overview(
                     duplicate_ids.append(eid)
                 persona_ids_seen.add(eid)
             is_protected = bool(entry.get("protected")) or entry.get("source") == "character_card"
-            is_perm_suppressed = bool(entry.get("permanent_suppression"))
+            perm_marker = entry.get("permanent_suppression")
+            is_perm_suppressed = bool(perm_marker)
+            retirement_reason = (
+                str(perm_marker.get("reason") or "")
+                if isinstance(perm_marker, dict)
+                else ""
+            )
             score = evidence_score(entry, now_dt)
             rein_count = int(entry.get("user_fact_reinforce_count") or 0)
             vh = entry.get("version_history") if isinstance(entry.get("version_history"), list) else []
@@ -520,8 +525,9 @@ def build_memory_overview(
                 "source": str(entry.get("source") or "unknown"),
                 "protected": is_protected,
                 "user_pinned": bool(entry.get("user_pinned")),
-                "suppress": bool(entry.get("suppress")) or is_perm_suppressed,
+                "suppress": bool(entry.get("suppress")),
                 "permanent_suppression": is_perm_suppressed,
+                "retirement_reason": retirement_reason,
                 "suppressed_at": entry.get("suppressed_at"),
                 "strength": _strength_level(score, rein_count),
                 "reinforce_count": rein_count,
@@ -734,11 +740,9 @@ def build_memory_overview(
 
     # Contribute non-protected persona entries into the radar chart so users with
     # persona impressions (even before reflections carry relation_type) see a rich shape.
-    for entry in persona_all_non_protected:
-        ent = str(entry.get("_entity") or "")
-        # fallback entity from bucket placement
-    dim_counts["preferences"] += max(0, len([x for x in about_you if x["kind"] == "persona"]) // 2)
-    dim_counts["personality"] += max(0, len([x for x in about_you if x["kind"] == "persona"]) - (len([x for x in about_you if x["kind"] == "persona"]) // 2))
+    master_persona_count = len([x for x in about_you if x["kind"] == "persona"])
+    dim_counts["preferences"] += max(0, master_persona_count // 2)
+    dim_counts["personality"] += max(0, master_persona_count - (master_persona_count // 2))
     dim_counts["shared_memories"] += len([x for x in relationship_items if x["kind"] == "persona"])
     dim_counts["growth"] += len([x for x in growth_items if x["kind"] == "persona"])
 
@@ -756,6 +760,7 @@ def build_memory_overview(
                 "index": idx,
                 "correction_id": str(item.get("correction_id") or "").strip(),
                 "entity": str(item.get("entity") or "master"),
+                "scope": str(item.get("scope") or ""),
                 "old_text": old_text,
                 "new_text": new_text,
                 "queued_at": item.get("queued_at") or item.get("created_at"),

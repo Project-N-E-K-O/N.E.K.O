@@ -1221,6 +1221,9 @@ class CorrectionsMixin:
         correction_id: str | None = None,
         expected_old_text: str | None = None,
         expected_new_text: str | None = None,
+        expected_entity: str | None = None,
+        expected_scope: str | None = None,
+        expected_queued_at: str | None = None,
     ) -> dict:
         """Manually resolve one pending persona correction from the UI.
 
@@ -1229,9 +1232,37 @@ class CorrectionsMixin:
         never apply the user's decision to a shifted index.
         """
         from config import PERSONA_VERSION_HISTORY_MAX
+        from memory.scopes import (
+            SCOPED_PERSONA_PREFIX,
+            MemoryScopeError,
+            MemorySubject,
+            entry_matches_subject,
+            subject_from_entry,
+        )
 
         if action not in ("keep_new", "keep_old", "merge", "keep_both"):
             raise ValueError(f"Unsupported correction action: {action}")
+
+        def _legacy_matches(cand: object) -> bool:
+            if not isinstance(cand, dict):
+                return False
+            if str(cand.get("old_text") or "").strip() != str(expected_old_text or "").strip():
+                return False
+            if str(cand.get("new_text") or "").strip() != str(expected_new_text or "").strip():
+                return False
+            if expected_entity is not None:
+                cand_entity = str(cand.get("entity") or "master").strip() or "master"
+                if cand_entity != str(expected_entity).strip():
+                    return False
+            if expected_scope is not None:
+                cand_scope = str(cand.get("scope") or "").strip()
+                if cand_scope != str(expected_scope).strip():
+                    return False
+            if expected_queued_at is not None:
+                cand_ts = str(cand.get("queued_at") or cand.get("created_at") or "").strip()
+                if cand_ts != str(expected_queued_at).strip():
+                    return False
+            return True
 
         async with self._get_resolve_alock(name):
             async with self._get_alock(name):
@@ -1246,23 +1277,15 @@ class CorrectionsMixin:
                     if resolved_idx is None:
                         raise LookupError(f"Correction already resolved or removed: {cid}")
                 elif expected_old_text is not None or expected_new_text is not None:
-                    exp_old = str(expected_old_text or "").strip()
-                    exp_new = str(expected_new_text or "").strip()
                     if (
                         correction_index is not None
                         and 0 <= correction_index < len(corrections)
-                        and isinstance(corrections[correction_index], dict)
-                        and str(corrections[correction_index].get("old_text") or "").strip() == exp_old
-                        and str(corrections[correction_index].get("new_text") or "").strip() == exp_new
+                        and _legacy_matches(corrections[correction_index])
                     ):
                         resolved_idx = correction_index
                     else:
                         for idx, cand in enumerate(corrections):
-                            if (
-                                isinstance(cand, dict)
-                                and str(cand.get("old_text") or "").strip() == exp_old
-                                and str(cand.get("new_text") or "").strip() == exp_new
-                            ):
+                            if _legacy_matches(cand):
                                 resolved_idx = idx
                                 break
                     if resolved_idx is None:
@@ -1275,10 +1298,31 @@ class CorrectionsMixin:
                 item = corrections[resolved_idx]
                 correction_index = resolved_idx
                 raw_entity = item.get("entity")
-                if not isinstance(raw_entity, str) or not raw_entity.strip():
+                if raw_entity is None or (isinstance(raw_entity, str) and not raw_entity.strip()):
+                    # Legacy queue entries without entity default to "master" to match overview rendering.
+                    entity = "master"
+                elif isinstance(raw_entity, str):
+                    entity = raw_entity.strip()
+                else:
                     raise ValueError("Correction item has invalid entity")
-                entity = raw_entity.strip()
+
                 item_subject = subject_from_entry(item)
+                if item_subject is None and entity.startswith(SCOPED_PERSONA_PREFIX):
+                    section_key_body = entity[len(SCOPED_PERSONA_PREFIX):]
+                    kind, sep, subject_id = section_key_body.partition(":")
+                    if not sep or not kind or not subject_id:
+                        raise ValueError("Scoped correction item has invalid subject entity")
+                    try:
+                        item_subject = MemorySubject.create(
+                            kind,
+                            subject_id,
+                            scope=item.get("scope") or section_key_body,
+                        )
+                    except MemoryScopeError as exc:
+                        raise ValueError(f"Scoped correction subject invalid: {exc}") from exc
+                elif item_subject is None and entity not in ("master", "neko", "relationship"):
+                    raise ValueError(f"Correction item has unsupported entity: {entity}")
+
                 item_cid = str(item.get("correction_id") or "").strip()
                 old_text = str(item.get("old_text") or "").strip()
                 new_text = str(item.get("new_text") or "").strip()
@@ -1294,6 +1338,29 @@ class CorrectionsMixin:
                         return not (isinstance(entry_obj, dict) and subject_from_entry(entry_obj) is not None)
                     return isinstance(entry_obj, dict) and entry_matches_subject(entry_obj, item_subject)
 
+                def _has_applied_cid(entry_obj: object, target_cid: str) -> bool:
+                    if not isinstance(entry_obj, dict) or not target_cid:
+                        return False
+                    if entry_obj.get("applied_correction_id") == target_cid:
+                        return True
+                    applied_list = entry_obj.get("applied_correction_ids")
+                    return isinstance(applied_list, list) and target_cid in applied_list
+
+                def _record_applied_cid(entry_obj: dict, target_cid: str) -> None:
+                    if not target_cid:
+                        return
+                    ids = [
+                        str(x) for x in (entry_obj.get("applied_correction_ids") or [])
+                        if isinstance(x, str) and x
+                    ]
+                    prev_single = entry_obj.get("applied_correction_id")
+                    if isinstance(prev_single, str) and prev_single and prev_single not in ids:
+                        ids.append(prev_single)
+                    if target_cid not in ids:
+                        ids.append(target_cid)
+                    entry_obj["applied_correction_ids"] = ids[-32:]
+                    entry_obj["applied_correction_id"] = target_cid
+
                 def _make_entry(text_val: str) -> dict:
                     raw = {
                         "id": f"manual_{uuid.uuid4().hex[:8]}",
@@ -1302,7 +1369,7 @@ class CorrectionsMixin:
                         "created_at": now_iso,
                     }
                     if item_cid:
-                        raw["applied_correction_id"] = item_cid
+                        _record_applied_cid(raw, item_cid)
                     if item_subject is not None:
                         raw.update(item_subject.as_entry_fields())
                     return self._normalize_entry(raw)
@@ -1310,9 +1377,7 @@ class CorrectionsMixin:
                 already_applied = bool(
                     item_cid
                     and any(
-                        isinstance(e, dict)
-                        and e.get("applied_correction_id") == item_cid
-                        and _matches_scope(e)
+                        _has_applied_cid(e, item_cid) and _matches_scope(e)
                         for e in section_facts
                     )
                 )
@@ -1357,7 +1422,7 @@ class CorrectionsMixin:
                                 existing["text"] = replacement_text
                                 existing["version_history"] = prior[-PERSONA_VERSION_HISTORY_MAX:]
                                 if item_cid:
-                                    existing["applied_correction_id"] = item_cid
+                                    _record_applied_cid(existing, item_cid)
                                 self._invalidate_token_count_cache(existing)
                                 self._invalidate_embedding_cache(existing)
                                 section_facts[idx] = self._normalize_entry(existing)

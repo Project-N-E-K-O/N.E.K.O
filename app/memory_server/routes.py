@@ -8417,6 +8417,9 @@ class _BrowserCorrectionResolveRequest(BaseModel):
     correction_id: str | None = None
     expected_old_text: str | None = None
     expected_new_text: str | None = None
+    expected_entity: str | None = None
+    expected_scope: str | None = None
+    expected_queued_at: str | None = None
     action: Literal["keep_new", "keep_old", "merge", "keep_both"]
     merged_text: str | None = None
 
@@ -8441,7 +8444,7 @@ class _BrowserFactArchiveRequest(BaseModel):
 
 class _BrowserDuplicateMergeRequest(BaseModel):
     character_name: str
-    kind: Literal["persona", "reflection"]
+    kind: Literal["persona", "reflection", "fact"]
     entity: str
     keep_id: str
     drop_id: str
@@ -8574,7 +8577,7 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                 "text": str(item.get("text") or "").strip(),
                 "status": item.get("status"),
                 "archived": is_archived_hit,
-                "protected": is_archived_hit,
+                "protected": False,
                 "created_at": item.get("created_at"),
                 "score": float(item.get("score") or 0.0),
             })
@@ -8598,8 +8601,8 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                             "created_at": r.get("created_at"),
                             "score": 0.8,
                         })
-            except Exception:
-                pass
+            except Exception as refl_exc:
+                logger.debug("[MemoryBrowser] reflection fallback search skipped: %s", refl_exc)
         if runtime.fact_store is not None:
             try:
                 facts = await runtime.fact_store.aload_facts(name)
@@ -8616,8 +8619,8 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                             "created_at": f.get("created_at"),
                             "score": 0.7,
                         })
-            except Exception:
-                pass
+            except Exception as fact_exc:
+                logger.debug("[MemoryBrowser] fact fallback search skipped: %s", fact_exc)
 
     return {"success": True, "results": results[:top_k]}
 
@@ -8705,11 +8708,14 @@ async def browser_resolve_correction(request: _BrowserCorrectionResolveRequest):
             correction_id=request.correction_id,
             expected_old_text=request.expected_old_text,
             expected_new_text=request.expected_new_text,
+            expected_entity=request.expected_entity,
+            expected_scope=request.expected_scope,
+            expected_queued_at=request.expected_queued_at,
         )
-    except LookupError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
     except (IndexError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return {"success": True, **res}
 
 
@@ -8763,17 +8769,30 @@ async def browser_archive_fact(request: _BrowserFactArchiveRequest):
 async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
     name = validate_lanlan_name(request.character_name)
     merged = str(request.merged_text or "").strip()
-    if not merged:
-        raise HTTPException(status_code=400, detail="merged_text cannot be empty")
+    if not merged or len(merged) > 1000:
+        raise HTTPException(status_code=400, detail="merged_text must be 1..1000 chars")
     if request.keep_id == request.drop_id:
         raise HTTPException(status_code=400, detail="keep_id and drop_id must differ")
+
+    async def _take_pre_merge_snapshot() -> None:
+        try:
+            from memory.analytics import acreate_snapshot
+            await acreate_snapshot(
+                name,
+                label="Before duplicate merge",
+                reason="pre_merge",
+                config_manager=runtime._config_manager,
+            )
+        except MaintenanceModeError:
+            raise
+        except Exception as exc:
+            logger.debug("[MemoryBrowser] pre-merge snapshot skipped for %s: %s", name, exc)
 
     if request.kind == "persona":
         if runtime.persona_manager is None:
             raise HTTPException(status_code=503, detail="PersonaManager not ready")
-        # Verify BOTH keep_id and drop_id exist and are non-protected BEFORE taking
-        # a snapshot or mutating either entry.
-        persona_view = await runtime.persona_manager.aload_persona(name)
+        # Fast pre-check before taking a snapshot; atomic re-validation runs under manager lock.
+        persona_view = await runtime.persona_manager.aensure_persona(name)
         section = persona_view.get(request.entity) if isinstance(persona_view, dict) else None
         facts_list = section.get("facts", []) if isinstance(section, dict) else []
         by_id = {
@@ -8793,67 +8812,66 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
         ):
             raise HTTPException(status_code=403, detail="Character card entries are protected")
 
+        await _take_pre_merge_snapshot()
         try:
-            from memory.analytics import acreate_snapshot
-            await acreate_snapshot(
-                name,
-                label="Before duplicate merge",
-                reason="pre_merge",
-                config_manager=runtime._config_manager,
-            )
-        except MaintenanceModeError:
-            raise
-        except Exception as exc:
-            logger.debug("[MemoryBrowser] pre-merge snapshot skipped for %s: %s", name, exc)
-
-        dropped = await runtime.persona_manager.aarchive_persona_entry(
-            name, request.entity, request.drop_id,
-        )
-        if not dropped:
-            raise HTTPException(status_code=409, detail="drop_id was already removed")
-        try:
-            updated = await runtime.persona_manager.aedit_persona_entry(
-                name, request.entity, request.keep_id, merged,
+            updated = await runtime.persona_manager.amerge_persona_entries(
+                name, request.entity, request.keep_id, request.drop_id, merged,
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        if updated is None:
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {"success": True, "kept": updated, "dropped": True}
+
+    if request.kind == "fact":
+        if runtime.fact_store is None:
+            raise HTTPException(status_code=503, detail="FactStore not ready")
+        facts = await runtime.fact_store.aload_facts(name)
+        fact_ids = {str(f.get("id") or "") for f in facts if isinstance(f, dict)}
+        if request.keep_id not in fact_ids:
             raise HTTPException(status_code=404, detail="keep_id not found")
-        return {"success": True, "kept": updated, "dropped": dropped}
+        if request.drop_id not in fact_ids:
+            raise HTTPException(status_code=404, detail="drop_id not found")
+
+        await _take_pre_merge_snapshot()
+        try:
+            updated = await runtime.fact_store.amerge_facts_manual(
+                name, request.keep_id, request.drop_id, merged,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {"success": True, "kept": updated, "dropped": True}
 
     if runtime.reflection_engine is None:
         raise HTTPException(status_code=503, detail="ReflectionEngine not ready")
-    refls = await runtime.reflection_engine.aload_reflections(name, include_archived=False)
-    refl_ids = {str(r.get("id") or "") for r in refls if isinstance(r, dict)}
-    if request.keep_id not in refl_ids:
+    # Include pending, confirmed, AND promoted reflections (matching overview duplicate pairs).
+    refls = await runtime.reflection_engine._aload_reflections_full(name)
+    eligible_ids = {
+        str(r.get("id") or "")
+        for r in refls
+        if isinstance(r, dict) and str(r.get("status") or "pending") not in ("archived", "merged", "denied")
+    }
+    if request.keep_id not in eligible_ids:
         raise HTTPException(status_code=404, detail="keep_id not found")
-    if request.drop_id not in refl_ids:
+    if request.drop_id not in eligible_ids:
         raise HTTPException(status_code=404, detail="drop_id not found")
 
+    await _take_pre_merge_snapshot()
     try:
-        from memory.analytics import acreate_snapshot
-        await acreate_snapshot(
-            name,
-            label="Before duplicate merge",
-            reason="pre_merge",
-            config_manager=runtime._config_manager,
+        updated = await runtime.reflection_engine.amerge_reflections(
+            name, request.keep_id, request.drop_id, merged,
         )
-    except MaintenanceModeError:
-        raise
-    except Exception as exc:
-        logger.debug("[MemoryBrowser] pre-merge snapshot skipped for %s: %s", name, exc)
-
-    dropped = await runtime.reflection_engine.aarchive_reflection(name, request.drop_id)
-    if not dropped:
-        raise HTTPException(status_code=409, detail="drop_id was already removed")
-    updated = await runtime.reflection_engine.amanual_review_reflection(
-        name, request.keep_id, "edit", edited_text=merged,
-    )
-    if updated is None:
-        raise HTTPException(status_code=404, detail="keep_id not found")
-    return {"success": True, "kept": updated, "dropped": dropped}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"success": True, "kept": updated, "dropped": True}
 
 
 @app.post("/internal/memory/browser/directive/add")

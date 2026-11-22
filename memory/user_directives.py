@@ -323,6 +323,7 @@ class UserDirectivesManager:
         term: str,
         source: str = "regex",
         now: Optional[float] = None,
+        raise_on_error: bool = False,
     ) -> Dict[str, Any]:
         """Register a directive; an existing ``(kind, term.casefold())`` hit refreshes it.
 
@@ -345,6 +346,8 @@ class UserDirectivesManager:
         key = (kind, term.casefold())
         with self._get_lock(name):
             entries = self._load_unlocked(name)
+            prev = [dict(e) for e in entries] if raise_on_error else None
+            target: Optional[Dict[str, Any]] = None
             for e in entries:
                 if (e["kind"], e["term"].casefold()) == key:
                     hits = int(e.get("hit_count", 1)) + 1
@@ -354,29 +357,29 @@ class UserDirectivesManager:
                     # not wait for another future hit.
                     e["expire_at"] = ts + _effective_ttl(hits)
                     e["hit_count"] = hits
-                    # Keep first-hit locale as the more diagnostic signal.
-                    # Rotate refreshed entries too; legacy files predate caps and may contain
-                    # hundreds of entries. Users only repeating old directives never reach
-                    # insertion branches, so without rotation here files never shrink,
-                    # and each record still fully reads/writes them synchronously
-                    # on every user-message chain.
-                    self._rotate_unlocked(name, now=ts)
-                    self._save_unlocked(name)
-                    return self._report_if_kept(name, e)
-            new_entry = {
-                "term": term,
-                "kind": kind,
-                "locale": locale,
-                "created_at": ts,
-                "last_seen_at": ts,
-                "expire_at": ts + _effective_ttl(1),
-                "hit_count": 1,
-                "source": source,
-            }
-            entries.append(new_entry)
+                    target = e
+                    break
+            if target is None:
+                target = {
+                    "term": term,
+                    "kind": kind,
+                    "locale": locale or "zh",
+                    "created_at": ts,
+                    "last_seen_at": ts,
+                    "expire_at": ts + _effective_ttl(1),
+                    "hit_count": 1,
+                    "source": source,
+                }
+                entries.append(target)
+            # Rotate both refreshed and newly inserted entries to enforce storage cap.
             self._rotate_unlocked(name, now=ts)
-            self._save_unlocked(name)
-            return self._report_if_kept(name, new_entry)
+            try:
+                self._save_unlocked(name, raise_on_error=raise_on_error)
+            except Exception:
+                if prev is not None:
+                    self._cache[name] = prev
+                raise
+            return self._report_if_kept(name, target)
 
     def _report_if_kept(
         self, name: str, entry: Dict[str, Any],
@@ -597,57 +600,6 @@ class UserDirectivesManager:
         import asyncio
         return await asyncio.to_thread(self.get_active, name, now=now, limit=limit)
 
-    def _record_strict(
-        self,
-        name: str,
-        *,
-        locale: str,
-        kind: str,
-        term: str,
-        source: str = "manual",
-        now: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        if not name:
-            return {}
-        term_norm = _normalize_term(term)
-        if term_norm is None:
-            return {}
-        ts = float(now if now is not None else _now())
-        key = (kind, term_norm.casefold())
-        with self._get_lock(name):
-            entries = self._load_unlocked(name)
-            prev = [dict(e) for e in entries]
-            matched: Optional[Dict[str, Any]] = None
-            for e in entries:
-                if (e.get("kind"), str(e.get("term", "")).casefold()) == key:
-                    matched = e
-                    break
-            if matched is not None:
-                matched["last_seen_at"] = ts
-                matched["expire_at"] = ts + USER_DIRECTIVE_TTL_SECONDS
-                matched["hit_count"] = int(matched.get("hit_count", 1)) + 1
-                result = dict(matched)
-            else:
-                entry: Dict[str, Any] = {
-                    "term": term_norm,
-                    "kind": kind,
-                    "locale": locale or "zh",
-                    "created_at": ts,
-                    "last_seen_at": ts,
-                    "expire_at": ts + USER_DIRECTIVE_TTL_SECONDS,
-                    "hit_count": 1,
-                    "source": source or "manual",
-                }
-                entries.append(entry)
-                result = dict(entry)
-            try:
-                self._save_unlocked(name, raise_on_error=True)
-            except Exception:
-                self._cache[name] = prev
-                raise
-        self.mark_pending_injection(name)
-        return result
-
     async def arecord(
         self,
         name: str,
@@ -659,15 +611,19 @@ class UserDirectivesManager:
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
         import asyncio
-        return await asyncio.to_thread(
-            self._record_strict,
+        result = await asyncio.to_thread(
+            self.record,
             name,
             locale=locale,
             kind=kind,
             term=term,
             source=source,
             now=now,
+            raise_on_error=True,
         )
+        if result:
+            self.mark_pending_injection(name)
+        return result
 
     async def aremove(self, name: str, term: str) -> bool:
         import asyncio

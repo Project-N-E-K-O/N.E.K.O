@@ -162,7 +162,6 @@ def _collect_candidate_pairs_sync(
             b = items[j]
             if a["entity"] != b["entity"]:
                 continue
-            sim = 0.0
             if a["vec"] is not None and b["vec"] is not None and len(a["vec"]) == len(b["vec"]):
                 sim = _cosine_sim(a["vec"], b["vec"])
                 if sim < _VECTOR_SIM_THRESHOLD:
@@ -252,30 +251,63 @@ async def arun_deep_conflict_check(
         .replace("{PAIRS}", "")
         .replace("{PAIRS_BLOCK}", "")
     )
-    pair_budget = max(256, DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS - shell_tokens)
+    # Keep a safety margin for newline joins and tokenizer variance so trailing JSON
+    # output instructions in the template are never truncated.
+    pair_budget = max(0, DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS - shell_tokens - 64)
 
-    # Allocate budget per complete candidate pair so checked_pairs & findings
-    # only account for pairs actually transmitted to the model.
+    # Allocate per-side budgets for both A and B so every pair counted in checked_pairs
+    # transmits both sides intact; skip any pair that cannot fit both sides.
     lines: list[str] = []
     sent_pairs: list[dict[str, Any]] = []
     pair_by_id: dict[str, dict[str, Any]] = {}
     used_tokens = 0
     for p in pairs:
-        block = (
-            f"[{p['pair_id']}] (entity={p['entity']}, sim={p['similarity']})\n"
-            f"  A ({p['left']['kind']}): {p['left']['text']}\n"
-            f"  B ({p['right']['kind']}): {p['right']['text']}"
-        )
-        block_tokens = count_tokens(block)
-        if sent_pairs and (used_tokens + block_tokens > pair_budget):
+        remaining = pair_budget - used_tokens - (2 if lines else 0)
+        if remaining <= 0:
             break
-        if not sent_pairs and block_tokens > pair_budget:
-            block = truncate_to_tokens(block, pair_budget)
-            block_tokens = pair_budget
+        header = f"[{p['pair_id']}] (entity={p['entity']}, sim={p['similarity']})\n"
+        a_prefix = f"  A ({p['left']['kind']}): "
+        b_prefix = f"\n  B ({p['right']['kind']}): "
+        frame_tokens = count_tokens(header + a_prefix + b_prefix)
+        content_budget = remaining - frame_tokens
+        if content_budget < 16:
+            if sent_pairs:
+                break
+            continue
+        a_text = str(p["left"]["text"])
+        b_text = str(p["right"]["text"])
+        a_toks = count_tokens(a_text)
+        b_toks = count_tokens(b_text)
+        if a_toks + b_toks > content_budget:
+            if sent_pairs:
+                break
+            half = max(8, content_budget // 2)
+            a_text = truncate_to_tokens(a_text, half)
+            b_text = truncate_to_tokens(b_text, max(8, content_budget - half))
+        block = f"{header}{a_prefix}{a_text}{b_prefix}{b_text}"
+        block_tokens = count_tokens(block) + (2 if lines else 0)
+        if used_tokens + block_tokens > pair_budget:
+            if sent_pairs:
+                break
+            continue
         lines.append(block)
         sent_pairs.append(p)
         pair_by_id[p["pair_id"]] = p
         used_tokens += block_tokens
+
+    if not sent_pairs:
+        return {
+            "character_name": character_name,
+            "checked_at": checked_at,
+            "checked_pairs": 0,
+            "findings": [],
+            "summary": {
+                "contradiction": 0,
+                "duplicate": 0,
+                "complementary": 0,
+                "unrelated": 0,
+            },
+        }
 
     pairs_block = "\n".join(lines)
     prompt = (
@@ -283,7 +315,6 @@ async def arun_deep_conflict_check(
         .replace("{PAIRS}", pairs_block)
         .replace("{PAIRS_BLOCK}", pairs_block)
     )
-    prompt = truncate_to_tokens(prompt, DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS)
 
     api_config = await cm.aget_model_api_config("correction")
     set_call_type("memory_deep_conflict_check")

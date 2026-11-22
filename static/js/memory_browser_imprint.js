@@ -1035,6 +1035,22 @@
             }));
             return;
         }
+        if (overviewError) {
+            panel.appendChild(el('div', { className: 'memory-empty-state' }, [
+                el('p', { textContent: overviewError }),
+                el('button', {
+                    type: 'button',
+                    className: 'memory-pill-btn is-sm',
+                    textContent: tr('memory.retry', '重试'),
+                    onClick: function () {
+                        overviewError = '';
+                        renderImprintPanel();
+                        fetchOverview(activeCharacter);
+                    },
+                }),
+            ]));
+            return;
+        }
         if (!overviewData || !overviewData.imprint) {
             panel.appendChild(el('div', {
                 className: 'memory-empty-state',
@@ -1574,6 +1590,9 @@
                 correction_id: c.correction_id || null,
                 expected_old_text: c.old_text || '',
                 expected_new_text: c.new_text || '',
+                expected_entity: c.entity || 'master',
+                expected_scope: c.scope || '',
+                expected_queued_at: c.queued_at || '',
             };
 
             box.appendChild(el('div', { className: 'memory-attention-item' }, [
@@ -1737,24 +1756,31 @@
 
     function renderMemoryCard(item) {
         const isProtected = Boolean(item.protected);
+        const isArchived = Boolean(item.archived);
+        const isPermRetired = Boolean(item.permanent_suppression);
+        const isReadOnly = isProtected || isArchived;
         const card = el('article', {
             className: 'memory-entry-card'
                 + (item.user_pinned ? ' is-pinned' : '')
-                + (item.suppress ? ' is-suppressed' : ''),
+                + ((item.suppress || isPermRetired) ? ' is-suppressed' : ''),
         });
 
         const badges = el('div', { className: 'memory-entry-badges' });
         if (item.user_pinned) {
             badges.appendChild(el('span', { className: 'memory-mini-badge is-accent', textContent: tr('memory.badgePinned', '已牢记') }));
         }
-        if (item.suppress) {
+        if (isPermRetired) {
+            badges.appendChild(el('span', { className: 'memory-mini-badge is-warn', textContent: tr('memory.badgePermanentlyRetired', '已自动退役') }));
+        } else if (item.suppress) {
             badges.appendChild(el('span', { className: 'memory-mini-badge is-warn', textContent: tr('memory.badgeSuppressed', '暂不提起') }));
         }
-        if (isProtected) {
+        if (isArchived) {
+            badges.appendChild(el('span', { className: 'memory-mini-badge', textContent: tr('memory.badgeArchived', '已归档') }));
+        } else if (isProtected) {
             badges.appendChild(el('span', { className: 'memory-mini-badge', textContent: tr('memory.badgeCardProtected', '角色初始设定') }));
         }
         const strength = Number(item.strength || 1);
-        if (!isProtected) {
+        if (!isReadOnly) {
             badges.appendChild(el('span', {
                 className: 'memory-mini-badge',
                 textContent: '★'.repeat(Math.max(1, Math.min(3, strength))),
@@ -1772,7 +1798,14 @@
         const textEl = el('p', { className: 'memory-entry-text', textContent: item.text });
         card.appendChild(textEl);
 
-        if (!isProtected && item.id) {
+        if (isPermRetired) {
+            card.appendChild(el('div', {
+                className: 'imprint-note-meta',
+                textContent: tr('memory.permanentlyRetiredNote', '该条印象已由自动整理退役，不会再被提起。'),
+            }));
+        }
+
+        if (!isReadOnly && item.id) {
             const editArea = el('textarea', { className: 'memory-inline-textarea', hidden: true });
             editArea.value = item.text || '';
             const saveBtn = el('button', {
@@ -1823,7 +1856,7 @@
                 },
             });
 
-            const actions = el('div', { className: 'memory-card-actions' }, [
+            const actions = el('div', { className: 'memory-card-actions' }, isPermRetired ? [] : [
                 el('button', {
                     type: 'button',
                     className: 'memory-pill-btn is-sm',
@@ -1840,7 +1873,7 @@
                 cancelBtn,
             ]);
 
-            if (item.kind === 'persona') {
+            if (item.kind === 'persona' && !isPermRetired) {
                 actions.appendChild(el('button', {
                     type: 'button',
                     className: 'memory-pill-btn is-sm',

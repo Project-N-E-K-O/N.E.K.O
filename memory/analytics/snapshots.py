@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from config import MEMORY_BROWSER_SNAPSHOT_MAX_KEEP
+from memory.archive_shards import PERSONA_ARCHIVE_DIRNAME, REFLECTION_ARCHIVE_DIRNAME
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_bytes, atomic_write_json
@@ -48,10 +49,45 @@ _SNAPSHOT_FILES: tuple[str, ...] = (
     "persona.json",
     "reflections.json",
     "facts.json",
+    "facts_archive.json",
+    "reflections_archive.json",
     "persona_corrections.json",
     "user_directives.json",
 )
+_SNAPSHOT_ARCHIVE_DIRS: tuple[str, ...] = (
+    PERSONA_ARCHIVE_DIRNAME,
+    REFLECTION_ARCHIVE_DIRNAME,
+)
 _SAFE_SNAPSHOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
+_SAFE_ARCHIVE_FILENAME_RE = re.compile(r"^(?:\.migrated_from_flat|[A-Za-z0-9_.-]+\.json)$")
+
+
+def _is_allowed_snapshot_relpath(relpath: str) -> bool:
+    """Validate a posix relative path stored in ``meta.json['files']``."""
+    if not isinstance(relpath, str) or not relpath or "\\" in relpath or relpath.startswith("/"):
+        return False
+    if relpath in _SNAPSHOT_FILES:
+        return True
+    parts = relpath.split("/")
+    if len(parts) == 2 and parts[0] in _SNAPSHOT_ARCHIVE_DIRS:
+        return bool(_SAFE_ARCHIVE_FILENAME_RE.match(parts[1])) and ".." not in parts[1]
+    return False
+
+
+def _collect_managed_relpaths(char_dir: Path) -> list[str]:
+    """Return all currently existing managed flat files and archive shard files."""
+    relpaths: list[str] = []
+    for fname in _SNAPSHOT_FILES:
+        if (char_dir / fname).is_file():
+            relpaths.append(fname)
+    for dirname in _SNAPSHOT_ARCHIVE_DIRS:
+        adir = char_dir / dirname
+        if not adir.is_dir():
+            continue
+        for child in sorted(adir.iterdir(), key=lambda p: p.name):
+            if child.is_file() and _SAFE_ARCHIVE_FILENAME_RE.match(child.name):
+                relpaths.append(f"{dirname}/{child.name}")
+    return relpaths
 
 
 def _snapshots_root(char_dir: Path) -> Path:
@@ -150,12 +186,14 @@ def create_snapshot_sync(
     snap_dir.mkdir(parents=True, exist_ok=True)
 
     copied_files: list[str] = []
-    for fname in _SNAPSHOT_FILES:
-        src = char_dir / fname
+    for relpath in _collect_managed_relpaths(char_dir):
+        src = char_dir / relpath
         if src.is_file():
             data = src.read_bytes()
-            atomic_write_bytes(str(snap_dir / fname), data)
-            copied_files.append(fname)
+            dst = snap_dir / relpath
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_bytes(str(dst), data)
+            copied_files.append(relpath)
 
     clean_label = str(label or "").strip()[:80]
     if not clean_label:
@@ -199,20 +237,35 @@ def _restore_snapshot_files_sync(
     if not snap_dir.is_dir() or not isinstance(meta, dict):
         raise FileNotFoundError(f"Snapshot not found: {snapshot_id}")
 
-    # 1. Read and validate ALL recorded snapshot files BEFORE creating pre_restore
+    # 1. Validate meta['files'] manifest strictly (allow explicit [], reject missing/invalid)
+    #    and read/validate ALL recorded snapshot files BEFORE creating pre_restore
     #    (creating pre_restore prunes old snapshots when the vault is at capacity,
     #    which could otherwise delete the very oldest snapshot we are restoring).
-    recorded_files = [str(f) for f in (meta.get("files") or []) if str(f) in _SNAPSHOT_FILES]
+    raw_files = meta.get("files")
+    if not isinstance(raw_files, list):
+        raise ValueError(f"Snapshot manifest missing valid files list: {snapshot_id}")
+    recorded_files: list[str] = []
+    for entry in raw_files:
+        if not isinstance(entry, str) or not _is_allowed_snapshot_relpath(entry):
+            raise ValueError(f"Snapshot manifest contains invalid file entry: {entry!r}")
+        if entry not in recorded_files:
+            recorded_files.append(entry)
+
     recorded_set = set(recorded_files)
     staged_bytes: dict[str, bytes] = {}
-    for fname in recorded_files:
-        snap_file = snap_dir / fname
+    for relpath in recorded_files:
+        snap_file = (snap_dir / relpath).resolve()
+        try:
+            snap_file.relative_to(snap_dir)
+        except ValueError as exc:
+            raise ValueError(f"Invalid snapshot file path: {relpath}") from exc
         if not snap_file.is_file():
-            raise FileNotFoundError(f"Snapshot file missing: {snapshot_id}/{fname}")
+            raise FileNotFoundError(f"Snapshot file missing: {snapshot_id}/{relpath}")
         raw = snap_file.read_bytes()
-        # Validate JSON integrity before modifying live memory.
-        json.loads(raw.decode("utf-8"))
-        staged_bytes[fname] = raw
+        # Validate JSON integrity for JSON files before modifying live memory.
+        if relpath.endswith(".json"):
+            json.loads(raw.decode("utf-8"))
+        staged_bytes[relpath] = raw
 
     # 2. Hold thread-level store locks across pre_restore backup, live file swap,
     #    and cache eviction so concurrent FactStore / UserDirectives writers
@@ -223,7 +276,7 @@ def _restore_snapshot_files_sync(
         if directives_manager is not None and callable(getattr(directives_manager, "_get_lock", None)):
             lock_stack.enter_context(directives_manager._get_lock(character_name))
 
-        # Capture a safety backup of current state before overwriting.
+        # Capture a safety backup of current state (including archives) before overwriting.
         pre_backup = create_snapshot_sync(
             character_name,
             label=f"Auto backup before restoring {meta.get('label') or snapshot_id}",
@@ -232,19 +285,46 @@ def _restore_snapshot_files_sync(
             max_keep=max_keep,
         )
 
+        # Stage current live managed files in memory so mid-restore write/delete errors
+        # can be rolled back completely under the same locks.
+        current_managed = _collect_managed_relpaths(char_dir)
+        orig_bytes: dict[str, bytes] = {}
+        for relpath in current_managed:
+            orig_bytes[relpath] = (char_dir / relpath).read_bytes()
+
+        all_targets = list(dict.fromkeys([*recorded_files, *current_managed]))
+        touched_targets: list[str] = []
         restored_files: list[str] = []
         removed_files: list[str] = []
-        for fname in _SNAPSHOT_FILES:
-            target_file = char_dir / fname
-            if fname in recorded_set:
-                atomic_write_bytes(str(target_file), staged_bytes[fname])
-                restored_files.append(fname)
-            elif target_file.is_file():
+        try:
+            for relpath in all_targets:
+                target_file = char_dir / relpath
+                if relpath in recorded_set:
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    touched_targets.append(relpath)
+                    atomic_write_bytes(str(target_file), staged_bytes[relpath])
+                    restored_files.append(relpath)
+                elif target_file.is_file():
+                    touched_targets.append(relpath)
+                    try:
+                        os.remove(target_file)
+                        removed_files.append(relpath)
+                    except FileNotFoundError:
+                        # Already absent — matches desired post-restore state.
+                        pass
+        except Exception:
+            # Roll back every modified or deleted file before propagating failure.
+            for relpath in reversed(touched_targets):
+                target_file = char_dir / relpath
                 try:
-                    os.remove(target_file)
-                    removed_files.append(fname)
-                except OSError:
-                    pass
+                    if relpath in orig_bytes:
+                        target_file.parent.mkdir(parents=True, exist_ok=True)
+                        atomic_write_bytes(str(target_file), orig_bytes[relpath])
+                    elif target_file.is_file():
+                        os.remove(target_file)
+                except OSError as rb_exc:
+                    logger.warning("[MemorySnapshots] rollback failed for %s: %s", relpath, rb_exc)
+            raise
 
         if fact_store is not None:
             facts_cache = getattr(fact_store, "_facts", None)
@@ -341,8 +421,16 @@ async def arestore_snapshot(
         if fact_store is not None and hasattr(fact_store, "_get_persist_alock"):
             await stack.enter_async_context(fact_store._get_persist_alock(character_name))
 
-        # Shield the worker thread so task cancellation cannot exit AsyncExitStack
-        # and release manager locks while the thread is still swapping files.
+        # Re-check cloudsave writability AFTER acquiring locks so maintenance mode
+        # entered while waiting for locks immediately aborts before modifying files.
+        assert_cloudsave_writable(
+            cm,
+            operation="save",
+            target=f"memory/{character_name}/persona.json",
+        )
+
+        # Shield the worker thread across repeated cancellations so AsyncExitStack
+        # cannot release manager locks while the thread is still swapping files.
         worker = asyncio.create_task(
             asyncio.to_thread(
                 _restore_snapshot_files_sync,
@@ -354,32 +442,38 @@ async def arestore_snapshot(
                 directives_manager=dm,
             )
         )
-        try:
-            result = await asyncio.shield(worker)
-        except asyncio.CancelledError:
+        cancelled = False
+        while not worker.done():
             try:
-                await worker
-            except Exception:
-                pass
-            raise
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancelled = True
 
-        # Invalidate async-locked manager caches while still holding the per-character locks.
-        if persona_manager is not None:
-            personas_cache = getattr(persona_manager, "_personas", None)
-            if isinstance(personas_cache, dict):
-                personas_cache.pop(character_name, None)
+        worker_exc = None if worker.cancelled() else worker.exception()
+        if worker_exc is None and not worker.cancelled():
+            # Always invalidate async-locked manager caches while still holding locks
+            # whenever the worker committed disk changes, even if cancelled mid-flight.
+            if persona_manager is not None:
+                personas_cache = getattr(persona_manager, "_personas", None)
+                if isinstance(personas_cache, dict):
+                    personas_cache.pop(character_name, None)
 
-        if reflection_engine is not None:
-            refl_cache = getattr(reflection_engine, "_reflections", None)
-            if isinstance(refl_cache, dict):
-                refl_cache.pop(character_name, None)
+            if reflection_engine is not None:
+                refl_cache = getattr(reflection_engine, "_reflections", None)
+                if isinstance(refl_cache, dict):
+                    refl_cache.pop(character_name, None)
 
-    # Also invalidate star-map FIFO cache in case filesystem mtime granularity matches.
-    try:
-        from .star_map import _STAR_CACHE, _STAR_CACHE_LOCK
-        with _STAR_CACHE_LOCK:
-            _STAR_CACHE.clear()
-    except Exception:
-        pass
+            try:
+                from .star_map import _STAR_CACHE, _STAR_CACHE_LOCK
+                with _STAR_CACHE_LOCK:
+                    _STAR_CACHE.clear()
+            except Exception as cache_exc:
+                logger.debug("[MemorySnapshots] failed to clear star-map cache: %s", cache_exc)
+
+        if cancelled:
+            raise asyncio.CancelledError
+        if worker_exc is not None:
+            raise worker_exc
+        result = worker.result()
 
     return result

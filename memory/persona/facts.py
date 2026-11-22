@@ -1205,6 +1205,120 @@ class FactsMixin:
             )
             return dict(entry)
 
+    async def amerge_persona_entries(
+        self,
+        name: str,
+        entity_key: str,
+        keep_id: str,
+        drop_id: str,
+        merged_text: str,
+    ) -> dict:
+        """Atomically update ``keep_id`` with ``merged_text`` and archive ``drop_id`` under one lock."""
+        import hashlib
+        from config import PERSONA_VERSION_HISTORY_MAX
+        from memory.archive_shards import aappend_to_shard, apick_today_shard_path
+        from memory.event_log import EVT_PERSONA_ENTRY_UPDATED, EVT_PERSONA_FACT_ADDED
+
+        cleaned = str(merged_text or "").strip()
+        if not cleaned or len(cleaned) > 1000:
+            raise ValueError("Persona text must be 1..1000 chars")
+        if keep_id == drop_id:
+            raise ValueError("keep_id and drop_id must differ")
+        if self._event_log is None:
+            raise RuntimeError("[Persona.amerge_persona_entries] event_log 未注入")
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(entity_key)
+            if not isinstance(section, dict):
+                raise LookupError("Persona section not found")
+            section_facts = section.get('facts', [])
+            keep_entry = self._find_entry_in_section(section_facts, keep_id)
+            drop_entry = self._find_entry_in_section(section_facts, drop_id)
+            if keep_entry is None:
+                raise LookupError("keep_id not found")
+            if drop_entry is None:
+                raise LookupError("drop_id not found")
+            if (
+                keep_entry.get('protected') or keep_entry.get('source') == 'character_card'
+                or drop_entry.get('protected') or drop_entry.get('source') == 'character_card'
+            ):
+                raise PermissionError("Character card entries are protected")
+
+            now = datetime.now()
+            now_iso = now.isoformat()
+
+            # Step 1: update keep_id FIRST so any validation/save failure leaves drop_id active.
+            old_text = str(keep_entry.get('text') or '').strip()
+            if old_text != cleaned:
+                prev_history = list(keep_entry.get('version_history') or [])
+                prev_history.append({
+                    'text': old_text,
+                    'replaced_at': now_iso,
+                    'reason': 'manual_merge',
+                })
+                updated_history = prev_history[-PERSONA_VERSION_HISTORY_MAX:]
+                edit_payload = {
+                    'entity_key': entity_key,
+                    'entry_id': keep_id,
+                    'rewrite_text_sha256': hashlib.sha256(cleaned.encode('utf-8')).hexdigest(),
+                    'source': 'manual_merge',
+                }
+
+                def _sync_load(_n: str):
+                    return persona
+
+                def _sync_mutate_edit(_view):
+                    keep_entry['text'] = cleaned
+                    keep_entry['version_history'] = updated_history
+                    self._invalidate_token_count_cache(keep_entry)
+                    self._invalidate_embedding_cache(keep_entry)
+
+                await self._event_log.arecord_and_save(
+                    name, EVT_PERSONA_ENTRY_UPDATED, edit_payload,
+                    sync_load_view=_sync_load,
+                    sync_mutate_view=_sync_mutate_edit,
+                    sync_save_view=self._sync_save_persona_view,
+                )
+
+            # Step 2: archive drop_id under the same per-character lock.
+            archive_dir = self._persona_archive_dir(name)
+            shard_path = await apick_today_shard_path(archive_dir, now=now)
+            shard_basename = os.path.basename(shard_path)
+            archive_entry = dict(drop_entry)
+            archive_entry['entity_key'] = entity_key
+            archive_entry['archived_at'] = now_iso
+            archive_entry['archive_shard_path'] = shard_basename
+            archive_entry['merged_into'] = keep_id
+
+            archive_payload = {
+                'entity_key': entity_key,
+                'entry_id': drop_id,
+                'archive_shard_path': shard_basename,
+                'archived_at': now_iso,
+                'text': drop_entry.get('text', ''),
+                'source': drop_entry.get('source', 'unknown'),
+                'entry_snapshot': archive_entry,
+            }
+
+            def _sync_load_arch(_n: str):
+                return persona
+
+            def _sync_mutate_arch(_view):
+                section_facts[:] = [
+                    e for e in section_facts
+                    if not (isinstance(e, dict) and e.get('id') == drop_id)
+                ]
+
+            await self._event_log.arecord_and_save(
+                name, EVT_PERSONA_FACT_ADDED, archive_payload,
+                sync_load_view=_sync_load_arch,
+                sync_mutate_view=_sync_mutate_arch,
+                sync_save_view=self._sync_save_persona_view,
+            )
+            await aappend_to_shard(archive_dir, [archive_entry], now=now)
+            return dict(keep_entry)
+
     async def aset_persona_flags(
         self,
         name: str,

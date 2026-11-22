@@ -5220,6 +5220,7 @@
                     beginBubbleInlineEdit(bubble, msg, 'ai');
                 });
                 bubble.addEventListener('keydown', function (ev) {
+                    if (ev.target !== bubble) return;
                     if ((ev.key === 'Enter' || ev.key === 'F2') && !bubble.classList.contains('is-inline-editing')) {
                         ev.preventDefault();
                         beginBubbleInlineEdit(bubble, msg, 'ai');
@@ -5259,6 +5260,7 @@
                     beginBubbleInlineEdit(bubble, msg, 'human');
                 });
                 bubble.addEventListener('keydown', function (ev) {
+                    if (ev.target !== bubble) return;
                     if ((ev.key === 'Enter' || ev.key === 'F2') && !bubble.classList.contains('is-inline-editing')) {
                         ev.preventDefault();
                         beginBubbleInlineEdit(bubble, msg, 'human');
