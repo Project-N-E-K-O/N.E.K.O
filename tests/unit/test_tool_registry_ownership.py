@@ -142,7 +142,16 @@ async def test_mixin_entries_forward_owner_check_and_skip_sync_on_refusal():
 
 
 class _PausingMgr:
-    """Manager that stops before touching its registry until released."""
+    """Manager that stops before touching its registry until released.
+
+    Not the real timing: ``ToolCallingMixin.register_tool_and_sync`` writes
+    the registry first and only then awaits the session sync. These tests pin
+    the contract that the router leaves the ownership decision to the registry
+    write (``owner_check``) instead of checking ahead of the call. The
+    interleaving production can hit (a later target taken while an earlier one
+    syncs during a global registration) is covered by
+    ``test_refused_role_is_excluded_before_the_next_target_is_awaited``.
+    """
 
     is_active = False
     is_starting = False

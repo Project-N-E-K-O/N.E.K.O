@@ -65,6 +65,15 @@ async def test_retry_after_lost_response_executes_once(runs):
 
 
 @pytest.mark.asyncio
+async def test_surrounding_whitespace_does_not_make_a_different_key(runs):
+    first = await manager.create_run(_req(key="call-1"), client_host=None)
+    retry = await manager.create_run(_req(key=" call-1 "), client_host=None)
+    await _drain()
+    assert retry.run_id == first.run_id
+    assert runs.calls == ["send"]
+
+
+@pytest.mark.asyncio
 async def test_retry_while_first_run_is_still_executing_reuses_it(runs):
     runs.gate.event = asyncio.Event()
     first = await manager.create_run(_req(key="call-1"), client_host=None)

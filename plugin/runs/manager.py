@@ -218,9 +218,12 @@ class InMemoryRunStore:
 
     @staticmethod
     def _idempotency_index_key(rec: RunRecord) -> Optional[Tuple[str, str, str]]:
-        if not _has_idempotency_key(rec.idempotency_key):
+        key = rec.idempotency_key
+        if not _has_idempotency_key(key):
             return None
-        return (rec.plugin_id, rec.entry_id, rec.idempotency_key)
+        # Same normalization as the "has a key" test: surrounding whitespace
+        # does not make a different key.
+        return (rec.plugin_id, rec.entry_id, key.strip())
 
     def create(self, rec: RunRecord) -> None:
         with self._lock:
