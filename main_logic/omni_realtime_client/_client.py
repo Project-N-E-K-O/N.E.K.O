@@ -391,7 +391,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # also counts as free, matching other free checks in this class.
         # Livestream mode with long streamer sessions bypasses this entire path.
         self._enable_silence_timeout = (
-            _effective_api_type.lower() in ['glm', 'free']
+            _effective_api_type.strip().lower() in ['glm', 'free']
             and not self._livestream_mode
         )
         self._silence_timeout_seconds = 90  # Automatically close after 90 seconds without voice input
@@ -499,13 +499,13 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._audio_processing_lock = asyncio.Lock()
 
         # Gemini Live API specific attributes
-        self._is_gemini = self._api_type.lower() == 'gemini'
+        self._is_gemini = self._api_type.strip().lower() == 'gemini'
         # ``api_type`` is the provider-ownership signal. The model name is
         # user-configurable, so an arbitrary local model such as
         # ``freeform-realtime`` must not inherit Lanlan's image wire protocol.
         # Keep a narrow compatibility fallback only for old callers that omit
         # api_type while targeting a known Lanlan/livestream route.
-        self._is_free_provider = _effective_api_type.lower() == 'free'
+        self._is_free_provider = _effective_api_type.strip().lower() == 'free'
 
         # Only the international/livestream free routes proxy Gemini. This flag
         # remains about VAD/lifecycle behaviour, not image capability: every

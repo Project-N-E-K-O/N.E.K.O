@@ -159,3 +159,25 @@ def test_app_chat_js_resolves_localized_master_nicknames():
     )
     proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+@pytest.mark.unit
+def test_get_character_nickname_ignores_later_empty_case_variants():
+    assert (
+        get_character_nickname(
+            {"nickname": "NonEmptyFallback", "NICKNAME": "  ", "档案名": "Carbon"}
+        )
+        == "NonEmptyFallback"
+    )
+    assert (
+        get_character_nickname(
+            {"NICKNAME": "  ", "nickname": "  NonEmptyFallback  ", "档案名": "Carbon"}
+        )
+        == "NonEmptyFallback"
+    )
+    assert (
+        get_character_nickname(
+            {"nickname": None, "NICKNAME": "", "apodo": "  Juan  "}
+        )
+        == "Juan"
+    )

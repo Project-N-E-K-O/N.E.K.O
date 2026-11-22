@@ -9917,3 +9917,31 @@ def test_soccer_pregame_opening_line_limits_match_all_locale_prompts():
         assert cjk_issues == [
             {"field": "openingLine", "reason": "too_long", "actual_length": 16, "maximum": 15}
         ]
+
+
+@pytest.mark.unit
+def test_soccer_pregame_opening_line_non_cjk_locale_allows_cjk_names():
+    mixed_line = "Let's play soccer, 小明!"
+    for locale in ("en", "ru", "es", "pt"):
+        issues: list[dict] = []
+        ctx, had_invalid = gr_pregame._normalize_soccer_pregame_context(
+            {"openingLine": mixed_line},
+            prompt_locale=locale,
+            validation_issues=issues,
+        )
+        assert had_invalid is False
+        assert issues == []
+        assert ctx["openingLine"] == mixed_line
+
+    for locale in ("ja", "ko", "zh", None):
+        issues = []
+        ctx, had_invalid = gr_pregame._normalize_soccer_pregame_context(
+            {"openingLine": mixed_line},
+            prompt_locale=locale,
+            validation_issues=issues,
+        )
+        assert had_invalid is True
+        assert ctx["openingLine"] == ""
+        assert issues == [
+            {"field": "openingLine", "reason": "too_long", "actual_length": len(mixed_line), "maximum": 15}
+        ]

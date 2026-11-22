@@ -267,13 +267,16 @@ def get_character_field_value(payload: object, keys: tuple[str, ...]) -> str:
             text = str(val).strip()
             if text:
                 return text
-    folded = {str(k).casefold(): v for k, v in payload.items()}
+    folded: dict[str, str] = {}
+    for k, v in payload.items():
+        if v is not None:
+            text = str(v).strip()
+            if text:
+                folded.setdefault(str(k).casefold(), text)
     for key in keys:
         val = folded.get(key.casefold())
-        if val is not None:
-            text = str(val).strip()
-            if text:
-                return text
+        if val:
+            return val
     return ""
 
 

@@ -1785,3 +1785,25 @@ def test_tooling_realtime_dialect_falls_back_on_minimal_double():
 
     assert _MinimalDouble("openai")._tooling_realtime_dialect() == "gpt"
     assert _MinimalDouble("qwen_intl")._tooling_realtime_dialect() == "qwen"
+
+
+@pytest.mark.unit
+def test_whitespace_padded_api_type_matches_realtime_dialect_and_provider_flags():
+    gemini_client = OmniRealtimeClient(
+        base_url="wss://generativelanguage.googleapis.com",
+        api_key="sk-test",
+        model="gemini-2.5-flash",
+        api_type=" gemini ",
+    )
+    assert gemini_client._realtime_dialect == "gemini"
+    assert gemini_client._is_gemini is True
+    assert gemini_client._has_server_vad is False
+
+    free_client = OmniRealtimeClient(
+        base_url="wss://www.lanlan.tech/api/v1/realtime",
+        api_key="sk-test",
+        model="free-model",
+        api_type=" free ",
+    )
+    assert free_client._realtime_dialect == "free"
+    assert free_client._is_free_provider is True

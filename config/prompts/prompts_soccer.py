@@ -42,6 +42,7 @@ def get_soccer_opening_line_max_chars(
     if locale is not None and str(locale).strip():
         if _normalize_prompt_lang(locale) in _SOCCER_CJK_LOCALES:
             return SOCCER_OPENING_LINE_MAX_CHARS_CJK
+        return SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK
     if opening_line and _CJK_CHAR_RE.search(opening_line):
         return SOCCER_OPENING_LINE_MAX_CHARS_CJK
     return SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK
