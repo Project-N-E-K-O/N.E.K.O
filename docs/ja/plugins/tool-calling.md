@@ -489,7 +489,7 @@ result = await self.unregister_llm_tool_async("custom_tool")
 `partial_failure`（解除：一部の role が失敗）、`main_server_unavailable`（リクエストが `main_server` に届かず、何も適用されていない）、
 `main_server_error`（HTTP ステータス >= 400。例：存在しない role。または JSON オブジェクトでない応答）、`timeout`（時間内に応答がなかった：`request_timeout` 内にホストが応答しなかった、
 またはリクエスト送信後に `main_server` が応答しなかった。結果は不明）、`host_unavailable`（リクエストがホストに届かなかった）、
-`not_registered`（解除：プラグイン側にその名前の記録がなく、`main_server` 上でもこのプラグインのその名前の
+`busy`（同じ名前の先行呼び出しが予算を使い切り、この呼び出しは送られなかった。何も送られておらず `cleanup` は `None`）、`not_registered`（解除：プラグイン側にその名前の記録がなく、`main_server` 上でもこのプラグインのその名前の
 ツールが何も削除されなかった。ローカルに記録がある場合、同じ応答は `ok=True, removed=False` となりローカルのハンドラを外します）、
 `invalid_request`。
 
@@ -522,8 +522,10 @@ result = await self.unregister_llm_tool_async("custom_tool")
   例えば `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))` では、解除は登録の応答が
   返ってから送られます。保証されるのは順序だけなので、それぞれの呼び出しの結果を確認してください（解除が
   `ok=False` を返した場合、ローカルのハンドラは残ります）。異なる名前同士は待ち合わせません。`request_timeout` は呼び出し全体に
-  適用され、同じ名前の先行呼び出しを待つ時間も含みます。待機中に使い切った場合は `timeout` となり、
-  ホストには何も送られていません。
+  適用され、同じ名前の先行呼び出しを待つ時間も含みます。リクエストを送るのに残りが足りない場合（5 秒未満、
+  予算が小さいときはその半分未満）は `busy` となり、ホストには何も送られていません。期限のあるエントリから
+  呼んだ場合、各リクエスト（後片付けの解除を含む）の実際の予算は自身の予算とエントリの残り時間の短い方です。
+  エントリの時間を使い切ると後片付けの解除は送られません（`cleanup` は `timeout`）。
 
 引数エラーは同期版と同じく例外になります（`ValueError`、`TypeError`、`EntryConflictError`）。
 async 版はさらに、`request_timeout` が (0, 60] の範囲外（ホストの上限）、名前が点だけ、登録時の `timeout`

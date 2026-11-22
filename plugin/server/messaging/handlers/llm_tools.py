@@ -45,20 +45,21 @@ def _invalid_name(fields: dict[str, object] | None) -> bool:
 def _transport_failure(httpx, exc: Exception) -> tuple[str, str]:
     """Map an httpx error from the main_server call to an ``error`` code.
 
-    Errors raised while the request was being sent or answered (read/write
-    timeout or failure, connection dropped mid-exchange) mean main_server
-    may have applied the change, so they are reported as ``timeout``: the
-    outcome is unknown, like an SDK timeout. Everything else (connect
-    failure, no pooled connection, proxy or protocol setup errors) happens
-    before the request is sent: ``main_server_unavailable``.
+    Only errors that certainly happen before the request is sent (connect
+    failure or timeout, no pooled connection, proxy, unsupported scheme,
+    invalid request on our side) are ``main_server_unavailable``. Anything
+    else (read/write timeout or failure, connection dropped mid-exchange,
+    undecodable answer, ...) means main_server may have applied the change,
+    so it is reported as ``timeout``: the outcome is unknown.
     """
     message = f"{type(exc).__name__}: {exc}"
-    in_flight = (
-        httpx.ReadTimeout, httpx.WriteTimeout, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError,
+    before_send = (
+        httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout,
+        httpx.ProxyError, httpx.UnsupportedProtocol, httpx.LocalProtocolError,
     )
-    if isinstance(exc, in_flight):
-        return "timeout", message
-    return "main_server_unavailable", message
+    if isinstance(exc, before_send):
+        return "main_server_unavailable", message
+    return "timeout", message
 
 
 async def handle_llm_tool_register(ctx: RpcContext, request: dict[str, object]) -> object:

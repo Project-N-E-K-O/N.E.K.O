@@ -815,13 +815,44 @@ async def test_lock_wait_counts_against_request_timeout():
     )
 
     assert late["ok"] is False
-    assert late["error"] == "timeout"
+    assert late["error"] == "busy"
     assert "nothing was sent" in (late["message"] or "")
     assert calls == ["LLM_TOOL_REGISTER_REQUEST"]
     gate.set()
     assert (await first)["ok"] is True
     assert _local_names(plugin) == {"tool_a"}
     assert plugin._llm_tool_locks == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_timeout,elapsed_fraction,sent", [
+    (1.0, 0.6, False),   # 0.4s left < half of 1s: busy, nothing sent
+    (1.0, 0.4, True),    # 0.6s left: sent
+    (40.0, 0.9, False),  # 4s left < 5s: busy
+    (40.0, 0.8, True),   # 8s left: sent
+])
+async def test_too_little_budget_after_the_lock_sends_nothing(monkeypatch, request_timeout, elapsed_fraction, sent):
+    from plugin.sdk.plugin import base
+
+    plugin, _ = _make_plugin()
+    host = _FakeHost(reply={"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []})
+    _install_host(plugin, host)
+    ticks = iter([0.0, request_timeout * elapsed_fraction])
+
+    class _Clock:
+        @staticmethod
+        def monotonic():
+            return next(ticks)
+
+    monkeypatch.setattr(base, "time", _Clock)
+    result = await plugin.register_llm_tool_async(**_register_kwargs(), request_timeout=request_timeout)
+
+    if sent:
+        assert result["ok"] is True and len(host.calls) == 1
+    else:
+        assert result["error"] == "busy" and result["cleanup"] is None
+        assert host.calls == []
+        assert plugin.list_llm_tools() == []
 
 
 @pytest.mark.asyncio
@@ -1177,6 +1208,9 @@ async def test_host_register_main_server_unavailable(monkeypatch, registry):
     ("PoolTimeout", "main_server_unavailable"),
     ("ProxyError", "main_server_unavailable"),
     ("UnsupportedProtocol", "main_server_unavailable"),
+    ("LocalProtocolError", "main_server_unavailable"),
+    ("DecodingError", "timeout"),
+    ("CloseError", "timeout"),
     ("ReadTimeout", "timeout"),
     ("WriteTimeout", "timeout"),
     ("ReadError", "timeout"),

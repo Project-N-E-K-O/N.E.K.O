@@ -130,6 +130,11 @@ DEFAULT_LLM_TOOL_REQUEST_TIMEOUT = 40.0
 # (``MAX_HANDLER_TIMEOUT_SECONDS`` in ``plugin/core/rpc.py``); a longer
 # request_timeout would be cut silently, so it is refused.
 _LLM_TOOL_MAX_REQUEST_TIMEOUT = 60.0
+# A call that got the name lock with less than this left of its budget
+# (or less than half of it, for small budgets) is not sent: it reports
+# "busy" with nothing applied, instead of an almost certain "timeout"
+# whose outcome would be unknown.
+_LLM_TOOL_MIN_SEND_BUDGET = 5.0
 # Budget of the unregister a failed register sends to clean up after itself.
 _LLM_TOOL_CLEANUP_TIMEOUT = 15.0
 # Register errors after which main_server may hold the tool: every role's
@@ -781,7 +786,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
         plugin has no handler. Calls may come from different event loops
         (command loop, timer threads), hence ``_CrossLoopLock``. The wait
         counts against ``request_timeout``; when the budget runs out first,
-        ``_LlmToolLockTimeout`` is raised and nothing has been sent. The
+        or too little of it is left to send the request (see
+        ``_LLM_TOOL_MIN_SEND_BUDGET``), ``_LlmToolLockTimeout`` is raised
+        and nothing has been sent. The
         sync calls are not serialised by it.
         """
         started = time.monotonic()
@@ -798,7 +805,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 raise _LlmToolLockTimeout() from None
             try:
                 remaining = request_timeout - (time.monotonic() - started)
-                if remaining <= 0:
+                if remaining < min(_LLM_TOOL_MIN_SEND_BUDGET, request_timeout / 2):
                     raise _LlmToolLockTimeout()
                 yield remaining
             finally:
@@ -812,10 +819,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
     @staticmethod
     def _llm_tool_lock_timeout_result(build_result: Any, name: str, request_timeout: float) -> Any:
         return build_result(
-            {}, ok=False, error="timeout",
+            {}, ok=False, error="busy",
             message=(
-                f"waited {request_timeout}s behind earlier calls for {name!r}; "
-                "nothing was sent to the host"
+                f"earlier calls for {name!r} used up most of the {request_timeout}s "
+                "budget; nothing was sent to the host"
             ),
         )
 
@@ -881,14 +888,20 @@ class NekoPluginBase(_SharedNekoPluginBase):
         except TimeoutError:
             return build_result(
                 {}, ok=False, error="timeout",
-                message=f"no answer from the host within {request_timeout}s",
+                message=(
+                    f"no answer from the host within {request_timeout}s "
+                    "(or the calling entry's remaining time, if shorter)"
+                ),
             )
         except Exception as exc:
             code = getattr(exc, "code", None)
             if code in _LLM_TOOL_TIMEOUT_CODES:
                 return build_result(
                     {}, ok=False, error="timeout",
-                    message=f"no answer from the host within {request_timeout}s ({code})",
+                    message=(
+                        f"no answer from the host within {request_timeout}s "
+                        f"(or the calling entry's remaining time, if shorter) ({code})"
+                    ),
                 )
             detail = str(exc)
             return build_result(

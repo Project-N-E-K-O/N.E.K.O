@@ -515,7 +515,9 @@ failed), `main_server_unavailable` (the request could not reach
 (HTTP status >= 400, e.g. unknown role, or an answer that is not a JSON object), `timeout` (no answer in time, from the host
 within `request_timeout` or from `main_server` after the request was sent;
 the outcome is unknown), `host_unavailable` (the request could
-not reach the host), `not_registered` (unregister: the plugin had no local
+not reach the host), `busy` (earlier calls for the same name used up the
+budget before this one could be sent; nothing was sent and `cleanup` is
+`None`), `not_registered` (unregister: the plugin had no local
 record of the name and `main_server` removed nothing of this plugin's under
 it; with a local record the same answer is `ok=True, removed=False` and the
 local handler is dropped), `invalid_request`.
@@ -563,8 +565,13 @@ Local state follows `ok`, so the plugin and the host agree:
   ordering is all this promises: check each call's own result (an
   unregister with `ok=False` keeps the local handler). Different names do not wait for each
   other. `request_timeout` covers the whole call, including the time spent
-  waiting behind earlier calls for the same name; if it runs out while
-  waiting, the result is `timeout` and nothing was sent to the host.
+  waiting behind earlier calls for the same name; if too little of it is
+  left to send the request (under 5 s, or under half of it for small
+  values), the result is `busy` and nothing was sent to the host. Called
+  from an entry that has a deadline, the effective budget of each request,
+  including the cleanup, is the smaller of its own budget and the entry's
+  remaining time; when the entry's time is used up, no cleanup is sent
+  (`cleanup` then reports `timeout`).
 
 Argument errors raise like the sync calls (`ValueError`, `TypeError`,
 `EntryConflictError`). The async calls also raise `ValueError` for a

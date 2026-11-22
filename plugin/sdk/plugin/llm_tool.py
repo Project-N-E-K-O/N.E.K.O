@@ -308,7 +308,9 @@ def collect_llm_tool_methods(instance: Any) -> list[tuple[LlmToolMeta, Callable[
 #                 ``request_timeout``, or from main_server to the host after
 #                 the request was sent; the outcome on main_server is unknown).
 #   SDK side   -- "host_unavailable" (the request could not reach the host or
-#                 the host failed to handle it), "not_registered"
+#                 the host failed to handle it), "busy" (earlier calls for
+#                 the same name used up the budget; nothing was sent),
+#                 "not_registered"
 #                 (unregister: no local record and main_server removed
 #                 nothing of this plugin's under that name; with a local
 #                 record the same answer is ok=True, removed=False).
