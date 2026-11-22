@@ -2204,6 +2204,39 @@ def test_external_heartbeat_timeout_clears_stale_window_and_degrades_cleanly():
     assert llm_signals['window_switch_rate_5min'] is None
 
 
+@pytest.mark.parametrize('poll_during_gap', [True, False], ids=['regular-reads', 'sparse-reads'])
+def test_idle_only_heartbeats_expire_the_window_and_restart_dwell_on_recovery(poll_during_gap):
+    from main_logic.activity.tracker import UserActivityTracker
+
+    tracker = UserActivityTracker('test_lanlan')
+    window = {'window_title': 'main.py - Visual Studio Code', 'process_name': 'Code.exe'}
+    for now in range(1000, 1101, 5):
+        tracker.push_external_system_signal(**window, idle_seconds=1.0, now=now)
+        focused = tracker.get_snapshot_sync(now=now)
+    assert focused.state == 'focused_work'
+
+    tracker.push_external_system_signal(idle_seconds=2.0, now=1105)
+    transient = tracker.get_snapshot_sync(now=1105)
+    assert transient.active_window == focused.active_window
+    assert transient.state == 'focused_work'
+
+    for now in range(1110, 1136, 5):
+        tracker.push_external_system_signal(idle_seconds=3.0, now=now)
+        if poll_during_gap:
+            missing = tracker.get_snapshot_sync(now=now)
+    if poll_during_gap:
+        assert missing.os_signals_available
+        assert missing.system_idle_seconds == 3.0
+        assert missing.active_window is None
+        assert missing.state != 'focused_work'
+
+    tracker.push_external_system_signal(**window, idle_seconds=1.0, now=1140)
+    restored = tracker.get_snapshot_sync(now=1140)
+    assert restored.active_window == focused.active_window
+    assert restored.state != 'focused_work'
+    assert restored.window_switch_rate_5min == focused.window_switch_rate_5min
+
+
 def test_partial_external_signal_without_idle_does_not_fake_active_input():
     """F0156: omitted idle_seconds stays None; GPU/CPU-only push stays os_signals_available=False."""
     from types import SimpleNamespace

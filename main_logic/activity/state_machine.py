@@ -121,6 +121,9 @@ FOCUSED_VIDEO_MIN_DWELL_SECONDS = 120.0
 WINDOW_SWITCH_TRANSITION_THRESHOLD = 5
 WINDOW_HISTORY_LOOKBACK_SECONDS = 300
 
+# Allow a brief gap between foreground samples while idle signals still arrive.
+_MISSING_WINDOW_GRACE_SECONDS = 15.0
+
 # How long a state has to remain "new" to be considered ``transitioned_recently``.
 TRANSITION_RECENT_WINDOW_SECONDS = 30.0
 
@@ -476,6 +479,7 @@ class ActivityStateMachine:
         self._window_history: deque[_WindowEntry] = deque(maxlen=WINDOW_BUFFER_MAXLEN)
         self._current_window: WindowObservation | None = None
         self._current_window_started_at: float = 0.0
+        self._window_missing_since: float | None = None
 
         # System (from singleton collector)
         self._latest_system: SystemSnapshot | None = None
@@ -532,14 +536,29 @@ class ActivityStateMachine:
             (prompt rendering, LLM enrichment, conversation buffers).
         """
         ts = now if now is not None else time.time()
-        if obs is None:
-            if self._latest_system is not None and self._latest_system.os_signals_available:
-                return  # A single untitled sample does not interrupt dwell.
+        if (
+            obs is None and self._current_window is not None
+            and self._latest_system is not None and self._latest_system.os_signals_available
+        ):
+            if self._window_missing_since is None:
+                self._window_missing_since = ts
+            if ts - self._window_missing_since < _MISSING_WINDOW_GRACE_SECONDS:
+                return
+
+        missing_since = self._window_missing_since
+        self._window_missing_since = None
+        # The next sample after a long gap can already contain a window. End
+        # the old dwell at the first miss before starting the recovered window.
+        if obs is None or (
+            missing_since is not None and ts - missing_since >= _MISSING_WINDOW_GRACE_SECONDS
+        ):
             if self._current_window is not None:
-                self._window_history.append(_WindowEntry(timestamp=ts, observation=None))
+                ended_at = ts if missing_since is None else missing_since
+                self._window_history.append(_WindowEntry(timestamp=ended_at, observation=None))
             self._current_window = None
             self._current_window_started_at = 0.0
             self._own_app_freeze_started_at = None
+        if obs is None:
             return
 
         if obs.category == 'own_app':
