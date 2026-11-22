@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'vision', 'summary', 'correction', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -62,7 +62,6 @@ const MODEL_CONFIG_EXPANSION_PATHS = {
     summary: ['summary'],
     gameMain: ['game', 'game-main'],
     gameSummary: ['game', 'game-summary'],
-    correction: ['correction'],
     emotion: ['emotion'],
     decision: ['decision'],
     vision: ['vision'],
@@ -75,7 +74,6 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
     summary: 'summary_model',
     gameMain: 'conversation_model',
     gameSummary: 'summary_model',
-    correction: 'correction_model',
     emotion: 'emotion_model',
     decision: 'decision_model',
     vision: 'vision_model',
@@ -1567,7 +1565,7 @@ function populateModelProviderDropdowns() {
             if (pk === 'free') return;
             if (isProviderRestricted(pk)) return;
             // 特异 TTS provider（tts_dropdown_only）仅在 TTS 下拉里出现，不污染
-            // conversation/summary/correction/emotion/vision/agent/omni 的下拉。
+            // conversation/summary/emotion/vision/agent/omni 的下拉。
             // 成员由后端 tts_provider_registry 驱动；注册表元数据缺失时 getTtsProviderMeta
             // 用结构信号兜底，前端始终不硬编码 provider key。
             const _spFilter = getTtsProviderMeta(pk);
@@ -1995,7 +1993,6 @@ const MODEL_TIER_BY_TYPE = {
     summary: 'summary',
     gameMain: 'conversation',
     gameSummary: 'summary',
-    correction: 'correction',
     emotion: 'emotion',
     decision: 'decision',
     vision: 'vision',
@@ -3011,10 +3008,6 @@ async function loadCurrentApiKey() {
             setInputValue('gameSummaryModelId', data.gameSummaryModelId);
             setSecretInputValue('gameSummaryModelApiKey', data.gameSummaryModelApiKey);
 
-            setInputValue('correctionModelUrl', data.correctionModelUrl);
-            setInputValue('correctionModelId', data.correctionModelId);
-            setSecretInputValue('correctionModelApiKey', data.correctionModelApiKey);
-
             setInputValue('emotionModelUrl', data.emotionModelUrl);
             setInputValue('emotionModelId', data.emotionModelId);
             setSecretInputValue('emotionModelApiKey', data.emotionModelApiKey);
@@ -3815,10 +3808,6 @@ async function save_button_down(e) {
     const gameSummaryModelId = getVal('gameSummaryModelId');
     const gameSummaryModelApiKey = getKeyVal('gameSummaryModelApiKey');
 
-    const correctionModelUrl = getVal('correctionModelUrl');
-    const correctionModelId = getVal('correctionModelId');
-    const correctionModelApiKey = getKeyVal('correctionModelApiKey');
-
     const emotionModelUrl = getVal('emotionModelUrl');
     const emotionModelId = getVal('emotionModelId');
     const emotionModelApiKey = getKeyVal('emotionModelApiKey');
@@ -3904,7 +3893,6 @@ async function save_button_down(e) {
         summaryModelUrl, summaryModelId, summaryModelApiKey,
         gameMainModelUrl, gameMainModelId, gameMainModelApiKey,
         gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
-        correctionModelUrl, correctionModelId, correctionModelApiKey,
         emotionModelUrl, emotionModelId, emotionModelApiKey,
         decisionModelUrl, decisionModelId, decisionModelApiKey,
         visionModelUrl, visionModelId, visionModelApiKey,
@@ -4473,16 +4461,16 @@ function positionTooltip(iconElement, tooltipElement) {
 }
 
 const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
-    conversation: 'vision',
-    vision: 'conversation',
-    summary: 'correction',
-    correction: 'summary',
-    emotion: 'omni',
-    omni: 'emotion',
-    agent: 'tts',
-    tts: 'agent',
-    game: 'image',
-    image: 'game',
+    conversation: 'summary',
+    summary: 'conversation',
+    emotion: 'decision',
+    decision: 'emotion',
+    omni: 'tts',
+    tts: 'omni',
+    agent: 'game',
+    game: 'agent',
+    image: 'vision',
+    vision: 'image',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {
@@ -4606,7 +4594,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'correction', 'emotion', 'decision', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'emotion', 'decision', 'vision', 'image', 'agent', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4712,10 +4700,9 @@ const LightStatus = {
 function getCustomModelDisplayLabel(modelType) {
     const labelMap = {
         conversation: ['api.conversationModelConfig', '文本聊天模型'],
-        summary: ['api.summaryModelConfig', '摘要模型'],
+        summary: ['api.summaryModelConfig', '记忆整理（大模型）'],
         gameMain: ['api.gameMainModelConfig', '小游戏主模型配置'],
         gameSummary: ['api.gameSummaryModelConfig', '小游戏摘要模型配置'],
-        correction: ['api.correctionModelConfig', '纠错模型'],
         emotion: ['api.emotionModelConfig', '情感模型'],
         decision: ['api.decisionModelConfig', '决策模型'],
         vision: ['api.visionModelConfig', '视觉聊天模型'],

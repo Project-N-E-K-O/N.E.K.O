@@ -18,7 +18,7 @@ trigger: always_on
     - **输入**：每条拼进 `messages` 的字符串都要先过 token budget（`truncate_to_tokens` / `truncate_head_tail_tokens` / `*_MAX_TOKENS` 常量，见 `docs/design/llm-prompt-budget.md`）。lint 用启发式检查"调用所在函数里有没有 budget 痕迹"，故意保守、会有误报；确实不该 cap 的（用户配置 / OS 窗口标题等"咎由自取"项，见 §6）用 `# noqa: LLM_INPUT_BUDGET` 并注明理由。
     - 守门：`scripts/check_llm_budget.py`（CI 见 `.github/workflows/analyze.yml`）。预算常量统一维护在 `config/__init__.py` §3.7，索引见 `docs/design/llm-prompt-budget.md`。
   - **模型从 tier 拿，不 hardcoded fallback**：每个 LLM 调用都通过 `config_manager.get_model_api_config(<tier>)` 拿 model/base_url/api_key 三件套。不要再写 `api_config.get('model', SETTING_PROPOSER_MODEL)` 这类 fallback——`SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 退环境。tier 未配好时让 API 直接拒绝，比静默回退到 qwen-max 更安全。
-  - **memory 子模块按职责选 tier**：fact extraction / signal detection / reflection synthesis / fact dedup / recall rerank 走 `summary`；recent.review + persona.correction + promotion merge 走 `correction`。不要为单点新增 hardcoded 模型名。
+  - **memory 子模块按职责选 tier**：记忆的活统一走 `summary`（设置页叫「记忆整理（大模型）」；2026-11 起原 `correction` 档并入它），需要深想的调用（recent.review、persona.correction、promotion merge 等）靠调用点开 thinking，不靠换档；用户在等的轻活（recall rerank 的聊天模型兜底、galgame 选项、窗口搜索关键词）走 `emotion`。不要为单点新增 hardcoded 模型名。
 
 ## 提交规范：高风险模块回归报告 + 大 PR 不拆分理由
 
