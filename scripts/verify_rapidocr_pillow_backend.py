@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+import contextlib
 import importlib.util
 import json
 import os
@@ -270,11 +272,36 @@ def _manifest_records(payload: object) -> list[dict[str, object]]:
     return records
 
 
+def _rapidocr_modnames() -> list[str]:
+    return [
+        name
+        for name in sys.modules
+        if name == "rapidocr_onnxruntime"
+        or name.startswith("rapidocr_onnxruntime.")
+        or name == "rapidocr_pillow"
+        or name.startswith("rapidocr_pillow.")
+    ]
+
+
+@contextlib.contextmanager
+def _using_fork_rapidocr() -> Iterator[None]:
+    original_sys_path = list(sys.path)
+    purged = {name: sys.modules.pop(name) for name in _rapidocr_modnames()}
+    sys.path.insert(0, str(FORK_ROOT))
+    try:
+        yield
+    finally:
+        sys.path[:] = original_sys_path
+        for name in _rapidocr_modnames():
+            sys.modules.pop(name, None)
+        sys.modules.update(purged)
+
+
 def _resolve_manifest_path(raw_path: str, manifest_dir: Path) -> Path:
     path = Path(raw_path)
     if path.is_absolute():
         return path
-    return (manifest_dir / path).resolve()
+    return Path(os.path.normpath(manifest_dir / path))
 
 
 def build_real_corpus_manifest(corpus_root: Path) -> list[dict[str, str]]:
@@ -333,10 +360,13 @@ def load_real_corpus_manifest(manifest_path: Path) -> list[CorpusItem]:
 
 
 def _ocr_key_candidates(item: CorpusItem) -> set[str]:
+    resolved = item.path.resolve()
     return {
         item.raw_path.replace("\\", "/"),
         item.path.as_posix(),
         _repo_relative(item.path),
+        resolved.as_posix(),
+        _repo_relative(resolved),
     }
 
 
@@ -409,9 +439,23 @@ def check_real_corpus_manifest(
             )
             continue
 
-        missing_json_items = [
-            item for item in items if not (_ocr_key_candidates(item) & set(ocr_payload))
-        ]
+        ocr_keys = set(ocr_payload)
+        resolved_ocr_paths: set[Path] = set()
+        for raw_key in ocr_keys:
+            key_path = Path(raw_key)
+            for candidate in (key_path, ROOT / key_path):
+                if candidate.exists():
+                    resolved_ocr_paths.add(candidate.resolve())
+
+        def _item_covered(item: CorpusItem) -> bool:
+            if _ocr_key_candidates(item) & ocr_keys:
+                return True
+            try:
+                return item.path.resolve() in resolved_ocr_paths
+            except OSError:
+                return False
+
+        missing_json_items = [item for item in items if not _item_covered(item)]
         _emit_result(
             results,
             f"real_corpus_json_coverage_{ocr_json_path.stem}",
@@ -474,49 +518,49 @@ def check_dependency_slimming(results: list[CheckResult]) -> None:
 
 
 def check_helper_parity(results: list[CheckResult]) -> None:
-    sys.path.insert(0, str(FORK_ROOT))
-    from rapidocr_onnxruntime import _pillow_cv as pillow_cv
+    with _using_fork_rapidocr():
+        from rapidocr_onnxruntime import _pillow_cv as pillow_cv
 
-    cv2_spec = importlib.util.find_spec("cv2")
-    shapely_spec = importlib.util.find_spec("shapely")
-    if cv2_spec is None or shapely_spec is None:
-        missing = [
-            name
-            for name, spec in (("cv2", cv2_spec), ("shapely", shapely_spec))
-            if spec is None
-        ]
-        _emit_result(
-            results,
-            "helper_parity",
-            "SKIP",
-            f"missing optional parity modules: {', '.join(missing)}",
-        )
-        return
+        cv2_spec = importlib.util.find_spec("cv2")
+        shapely_spec = importlib.util.find_spec("shapely")
+        if cv2_spec is None or shapely_spec is None:
+            missing = [
+                name
+                for name, spec in (("cv2", cv2_spec), ("shapely", shapely_spec))
+                if spec is None
+            ]
+            _emit_result(
+                results,
+                "helper_parity",
+                "SKIP",
+                f"missing optional parity modules: {', '.join(missing)}",
+            )
+            return
 
-    import cv2
-    from shapely.geometry import Polygon
+        import cv2
+        from shapely.geometry import Polygon
 
-    rng = np.random.default_rng(20260611)
-    color = rng.integers(0, 256, size=(17, 23, 3), dtype=np.uint8)
-    gray = rng.integers(0, 256, size=(17, 23), dtype=np.uint8)
-    mask = rng.integers(0, 2, size=(17, 23), dtype=np.uint8) * 255
+        rng = np.random.default_rng(20260611)
+        color = rng.integers(0, 256, size=(17, 23, 3), dtype=np.uint8)
+        gray = rng.integers(0, 256, size=(17, 23), dtype=np.uint8)
+        mask = rng.integers(0, 2, size=(17, 23), dtype=np.uint8) * 255
 
-    comparisons = {
-        "gray_to_bgr": np.array_equal(pillow_cv.gray_to_bgr(gray), cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)),
-        "rgb_to_bgr": np.array_equal(pillow_cv.rgb_to_bgr(color), cv2.cvtColor(color, cv2.COLOR_RGB2BGR)),
-        "bitwise_not": np.array_equal(pillow_cv.bitwise_not(color), cv2.bitwise_not(color)),
-        "bitwise_and": np.array_equal(
-            pillow_cv.bitwise_and_with_mask(color, mask),
-            cv2.bitwise_and(color, color, mask=mask),
-        ),
-        "add_uint8": np.array_equal(pillow_cv.add_uint8(color, color), cv2.add(color, color)),
-        "copy_make_border": np.array_equal(
-            pillow_cv.copy_make_border(color, 2, 3, 4, 5, 0),
-            cv2.copyMakeBorder(color, 2, 3, 4, 5, cv2.BORDER_CONSTANT, value=0),
-        ),
-    }
-    for name, ok in comparisons.items():
-        _emit_result(results, name, "PASS" if ok else "FAIL", "pixel exact")
+        comparisons = {
+            "gray_to_bgr": np.array_equal(pillow_cv.gray_to_bgr(gray), cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)),
+            "rgb_to_bgr": np.array_equal(pillow_cv.rgb_to_bgr(color), cv2.cvtColor(color, cv2.COLOR_RGB2BGR)),
+            "bitwise_not": np.array_equal(pillow_cv.bitwise_not(color), cv2.bitwise_not(color)),
+            "bitwise_and": np.array_equal(
+                pillow_cv.bitwise_and_with_mask(color, mask),
+                cv2.bitwise_and(color, color, mask=mask),
+            ),
+            "add_uint8": np.array_equal(pillow_cv.add_uint8(color, color), cv2.add(color, color)),
+            "copy_make_border": np.array_equal(
+                pillow_cv.copy_make_border(color, 2, 3, 4, 5, 0),
+                cv2.copyMakeBorder(color, 2, 3, 4, 5, cv2.BORDER_CONSTANT, value=0),
+            ),
+        }
+        for name, ok in comparisons.items():
+            _emit_result(results, name, "PASS" if ok else "FAIL", "pixel exact")
 
     points = np.array([[2.0, 1.0], [8.0, 2.0], [7.0, 6.0], [1.0, 5.0]], dtype=np.float32)
     polygon = Polygon(points)
@@ -625,16 +669,16 @@ def run_ocr(
     output_json: Path | None,
     runtime_source: str,
 ) -> dict[str, str]:
-    if runtime_source == "fork":
-        sys.path.insert(0, str(FORK_ROOT))
-    from rapidocr_onnxruntime import RapidOCR
+    ctx = _using_fork_rapidocr() if runtime_source == "fork" else contextlib.nullcontext()
+    with ctx:
+        from rapidocr_onnxruntime import RapidOCR
 
-    engine = RapidOCR()
-    results: dict[str, str] = {}
-    for image_path in _iter_images(images):
-        ocr_result, _ = engine(str(image_path))
-        text = "".join(item[1] for item in ocr_result) if ocr_result else ""
-        results[_repo_relative(image_path)] = text
+        engine = RapidOCR()
+        results: dict[str, str] = {}
+        for image_path in _iter_images(images):
+            ocr_result, _ = engine(str(image_path))
+            text = "".join(item[1] for item in ocr_result) if ocr_result else ""
+            results[_repo_relative(image_path)] = text
 
     if output_json is not None:
         output_json.parent.mkdir(parents=True, exist_ok=True)

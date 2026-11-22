@@ -170,10 +170,11 @@ class SteamWorkshop(object):
         :param title: str
         :return: bool
         """
-        if len(title) > 128:
-            raise AttributeError('title exceeds 128 characters')
+        title_bytes = title.encode("utf-8")
+        if len(title_bytes) > 128:
+            raise AttributeError('title exceeds 128 UTF-8 bytes')
 
-        return self.steam.Workshop_SetItemTitle(update_handle, title.encode())
+        return self.steam.Workshop_SetItemTitle(update_handle, title_bytes)
 
 
     def SetItemDescription(self, update_handle: int, description: str) -> bool:
@@ -183,10 +184,11 @@ class SteamWorkshop(object):
         :param description: str
         :return: bool
         """
-        if len(description) > 8000:
-            raise AttributeError('description exceeds 8000 characters')
+        description_bytes = description.encode("utf-8")
+        if len(description_bytes) > 8000:
+            raise AttributeError('description exceeds 8000 UTF-8 bytes')
 
-        return self.steam.Workshop_SetItemDescription(update_handle, description.encode())
+        return self.steam.Workshop_SetItemDescription(update_handle, description_bytes)
 
 
     def SetItemTags(self, update_handle: int, tags: list) -> bool:

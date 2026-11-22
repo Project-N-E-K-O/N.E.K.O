@@ -504,3 +504,27 @@ def test_main_fails_on_unregistered_package(script_module, monkeypatch, capsys) 
     out = capsys.readouterr().out
     assert "newpkg/  UNREGISTERED_PACKAGE  newpkg/mod.py" in out
     assert "Add 'newpkg' to LAYERS" in out
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("ancestor", ["build", "dist", "tests", "docs"])
+def test_repo_under_excluded_ancestor_still_collects_edges(
+    script_module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ancestor: str
+) -> None:
+    """F0326: ancestor dirs named build/dist/tests/docs must not exclude repo files."""
+    fake_root = tmp_path / ancestor / "NEKO"
+    utils_file = fake_root / "utils" / "bad.py"
+    utils_file.parent.mkdir(parents=True)
+    utils_file.write_text("import memory\n", encoding="utf-8")
+
+    tests_file = fake_root / "tests" / "test_ok.py"
+    tests_file.parent.mkdir(parents=True)
+    tests_file.write_text("import memory\n", encoding="utf-8")
+
+    monkeypatch.setattr(script_module, "REPO_ROOT", fake_root)
+    assert script_module._is_excluded(utils_file) is False
+    assert script_module._is_excluded(tests_file) is True
+
+    edges = script_module.collect_edges([fake_root])
+    inversions, _cycles = script_module.find_violations(edges)
+    assert any(edge[0] == utils_file and edge[3] == "utils" and edge[4] == "memory" for edge in inversions)

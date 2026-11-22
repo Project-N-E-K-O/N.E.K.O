@@ -382,14 +382,33 @@ class TrailingSlashChecker(ast.NodeVisitor):
         self._visit_decorated(node)
 
 
-def _is_excluded(path: Path) -> bool:
-    parts = set(path.parts)
+def _relative_to_root(path: Path, scan_root: Path | None) -> Path | None:
+    for root in (REPO_ROOT, scan_root):
+        if root is None:
+            continue
+        try:
+            rel = path.relative_to(root)
+            return Path(path.name) if root == scan_root and rel == Path(".") else rel
+        except ValueError:
+            pass
+        try:
+            rel = path.resolve().relative_to(root.resolve())
+            return Path(path.name) if root == scan_root and rel == Path(".") else rel
+        except ValueError:
+            pass
+    return None
+
+
+def _is_excluded(path: Path, scan_root: Path | None = None) -> bool:
+    rel_path = _relative_to_root(path, scan_root)
+    if rel_path is not None:
+        parts = set(rel_path.parts)
+        rel = rel_path.as_posix()
+    else:
+        parts = set(path.parts)
+        rel = path.as_posix()
     if parts & EXCLUDE_DIRS:
         return True
-    try:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        rel = path.as_posix()
     if rel in EXCLUDE_FILES:
         return True
     for ex in EXCLUDE_DIRS:
@@ -406,11 +425,11 @@ def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
             # of just one slice should still lint cleanly.
             continue
         if p.is_file():
-            if p.suffix == ".py" and not _is_excluded(p):
+            if p.suffix == ".py" and not _is_excluded(p, scan_root=p):
                 yield p
         elif p.is_dir():
             for f in sorted(p.rglob("*.py")):
-                if not _is_excluded(f):
+                if not _is_excluded(f, scan_root=p):
                     yield f
 
 

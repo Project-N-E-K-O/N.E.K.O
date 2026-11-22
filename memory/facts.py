@@ -53,6 +53,7 @@ from config import (
 from memory.temporal import (
     compute_event_timestamps,
     normalize_event_when,
+    to_naive_local,
 )
 from config.prompts.prompts_memory import (
     get_fact_extraction_batch_prompt,
@@ -2374,11 +2375,15 @@ class FactStore:
         cutoff = datetime.now() - timedelta(days=_ARCHIVE_AGE_DAYS)
         active, to_archive = [], []
         for f in facts:
+            if not isinstance(f, dict):
+                active.append(f)
+                continue
             try:
                 created = datetime.fromisoformat(f.get('created_at', ''))
             except (ValueError, TypeError):
                 active.append(f)
                 continue
+            created = to_naive_local(created)
             if f.get('absorbed') and created < cutoff and not f.get('_near_dup_pending'):
                 to_archive.append(f)
             else:
