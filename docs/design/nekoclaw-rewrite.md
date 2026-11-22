@@ -2541,7 +2541,7 @@ owner 2026-11-21 到 11-22 定了同一个项目里多个会话可以并行：�
 
 - 只写这几样：对象；`refs/nekoclaw/worktrees/<名字>/start`（下一次合回的合并起点，也让快照不被回收）；`git worktree add` / `remove` 的登记；合回时项目目录里合并真正改到的那些工作文件。
 - 分支、暂存区（真索引）、stash、配置、钩子一样不动。拍快照用临时索引（`GIT_INDEX_FILE`）：把真索引复制一份（只读真索引，保留时间，git 靠它跳过没改的文件；副本里 assume-unchanged / skip-worktree 的标记清掉，免得藏起改动；没有索引文件时从 `HEAD` 读）+ `add --all` + `write-tree` + `commit-tree`。唯一会切换检出的命令（`checkout`，备好冲突时）只在宿主自己的工作副本里跑。
-- 用户的主检出永远不会被当成宿主的工作副本：列登记时第一条（主检出）一律去掉；`open` 要求路径确实是这个仓库登记的工作副本、目录还在；`remove` 只删登记过的目录，或者 `.git` 文件指回这个仓库登记处的目录（git 删到一半把登记先删了的那种），路径上换成了别的目录就不动它。
+- 用户的主检出永远不会被当成宿主的工作副本：列登记时第一条（主检出）一律去掉；`open` 要求路径确实是这个仓库登记的工作副本、目录还在；`remove` 只删登记过的目录，或者 `.git` 文件指回这个仓库登记处的目录（git 删到一半把登记先删了的那种），路径上换成了别的目录（`.git` 不指回这个仓库，git 里的登记还在也一样）就不动它，只清掉过期的登记和引用。
 - 宿主不替用户跑用户配置的程序：任何属性来源给文件配了内容过滤器（`filter=`：LFS、git-crypt……）或用户配置的合并驱动（`merge=<名字>` 属性或 `merge.default` 指向的名字有任何 `merge.<名字>.*` 配置；只有描述没有命令的，git 合并时会直接报错，也算；给 `union` 之类自带的名字配了的，git 会先用用户的，也算），一律不用（见下）。只写了名字、本机没配驱动的，git 按文本合并，不跑程序，照常可用。
 - 每条 git 命令都带：`core.hooksPath` 指到一个不存在的目录（`worktree add` 本来会跑 `post-checkout`），关掉 fsmonitor、自动 gc 和 maintenance，`core.longpaths=true`，`core.safecrlf=false`（用户设了 `safecrlf` 时 `add` 会因为换行符拒绝），`core.splitIndex=false`（不然写临时索引会在用户的 `.git` 里留下共享索引文件），`GIT_TERMINAL_PROMPT=0`、`GCM_INTERACTIVE=never`、`GIT_NO_LAZY_FETCH=1`（不弹凭据、不联网），去掉会把 git 指到别的仓库、索引、配置、属性来源的环境变量，以及会改路径匹配和补丁格式的（`GIT_DIR`、`GIT_INDEX_FILE`、`GIT_CONFIG_COUNT`、`GIT_*_PATHSPECS`、`GIT_DIFF_OPTS`、`GIT_ATTR_SOURCE` 等）。快照提交的作者是固定的 `NekoClaw <nekoclaw@localhost>`（用户没配身份也行；`commit-tree` 本来就不看 `commit.gpgSign`，开了签名也不影响）。
 - 全部异步子进程，带超时（问版本和单个名字 30 秒，其余都可能扫全树，600 秒；`WORKTREE_GIT_*_SECONDS`），超时或被取消时杀掉 git 和它起的子进程（POSIX 上 git 自成一个进程组、整组杀，git 自己已经退出、子进程还在时也杀，组里有成员时组号不会被别人复用；Windows 上只在 git 还没被回收、进程号还是它的时候，用 psutil 找它的子孙，按创建时间排除进程号被复用的），再把剩下的输出读完回收，这一步最多等 `WORKTREE_GIT_STOP_SECONDS`（5 秒），到点就关掉管道不等了，免得一直拿着仓库的锁；输出按字节读，路径都用 `-z` 取。
@@ -2556,7 +2556,7 @@ owner 2026-11-21 到 11-22 定了同一个项目里多个会话可以并行：�
 
 **合回**（`merge_back`，办法可换：`Landing`，现在只有 `WorkingFiles`，以后加提交到分支、开 PR）：
 
-1. 用户正在合并、变基、拣选、还原、二分的半途（文件里可能带着用户自己的冲突标记），或者工作副本自己停在这类操作上、索引里有未合并的条目：回 `failed`，项目不动，等做完或放弃再合。
+1. 项目目录或工作副本任一边停在合并、变基、拣选、还原、二分的半途，或者索引里有未合并的条目（`stash pop` 冲突这类没有操作文件、只留下冲突标记的也算；文件里可能带着用户自己的冲突标记）：回 `failed`，项目不动，等做完或放弃再合。备冲突（`prepare_conflicts`）时工作副本停在这类操作上同样拒绝：检出会把它结束掉，放回时也找不回来。
 2. 给工作副本拍快照（结果），给项目目录拍快照（现在），`git merge-tree --write-tree --merge-base <起点> <现在> <结果>`，只算不碰文件。
 3. 有冲突：项目目录一个字节不变，回 `conflict` 和撞了的文件。
 4. 合并结果和现在一样：回 `unchanged`。

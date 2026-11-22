@@ -535,6 +535,11 @@ class WorktreeManager:
             start = await self._start(worktree)
             if start != conflict.base:
                 raise WorktreeError("the worktree landed or was prepared since this merge was tried; merge again")
+            # A checkout would end what is half done there (a merge's
+            # MERGE_HEAD), which putting back cannot restore.
+            unfinished = await self._unfinished(worktree.path)
+            if unfinished:
+                raise WorktreeError(f"{unfinished} in the worktree; finish or abort that, then merge again")
             now = await self._snapshot(worktree.path, "nekoclaw: worktree result", start)
             if now.tree != conflict.result_tree:
                 raise WorktreeError("the worktree changed after the merge was tried; merge again")
@@ -651,6 +656,11 @@ class WorktreeManager:
                                 f"the worktree's index could not be put back ({failed}); "
                                 f"what it was is kept in {saved / 'index'}"
                             )
+                    else:  # it had none: the checkouts made one
+                        try:
+                            await asyncio.to_thread(_remove_index, index)
+                        except Exception as failed:
+                            error.add_note(f"the index the checkout made could not be removed from {index}: {failed}")
                     try:
                         await self._put_start_back(worktree, start, error)
                     except Exception as failed:
@@ -681,8 +691,10 @@ class WorktreeManager:
     async def remove(self, worktree: Worktree) -> None:
         """Remove the worktree, its registration and its refs, whatever it holds; fine when already gone.
 
-        A directory at its path the repository has no registration for is
-        left alone: it is not known to be this worktree.
+        A directory at its path the repository has no registration for,
+        or whose ``.git`` does not point back to the repository (one put
+        there after the worktree went), is left alone: it is not known to
+        be this worktree.
         """
         async with await self._lock(worktree.repo_root):
             await self._forget(worktree.repo_root, worktree.path, worktree.id, remove_directory=False)
@@ -796,6 +808,9 @@ class WorktreeManager:
         if not await asyncio.to_thread(resolved.is_dir):
             return unusable(NOT_A_REPOSITORY, f"{directory} is not a directory")
         if root is None:
+            # A bare repository has no .git entry to find: git is asked.
+            if await self._is_bare(resolved):
+                return unusable(BARE_REPOSITORY, f"{resolved} is a bare repository")
             return unusable(NOT_A_REPOSITORY, f"{directory} is in no git repository")
         try:
             facts = await self._git(
@@ -817,6 +832,16 @@ class WorktreeManager:
         except GitError as error:
             return unusable(GIT_FAILED, str(error), top, subpath)
         return found if found is not None else Probe(None, "", top, subpath, version)
+
+    async def _is_bare(self, directory: Path) -> bool:
+        try:
+            asked = await self._git(
+                directory, "rev-parse", "--is-bare-repository", check=False,
+                timeout=settings.WORKTREE_GIT_QUERY_SECONDS,
+            )
+        except GitError:
+            return False
+        return asked.ok and asked.lines()[:1] == ["true"]
 
     async def _qualify(self, top: Path, subpath: str, git_dir: Path) -> Probe | None:
         """Return why a repository's work tree does not qualify, or None when it does."""
@@ -1247,6 +1272,14 @@ class WorktreeManager:
         # Another registered worktree of the same name owns the refs.
         theirs = any(known.name == worktree_id and not _same_path(known, path) for known in listed)
         common = Path((await self._git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")).lines()[0])
+        if registered and not remove_directory and await asyncio.to_thread(_taken_over, path, common):
+            # Still listed, but what is there now is not that worktree (its
+            # .git does not point back here): only the stale registration
+            # and the refs go.
+            await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
+            if not theirs:
+                await self._delete_refs(repo_root, worktree_id)
+            return
         removed_by_git = False
         if registered:
             removed = await self._git(
@@ -1262,11 +1295,12 @@ class WorktreeManager:
         # Ours: registered, made by this call, or (git dropped the
         # registration before it gave up) its .git file still points here.
         if registered or remove_directory or await asyncio.to_thread(_points_into, path, common):
-            await asyncio.to_thread(_remove_tree, path)
+            # Waited for to the end: the lock is not let go while it runs.
+            await _to_the_end(asyncio.to_thread(_remove_tree, path))
             if await asyncio.to_thread(os.path.lexists, _fs(path)):
                 raise WorktreeError(f"{path} could not be removed entirely; its registration and refs are kept")
         if registered and not removed_by_git:
-            await asyncio.to_thread(_drop_registration, common, path)
+            await _to_the_end(asyncio.to_thread(_drop_registration, common, path))
         if not theirs:
             await self._delete_refs(repo_root, worktree_id)
 
@@ -1461,6 +1495,12 @@ def _in_the_way(root: Path, written: list[str], held: set[str], nested: set[str]
 def _put_index_back(copy: Path, index: Path) -> None:
     """Put a worktree's index file back from its copy."""
     shutil.copy2(copy, index)
+
+
+def _remove_index(index: Path) -> None:
+    """Remove an index file that was not there before; fine when it is not there now."""
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(index)
 
 
 def _remove_files(root: Path, names: list[str]) -> None:
@@ -1718,6 +1758,11 @@ def _points_into(path: Path, common_dir: Path) -> bool:
     if not pointed.is_absolute():  # relative to where the .git file is
         pointed = path / pointed
     return _same_path(pointed.parent, common_dir / "worktrees")
+
+
+def _taken_over(path: Path, common_dir: Path) -> bool:
+    """Return whether something is at ``path`` that is not a worktree of this repository."""
+    return os.path.lexists(_fs(path)) and not _points_into(path, common_dir)
 
 
 def _drop_registration(common_dir: Path, path: Path) -> None:
