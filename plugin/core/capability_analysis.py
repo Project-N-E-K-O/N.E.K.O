@@ -206,14 +206,18 @@ def _sdk_module(path: str) -> bool:
     return path == "plugin" or path.startswith("plugin.")
 
 
-def _getattr_reference(node: ast.AST) -> tuple[ast.AST, str] | None:
-    """getattr(x, "name") — optionally called — reads like x.name."""
+def _getattr_reference(node: ast.AST, bindings=None) -> tuple[ast.AST, str] | None:
+    """getattr(x, "name") — optionally called — reads like x.name.
+
+    Skipped when the plugin binds its own ``getattr`` (bindings given).
+    """
     if not isinstance(node, ast.Call):
         return None
     func = node.func
     if (
         isinstance(func, ast.Name)
         and func.id == "getattr"
+        and (bindings is None or "getattr" not in bindings)
         and len(node.args) >= 2
         and isinstance(node.args[1], ast.Constant)
         and isinstance(node.args[1].value, str)
@@ -221,7 +225,7 @@ def _getattr_reference(node: ast.AST) -> tuple[ast.AST, str] | None:
     ):
         return node.args[0], node.args[1].value
     if isinstance(func, ast.Call):
-        return _getattr_reference(func)
+        return _getattr_reference(func, bindings)
     return None
 
 
@@ -244,6 +248,10 @@ class _Reference:
     raw_root: str = ""
     # Only stored into or deleted from (x[k] = v, del x[k]), never read.
     written: bool = False
+    # The root name holds a value read from the environment earlier
+    # (tok = os.environ.get()), whose own line is already the evidence. Other
+    # stored call results (p = Path(); p.write_text()) still count.
+    via_call_result: bool = False
 
 
 def _resolved_references(tree, walker: _AnalysisWalker):
@@ -261,9 +269,12 @@ def _references(tree, walker: _AnalysisWalker):
         _propagate_assignments(assignments, bindings, walker)
         # Names rebound here, plus those inherited from enclosing scopes that
         # this scope does not bind itself (it may import its own copy).
-        rebound = _rebound_names(nodes, walker) | (outer_rebound - declared)
+        rebound = _derived_rebound(
+            _rebound_names(nodes, walker) | (outer_rebound - declared), assignments, walker
+        )
         own = {id(node) for node in nodes}
         written = _written_targets(nodes, walker)
+        comprehension_locals = _comprehension_locals(nodes, walker)
 
         def nested(body, inherited, parameters=(), function=""):
             return scope(body, inherited, parameters, function, rebound)
@@ -272,7 +283,10 @@ def _references(tree, walker: _AnalysisWalker):
             # Nested scopes already applied their own view of rebinding.
             if id(reference.node) in own:
                 changes = {}
-                if reference.raw_root in rebound and not reference.rebound:
+                if not reference.rebound and (
+                    reference.raw_root in rebound
+                    or reference.raw_root in comprehension_locals.get(id(reference.node), ())
+                ):
                     changes["rebound"] = True
                 if id(reference.node) in written:
                     changes["written"] = True
@@ -331,7 +345,9 @@ def _rebound_names(nodes, walker) -> frozenset[str]:
     names: set[str] = set()
     for node in nodes:
         walker.check()
-        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            # Comprehension targets stay inside the comprehension; see
+            # _comprehension_locals.
             _target_names(node.target, names)
         elif isinstance(node, (ast.With, ast.AsyncWith)):
             for item in node.items:
@@ -346,10 +362,51 @@ def _rebound_names(nodes, walker) -> frozenset[str]:
             # A value the alias resolution cannot follow (a lambda, a
             # conditional, a subscript ...) leaves the previous binding in
             # place, so the name's origin is no longer certain.
-            opaque = node.value is None or isinstance(node, ast.AugAssign) or not _name(node.value)
+            # A constant (the optional-import fallback "requests = None") is
+            # not an alternative origin worth weakening the import for.
+            opaque = (
+                node.value is None
+                or isinstance(node, ast.AugAssign)
+                or (not _name(node.value) and not isinstance(node.value, ast.Constant))
+            )
             for target in targets:
                 if isinstance(target, (ast.Tuple, ast.List)) or (opaque and isinstance(target, ast.Name)):
                     _target_names(target, names)
+    return frozenset(names)
+
+
+def _is_data_read_result(resolved: str) -> bool:
+    return "()" in resolved and _matches(resolved.split("(", 1)[0], _DATA_READS + ("os.getenv", "os.getenvb"))
+
+
+def _comprehension_locals(nodes, walker) -> dict[int, frozenset[str]]:
+    """Node id -> names a comprehension binds around that node."""
+    local: dict[int, set[str]] = {}
+    for node in nodes:
+        walker.check()
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            names: set[str] = set()
+            for generator in node.generators:
+                _target_names(generator.target, names)
+            for child in ast.walk(node):
+                walker.check()
+                local.setdefault(id(child), set()).update(names)
+    return {key: frozenset(value) for key, value in local.items()}
+
+
+def _derived_rebound(rebound: frozenset[str], assignments, walker) -> frozenset[str]:
+    """Aliases of rebound names are uncertain too (run = subprocess.run)."""
+    names = set(rebound)
+    changed = True
+    while changed:
+        changed = False
+        for key, value in assignments:
+            walker.check()
+            if "." in key or key in names:
+                continue
+            if _root_name(_name(value)) in names:
+                names.add(key)
+                changed = True
     return frozenset(names)
 
 
@@ -488,7 +545,7 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             yield _Reference(node, "", False, None, function, False)
         elif isinstance(node, (ast.Attribute, ast.Call)):
-            getattr_reference = _getattr_reference(node)
+            getattr_reference = _getattr_reference(node, bindings)
             if getattr_reference is not None:
                 receiver, attribute = getattr_reference
                 raw = _name(receiver)
@@ -502,17 +559,22 @@ def _emit_references(nodes, bindings, scope, walker, function=""):
             else:
                 raw = _name(node.func if isinstance(node, ast.Call) else node)
                 resolved, external, bound = _resolve_with_origin(raw, bindings)
+                raw_root = _root_name(raw)
                 yield _Reference(
                     node, resolved, external, bound, function,
                     isinstance(node, ast.Call),
-                    raw_root=_root_name(raw),
+                    raw_root=raw_root,
+                    via_call_result=bool(bound)
+                    and raw_root != raw
+                    and _is_data_read_result(_resolve(raw_root, bindings)[0]),
                 )
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             # A bare name bound to a data attribute (from os import environ)
             # reads it; other bare names are left to the attribute and call
             # references so the legacy capability scan is unchanged.
             resolved, external, bound = _resolve_with_origin(node.id, bindings)
-            if external and bound and _matches(resolved, _DATA_READS):
+            # Only the mapping itself, not a stored result (tok = os.environ.get()).
+            if external and bound and resolved in _DATA_READS:
                 yield _Reference(node, resolved, external, bound, function, False, raw_root=node.id)
 
 
@@ -693,7 +755,8 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 # Data attributes whose mere read is the use (no call needed).
 _DATA_READS = ("os.environ", "os.environb")
 # Methods on those that change the mapping rather than read it.
-_DATA_WRITE_METHODS = frozenset({"update", "clear", "pop", "popitem", "setdefault", "__setitem__", "__delitem__"})
+# pop / popitem / setdefault return a value, so they read too.
+_DATA_WRITE_METHODS = frozenset({"update", "clear", "__setitem__", "__delitem__"})
 # SDK access points reported only under a permission id (no legacy name).
 _SDK_PERMISSION_SUFFIXES = ((".models.get_client", _MODELS),)
 # open()-like calls: function -> positional index of the mode argument.
@@ -754,7 +817,8 @@ _NOT_ANALYZED_WARNINGS = frozenset(
 # Non-Python code the scan does not read (hosted UI scripts and the like).
 _NON_PYTHON_CODE_SUFFIXES = frozenset({".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".vue"})
 _NON_PYTHON_SKIPPED_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv", "vendor"})
-_MAX_TREE_ENTRIES = 5000
+# Files and directories visited; generous so asset-heavy plugins finish.
+_MAX_TREE_ENTRIES = 20000
 _MAX_NON_PYTHON_REPORTED = 20
 _MAX_MANIFEST_BYTES = 1024 * 1024
 
@@ -798,6 +862,12 @@ def _open_permissions(reference: _Reference, name: str) -> tuple[tuple[str, ...]
         return (_FS_READ, _FS_WRITE), "unknown"
     argument = _call_argument(node, index, "mode")
     if argument is None:
+        unpacked = any(item.arg is None for item in node.keywords) or any(
+            isinstance(item, ast.Starred) for item in node.args
+        )
+        if unpacked:
+            # *args / **kwargs may carry the mode.
+            return (_FS_READ, _FS_WRITE), "unknown"
         return (_FS_READ,), "read"
     mode = _literal_string(argument)
     if mode is None:
@@ -828,7 +898,7 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
             if call_target.endswith(suffix):
                 results.append((permission, sdk_basis, {}))
     name = _origin_name(reference)
-    if name is None:
+    if name is None or reference.via_call_result:
         return results
     if name in _OPEN_CALLS and reference.is_call:
         permissions, mode = _open_permissions(reference, name)
@@ -863,7 +933,7 @@ def _import_hints(node: ast.Import | ast.ImportFrom) -> set[str]:
 
 def _reference_blind_spot(reference: _Reference) -> str | None:
     node = reference.node
-    name = _origin_name(reference)
+    name = None if reference.via_call_result else _origin_name(reference)
     method = reference.method
     if name is not None:
         if reference.is_call and name in _DYNAMIC_IMPORT_CALLS:
@@ -932,6 +1002,10 @@ def skipped_inventory(root: Path, stop: Event | None = None) -> dict:
                 inventory["truncated"] = True
                 break
             base = Path(current)
+            visited += len(directories)
+            if visited > _MAX_TREE_ENTRIES:
+                inventory["truncated"] = True
+                return inventory
             directories[:] = sorted(
                 name
                 for name in directories
@@ -1197,15 +1271,22 @@ def compare_declarations(report: dict) -> list[PermissionIssue]:
 def scan_note(report: dict) -> str:
     """Which user-facing scan sentence applies: never a safety claim.
 
-    "no_extra_usage": completed with no blind spots; "blind_spots": the scan
-    ran but has known blind spots or is partial; "unavailable" otherwise.
+    "no_extra_usage": completed, no blind spots and nothing beyond the
+    declarations; "completed": the same but with undeclared findings;
+    "blind_spots": known blind spots or partial; "unavailable" otherwise.
     """
     status = report.get("status")
-    if status == "completed" and not report.get("blind_spots"):
-        return "no_extra_usage"
-    if status in ("completed", "partial"):
+    if status not in ("completed", "partial"):
+        return "unavailable"
+    if report.get("blind_spots") or status == "partial":
         return "blind_spots"
-    return "unavailable"
+    undeclared = any(
+        item.get("findings") and item.get("declared") is None
+        for item in (report.get("permissions") or {}).values()
+    )
+    # Found use beyond the declarations: no summary sentence, the
+    # comparison issues say it.
+    return "completed" if undeclared else "no_extra_usage"
 
 
 def summarize_permissions(report: dict) -> dict:

@@ -582,7 +582,7 @@ def test_cli_checks_component_narrowing(tmp_path):
     assert any(
         message.startswith('@llm_tool in worker.py:6: permissions= lists "system.env:read"') for message in errors
     )
-    assert not any("worker.py:4" in message for message in errors)
+    assert not any(message.startswith("@plugin_entry in worker.py:4: permissions= lists") for message in errors)
     info = [message for level, message in messages if level == "info"]
     assert any(message.startswith("@llm_tool in worker.py:8: permissions= is not a literal list") for message in info)
 
@@ -745,7 +745,7 @@ def test_getattr_retrieval_is_not_a_call(tmp_path, source, direct):
 
 @pytest.mark.parametrize(
     "replacement",
-    ["lambda *args: None", "None", "pick() if flag else other", "handlers['run']"],
+    ["lambda *args: None", "pick() if flag else other", "handlers['run']"],
 )
 def test_a_name_reassigned_to_something_unresolvable_is_not_direct_evidence(tmp_path, replacement):
     report = _scan(tmp_path, f"import subprocess\nrunner = subprocess.run\nrunner = {replacement}\nrunner('x')\n")
@@ -825,7 +825,6 @@ def test_more_imported_environ_reads(tmp_path, source):
         "import os\nos.environ['X'] = '1'\n",
         "import os\ndel os.environ['X']\n",
         "import os\nos.environ.update(X='1')\n",
-        "import os\nos.environ.pop('X', None)\n",
         "from os import environ\nenviron['X'] = '1'\n",
     ],
 )
@@ -863,7 +862,7 @@ def test_cli_warns_that_the_sdk_does_not_take_permissions_yet(tmp_path):
         "    async def a(self): ...\n",
         '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
     )
-    warnings = _issues(plugin_dir, "warning")
+    warnings = _issues(plugin_dir, "error")
     [warning] = [message for message in warnings if "does not accept permissions=" in message]
     assert warning.startswith("@plugin_entry in worker.py:4:")
     _assert_all_locales(warning)
@@ -901,3 +900,98 @@ def test_release_check_passes_validation_without_a_table_and_says_it_will_become
 )
 def test_augmented_assignment_to_the_environment_is_a_read(tmp_path, source):
     assert _errors(_scan(tmp_path, source)) == ["system.env:read"]
+
+
+# --- review round 3 ----------------------------------------------------------------------
+
+
+def test_optional_import_fallback_keeps_direct_evidence(tmp_path):
+    source = (
+        "try:\n    import requests\nexcept ImportError:\n    requests = None\n"
+        "def fetch(u):\n    return requests.get(u)\n"
+    )
+    assert _errors(_scan(tmp_path, source)) == ["system.network:connect"]
+
+
+def test_comprehension_targets_do_not_leak_into_the_enclosing_scope(tmp_path):
+    source = "import subprocess\nITEMS = [subprocess for subprocess in range(3)]\ndef f():\n    subprocess.run(['ls'])\n"
+    assert _errors(_scan(tmp_path, source)) == ["system.process:spawn"]
+
+
+def test_aliases_of_rebound_names_are_uncertain(tmp_path):
+    source = "import subprocess\nfor subprocess in handlers:\n    run = subprocess.run\n    run('x')\n"
+    assert _errors(_scan(tmp_path, source)) == []
+    plain = "import subprocess\nrun = subprocess.run\nrun('x')\n"
+    assert _errors(_scan(tmp_path, plain)) == ["system.process:spawn"]
+
+
+def test_a_plugin_defined_getattr_is_not_the_builtin(tmp_path):
+    source = "import subprocess\ndef getattr(obj, name):\n    return lambda *a: None\ngetattr(subprocess, 'run')([])\n"
+    assert _errors(_scan(tmp_path, source)) == []
+
+
+def test_open_with_unpacked_arguments_has_an_unknown_mode(tmp_path):
+    report = _scan(tmp_path, "open('out.txt', **{'mode': 'w'})\n")
+    assert set(report["permissions"]) == {"system.fs:read", "system.fs:write"}
+    assert report["permissions"]["system.fs:write"]["findings"][0]["mode"] == "unknown"
+
+
+def test_scan_note_does_not_claim_no_extra_usage_next_to_undeclared_use(tmp_path):
+    report = _scan(tmp_path, "import os\nos.getenv('KEY')\n")
+    assert scan_note(report) == "completed"
+    declared = _scan(tmp_path, "import os\nos.getenv('KEY')\n", manifest='[permissions.ask]\n"system.env:read" = { reason = "x" }\n')
+    assert scan_note(declared) == "no_extra_usage"
+
+
+@pytest.mark.parametrize("call", ["os.environ.pop('X', None)", "os.environ.setdefault('X', '1')"])
+def test_methods_that_return_environment_values_are_reads(tmp_path, call):
+    assert _errors(_scan(tmp_path, f"import os\nsend({call})\n")) == ["system.env:read"]
+
+
+@pytest.mark.parametrize("read", ["os.environ.get('A')", "os.getenv('A')"])
+def test_uses_of_a_stored_call_result_do_not_repeat_the_evidence(tmp_path, read):
+    report = _scan(tmp_path, f"import os\ntok = {read}\nx = tok.strip()\ny = tok.lower()\n")
+    assert [row["line"] for row in report["permissions"]["system.env:read"]["findings"]] == [2]
+
+
+def test_directories_count_toward_the_tree_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(capability_analysis, "_MAX_TREE_ENTRIES", 3)
+    for index in range(5):
+        (tmp_path / f"dir_{index}").mkdir()
+    assert capability_analysis.skipped_inventory(tmp_path)["truncated"] is True
+
+
+def test_cli_only_checks_permissions_on_sdk_decorators(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "def hook(**kwargs):\n    return lambda f: f\n"
+        "class P:\n"
+        "    @hook(permissions=['local-cache'])\n"
+        "    def a(self): ...\n",
+        "[permissions]\n",
+    )
+    assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
+
+
+def test_cli_permissions_keyword_on_sdk_decorators_is_an_error(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "from plugin.sdk.plugin import plugin_entry\n"
+        "class P:\n"
+        "    @plugin_entry(id='a', permissions=['system.network:connect'])\n"
+        "    async def a(self): ...\n",
+        '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
+    )
+    assert any("does not accept permissions=" in message for message in _issues(plugin_dir, "error"))
+
+
+@pytest.mark.parametrize(
+    "source,permission",
+    [
+        ("import pathlib\np = pathlib.Path('x')\np.write_text('hi')\n", "system.fs:write"),
+        ("import requests\ns = requests.Session()\ns.get('u')\n", "system.network:connect"),
+    ],
+)
+def test_methods_on_stored_objects_still_count(tmp_path, source, permission):
+    report = _scan(tmp_path, source)
+    assert 3 in [row["line"] for row in report["permissions"][permission]["findings"]]

@@ -1253,9 +1253,10 @@ def _check_permission_narrowing(
     for item in decorator.keywords:
         if item.arg != "permissions":
             continue
-        # The SDK decorators are keyword-only and do not take this yet.
+        # The SDK decorators are keyword-only and do not take this yet, so the
+        # plugin would fail to load.
         issues.append(
-            _permission_issue(PermissionIssue("warning", "narrowing_runtime_unsupported", {"label": label}))
+            _permission_issue(PermissionIssue("error", "narrowing_runtime_unsupported", {"label": label}))
         )
         if declared is None:
             return
@@ -1331,6 +1332,28 @@ def _check_permission_usage(
         )
 
 
+def _sdk_imported_names(tree: ast.Module) -> set[str]:
+    """Local names bound by imports from the plugin SDK (``plugin.*``)."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and not node.level and node.module and (
+            node.module == "plugin" or node.module.startswith("plugin.")
+        ):
+            names.update(item.asname or item.name for item in node.names)
+        elif isinstance(node, ast.Import):
+            for item in node.names:
+                if item.name == "plugin" or item.name.startswith("plugin."):
+                    names.add(item.asname or item.name.split(".")[0])
+    return names
+
+
+def _decorator_root(decorator: ast.expr) -> str:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    while isinstance(target, ast.Attribute):
+        target = target.value
+    return target.id if isinstance(target, ast.Name) else ""
+
+
 def _check_python_decorators(
     plugin_dir: Path,
     issues: list[tuple[str, str]],
@@ -1344,12 +1367,13 @@ def _check_python_decorators(
         if tree is None:
             continue
         _check_deprecated_push_message_calls(tree, relative, issues)
+        sdk_names = _sdk_imported_names(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
                 name = _decorator_name(decorator)
-                if name in _PERMISSION_NARROWING_DECORATORS:
+                if name in _PERMISSION_NARROWING_DECORATORS and _decorator_root(decorator) in sdk_names:
                     _check_permission_narrowing(
                         decorator, f"@{name} in {relative}:{node.lineno}", declared, issues
                     )
