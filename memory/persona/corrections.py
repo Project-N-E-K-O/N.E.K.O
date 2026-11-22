@@ -928,7 +928,25 @@ class CorrectionsMixin:
                         snapshot['speaker_trust'] = trust
                 return snapshot
 
-            if action == 'merge':
+            item_cid = str(item.get('correction_id') or '').strip()
+            already_applied = bool(
+                item_cid
+                and any(
+                    isinstance(e, dict)
+                    and _entry_in_scope(e)
+                    and (
+                        e.get('applied_correction_id') == item_cid
+                        or (
+                            isinstance(e.get('applied_correction_ids'), list)
+                            and item_cid in e['applied_correction_ids']
+                        )
+                    )
+                    for e in section_facts
+                )
+            )
+            if already_applied:
+                pass
+            elif action == 'merge':
                 # `replace` means "new observation is an update/correction to
                 # the old memory" — semantically an in-place edit, not a
                 # fresh insertion. We update `text` + extend the version

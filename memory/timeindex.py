@@ -1834,19 +1834,21 @@ class TimeIndexedMemory:
 
     def index_fact(
         self, lanlan_name: str, fact_id: str, content: str, *, replace: bool = False,
-    ) -> None:
+    ) -> bool:
         """Insert (or replace when ``replace=True``) a fact in the FTS5 index.
 
         What lands in the ``content`` column is the token list from
         ``fts_tokens``, space-joined — never the raw fact text. Nothing
         reads this column back as prose (search returns ids), so the
         stored form is free to be whatever makes matching work.
+        Returns True when the index reflects the fact (or already had it in
+        insert mode), False when engine/table was unavailable or DB write failed.
         """
         self._assert_timeindex_writable(lanlan_name)
         if not self._ensure_engine_exists(lanlan_name):
-            return
+            return False
         if not self._ensure_fts_table(lanlan_name):
-            return
+            return False
         stop_names = collect_stop_names(get_config_manager(), lanlan_name)
         indexed_content = " ".join(fts_tokens(content, stop_names))
         try:
@@ -1863,19 +1865,21 @@ class TimeIndexedMemory:
                         {"fid": fact_id}
                     )
                     if result.fetchone():
-                        return  # Already indexed.
+                        return True  # Already indexed.
                 conn.execute(
                     text(f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) VALUES(:fid, :content)"),
                     {"fid": fact_id, "content": indexed_content}
                 )
                 conn.commit()
+            return True
         except Exception as e:
             logger.warning(f"[TimeIndexedMemory] 索引事实失败: {e}")
+            return False
 
     async def aindex_fact(
         self, lanlan_name: str, fact_id: str, content: str, *, replace: bool = False,
-    ) -> None:
-        await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content, replace=replace)
+    ) -> bool:
+        return await asyncio.to_thread(self.index_fact, lanlan_name, fact_id, content, replace=replace)
 
     # ── v1 → v2 index backfill ──────────────────────────────────────────
 
@@ -2157,3 +2161,51 @@ class TimeIndexedMemory:
             fact_id,
             strict=strict,
         )
+
+    def rebuild_fact_index(
+        self, lanlan_name: str, facts: list[dict],
+    ) -> int:
+        """Atomically rebuild ``facts_fts_v2`` for ``lanlan_name`` from ``facts``.
+
+        Used after snapshot restore so restored, un-archived, or reverted facts
+        immediately match the on-disk ``facts.json`` state for near-duplicate
+        checks (instead of retaining stale pre-restore tokens or missing deleted rows).
+        """
+        self._assert_timeindex_writable(lanlan_name)
+        if not self._ensure_engine_exists(lanlan_name):
+            return 0
+        if not self._ensure_fts_table(lanlan_name):
+            return 0
+        stop_names = collect_stop_names(get_config_manager(), lanlan_name)
+        rows: list[tuple[str, str]] = []
+        seen_ids: set[str] = set()
+        for f in facts:
+            if not isinstance(f, dict):
+                continue
+            fid = str(f.get("id") or "").strip()
+            content = str(f.get("text") or "").strip()
+            if not fid or not content or fid in seen_ids:
+                continue
+            seen_ids.add(fid)
+            rows.append((fid, " ".join(fts_tokens(content, stop_names))))
+        try:
+            with self.engines[lanlan_name].connect() as conn:
+                conn.execute(text(f"DELETE FROM {self.FACTS_FTS_TABLE}"))
+                for fid, indexed_content in rows:
+                    conn.execute(
+                        text(
+                            f"INSERT INTO {self.FACTS_FTS_TABLE}(fact_id, content) "
+                            "VALUES(:fid, :content)"
+                        ),
+                        {"fid": fid, "content": indexed_content},
+                    )
+                conn.commit()
+            return len(rows)
+        except Exception as e:
+            logger.warning(f"[TimeIndexedMemory] 重建 FTS5 索引失败: {e}")
+            return 0
+
+    async def arebuild_fact_index(
+        self, lanlan_name: str, facts: list[dict],
+    ) -> int:
+        return await asyncio.to_thread(self.rebuild_fact_index, lanlan_name, facts)

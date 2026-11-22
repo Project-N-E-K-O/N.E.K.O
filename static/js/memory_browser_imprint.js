@@ -317,7 +317,8 @@
             if (!resp.ok || !data.success) {
                 overviewData = null;
                 overviewError = data.error || tr('memory.loadFailed', '加载失败');
-                renderErrorState(overviewError);
+                renderImprintPanel();
+                renderProfilePanel();
                 return;
             }
             overviewError = '';
@@ -330,7 +331,8 @@
             if (reqId !== loadingRequestId) return;
             overviewData = null;
             overviewError = (err && err.message) ? err.message : tr('memory.loadFailed', '加载失败');
-            renderErrorState(overviewError);
+            renderImprintPanel();
+            renderProfilePanel();
         }
     }
 
@@ -377,7 +379,17 @@
             if (reqId === snapshotsRequestId) {
                 snapshotsLoading = false;
                 if (activeTab === 'profile' && !overviewError) {
-                    renderProfilePanel();
+                    const profilePanel = document.getElementById('memory-panel-profile');
+                    const activeEl = document.activeElement;
+                    const editingInProfile = Boolean(
+                        profilePanel && (
+                            profilePanel.querySelector('textarea.memory-inline-textarea:not([hidden])')
+                            || (activeEl && profilePanel.contains(activeEl) && (activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT'))
+                        )
+                    );
+                    if (!editingInProfile) {
+                        renderProfilePanel();
+                    }
                 }
             }
         }
@@ -473,7 +485,9 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = targetChar + '_' + (normMode === 'diagnostics' ? 'diagnostics_redacted' : 'keepsake') + '.zip';
+            a.download = normMode === 'diagnostics'
+                ? 'neko_memory_diagnostics_redacted.zip'
+                : (targetChar + '_keepsake.zip');
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -2114,6 +2128,23 @@
                 className: 'memory-empty-state',
                 textContent: tr('memory.selectCharacterPrompt', '请先在左侧选择一位角色'),
             }));
+            return;
+        }
+        if (overviewError) {
+            panel.appendChild(el('div', { className: 'memory-empty-state' }, [
+                el('p', { textContent: overviewError }),
+                el('button', {
+                    type: 'button',
+                    className: 'memory-pill-btn is-sm',
+                    textContent: tr('memory.retry', '重试'),
+                    onClick: function () {
+                        overviewError = '';
+                        renderImprintPanel();
+                        renderProfilePanel();
+                        fetchOverview(activeCharacter);
+                    },
+                }),
+            ]));
             return;
         }
         if (!overviewData || !overviewData.memories) {

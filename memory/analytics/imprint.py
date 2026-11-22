@@ -180,6 +180,15 @@ def _text_bigrams(text: str) -> set[str]:
     return {compact[i : i + 2] for i in range(len(compact) - 1)}
 
 
+def _entry_subject_scope_key(entry: dict) -> tuple[str, str, str]:
+    """Return a canonical subject/scope isolation key so merges never cross subject boundaries."""
+    return (
+        str(entry.get("subject_kind") or ""),
+        str(entry.get("subject_id") or ""),
+        str(entry.get("scope") or ""),
+    )
+
+
 def _inspect_embeddings(items: list[tuple[str, dict]]) -> dict[str, Any]:
     """Audit embedding coverage, staleness, corruption, and dimension splits."""
     total = len(items)
@@ -188,7 +197,7 @@ def _inspect_embeddings(items: list[tuple[str, dict]]) -> dict[str, Any]:
     stale = 0
     corrupt = 0
     dims: dict[int, int] = {}
-    decoded_vectors: list[tuple[str, str, str, str, Any]] = []
+    decoded_vectors: list[tuple[str, str, str, str, Any, tuple[str, str, str]]] = []
 
     for kind, entry in items:
         text = str(entry.get("text") or "").strip()
@@ -216,7 +225,7 @@ def _inspect_embeddings(items: list[tuple[str, dict]]) -> dict[str, Any]:
                 if str(emb_legacy_hash).strip()[:16] != full_sha[:16]:
                     stale += 1
         if eid and text:
-            decoded_vectors.append((kind, entity, eid, text, vec))
+            decoded_vectors.append((kind, entity, eid, text, vec, _entry_subject_scope_key(entry)))
 
     primary_dim = max(dims.items(), key=lambda kv: kv[1])[0] if dims else None
     other_dim_count = sum(c for d, c in dims.items() if d != primary_dim)
@@ -236,8 +245,8 @@ def _inspect_embeddings(items: list[tuple[str, dict]]) -> dict[str, Any]:
 
 
 def _find_near_duplicates(
-    decoded_vectors: list[tuple[str, str, str, str, Any]],
-    fallback_items: list[tuple[str, str, str, str]],
+    decoded_vectors: list[tuple[str, str, str, str, Any, tuple[str, str, str]]],
+    fallback_items: list[tuple[str, str, str, str, tuple[str, str, str]]],
     *,
     cosine_threshold: float = 0.90,
     jaccard_threshold: float = 0.78,
@@ -269,10 +278,11 @@ def _find_near_duplicates(
                     for j in range(i + 1, n):
                         score = float(row[j])
                         if score >= cosine_threshold:
-                            # Only propose merges within the same kind & entity with distinct IDs.
+                            # Only propose merges within the same kind, entity, and subject/scope.
                             if (
                                 usable[i][0] == usable[j][0]
                                 and usable[i][1] == usable[j][1]
+                                and usable[i][5] == usable[j][5]
                                 and usable[i][2] != usable[j][2]
                             ):
                                 raw_hits.append((score, i, j))
@@ -311,6 +321,8 @@ def _find_near_duplicates(
             continue
         for j in range(i + 1, len(capped)):
             if capped[i][0] != capped[j][0] or capped[i][1] != capped[j][1]:
+                continue
+            if capped[i][4] != capped[j][4]:
                 continue
             if capped[i][2] == capped[j][2]:
                 continue
@@ -479,7 +491,7 @@ def build_memory_overview(
         all_dates.append(first_db_dt)
 
     embed_audit_pool: list[tuple[str, dict]] = []
-    dedup_fallback_pool: list[tuple[str, str, str, str]] = []
+    dedup_fallback_pool: list[tuple[str, str, str, str, tuple[str, str, str]]] = []
 
     for entity_key, section in persona_raw.items():
         if entity_key == _META_ENTITY or not isinstance(section, dict):
@@ -558,7 +570,7 @@ def build_memory_overview(
             embed_entry["_entity"] = entity_key
             embed_audit_pool.append(("persona", embed_entry))
             if eid:
-                dedup_fallback_pool.append(("persona", entity_key, eid, text))
+                dedup_fallback_pool.append(("persona", entity_key, eid, text, _entry_subject_scope_key(entry)))
 
             if not math.isinf(score) and score < 0:
                 negative_evidence_count += 1
@@ -621,7 +633,7 @@ def build_memory_overview(
 
         embed_audit_pool.append(("reflection", r))
         if rid:
-            dedup_fallback_pool.append(("reflection", entity, rid, text))
+            dedup_fallback_pool.append(("reflection", entity, rid, text, _entry_subject_scope_key(r)))
 
         rel_type = str(r.get("relation_type") or "")
         dim = _RELATION_TO_DIMENSION.get(rel_type)

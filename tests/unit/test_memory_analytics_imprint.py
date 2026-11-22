@@ -1029,12 +1029,13 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
     assert retired_cards[0]["permanent_suppression"] is True
     assert retired_cards[0]["suppress"] is False
 
-    ev_log = EventLog(memory_dir=str(cm.memory_dir))
     fake_timeindex = MagicMock()
-    fake_timeindex.aindex_fact = AsyncMock()
+    fake_timeindex.aindex_fact = AsyncMock(return_value=True)
     fake_timeindex.adelete_fact_from_index = AsyncMock()
+    fake_timeindex.arebuild_fact_index = AsyncMock(return_value=2)
 
     with (
+        patch("memory.event_log.get_config_manager", return_value=cm),
         patch("memory.persona.manager.get_config_manager", return_value=cm),
         patch("memory.persona.persistence.assert_cloudsave_writable"),
         patch("memory.persona.facts.assert_cloudsave_writable"),
@@ -1046,6 +1047,7 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
         patch("memory.analytics.snapshots.assert_cloudsave_writable"),
         patch("memory.user_directives.get_config_manager", return_value=cm),
     ):
+        ev_log = EventLog()
         pm = PersonaManager(event_log=ev_log)
         pm._config_manager = cm
         fs = FactStore(time_indexed_memory=fake_timeindex)
@@ -1053,8 +1055,15 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
         re_eng = ReflectionEngine(fact_store=fs, persona_manager=pm, event_log=ev_log)
         re_eng._config_manager = cm
 
-        # Create safety checkpoint BEFORE mutations
-        snap = await acreate_snapshot(char_name, label="pre-ops", config_manager=cm)
+        # Create safety checkpoint BEFORE mutations (passing managers to exercise lock path)
+        snap = await acreate_snapshot(
+            char_name,
+            label="pre-ops",
+            config_manager=cm,
+            persona_manager=pm,
+            fact_store=fs,
+            reflection_engine=re_eng,
+        )
 
         # Oversized merged_text (>1000 chars) fails WITHOUT archiving drop_id for all 3 kinds
         too_long = "长" * 1005
@@ -1068,13 +1077,37 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
         assert len(await re_eng._aload_reflections_full(char_name)) == 2
         assert len(await fs.aload_facts(char_name)) == 2
 
+        # Cross-subject fact merge is rejected before any write
+        cur_facts = await fs.aload_facts(char_name)
+        cur_facts.append({
+            "id": "f_other_subj",
+            "entity": "master",
+            "text": "周六买了咖啡豆",
+            "subject_kind": "person",
+            "subject_id": "alice",
+            "scope": "group:1",
+        })
+        fs.save_facts(char_name)
+        with pytest.raises(ValueError):
+            await fs.amerge_facts_manual(char_name, "f_keep", "f_other_subj", "不应跨主体合并")
+        cur_facts.pop()
+        fs.save_facts(char_name)
+
+        # Shard preparation failure leaves keep_entry untouched in amerge_persona_entries
+        with patch("memory.archive_shards.apick_today_shard_path", AsyncMock(side_effect=OSError("disk full"))):
+            with pytest.raises(OSError):
+                await pm.amerge_persona_entries(char_name, "master", "p_keep", "p_drop", "不应提前改写")
+        persona_after_fail = (await pm.aensure_persona(char_name))["master"]["facts"]
+        assert next(e for e in persona_after_fail if e["id"] == "p_keep")["text"] == "喜欢听爵士乐"
+        assert any(e["id"] == "p_drop" for e in persona_after_fail)
+
         # Daily external_import fact edit preserves date-salted hash & refreshes FTS with replace=True
         edited_daily = await fs.aedit_fact_manual(char_name, "f_keep", "周六买了埃塞俄比亚豆")
         expected_daily_hash = hashlib.sha256("2026-05-01\n周六买了埃塞俄比亚豆".encode()).hexdigest()[:16]
         assert edited_daily is not None and edited_daily["hash"] == expected_daily_hash
         fake_timeindex.aindex_fact.assert_awaited_with(char_name, "f_keep", "周六买了埃塞俄比亚豆", replace=True)
 
-        # Valid merges across fact, persona, and promoted reflection all succeed
+        # Valid merges across fact, persona, and promoted reflection all succeed with item-level archive assertions
         merged_fact = await fs.amerge_facts_manual(char_name, "f_keep", "f_drop", "周六买了精品咖啡豆")
         assert merged_fact is not None and merged_fact["text"] == "周六买了精品咖啡豆"
         assert [f["id"] for f in await fs.aload_facts(char_name)] == ["f_keep"]
@@ -1082,13 +1115,29 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
 
         merged_persona = await pm.amerge_persona_entries(char_name, "master", "p_keep", "p_drop", "很喜欢听爵士乐")
         assert merged_persona["text"] == "很喜欢听爵士乐"
-        assert (char_dir / "persona_archive").is_dir()
+        active_persona_ids = [e["id"] for e in (await pm.aensure_persona(char_name))["master"]["facts"]]
+        assert "p_keep" in active_persona_ids and "p_drop" not in active_persona_ids
+        p_shards = list((char_dir / "persona_archive").glob("*.json"))
+        assert p_shards
+        p_archived = json.loads(p_shards[0].read_text(encoding="utf-8"))
+        assert any(e.get("id") == "p_drop" and e.get("merged_into") == "p_keep" for e in p_archived)
 
         merged_refl = await re_eng.amerge_reflections(char_name, "r_keep", "r_drop", "喜欢去海边散步")
         assert merged_refl["text"] == "喜欢去海边散步"
-        assert (char_dir / "reflection_archive").is_dir()
+        active_refl_ids = [r["id"] for r in await re_eng._aload_reflections_full(char_name)]
+        assert "r_keep" in active_refl_ids and "r_drop" not in active_refl_ids
+        r_shards = list((char_dir / "reflection_archive").glob("*.json"))
+        assert r_shards
+        r_archived = json.loads(r_shards[0].read_text(encoding="utf-8"))
+        assert any(r.get("id") == "r_drop" and r.get("merged_into") == "r_keep" for r in r_archived)
+
+        # Automatic archive sweep skips pinned entries under persona lock
+        await pm.aset_persona_flags(char_name, "master", "p_keep", user_pinned=True)
+        assert await pm.aarchive_persona_entry(char_name, "master", "p_keep", skip_pinned=True) is False
+        assert any(e["id"] == "p_keep" for e in (await pm.aensure_persona(char_name))["master"]["facts"])
 
         # Restore checkpoint: forgotten/merged facts & persona/reflection shards must NOT remain duplicated
+        # AND FTS index must be rebuilt from restored facts.json
         await arestore_snapshot(
             char_name,
             snap["snapshot_id"],
@@ -1102,6 +1151,7 @@ async def test_round2_merges_snapshot_archives_directives_and_redaction(tmp_path
         assert not (char_dir / "facts_archive.json").exists()
         assert not list((char_dir / "persona_archive").glob("*.json"))
         assert not list((char_dir / "reflection_archive").glob("*.json"))
+        fake_timeindex.arebuild_fact_index.assert_awaited_once()
 
         # Snapshot manifest missing `files` list is rejected without deleting live files
         bad_snap_dir = char_dir / "browser_snapshots" / "snap_bad_manifest"

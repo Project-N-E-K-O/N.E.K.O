@@ -974,6 +974,8 @@ class FactsMixin:
             entry = self._find_entry_in_section(section_facts, entry_id)
             if entry is None:
                 return None
+            if entry.get('protected') or entry.get('user_pinned'):
+                return None
             # Coderabbit PR #934 round-2 Major #2: probe on a staged copy
             # so the cached entry is NOT mutated until inside the locked
             # record_and_save critical section. If event append or save
@@ -1025,7 +1027,7 @@ class FactsMixin:
             return new_count
 
     async def aarchive_persona_entry(
-        self, name: str, entity_key: str, entry_id: str,
+        self, name: str, entity_key: str, entry_id: str, *, skip_pinned: bool = False,
     ) -> bool:
         """Move one persona entry from main view to a sharded archive file.
 
@@ -1034,7 +1036,11 @@ class FactsMixin:
         the archive flow from a regular fact_added (regular adds have no
         such field). Mirrors `ReflectionEngine.aarchive_reflection`.
 
-        Returns True if archived; False if not found / protected.
+        When ``skip_pinned=True`` (used by automatic archive sweep), also skips
+        entries marked ``user_pinned`` under the persona lock so concurrent pin
+        actions are never overwritten by an in-flight sweep.
+
+        Returns True if archived; False if not found / protected / skipped.
         """
         from memory.archive_shards import aappend_to_shard, apick_today_shard_path
         from memory.event_log import EVT_PERSONA_FACT_ADDED
@@ -1061,9 +1067,9 @@ class FactsMixin:
                     f"entry_id={entry_id}"
                 )
                 return False
-            if entry.get('protected'):
+            if entry.get('protected') or (skip_pinned and entry.get('user_pinned')):
                 logger.debug(
-                    f"[Persona] {name}: aarchive_persona_entry 跳过 protected "
+                    f"[Persona] {name}: aarchive_persona_entry 跳过 protected/pinned "
                     f"entry_id={entry_id}"
                 )
                 return False
@@ -1244,9 +1250,21 @@ class FactsMixin:
                 or drop_entry.get('protected') or drop_entry.get('source') == 'character_card'
             ):
                 raise PermissionError("Character card entries are protected")
+            from memory.scopes import subject_from_entry
+            if (
+                subject_from_entry(keep_entry) != subject_from_entry(drop_entry)
+                or str(keep_entry.get('scope') or '') != str(drop_entry.get('scope') or '')
+            ):
+                raise ValueError("Cannot merge persona entries from different subjects or scopes")
 
             now = datetime.now()
             now_iso = now.isoformat()
+
+            # Prepare archive shard BEFORE mutating or writing persona.json so a shard
+            # preparation failure never leaves keep_entry rewritten while drop_entry stays active.
+            archive_dir = self._persona_archive_dir(name)
+            shard_path = await apick_today_shard_path(archive_dir, now=now)
+            shard_basename = os.path.basename(shard_path)
 
             # Step 1: update keep_id FIRST so any validation/save failure leaves drop_id active.
             old_text = str(keep_entry.get('text') or '').strip()
@@ -1282,9 +1300,6 @@ class FactsMixin:
                 )
 
             # Step 2: archive drop_id under the same per-character lock.
-            archive_dir = self._persona_archive_dir(name)
-            shard_path = await apick_today_shard_path(archive_dir, now=now)
-            shard_basename = os.path.basename(shard_path)
             archive_entry = dict(drop_entry)
             archive_entry['entity_key'] = entity_key
             archive_entry['archived_at'] = now_iso

@@ -7097,20 +7097,20 @@ class FactStore:
         return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
 
     @staticmethod
-    async def _run_shielded_persist_thread(fn):
-        """Run a sync persist callback in a thread and wait for completion under repeated cancels."""
-        worker = asyncio.create_task(asyncio.to_thread(fn))
+    async def _run_shielded_async(coro_fn):
+        """Run an async persist+index sequence shielded against repeated cancellations."""
+        task = asyncio.create_task(coro_fn())
         cancelled = False
-        while not worker.done():
+        while not task.done():
             try:
-                await asyncio.shield(worker)
+                await asyncio.shield(task)
             except asyncio.CancelledError:
                 cancelled = True
         if cancelled:
-            if not worker.cancelled():
-                worker.exception()
+            if not task.cancelled():
+                task.exception()
             raise asyncio.CancelledError
-        return worker.result()
+        return task.result()
 
     async def aedit_fact_manual(self, name: str, fact_id: str, new_text: str) -> dict | None:
         """Manually edit one active fact's text, recompute dedup hash, and clear embedding cache."""
@@ -7143,8 +7143,8 @@ class FactStore:
                 self.save_facts(name, _fact_lock_held=True)
                 return dict(target)
 
-        async with self._get_persist_alock(name):
-            result = await self._run_shielded_persist_thread(_edit)
+        async def _commit_and_index() -> dict | None:
+            result = await asyncio.to_thread(_edit)
             if result is not None and self._time_indexed is not None:
                 try:
                     await self._time_indexed.aindex_fact(
@@ -7153,6 +7153,9 @@ class FactStore:
                 except Exception as exc:
                     logger.warning(f"[FactStore] {name}: 刷新编辑后 FTS 索引失败 ({fact_id}): {exc}")
             return result
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_index)
 
     async def aarchive_fact_manual(self, name: str, fact_id: str) -> bool:
         """Manually archive (forget) one active fact with recall-honored retirement markers."""
@@ -7197,14 +7200,17 @@ class FactStore:
                 self.save_facts(name, _fact_lock_held=True)
                 return True
 
-        async with self._get_persist_alock(name):
-            archived = await self._run_shielded_persist_thread(_archive)
+        async def _commit_and_delete_index() -> bool:
+            archived = await asyncio.to_thread(_archive)
             if archived and self._time_indexed is not None:
                 try:
                     await self._time_indexed.adelete_fact_from_index(name, fact_id)
                 except Exception as exc:
                     logger.warning(f"[FactStore] {name}: 清理归档事实 FTS 索引失败 ({fact_id}): {exc}")
             return archived
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_delete_index)
 
     async def amerge_facts_manual(
         self, name: str, keep_id: str, drop_id: str, merged_text: str,
@@ -7226,20 +7232,28 @@ class FactStore:
                     target=f"memory/{name}/facts_archive.json",
                 )
                 current = self._load_facts_locked(name)
-                keep_obj: dict | None = None
-                drop_obj: dict | None = None
-                for fact in current:
-                    if not isinstance(fact, dict):
-                        continue
-                    fid = fact.get("id")
-                    if fid == keep_id and keep_obj is None:
-                        keep_obj = fact
-                    elif fid == drop_id and drop_obj is None:
-                        drop_obj = fact
-                if keep_obj is None:
+                keep_matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == keep_id
+                ]
+                drop_matches = [
+                    fact for fact in current
+                    if isinstance(fact, dict) and fact.get("id") == drop_id
+                ]
+                if not keep_matches:
                     raise LookupError("keep_id not found")
-                if drop_obj is None:
+                if not drop_matches:
                     raise LookupError("drop_id not found")
+                if len(keep_matches) > 1 or len(drop_matches) > 1:
+                    raise ValueError("Ambiguous duplicate fact_id across scopes")
+                keep_obj = keep_matches[0]
+                drop_obj = drop_matches[0]
+                if (
+                    str(keep_obj.get("entity") or "master") != str(drop_obj.get("entity") or "master")
+                    or subject_from_entry(keep_obj) != subject_from_entry(drop_obj)
+                    or str(keep_obj.get("scope") or "") != str(drop_obj.get("scope") or "")
+                ):
+                    raise ValueError("Cannot merge facts from different subjects or scopes")
 
                 archive_path = self._facts_archive_path(name)
                 orig_archive_bytes: bytes | None = None
@@ -7274,10 +7288,7 @@ class FactStore:
                     keep_obj.pop("embedding_model", None)
                     keep_obj.pop("embedding_text_hash", None)
 
-                    kept = [
-                        f for f in current
-                        if not (isinstance(f, dict) and f.get("id") == drop_id)
-                    ]
+                    kept = [f for f in current if f is not drop_obj]
                     current[:] = kept
                     self.save_facts(name, _fact_lock_held=True)
                 except Exception:
@@ -7293,8 +7304,8 @@ class FactStore:
                     raise
                 return dict(keep_obj)
 
-        async with self._get_persist_alock(name):
-            kept_fact = await self._run_shielded_persist_thread(_merge)
+        async def _commit_and_update_index() -> dict | None:
+            kept_fact = await asyncio.to_thread(_merge)
             if kept_fact is not None and self._time_indexed is not None:
                 try:
                     await self._time_indexed.aindex_fact(
@@ -7304,3 +7315,6 @@ class FactStore:
                 except Exception as exc:
                     logger.warning(f"[FactStore] {name}: 合并事实后刷新 FTS 索引失败: {exc}")
             return kept_fact
+
+        async with self._get_persist_alock(name):
+            return await self._run_shielded_async(_commit_and_update_index)

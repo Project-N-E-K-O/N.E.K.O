@@ -8515,10 +8515,13 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
     results: list[dict] = []
     q_low = query.casefold()
 
-    # 1. Direct persona match (fast, covers master/neko/relationship entries).
-    if runtime.persona_manager is not None:
-        try:
-            persona = await runtime.persona_manager.aensure_persona(name)
+    # 1. Direct read-only persona match (never calls aensure_persona so search cannot write persona.json).
+    try:
+        from pathlib import Path
+        from memory.analytics.imprint import _read_json_safe
+        persona_path = Path(runtime._config_manager.memory_dir) / name / "persona.json"
+        persona = await asyncio.to_thread(_read_json_safe, persona_path, {})
+        if isinstance(persona, dict):
             for entity_key in ("master", "relationship", "neko"):
                 section = persona.get(entity_key)
                 if not isinstance(section, dict):
@@ -8538,11 +8541,12 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                         "protected": is_protected,
                         "user_pinned": bool(entry.get("user_pinned")),
                         "suppress": bool(entry.get("suppress")),
+                        "permanent_suppression": bool(entry.get("permanent_suppression")),
                         "created_at": entry.get("created_at") or entry.get("promoted_at"),
                         "score": 1.0,
                     })
-        except Exception as exc:
-            logger.debug("[MemoryBrowser] persona search error: %s", exc)
+    except Exception as exc:
+        logger.debug("[MemoryBrowser] persona search error: %s", exc)
 
     # 2. Hybrid recall over reflections + facts (BM25 + local ONNX vectors when available).
     try:
@@ -8625,19 +8629,35 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
     return {"success": True, "results": results[:top_k]}
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def _admit_browser_character_write(name: str):
+    """Register body-addressed browser mutations in the character release-draining ledger."""
+    token = runtime._begin_character_request(name)
+    if token is None:
+        raise HTTPException(status_code=409, detail="character release in progress")
+    try:
+        yield
+    finally:
+        runtime._end_character_request(name, token)
+
+
 @app.post("/internal/memory/browser/persona/edit")
 async def browser_edit_persona(request: _BrowserPersonaEditRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
         raise HTTPException(status_code=503, detail="PersonaManager not ready")
-    try:
-        updated = await runtime.persona_manager.aedit_persona_entry(
-            name, request.entity, request.entry_id, request.text,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    with _admit_browser_character_write(name):
+        try:
+            updated = await runtime.persona_manager.aedit_persona_entry(
+                name, request.entity, request.entry_id, request.text,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Persona entry not found")
     return {"success": True, "entry": updated}
@@ -8648,16 +8668,17 @@ async def browser_set_persona_flags(request: _BrowserPersonaFlagsRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
         raise HTTPException(status_code=503, detail="PersonaManager not ready")
-    try:
-        updated = await runtime.persona_manager.aset_persona_flags(
-            name,
-            request.entity,
-            request.entry_id,
-            user_pinned=request.user_pinned,
-            suppress=request.suppress,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+    with _admit_browser_character_write(name):
+        try:
+            updated = await runtime.persona_manager.aset_persona_flags(
+                name,
+                request.entity,
+                request.entry_id,
+                user_pinned=request.user_pinned,
+                suppress=request.suppress,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Persona entry not found")
     return {"success": True, "entry": updated}
@@ -8668,9 +8689,10 @@ async def browser_archive_persona(request: _BrowserPersonaArchiveRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
         raise HTTPException(status_code=503, detail="PersonaManager not ready")
-    ok = await runtime.persona_manager.aarchive_persona_entry(
-        name, request.entity, request.entry_id,
-    )
+    with _admit_browser_character_write(name):
+        ok = await runtime.persona_manager.aarchive_persona_entry(
+            name, request.entity, request.entry_id,
+        )
     if not ok:
         raise HTTPException(status_code=404, detail="Persona entry not found or protected")
     return {"success": True}
@@ -8681,14 +8703,15 @@ async def browser_restore_persona_version(request: _BrowserPersonaRestoreRequest
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
         raise HTTPException(status_code=503, detail="PersonaManager not ready")
-    try:
-        updated = await runtime.persona_manager.arestore_persona_version(
-            name, request.entity, request.entry_id, request.version_index,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except (IndexError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    with _admit_browser_character_write(name):
+        try:
+            updated = await runtime.persona_manager.arestore_persona_version(
+                name, request.entity, request.entry_id, request.version_index,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except (IndexError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Persona entry not found")
     return {"success": True, "entry": updated}
@@ -8699,23 +8722,24 @@ async def browser_resolve_correction(request: _BrowserCorrectionResolveRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.persona_manager is None:
         raise HTTPException(status_code=503, detail="PersonaManager not ready")
-    try:
-        res = await runtime.persona_manager.aresolve_correction_manual(
-            name,
-            request.correction_index,
-            request.action,
-            merged_text=request.merged_text,
-            correction_id=request.correction_id,
-            expected_old_text=request.expected_old_text,
-            expected_new_text=request.expected_new_text,
-            expected_entity=request.expected_entity,
-            expected_scope=request.expected_scope,
-            expected_queued_at=request.expected_queued_at,
-        )
-    except (IndexError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except LookupError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    with _admit_browser_character_write(name):
+        try:
+            res = await runtime.persona_manager.aresolve_correction_manual(
+                name,
+                request.correction_index,
+                request.action,
+                merged_text=request.merged_text,
+                correction_id=request.correction_id,
+                expected_old_text=request.expected_old_text,
+                expected_new_text=request.expected_new_text,
+                expected_entity=request.expected_entity,
+                expected_scope=request.expected_scope,
+                expected_queued_at=request.expected_queued_at,
+            )
+        except (IndexError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except LookupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
     return {"success": True, **res}
 
 
@@ -8724,15 +8748,16 @@ async def browser_review_reflection(request: _BrowserReflectionReviewRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.reflection_engine is None:
         raise HTTPException(status_code=503, detail="ReflectionEngine not ready")
-    try:
-        res = await runtime.reflection_engine.amanual_review_reflection(
-            name,
-            request.reflection_id,
-            request.decision,
-            edited_text=request.edited_text,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    with _admit_browser_character_write(name):
+        try:
+            res = await runtime.reflection_engine.amanual_review_reflection(
+                name,
+                request.reflection_id,
+                request.decision,
+                edited_text=request.edited_text,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if res is None:
         raise HTTPException(status_code=404, detail="Reflection not found")
     return {"success": True, **res}
@@ -8743,12 +8768,13 @@ async def browser_edit_fact(request: _BrowserFactEditRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.fact_store is None:
         raise HTTPException(status_code=503, detail="FactStore not ready")
-    try:
-        updated = await runtime.fact_store.aedit_fact_manual(
-            name, request.fact_id, request.text,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    with _admit_browser_character_write(name):
+        try:
+            updated = await runtime.fact_store.aedit_fact_manual(
+                name, request.fact_id, request.text,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Fact not found")
     return {"success": True, "fact": updated}
@@ -8759,7 +8785,8 @@ async def browser_archive_fact(request: _BrowserFactArchiveRequest):
     name = validate_lanlan_name(request.character_name)
     if runtime.fact_store is None:
         raise HTTPException(status_code=503, detail="FactStore not ready")
-    ok = await runtime.fact_store.aarchive_fact_manual(name, request.fact_id)
+    with _admit_browser_character_write(name):
+        ok = await runtime.fact_store.aarchive_fact_manual(name, request.fact_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Fact not found")
     return {"success": True}
@@ -8782,40 +8809,92 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
                 label="Before duplicate merge",
                 reason="pre_merge",
                 config_manager=runtime._config_manager,
+                persona_manager=runtime.persona_manager,
+                fact_store=runtime.fact_store,
+                reflection_engine=runtime.reflection_engine,
             )
         except MaintenanceModeError:
             raise
         except Exception as exc:
             logger.debug("[MemoryBrowser] pre-merge snapshot skipped for %s: %s", name, exc)
 
-    if request.kind == "persona":
-        if runtime.persona_manager is None:
-            raise HTTPException(status_code=503, detail="PersonaManager not ready")
-        # Fast pre-check before taking a snapshot; atomic re-validation runs under manager lock.
-        persona_view = await runtime.persona_manager.aensure_persona(name)
-        section = persona_view.get(request.entity) if isinstance(persona_view, dict) else None
-        facts_list = section.get("facts", []) if isinstance(section, dict) else []
-        by_id = {
-            str(e.get("id") or ""): e
-            for e in facts_list
-            if isinstance(e, dict) and e.get("id")
+    with _admit_browser_character_write(name):
+        if request.kind == "persona":
+            if runtime.persona_manager is None:
+                raise HTTPException(status_code=503, detail="PersonaManager not ready")
+            # Fast pre-check before taking a snapshot; atomic re-validation runs under manager lock.
+            persona_view = await runtime.persona_manager.aensure_persona(name)
+            section = persona_view.get(request.entity) if isinstance(persona_view, dict) else None
+            facts_list = section.get("facts", []) if isinstance(section, dict) else []
+            by_id = {
+                str(e.get("id") or ""): e
+                for e in facts_list
+                if isinstance(e, dict) and e.get("id")
+            }
+            keep_obj = by_id.get(request.keep_id)
+            drop_obj = by_id.get(request.drop_id)
+            if keep_obj is None:
+                raise HTTPException(status_code=404, detail="keep_id not found")
+            if drop_obj is None:
+                raise HTTPException(status_code=404, detail="drop_id not found")
+            if (
+                keep_obj.get("protected") or keep_obj.get("source") == "character_card"
+                or drop_obj.get("protected") or drop_obj.get("source") == "character_card"
+            ):
+                raise HTTPException(status_code=403, detail="Character card entries are protected")
+
+            await _take_pre_merge_snapshot()
+            try:
+                updated = await runtime.persona_manager.amerge_persona_entries(
+                    name, request.entity, request.keep_id, request.drop_id, merged,
+                )
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail=str(exc))
+            return {"success": True, "kept": updated, "dropped": True}
+
+        if request.kind == "fact":
+            if runtime.fact_store is None:
+                raise HTTPException(status_code=503, detail="FactStore not ready")
+            facts = await runtime.fact_store.aload_facts(name)
+            fact_ids = {str(f.get("id") or "") for f in facts if isinstance(f, dict)}
+            if request.keep_id not in fact_ids:
+                raise HTTPException(status_code=404, detail="keep_id not found")
+            if request.drop_id not in fact_ids:
+                raise HTTPException(status_code=404, detail="drop_id not found")
+
+            await _take_pre_merge_snapshot()
+            try:
+                updated = await runtime.fact_store.amerge_facts_manual(
+                    name, request.keep_id, request.drop_id, merged,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except LookupError as exc:
+                raise HTTPException(status_code=404, detail=str(exc))
+            return {"success": True, "kept": updated, "dropped": True}
+
+        if runtime.reflection_engine is None:
+            raise HTTPException(status_code=503, detail="ReflectionEngine not ready")
+        # Include pending, confirmed, AND promoted reflections (matching overview duplicate pairs).
+        refls = await runtime.reflection_engine._aload_reflections_full(name)
+        eligible_ids = {
+            str(r.get("id") or "")
+            for r in refls
+            if isinstance(r, dict) and str(r.get("status") or "pending") not in ("archived", "merged", "denied")
         }
-        keep_obj = by_id.get(request.keep_id)
-        drop_obj = by_id.get(request.drop_id)
-        if keep_obj is None:
+        if request.keep_id not in eligible_ids:
             raise HTTPException(status_code=404, detail="keep_id not found")
-        if drop_obj is None:
+        if request.drop_id not in eligible_ids:
             raise HTTPException(status_code=404, detail="drop_id not found")
-        if (
-            keep_obj.get("protected") or keep_obj.get("source") == "character_card"
-            or drop_obj.get("protected") or drop_obj.get("source") == "character_card"
-        ):
-            raise HTTPException(status_code=403, detail="Character card entries are protected")
 
         await _take_pre_merge_snapshot()
         try:
-            updated = await runtime.persona_manager.amerge_persona_entries(
-                name, request.entity, request.keep_id, request.drop_id, merged,
+            updated = await runtime.reflection_engine.amerge_reflections(
+                name, request.keep_id, request.drop_id, merged,
             )
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
@@ -8825,72 +8904,25 @@ async def browser_merge_duplicate(request: _BrowserDuplicateMergeRequest):
             raise HTTPException(status_code=404, detail=str(exc))
         return {"success": True, "kept": updated, "dropped": True}
 
-    if request.kind == "fact":
-        if runtime.fact_store is None:
-            raise HTTPException(status_code=503, detail="FactStore not ready")
-        facts = await runtime.fact_store.aload_facts(name)
-        fact_ids = {str(f.get("id") or "") for f in facts if isinstance(f, dict)}
-        if request.keep_id not in fact_ids:
-            raise HTTPException(status_code=404, detail="keep_id not found")
-        if request.drop_id not in fact_ids:
-            raise HTTPException(status_code=404, detail="drop_id not found")
-
-        await _take_pre_merge_snapshot()
-        try:
-            updated = await runtime.fact_store.amerge_facts_manual(
-                name, request.keep_id, request.drop_id, merged,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        except LookupError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        return {"success": True, "kept": updated, "dropped": True}
-
-    if runtime.reflection_engine is None:
-        raise HTTPException(status_code=503, detail="ReflectionEngine not ready")
-    # Include pending, confirmed, AND promoted reflections (matching overview duplicate pairs).
-    refls = await runtime.reflection_engine._aload_reflections_full(name)
-    eligible_ids = {
-        str(r.get("id") or "")
-        for r in refls
-        if isinstance(r, dict) and str(r.get("status") or "pending") not in ("archived", "merged", "denied")
-    }
-    if request.keep_id not in eligible_ids:
-        raise HTTPException(status_code=404, detail="keep_id not found")
-    if request.drop_id not in eligible_ids:
-        raise HTTPException(status_code=404, detail="drop_id not found")
-
-    await _take_pre_merge_snapshot()
-    try:
-        updated = await runtime.reflection_engine.amerge_reflections(
-            name, request.keep_id, request.drop_id, merged,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return {"success": True, "kept": updated, "dropped": True}
-
 
 @app.post("/internal/memory/browser/directive/add")
 async def browser_add_directive(request: _BrowserDirectiveRequest):
     from memory.user_directives import get_user_directives_manager
     name = validate_lanlan_name(request.character_name)
-    assert_cloudsave_writable(
-        runtime._config_manager,
-        operation="save",
-        target=f"memory/{name}/user_directives.json",
-    )
-    locale = normalize_language_code(request.language or get_global_language_full(), format="short")
-    created = await get_user_directives_manager().arecord(
-        name,
-        locale=locale,
-        kind="ban_topic",
-        term=request.term,
-        source="manual",
-    )
+    with _admit_browser_character_write(name):
+        assert_cloudsave_writable(
+            runtime._config_manager,
+            operation="save",
+            target=f"memory/{name}/user_directives.json",
+        )
+        locale = normalize_language_code(request.language or get_global_language_full(), format="short")
+        created = await get_user_directives_manager().arecord(
+            name,
+            locale=locale,
+            kind="ban_topic",
+            term=request.term,
+            source="manual",
+        )
     if not created:
         raise HTTPException(status_code=400, detail="Directive term must be 2..40 characters")
     return {"success": True, "directive": created}
@@ -8900,12 +8932,13 @@ async def browser_add_directive(request: _BrowserDirectiveRequest):
 async def browser_remove_directive(request: _BrowserDirectiveRequest):
     from memory.user_directives import get_user_directives_manager
     name = validate_lanlan_name(request.character_name)
-    assert_cloudsave_writable(
-        runtime._config_manager,
-        operation="save",
-        target=f"memory/{name}/user_directives.json",
-    )
-    removed = await get_user_directives_manager().aremove(name, request.term)
+    with _admit_browser_character_write(name):
+        assert_cloudsave_writable(
+            runtime._config_manager,
+            operation="save",
+            target=f"memory/{name}/user_directives.json",
+        )
+        removed = await get_user_directives_manager().aremove(name, request.term)
     if not removed:
         raise HTTPException(status_code=404, detail="Directive not found")
     return {"success": True}
@@ -9056,6 +9089,9 @@ async def browser_create_snapshot(
             label=request.label,
             reason=request.reason,
             config_manager=runtime._config_manager,
+            persona_manager=runtime.persona_manager,
+            fact_store=runtime.fact_store,
+            reflection_engine=runtime.reflection_engine,
         )
         return {"success": True, "snapshot": snap}
     except MaintenanceModeError:

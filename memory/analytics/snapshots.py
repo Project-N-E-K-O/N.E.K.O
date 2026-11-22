@@ -355,6 +355,30 @@ async def alist_snapshots(
     return await asyncio.to_thread(list_snapshots, character_name, memory_dir=memory_dir)
 
 
+def _create_snapshot_locked_sync(
+    character_name: str,
+    *,
+    label: str = "",
+    reason: str = "manual",
+    memory_dir: Path,
+    max_keep: int = MEMORY_BROWSER_SNAPSHOT_MAX_KEEP,
+    fact_store=None,
+    directives_manager=None,
+) -> dict[str, Any]:
+    with ExitStack() as lock_stack:
+        if fact_store is not None and callable(getattr(fact_store, "_get_lock", None)):
+            lock_stack.enter_context(fact_store._get_lock(character_name))
+        if directives_manager is not None and callable(getattr(directives_manager, "_get_lock", None)):
+            lock_stack.enter_context(directives_manager._get_lock(character_name))
+        return create_snapshot_sync(
+            character_name,
+            label=label,
+            reason=reason,
+            memory_dir=memory_dir,
+            max_keep=max_keep,
+        )
+
+
 async def acreate_snapshot(
     character_name: str,
     *,
@@ -362,9 +386,13 @@ async def acreate_snapshot(
     reason: str = "manual",
     config_manager=None,
     memory_dir: Path | None = None,
+    persona_manager=None,
+    fact_store=None,
+    reflection_engine=None,
+    directives_manager=None,
     max_keep: int = MEMORY_BROWSER_SNAPSHOT_MAX_KEEP,
 ) -> dict[str, Any]:
-    """Create a safety snapshot after checking cloudsave writability."""
+    """Create a safety snapshot under the same manager lock hierarchy as restore."""
     cm = config_manager or get_config_manager()
     assert_cloudsave_writable(
         cm,
@@ -372,14 +400,53 @@ async def acreate_snapshot(
         target=f"memory/{character_name}/{_SNAPSHOTS_DIRNAME}",
     )
     resolved_dir = Path(memory_dir) if memory_dir is not None else Path(cm.memory_dir)
-    return await asyncio.to_thread(
-        create_snapshot_sync,
-        character_name,
-        label=label,
-        reason=reason,
-        memory_dir=resolved_dir,
-        max_keep=max_keep,
-    )
+
+    dm = directives_manager
+    if dm is None:
+        try:
+            from memory.user_directives import get_user_directives_manager
+            dm = get_user_directives_manager()
+        except Exception:
+            dm = None
+
+    async with AsyncExitStack() as stack:
+        # Same lock hierarchy as arestore_snapshot (reflection -> persona -> fact persist)
+        # so manual snapshot capture is mutually exclusive with restore and archive writes.
+        if reflection_engine is not None and hasattr(reflection_engine, "_get_alock"):
+            await stack.enter_async_context(reflection_engine._get_alock(character_name))
+        if persona_manager is not None and hasattr(persona_manager, "_get_alock"):
+            await stack.enter_async_context(persona_manager._get_alock(character_name))
+        if fact_store is not None and hasattr(fact_store, "_get_persist_alock"):
+            await stack.enter_async_context(fact_store._get_persist_alock(character_name))
+
+        assert_cloudsave_writable(
+            cm,
+            operation="save",
+            target=f"memory/{character_name}/{_SNAPSHOTS_DIRNAME}",
+        )
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                _create_snapshot_locked_sync,
+                character_name,
+                label=label,
+                reason=reason,
+                memory_dir=resolved_dir,
+                max_keep=max_keep,
+                fact_store=fact_store,
+                directives_manager=dm,
+            )
+        )
+        cancelled = False
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            if not worker.cancelled():
+                worker.exception()
+            raise asyncio.CancelledError
+        return worker.result()
 
 
 async def arestore_snapshot(
@@ -469,6 +536,33 @@ async def arestore_snapshot(
                     _STAR_CACHE.clear()
             except Exception as cache_exc:
                 logger.debug("[MemorySnapshots] failed to clear star-map cache: %s", cache_exc)
+
+            # Rebuild FTS near-duplicate index from the restored facts.json while still
+            # holding fact_store._get_persist_alock so restored/un-archived facts never
+            # miss near-duplicate checks or retain pre-restore tokens.
+            time_indexed = getattr(fact_store, "_time_indexed", None) if fact_store is not None else None
+            if time_indexed is not None and callable(getattr(time_indexed, "arebuild_fact_index", None)):
+                async def _rebuild_fts() -> None:
+                    raw = await asyncio.to_thread(
+                        _read_json_safe, resolved_dir / character_name / "facts.json", [],
+                    )
+                    restored_facts = raw if isinstance(raw, list) else []
+                    await time_indexed.arebuild_fact_index(character_name, restored_facts)
+
+                rebuild_task = asyncio.create_task(_rebuild_fts())
+                while not rebuild_task.done():
+                    try:
+                        await asyncio.shield(rebuild_task)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                if not rebuild_task.cancelled():
+                    rebuild_exc = rebuild_task.exception()
+                    if rebuild_exc is not None:
+                        logger.warning(
+                            "[MemorySnapshots] failed to rebuild FTS index after restore for %s: %s",
+                            character_name,
+                            rebuild_exc,
+                        )
 
         if cancelled:
             raise asyncio.CancelledError

@@ -538,19 +538,19 @@ class EvidenceFlowMixin:
                 raise LookupError("drop_id not found")
             if keep_entry.get("protected") or drop_entry.get("protected"):
                 raise PermissionError("Protected reflection cannot be merged")
+            from memory.scopes import subject_from_entry
+            if (
+                str(keep_entry.get("entity") or "master") != str(drop_entry.get("entity") or "master")
+                or subject_from_entry(keep_entry) != subject_from_entry(drop_entry)
+                or str(keep_entry.get("scope") or "") != str(drop_entry.get("scope") or "")
+            ):
+                raise ValueError("Cannot merge reflections from different subjects or scopes")
 
             now = datetime.now()
             now_iso = now.isoformat()
 
-            # Step 1: update keep_id text and persist BEFORE archiving drop_id.
-            if cleaned != str(keep_entry.get("text") or ""):
-                keep_entry["text"] = cleaned
-                clear_embedding_fields(keep_entry)
-                keep_entry.pop("embedding_model", None)
-                keep_entry.pop("embedding_text_hash", None)
-                await self.asave_reflections(lanlan_name, reflections_full)
-
-            # Step 2: archive drop_id under the same per-character lock.
+            # Prepare archive shard BEFORE mutating reflections.json, then commit both
+            # the keep_entry rewrite and drop_id removal in a single atomic record_and_save.
             prev_status = str(drop_entry.get("status") or "pending")
             archive_dir = self._reflections_archive_dir(lanlan_name)
             shard_path = await apick_today_shard_path(archive_dir, now=now)
@@ -574,6 +574,11 @@ class EvidenceFlowMixin:
                 return reflections_full
 
             def _sync_mutate(view):
+                if cleaned != str(keep_entry.get("text") or ""):
+                    keep_entry["text"] = cleaned
+                    clear_embedding_fields(keep_entry)
+                    keep_entry.pop("embedding_model", None)
+                    keep_entry.pop("embedding_text_hash", None)
                 view[:] = [r for r in view if r.get("id") != drop_id]
 
             def _sync_save(n: str, view):

@@ -1198,7 +1198,7 @@ async def _periodic_archive_sweep_loop():
                     if effective_sz >= EVIDENCE_ARCHIVE_DAYS:
                         try:
                             await runtime.persona_manager.aarchive_persona_entry(
-                                name, entity_key, eid,
+                                name, entity_key, eid, skip_pinned=True,
                             )
                         except Exception as e:
                             logger.warning(

@@ -611,19 +611,22 @@ class UserDirectivesManager:
         now: Optional[float] = None,
     ) -> Dict[str, Any]:
         import asyncio
-        result = await asyncio.to_thread(
-            self.record,
-            name,
-            locale=locale,
-            kind=kind,
-            term=term,
-            source=source,
-            now=now,
-            raise_on_error=True,
-        )
-        if result:
-            self.mark_pending_injection(name)
-        return result
+
+        def _record_and_mark() -> Dict[str, Any]:
+            result = self.record(
+                name,
+                locale=locale,
+                kind=kind,
+                term=term,
+                source=source,
+                now=now,
+                raise_on_error=True,
+            )
+            if result:
+                self.mark_pending_injection(name)
+            return result
+
+        return await asyncio.to_thread(_record_and_mark)
 
     async def aremove(self, name: str, term: str) -> bool:
         import asyncio
