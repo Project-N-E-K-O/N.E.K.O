@@ -147,6 +147,8 @@ def _idle_maintenance(mp, h):
 
 def _slow_recheck(mp, h):
     mp.setattr(evidence_loops, 'MEMORY_RECHECK_ENABLED', True)
+    # Round-robin start is module state; pin it so the roster order holds.
+    mp.setattr(evidence_loops, '_RECHECK_RR_CURSOR', 0)
     mp.setattr(runtime, 'reflection_engine', SimpleNamespace(
         arecheck_one_legacy_reflection=h.arecord_false,
     ))
@@ -327,3 +329,66 @@ def test_admission_predicate_follows_retire_and_hold_sets():
     review._retired_derived_task_names.discard(HELD)
     review._publication_held_derived_task_names.add(HELD)
     assert not review.is_character_periodic_write_admitted(HELD)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'setup', [c[1] for c in SERIAL_CASES], ids=[c[0] for c in SERIAL_CASES],
+)
+async def test_serial_loop_skips_character_renamed_away_mid_round(
+    monkeypatch, harness, setup,
+):
+    """A whole rename finishes while an earlier character is being worked on:
+    the claim is released, so the old name is neither retired nor held any
+    more, but it is gone from the roster. The round's stale roster still lists
+    it; the loop must not reach its work."""
+    loop_fn = setup(monkeypatch, harness)
+    record = harness.record
+
+    roster = {'猫娘': {OPEN: {'uid': 'uid-open'}, HELD: {'uid': 'uid-held'}}}
+    runtime._config_manager.aload_characters = AsyncMock(return_value=roster)
+    monkeypatch.setitem(ROSTER, '猫娘', roster['猫娘'])
+
+    renamed_during = []
+
+    def rename_on_first_work(name, *args, **kwargs):
+        record(name)
+        if name == OPEN and not renamed_during:
+            # Published: characters.json now carries the new name only, and
+            # the old name's admission state is back to open.
+            runtime._config_manager.aload_characters.return_value = {
+                '猫娘': {OPEN: {'uid': 'uid-open'}, '新名喵': {'uid': 'uid-held'}},
+            }
+            renamed_during.append(name)
+
+    harness.record = rename_on_first_work
+    await _run_round(loop_fn)
+
+    assert renamed_during == [OPEN]
+    assert review.is_character_periodic_write_admitted(HELD)
+    assert HELD not in harness.seen
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_gate_skips_when_roster_cannot_be_read(monkeypatch, harness):
+    runtime._config_manager.aload_characters = AsyncMock(side_effect=OSError('busy'))
+    assert not await review.ais_character_periodic_write_admitted(OPEN)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_gate_matches_raw_roster_key_against_normalized_fence(harness):
+    """The release endpoint fences the normalized name; the loops iterate the
+    raw characters.json key."""
+    raw = f' {HELD} '
+    runtime._config_manager.aload_characters = AsyncMock(
+        return_value={'猫娘': {raw: {}}},
+    )
+    assert await review.ais_character_periodic_write_admitted(raw)
+    token = await _fence(HELD, hold=True)
+    assert not review.is_character_periodic_write_admitted(raw)
+    assert not await review.ais_character_periodic_write_admitted(raw)
+    await _unfence(HELD, token)
+    assert await review.ais_character_periodic_write_admitted(raw)

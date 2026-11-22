@@ -683,6 +683,9 @@ async def _periodic_signal_extraction_loop():
                 catgirl_names = list(character_data.get('猫娘', {}).keys())
                 cursor_now = datetime.now()
                 for name in catgirl_names:
+                    # A fenced name keeps its cursor. If the rename / delete rolls back
+                    # and strong memory is turned on before the next round, the first
+                    # round catches up on the whole disabled-period backlog (rare, accepted).
                     if not review.is_character_periodic_write_admitted(name):
                         continue
                     try:

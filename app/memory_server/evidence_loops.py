@@ -339,6 +339,9 @@ async def _periodic_rebuttal_loop():
                 catgirl_names = list(character_data.get('猫娘', {}).keys())
                 cursor_now = datetime.now()
                 for name in catgirl_names:
+                    # A fenced name keeps its cursor. If the rename / delete rolls back
+                    # and strong memory is turned on before the next round, the first
+                    # round catches up on the whole disabled-period backlog (rare, accepted).
                     if not review.is_character_periodic_write_admitted(name):
                         continue
                     try:
@@ -621,7 +624,7 @@ async def _periodic_idle_maintenance_loop():
                 if not gates._is_idle():
                     logger.debug("[IdleMaint] 检测到新活动，中断本轮维护")
                     break
-                if not review.is_character_periodic_write_admitted(name):
+                if not await review.ais_character_periodic_write_admitted(name):
                     continue
 
                 try:
@@ -980,7 +983,7 @@ async def _periodic_slow_memory_recheck_loop():
         # Touch only one entry per outer loop to prevent one character's reflections monopolizing work.
         did_one = False
         for name in ordered:
-            if not review.is_character_periodic_write_admitted(name):
+            if not await review.ais_character_periodic_write_admitted(name):
                 continue
             try:
                 if await runtime.reflection_engine.arecheck_one_legacy_reflection(name):
@@ -990,7 +993,7 @@ async def _periodic_slow_memory_recheck_loop():
                 logger.debug(f"[MemoryRecheck] {name} reflection recheck 异常: {e}")
         if not did_one:
             for name in ordered:
-                if not review.is_character_periodic_write_admitted(name):
+                if not await review.ais_character_periodic_write_admitted(name):
                     continue
                 try:
                     if await runtime.fact_store.arecheck_one_legacy_fact(name):

@@ -735,7 +735,7 @@ async def _periodic_organizer_loop():
             if getattr(runtime._config_manager, 'app_docs_dir', None):
                 characters = (await runtime._config_manager.aload_characters()).get('猫娘', {})
                 for name in list(characters):
-                    if not review.is_character_periodic_write_admitted(name):
+                    if not await review.ais_character_periodic_write_admitted(name):
                         continue
                     try:
                         await resume_owed_capture(validate_lanlan_name(name))
