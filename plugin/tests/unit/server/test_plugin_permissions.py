@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES
 from plugin.server.application import install_source as install_source_module
 from plugin.server.application.install_source.models import (
     LockEntry,
@@ -15,16 +16,16 @@ from plugin.server.application.install_source.models import (
 from plugin.server.application.plugins import permission_service
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.plugin_permissions import (
-    CONVERSATIONS_READ,
     LEGACY_DENIED,
-    MEMORY_READ,
-    MESSAGES_PUSH,
     PluginPermissionStore,
     PluginSource,
-    normalize_permission,
 )
 
 pytestmark = pytest.mark.plugin_unit
+
+MEMORY_READ = LEGACY_PERMISSION_NAMES["memory.read"]
+CONVERSATIONS_READ = LEGACY_PERMISSION_NAMES["conversations.read"]
+MESSAGES_PUSH = LEGACY_PERMISSION_NAMES["messages.push"]
 
 MARKET = PluginSource("market", "m-1")
 MANUAL = PluginSource("manual")
@@ -491,10 +492,48 @@ def test_clear_returns_a_permission_to_undecided(manager):
     assert store.clear("x", MEMORY_READ)["permissions"] == {}
 
 
-def test_normalize_permission_maps_legacy_names_only():
-    assert normalize_permission("memory.read") == MEMORY_READ
-    assert normalize_permission(MEMORY_READ) == MEMORY_READ
-    assert normalize_permission("system.fs:read") == "system.fs:read"
+def test_decide_and_clear_reject_ids_outside_the_vocabulary(manager):
+    store = PluginPermissionStore(manager)
+
+    for permission_id in ("system.unknown:read", "", None):
+        with pytest.raises(ValueError):
+            store.decide("x", permission_id, "granted")
+        with pytest.raises(ValueError):
+            store.clear("x", permission_id)
+    assert store.read("x") == {}
+
+    # Ids from the vocabulary pass through unchanged.
+    record = store.decide("x", "system.fs:read", "granted")
+    assert list(record["permissions"]) == ["system.fs:read"]
+
+
+def test_legacy_names_resolve_to_permission_ids_in_decide_and_clear(manager):
+    store = PluginPermissionStore(manager)
+
+    record = store.decide("x", "memory.read", "granted")
+    assert list(record["permissions"]) == [MEMORY_READ]
+
+    assert store.clear("x", "memory.read")["permissions"] == {}
+
+
+def test_clear_removes_a_stored_id_the_vocabulary_no_longer_has(manager):
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted")
+    document = json.loads(_new_file(manager).read_text(encoding="utf-8"))
+    document["plugins"]["x"]["permissions"]["system.retired:read"] = {
+        "state": "granted",
+        "condition": "in_use",
+        "scope": "all",
+        "decided_at": "2026-01-01T00:00:00Z",
+    }
+    _new_file(manager).write_text(json.dumps(document), encoding="utf-8")
+    store = PluginPermissionStore(manager)
+
+    record = store.clear("x", "system.retired:read")
+
+    assert list(record["permissions"]) == [MEMORY_READ]
+    with pytest.raises(ValueError):
+        store.clear("y", "system.retired:read")
 
 
 # ---------------------------------------------------------------------------
