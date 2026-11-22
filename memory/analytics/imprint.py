@@ -549,9 +549,9 @@ def build_memory_overview(
                 "strength": _strength_level(score, rein_count),
                 "reinforce_count": rein_count,
                 "created_at": entry.get("created_at") or entry.get("promoted_at"),
+                "subject_kind": str(entry.get("subject_kind") or ""),
                 "subject_id": str(entry.get("subject_id") or ""),
-                "scope_kind": str(entry.get("scope_kind") or ""),
-                "scope_id": str(entry.get("scope_id") or ""),
+                "scope": str(entry.get("scope") or ""),
                 "version_history": [
                     {
                         "index": idx,
@@ -679,9 +679,9 @@ def build_memory_overview(
             "reinforce_count": rein_count,
             "created_at": r.get("created_at"),
             "suppress": bool(r.get("suppress")),
+            "subject_kind": str(r.get("subject_kind") or ""),
             "subject_id": str(r.get("subject_id") or ""),
-            "scope_kind": str(r.get("scope_kind") or ""),
-            "scope_id": str(r.get("scope_id") or ""),
+            "scope": str(r.get("scope") or ""),
         }
         if status == "pending":
             pending_reflections.append(item)
@@ -755,9 +755,9 @@ def build_memory_overview(
                     "importance": imp,
                     "strength": 2 if imp >= 9 else 1,
                     "created_at": f.get("created_at"),
+                    "subject_kind": str(f.get("subject_kind") or ""),
                     "subject_id": str(f.get("subject_id") or ""),
-                    "scope_kind": str(f.get("scope_kind") or ""),
-                    "scope_id": str(f.get("scope_id") or ""),
+                    "scope": str(f.get("scope") or ""),
                 }
                 if entity == "master":
                     about_you.append(fact_card)

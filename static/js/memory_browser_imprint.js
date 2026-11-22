@@ -645,9 +645,9 @@
                     entry_id: entryId || '',
                     text: text,
                     top_k: 4,
+                    subject_kind: scope.subject_kind || '',
                     subject_id: scope.subject_id || '',
-                    scope_kind: scope.scope_kind || '',
-                    scope_id: scope.scope_id || '',
+                    scope: scope.scope || '',
                 }
             );
             const data = await resp.json();
@@ -1871,9 +1871,9 @@
                     }
                     if (ok && targetChar === activeCharacter) {
                         checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text || nextText, targetChar, {
+                            subject_kind: item.subject_kind || '',
                             subject_id: item.subject_id || '',
-                            scope_kind: item.scope_kind || '',
-                            scope_id: item.scope_id || '',
+                            scope: item.scope || '',
                         });
                     }
                 },
@@ -1981,9 +1981,9 @@
                     }
                     if (ok && targetChar === activeCharacter) {
                         checkRelatedMemoriesAfterMutation(item.kind, item.id, item.text, targetChar, {
+                            subject_kind: item.subject_kind || '',
                             subject_id: item.subject_id || '',
-                            scope_kind: item.scope_kind || '',
-                            scope_id: item.scope_id || '',
+                            scope: item.scope || '',
                         });
                     }
                 },

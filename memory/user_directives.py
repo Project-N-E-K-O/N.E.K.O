@@ -296,7 +296,7 @@ class UserDirectivesManager:
                 )
                 directives = []
         self._cache[name] = directives
-        self._cache_stat[name] = self._stat_path(path)
+        self._cache_stat[name] = disk_stat
         return directives
 
     def _save_unlocked(self, name: str, *, raise_on_error: bool = False) -> None:

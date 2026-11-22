@@ -138,9 +138,9 @@ def _collect_memory_entries(char_dir: Path, now_dt: datetime) -> list[dict[str, 
                     "user_pinned": bool(entry.get("user_pinned")),
                     "embedding_raw": entry.get("embedding"),
                     "scope_key": _entry_subject_scope_key(entry),
+                    "subject_kind": str(entry.get("subject_kind") or ""),
                     "subject_id": str(entry.get("subject_id") or ""),
-                    "scope_kind": str(entry.get("scope_kind") or ""),
-                    "scope_id": str(entry.get("scope_id") or ""),
+                    "scope": str(entry.get("scope") or ""),
                 })
 
     reflections_raw = _read_json_safe(char_dir / "reflections.json", [])
@@ -171,9 +171,9 @@ def _collect_memory_entries(char_dir: Path, now_dt: datetime) -> list[dict[str, 
                 "user_pinned": False,
                 "embedding_raw": r.get("embedding"),
                 "scope_key": _entry_subject_scope_key(r),
+                "subject_kind": str(r.get("subject_kind") or ""),
                 "subject_id": str(r.get("subject_id") or ""),
-                "scope_kind": str(r.get("scope_kind") or ""),
-                "scope_id": str(r.get("scope_id") or ""),
+                "scope": str(r.get("scope") or ""),
             })
 
     facts_raw = _read_json_safe(char_dir / "facts.json", [])
@@ -200,9 +200,9 @@ def _collect_memory_entries(char_dir: Path, now_dt: datetime) -> list[dict[str, 
                 "user_pinned": False,
                 "embedding_raw": f.get("embedding"),
                 "scope_key": _entry_subject_scope_key(f),
+                "subject_kind": str(f.get("subject_kind") or ""),
                 "subject_id": str(f.get("subject_id") or ""),
-                "scope_kind": str(f.get("scope_kind") or ""),
-                "scope_id": str(f.get("scope_id") or ""),
+                "scope": str(f.get("scope") or ""),
             })
 
     return items
@@ -628,9 +628,9 @@ def find_related_memories(
     text: str,
     top_k: int = 4,
     memory_dir: Path | None = None,
+    subject_kind: str | None = None,
     subject_id: str | None = None,
-    scope_kind: str | None = None,
-    scope_id: str | None = None,
+    scope: str | None = None,
 ) -> list[dict[str, Any]]:
     """Find closely related memories for cascade review after editing/forgetting an entry."""
     base = Path(memory_dir) if memory_dir is not None else Path(get_config_manager().memory_dir)
@@ -642,12 +642,12 @@ def find_related_memories(
 
     has_explicit_scope = any(
         v is not None and str(v).strip() != ""
-        for v in (subject_id, scope_kind, scope_id)
+        for v in (subject_kind, subject_id, scope)
     )
     requested_scope_key = _entry_subject_scope_key({
+        "subject_kind": subject_kind,
         "subject_id": subject_id,
-        "scope_kind": scope_kind,
-        "scope_id": scope_id,
+        "scope": scope,
     })
 
     target_vec = None
@@ -740,9 +740,9 @@ def find_related_memories(
             "created_at": item["created_at"],
             "user_pinned": item["user_pinned"],
             "strength": item["strength"],
+            "subject_kind": item.get("subject_kind", ""),
             "subject_id": item.get("subject_id", ""),
-            "scope_kind": item.get("scope_kind", ""),
-            "scope_id": item.get("scope_id", ""),
+            "scope": item.get("scope", ""),
             "similarity": round(sim, 3),
             "method": method,
         })
@@ -757,9 +757,9 @@ async def afind_related_memories(
     text: str,
     top_k: int = 4,
     memory_dir: Path | None = None,
+    subject_kind: str | None = None,
     subject_id: str | None = None,
-    scope_kind: str | None = None,
-    scope_id: str | None = None,
+    scope: str | None = None,
 ) -> list[dict[str, Any]]:
     """Non-blocking async wrapper around ``find_related_memories``."""
     return await asyncio.to_thread(
@@ -770,7 +770,7 @@ async def afind_related_memories(
         text=text,
         top_k=top_k,
         memory_dir=memory_dir,
+        subject_kind=subject_kind,
         subject_id=subject_id,
-        scope_kind=scope_kind,
-        scope_id=scope_id,
+        scope=scope,
     )

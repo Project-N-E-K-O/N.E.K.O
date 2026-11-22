@@ -1410,6 +1410,11 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
 
     # 5. Cascade related-memory lookup stays within the original memory's subject/scope
     from memory.analytics.star_map import find_related_memories
+    from memory.scopes import MemorySubject
+
+    scoped_fields = MemorySubject.group_participant(
+        "discord", "grp_1", "guest_alice",
+    ).as_entry_fields()
 
     _write_json(
         char_dir / "persona.json",
@@ -1436,17 +1441,13 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
             {
                 "id": "f_other_scope",
                 "entity": "master",
-                "subject_id": "guest_alice",
-                "scope_kind": "group",
-                "scope_id": "grp_1",
+                **scoped_fields,
                 "text": "每天早上都会喝一杯燕麦拿铁",
             },
             {
                 "id": "f_other_scope_2",
                 "entity": "master",
-                "subject_id": "guest_alice",
-                "scope_kind": "group",
-                "scope_id": "grp_1",
+                **scoped_fields,
                 "text": "每天早上都会喝一杯燕麦拿铁加冰",
             },
         ],
@@ -1462,19 +1463,18 @@ async def test_round5_directives_sync_ambiguous_fact_fts_and_stale_dedup(tmp_pat
     assert "f_priv" in rel_priv_ids
     assert "f_other_scope" not in rel_priv_ids
 
-    # Forgotten scoped entry passes explicit scope and only sees same-scope candidates
+    # Forgotten scoped entry passes canonical persisted fields and only sees same-scope candidates
     rel_scoped = find_related_memories(
         char_name,
         kind="fact",
         entry_id="f_forgotten",
         text="每天早上都会喝一杯燕麦拿铁",
         memory_dir=cm.memory_dir,
-        subject_id="guest_alice",
-        scope_kind="group",
-        scope_id="grp_1",
+        **scoped_fields,
     )
     rel_scoped_ids = {r["id"] for r in rel_scoped}
     assert "f_other_scope" in rel_scoped_ids
+    assert "f_other_scope_2" in rel_scoped_ids
     assert "f_priv" not in rel_scoped_ids
     assert "p_priv" not in rel_scoped_ids
 

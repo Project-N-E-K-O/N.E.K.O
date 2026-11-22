@@ -8545,9 +8545,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                         "suppress": bool(entry.get("suppress")),
                         "permanent_suppression": bool(entry.get("permanent_suppression")),
                         "created_at": entry.get("created_at") or entry.get("promoted_at"),
+                        "subject_kind": str(entry.get("subject_kind") or ""),
                         "subject_id": str(entry.get("subject_id") or ""),
-                        "scope_kind": str(entry.get("scope_kind") or ""),
-                        "scope_id": str(entry.get("scope_id") or ""),
+                        "scope": str(entry.get("scope") or ""),
                         "score": 1.0,
                     })
     except Exception as exc:
@@ -8588,9 +8588,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                 "archived": is_archived_hit,
                 "protected": False,
                 "created_at": item.get("created_at"),
+                "subject_kind": str(item.get("subject_kind") or ""),
                 "subject_id": str(item.get("subject_id") or ""),
-                "scope_kind": str(item.get("scope_kind") or ""),
-                "scope_id": str(item.get("scope_id") or ""),
+                "scope": str(item.get("scope") or ""),
                 "score": float(item.get("score") or 0.0),
             })
     except Exception as exc:
@@ -8611,9 +8611,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                             "text": text,
                             "status": r.get("status"),
                             "created_at": r.get("created_at"),
+                            "subject_kind": str(r.get("subject_kind") or ""),
                             "subject_id": str(r.get("subject_id") or ""),
-                            "scope_kind": str(r.get("scope_kind") or ""),
-                            "scope_id": str(r.get("scope_id") or ""),
+                            "scope": str(r.get("scope") or ""),
                             "score": 0.8,
                         })
             except Exception as refl_exc:
@@ -8632,9 +8632,9 @@ async def browser_search_memory(lanlan_name: str, request: _BrowserSearchRequest
                             "entity": str(f.get("entity") or "master"),
                             "text": text,
                             "created_at": f.get("created_at"),
+                            "subject_kind": str(f.get("subject_kind") or ""),
                             "subject_id": str(f.get("subject_id") or ""),
-                            "scope_kind": str(f.get("scope_kind") or ""),
-                            "scope_id": str(f.get("scope_id") or ""),
+                            "scope": str(f.get("scope") or ""),
                             "score": 0.7,
                         })
             except Exception as fact_exc:
@@ -8985,9 +8985,9 @@ class _BrowserRelatedMemoriesRequest(BaseModel):
     entry_id: str
     text: str = ""
     top_k: int = 4
+    subject_kind: str | None = None
     subject_id: str | None = None
-    scope_kind: str | None = None
-    scope_id: str | None = None
+    scope: str | None = None
 
 
 @app.get("/internal/memory/browser/star_map/{lanlan_name}")
@@ -9071,9 +9071,9 @@ async def browser_related_memories(
             text=request.text,
             top_k=request.top_k,
             memory_dir=runtime._config_manager.memory_dir,
+            subject_kind=request.subject_kind,
             subject_id=request.subject_id,
-            scope_kind=request.scope_kind,
-            scope_id=request.scope_id,
+            scope=request.scope,
         )
         return {"success": True, "related": items}
     except Exception as exc:
