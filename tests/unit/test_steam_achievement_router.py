@@ -387,7 +387,7 @@ def test_production_initializer_does_not_publish_after_reset(
 ) -> None:
     blocking = _BlockingInitializer(result=_FakeSteamworks(_FakeUserStats()))
     empty_steam_cache.append(blocking)
-    initializer, _namespace = _load_production_steamworks_initializer(
+    initializer, namespace = _load_production_steamworks_initializer(
         lambda *, quiet=False: blocking()
     )
     steam_state.set_steamworks_initializer(initializer)
@@ -408,6 +408,16 @@ def test_production_initializer_does_not_publish_after_reset(
         worker.join(_WAIT)
 
     assert steam_state.get_steamworks() is None
+    # The late result must not linger in main_server's module global either.
+    assert namespace["steamworks"] is None
+
+    # Steam is gone by the next retry: it must run a fresh init (which fails)
+    # instead of returning and installing the handle from before the reset.
+    blocking.result = None
+    assert steam_state.ensure_steamworks(force=True) is None
+    assert steam_state.get_steamworks() is None
+    assert namespace["steamworks"] is None
+    assert blocking.calls == 2
 
 
 @pytest.mark.unit
