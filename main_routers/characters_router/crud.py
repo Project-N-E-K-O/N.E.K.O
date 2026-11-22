@@ -87,7 +87,7 @@ from utils.config_manager import (
 from utils.api_config_loader import (  # noqa: F401 - re-exported by the characters_router facade
     DEFAULT_NEW_CHARACTER_FREE_VOICE_ID as DEFAULT_NEW_CATGIRL_FREE_VOICE_ID,
 )
-from utils.asyncio_retirement import await_retirement
+from utils.asyncio_retirement import await_completion_with_cancel, await_retirement
 from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
 from utils.config_manager.storage_roots import chat_avatar_directory
 from utils.voice_config import read_legacy_voice_id
@@ -1745,9 +1745,13 @@ async def update_master(request: Request):
         if renamed_via_body_fallback:
             _append_profile_rename_event(next_master, previous_profile_name, profile_name)
         characters['主人'] = next_master
-        await await_retirement(_config_manager.asave_characters(characters))
+        _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
     # Automatically reload configuration.
-    await initialize_character_data()
+    try:
+        await await_retirement(initialize_character_data())
+    finally:
+        if cancelled:
+            raise asyncio.CancelledError
     return {"success": True}
 
 

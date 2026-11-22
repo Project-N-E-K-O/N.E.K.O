@@ -569,3 +569,168 @@ async def test_cancel_after_voice_deletion_still_cleans_references(monkeypatch):
         await operation
     assert cm.deleted_voices == ["v1"]
     assert get_reserved(cm.characters["猫娘"][name], "voice_id") == ""
+
+
+@pytest.mark.asyncio
+async def test_unregister_voice_refreshes_runtime_after_cancellation_during_save(monkeypatch):
+    name = "测试猫娘"
+    cm = DummyConfigManager(_base_characters())
+    cm.allow_save_finish.clear()
+    mgr = DummySessionMgr(is_active=True)
+    mgr.voice_id = "v1"
+    lock = asyncio.Lock()
+
+    async def refresh(char_name, *, is_new):
+        assert not lock.locked()
+        assert is_new is False
+        mgr.voice_id = get_reserved(cm.characters["猫娘"][char_name], "voice_id", default="")
+
+    monkeypatch.setattr(voice_registry_module, "character_config_mutation_lock", lock)
+    monkeypatch.setattr(voice_registry_module, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(voice_registry_module, "get_session_manager", lambda: {name: mgr})
+    monkeypatch.setattr(voice_registry_module, "get_init_one_catgirl", lambda: refresh)
+
+    operation = asyncio.create_task(voice_registry_module.unregister_voice(name))
+    await asyncio.wait_for(cm.save_started.wait(), 2)
+    assert lock.locked()
+    operation.cancel()
+    cm.allow_save_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+
+    assert not lock.locked()
+    assert get_reserved(cm.characters["猫娘"][name], "voice_id") == ""
+    assert mgr.notified is True
+    assert mgr.ended is True
+    assert mgr.reset_called is True
+    assert mgr.voice_id == ""
+
+    retry = await voice_registry_module.unregister_voice(name)
+    assert retry.status_code == 400
+    assert json.loads(retry.body)["code"] == "TTS_VOICE_NOT_REGISTERED"
+    assert mgr.voice_id == ""
+
+
+@pytest.mark.asyncio
+async def test_clear_voice_ids_restores_default_and_refreshes_after_cancellation(monkeypatch):
+    lock = asyncio.Lock()
+    monkeypatch.setattr(voice_registry_module, "character_config_mutation_lock", lock)
+
+    # (a) Cancel during asave_characters
+    cm = DummyConfigManager(_base_characters())
+    cm.allow_save_finish.clear()
+    events = []
+
+    async def _fake_yui(_cm):
+        assert lock.locked()
+        events.append("yui")
+        chars = await _cm.aload_characters()
+        await _cm.asave_characters(chars)
+
+    async def _init_all():
+        assert not lock.locked()
+        events.append("init_all")
+
+    monkeypatch.setattr(voice_registry_module, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(voice_registry_module, "ensure_default_yui_voice_for_free_api", _fake_yui)
+    monkeypatch.setattr(voice_registry_module, "get_initialize_character_data", lambda: _init_all)
+
+    operation = asyncio.create_task(voice_registry_module.clear_voice_ids())
+    await asyncio.wait_for(cm.save_started.wait(), 2)
+    operation.cancel()
+    cm.allow_save_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+
+    assert not lock.locked()
+    assert get_reserved(cm.characters["猫娘"]["测试猫娘"], "voice_id") == ""
+    assert events == ["yui", "init_all"]
+
+    # (b) Cancel during ensure_default_yui_voice_for_free_api
+    cm2 = DummyConfigManager(_base_characters())
+    yui_started = asyncio.Event()
+    yui_release = asyncio.Event()
+    events2 = []
+
+    async def _fake_yui2(_cm):
+        assert lock.locked()
+        yui_started.set()
+        await yui_release.wait()
+        events2.append("yui")
+
+    async def _init_all2():
+        assert not lock.locked()
+        events2.append("init_all")
+
+    monkeypatch.setattr(voice_registry_module, "get_config_manager", lambda: cm2)
+    monkeypatch.setattr(voice_registry_module, "ensure_default_yui_voice_for_free_api", _fake_yui2)
+    monkeypatch.setattr(voice_registry_module, "get_initialize_character_data", lambda: _init_all2)
+
+    op2 = asyncio.create_task(voice_registry_module.clear_voice_ids())
+    await asyncio.wait_for(yui_started.wait(), 2)
+    op2.cancel()
+    yui_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await op2
+
+    assert not lock.locked()
+    assert get_reserved(cm2.characters["猫娘"]["测试猫娘"], "voice_id") == ""
+    assert events2 == ["yui", "init_all"]
+
+
+@pytest.mark.asyncio
+async def test_update_master_and_touch_set_refresh_runtime_after_cancellation_during_save(monkeypatch):
+    lock = asyncio.Lock()
+    monkeypatch.setattr(crud_module, "character_config_mutation_lock", lock)
+    monkeypatch.setattr(live2d_models_module, "character_config_mutation_lock", lock)
+
+    # 1. update_master
+    cm_master = DummyConfigManager(_base_characters())
+    cm_master.allow_save_finish.clear()
+    master_refreshed = []
+
+    async def _init_all():
+        master_refreshed.append(lock.locked())
+
+    monkeypatch.setattr(crud_module, "get_config_manager", lambda: cm_master)
+    monkeypatch.setattr(crud_module, "get_initialize_character_data", lambda: _init_all)
+
+    op_master = asyncio.create_task(
+        crud_module.update_master(DummyRequest({"档案名": "主人", "性格": "冷静"}))
+    )
+    await asyncio.wait_for(cm_master.save_started.wait(), 2)
+    op_master.cancel()
+    cm_master.allow_save_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await op_master
+
+    assert not lock.locked()
+    assert cm_master.load_characters()["主人"]["性格"] == "冷静"
+    assert master_refreshed == [False]
+
+    # 2. update_catgirl_touch_set
+    cm_touch = DummyConfigManager(_base_characters())
+    cm_touch.allow_save_finish.clear()
+    touch_refreshed = []
+
+    async def _init_one(char_name, is_new=False):
+        touch_refreshed.append((char_name, is_new, lock.locked()))
+
+    monkeypatch.setattr(live2d_models_module, "get_config_manager", lambda: cm_touch)
+    monkeypatch.setattr(live2d_models_module, "get_init_one_catgirl", lambda: _init_one)
+
+    op_touch = asyncio.create_task(
+        live2d_models_module.update_catgirl_touch_set(
+            "测试猫娘", DummyRequest({"model_name": "mao", "touch_set": {"default": {"motions": ["m1"]}}})
+        )
+    )
+    await asyncio.wait_for(cm_touch.save_started.wait(), 2)
+    op_touch.cancel()
+    cm_touch.allow_save_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await op_touch
+
+    assert not lock.locked()
+    saved_touch = get_reserved(cm_touch.load_characters()["猫娘"]["测试猫娘"], "touch_set")
+    assert saved_touch["mao"] == {"default": {"motions": ["m1"]}}
+    assert touch_refreshed == [("测试猫娘", False, False)]

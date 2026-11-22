@@ -415,6 +415,7 @@ _PROACTIVE_CHAT_TOTALS_FILENAME = "proactive_chat_totals.json"
 
 
 _PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION = 2
+_MAX_PROACTIVE_CHAT_TOTAL = (1 << 63) - 1
 
 
 _proactive_chat_totals: dict[str, int] = {}
@@ -738,16 +739,13 @@ async def _ensure_proactive_chat_totals_loaded(
             for k, v in totals.items():
                 if not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, (int, float)):
                     continue
-                try:
-                    num = float(v)
-                except (TypeError, ValueError, OverflowError):
+                if isinstance(v, int):
+                    if 0 <= v <= _MAX_PROACTIVE_CHAT_TOTAL:
+                        loaded_totals[k] = v
                     continue
-                if not math.isfinite(num):
+                if not math.isfinite(v) or v < 0 or v > _MAX_PROACTIVE_CHAT_TOTAL:
                     continue
-                try:
-                    loaded_totals[k] = int(num)
-                except (OverflowError, ValueError):
-                    continue
+                loaded_totals[k] = int(v)
         ever = data.get("ever_delivered") if isinstance(data, dict) else None
         if isinstance(ever, dict):
             for k, v in ever.items():

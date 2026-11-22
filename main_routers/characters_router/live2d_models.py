@@ -22,6 +22,7 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 from ._shared import logger, router
 from .voice_providers import _config_value_is_enabled
 
+import asyncio
 import re
 import os
 import math
@@ -32,7 +33,7 @@ from ..shared_state import (
     get_config_manager,
     get_init_one_catgirl,
 )
-from utils.asyncio_retirement import await_retirement
+from utils.asyncio_retirement import await_completion_with_cancel, await_retirement
 from utils.character_memory import character_config_mutation_lock
 from utils.config_manager import (
     get_reserved,
@@ -44,6 +45,26 @@ from utils.cloudsave_runtime import MaintenanceModeError
 from config import (
     DEFAULT_LIVE2D_MODEL_NAME,
 )
+
+
+async def _finish_catgirl_runtime_refresh(
+    name: str,
+    *,
+    apply_runtime: bool,
+    cancelled: bool,
+) -> bool:
+    """Refresh one character's runtime state after a saved config change before propagating cancellation."""
+    refreshed = False
+    try:
+        if apply_runtime:
+            init_one_catgirl = get_init_one_catgirl()
+            if init_one_catgirl:
+                await await_retirement(init_one_catgirl(name, is_new=False))
+                refreshed = True
+    finally:
+        if cancelled:
+            raise asyncio.CancelledError
+    return refreshed
 
 
 def _derive_live2d_model_name(model_ref: str) -> str:
@@ -644,11 +665,13 @@ async def update_catgirl_l2d(name: str, request: Request):
                     'idle_animation',
                     live2d_idle_animation,
                 )
-                await await_retirement(_config_manager.asave_characters(characters))
+                _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
 
-            if apply_runtime:
-                init_one_catgirl = get_init_one_catgirl()
-                await init_one_catgirl(name, is_new=False)
+            await _finish_catgirl_runtime_refresh(
+                name,
+                apply_runtime=apply_runtime,
+                cancelled=cancelled,
+            )
 
             return JSONResponse(content={
                 'success': True,
@@ -1016,7 +1039,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                     logger.debug(f"已保存角色 {name} 的模型 {live2d_model}，asset_source={resolved_asset_source or 'local_imported'}")
 
             # Save the configuration.
-            await await_retirement(_config_manager.asave_characters(characters))
+            _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
         # Telemetry: which avatar type the user actively picks (live2d / vrm / mmd / pngtuber).
         # Complements the startup snapshot, which misses a switch until the next launch.
         try:
@@ -1029,9 +1052,11 @@ async def update_catgirl_l2d(name: str, request: Request):
         except Exception:
             pass  # Telemetry must never affect saving the model.
         # Fast path: refresh only the edited character's session_manager (avatar configuration), without iterating over the other N-1 entries.
-        init_one_catgirl = get_init_one_catgirl()
-        if apply_runtime:
-            await init_one_catgirl(name, is_new=False)
+        await _finish_catgirl_runtime_refresh(
+            name,
+            apply_runtime=apply_runtime,
+            cancelled=cancelled,
+        )
 
 
         if model_type_str == 'live3d':
@@ -1115,12 +1140,14 @@ async def update_catgirl_touch_set(name: str, request: Request):
             existing_touch_set[model_name] = touch_set_data
 
             set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
-            await await_retirement(_config_manager.asave_characters(characters))
+            _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
 
         # Fast path: refresh only the edited character's session_manager (touch_set), without iterating over the other N-1 entries.
-        init_one_catgirl = get_init_one_catgirl()
-        if init_one_catgirl:
-            await init_one_catgirl(name, is_new=False)
+        await _finish_catgirl_runtime_refresh(
+            name,
+            apply_runtime=True,
+            cancelled=cancelled,
+        )
 
         logger.debug(f"已更新角色 {name} 模型 {model_name} 的触摸配置")
 
@@ -1233,15 +1260,19 @@ async def update_catgirl_lighting(name: str, request: Request):
                 get_reserved(characters['猫娘'][name], 'avatar', 'vrm', 'lighting', default=None),
             )
 
-            await await_retirement(_config_manager.asave_characters(characters))
+            _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
 
         if apply_runtime:
             # Fast path: refresh only the edited character's session_manager (lighting), without iterating over the other N-1 entries.
-            init_one_catgirl = get_init_one_catgirl()
-            if init_one_catgirl:
-                await init_one_catgirl(name, is_new=False)
+            if await _finish_catgirl_runtime_refresh(
+                name,
+                apply_runtime=True,
+                cancelled=cancelled,
+            ):
                 logger.info(f"已应用到运行时（角色 {name} 的打光配置）")
         else:
+            if cancelled:
+                raise asyncio.CancelledError
             logger.debug("跳过运行时刷新（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
 
         if apply_runtime:

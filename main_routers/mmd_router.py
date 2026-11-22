@@ -974,11 +974,14 @@ def _tree_has_model_named(root: Path, key: str, skip_top_dirs: frozenset[str] = 
         if skip_top_dirs and Path(dirpath) == root:
             dirnames[:] = [name for name in dirnames if name.lower() not in skip_top_dirs]
         for name in filenames:
-            candidate = Path(name)
+            candidate = Path(dirpath, name)
             if (candidate.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
-                    and candidate.stem.replace("..", "_").casefold() == wanted
-                    and os.path.isfile(os.path.join(dirpath, name))):
-                return True
+                    and candidate.stem.replace("..", "_").casefold() == wanted):
+                try:
+                    if candidate.is_file():
+                        return True
+                except OSError as exc:
+                    errors.append(exc)
     if errors:
         raise errors[0]
     return False
@@ -1008,15 +1011,21 @@ def _remove_unused_emotion_mapping(config_mgr, mmd_dir: Path, model_name: str) -
         logger.warning("清理 MMD 情感映射配置失败，保留原文件 %s: %s", mapping.name, exc)
 
 
+def _is_other_model(candidate: Path, resolved_target: Path) -> bool:
+    try:
+        return candidate.resolve() != resolved_target
+    except (OSError, RuntimeError):
+        # Cannot confirm this model-extension entry aliases the deleted target; keep the folder.
+        return True
+
+
 def _delete_subdir_model_sync(safe_path: Path, top_subdir: Path) -> int:
     """Delete an MMD model in a subdirectory, removing the directory only if no sibling model remains."""
     resolved_target = safe_path.resolve()
     resolved_top = top_subdir.resolve()
     has_sibling_model = any(
-        candidate.is_file()
-        and candidate.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
-        and candidate.resolve() != resolved_target
-        for candidate in top_subdir.rglob("*")
+        _is_other_model(candidate, resolved_target)
+        for candidate in _iter_model_files(top_subdir)
     )
     if not has_sibling_model:
         return _count_and_rmtree(top_subdir)

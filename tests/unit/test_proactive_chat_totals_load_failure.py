@@ -204,8 +204,11 @@ async def test_f0173_cancelled_load_and_root_swap_between_load_and_write(monkeyp
 async def test_f0173_one_corrupt_total_entry_does_not_drop_other_characters(tmp_path):
     root = tmp_path / "memory"
     root.mkdir(parents=True, exist_ok=True)
+    exact_large = (1 << 53) + 1
     _totals_path(root).write_text(
-        '{"version": 2, "totals": {"A": 5, "bad_nan": NaN, "bad_bool": true, "bad_huge": '
+        '{"version": 2, "totals": {"A": 5, "exact_large": '
+        + str(exact_large)
+        + ', "bad_nan": NaN, "bad_inf": Infinity, "bad_bool": true, "bad_neg": -1, "bad_huge": '
         + str(10**400)
         + '}, "ever_delivered": {"A": true}}',
         encoding="utf-8",
@@ -213,7 +216,10 @@ async def test_f0173_one_corrupt_total_entry_does_not_drop_other_characters(tmp_
 
     assert await state._ensure_proactive_chat_totals_loaded(memory_dir=root) is True
     assert state._get_proactive_chat_total("A") == 5
+    assert state._get_proactive_chat_total("exact_large") == exact_large
     assert math.isfinite(state._get_proactive_chat_total("bad_nan"))
     assert "bad_nan" not in state._proactive_chat_totals
+    assert "bad_inf" not in state._proactive_chat_totals
     assert "bad_bool" not in state._proactive_chat_totals
+    assert "bad_neg" not in state._proactive_chat_totals
     assert "bad_huge" not in state._proactive_chat_totals

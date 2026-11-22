@@ -169,3 +169,106 @@ async def test_f0210_delete_model_keeps_mapping_when_a_directory_cannot_be_liste
     assert body["success"] is True
     assert not model.exists()
     assert mapping.read_text() == '{"happy":1}'
+
+
+@pytest.mark.asyncio
+async def test_f0210_delete_model_emotion_mapping_ignores_broken_symlink_but_keeps_on_permission_error(
+    monkeypatch, tmp_path,
+):
+    from pathlib import Path
+
+    mmd_dir = _setup_mmd_env(monkeypatch, tmp_path)
+    workshop_dir = tmp_path / "workshop"
+    workshop_item = workshop_dir / "item"
+    workshop_item.mkdir(parents=True)
+    broken_link = workshop_item / "Solo.pmx"
+    broken_link.symlink_to(workshop_item / "missing.pmx")
+    cm = mmd_router.get_config_manager()
+    cm.get_steam_workshop_path = lambda: str(workshop_dir)
+
+    # Part 1: broken symlink is treated as non-file and allows emotion mapping cleanup
+    model = mmd_dir / "Solo.pmx"
+    model.write_bytes(b"solo")
+    mapping = mmd_dir / "emotion_config" / "Solo.json"
+    mapping.parent.mkdir()
+    mapping.write_text('{"happy":1}')
+
+    resp1 = await mmd_router.delete_mmd_model(_DummyRequest({"url": "/user_mmd/Solo.pmx"}))
+    assert resp1.status_code == 200
+    assert not model.exists()
+    assert not mapping.exists()
+
+    # Part 2: PermissionError during Path.is_file() keeps emotion mapping
+    broken_link.unlink()
+    unreadable_same_named = workshop_item / "Solo.pmx"
+    unreadable_same_named.write_bytes(b"locked-target")
+    model.write_bytes(b"solo")
+    mapping.write_text('{"happy":1}')
+
+    orig_is_file = Path.is_file
+
+    def guarded_is_file(self):
+        if self == unreadable_same_named:
+            raise PermissionError(13, "Permission denied", str(self))
+        return orig_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", guarded_is_file)
+
+    resp2 = await mmd_router.delete_mmd_model(_DummyRequest({"url": "/user_mmd/Solo.pmx"}))
+    assert resp2.status_code == 200
+    assert not model.exists()
+    assert mapping.read_text() == '{"happy":1}'
+
+
+@pytest.mark.asyncio
+async def test_f0210_delete_subdir_model_handles_unreadable_symlinks_by_extension(
+    monkeypatch, tmp_path,
+):
+    from pathlib import Path
+
+    mmd_dir = _setup_mmd_env(monkeypatch, tmp_path)
+
+    # Part 1: unreadable non-model resource does not 500 and lets solo dir be removed
+    pack_dir = mmd_dir / "Pack"
+    tex_dir = pack_dir / "tex"
+    tex_dir.mkdir(parents=True)
+    solo_model = pack_dir / "Solo.pmx"
+    solo_model.write_bytes(b"solo")
+    unreadable_tex = tex_dir / "texture.png"
+    unreadable_tex.write_bytes(b"tex")
+
+    # Part 2: unreadable model-extension sibling preserves directory and sibling
+    pack2_dir = mmd_dir / "Pack2"
+    pack2_dir.mkdir(parents=True)
+    solo2 = pack2_dir / "Solo.pmx"
+    solo2.write_bytes(b"solo2")
+    unreadable_sibling = pack2_dir / "Other.pmx"
+    unreadable_sibling.write_bytes(b"other")
+
+    orig_is_file = Path.is_file
+    orig_resolve = Path.resolve
+
+    def guarded_is_file(self):
+        if self in (unreadable_tex, unreadable_sibling):
+            raise PermissionError(13, "Permission denied", str(self))
+        return orig_is_file(self)
+
+    def guarded_resolve(self, *args, **kwargs):
+        if self == unreadable_sibling:
+            raise PermissionError(13, "Permission denied", str(self))
+        return orig_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", guarded_is_file)
+    monkeypatch.setattr(Path, "resolve", guarded_resolve)
+
+    resp1 = await mmd_router.delete_mmd_model(_DummyRequest({"url": "/user_mmd/Pack/Solo.pmx"}))
+    assert resp1.status_code == 200
+    assert json.loads(resp1.body)["success"] is True
+    assert not pack_dir.exists()
+
+    resp2 = await mmd_router.delete_mmd_model(_DummyRequest({"url": "/user_mmd/Pack2/Solo.pmx"}))
+    assert resp2.status_code == 200
+    assert json.loads(resp2.body)["success"] is True
+    assert not solo2.exists()
+    assert pack2_dir.exists()
+    assert unreadable_sibling.exists()
