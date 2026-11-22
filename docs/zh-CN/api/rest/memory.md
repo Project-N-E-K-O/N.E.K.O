@@ -293,7 +293,7 @@
 
 ### `POST /api/memory/external_import/preview`
 
-在不写入记忆文件的情况下解析 OpenClaw、Hermes 或 Molili 的 Markdown 文件或 ZIP 压缩包。请求头若声明了 `Content-Length`，则受中间件上限 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 约束；未带该请求头的分块传输（chunked）请求会直接透传给应用处理。
+在不写入记忆文件的情况下解析 OpenClaw、Hermes 或 Molili 的 Markdown 文件或 ZIP 压缩包。仅当非 multipart 请求声明了超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 的有效整数 `Content-Length` 请求头时受中间件拦截；`multipart/*` 请求以及缺少有效整数 `Content-Length` 的分块传输（chunked）请求会直接透传给应用处理。
 
 **请求体**
 
@@ -304,7 +304,7 @@
 | `files` | 数组 | 否 | `{path/name, content}` 对象数组；与 `archive_b64` 互斥 |
 | `archive_b64` | 字符串 | 否 | Base64 编码的 ZIP 压缩包（可带 `data:` 前缀）；与 `files` 互斥 |
 
-成功返回 `success`、`character_name`、`source_format`、`files`、`counts`（`persona`、`facts`、`daily`）、`candidate_count`、`persona_fusion_calls`、`persona_candidate_tokens`、`daily_extraction_calls`、`daily_candidate_tokens`、`warning_count`、`warnings`（最多 20 条）、`candidates`（最多 100 条）和 `truncated_preview`；Molili 压缩包还会返回 `character_card`、`master_profile`、`skipped` 和 `snapshot_time`。当非 multipart 请求带有有效的 `Content-Length` 请求头且其值超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 时，会先被 `InboundBodySizeLimitMiddleware` 以 HTTP `413` 拒绝并返回 `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（非 `{success, error}` 格式）；缺少 `Content-Length` 的分块传输请求不会被该中间件以 `413` 拒绝而直接进入应用。导入字段/文件校验及 OpenClaw/Hermes Markdown/ZIP（`ExternalMemoryImportError`）解析失败返回 `400`；请求体 JSON 解码失败（例如格式错误的 `{`）、`source_format: "molili"` 下无效 ZIP 容器引发的未捕获 `zipfile.BadZipFile` 异常（当前未包装为 `ExternalMemoryImportError`）及其他未预期异常返回 `500`。
+成功返回 `success`、`character_name`、`source_format`、`files`、`counts`（`persona`、`facts`、`daily`）、`candidate_count`、`persona_fusion_calls`、`persona_candidate_tokens`、`daily_extraction_calls`、`daily_candidate_tokens`、`warning_count`、`warnings`（最多 20 条）、`candidates`（最多 100 条）和 `truncated_preview`；Molili 压缩包还会返回 `character_card`、`master_profile`、`skipped` 和 `snapshot_time`。当非 multipart 请求带有有效的整数 `Content-Length` 请求头且其值超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 时，会先被 `InboundBodySizeLimitMiddleware` 以 HTTP `413` 拒绝并返回 `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（非 `{success, error}` 格式）；`multipart/*` 请求以及缺少有效整数 `Content-Length` 的分块传输请求不会被该中间件以 `413` 拒绝而直接进入应用。导入字段/文件校验及 OpenClaw/Hermes Markdown/ZIP（`ExternalMemoryImportError`）解析失败返回 `400`；请求体 JSON 解码失败（例如格式错误的 `{`）、`source_format: "molili"` 下无效 ZIP 容器引发的未捕获 `zipfile.BadZipFile` 异常（当前未包装为 `ExternalMemoryImportError`）及其他未预期异常返回 `500`。
 
 ### `POST /api/memory/external_import/commit`
 
@@ -319,7 +319,7 @@
 | `acknowledge_warnings` | 布尔 | 条件必填 | 检测到可疑指令警告时必须为 `true`，否则返回 `409` |
 | `render_language` | 字符串 | 否 | 仅用于本次渲染的语言兜底，不会持久化为角色语言偏好 |
 
-成功返回 `success: true`、`need_refresh: true`、`memory_server_reloaded: true`、`status: "success"`、`character_name`、`source_format`、`imported_files`、`added_persona`、`added_facts`、`skipped_duplicates` 和 `warning_count`。当非 multipart 请求带有有效的 `Content-Length` 请求头且其值超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 时，会先被 `InboundBodySizeLimitMiddleware` 以 HTTP `413` 拒绝并返回 `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（非 `{success, error}` 格式）；缺少 `Content-Length` 的分块传输请求不会被该中间件以 `413` 拒绝而直接进入应用。路由与记忆服务器错误码包括：`400`（导入字段/文件校验或 OpenClaw/Hermes Markdown/ZIP `ExternalMemoryImportError` 解析失败，或上游未带 partial/too_large 错误码的拒绝）、`409`（未确认警告或云存储处于维护态）、`413`（`error_code: "external_import_too_large"` 并附带 `partial_import`）、`500`（`error_code: "external_import_partial"` 并附带 `partial_import`、请求体 JSON 解码失败如 `{`、`source_format: "molili"` 下无效 ZIP 容器引发的 `zipfile.BadZipFile` 异常，或其他未预期失败）以及 `504`（`error_code: "external_import_timeout"`，表示转发客户端超时）。返回 `504` 时，导入可能仍在记忆服务器后台执行（请求已发出后的读超时），也可能根本尚未开始（连接超时或连接池超时）；调用方可查询 `GET /api/memory/external_import/progress`（每个角色仅在内存中保留一条进度条目，因此可能仍显示上次运行状态或被重叠请求覆盖），或重试导入（已完成融合的人格批次与已完成的日记条目会通过指纹去重跳过重复处理，但并不保证整次导入或并发重试的严格幂等性）。
+成功返回 `success: true`、`need_refresh: true`、`memory_server_reloaded: true`、`status: "success"`、`character_name`、`source_format`、`imported_files`、`added_persona`、`added_facts`、`skipped_duplicates` 和 `warning_count`。当非 multipart 请求带有有效的整数 `Content-Length` 请求头且其值超过 `EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES` 时，会先被 `InboundBodySizeLimitMiddleware` 以 HTTP `413` 拒绝并返回 `{"ok": false, "error_code": "payload_too_large", "max_bytes": ..., "error": ...}`（非 `{success, error}` 格式）；`multipart/*` 请求以及缺少有效整数 `Content-Length` 的分块传输请求不会被该中间件以 `413` 拒绝而直接进入应用。路由与记忆服务器错误码包括：`400`（导入字段/文件校验或 OpenClaw/Hermes Markdown/ZIP `ExternalMemoryImportError` 解析失败，或上游未带 partial/too_large 错误码的拒绝）、`409`（未确认警告或云存储处于维护态）、`413`（`error_code: "external_import_too_large"` 并附带 `partial_import`）、`500`（`error_code: "external_import_partial"` 并附带 `partial_import`、请求体 JSON 解码失败如 `{`、`source_format: "molili"` 下无效 ZIP 容器引发的 `zipfile.BadZipFile` 异常，或其他未预期失败）以及 `504`（`error_code: "external_import_timeout"`，表示转发客户端超时）。返回 `504` 时，导入可能仍在记忆服务器后台执行（请求已发出后的读超时），也可能根本尚未开始（连接超时或连接池超时）；调用方可查询 `GET /api/memory/external_import/progress`（每个角色仅在内存中保留一条进度条目，因此可能仍显示上次运行状态或被重叠请求覆盖），或重试导入（已完成融合的人格批次与已完成的日记条目会通过指纹去重跳过重复处理，但并不保证整次导入或并发重试的严格幂等性）。
 
 ### `GET /api/memory/external_import/progress`
 
