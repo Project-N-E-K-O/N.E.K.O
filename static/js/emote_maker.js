@@ -1950,6 +1950,15 @@
         }
     }
 
+    function persistWardrobePresence(key, placement, index, present) {
+        const storageKey = `neko.emote.wardrobeSprites.${key}`;
+        const saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+        if (!Array.isArray(saved)) throw new Error('sprite_save_failed');
+        const next = saved.filter(item => item?.id !== placement.id);
+        if (present) next.splice(Math.max(0, Math.min(index, next.length)), 0, structuredClone(placement));
+        localStorage.setItem(storageKey, JSON.stringify(next));
+    }
+
     function restoreWardrobeSnapshot(placements) {
         const order = [];
         for (const placement of placements) {
@@ -2277,7 +2286,7 @@
     function syncWardrobePlacements() {
         if (!wardrobePlacements) return;
         const visible = templatePackage?.source?.builtIn === true && hasSpineRenderer();
-        const key = visible ? currentTemplateKey() : '';
+        const key = templatePackage?.source?.builtIn === true ? currentTemplateKey() : '';
         if (key !== wardrobeTemplateKey) {
             clearTimeout(wardrobeRetryTimer);
             wardrobeRetryTimer = 0;
@@ -2498,6 +2507,7 @@
         }
         if (key !== currentTemplateKey() || key !== wardrobeTemplateKey) {
             if (url) URL.revokeObjectURL(url);
+            persistWardrobePresence(key, placement, index, present);
             return;
         }
         if (present) {
@@ -4001,7 +4011,7 @@
         // 只读只是"不能改组员"，整组照导不误 —— 那正是"把这份场景列表全导出来"的入口
         row.disabled = !total || !hasSpineRenderer();
         row.addEventListener('click', () => {
-            if (groupExportBusy || groupExportPicking) return;
+            if (groupExportBusy || groupExportPicking || packBusy) return;
             if (!hasSpineRenderer()) {
                 closeGroupPicker();
                 showToast(t('emoteMaker.groupExportNoRuntime'));

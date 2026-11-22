@@ -959,6 +959,12 @@
                 const scene = node ? sceneNodeFor(node) : null;
                 const bound = node ? boundImagesFor(node) : null;
                 const sourceScene = node ? committedFrameSource(node) : '';
+                const thumbSource = JSON.stringify([sourceScene, bound?.[0]?.id || '', Number(node?.params.startAt) || 0]);
+                if (refs.thumbSource !== thumbSource) {
+                    refs.thumbSource = thumbSource;
+                    delete refs.thumb.dataset.thumbRequest;
+                    if (!slice?.length) refs.thumb.replaceChildren();
+                }
                 if (slice?.length) paintTileCanvas(refs.thumb, slice[0]);
                 else if (refs.thumb.firstChild === null && node && bound?.length) {
                     // 绑了用户图片的格子缩略图走图片源；committedScene 给的是
