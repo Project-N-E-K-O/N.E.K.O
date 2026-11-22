@@ -9,7 +9,7 @@ const SOURCE_PATH = path.join(PROJECT_ROOT, 'static', 'js', 'api_key_settings.js
 const source = fs.readFileSync(SOURCE_PATH, 'utf8');
 
 const MASKED = '__NEKO_SECRET_MASKED__';
-const MODEL_TYPES = ['conversation', 'summary', 'vision', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary'];
 
 function sourceBetween(startMarker, endMarker) {
     const start = source.indexOf(startMarker);

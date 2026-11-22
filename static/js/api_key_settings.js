@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'summary', 'vision', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
+const MODEL_TYPES = ['conversation', 'vision', 'summary', 'emotion', 'omni', 'agent', 'tts', 'gameMain', 'gameSummary', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -4463,14 +4463,14 @@ function positionTooltip(iconElement, tooltipElement) {
 const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
     conversation: 'summary',
     summary: 'conversation',
-    vision: 'emotion',
-    emotion: 'vision',
-    omni: 'agent',
-    agent: 'omni',
-    tts: 'game',
-    game: 'tts',
-    image: 'decision',
-    decision: 'image',
+    emotion: 'decision',
+    decision: 'emotion',
+    omni: 'tts',
+    tts: 'omni',
+    agent: 'game',
+    game: 'agent',
+    image: 'vision',
+    vision: 'image',
 });
 
 function finishModelConfigCollapse(content, pairedContent, transitionId) {

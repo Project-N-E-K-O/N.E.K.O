@@ -404,46 +404,6 @@
                                     </div>
                                 </div>
 
-                                <!-- 视觉聊天模型 -->
-                                <div class="model-config-container">
-                                    <div class="model-header" onclick="toggleModelConfig('vision')">
-                                        <span class="model-title">
-                                            <img src="/static/icons/vision_model_icon.png"
-                                                data-i18n-alt="api.visionModelConfig" class="model-title-icon">
-                                            <span data-i18n="api.visionModelConfig">视觉聊天模型</span>
-                                        </span>
-                                        <span class="toggle-icon">▼</span>
-                                    </div>
-                                    <div id="vision-model-content" class="model-content">
-                                        <div class="field-row">
-                                            <label for="visionModelProvider" data-i18n="api.providerLabel">服务商</label>
-                                            <select id="visionModelProvider" class="api-provider-select" style="max-width: 600px;">
-                                            </select>
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="visionModelUrl" data-i18n="api.apiUrl">API URL</label>
-                                            <input type="text" id="visionModelUrl"
-                                                data-i18n-placeholder="api.baseUrlExamplePlaceholder"
-                                                placeholder="e.g., https://api.openai.com/v1" value=""
-                                                style="max-width: 600px;">
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="visionModelId" data-i18n="api.modelId">模型ID</label>
-                                            <input type="text" id="visionModelId"
-                                                data-i18n-placeholder="api.visionModelExamplePlaceholder"
-                                                placeholder="e.g., gpt-4-vision-preview, qwen-vl-plus" value=""
-                                                style="max-width: 600px;">
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="visionModelApiKey" data-i18n="api.apiKey">API Key</label>
-                                            <input type="text" id="visionModelApiKey"
-                                                data-i18n-placeholder="api.visionModelApiKeyPlaceholder"
-                                                placeholder="Enter Vision API Key" value=""
-                                                style="max-width: 600px;">
-                                        </div>
-                                    </div>
-                                </div>
-
                                 <!-- 情感模型 -->
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('emotion')">
@@ -479,6 +439,46 @@
                                             <input type="text" id="emotionModelApiKey"
                                                 data-i18n-placeholder="api.emotionModelApiKeyPlaceholder"
                                                 placeholder="Enter Emotion API Key" value=""
+                                                style="max-width: 600px;">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 决策模型 -->
+                                <div class="model-config-container">
+                                    <div class="model-header" onclick="toggleModelConfig('decision')">
+                                        <span class="model-title">
+                                            <img src="/static/icons/model_type_icon.png"
+                                                data-i18n-alt="api.decisionModelConfig" class="model-title-icon">
+                                            <span data-i18n="api.decisionModelConfig">决策模型</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </div>
+                                    <div id="decision-model-content" class="model-content">
+                                        <div class="field-row">
+                                            <label for="decisionModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                            <select id="decisionModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                            </select>
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="decisionModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                            <input type="text" id="decisionModelUrl"
+                                                data-i18n-placeholder="api.baseUrlExamplePlaceholder"
+                                                placeholder="e.g., https://api.openai.com/v1" value=""
+                                                style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="decisionModelId" data-i18n="api.modelId">模型ID</label>
+                                            <input type="text" id="decisionModelId"
+                                                data-i18n-placeholder="api.modelExamplePlaceholder"
+                                                placeholder="e.g., decision-model-preview, gemini-decision-1, gpt-6-luna" value=""
+                                                style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="decisionModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                            <input type="text" id="decisionModelApiKey"
+                                                data-i18n-placeholder="api.decisionModelApiKeyPlaceholder"
+                                                placeholder="Enter Decision API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
                                     </div>
@@ -521,46 +521,6 @@
                                                 data-i18n-placeholder="api.omniModelApiKeyPlaceholder"
                                                 placeholder="Enter Realtime API Key" value=""
                                                 style="max-width: 600px;">
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Agent API -->
-                                <div class="model-config-container">
-                                    <div class="model-header" onclick="toggleModelConfig('agent')">
-                                        <span class="model-title">
-                                            <img src="/static/icons/correction_model_icon.png"
-                                                data-i18n-alt="api.agentApiConfigTitle" class="model-title-icon">
-                                            <span data-i18n="api.agentApiConfigTitle">Agent API（需支持视觉功能）</span>
-                                        </span>
-                                        <span class="toggle-icon">▼</span>
-                                    </div>
-                                    <div id="agent-model-content" class="model-content">
-                                        <div class="field-row">
-                                            <label for="agentModelProvider" data-i18n="api.providerLabel">服务商</label>
-                                            <select id="agentModelProvider" class="api-provider-select" style="max-width: 600px;">
-                                            </select>
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="agentModelUrl" data-i18n="api.apiUrl">API URL</label>
-                                            <input type="text" id="agentModelUrl"
-                                                data-i18n-placeholder="api.agentModelUrlPlaceholder"
-                                                placeholder="Leave blank to follow Assist API vision model URL"
-                                                value="" style="max-width: 600px;">
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="agentModelId" data-i18n="api.modelId">模型ID</label>
-                                            <input type="text" id="agentModelId"
-                                                data-i18n-placeholder="api.agentModelIdPlaceholder"
-                                                placeholder="Leave blank to follow Assist API vision model ID"
-                                                value="" style="max-width: 600px;">
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="agentModelApiKey" data-i18n="api.apiKey">API Key</label>
-                                            <input type="text" id="agentModelApiKey"
-                                                data-i18n-placeholder="api.agentModelApiKeyPlaceholder"
-                                                placeholder="Leave blank to follow Assist API Key (not available for 'free')"
-                                                value="" style="max-width: 600px;">
                                         </div>
                                     </div>
                                 </div>
@@ -675,6 +635,46 @@
                                                 </div>
                                             </div>
 
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Agent API -->
+                                <div class="model-config-container">
+                                    <div class="model-header" onclick="toggleModelConfig('agent')">
+                                        <span class="model-title">
+                                            <img src="/static/icons/correction_model_icon.png"
+                                                data-i18n-alt="api.agentApiConfigTitle" class="model-title-icon">
+                                            <span data-i18n="api.agentApiConfigTitle">Agent API（需支持视觉功能）</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </div>
+                                    <div id="agent-model-content" class="model-content">
+                                        <div class="field-row">
+                                            <label for="agentModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                            <select id="agentModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                            </select>
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="agentModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                            <input type="text" id="agentModelUrl"
+                                                data-i18n-placeholder="api.agentModelUrlPlaceholder"
+                                                placeholder="Leave blank to follow Assist API vision model URL"
+                                                value="" style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="agentModelId" data-i18n="api.modelId">模型ID</label>
+                                            <input type="text" id="agentModelId"
+                                                data-i18n-placeholder="api.agentModelIdPlaceholder"
+                                                placeholder="Leave blank to follow Assist API vision model ID"
+                                                value="" style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="agentModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                            <input type="text" id="agentModelApiKey"
+                                                data-i18n-placeholder="api.agentModelApiKeyPlaceholder"
+                                                placeholder="Leave blank to follow Assist API Key (not available for 'free')"
+                                                value="" style="max-width: 600px;">
                                         </div>
                                     </div>
                                 </div>
@@ -808,41 +808,41 @@
                                     </div>
                                 </div>
 
-                                <!-- 决策模型 -->
+                                <!-- 视觉聊天模型 -->
                                 <div class="model-config-container">
-                                    <div class="model-header" onclick="toggleModelConfig('decision')">
+                                    <div class="model-header" onclick="toggleModelConfig('vision')">
                                         <span class="model-title">
-                                            <img src="/static/icons/model_type_icon.png"
-                                                data-i18n-alt="api.decisionModelConfig" class="model-title-icon">
-                                            <span data-i18n="api.decisionModelConfig">决策模型</span>
+                                            <img src="/static/icons/vision_model_icon.png"
+                                                data-i18n-alt="api.visionModelConfig" class="model-title-icon">
+                                            <span data-i18n="api.visionModelConfig">视觉聊天模型</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
                                     </div>
-                                    <div id="decision-model-content" class="model-content">
+                                    <div id="vision-model-content" class="model-content">
                                         <div class="field-row">
-                                            <label for="decisionModelProvider" data-i18n="api.providerLabel">服务商</label>
-                                            <select id="decisionModelProvider" class="api-provider-select" style="max-width: 600px;">
+                                            <label for="visionModelProvider" data-i18n="api.providerLabel">服务商</label>
+                                            <select id="visionModelProvider" class="api-provider-select" style="max-width: 600px;">
                                             </select>
                                         </div>
                                         <div class="field-row">
-                                            <label for="decisionModelUrl" data-i18n="api.apiUrl">API URL</label>
-                                            <input type="text" id="decisionModelUrl"
+                                            <label for="visionModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                            <input type="text" id="visionModelUrl"
                                                 data-i18n-placeholder="api.baseUrlExamplePlaceholder"
                                                 placeholder="e.g., https://api.openai.com/v1" value=""
                                                 style="max-width: 600px;">
                                         </div>
                                         <div class="field-row">
-                                            <label for="decisionModelId" data-i18n="api.modelId">模型ID</label>
-                                            <input type="text" id="decisionModelId"
-                                                data-i18n-placeholder="api.modelExamplePlaceholder"
-                                                placeholder="e.g., decision-model-preview, gemini-decision-1, gpt-6-luna" value=""
+                                            <label for="visionModelId" data-i18n="api.modelId">模型ID</label>
+                                            <input type="text" id="visionModelId"
+                                                data-i18n-placeholder="api.visionModelExamplePlaceholder"
+                                                placeholder="e.g., gpt-4-vision-preview, qwen-vl-plus" value=""
                                                 style="max-width: 600px;">
                                         </div>
                                         <div class="field-row">
-                                            <label for="decisionModelApiKey" data-i18n="api.apiKey">API Key</label>
-                                            <input type="text" id="decisionModelApiKey"
-                                                data-i18n-placeholder="api.decisionModelApiKeyPlaceholder"
-                                                placeholder="Enter Decision API Key" value=""
+                                            <label for="visionModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                            <input type="text" id="visionModelApiKey"
+                                                data-i18n-placeholder="api.visionModelApiKeyPlaceholder"
+                                                placeholder="Enter Vision API Key" value=""
                                                 style="max-width: 600px;">
                                         </div>
                                     </div>

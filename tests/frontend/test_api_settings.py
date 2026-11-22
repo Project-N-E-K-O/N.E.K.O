@@ -359,14 +359,14 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             rowPairs: { ...MODEL_CONFIG_ROW_PAIRS },
             conversation: rect(cards[0]),
             summary: rect(cards[1]),
-            vision: rect(cards[2]),
-            emotion: rect(cards[3]),
+            emotion: rect(cards[2]),
+            decision: rect(cards[3]),
             omni: rect(cards[4]),
-            agent: rect(cards[5]),
-            tts: rect(cards[6]),
+            tts: rect(cards[5]),
+            agent: rect(cards[6]),
             game: rect(cards[7]),
             image: rect(cards[8]),
-            decision: rect(cards[9]),
+            vision: rect(cards[9]),
         };
     }""")
 
@@ -375,31 +375,31 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["contentIds"] == [
         "conversation-model-content",
         "summary-model-content",
-        "vision-model-content",
         "emotion-model-content",
+        "decision-model-content",
         "omni-model-content",
-        "agent-model-content",
         "tts-model-content",
+        "agent-model-content",
         "game-model-content",
         "image-model-content",
-        "decision-model-content",
+        "vision-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
         "api.summaryModelConfig",
-        "api.visionModelConfig",
         "api.emotionModelConfig",
+        "api.decisionModelConfig",
         "api.realtimeModelConfig",
-        "api.agentApiConfigTitle",
         "api.ttsModelConfig",
+        "api.agentApiConfigTitle",
         "api.gameModelsConfig",
         "api.imageModelConfig",
-        "api.decisionModelConfig",
+        "api.visionModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
-        "summary",
         "vision",
+        "summary",
         "emotion",
         "omni",
         "agent",
@@ -411,26 +411,26 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["rowPairs"] == {
         "conversation": "summary",
         "summary": "conversation",
-        "vision": "emotion",
-        "emotion": "vision",
-        "omni": "agent",
-        "agent": "omni",
-        "tts": "game",
-        "game": "tts",
-        "image": "decision",
-        "decision": "image",
+        "emotion": "decision",
+        "decision": "emotion",
+        "omni": "tts",
+        "tts": "omni",
+        "agent": "game",
+        "game": "agent",
+        "image": "vision",
+        "vision": "image",
     }
     assert desktop["conversation"]["top"] == desktop["summary"]["top"]
     assert desktop["conversation"]["left"] < desktop["summary"]["left"]
     assert abs(desktop["conversation"]["width"] - desktop["summary"]["width"]) <= 1
-    assert desktop["vision"]["top"] == desktop["emotion"]["top"]
-    assert desktop["vision"]["left"] < desktop["emotion"]["left"]
-    assert abs(desktop["vision"]["width"] - desktop["emotion"]["width"]) <= 1
-    assert desktop["omni"]["top"] == desktop["agent"]["top"]
-    assert desktop["tts"]["top"] == desktop["game"]["top"]
-    assert desktop["tts"]["top"] > desktop["omni"]["top"]
-    assert desktop["image"]["top"] == desktop["decision"]["top"]
-    assert desktop["image"]["left"] < desktop["decision"]["left"]
+    assert desktop["emotion"]["top"] == desktop["decision"]["top"]
+    assert desktop["emotion"]["left"] < desktop["decision"]["left"]
+    assert abs(desktop["emotion"]["width"] - desktop["decision"]["width"]) <= 1
+    assert desktop["omni"]["top"] == desktop["tts"]["top"]
+    assert desktop["agent"]["top"] == desktop["game"]["top"]
+    assert desktop["agent"]["top"] > desktop["omni"]["top"]
+    assert desktop["image"]["top"] == desktop["vision"]["top"]
+    assert desktop["image"]["left"] < desktop["vision"]["left"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)
