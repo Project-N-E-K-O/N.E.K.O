@@ -63,6 +63,7 @@ def store(monkeypatch, manager):
     monkeypatch.setattr(permission_service, "current_source", lambda _pid: None)
     monkeypatch.setattr(permission_service, "_last_records", {})
     monkeypatch.setattr(permission_service, "_removals", {})
+    monkeypatch.setattr(permission_service, "_reloads", 0)
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", False)
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", None)
     return store
@@ -874,6 +875,7 @@ def test_the_first_read_is_remembered_even_though_it_loads_the_store(monkeypatch
     monkeypatch.setattr(permission_service, "current_source", lambda _pid: None)
     monkeypatch.setattr(permission_service, "_last_records", {})
     monkeypatch.setattr(permission_service, "_removals", {})
+    monkeypatch.setattr(permission_service, "_reloads", 0)
     monkeypatch.setattr(
         plugin_permissions, "_change_listeners", [permission_service._on_store_change]
     )
@@ -895,3 +897,38 @@ async def test_a_new_change_restarts_the_backoff(monkeypatch, service, store, ho
     timer = service._timers["demo"]
     assert timer.when() - asyncio.get_running_loop().time() <= 30.0 + 0.5
     assert service._read_retry_delay["demo"] == 60.0
+
+
+def test_a_read_overtaken_by_a_reload_is_read_again_before_it_is_remembered(monkeypatch, store):
+    store.decide("demo", MEMORY_READ, "granted")
+    real_record = permission_service.permission_record
+    reads = []
+
+    def read_then_reload(plugin_id):
+        record = real_record(plugin_id)
+        reads.append(record["permissions"][MEMORY_READ]["state"])
+        if len(reads) == 1:
+            # Another thread reloads the store (e.g. from a new path) and the
+            # grant is now denied there; this read already saw "granted".
+            store._document["plugins"]["demo"]["permissions"][MEMORY_READ]["state"] = "denied"
+            permission_service._on_store_change(None)
+        return record
+
+    monkeypatch.setattr(permission_service, "permission_record", read_then_reload)
+    assert _states("demo").get(MEMORY_READ).status == "denied"
+    assert reads == ["granted", "denied"]
+    assert permission_service._last_records["demo"][1]["permissions"][MEMORY_READ]["state"] == "denied"
+
+
+def test_a_read_overtaken_by_reloads_twice_is_not_remembered(monkeypatch, store):
+    store.decide("demo", MEMORY_READ, "granted")
+    real_record = permission_service.permission_record
+
+    def always_reloading(plugin_id):
+        record = real_record(plugin_id)
+        permission_service._on_store_change(None)
+        return record
+
+    monkeypatch.setattr(permission_service, "permission_record", always_reloading)
+    permission_service.permission_snapshot("demo")
+    assert "demo" not in permission_service._last_records

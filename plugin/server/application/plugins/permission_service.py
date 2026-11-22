@@ -325,29 +325,63 @@ _snapshot_revision = itertools.count(1)
 # Last record read successfully per plugin, with the revision of the snapshot
 # that read it: a later read failure keeps using it.
 _last_records: dict[str, tuple[int, dict]] = {}
-# Bumped whenever a plugin's stored grants change: a read that started
-# before the change must not put the older record back into ``_last_records``.
+# Bumped whenever a plugin's stored grants change (``_reloads`` when the
+# whole store is (re)loaded): a read that started before the change must not
+# put the older record back into ``_last_records``.
 _removals: dict[str, int] = {}
+_reloads = 0
+
+
+def _invalidate_last_records(plugin_ids: frozenset[str] | None) -> None:
+    """The one place remembered records are dropped: forget them and advance
+    the generation, so reads that started earlier cannot write them back.
+    ``None`` means every plugin (the store was (re)loaded)."""
+    global _reloads
+    with _snapshot_lock:
+        if plugin_ids is None:
+            _last_records.clear()
+            _reloads += 1
+            return
+        for plugin_id in plugin_ids:
+            _last_records.pop(plugin_id, None)
+            _removals[plugin_id] = _removals.get(plugin_id, 0) + 1
 
 
 def _forget_last_record(plugin_id: str) -> None:
     """A plugin whose grants changed must not fall back to the old ones."""
-    with _snapshot_lock:
-        _last_records.pop(plugin_id, None)
-        _removals[plugin_id] = _removals.get(plugin_id, 0) + 1
+    _invalidate_last_records(frozenset({plugin_id}))
 
 
 def _on_store_change(plugin_ids: frozenset[str] | None) -> None:
     """Store change listener: drop remembered records the write made stale,
     so a later read failure never reports a removed or replaced grant."""
-    if plugin_ids is None:
-        # A (re)load: nothing remembered predates it. Reads in progress are
-        # not refused, since the load is usually part of their own read.
+    _invalidate_last_records(plugin_ids)
+
+
+def _generation(plugin_id: str) -> tuple[int, int]:
+    return _reloads, _removals.get(plugin_id, 0)
+
+
+def _read_and_remember(plugin_id: str, revision: int) -> dict:
+    """Read the plugin's record and remember it for read failures, unless its
+    grants changed while reading. A store (re)load during the read, usually
+    triggered by this very read, gets one re-read under the new generation."""
+    for attempt in range(2):
         with _snapshot_lock:
-            _last_records.clear()
-        return
-    for plugin_id in plugin_ids:
-        _forget_last_record(plugin_id)
+            generation = _generation(plugin_id)
+        record = permission_record(plugin_id)
+        with _snapshot_lock:
+            current = _generation(plugin_id)
+            if current == generation:
+                # Snapshots read concurrently: only a newer read replaces an older one.
+                if _last_records.get(plugin_id, (0, None))[0] < revision:
+                    _last_records[plugin_id] = (revision, copy.deepcopy(record))
+                return record
+            if current[1] != generation[1] or attempt:
+                # This plugin's grants changed meanwhile: use the read for this
+                # snapshot, remember nothing (the change schedules a new push).
+                return record
+    return record
 
 
 add_change_listener(_on_store_change)
@@ -399,18 +433,9 @@ def permission_snapshot(plugin_id: str) -> dict:
     # outranks one that may have read the data from before it.
     with _snapshot_lock:
         revision = next(_snapshot_revision)
-        generation = _removals.get(plugin_id, 0)
     read_failed = False
     try:
-        record: dict | None = permission_record(plugin_id)
-        with _snapshot_lock:
-            # Snapshots read concurrently: only a newer read replaces an older
-            # one, and none started before the grants last changed.
-            if (
-                _removals.get(plugin_id, 0) == generation
-                and _last_records.get(plugin_id, (0, None))[0] < revision
-            ):
-                _last_records[plugin_id] = (revision, copy.deepcopy(record))
+        record: dict | None = _read_and_remember(plugin_id, revision)
     except Exception as exc:
         code = getattr(exc, "code", None)
         read_failed = True
