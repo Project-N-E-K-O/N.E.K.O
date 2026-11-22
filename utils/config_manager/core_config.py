@@ -1519,6 +1519,10 @@ class CoreConfigMixin:
                     config[model_key] = config.get('EMOTION_MODEL', '')
                     config[url_key] = config.get('EMOTION_MODEL_URL', '')
                     config[apikey_key] = config.get('EMOTION_MODEL_API_KEY', '')
+                    own_url = str(core_cfg.get('agentSmallModelUrl') or '').strip()
+                    if provider in ('', 'custom') and own_url and own_url != config[url_key]:
+                        # A hand-entered endpoint never inherits another endpoint's key.
+                        config[apikey_key] = ''
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
                     # Retain a saved DashScope slot for existing CosyVoice clones,

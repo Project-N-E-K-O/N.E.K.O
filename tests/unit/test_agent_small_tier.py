@@ -209,3 +209,15 @@ def test_save_connectivity_probes_a_named_small_familiar_provider():
         'enableCustomApi': True, 'agentSmallModelProvider': 'qwen_intl',
     }
     assert 'assist:qwen_intl' in _build_save_connectivity_targets(core_cfg, api_config)
+
+
+def test_hand_entered_endpoint_never_inherits_the_recognition_key(config_manager):
+    # core_config.json edited by hand without a key field: the recognition key must not
+    # be sent to the user's own endpoint.
+    _write_core_config(config_manager, {
+        **BASE, 'enableCustomApi': True, **EMOTION_CUSTOM,
+        'agentSmallModelProvider': 'custom', 'agentSmallModelUrl': 'https://my.test/v1',
+    })
+    small = config_manager.get_model_api_config('agent_small')
+    assert small['base_url'] == 'https://my.test/v1'
+    assert small['api_key'] == ''
