@@ -3758,6 +3758,15 @@ body.is-pack-dragging * {
 }
 .wardrobe-placement:active { cursor: grabbing; }
 .wardrobe-placement img { display: block; width: 100%; visibility: hidden; pointer-events: none; }
+.wardrobe-placement.is-missing {
+    aspect-ratio: 1;
+    border: 1px dashed var(--emote-line);
+    border-radius: 8px;
+    background: rgb(244 251 255 / 85%);
+    color: var(--emote-accent-strong);
+}
+.wardrobe-placement.is-missing img { display: none; }
+.wardrobe-placement.is-missing::after { content: "!"; font: 700 20px/1 system-ui, sans-serif; }
 .wardrobe-transform {
     position: absolute;
     inset: 0;

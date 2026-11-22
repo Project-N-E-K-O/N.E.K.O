@@ -1912,6 +1912,7 @@
     }
 
     const WARDROBE_SPRITE_PREFIX = 'WardrobeSprites/';
+    const WARDROBE_RESTORE_ATTEMPTS = 3;
     const wardrobeSprites = new Map();
     const wardrobeArtwork = $('#wardrobe-artwork');
     const wardrobeArtworkBehind = $('#wardrobe-artwork-behind');
@@ -1922,6 +1923,7 @@
     const wardrobeLayerSlot = $('#wardrobe-layer-slot');
     let wardrobeSpritesLoaded = false;
     let wardrobeTemplateKey = '';
+    let wardrobeRetryTimer = 0;
     let selectedWardrobeSprite = null;
     let wardrobeFileBusy = false;
     let wardrobeGestureActive = false;
@@ -1974,6 +1976,7 @@
     }
 
     function wardrobeSpriteGeometry(sprite) {
+        if (!wardrobeImageReady(sprite.image)) return { width: sprite.size, height: sprite.size };
         const longest = Math.max(sprite.image.naturalWidth, sprite.image.naturalHeight);
         return {
             width: sprite.size * sprite.image.naturalWidth / longest,
@@ -2064,7 +2067,9 @@
     }
 
     function updateWardrobeSprite(sprite, repaint = true) {
-        if (!wardrobeImageReady(sprite?.image)) return;
+        if (!wardrobeImageReady(sprite?.image) && !sprite?.restoreFailed) return;
+        sprite.button.classList.toggle('is-missing', Boolean(sprite.restoreFailed));
+        sprite.button.title = sprite.restoreFailed ? t('emoteMaker.wardrobeMarkImageFailed') : '';
         const [a, b, c, d, x, y] = wardrobeSpritePose(sprite);
         const { clientWidth, clientHeight } = wardrobePlacements;
         const aspect = clientWidth / (clientHeight || 1) || 1;
@@ -2157,7 +2162,7 @@
             sprite.button.setAttribute('aria-pressed', String(sprite.id === id));
         }
         const selected = wardrobeSprites.get(id);
-        if (wardrobeImageReady(selected?.image)) updateWardrobeSprite(selected);
+        if (wardrobeImageReady(selected?.image) || selected?.restoreFailed) updateWardrobeSprite(selected);
         else wardrobeTransform.hidden = true;
     }
 
@@ -2248,16 +2253,49 @@
         return sprite;
     }
 
+    function scheduleWardrobeRetry(key) {
+        clearTimeout(wardrobeRetryTimer);
+        wardrobeRetryTimer = 0;
+        if (key !== wardrobeTemplateKey || key !== currentTemplateKey()) return;
+        const next = Math.min(...[...wardrobeSprites.values()]
+            .filter(sprite => sprite.restoreFailed && !sprite.restoring
+                && sprite.restoreAttempts < WARDROBE_RESTORE_ATTEMPTS)
+            .map(sprite => sprite.retryAt));
+        if (!Number.isFinite(next)) return;
+        wardrobeRetryTimer = setTimeout(() => {
+            wardrobeRetryTimer = 0;
+            if (key !== wardrobeTemplateKey || key !== currentTemplateKey()) return;
+            if (packBusy || capturingFrames || wardrobeGestureActive || historyBusy) {
+                wardrobeRetryTimer = setTimeout(() => scheduleWardrobeRetry(key), 250);
+                return;
+            }
+            wardrobeSpritesLoaded = false;
+            syncWardrobePlacements();
+        }, Math.max(0, next - Date.now()));
+    }
+
     function syncWardrobePlacements() {
         if (!wardrobePlacements) return;
         const visible = templatePackage?.source?.builtIn === true && hasSpineRenderer();
+        const key = visible ? currentTemplateKey() : '';
+        if (key !== wardrobeTemplateKey) {
+            clearTimeout(wardrobeRetryTimer);
+            wardrobeRetryTimer = 0;
+            for (const sprite of wardrobeSprites.values()) {
+                sprite.button.remove();
+                if (sprite.image.src.startsWith('blob:')) URL.revokeObjectURL(sprite.image.src);
+            }
+            wardrobeSprites.clear();
+            wardrobeSpritesLoaded = false;
+            wardrobeTemplateKey = key;
+            wardrobeGestureActive = false;
+            selectWardrobeSprite(null);
+        }
         wardrobePlacements.hidden = !visible;
         selectWardrobeSprite(selectedWardrobeSprite);
         renderWardrobeArtwork();
         if (!visible || wardrobeSpritesLoaded) return;
-        const key = currentTemplateKey();
         if (!key) return;
-        wardrobeTemplateKey = key;
         wardrobeSpritesLoaded = true;
         let saved;
         try {
@@ -2271,9 +2309,10 @@
                     || ![sprite.x, sprite.y, sprite.size].every(Number.isFinite)
                     || sprite.size < .05 || sprite.size > 1.5) continue;
             const previous = wardrobeSprites.get(sprite.id);
-            if (previous && !previous.restoreFailed) continue;
+            if (previous && (!previous.restoreFailed || previous.restoring)) continue;
+            if (previous?.restoreAttempts >= WARDROBE_RESTORE_ATTEMPTS) continue;
             if (previous && Date.now() < previous.retryAt) {
-                wardrobeSpritesLoaded = false;
+                scheduleWardrobeRetry(key);
                 continue;
             }
             const validMatrix = (value, length) => Array.isArray(value) && value.length === length && value.every(Number.isFinite);
@@ -2285,23 +2324,27 @@
             const path = `${WARDROBE_SPRITE_PREFIX}${sprite.id}.png`;
             const image = new Image();
             previous?.button.remove();
-            mountWardrobeSprite(sprite, image);
+            mountWardrobeSprite({ ...sprite, restoreAttempts: previous?.restoreAttempts || 0,
+                restoreFailed: Boolean(previous?.restoreFailed), restoring: true }, image);
             if (previous) setWardrobeOrder([...wardrobeSprites.values()]);
             image.addEventListener('load', () => {
                 const current = wardrobeSprites.get(sprite.id);
-                if (current?.image !== image) return;
+                if (current?.image !== image || key !== wardrobeTemplateKey || key !== currentTemplateKey()) return;
+                current.restoring = false;
+                current.restoreFailed = false;
                 updateWardrobeSprite(current);
+                scheduleWardrobeRetry(key);
                 forgetStageFrames();
             }, { once: true });
             image.addEventListener('error', () => {
                 const current = wardrobeSprites.get(sprite.id);
-                if (current?.image !== image) return;
+                if (current?.image !== image || key !== wardrobeTemplateKey || key !== currentTemplateKey()) return;
+                current.restoring = false;
                 current.restoreFailed = true;
-                current.retryAt = Date.now() + 1000;
-                current.button.hidden = true;
-                wardrobeSpritesLoaded = false;
-                if (selectedWardrobeSprite === sprite.id) selectWardrobeSprite(null);
-                renderWardrobeArtwork();
+                current.restoreAttempts += 1;
+                current.retryAt = Date.now() + 1000 * 2 ** (current.restoreAttempts - 1);
+                updateWardrobeSprite(current);
+                scheduleWardrobeRetry(key);
             }, { once: true });
             image.src = templateTextureUrl(key, path);
         }
@@ -2360,7 +2403,7 @@
     }
 
     function wardrobeLayers() {
-        const sprites = [...wardrobeSprites.values()];
+        const sprites = [...wardrobeSprites.values()].filter(sprite => !sprite.restoreFailed);
         const slots = spineRenderer.drawOrderNames();
         const layered = sprites.filter((sprite) => !sprite.behind)
             .map((sprite) => ({ sprite, slot: wardrobeSpriteLayerSlot(sprite) }));
@@ -2387,7 +2430,9 @@
 
     function applyWardrobeLayerOrder(order, sprite, position) {
         const before = wardrobeSnapshot();
-        setWardrobeOrder(order.filter((item) => typeof item !== 'string'));
+        const visible = order.filter(item => typeof item !== 'string');
+        let next = 0;
+        setWardrobeOrder([...wardrobeSprites.values()].map(item => item.restoreFailed ? item : visible[next++]));
         sprite.behind = position === 'back';
         sprite.aboveSlot = position.startsWith('slot:') ? position.slice(5) : undefined;
         renderWardrobeArtwork();
@@ -2408,7 +2453,7 @@
         const sprite = wardrobeSprites.get(selectedWardrobeSprite);
         const index = order.indexOf(sprite);
         const adjacent = order[index + step];
-        if (!sprite || sprite.removing || wardrobeFileBusy || wardrobeGestureActive || adjacent === undefined) return;
+        if (!sprite || index < 0 || sprite.removing || wardrobeFileBusy || wardrobeGestureActive || adjacent === undefined) return;
         const slot = wardrobeSpriteLayerSlot(sprite);
         let position = slot ? `slot:${slot}` : sprite.behind ? 'back' : 'front';
         [order[index], order[index + step]] = [adjacent, sprite];
@@ -2424,26 +2469,41 @@
         if (action.disabled) (step > 0 ? wardrobeLayerDown : wardrobeLayerUp).focus({ preventScroll: true });
     }
 
-    async function setWardrobePresence(key, placement, index, blob, present) {
+    async function setWardrobePresence(key, placement, index, blob, present, allowMissing = false) {
         const { id } = placement;
         const path = `${WARDROBE_SPRITE_PREFIX}${id}.png`;
         let image;
         let url;
+        let missing = false;
         try {
             if (present) {
                 image = new Image();
-                url = URL.createObjectURL(blob);
-                image.src = url;
-                await image.decode();
+                if (blob) {
+                    url = URL.createObjectURL(blob);
+                    image.src = url;
+                    try {
+                        await image.decode();
+                    } catch (error) {
+                        if (!allowMissing) throw error;
+                        missing = true;
+                    }
+                } else {
+                    missing = true;
+                }
             }
-            await writeTemplateTextures(key, [[path, blob]], { remove: !present });
+            if (!present || !missing) await writeTemplateTextures(key, [[path, blob]], { remove: !present });
         } catch (error) {
             if (url) URL.revokeObjectURL(url);
             throw error;
         }
+        if (key !== currentTemplateKey() || key !== wardrobeTemplateKey) {
+            if (url) URL.revokeObjectURL(url);
+            return;
+        }
         if (present) {
             const order = [...wardrobeSprites.values()];
-            const sprite = mountWardrobeSprite(structuredClone(placement), image);
+            const sprite = mountWardrobeSprite({ ...structuredClone(placement), restoreFailed: missing,
+                restoreAttempts: WARDROBE_RESTORE_ATTEMPTS }, image);
             sprite.blob = blob;
             order.splice(index, 0, sprite);
             setWardrobeOrder(order);
@@ -2459,6 +2519,7 @@
         }
         renderWardrobeArtwork();
         persistWardrobePlacements();
+        scheduleWardrobeRetry(key);
     }
 
     async function removeWardrobeSprite(sprite) {
@@ -2471,11 +2532,18 @@
         updateHistoryButtons();
         try {
             const path = `${WARDROBE_SPRITE_PREFIX}${sprite.id}.png`;
-            const blob = sprite.blob || await readTemplateTexture(key, path);
-            if (!blob) throw new Error('sprite_save_failed');
+            let blob = sprite.blob;
+            if (!blob) {
+                try {
+                    blob = await readTemplateTexture(key, path);
+                } catch (error) {
+                    if (!sprite.restoreFailed) throw error;
+                }
+            }
+            if (!blob && !sprite.restoreFailed) throw new Error('sprite_save_failed');
             const placement = wardrobePlacement(sprite);
             const index = [...wardrobeSprites.keys()].indexOf(sprite.id);
-            const apply = (present) => setWardrobePresence(key, placement, index, blob, present);
+            const apply = (present) => setWardrobePresence(key, placement, index, blob, present, sprite.restoreFailed);
             await apply(false);
             if (currentTemplateKey() === key) rememberHistory(true, false, apply);
         } catch (_) {
@@ -6872,12 +6940,12 @@
             if (key === currentTemplateKey() || packBusy || pendingTemplateRemovals.has(key)
                 || !findTemplateLibraryEntry(key)) return;
             if (await applyTemplateFromRegistryNow(key)) {
-                showToast(t('emoteMaker.templateSwitched'));
+                if (hasSpineRenderer()) showToast(t('emoteMaker.templateSwitched'));
                 return;
             }
             // Keep archive loading in the same transaction as activation.
             if (await tryRestoreTemplateFromArchive(key)) {
-                showToast(t('emoteMaker.templateSwitched'));
+                if (hasSpineRenderer()) showToast(t('emoteMaker.templateSwitched'));
                 return;
             }
             if (builtinTemplates.has(key)) {
@@ -6948,14 +7016,21 @@
         if (pendingTemplateRemovals.has(key) || !findTemplateLibraryEntry(key)) return;
         pendingTemplateRemovals.add(key);
         renderTemplateLibraryGrid();
+        const archiveEntry = templateArchiveEntries.get(key);
+        let deleted = false;
         try {
             await deleteTemplateArchive(key);
+            deleted = true;
         } catch (_) {
+            if (archiveEntry) templateArchiveEntries.set(key, archiveEntry);
             showToast(t('emoteMaker.archiveDeleteFailed'));
-            return;
         } finally {
             pendingTemplateRemovals.delete(key);
             renderTemplateLibraryGrid();
+        }
+        if (!deleted) {
+            await refreshTemplateArchiveSizes();
+            return;
         }
         const held = loadedTemplates.get(key);
         const isCurrent = key === currentTemplateKey();
@@ -7751,6 +7826,7 @@
             await stageImagesReady;
             if (generation !== spineRendererGeneration) return null;
             const baked = await bakePackJobsNow(jobs, { format: packFormat });
+            if (generation !== spineRendererGeneration) return null;
             if (!baked.some((item) => item.stateKey === 'idle_image' && item.frames?.length)) {
                 showToast(interpolate(t('emoteMaker.packIdleRequired'), { state: t('emoteMaker.packStateIdle') }));
                 return null;

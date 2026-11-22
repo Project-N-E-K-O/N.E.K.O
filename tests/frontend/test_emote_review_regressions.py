@@ -34,6 +34,8 @@ def editor(page, running_server, emote_template_library_dir):
         stageImages: () => [...stageUserImages].map(([id,image])=>({id,name:image.name})),
         renderer: () => spineRenderer,
         generation: () => spineRendererGeneration,
+        advanceGeneration: () => ++spineRendererGeneration,
+        translate: t,
     };
 """
     assert source.count(marker) == 1
@@ -1055,8 +1057,6 @@ def test_failed_accessory_restore_keeps_placement_when_another_accessory_is_edit
     assert len(saved) == 2
     assert next(sprite for sprite in saved if sprite['id'] == sprites[0]['id']) == sprites[0]
     assert len(reads) == 1
-    editor.wait_for_timeout(1100)
-    editor.evaluate('reviewEditor.syncWardrobePlacements()')
     editor.wait_for_function('''id => {
         const image=[...document.querySelectorAll('.wardrobe-placement img')].find(i=>i.src.includes(id));
         return image?.complete && image.naturalWidth===32;
@@ -1065,6 +1065,146 @@ def test_failed_accessory_restore_keeps_placement_when_another_accessory_is_edit
     assert editor.evaluate('reviewEditor.wardrobeSnapshot().map(s=>s.id)') == [s['id'] for s in sprites]
     assert editor.evaluate('''id=>JSON.parse(JSON.stringify(
         reviewEditor.wardrobeSnapshot().find(s=>s.id===id)))''', sprites[0]['id']) == sprites[0]
+
+
+def _wardrobe_test_image():
+    from PIL import Image
+
+    content = io.BytesIO()
+    Image.new('RGBA', (32, 32), (23, 180, 210, 255)).save(content, 'PNG')
+    return content.getvalue()
+
+
+def _save_wardrobe_test_sprites(editor, server, key, sprites):
+    for sprite in sprites:
+        response = editor.request.post(server + '/api/emote-maker/library/textures',
+            headers={'x-neko-emote-library': '1'}, params={'key': key}, multipart={
+                'textures': {'name': sprite['id'] + '.png', 'mimeType': 'image/png', 'buffer': _wardrobe_test_image()},
+                'texture_paths': f"WardrobeSprites/{sprite['id']}.png"})
+        assert response.ok, response.text()
+    editor.evaluate('''([key,sprites])=>localStorage.setItem(
+        'neko.emote.wardrobeSprites.'+key,JSON.stringify(sprites))''', [key, sprites])
+
+
+@pytest.mark.parametrize('failure', ['404', 'decode'])
+def test_permanently_failed_accessory_stops_retrying_and_can_be_deleted_and_undone(
+        editor, running_server, builtin_emote_template_dir, failure):
+    key = 'builtin:yui-0.2'
+    sprite = {'id': 'sprite-00000000000000f1', 'x': .3, 'y': .3, 'size': .16, 'behind': False}
+    _save_wardrobe_test_sprites(editor, running_server, key, [sprite])
+    reads = []
+
+    def broken(route):
+        if sprite['id'] not in route.request.url:
+            route.continue_()
+            return
+        reads.append(route.request.url)
+        route.fulfill(status=404 if failure == '404' else 200, content_type='image/png', body=b'broken')
+
+    editor.route('**/api/emote-maker/library/texture?**', broken)
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    editor.wait_for_function('''id=>document.querySelector('.wardrobe-placement.is-missing img')?.src.includes(id)''',
+                             arg=sprite['id'])
+    editor.wait_for_timeout(3400)
+    assert len(reads) == 3
+    for _ in range(4):
+        editor.evaluate('reviewEditor.syncWardrobePlacements()')
+    editor.wait_for_timeout(1200)
+    assert len(reads) == 3
+    placeholder = editor.locator('.wardrobe-placement.is-missing')
+    assert placeholder.is_visible()
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot().map(s=>s.id)') == [sprite['id']]
+    with editor.expect_response(lambda r: '/library/textures/remove?' in r.url) as removal:
+        placeholder.press('Delete')
+    assert removal.value.ok
+    editor.wait_for_function('reviewEditor.wardrobeSnapshot().length===0')
+    editor.keyboard.press('Control+z')
+    editor.wait_for_function('reviewEditor.wardrobeSnapshot().length===1')
+    assert editor.locator('.wardrobe-placement.is-missing').is_visible()
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot()[0].id') == sprite['id']
+
+
+def test_layer_moves_skip_failed_accessories_without_dropping_their_saved_order(
+        editor, running_server, builtin_emote_template_dir):
+    key = 'builtin:yui-0.2'
+    sprites = [{'id': f'sprite-{i:016x}', 'x': .15 + i * .15, 'y': .3, 'size': .16,
+                'behind': False, 'aboveSlot': 'tou'} for i in (1, 2, 3)]
+    _save_wardrobe_test_sprites(editor, running_server, key, sprites)
+    editor.route('**/api/emote-maker/library/texture?**', lambda route:
+        route.fulfill(status=404) if sprites[1]['id'] in route.request.url else route.continue_())
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    editor.locator('.wardrobe-placement.is-missing').wait_for(state='visible')
+    good = editor.locator(f'.wardrobe-placement:has(img[src*="{sprites[0]["id"]}"])')
+    good.focus()
+    editor.keyboard.press('Shift+F10')
+    editor.locator('#wardrobe-layer-up').click()
+    expected = [sprites[i]['id'] for i in (2, 1, 0)]
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot().map(s=>s.id)') == expected
+    assert editor.evaluate('''id=>JSON.parse(JSON.stringify(
+        reviewEditor.wardrobeSnapshot().find(s=>s.id===id)))''', sprites[1]['id']) == sprites[1]
+
+
+@pytest.mark.parametrize('old_state', ['healthy', 'failed', 'pending'])
+def test_switching_builtin_templates_isolates_accessories_and_late_retries(
+        editor, running_server, builtin_emote_template_dir, old_state):
+    from urllib.parse import parse_qs, urlparse
+
+    a, b = 'builtin:yui-0.2', 'builtin:review-b'
+    payload = editor.request.get(running_server + '/api/emote-maker/builtins').json()
+    package_b = json.loads(json.dumps(payload['packages'][0]))
+    package_b['id'] = b
+    package_b['model']['displayName'] = 'Review B'
+    payload['packages'].append(package_b)
+    archive = editor.request.get(running_server + '/api/emote-maker/library/archive', params={'key': a}).body()
+    editor.route('**/api/emote-maker/builtins', lambda route: route.fulfill(json=payload))
+    editor.route('**/api/emote-maker/library/archive?**', lambda route:
+        route.fulfill(content_type='application/zip', body=archive) if 'review-b' in route.request.url else route.continue_())
+    editor.reload(wait_until='networkidle')
+    sprite_a = {'id': 'sprite-00000000000000a1', 'x': .3, 'y': .3, 'size': .16}
+    sprite_b = {'id': 'sprite-00000000000000b1', 'x': .6, 'y': .3, 'size': .16}
+    editor.evaluate('''entries=>{for(const [key,sprite] of entries)localStorage.setItem(
+        'neko.emote.wardrobeSprites.'+key,JSON.stringify([sprite]));}''', [[a, sprite_a], [b, sprite_b]])
+    reads, pending = [], []
+
+    def texture(route):
+        query = parse_qs(urlparse(route.request.url).query)
+        if not query.get('path', [''])[0].startswith('WardrobeSprites/'):
+            route.continue_()
+            return
+        key = query['key'][0]
+        reads.append(key)
+        if key == a and old_state == 'pending':
+            pending.append(route)
+        else:
+            route.fulfill(status=503 if key == a and old_state == 'failed' else 200,
+                          content_type='image/png',
+                          body=b'broken' if key == a and old_state == 'failed' else _wardrobe_test_image())
+
+    editor.route('**/api/emote-maker/library/texture?**', texture)
+    editor.locator(f'[data-template-key="{a}"] .template-lib-open').click()
+    editor.wait_for_function('reviewEditor.wardrobeSnapshot().length===1')
+    if old_state == 'failed':
+        editor.locator('.wardrobe-placement.is-missing').wait_for(state='visible')
+    editor.locator(f'[data-template-key="{b}"] .template-lib-open').click()
+    editor.wait_for_function('key=>reviewEditor.currentTemplateKey()===key', arg=b)
+    editor.wait_for_function('''id=>{
+        const image=document.querySelector('.wardrobe-placement img');
+        return image?.src.includes(id) && image.complete && image.naturalWidth===32;
+    }''', arg=sprite_b['id'])
+    for route in pending:
+        route.fulfill(status=503)
+    editor.locator('.wardrobe-placement').press('ArrowRight')
+    saved = editor.evaluate("key=>JSON.parse(localStorage.getItem('neko.emote.wardrobeSprites.'+key))", b)
+    assert [s['id'] for s in saved] == [sprite_b['id']]
+    assert saved[0]['x'] == pytest.approx(.61)
+    a_reads = reads.count(a)
+    editor.wait_for_timeout(1400)
+    assert reads.count(a) == a_reads
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot().map(s=>s.id)') == [sprite_b['id']]
+    assert editor.evaluate("key=>JSON.parse(localStorage.getItem('neko.emote.wardrobeSprites.'+key))", a) == [sprite_a]
+    _import(editor, spine_zip())
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot()') == []
+    assert editor.locator('.wardrobe-placement').count() == 0
 
 
 def test_stopping_a_queued_batch_does_not_wait_for_the_preceding_capture_or_write_later(editor):
@@ -1109,6 +1249,21 @@ def test_missing_archive_only_template_opens_the_relocation_picker(editor):
         editor.locator(f'.template-lib-card[data-template-key="{key}"] .template-lib-open').click()
 
 
+def test_generation_change_during_baking_does_not_report_a_missing_idle_binding(editor):
+    _import(editor, spine_zip())
+    result = editor.evaluate('''async () => {
+        const q=reviewEditor,before=q.generation();
+        document.querySelector('#emote-toast').textContent='';
+        window.reviewCaptureHook=()=>{delete window.reviewCaptureHook;q.advanceGeneration();};
+        const built=await q.buildPngtuberPackage();
+        return {cancelled:built===null,advanced:q.generation()>before,
+            toast:document.querySelector('#emote-toast').textContent,
+            idle:q.translate('emoteMaker.packIdleRequired').replace('{{state}}',q.translate('emoteMaker.packStateIdle'))};
+    }''')
+    assert result['cancelled'] and result['advanced']
+    assert result['toast'] != result['idle']
+
+
 def test_failed_registry_renderer_does_not_reimport_the_already_committed_template(editor):
     _import(editor, spine_zip(), 'A.zip')
     key = editor.evaluate('reviewEditor.currentTemplateKey()')
@@ -1123,6 +1278,8 @@ def test_failed_registry_renderer_does_not_reimport_the_already_committed_templa
     assert editor.evaluate('reviewEditor.currentTemplateKey()') == key
     assert editor.evaluate('Boolean(reviewEditor.renderer()?.loaded)') is False
     assert archives == []
+    assert editor.locator('#emote-toast').inner_text() != editor.evaluate(
+        "reviewEditor.translate('emoteMaker.templateSwitched')")
 
 
 def test_archive_only_card_returns_after_failed_delete_even_when_byte_totals_are_unchanged(editor):
@@ -1140,7 +1297,6 @@ def test_archive_only_card_returns_after_failed_delete_even_when_byte_totals_are
     card.wait_for(state='hidden')
     pending[0].fulfill(status=500, json={'success':False,'error':'test-delete-failed'})
     editor.wait_for_function('key=>!reviewEditor.templateRemovalPending(key)', arg=key)
-    editor.evaluate('reviewEditor.refreshTemplateArchiveSizes()')
     card.wait_for(state='visible', timeout=5000)
 
 def test_switching_loaded_templates_survives_an_oversized_library_without_discarding_sessions(editor):
