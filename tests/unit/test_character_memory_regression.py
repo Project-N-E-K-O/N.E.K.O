@@ -7949,7 +7949,13 @@ def test_f0064_rename_refuses_shared_source_directory(tmp_path):
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "failure_mode",
-    ["corrupt_json", "unreadable", "missing", "missing_runtime_with_seed"],
+    [
+        "corrupt_json",
+        "unreadable",
+        "missing",
+        "missing_runtime_with_seed",
+        "missing_runtime_dirty_default_cache",
+    ],
 )
 def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable(
     tmp_path, monkeypatch, failure_mode
@@ -8009,6 +8015,14 @@ def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable
         )
         config_path.unlink()
         assert Path(cm.get_config_path("characters.json")) == seed_path
+    elif failure_mode == "missing_runtime_dirty_default_cache":
+        config_path.unlink()
+        with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+            fallback = cm.load_characters()
+            assert "当前猫娘" in fallback
+        assert cm._characters_dirty is True
+        assert cm._characters_cache_mtime is None
+        assert not config_path.exists()
     else:
         def _deny_load(*_args, **_kwargs):
             raise PermissionError("characters.json unreadable")
@@ -8017,14 +8031,14 @@ def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable
 
     expected_exc = (
         FileNotFoundError
-        if failure_mode == "missing_runtime_with_seed"
+        if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}
         else (OSError, ValueError)
     )
     with pytest.raises(expected_exc):
         character_memory.rename_character_memory_storage(cm, "neko", "NewNeko")
     assert not (memory_root / "NewNeko").exists()
     assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
-    if failure_mode == "missing_runtime_with_seed":
+    if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}:
         assert not config_path.exists()
 
     with _isolated_sidecar_stores(memory_root) as stores:
@@ -8032,8 +8046,10 @@ def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable
             character_memory.delete_character_memory_storage(cm, "neko")
         assert all("neko" in store._retired for store in stores)
     assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
-    if failure_mode == "missing_runtime_with_seed":
+    if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}:
         assert not config_path.exists()
+    if failure_mode == "missing_runtime_dirty_default_cache":
+        assert cm._characters_dirty is True
     # Recent file locks must not be leaked on fail-closed refusal: acquiring again succeeds immediately.
     acquired = threading.Event()
 

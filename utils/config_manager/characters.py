@@ -19,6 +19,7 @@ characters.json load/save (with mtime cache and reserved-field migration)
 and the aggregated character data snapshot used by the runtime.
 """
 import asyncio
+import errno
 import json
 import os
 import time
@@ -140,7 +141,13 @@ class CharactersMixin:
         snapshot["猫娘"][selected] = profile
         return snapshot
 
-    def load_characters(self, character_json_path=None, *, require_authoritative=False):
+    def load_characters(
+        self,
+        character_json_path=None,
+        *,
+        require_authoritative=False,
+        allow_missing_default=True,
+    ):
         """Load profiles; authoritative callers reject fallbacks and unpersisted IDs."""
         # Migration results are written back to the file they came from, except
         # when the default lookup fell back to a project/seed copy (the runtime
@@ -195,11 +202,17 @@ class CharactersMixin:
                 except OSError:
                     current_mtime = None
                 if cache_dirty and current_mtime is None and not (
-                    source_missing and cache_mtime is None
+                    allow_missing_default and source_missing and cache_mtime is None
                 ):
                     # An unreadable source cannot supersede an unpersisted identity.
                     # Only a never-persisted default may retry creating a missing file.
                     if require_authoritative:
+                        if source_missing and not allow_missing_default:
+                            raise FileNotFoundError(
+                                errno.ENOENT,
+                                os.strerror(errno.ENOENT),
+                                character_json_path,
+                            )
                         raise ValueError("character_config_not_authoritative")
                     return deepcopy(cache)
                 if current_mtime == cache_mtime and (
@@ -565,11 +578,18 @@ class CharactersMixin:
             return None
         return normalize_language_code(str(language), format="full")
 
-    async def aload_characters(self, character_json_path=None, *, require_authoritative=False):
+    async def aload_characters(
+        self,
+        character_json_path=None,
+        *,
+        require_authoritative=False,
+        allow_missing_default=True,
+    ):
         """Async wrapper for load_characters: even a cache hit deepcopies the whole dict;
         with N nekos the copy can take several ms — offload to avoid blocking the event loop."""
         return await asyncio.to_thread(
             self.load_characters,
             character_json_path,
             require_authoritative=require_authoritative,
+            allow_missing_default=allow_missing_default,
         )

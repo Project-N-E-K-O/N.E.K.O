@@ -352,6 +352,96 @@ async def test_rename_and_delete_refuse_corrupt_characters_json_without_overwrit
     assert (Path(cm3.memory_dir) / "Old" / "facts.json").read_text(encoding="utf-8") == '["keep-delete"]'
 
 
+async def test_delete_shared_memory_rollback_preserves_co_owner_concurrent_writes(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {"Current": {"昵称": "Current"}, "Neko": {"昵称": "Neko"}, "neko": {"昵称": "neko"}},
+    )
+    memory_root = Path(cm.memory_dir)
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True, exist_ok=True)
+    facts_file = neko_upper / "facts.json"
+    facts_file.write_text('["before"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        try:
+            neko_lower.symlink_to(neko_upper, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    upper_face = cm.card_faces_dir / "Neko.png"
+    upper_face.write_bytes(b"face-before")
+    lower_face = cm.card_faces_dir / "neko.png"
+    if not lower_face.exists():
+        lower_face.symlink_to(upper_face.name)
+    upper_meta = cm.card_face_meta_path("Neko")
+    upper_meta.write_bytes(b'{"v":1}')
+    lower_meta = cm.card_face_meta_path("neko")
+    if not lower_meta.exists():
+        lower_meta.symlink_to(upper_meta.name)
+
+    async def co_owner_writes_then_fail_reload(**_kwargs):
+        facts_file.write_text('["before", "co-owner-write"]', encoding="utf-8")
+        upper_face.write_bytes(b"face-updated")
+        upper_meta.write_bytes(b'{"v":2}')
+        return False
+
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, _) = _crud(cm)
+        with release, patch.object(
+            crud, "notify_memory_server_reload", side_effect=co_owner_writes_then_fail_reload
+        ):
+            status, _ = _result(await crud.delete_catgirl("neko"))
+            assert status == 500
+
+    assert facts_file.read_text(encoding="utf-8") == '["before", "co-owner-write"]'
+    assert upper_face.read_bytes() == b"face-updated"
+    assert upper_meta.read_bytes() == b'{"v":2}'
+
+
+async def test_delete_skips_shared_card_face_and_meta_but_deletes_unshared_assets(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {
+            "Current": {"昵称": "Current"},
+            "Neko": {"昵称": "Neko"},
+            "neko": {"昵称": "neko"},
+            "Solo": {"昵称": "Solo"},
+        },
+    )
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    upper_face = cm.card_faces_dir / "Neko.png"
+    upper_face.write_bytes(b"shared-face")
+    lower_face = cm.card_faces_dir / "neko.png"
+    if not lower_face.exists():
+        try:
+            lower_face.symlink_to(upper_face.name)
+        except OSError as exc:
+            pytest.skip(f"symlinks unsupported on this platform: {exc}")
+    upper_meta = cm.card_face_meta_path("Neko")
+    upper_meta.write_bytes(b'{"owner":"Neko"}')
+    lower_meta = cm.card_face_meta_path("neko")
+    if not lower_meta.exists():
+        lower_meta.symlink_to(upper_meta.name)
+
+    solo_face = cm.card_faces_dir / "Solo.png"
+    solo_face.write_bytes(b"solo-face")
+    solo_meta = cm.card_face_meta_path("Solo")
+    solo_meta.write_bytes(b'{"owner":"Solo"}')
+
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _delete(cm, "neko")
+        assert status == 200 and body["success"] is True
+        assert upper_face.exists() and upper_face.read_bytes() == b"shared-face"
+        assert upper_meta.exists() and upper_meta.read_bytes() == b'{"owner":"Neko"}'
+
+        status2, body2 = await _delete(cm, "Solo")
+        assert status2 == 200 and body2["success"] is True
+        assert not solo_face.exists()
+        assert not solo_meta.exists()
+
+
 async def test_rename_refuses_shared_source_memory_before_release(tmp_path):
     cm, path = _backfilled_manager(tmp_path, {
         "Neko": {}, "neko": {},

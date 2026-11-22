@@ -517,6 +517,7 @@ def _iter_registered_catgirl_names(
     if require_authoritative:
         accepts_authoritative = False
         accepts_path = False
+        accepts_allow_missing_default = False
         try:
             params = inspect.signature(load_characters).parameters.values()
             accepts_authoritative = any(
@@ -529,9 +530,15 @@ def _iter_registered_catgirl_names(
                 or param.kind is inspect.Parameter.VAR_KEYWORD
                 for param in params
             )
+            accepts_allow_missing_default = any(
+                param.name == "allow_missing_default"
+                or param.kind is inspect.Parameter.VAR_KEYWORD
+                for param in params
+            )
         except (TypeError, ValueError):
             accepts_authoritative = False
             accepts_path = False
+            accepts_allow_missing_default = False
 
         runtime_path: str | None = None
         get_runtime_path = getattr(config_manager, "get_runtime_config_path", None)
@@ -549,6 +556,8 @@ def _iter_registered_catgirl_names(
                 "falling back to plain load_characters()",
                 type(config_manager).__name__,
             )
+        if accepts_allow_missing_default:
+            kwargs["allow_missing_default"] = False
         if runtime_path is not None:
             if accepts_path:
                 kwargs["character_json_path"] = runtime_path
@@ -573,6 +582,11 @@ def _iter_registered_catgirl_names(
     if not isinstance(catgirls, dict):
         return []
     return [name for name in catgirls.keys() if isinstance(name, str) and name]
+
+
+def iter_authoritative_catgirl_names(config_manager) -> list[str]:
+    """Return configured character names loaded authoritatively from runtime storage."""
+    return _iter_registered_catgirl_names(config_manager, require_authoritative=True)
 
 
 def _normalize_collision_key(name: str) -> str:
@@ -1276,6 +1290,9 @@ def _find_co_owner_for_memory_path(
             if _paths_refer_to_same_entry(other_path, entry_path):
                 return other_name
     return None
+
+
+find_co_owner_for_memory_path = _find_co_owner_for_memory_path
 
 
 def _is_recent_path_shared_with_other(

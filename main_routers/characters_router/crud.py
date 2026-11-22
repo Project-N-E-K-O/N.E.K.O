@@ -74,8 +74,11 @@ from utils.character_memory import (
     finalize_character_recent_rename,
     find_character_name_collision,
     find_character_shared_memory_owner,
+    find_co_owner_for_memory_path,
+    iter_authoritative_catgirl_names,
     list_character_memory_paths,
     paths_refer_to_same_directory_entry,
+    paths_refer_to_same_entry,
     rename_character_memory_storage,
     release_character_recent_transaction,
     rollback_character_recent_delete,
@@ -1100,6 +1103,7 @@ async def _aload_authoritative_characters(config_manager) -> dict:
         raise ValueError("character_config_not_authoritative: missing aload_characters")
     accepts_authoritative = False
     accepts_path = False
+    accepts_allow_missing_default = False
     try:
         params = inspect.signature(aload_characters).parameters.values()
         accepts_authoritative = any(
@@ -1112,9 +1116,15 @@ async def _aload_authoritative_characters(config_manager) -> dict:
             or param.kind is inspect.Parameter.VAR_KEYWORD
             for param in params
         )
+        accepts_allow_missing_default = any(
+            param.name == "allow_missing_default"
+            or param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in params
+        )
     except (TypeError, ValueError):
         accepts_authoritative = False
         accepts_path = False
+        accepts_allow_missing_default = False
 
     runtime_path: str | None = None
     get_runtime_path = getattr(config_manager, "get_runtime_config_path", None)
@@ -1132,6 +1142,8 @@ async def _aload_authoritative_characters(config_manager) -> dict:
             "falling back to plain aload_characters()",
             type(config_manager).__name__,
         )
+    if accepts_allow_missing_default:
+        kwargs["allow_missing_default"] = False
     if runtime_path is not None and accepts_path:
         kwargs["character_json_path"] = runtime_path
 
@@ -1164,6 +1176,62 @@ def _find_self_referential_card_symlink(
             old_meta_path = Path(old_meta)
             if symlink_chain_reaches_path(old_meta_path, Path(new_meta)):
                 return old_meta_path
+    return None
+
+
+def _find_card_asset_co_owner_sync(
+    config_manager,
+    character_name: str,
+    asset_path: Path,
+    *,
+    is_meta: bool,
+    existing_names=None,
+) -> str | None:
+    """Return another registered character name whose card asset refers to ``asset_path``."""
+    if not (asset_path.exists() or asset_path.is_symlink()):
+        return None
+    names = (
+        [str(name) for name in existing_names if isinstance(name, str) and name]
+        if existing_names is not None
+        else iter_authoritative_catgirl_names(config_manager)
+    )
+    faces_dir = getattr(config_manager, "card_faces_dir", None)
+    meta_fn = getattr(config_manager, "card_face_meta_path", None)
+    for other_name in names:
+        if other_name == character_name:
+            continue
+        other_path: Path | None = None
+        if is_meta:
+            if callable(meta_fn):
+                candidate = meta_fn(other_name)
+                if isinstance(candidate, (str, os.PathLike)):
+                    other_path = Path(candidate)
+        elif isinstance(faces_dir, (str, os.PathLike)):
+            other_path = Path(faces_dir) / f"{other_name}.png"
+        if other_path is not None and paths_refer_to_same_entry(other_path, asset_path):
+            return other_name
+    return None
+
+
+def _unlink_unshared_card_asset_sync(
+    config_manager,
+    character_name: str,
+    asset_path: Path,
+    *,
+    is_meta: bool,
+) -> str | None:
+    """Unlink ``asset_path`` unless shared with another registered character."""
+    if not asset_path.exists():
+        return None
+    co_owner = _find_card_asset_co_owner_sync(
+        config_manager,
+        character_name,
+        asset_path,
+        is_meta=is_meta,
+    )
+    if co_owner is not None:
+        return co_owner
+    asset_path.unlink()
     return None
 
 
@@ -2484,12 +2552,41 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         }
 
     characters_snapshot = copy.deepcopy(characters)
-    memory_targets = list_character_memory_paths(_config_manager, name)
-    memory_targets.extend(numeric_purge.snapshot_targets())
     face_path = _config_manager.card_faces_dir / f"{name}.png"
     meta_path = _config_manager.card_face_meta_path(name)
-    memory_targets.append(face_path)
-    memory_targets.append(meta_path)
+
+    def _collect_delete_snapshot_targets_sync() -> list[Path]:
+        existing_names = list((characters.get("猫娘") or {}).keys())
+        targets = [
+            entry_path
+            for entry_path in list_character_memory_paths(_config_manager, name)
+            if find_co_owner_for_memory_path(
+                _config_manager,
+                name,
+                entry_path,
+                existing_names=existing_names,
+            ) is None
+        ]
+        targets.extend(numeric_purge.snapshot_targets())
+        if _find_card_asset_co_owner_sync(
+            _config_manager,
+            name,
+            face_path,
+            is_meta=False,
+            existing_names=existing_names,
+        ) is None:
+            targets.append(face_path)
+        if _find_card_asset_co_owner_sync(
+            _config_manager,
+            name,
+            meta_path,
+            is_meta=True,
+            existing_names=existing_names,
+        ) is None:
+            targets.append(meta_path)
+        return targets
+
+    memory_targets = await asyncio.to_thread(_collect_delete_snapshot_targets_sync)
 
     with _create_character_operation_backup_dir(_config_manager, "neko-delete-character-") as temp_dir:
         memory_snapshot_records = []
@@ -2602,11 +2699,34 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
 
-            # Delete cover PNG and sidecar JSON in the same rollback-capable transaction.
-            if face_path.exists():
-                await _await_thread_mutation(face_path.unlink)
-            if meta_path.exists():
-                await _await_thread_mutation(meta_path.unlink)
+            # Delete cover PNG and sidecar JSON in the same rollback-capable transaction,
+            # skipping assets shared with another registered character.
+            face_co_owner = await _await_thread_mutation(
+                _unlink_unshared_card_asset_sync,
+                _config_manager,
+                name,
+                face_path,
+                is_meta=False,
+            )
+            if face_co_owner is not None:
+                logger.warning(
+                    "[删除角色] 跳过删除卡面 %s，因与现有角色 %r 共享",
+                    face_path,
+                    face_co_owner,
+                )
+            meta_co_owner = await _await_thread_mutation(
+                _unlink_unshared_card_asset_sync,
+                _config_manager,
+                name,
+                meta_path,
+                is_meta=True,
+            )
+            if meta_co_owner is not None:
+                logger.warning(
+                    "[删除角色] 跳过删除卡面元数据 %s，因与现有角色 %r 共享",
+                    meta_path,
+                    meta_co_owner,
+                )
 
             # Theater Sessions, receipts, public cold archives, forget intents, and quarantine are all snapshotted above.
             await purge_numeric_v2_character_data(numeric_purge)
