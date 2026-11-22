@@ -128,6 +128,13 @@ class _Unconfirmed:
                 entry[0] = bool(value)
 
     def settle(self, mgr, command: object, *, taken: bool) -> None:
+        """A command is over: ``taken`` unless it is known that the agent process did not take it.
+
+        One whose answer never came (a timeout, a request given up)
+        counts as taken: it may well have been, and the switch stays
+        as it wrote it, as it always did. Called again for a command
+        that is over already, it does nothing.
+        """
         back: dict = {}
         for (owner, key), entry in list(self._switches.items()):
             if owner != id(mgr) or command not in entry[1]:
@@ -135,9 +142,10 @@ class _Unconfirmed:
             wrote = entry[1].pop(command)
             if taken:
                 entry[0] = wrote
-            elif not entry[1]:
-                # No other command is under way for it: back to what it was before them.
-                back[key] = entry[0]
+            else:
+                # What it wrote is not so. The switch is what the command still under way that
+                # wrote last made it, and with none left what it was before them.
+                back[key] = list(entry[1].values())[-1] if entry[1] else entry[0]
             if not entry[1]:
                 del self._switches[(owner, key)]
         if back:
@@ -349,6 +357,9 @@ async def post_agent_command(request: Request):
     if blocked is not None:
         return blocked
     t0 = time.perf_counter()
+    mgr = None
+    # This command, for what it writes of the session's switches (``_Unconfirmed``).
+    mine = object()
     try:
         data = await request.json()
         request_id = data.get("request_id")
@@ -364,8 +375,6 @@ async def post_agent_command(request: Request):
             except Exception:
                 lanlan = None
         mgr = session_manager.get(lanlan) if lanlan else None
-        # This command, for what it writes of the session's switches (``_Unconfirmed``).
-        mine = object()
 
         def write(flags: dict) -> None:
             _unconfirmed.write(mgr, mine, flags)
@@ -424,6 +433,11 @@ async def post_agent_command(request: Request):
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.warning("[MainAgentTiming] proxy_exception total_ms=%s error=%s", total_ms, e)
         return JSONResponse({"success": False, "error": str(e)}, status_code=502)
+    finally:
+        # However it ended (an answer that never came, a request given up): nothing is kept of
+        # it, so that a later command is not held to be one of several under way for ever.
+        if mgr:
+            _unconfirmed.settle(mgr, mine, taken=True)
 
 
 @router.get('/health')
