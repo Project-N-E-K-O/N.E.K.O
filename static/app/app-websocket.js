@@ -5485,6 +5485,9 @@
                                 dataUrl = await window.captureProactiveChatScreenshot();
                             }
                             if (replySuppressedScreenshot()) return;
+                            // 拿不到图（dataUrl 为空）时不回应答，后端超时后会自己截整屏兜底（不遮）。
+                            // 若以后遮罩的退化策略改成丢帧，这里要对被丢的帧回 declined: true，
+                            // 见 app-capture-mask.js 的 decideWhenGeometryUnavailable。
                             if (dataUrl && S.socket && S.socket.readyState === WebSocket.OPEN) {
                                 var respMsg = { action: 'screenshot_response', data: dataUrl };
                                 // null = 窗口截图或无法确定 → 不叠加

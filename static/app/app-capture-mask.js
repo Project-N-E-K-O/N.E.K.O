@@ -511,7 +511,11 @@
      * Current policy: send the frame unmasked in both cases, as before this
      * module existed. Return 'drop' instead to withhold such frames (for all
      * reasons, or only for one); every caller already treats a null result
-     * from maskFrameForModel() as "no frame".
+     * from maskFrameForModel() as "no frame". One exception to check when
+     * switching to 'drop': the backend's screenshot_request (app-websocket.js)
+     * sends no reply when it gets no frame, and the backend then takes its own
+     * desktop screenshot after the timeout, unmasked. That entry would have to
+     * reply declined: true for a dropped frame.
      *
      * @param {object} ctx the frame context passed to maskFrameForModel()
      * @param {'position_unknown'|'paint_failed'} reason
@@ -708,6 +712,7 @@
                 subtree: true,
                 childList: true,
                 attributes: true,
+                characterData: true,
                 attributeFilter: ['class', 'style', 'hidden', MASK_ATTRIBUTE]
             });
         }
@@ -715,6 +720,9 @@
         doc.addEventListener('visibilitychange', schedule);
         doc.addEventListener('transitionend', schedule, true);
         doc.addEventListener('animationend', schedule, true);
+        // Scrolling moves regions without any DOM mutation (captured: scroll
+        // does not bubble from inner scroll containers).
+        doc.addEventListener('scroll', schedule, true);
         // Low-frequency recheck; only sends when the payload changed.
         setInterval(schedule, REPORT_RECHECK_MS);
         schedule();

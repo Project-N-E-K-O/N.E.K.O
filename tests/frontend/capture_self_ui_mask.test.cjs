@@ -1382,3 +1382,45 @@ test('acquireOrReuseCachedStream: a stale selection falls back to the first scre
     assert.equal(env.S.selectedScreenSourceId, null, 'the stale selection is cleared');
     assert.equal(env.w.appScreen.getStreamCaptureSourceId(stream), 'screen:1:0');
 });
+
+// ---------------------------------------------------------------- review round 9
+
+test('manual screen share: mask queries use the source the stream actually captures (stale selection fell back to screen:1:0)', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    const track = { readyState: 'live', kind: 'video', addEventListener() {}, getSettings: () => ({ displaySurface: 'monitor' }), stop() {} };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    env.S.selectedScreenSourceId = 'screen:9:0';
+    env.w.getDesktopCaptureProvider = () => ({ getSources() {} });
+    env.w.desktopSourceEnumerationMayPrompt = () => false;
+    env.w.invokeDesktopCaptureWithTimeout = async () => [{ id: 'screen:1:0' }];
+    env.w.navigator.mediaDevices.getUserMedia = async () => stream;
+    assert.equal(await env.w.appScreen.acquireOrReuseCachedStream({ allowPrompt: false }), stream);
+    assert.equal(env.S.selectedScreenSourceId, null);
+    env.w.startScreenVideoStreaming(stream, 'screen');
+    for (let i = 0; i < 10 && env.intervals.length === 0; i++) await new Promise((r) => setImmediate(r));
+    await env.intervals[0]();
+    assert.equal(env.sent.length, 1);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:1:0', 'screen:1:0']);
+    assert.deepEqual(fillsOf(env.sent[0].data), [[500, 400, 250, 200]]);
+});
+
+test('reporter: scrolling (no DOM mutation) and text changes trigger a report', async () => {
+    const reports = [];
+    const docListeners = {};
+    let observeOptions = null;
+    const history = makeElement({ x: 10, y: 10, w: 100, h: 100 });
+    const { w } = makeWindow({ elements: [history] });
+    w.document.addEventListener = (type, fn, capture) => { docListeners[type] = { fn, capture }; };
+    w.MutationObserver = function () { this.observe = (_t, o) => { observeOptions = o; }; };
+    w.nekoCaptureMask = { report: (p) => { reports.push(JSON.parse(JSON.stringify(p))); } };
+    w.appCaptureMask.startShellReporter(w, w.document);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(reports.length, 1);
+    assert.equal(observeOptions.characterData, true);
+    assert.ok(docListeners.scroll && docListeners.scroll.capture === true, 'scroll listened in the capture phase');
+    history.rect = { x: 10, y: 60, w: 100, h: 100 };
+    docListeners.scroll.fn();
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(reports.length, 2, 'scroll is reported without waiting for the 1 s recheck');
+});

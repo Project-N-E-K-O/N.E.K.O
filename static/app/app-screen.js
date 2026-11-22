@@ -1118,12 +1118,6 @@
         return cached;
     }
 
-    /**
-     * 统一的流获取函数：优先缓存流 → Electron sourceId → getDisplayMedia → null
-     * @param {Object} opts
-     * @param {boolean} opts.allowPrompt - 是否允许 getDisplayMedia 弹窗（用户手势上下文传true）
-     * @returns {Promise<MediaStream|null>}
-     */
     // 流实际截的是哪个桌面源（#3474 遮罩查询要用）。选中源失效时，下面会清空
     // S.selectedScreenSourceId 并回退到第一个 screen: 源，事后读选中状态只能拿到 null。
     var streamCaptureSourceIds = typeof WeakMap === 'function' ? new WeakMap() : null;
@@ -1133,6 +1127,12 @@
     }
     mod.getStreamCaptureSourceId = getStreamCaptureSourceId;
 
+    /**
+     * 统一的流获取函数：优先缓存流 → Electron sourceId → getDisplayMedia → null
+     * @param {Object} opts
+     * @param {boolean} opts.allowPrompt - 是否允许 getDisplayMedia 弹窗（用户手势上下文传true）
+     * @returns {Promise<MediaStream|null>}
+     */
     async function acquireOrReuseCachedStream(opts) {
         if (!opts) opts = {};
 
@@ -1787,7 +1787,8 @@
                 // 下一拍在新连接上继续（原生路径则停止整段分享，见 startNativeScreenStreaming）。
                 var captureSocket = S.socket;
                 // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
-                var frameSourceId = S.selectedScreenSourceId || null;
+                // 流实际截的源优先：选中源失效、回退到第一个 screen: 源时选中状态已被清空。
+                var frameSourceId = getStreamCaptureSourceId(stream) || S.selectedScreenSourceId || null;
                 var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream' });
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl) {
