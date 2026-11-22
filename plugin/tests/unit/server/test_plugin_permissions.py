@@ -296,6 +296,14 @@ def test_source_resolver_failure_imports_without_source(manager):
             json.dumps({"schema_version": 1, "plugins": {"x": {"permissions": []}}}),
             "PLUGIN_PERMISSIONS_CORRUPT",
         ),
+        (
+            json.dumps({"schema_version": 1, "plugins": {"x": {"legacy_denied": True, "permissions": {"p": "granted"}}}}),
+            "PLUGIN_PERMISSIONS_CORRUPT",
+        ),
+        (
+            json.dumps({"schema_version": 1, "plugins": {"x": {"permissions": {"p": {"state": "maybe"}}}}}),
+            "PLUGIN_PERMISSIONS_CORRUPT",
+        ),
         (json.dumps({"schema_version": 2, "plugins": {}}), "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"),
     ],
 )
@@ -842,3 +850,38 @@ def test_permission_record_never_saves(install_sources, monkeypatch, manager):
     assert permission_service.permission_record("unbound")["source"] == MANUAL.to_dict()
     assert store.read("unbound")["source"] is None
     assert manager.saves == saves
+
+
+def test_stored_undecided_entries_load_and_repeat_clears_do_not_write(manager):
+    manager.root.mkdir(parents=True)
+    _new_file(manager).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "plugins": {
+                    "x": {
+                        "legacy_denied": True,
+                        "permissions": {MEMORY_READ: {"state": "undecided", "scope": "all"}},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = PluginPermissionStore(manager)
+
+    assert store.clear("x", MEMORY_READ)["permissions"][MEMORY_READ]["state"] == "undecided"
+    assert manager.saves == 0
+
+
+def test_view_reports_source_mismatch(install_sources, monkeypatch, manager):
+    store = PluginPermissionStore(manager, source_resolver=permission_service.current_source)
+    monkeypatch.setattr(permission_service, "permission_store", store)
+    store.decide("demo", MEMORY_READ, "granted", source=MARKET)
+
+    install_sources["manager"] = FakeInstallSources([_lock_entry(channel="manual")])
+    assert permission_service.permission_record("demo")["source_mismatch"] is True
+
+    install_sources["manager"] = None
+    assert permission_service.permission_record("demo")["source_mismatch"] is False
+    assert permission_service.permission_record("nobody")["source_mismatch"] is False

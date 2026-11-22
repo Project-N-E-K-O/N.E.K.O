@@ -23,15 +23,11 @@ from plugin.server.application.install_source.scanner import PluginDirectoryScan
 from plugin.server.application.plugins.consent_service import forget_plugin
 from plugin.server.application.plugins.permission_service import (
     forget_permissions,
-    load_permissions,
     restore_permissions,
 )
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.plugin_permissions import (
-    READ_ERROR_CODES as PERMISSION_READ_ERROR_CODES,
-)
 from plugin.server.infrastructure.autostart_approvals import (
     clear_autostart_pending,
     is_autostart_approved,
@@ -149,6 +145,9 @@ class _RollbackOutcome:
     # Whether the plugin's own source (install record and code) is back,
     # independent of the package-profile restore in filesystem_rollback.
     source_restored: bool = True
+    # Whether the post-rollback registry refresh succeeded; if not, the
+    # registry may still describe a different plugin for this id.
+    registry_restored: bool = True
 
 
 def _get_plugin_meta_sync(plugin_id: str) -> dict[str, object] | None:
@@ -756,10 +755,12 @@ async def _rollback_precommit(
                 "uninstall rollback failed to restore preference plugin_id={}",
                 plugin_id,
             )
+    registry_restored = True
     if filesystem_changed:
         try:
             await _refresh_registry(registry_target)
         except Exception:
+            registry_restored = False
             # A refresh failure does not undo the physical restores above;
             # the scan itself is not part of the filesystem rollback report.
             logger.exception(
@@ -780,54 +781,27 @@ async def _rollback_precommit(
         runtime_restart=runtime_restart,
         preference_restored=preference_restored,
         source_restored=source_restored,
+        registry_restored=registry_restored,
     )
 
 
-async def _load_permissions_before_changes(plugin_id: str) -> bool:
-    """Whether the permission store is loaded, so later steps never import.
-
-    A failed load is not retried later in the uninstall: once the source has
-    switched, a first-use import would bind grants to the wrong source.
-    """
-    try:
-        await asyncio.to_thread(load_permissions)
-    except ServerDomainError as exc:
-        # Same policy as an unreadable store at cleanup time: the uninstall
-        # continues and the grants are not cleared.
-        logger.error(
-            "uninstall could not load plugin permissions; grants of {} will not "
-            "be cleared: code={}",
-            plugin_id,
-            exc.code,
-        )
-        return False
-    return True
-
-
 async def _forget_permissions_precommit(plugin_id: str) -> dict | None:
-    """Clear the plugin's permission grants before the uninstall commits.
+    """Clear the plugin's permission grants before anything else changes.
 
-    A failed write aborts the uninstall (it is rolled back like any other
-    pre-commit failure). An unreadable store cannot be cleaned without
-    overwriting it; the uninstall proceeds and the failure is logged.
+    This runs while the registry and install source still describe the
+    plugin being removed, so a first-use import binds to that plugin and no
+    concurrent reader can observe another source for a record that still
+    exists. Any failure (unreadable store or failed write) aborts the
+    uninstall; the error keeps the store's own code.
     """
     try:
         return await asyncio.to_thread(forget_permissions, plugin_id)
     except ServerDomainError as exc:
-        if exc.code in PERMISSION_READ_ERROR_CODES:
-            logger.error(
-                "uninstall could not read plugin permissions; grants of {} were "
-                "not cleared",
-                plugin_id,
-            )
-            return None
-        # A domain error, so the caller's rollback reports its outcome with it.
         raise ServerDomainError(
-            "PLUGIN_PERMISSIONS_PERSIST_FAILED",
-            "uninstall could not clear the plugin's permission grants; "
-            "refusing to commit",
-            500,
-            details={"plugin_id": plugin_id},
+            exc.code,
+            "Uninstall could not clear the plugin's permission grants: " + exc.message,
+            exc.status_code,
+            details={**exc.details, "plugin_id": plugin_id},
         ) from exc
 
 
@@ -917,10 +891,6 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     preference_snapshot = await asyncio.to_thread(
         _snapshot_runtime_preference, plugin_id
     )
-    # Load the permission store while the registry still points at the plugin
-    # being removed: a first-use import binds legacy grants to the current
-    # source, which must be this plugin's, not a built-in restored below.
-    permissions_loaded = await _load_permissions_before_changes(plugin_id)
     stop_attempted = False
     staged_code: _StagedPluginCode | None = None
     source_update_attempted = False
@@ -930,6 +900,9 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     removed_permissions: dict | None = None
     permission_rollback: str | None = None
     try:
+        stage = "forget_permissions"
+        removed_permissions = await _forget_permissions_precommit(plugin_id)
+
         stage = "stop"
         if was_running:
             stop_attempted = True
@@ -975,9 +948,6 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
                 status_code=500,
                 stage=stage,
             )
-        # Grants belong to the uninstalled plugin; a reinstall starts from scratch.
-        if permissions_loaded:
-            removed_permissions = await _forget_permissions_precommit(plugin_id)
         preference_action: PreferenceAction = (
             "preserved" if restored_builtin else "cleared"
         )
@@ -1040,6 +1010,10 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
                     plugin_id,
                     type(restore_exc).__name__,
                 )
+            if permission_rollback is None and not rollback.registry_restored:
+                # The grants are back, but the registry may still resolve this
+                # id to another copy, so their source cannot be confirmed.
+                permission_rollback = "incomplete"
         gate_details = (
             {} if autostart_gate_rollback is None
             else {"autostart_gate_rollback": autostart_gate_rollback}

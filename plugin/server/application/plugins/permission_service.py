@@ -104,11 +104,6 @@ def current_source(plugin_id: str) -> PluginSource | None:
 permission_store = PluginPermissionStore(source_resolver=current_source)
 
 
-def load_permissions() -> None:
-    """Load the store now, so a first-use import resolves today's sources."""
-    permission_store.ensure_loaded()
-
-
 def permission_record(plugin_id: str) -> dict:
     """The plugin's grants as they apply to its current source.
 
@@ -118,6 +113,7 @@ def permission_record(plugin_id: str) -> dict:
     source = current_source(plugin_id)
     view = permission_store.view(plugin_id, source)
     view.setdefault("permissions", {})
+    view.setdefault("source_mismatch", False)
     view["source_confirmed"] = source is not None
     return view
 

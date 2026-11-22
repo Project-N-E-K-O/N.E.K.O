@@ -74,6 +74,7 @@ STATE_GRANTED = "granted"
 STATE_DENIED = "denied"
 STATE_UNDECIDED = "undecided"
 STATES = frozenset({STATE_GRANTED, STATE_DENIED})
+_STORED_STATES = STATES | {STATE_UNDECIDED}
 
 CONDITION_ANYTIME = "anytime"
 CONDITION_IN_USE = "in_use"
@@ -156,6 +157,9 @@ def _validate_document(raw: Any) -> dict:
             record.get("permissions", {}), dict
         ):
             raise ValueError("Invalid permission record")
+        for entry in record.get("permissions", {}).values():
+            if not isinstance(entry, dict) or entry.get("state") not in _STORED_STATES:
+                raise ValueError("Invalid permission entry")
     return raw
 
 
@@ -364,11 +368,6 @@ class PluginPermissionStore:
     # Public API
     # ------------------------------------------------------------------
 
-    def ensure_loaded(self) -> None:
-        """Load (and on first use import) the store now rather than lazily."""
-        with self._lock:
-            self._load()
-
     def legacy_import(self) -> dict:
         with self._lock:
             self._load()
@@ -392,6 +391,10 @@ class PluginPermissionStore:
             self._load()
             record = copy.deepcopy(self._document["plugins"].get(plugin_id) or {})
         if record:
+            known = PluginSource.from_dict(record.get("source"))
+            record["source_mismatch"] = (
+                known is not None and current is not None and known != current
+            )
             self._apply_source(record, current)
         return record
 

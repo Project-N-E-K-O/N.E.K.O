@@ -1372,31 +1372,47 @@ async def test_uninstall_aborts_when_permission_grants_cannot_be_saved(
     with pytest.raises(UninstallPluginError) as captured:
         await uninstall_plugin("demo")
 
-    assert captured.value.code == "PLUGIN_PERMISSIONS_PERSIST_FAILED"
-    assert captured.value.filesystem_rollback == "completed"
+    assert captured.value.code == "PLUGIN_PERMISSIONS_WRITE_FAILED"
+    assert captured.value.stage == "forget_permissions"
+    assert _details_of(captured.value)["plugin_id"] == "demo"
+    # Grants are cleared before anything else, so nothing else was touched.
+    assert captured.value.filesystem_rollback == "not_needed"
+    assert harness.stop_calls == []
     assert harness.plugin_dir.is_dir()
     assert "plugin_sdk.main_agent.memory:read" in _demo_grants()["permissions"]
 
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_uninstall_proceeds_when_permission_store_is_unreadable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [
+        ("PLUGIN_PERMISSIONS_READ_FAILED", 503),
+        ("PLUGIN_PERMISSIONS_CORRUPT", 500),
+        ("PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION", 500),
+    ],
+)
+async def test_uninstall_aborts_when_permission_store_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, code: str, status: int
 ) -> None:
     harness = _Harness(tmp_path)
+    harness.running.add("demo")
     harness.install(monkeypatch)
 
     def _fail(_plugin_id: str) -> None:
-        raise ServerDomainError(
-            "PLUGIN_PERMISSIONS_READ_FAILED", "Plugin permission records could not be read", 503
-        )
+        raise ServerDomainError(code, "Plugin permission records cannot be read", status)
 
     monkeypatch.setattr(uninstall_module, "forget_permissions", _fail)
 
-    result = await uninstall_plugin("demo")
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
 
-    assert result.deleted_from_disk is True
-    assert harness.plugin_dir.exists() is False
+    assert captured.value.code == code
+    assert captured.value.status_code == status
+    assert captured.value.stage == "forget_permissions"
+    assert harness.stop_calls == []
+    assert harness.manager.marked_removed == []
+    assert harness.plugin_dir.is_dir()
 
 
 @pytest.mark.plugin_unit
@@ -1454,7 +1470,7 @@ async def test_uninstall_reports_incomplete_permission_rollback(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["preload", "preload_fails_once", "concurrent_read"])
+@pytest.mark.parametrize("scenario", ["plain", "concurrent_read"])
 async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1464,9 +1480,9 @@ async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
     """First store load during uninstall must bind legacy grants to the
     plugin being removed, not to the built-in copy the registry switches to.
 
-    ``preload_fails_once``: the up-front load hits a transient read error; the
-    store must not be loaded (and imported) later once the source switched.
-    ``concurrent_read``: a read while the built-in is exposed must not save it.
+    ``concurrent_read``: a read while the built-in is exposed (after the
+    grants were cleared, before the commit) must not change what rollback
+    restores.
     """
     import json
 
@@ -1529,7 +1545,7 @@ async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
                 }
             if scenario == "concurrent_read":
                 seen = permission_service.permission_record("demo")
-                assert seen["source"] == {"channel": "builtin", "fingerprint": None}
+                assert seen["permissions"] == {}
         return result
 
     monkeypatch.setattr(
@@ -1558,22 +1574,9 @@ async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
         raise OSError("override disk full")
 
     monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail)
-    if scenario == "preload_fails_once":
-        from plugin.server.domain.errors import ServerDomainError as _DomainError
-
-        def _transient(*_args: object) -> None:
-            raise _DomainError("PLUGIN_PERMISSIONS_READ_FAILED", "busy", 503)
-
-        monkeypatch.setattr(uninstall_module, "load_permissions", _transient)
-
     with pytest.raises(UninstallPluginError) as captured:
         await uninstall_plugin("demo")
     assert captured.value.stage == "refresh_and_preferences"
-    if scenario == "preload_fails_once":
-        # Nothing loaded the store after the source switched.
-        assert not store._manager_override.get_runtime_config_path(
-            "plugin_permissions.json"
-        ).exists()
 
     with state.acquire_plugins_write_lock():
         state.plugins["demo"] = {"id": "demo", "config_path": str(harness.config_path)}
@@ -1584,22 +1587,16 @@ async def test_failed_uninstall_of_builtin_override_keeps_imported_grants(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "code",
-    ["PLUGIN_PERMISSIONS_CORRUPT", "PLUGIN_PERMISSIONS_UNSUPPORTED_VERSION"],
-)
-async def test_uninstall_proceeds_when_permission_store_is_damaged_or_newer(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, code: str
+async def test_uninstall_rollback_without_registry_refresh_flags_permissions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     harness = _Harness(tmp_path)
     harness.install(monkeypatch)
+    _grant_demo()
+    harness.refresh_error = RuntimeError("registry unavailable")
 
-    def _fail(*_args: object) -> None:
-        raise ServerDomainError(code, "Plugin permission records cannot be read", 500)
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
 
-    monkeypatch.setattr(uninstall_module, "forget_permissions", _fail)
-    monkeypatch.setattr(uninstall_module, "load_permissions", _fail)
-
-    result = await uninstall_plugin("demo")
-
-    assert result.deleted_from_disk is True
+    assert "plugin_sdk.main_agent.memory:read" in _demo_grants()["permissions"]
+    assert _details_of(captured.value)["permission_rollback"] == "incomplete"
