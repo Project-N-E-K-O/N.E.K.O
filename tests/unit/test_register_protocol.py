@@ -208,3 +208,159 @@ def test_cli_exits_nonzero_when_required_command_fails(
     out = capsys.readouterr().out
     assert f"[FAIL] {required} exited with status 1" in out
     assert "[OK]" not in out
+
+
+_MIMEAPPS_BEFORE = (
+    "[Default Applications]\n"
+    "text/html=firefox.desktop\n"
+    "x-scheme-handler/neko=neko-protocol-handler.desktop\n"
+    "\n"
+    "[Added Associations]\n"
+    "x-scheme-handler/neko=other-neko.desktop;neko-protocol-handler.desktop;\n"
+    "image/png=viewer.desktop;\n"
+)
+_MIMEAPPS_AFTER = (
+    "[Default Applications]\n"
+    "text/html=firefox.desktop\n"
+    "\n"
+    "[Added Associations]\n"
+    "x-scheme-handler/neko=other-neko.desktop;\n"
+    "image/png=viewer.desktop;\n"
+)
+
+
+def _linux_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    apps_dir = tmp_path / ".local" / "share" / "applications"
+    apps_dir.mkdir(parents=True)
+    desktop_file = apps_dir / "neko-protocol-handler.desktop"
+    desktop_file.write_text("[Desktop Entry]\n", encoding="utf-8")
+    return apps_dir, desktop_file
+
+
+def test_linux_remove_drops_default_association(monkeypatch, tmp_path) -> None:
+    apps_dir, desktop_file = _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_text(_MIMEAPPS_BEFORE, encoding="utf-8")
+    legacy_list = apps_dir / "mimeapps.list"
+    legacy_list.write_text(
+        "[Default Applications]\nx-scheme-handler/neko = neko-protocol-handler.desktop\n",
+        encoding="utf-8",
+    )
+    calls = _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_text(encoding="utf-8") == _MIMEAPPS_AFTER
+    assert legacy_list.read_text(encoding="utf-8") == "[Default Applications]\n"
+    assert not desktop_file.exists()
+    assert calls == [["update-desktop-database", str(apps_dir)]]
+    assert sorted(p.name for p in config_list.parent.iterdir()) == ["mimeapps.list"]
+
+
+def test_linux_remove_leaves_unrelated_mimeapps_untouched(monkeypatch, tmp_path) -> None:
+    _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    # Our handler in an unrelated group or for another type is not ours to drop.
+    original = (
+        "[Removed Associations]\n"
+        "x-scheme-handler/neko=neko-protocol-handler.desktop\n"
+        "[Default Applications]\n"
+        "x-scheme-handler/other=neko-protocol-handler.desktop\n"
+    )
+    config_list.write_text(original, encoding="utf-8")
+    before = config_list.stat().st_mtime_ns
+    _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_linux() is True
+
+    assert config_list.read_text(encoding="utf-8") == original
+    assert config_list.stat().st_mtime_ns == before
+
+
+def test_linux_mimeapps_paths_ignore_relative_xdg_config_home(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative/config")
+
+    assert register_protocol._linux_mimeapps_paths()[0] == tmp_path / ".config" / "mimeapps.list"
+
+
+def test_linux_remove_reports_association_write_failure(
+    monkeypatch, tmp_path, capsys,
+) -> None:
+    _, desktop_file = _linux_home(monkeypatch, tmp_path)
+    config_list = tmp_path / "xdg-config" / "mimeapps.list"
+    config_list.parent.mkdir()
+    config_list.write_text(_MIMEAPPS_BEFORE, encoding="utf-8")
+    _fake_commands(monkeypatch)
+
+    def fail_replace(*_args):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(register_protocol.os, "replace", fail_replace)
+
+    assert register_protocol._remove_linux() is False
+
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "[OK]" not in out
+    # The user's file is intact and no temporary file is left behind.
+    assert config_list.read_text(encoding="utf-8") == _MIMEAPPS_BEFORE
+    assert sorted(p.name for p in config_list.parent.iterdir()) == ["mimeapps.list"]
+    assert not desktop_file.exists()
+
+
+def _macos_app(monkeypatch, tmp_path):
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    app_dir = tmp_path / "Applications" / "NekoProtocolHandler.app"
+    (app_dir / "Contents").mkdir(parents=True)
+    return app_dir
+
+
+def test_macos_remove_unregisters_before_deleting(monkeypatch, tmp_path) -> None:
+    app_dir = _macos_app(monkeypatch, tmp_path)
+    seen_existing: list[bool] = []
+    calls = _fake_commands(monkeypatch)
+    original_run = register_protocol.subprocess.run
+
+    def run_and_check_bundle(args, **kwargs):
+        seen_existing.append(app_dir.exists())
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(register_protocol.subprocess, "run", run_and_check_bundle)
+
+    assert register_protocol._remove_macos() is True
+
+    assert calls == [[register_protocol.LSREGISTER, "-u", str(app_dir)]]
+    assert seen_existing == [True]
+    assert not app_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("returncodes", "missing"),
+    [({"lsregister": 1}, ()), ({}, ("lsregister",))],
+    ids=["nonzero", "missing"],
+)
+def test_macos_remove_reports_unregister_failure(
+    monkeypatch, tmp_path, capsys, returncodes, missing,
+) -> None:
+    app_dir = _macos_app(monkeypatch, tmp_path)
+    _fake_commands(monkeypatch, returncodes=returncodes, missing=missing)
+
+    assert register_protocol._remove_macos() is False
+
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out
+    assert "[OK]" not in out
+    assert not app_dir.exists()
+
+
+def test_macos_remove_without_app_skips_lsregister(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(register_protocol.Path, "home", lambda: tmp_path)
+    calls = _fake_commands(monkeypatch)
+
+    assert register_protocol._remove_macos() is True
+    assert calls == []
