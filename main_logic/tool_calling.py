@@ -38,6 +38,7 @@ import asyncio
 import base64
 import binascii
 import json
+import threading
 import time
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -536,6 +537,21 @@ class ToolRegistryError(Exception):
     pass
 
 
+# Decides whether the tool currently holding a name may be replaced or
+# removed by the caller (e.g. "same ``metadata.source``").
+ToolOwnerCheck = Callable[["ToolDefinition"], bool]
+
+
+class ToolOwnershipError(ToolRegistryError):
+    """A conditional register/unregister found the name held by a tool the
+    caller does not own; the registry was left unchanged."""
+
+    def __init__(self, name: str, existing: "ToolDefinition") -> None:
+        self.name = name
+        self.existing = existing
+        super().__init__(f"tool '{name}' is owned by another source")
+
+
 class ToolRegistry:
     """Process-local tool registry.
 
@@ -552,6 +568,10 @@ class ToolRegistry:
     ) -> None:
         self._tools: Dict[str, ToolDefinition] = {}
         self._lock = asyncio.Lock()
+        # Guards every write so an ownership check and the write it permits
+        # are one step (register/unregister ``owner_check``), also when a
+        # caller reaches the registry from another thread.
+        self._write_lock = threading.RLock()
         self._remote_dispatcher = remote_dispatcher
         # Telemetry: last execution timing for each tool. Useful for
         # surface-level observability without having to plumb full tracing.
@@ -559,12 +579,30 @@ class ToolRegistry:
 
     # ---- registration ---------------------------------------------------
 
-    def register(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    def register(
+        self,
+        tool: ToolDefinition,
+        *,
+        replace: bool = True,
+        owner_check: Optional[ToolOwnerCheck] = None,
+    ) -> None:
+        """Add ``tool``, replacing a same-name tool when ``replace`` is set.
+
+        With ``owner_check``, a same-name tool is only replaced if
+        ``owner_check(existing)`` is true; otherwise ``ToolOwnershipError`` is
+        raised. The check and the write happen under one lock, so no other
+        write can land between them.
+        """
         if not tool.name:
             raise ToolRegistryError("ToolDefinition.name must be non-empty")
-        if not replace and tool.name in self._tools:
-            raise ToolRegistryError(f"tool '{tool.name}' already registered")
-        self._tools[tool.name] = tool
+        with self._write_lock:
+            existing = self._tools.get(tool.name)
+            if existing is not None:
+                if not replace:
+                    raise ToolRegistryError(f"tool '{tool.name}' already registered")
+                if owner_check is not None and not owner_check(existing):
+                    raise ToolOwnershipError(tool.name, existing)
+            self._tools[tool.name] = tool
         logger.info(
             "ToolRegistry: registered '%s' (handler=%s, source=%s)",
             tool.name,
@@ -572,8 +610,21 @@ class ToolRegistry:
             tool.metadata.get("source", "unknown"),
         )
 
-    def unregister(self, name: str) -> bool:
-        existed = self._tools.pop(name, None) is not None
+    def unregister(self, name: str, *, owner_check: Optional[ToolOwnerCheck] = None) -> bool:
+        """Remove the tool called ``name``; return whether one was removed.
+
+        With ``owner_check``, the tool is only removed if
+        ``owner_check(existing)`` is true; otherwise ``ToolOwnershipError`` is
+        raised. The check and the removal happen under one lock, so no other
+        write can land between them.
+        """
+        with self._write_lock:
+            existing = self._tools.get(name)
+            if existing is not None:
+                if owner_check is not None and not owner_check(existing):
+                    raise ToolOwnershipError(name, existing)
+                del self._tools[name]
+        existed = existing is not None
         if existed:
             logger.info("ToolRegistry: unregistered '%s'", name)
         return existed
@@ -593,14 +644,15 @@ class ToolRegistry:
         Returns the number removed. Callers like ``unregister_plugin_tools``
         use ``source="plugin:<id>"`` to drop just that plugin's tools.
         """
-        if source is None:
-            n = len(self._tools)
-            self._tools.clear()
-            return n
-        to_drop = [k for k, t in self._tools.items() if t.metadata.get("source") == source]
-        for k in to_drop:
-            self._tools.pop(k, None)
-        return len(to_drop)
+        with self._write_lock:
+            if source is None:
+                n = len(self._tools)
+                self._tools.clear()
+                return n
+            to_drop = [k for k, t in self._tools.items() if t.metadata.get("source") == source]
+            for k in to_drop:
+                self._tools.pop(k, None)
+            return len(to_drop)
 
     # ---- execution ------------------------------------------------------
 

@@ -85,6 +85,7 @@ from pydantic import BaseModel, Field, field_validator
 from main_logic.tool_calling import (
     ToolCall,
     ToolDefinition,
+    ToolOwnershipError,
     ToolResult,
     looks_like_tool_envelope,
     tool_result_from_envelope,
@@ -264,6 +265,10 @@ def _callback_origin(url: str) -> str:
         return f"{parsed.scheme}://{host}:{port}"
     except (ValueError, TypeError):
         return url
+
+
+def _tool_source(tool: ToolDefinition) -> str:
+    return str((tool.metadata or {}).get("source", ""))
 
 
 def _is_plugin_source(source: str) -> bool:
@@ -734,6 +739,10 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             **({"reply_tail": True} if req.reply_tail else {}),
         },
     )
+
+    def same_source(existing: ToolDefinition) -> bool:
+        return _tool_source(existing) == req.source
+
     # Reserve ownership before the first await, including managers rebuilt
     # during session sync. Refused registrations must not alter the ledger.
     conflicts = []
@@ -771,28 +780,27 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             # without protection, later plugins silently displace existing same-name tools from other sources,
             # rerouting model calls to new callback and permitting original plugin to unregister another's tool.
             # Same-source refresh (restart callback_url / schema updates) unaffected.
-            existing = mgr.tool_registry.get(req.name)
-            if existing is not None:
-                existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
-                if existing_source != req.source:
-                    logger.warning(
-                        "register_tool refused cross-source overwrite on %s: name='%s' owned_by='%s' incoming='%s'",
-                        role_name, req.name, existing_source or "unknown", req.source,
-                    )
-                    failed.append({
-                        "role": role_name,
-                        "error": (
-                            f"tool '{req.name}' already owned by source "
-                            f"'{existing_source or 'unknown'}' (cross-source overwrite refused)"
-                        ),
-                    })
-                    continue
+            # The registry runs the ownership check and the write as one locked step (owner_check), so a
+            # same-name write by another source cannot slip in between them.
             # Use _and_sync: await session.update push after registration,
             # so when caller gets ok=True, active/pending session tools
             # are current, avoiding success responses followed by model calls
             # unable to see tools.
-            await mgr.register_tool_and_sync(tool, replace=True)
+            await mgr.register_tool_and_sync(tool, replace=True, owner_check=same_source)
             affected.append(role_name)
+        except ToolOwnershipError as e:
+            existing_source = _tool_source(e.existing)
+            logger.warning(
+                "register_tool refused cross-source overwrite on %s: name='%s' owned_by='%s' incoming='%s'",
+                role_name, req.name, existing_source or "unknown", req.source,
+            )
+            failed.append({
+                "role": role_name,
+                "error": (
+                    f"tool '{req.name}' already owned by source "
+                    f"'{existing_source or 'unknown'}' (cross-source overwrite refused)"
+                ),
+            })
         except Exception as e:
             err_text = f"{type(e).__name__}: {e}"
             logger.warning("register_tool to %s failed: %s", role_name, err_text)
@@ -841,27 +849,24 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
         try:
             # Reject removal if the source or host instance has been replaced.
             # Symmetric with /register cross-source rejection: unregister only own tools.
-            # getattr tool_registry supports duck-typed managers/test stubs;
-            # managers without registries skip validation, retaining previous unregister behavior.
-            registry = getattr(mgr, "tool_registry", None)
-            existing = registry.get(req.name) if registry is not None else None
-            if existing is not None and not matches_owner(existing):
-                existing_source = str(existing.metadata.get("source") or "unknown")
-                logger.warning(
-                    "unregister_tool refused '%s' on %s: source=%s expected_source=%s "
-                    "host_instance_id=%s expected_host_instance_id=%s",
-                    req.name, role_name, existing_source, req.expected_source,
-                    existing.metadata.get("host_instance_id"), req.expected_host_instance_id,
-                )
-                refused.append({
-                    "role": role_name,
-                    "owned_by": existing_source,
-                })
-                continue
+            # The registry checks ownership and removes in one locked step (owner_check), so a
+            # same-name registration by another source cannot be deleted by name in between.
             # _and_sync awaits session synchronization before return, symmetric with register.
-            if await mgr.unregister_tool_and_sync(req.name):
+            if await mgr.unregister_tool_and_sync(req.name, owner_check=matches_owner):
                 removed_any = True
                 affected.append(role_name)
+        except ToolOwnershipError as e:
+            existing_source = str(e.existing.metadata.get("source") or "unknown")
+            logger.warning(
+                "unregister_tool refused '%s' on %s: source=%s expected_source=%s "
+                "host_instance_id=%s expected_host_instance_id=%s",
+                req.name, role_name, existing_source, req.expected_source,
+                e.existing.metadata.get("host_instance_id"), req.expected_host_instance_id,
+            )
+            refused.append({
+                "role": role_name,
+                "owned_by": existing_source,
+            })
         except Exception as e:
             # One role's sync failure must not 500 the whole cross-role request; callers need
             # successful-role lists to infer state.

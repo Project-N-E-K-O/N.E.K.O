@@ -110,6 +110,8 @@ class ExportStore(Protocol):
 class RunStore(Protocol):
     def create(self, rec: RunRecord) -> None: ...
 
+    def create_or_get_idempotent(self, rec: RunRecord) -> Tuple[RunRecord, bool]: ...
+
     def get(self, run_id: str) -> Optional[RunRecord]: ...
 
     def update(self, run_id: str, **patch: Any) -> Optional[RunRecord]: ...
@@ -199,12 +201,45 @@ class InMemoryRunStore:
     def __init__(self, max_completed: int = 0) -> None:
         self._lock = threading.Lock()
         self._runs: Dict[str, RunRecord] = {}
+        # (plugin_id, entry_id, idempotency_key) -> run_id, for runs still held
+        # in ``_runs``. An entry lives exactly as long as its run record does:
+        # it is dropped when the record is evicted.
+        self._by_idempotency: Dict[Tuple[str, str, str], str] = {}
         self._completed_order: collections.deque[str] = collections.deque()
         self._max_completed = max_completed if max_completed > 0 else int(RUN_STORE_MAX_COMPLETED)
+
+    @staticmethod
+    def _idempotency_index_key(rec: RunRecord) -> Optional[Tuple[str, str, str]]:
+        if not rec.idempotency_key:
+            return None
+        return (rec.plugin_id, rec.entry_id, rec.idempotency_key)
 
     def create(self, rec: RunRecord) -> None:
         with self._lock:
             self._runs[rec.run_id] = rec
+            key = self._idempotency_index_key(rec)
+            if key is not None:
+                self._by_idempotency[key] = rec.run_id
+
+    def create_or_get_idempotent(self, rec: RunRecord) -> Tuple[RunRecord, bool]:
+        """Insert ``rec`` unless a held run already has its idempotency key.
+
+        The lookup and the insert happen under one lock, so concurrent
+        requests with the same ``(plugin_id, entry_id, idempotency_key)``
+        create at most one run. Returns ``(record, created)``; when
+        ``created`` is False the record is a copy of the existing run.
+        A record without an idempotency key is always inserted.
+        """
+        with self._lock:
+            key = self._idempotency_index_key(rec)
+            if key is not None:
+                existing_id = self._by_idempotency.get(key)
+                existing = self._runs.get(existing_id) if existing_id is not None else None
+                if existing is not None:
+                    return existing.model_copy(deep=True), False
+                self._by_idempotency[key] = rec.run_id
+            self._runs[rec.run_id] = rec
+            return rec.model_copy(deep=True), True
 
     def get(self, run_id: str) -> Optional[RunRecord]:
         with self._lock:
@@ -306,6 +341,9 @@ class InMemoryRunStore:
             r = self._runs.get(rid)
             if r is not None and r.status in _TERMINAL_STATUSES:
                 self._runs.pop(rid, None)
+                key = self._idempotency_index_key(r)
+                if key is not None and self._by_idempotency.get(key) == rid:
+                    del self._by_idempotency[key]
                 evicted.append(rid)
         return evicted
 
@@ -803,6 +841,16 @@ def _resolve_run_execution_timeout(args: Dict[str, Any]) -> float | None:
 
 
 async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> RunCreateResponse:
+    """Create a run and start executing it.
+
+    With a non-empty ``idempotency_key`` the request is deduplicated against
+    runs the store still holds for the same ``(plugin_id, entry_id)``: a retry
+    whose first response was lost gets the original ``run_id`` and its current
+    status back, and the entry is not executed a second time. A key stops
+    matching once its run record is evicted (terminal runs beyond
+    ``RUN_STORE_MAX_COMPLETED``). ``args`` are not compared: reusing a key for
+    a different call returns the earlier run.
+    """
     run_id = str(uuid.uuid4())
     now = float(time.time())
     rec = RunRecord(
@@ -818,7 +866,16 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
         cancel_requested=False,
         result_refs=[],
     )
-    _run_store.create(rec)
+    if req.idempotency_key:
+        stored, created = _run_store.create_or_get_idempotent(rec)
+        if not created:
+            logger.debug(
+                "create_run: idempotency key matched existing run {} (plugin={}, entry={})",
+                stored.run_id, stored.plugin_id, stored.entry_id,
+            )
+            return RunCreateResponse(run_id=stored.run_id, status=stored.status)
+    else:
+        _run_store.create(rec)
     _emit_runs("add", rec)
 
     task = asyncio.create_task(
