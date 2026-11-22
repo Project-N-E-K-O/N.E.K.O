@@ -80,9 +80,11 @@ function makeWindow(opts) {
         devicePixelRatio: 1,
     }, opts.geom || {});
     const imageSizes = Object.assign({}, opts.imageSizes || {});
-    const state = { elements: opts.elements || [] };
+    // focused: document.hasFocus() (browser window in front); default true.
+    const state = { elements: opts.elements || [], focused: opts.focused !== false };
     const document = {
         visibilityState: 'visible',
+        hasFocus() { return state.focused; },
         documentElement: makeElement({ x: 0, y: 0, w: 1, h: 1 }),
         querySelectorAll(selector) {
             assert.equal(selector, '[data-neko-capture-mask]');
@@ -1423,4 +1425,172 @@ test('reporter: scrolling (no DOM mutation) and text changes trigger a report', 
     docListeners.scroll.fn();
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(reports.length, 2, 'scroll is reported without waiting for the 1 s recheck');
+});
+
+
+// ---------------------------------------------------------------- review round 9: focus + user switch
+
+const stateSource = fs.readFileSync(path.join(repo, 'static/app/app-state.js'), 'utf8');
+const settingsSource = fs.readFileSync(path.join(repo, 'static/app/app-settings.js'), 'utf8');
+
+function spyReasons(w) {
+    const src = maskSource.replace("    function decideWhenGeometryUnavailable(ctx, reason) {\n",
+        "    function decideWhenGeometryUnavailable(ctx, reason) {\n        globalThis.__reasons = (globalThis.__reasons || []).concat([reason]);\n");
+    assert.notEqual(src, maskSource);
+    vm.runInContext(src, w);
+}
+
+function screenEnv(opts) {
+    return makeWindow(Object.assign({
+        elements: chatElements({ galOpen: true }),
+        geom: { innerWidth: 1000, innerHeight: 1000, outerWidth: 1000, outerHeight: 1000, screenWidth: 1000, screenHeight: 1000 },
+        imageSizes: { [RAW_FRAME]: [1000, 1000] },
+    }, opts || {}));
+}
+
+test('browser whole-screen share: focused window before and after capture -> masked', async () => {
+    const env = screenEnv();
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('browser whole-screen share: window not focused before capture -> position unknown, sent unmasked', async () => {
+    const env = screenEnv({ focused: false });
+    spyReasons(env.w);
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    env.state.focused = true;
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.equal(out, RAW_FRAME);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+});
+
+test('browser whole-screen share: window loses focus during capture -> position unknown, sent unmasked', async () => {
+    const env = screenEnv();
+    spyReasons(env.w);
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    env.state.focused = false;
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.equal(out, RAW_FRAME);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+    // Single sample (no pre-capture session) follows the same rule.
+    env.w.__reasons = [];
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+});
+
+test('browser tab share of this tab: still masked while the window is not focused', async () => {
+    const env = makeWindow({ focused: false, elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: ownTab(env.w) }, session);
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('browser whole-screen share: not focused but nothing to mask -> known, untouched without the fallback', async () => {
+    const env = screenEnv({ focused: false, elements: [] });
+    spyReasons(env.w);
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
+    assert.equal(env.w.__reasons, undefined);
+});
+
+// Load the real app-state.js / app-settings.js into a mask test window; the
+// two windows of one test share `store` as their localStorage.
+function withSettings(env, store) {
+    const w = env.w;
+    const listeners = [];
+    w.addEventListener = (type, fn) => { listeners.push({ type, fn }); };
+    w.removeEventListener = () => {};
+    w.dispatchEvent = () => {};
+    w.CustomEvent = class { constructor(type) { this.type = type; } };
+    w.localStorage = {
+        getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null),
+        setItem: (k, v) => { store[k] = String(v); },
+        removeItem: (k) => { delete store[k]; },
+    };
+    w.navigator = Object.assign({ userAgent: 'test' }, w.navigator || {});
+    w.location = Object.assign({ search: '' }, w.location || {});
+    w.matchMedia = () => ({ matches: false });
+    w.fetch = () => new Promise(() => {});
+    w.setTimeout = (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; };
+    w.document.getElementById = () => null;
+    w.document.querySelector = () => null;
+    vm.runInContext(stateSource, w);
+    vm.runInContext(settingsSource, w);
+    env.fireStorage = (newValue) => listeners
+        .filter((l) => l.type === 'storage')
+        .forEach((l) => l.fn({ key: 'project_neko_settings', newValue }));
+    return env;
+}
+
+test('switch: on by default (app state, saved settings, reset defaults)', async () => {
+    const env = withSettings(screenEnv(), {});
+    assert.equal(env.w.appState.captureSelfUiMaskEnabled, true);
+    assert.equal(env.w.captureSelfUiMaskEnabled, true);
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' });
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+    // A saved snapshot from before the switch existed has no key: stays on.
+    const old = withSettings(screenEnv(), { project_neko_settings: JSON.stringify({ slopFilterEnabled: true }) });
+    assert.equal(old.w.appState.captureSelfUiMaskEnabled, true);
+});
+
+test('switch off: the frame is returned as captured, no region read, no shell query', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0, y: 0, width: 0.5, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell });
+    env.w.appState = { captureSelfUiMaskEnabled: false };
+    assert.equal(env.w.appCaptureMask.beginMaskSession({ via: 'stream', sourceId: 'screen:0:0' }), null);
+    for (const via of ['stream', 'native', 'backend']) {
+        assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: 'screen:0:0', via }), RAW_FRAME);
+    }
+    assert.equal(shell.calls.length, 0);
+
+    const browser = screenEnv();
+    browser.w.appState = { captureSelfUiMaskEnabled: false };
+    let reads = 0;
+    browser.w.document.querySelectorAll = () => { reads += 1; return browser.state.elements; };
+    assert.equal(browser.w.appCaptureMask.beginMaskSession({ via: 'stream' }), null);
+    assert.equal(await browser.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
+    assert.equal(reads, 0);
+    // Read on every frame: switching back on takes effect on the next frame.
+    browser.w.appState.captureSelfUiMaskEnabled = true;
+    const out = await browser.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' });
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('switch: turned off in the chat window -> the next frame in the Pet window is not masked (and back on)', async () => {
+    const store = {};
+    const chat = withSettings(makeWindow({}), store);
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const pet = withSettings(makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } }), store);
+    const ctx = { captureType: 'screen', sourceId: 'screen:0:0', via: 'native' };
+    assert.deepEqual(fillsOf(await pet.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx)), [[800, 225, 400, 450]]);
+    assert.equal(shell.calls.length, 1);
+
+    // The settings popup handler: set the global, then save.
+    chat.w.captureSelfUiMaskEnabled = false;
+    chat.w.saveNEKOSettings();
+    assert.equal(JSON.parse(store.project_neko_settings).captureSelfUiMaskEnabled, false);
+    pet.fireStorage(store.project_neko_settings);
+    assert.equal(await pet.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx), RAW_FRAME);
+    assert.equal(shell.calls.length, 1, 'no shell query while switched off');
+
+    chat.w.captureSelfUiMaskEnabled = true;
+    chat.w.saveNEKOSettings();
+    pet.fireStorage(store.project_neko_settings);
+    assert.deepEqual(fillsOf(await pet.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx)), [[800, 225, 400, 450]]);
+    assert.equal(shell.calls.length, 2);
+});
+
+test('switch: wired through settings sync, the server allow-list, the popup and all 8 locales (text guard only)', () => {
+    const settings = settingsSource;
+    assert.match(settings, /'captureSelfUiMaskEnabled',\n/);
+    assert.match(settings, /captureSelfUiMaskEnabled: true,/);
+    assert.match(settings, /S\.captureSelfUiMaskEnabled = settings\.captureSelfUiMaskEnabled \?\? true;/);
+    const allowList = fs.readFileSync(path.join(repo, 'utils/conversation_settings_constants.py'), 'utf8');
+    assert.match(allowList, /"captureSelfUiMaskEnabled",/);
+    const popup = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup.js'), 'utf8');
+    assert.match(popup, /id: 'capture-self-ui-mask'.*storageKey: 'captureSelfUiMaskEnabled'/);
+    for (const locale of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es']) {
+        const toggles = JSON.parse(fs.readFileSync(path.join(repo, 'static/locales', locale + '.json'), 'utf8')).settings.toggles;
+        assert.ok(toggles.captureSelfUiMask && toggles.captureSelfUiMaskTooltip, locale);
+    }
 });

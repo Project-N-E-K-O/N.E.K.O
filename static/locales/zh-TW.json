@@ -4262,6 +4262,8 @@
             "autoMemoryRecallTooltip": "開啟後，文字聊天（含語音轉文字）時，回覆前會自動想起和你這句話相關的往事；關閉後只在需要時主動回憶。",
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",
+            "captureSelfUiMask": "截圖遮住聊天記錄",
+            "captureSelfUiMaskTooltip": "看螢幕時，先把 N.E.K.O 自己的聊天記錄和選項區域塗掉，再把畫面傳給模型。輸入框不遮。",
             "catSettings": "貓咪設定",
             "autoCat": "自動變貓",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",

@@ -527,7 +527,8 @@ function createSettingsPopupContent(manager, prefix, popup) {
 
     const settingsToggles = [
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15, controlStyle: 'slider' },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' }
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' },
+        { id: 'capture-self-ui-mask', label: window.t ? window.t('settings.toggles.captureSelfUiMask') : '截图遮住聊天记录', labelKey: 'settings.toggles.captureSelfUiMask', tooltipKey: 'settings.toggles.captureSelfUiMaskTooltip', storageKey: 'captureSelfUiMaskEnabled', controlStyle: 'slider' }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -2842,6 +2843,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
         checkbox.checked = toggle.inverted ? !window.proactiveVisionEnabled : window.proactiveVisionEnabled;
+    } else if (toggle.id === 'capture-self-ui-mask' && typeof window.captureSelfUiMaskEnabled !== 'undefined') {
+        checkbox.checked = window.captureSelfUiMaskEnabled !== false;
     } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
     } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
@@ -3037,6 +3040,13 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // released when the switch went off and later captures never prompt.
             if (isChecked && typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
                 window.acquireProactiveVisionAfterUserEnable();
+            }
+        } else if (toggle.id === 'capture-self-ui-mask') {
+            // Read by app-capture-mask.js on every frame; other windows pick
+            // it up through the shared settings snapshot (storage event).
+            window.captureSelfUiMaskEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
             }
         } else if (toggle.id === 'proactive-vision') {
             const visionEnabled = toggle.inverted ? !isChecked : isChecked;

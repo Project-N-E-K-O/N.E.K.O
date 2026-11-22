@@ -298,6 +298,23 @@
         return { known: true, rects: clipNormalizedRects(res.rects) };
     }
 
+    // ======================== User switch ========================
+
+    // Settings switch captureSelfUiMaskEnabled (default on). Read on every
+    // frame, never cached: another window (e.g. the chat window in desktop
+    // multi-window mode) can change it, and app-settings.js applies that
+    // change here through the shared settings snapshot. Only an explicit
+    // false turns masking off.
+    function isMaskEnabled(win) {
+        try {
+            var S = win.appState;
+            var value = S && typeof S.captureSelfUiMaskEnabled === 'boolean'
+                ? S.captureSelfUiMaskEnabled
+                : win.captureSelfUiMaskEnabled;
+            return value !== false;
+        } catch (e) { return true; }
+    }
+
     // ======================== Geometry resolution ========================
 
     // Same captured surface as far as the shell query is concerned: the C2
@@ -319,6 +336,8 @@
      */
     function beginMaskSession(ctxHint) {
         var win = window;
+        // Switched off: no sample, no shell query.
+        if (!isMaskEnabled(win)) return null;
         var hint = ctxHint || {};
         if (isDesktopMultiWindow(win)) {
             return { hint: hint, pending: queryShellMask(win, hint) };
@@ -334,9 +353,15 @@
     // captured (see mapLocalSample).
     function sampleLocal(win) {
         var doc = win.document;
+        var focused = false;
+        try { focused = !!doc && typeof doc.hasFocus === 'function' && doc.hasFocus() === true; } catch (e) { focused = false; }
         return {
             rects: collectLocalMaskRects(doc, win, { includeHiddenDocument: true }),
-            hidden: !!doc && doc.visibilityState === 'hidden'
+            hidden: !!doc && doc.visibilityState === 'hidden',
+            // Only a focused browser window is known to be in front. Without
+            // focus, another application may cover the chat regions, and a
+            // mask painted at their screen position would land on it.
+            focused: focused
         };
     }
 
@@ -360,6 +385,13 @@
         }
         // A background tab is not on any screen or window capture.
         if (sample.hidden) return { known: true, rects: [] };
+        // Whole-screen capture of a browser window that is not in front: the
+        // regions may be covered by another application, so what the frame
+        // shows there is unknown. When unsure, mask less. (A tab capture
+        // above gets the page itself, covered or not.)
+        if (captureType === 'screen' && !sample.focused && sample.rects && sample.rects.length > 0) {
+            return { known: false, rects: [] };
+        }
         return mapViewportRectsToCapture(sample.rects, captureType, geom);
     }
 
@@ -499,7 +531,10 @@
     /**
      * The chat history / option regions may be in the frame, but where they
      * are is unknown: several displays in the browser, or a display count the
-     * browser does not report (no Screen.isExtended); a shared window that may
+     * browser does not report (no Screen.isExtended); a whole-screen share
+     * while the browser window is not focused (another application may cover
+     * the regions; a desktop shell chat window that is not always-on-top is
+     * the shell's ok:false); a shared window that may
      * or may not be this browser; a shared browser tab that cannot be tied to
      * this page (no Capture Handle) or shows another N.E.K.O page of the same
      * origin; the samples before and after capture where either side is
@@ -592,6 +627,9 @@
      */
     async function maskFrameForModel(dataUrl, ctx, session) {
         if (!dataUrl) return dataUrl;
+        // Switched off: the frame goes out as captured, without reading any
+        // region or asking the desktop shell.
+        if (!isMaskEnabled(window)) return dataUrl;
         var geometry;
         try {
             geometry = await resolveGeometry(session, ctx || {});
