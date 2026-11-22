@@ -347,8 +347,8 @@ def hosts(monkeypatch):
     busy["left"] = 0
     registered: dict[str, Host] = {}
     monkeypatch.setattr(
-        permission_push.state,
-        "get_plugin_hosts_snapshot_nowait",
+        permission_push,
+        "_running_hosts",
         lambda: None if busy["left"] and _consume(busy) else dict(registered),
     )
     return registered
@@ -555,11 +555,11 @@ async def test_an_error_while_collecting_does_not_stop_the_service(monkeypatch, 
     real_take = service._take
     calls = {"n": 0}
 
-    def take():
+    async def take():
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("boom")
-        return real_take()
+        return await real_take()
 
     monkeypatch.setattr(service, "_take", take)
     service.notify(frozenset({"demo"}))
@@ -601,3 +601,91 @@ def test_undoing_a_consent_mirror_to_nothing_counts_as_a_removal(store):
     undo()
     assert "demo" not in permission_service._last_records
     assert permission_service._removals.get("demo") == 1
+
+
+def test_host_lookup_reads_the_live_table_not_a_stale_cache():
+    from plugin.core.state import state
+
+    marker = object()
+    with state._snapshot_cache_lock:
+        saved_cache = dict(state._snapshot_cache["hosts"])
+        # A cached table from before the plugin started, still within its TTL.
+        state._snapshot_cache["hosts"] = {"data": {}, "timestamp": 10**12}
+    with state.acquire_plugin_hosts_write_lock():
+        state.plugin_hosts["fresh_plugin"] = marker
+    try:
+        hosts = permission_push._running_hosts()
+        assert hosts is not None and hosts.get("fresh_plugin") is marker
+    finally:
+        with state.acquire_plugin_hosts_write_lock():
+            state.plugin_hosts.pop("fresh_plugin", None)
+        with state._snapshot_cache_lock:
+            state._snapshot_cache["hosts"] = saved_cache
+
+
+def test_host_lookup_reports_a_locked_table_as_unknown(monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def locked(timeout):
+        raise TimeoutError("busy")
+        yield
+
+    monkeypatch.setattr(permission_push.state, "acquire_plugin_hosts_read_lock", locked)
+    assert permission_push._running_hosts() is None
+
+
+async def test_one_read_retry_per_plugin_however_many_changes(monkeypatch, service, store, hosts):
+    monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 30.0)
+    monkeypatch.setattr(permission_service, "logger", Log())
+    host = hosts["demo"] = Host()
+    host.set_initial_permissions(permission_service.permission_snapshot("demo"))
+    _unreadable(monkeypatch)
+    for _ in range(4):
+        service.notify(frozenset({"demo"}))
+        await _settle()
+    assert len(host.pushes) == 4
+    assert list(service._timers) == ["demo"]
+
+
+async def test_a_failed_send_keeps_retrying_an_unreadable_store(monkeypatch, service, store, hosts):
+    monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 0.05)
+    monkeypatch.setattr(permission_service, "logger", Log())
+    monkeypatch.setattr(permission_push, "logger", Log())
+    store.decide("demo", MEMORY_READ, "granted")
+    host = hosts["demo"] = Host()
+    host.set_initial_permissions(permission_service.permission_snapshot("demo"))
+    real_record = permission_service.permission_record
+    broken = {"on": True}
+
+    def flaky(plugin_id):
+        if broken["on"]:
+            raise ServerDomainError(plugin_permissions.READ_FAILED, "x", 503)
+        return real_record(plugin_id)
+
+    monkeypatch.setattr(permission_service, "permission_record", flaky)
+    store._document["plugins"]["demo"]["permissions"].clear()
+    host.fail = RuntimeError("downlink busy")  # the fallback push is not delivered either
+    service.notify(frozenset({"demo"}))
+    await _settle()
+    assert "demo" in service._timers
+    host.fail = None
+    broken["on"] = False
+    await _settle()
+    assert host.permissions.get(MEMORY_READ).status == "undecided"
+    assert "demo" not in service._timers
+
+
+async def test_stopping_cancels_pending_retries(monkeypatch, store, hosts):
+    monkeypatch.setattr(plugin_permissions, "_change_listeners", [])
+    monkeypatch.setattr(permission_push, "READ_RETRY_SECONDS", 30.0)
+    monkeypatch.setattr(permission_service, "logger", Log())
+    service = permission_push.PermissionPushService()
+    service.start()
+    hosts["demo"] = Host()
+    _unreadable(monkeypatch)
+    service.notify(frozenset({"demo"}))
+    await _settle()
+    (timer,) = service._timers.values()
+    await service.stop()
+    assert timer.cancelled() and not service._timers

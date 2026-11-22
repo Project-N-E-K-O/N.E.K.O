@@ -48,10 +48,24 @@ READ_RETRY_SECONDS = 5.0
 READ_RETRY_MAX_SECONDS = 60.0
 
 SENT = "sent"
-SENT_FALLBACK = "sent_fallback"  # sent, but built without reading the store
 NOT_RUNNING = "not_running"
 HOSTS_BUSY = "hosts_busy"
 FAILED = "failed"
+
+
+def _running_hosts() -> dict[str, Any] | None:
+    """A fresh copy of the host table, or None if it stayed locked.
+
+    Read under the hosts lock every time: the shared snapshot cache may hand
+    back a table from before a start or stop while the lock is held, which
+    would make a running plugin look stopped. Blocks up to a second, so call
+    it off the event loop.
+    """
+    try:
+        with state.acquire_plugin_hosts_read_lock(timeout=1.0):
+            return dict(state.plugin_hosts)
+    except TimeoutError:
+        return None
 
 
 async def push_permissions(plugin_id: str, host: Any | None = None) -> bool:
@@ -60,28 +74,30 @@ async def push_permissions(plugin_id: str, host: Any | None = None) -> bool:
     Returns whether it was sent; a plugin that is not running is not an
     error. A failed send is logged and never raises.
     """
-    return await _deliver(plugin_id, host) in (SENT, SENT_FALLBACK)
+    outcome, _read_failed = await _deliver(plugin_id, host)
+    return outcome == SENT
 
 
-async def _deliver(plugin_id: str, host: Any | None = None) -> str:
+async def _deliver(plugin_id: str, host: Any | None = None) -> tuple[str, bool]:
+    """Push once; returns the outcome and whether the snapshot had to be
+    built without reading the grant store."""
     from plugin.server.application.plugins.permission_service import permission_snapshot
 
     if host is None:
-        # Never waits (safe on the loop) and never mistakes a busy host table
-        # for "no plugins running": None means the lock was not available.
-        hosts = state.get_plugin_hosts_snapshot_nowait()
+        hosts = await asyncio.to_thread(_running_hosts)
         if hosts is None:
-            return HOSTS_BUSY
+            return HOSTS_BUSY, False
         host = hosts.get(plugin_id)
     push = getattr(host, "push_permissions", None)
     if host is None or not callable(push):
-        return NOT_RUNNING
+        return NOT_RUNNING, False
     try:
         if not host.is_alive():
-            return NOT_RUNNING
+            return NOT_RUNNING, False
     except Exception:
-        return NOT_RUNNING
+        return NOT_RUNNING, False
     snapshot = await asyncio.to_thread(permission_snapshot, plugin_id)
+    read_failed = bool(snapshot.get("read_failed"))
     try:
         await asyncio.wait_for(push(snapshot), timeout=PUSH_TIMEOUT_SECONDS)
     except asyncio.CancelledError:
@@ -93,8 +109,8 @@ async def _deliver(plugin_id: str, host: Any | None = None) -> str:
             snapshot.get("revision"),
             type(exc).__name__,
         )
-        return FAILED
-    return SENT_FALLBACK if snapshot.get("read_failed") else SENT
+        return FAILED, read_failed
+    return SENT, read_failed
 
 
 class PermissionPushService:
@@ -110,6 +126,8 @@ class PermissionPushService:
         self._rerun: set[str] = set()
         self._busy_retries: dict[str, int] = {}
         self._read_retry_delay: dict[str, float] = {}
+        # At most one pending retry per plugin ("*" = every running plugin).
+        self._timers: dict[str, asyncio.TimerHandle] = {}
 
     def start(self) -> None:
         """Start on the running (server) loop; idempotent."""
@@ -129,6 +147,9 @@ class PermissionPushService:
             self._loop = None
             self._pending.clear()
             self._all = False
+        for timer in self._timers.values():
+            timer.cancel()
+        self._timers.clear()
         tasks = [t for t in (task, *self._inflight.values()) if t is not None and not t.done()]
         self._inflight.clear()
         self._rerun.clear()
@@ -155,30 +176,52 @@ class PermissionPushService:
             # The loop is closing; the plugins are going down with it.
             logger.warning("permission update not scheduled: server loop is closed")
 
-    def _notify_later(self, delay: float, plugin_ids: frozenset[str] | None) -> None:
+    def _retry_later(self, key: str, delay: float) -> None:
+        """Schedule one retry for ``key``; an earlier pending one is kept."""
         loop = self._loop
-        if loop is not None:
-            loop.call_later(delay, self.notify, plugin_ids)
+        if loop is None:
+            return
+        existing = self._timers.get(key)
+        if existing is not None:
+            if existing.when() <= loop.time() + delay:
+                return
+            existing.cancel()
+        ids = None if key == "*" else frozenset({key})
+        self._timers[key] = loop.call_later(delay, self._fire, key, ids)
 
-    def _take(self) -> set[str] | None:
-        """Pending ids, or None while "every plugin" cannot be resolved yet."""
+    def _fire(self, key: str, ids: frozenset[str] | None) -> None:
+        self._timers.pop(key, None)
+        self.notify(ids)
+
+    def _cancel_retry(self, key: str) -> None:
+        timer = self._timers.pop(key, None)
+        if timer is not None:
+            timer.cancel()
+
+    async def _take(self) -> set[str]:
         with self._lock:
             pending, self._pending = self._pending, set()
             everyone, self._all = self._all, False
         if everyone:
-            hosts = state.get_plugin_hosts_snapshot_nowait()
+            hosts = await asyncio.to_thread(_running_hosts)
             if hosts is None:
-                count = self._busy_retries.get("*", 0) + 1
-                self._busy_retries["*"] = count
-                if count <= HOSTS_BUSY_MAX_RETRIES:
-                    self._notify_later(HOSTS_BUSY_RETRY_SECONDS, None)
-                else:
-                    self._busy_retries.pop("*", None)
-                    logger.error("permission update to every running plugin dropped: host table stayed busy")
+                self._busy("*")
             else:
                 self._busy_retries.pop("*", None)
                 pending |= set(hosts)
         return pending
+
+    def _busy(self, key: str) -> None:
+        count = self._busy_retries.get(key, 0) + 1
+        self._busy_retries[key] = count
+        if count <= HOSTS_BUSY_MAX_RETRIES:
+            self._retry_later(key, HOSTS_BUSY_RETRY_SECONDS)
+            return
+        self._busy_retries.pop(key, None)
+        if key == "*":
+            logger.error("permission update to every running plugin dropped: host table stayed busy")
+        else:
+            logger.error("permission update dropped: host table stayed busy, plugin_id={}", key)
 
     def _spawn(self, plugin_id: str) -> None:
         running = self._inflight.get(plugin_id)
@@ -199,7 +242,7 @@ class PermissionPushService:
 
     async def _push_one(self, plugin_id: str) -> None:
         try:
-            outcome = await _deliver(plugin_id)
+            outcome, read_failed = await _deliver(plugin_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -210,23 +253,23 @@ class PermissionPushService:
             )
             return
         if outcome == HOSTS_BUSY:
-            count = self._busy_retries.get(plugin_id, 0) + 1
-            self._busy_retries[plugin_id] = count
-            if count <= HOSTS_BUSY_MAX_RETRIES:
-                self._notify_later(HOSTS_BUSY_RETRY_SECONDS, frozenset({plugin_id}))
-            else:
-                self._busy_retries.pop(plugin_id, None)
-                logger.error(
-                    "permission update dropped: host table stayed busy, plugin_id={}", plugin_id
-                )
+            self._busy(plugin_id)
             return
         self._busy_retries.pop(plugin_id, None)
-        if outcome == SENT_FALLBACK:
+        if outcome == NOT_RUNNING:
+            self._cancel_retry(plugin_id)
+            self._read_retry_delay.pop(plugin_id, None)
+            return
+        if read_failed:
+            # Sent or not, the plugin needs a snapshot read from the store:
+            # rebuild later with a growing delay until a read works.
             delay = self._read_retry_delay.get(plugin_id, READ_RETRY_SECONDS)
             self._read_retry_delay[plugin_id] = min(delay * 2, READ_RETRY_MAX_SECONDS)
-            self._notify_later(delay, frozenset({plugin_id}))
+            self._retry_later(plugin_id, delay)
         else:
             self._read_retry_delay.pop(plugin_id, None)
+            if outcome == SENT:
+                self._cancel_retry(plugin_id)
 
     async def _run(self) -> None:
         wakeup = self._wakeup
@@ -235,9 +278,10 @@ class PermissionPushService:
             await wakeup.wait()
             wakeup.clear()
             try:
-                pending = self._take()
-                for plugin_id in sorted(pending or ()):
+                for plugin_id in sorted(await self._take()):
                     self._spawn(plugin_id)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 # Keep serving later changes; this batch is reported, not retried.
                 logger.error("permission update batch failed: error={}", type(exc).__name__)
