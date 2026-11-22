@@ -452,14 +452,18 @@
             if (kind === 'interrupt_resist_light') {
                 const screenX = Number.isFinite(detail.screenX) ? detail.screenX : null;
                 const screenY = Number.isFinite(detail.screenY) ? detail.screenY : null;
+                let mappedFromScreen = false;
                 if (screenX !== null && screenY !== null && typeof this.screenPointToLocalPoint === 'function') {
                     const mapped = this.screenPointToLocalPoint({ x: screenX, y: screenY });
                     if (mapped && Number.isFinite(mapped.x) && Number.isFinite(mapped.y)) {
                         x = mapped.x;
                         y = mapped.y;
+                        mappedFromScreen = true;
                     }
-                } else if (
-                    x !== null && y !== null
+                }
+                if (
+                    !mappedFromScreen
+                    && x !== null && y !== null
                     && Number.isFinite(detail.viewportWidth) && detail.viewportWidth > 0
                     && Number.isFinite(detail.viewportHeight) && detail.viewportHeight > 0
                     && Number.isFinite(window.innerWidth) && window.innerWidth > 0

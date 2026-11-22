@@ -480,6 +480,31 @@ def test_stop_emits_closed_when_server_closes_1000_before_leave_settles():
     assert out["sockets"] == 1
 
 
+def test_mark_stopped_cancels_pending_reconnect_timer():
+    out = run_visit_js(
+        """
+        const h = await joinedController('guest');
+        h.ws.serverClose(1006, 'drop');
+        await settle();
+        const timerBeforeStop = h.c.link.reconnectTimer !== null;
+        h.trtc.exitRoom = () => new Promise(() => {});
+        h.c.onStop();
+        const timerAfterMark = h.c.link.reconnectTimer;
+        await advance(1500);
+        return {
+          timerBeforeStop,
+          timerAfterMark,
+          stopped: h.c.link.stopped,
+          sockets: h.sockets.length,
+        };
+        """
+    )
+    assert out["timerBeforeStop"] is True
+    assert out["timerAfterMark"] is None
+    assert out["stopped"] is True
+    assert out["sockets"] == 1
+
+
 def test_unknown_or_foreign_template_free_files():
     # Only the nine registered scripts belong in the directory; additions require matching template/test updates.
     names = sorted(p.name for p in TRANSPORT_DIR.glob("*.js"))

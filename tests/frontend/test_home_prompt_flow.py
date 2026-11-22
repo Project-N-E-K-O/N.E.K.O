@@ -8990,6 +8990,24 @@ def test_plugin_dashboard_light_resistance_maps_screen_and_viewport_coordinates(
                     viewportHeight: 600,
                 },
             });
+
+            director.screenPointToLocalPoint = () => null;
+            await director.handlePluginDashboardInterruptRequest(null, {
+                windowRef: null,
+                targetOrigin: window.location.origin,
+            }, {
+                requestId: 'interrupt-screen-fallback-3',
+                sessionId: 'session-1',
+                detail: {
+                    kind: 'interrupt_resist_light',
+                    x: 200,
+                    y: 150,
+                    screenX: 1240,
+                    screenY: 850,
+                    viewportWidth: 800,
+                    viewportHeight: 600,
+                },
+            });
             return {
                 calls,
                 innerWidth: window.innerWidth,
@@ -8999,11 +9017,13 @@ def test_plugin_dashboard_light_resistance_maps_screen_and_viewport_coordinates(
         """
     )
 
-    assert len(result["calls"]) == 2
+    assert len(result["calls"]) == 3
     assert result["calls"][0]["x"] == 240
     assert result["calls"][0]["y"] == 250
     assert result["calls"][1]["x"] == pytest.approx(0.5 * result["innerWidth"])
     assert result["calls"][1]["y"] == pytest.approx(0.5 * result["innerHeight"])
+    assert result["calls"][2]["x"] == pytest.approx(0.25 * result["innerWidth"])
+    assert result["calls"][2]["y"] == pytest.approx(0.25 * result["innerHeight"])
 
 
 @pytest.mark.frontend

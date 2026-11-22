@@ -782,3 +782,144 @@ test('normalizes case and whitespace for hosted-tsx mode and entry suffix', () =
     })
   }
 })
+
+test('allows local type and value declarations that shadow SDK names', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'local-shadow-sdk')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import type { Tone as SdkTone } from '@neko/plugin-ui'
+import { Page } from '@neko/plugin-ui'
+
+type Tone = 'quiet'
+type CommonProps = { title: string }
+
+function render(label: string) {
+  return label.toUpperCase()
+}
+
+export default function Panel(props: PluginSurfaceProps) {
+  const localTone: Tone = 'quiet'
+  const sdkTone: SdkTone = 'info'
+  const common: CommonProps = { title: render(localTone + '-' + sdkTone + '-' + props.locale) }
+  return <Page title={common.title} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('supports aliased h/Fragment and value aliases reusing SDK global names', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'aliased-values-and-jsx')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import {
+  Button as Card,
+  Button as MyButton,
+  Fragment as Frag,
+  Page,
+  h as createElement,
+} from '@neko/plugin-ui'
+
+export default function Panel() {
+  return createElement(
+    Page,
+    { title: 'Aliased' },
+    createElement(
+      Frag,
+      null,
+      <Card tone="primary">Reuse Card Name</Card>,
+      <MyButton tone="default">Alias Button</MyButton>,
+    ),
+  )
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})
+
+test('type-checks valid uppercase .TSX/.JSX entries and maps diagnostics back to original path', () => {
+  for (const [name, entry] of [
+    ['valid-upper-tsx', 'Panel.TSX'],
+    ['valid-upper-jsx', 'Panel.JSX'],
+  ]) {
+    withFixture((root) => {
+      const pluginDir = join(root, name)
+      writePluginToml(pluginDir, entry)
+      writeFixtureFile(
+        join(pluginDir, entry),
+        `import { Page } from '@neko/plugin-ui'
+
+export default function Panel(props: PluginSurfaceProps) {
+  return <Page title={props.locale} />
+}
+`,
+      )
+
+      const result = runCheck(pluginDir)
+
+      assert.equal(result.status, 0, `expected success for ${entry}, stderr=${result.stderr}`)
+      assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+    })
+  }
+
+  withFixture((root) => {
+    const pluginDir = join(root, 'diag-upper-tsx')
+    writePluginToml(pluginDir, 'Panel.TSX')
+    writeFixtureFile(
+      join(pluginDir, 'Panel.TSX'),
+      `export default function Panel() {
+  const n: number = 'bad'
+  return <Page title={String(n)} />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 1)
+    assert.match(result.stderr, /Panel\.TSX:2:/)
+  })
+})
+
+test('allows copied dependency files to call bare render without importing it', () => {
+  withFixture((root) => {
+    const pluginDir = join(root, 'dep-bare-render')
+    writePluginToml(pluginDir, 'main.tsx')
+    writeFixtureFile(
+      join(pluginDir, 'helper.tsx'),
+      `export function mountHelper(el: Element) {
+  render(<Page title="Helper" />, el)
+}
+`,
+    )
+    writeFixtureFile(
+      join(pluginDir, 'main.tsx'),
+      `import { mountHelper } from './helper'
+
+export default function Panel() {
+  void mountHelper
+  return <Page title="Main" />
+}
+`,
+    )
+
+    const result = runCheck(pluginDir)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Hosted TSX check passed \(1 file\)/)
+  })
+})

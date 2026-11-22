@@ -1747,7 +1747,15 @@ def test_icebreaker_treats_stale_session_skip_as_inactive_across_endpoints():
         1,
     )[0]
     assert "data.skipped === 'stale_session'" in speak_block
-    assert "deactivateInactiveIcebreakerSession(activeSession);" in speak_block
+    assert "return false;" in speak_block
+    assert "deactivateInactiveIcebreakerSession" not in speak_block
+
+    start_block = runtime.split("function startForDay(day, options)", 1)[1].split(
+        "function startFromEndState(endState)",
+        1,
+    )[0]
+    assert "deactivateInactiveIcebreakerSession(createdSession);" in start_block
+    assert "deactivateInactiveIcebreakerSession(activeSession)" not in start_block
 
     handle_choice_block = runtime.split("function handleChoice(detail)", 1)[1].split(
         "function applyFreeTextInterpretation",

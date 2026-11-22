@@ -1856,6 +1856,41 @@ async function main() {
   } catch (error) { withheldRequiredError = error; }
   assert(withheldRequiredError?.code === 'capability_unavailable',
     'a required route-only capability connected without runtime');
+  let withheldRequiredMemoryError = null;
+  try {
+    await window.NekoMiniGame.connect({
+      id: 'runtime-withheld-required-memory',
+      version: '1.0.0',
+      requiredCapabilities: ['logging', 'memory'],
+      optionalCapabilities: ['runtime'],
+    }, { transport: withheldRuntimeTransport });
+  } catch (error) { withheldRequiredMemoryError = error; }
+  assert(withheldRequiredMemoryError?.code === 'capability_unavailable'
+    && withheldRequiredMemoryError?.details?.missing?.includes('memory'),
+  'required memory connected without runtime even though memory.submit() is permanently unusable');
+  let withheldRequiredMediaError = null;
+  try {
+    await window.NekoMiniGame.connect({
+      id: 'runtime-withheld-required-media',
+      version: '1.0.0',
+      requiredCapabilities: ['logging', 'media-timeline'],
+      optionalCapabilities: ['runtime'],
+    }, { transport: withheldRuntimeTransport });
+  } catch (error) { withheldRequiredMediaError = error; }
+  assert(withheldRequiredMediaError?.code === 'capability_unavailable'
+    && withheldRequiredMediaError?.details?.missing?.includes('media-timeline'),
+  'required media-timeline connected without runtime even though media.mount/watch are unusable');
+  const requiredContextClient = await window.NekoMiniGame.connect({
+    id: 'runtime-withheld-required-context-read',
+    version: '1.0.0',
+    requiredCapabilities: ['logging', 'context-read'],
+    optionalCapabilities: ['runtime'],
+  }, { transport: withheldRuntimeTransport });
+  assert(requiredContextClient.capabilities.has('context-read'),
+    'required context-read should stay usable when optional runtime is withheld');
+  const requiredContextResp = await requiredContextClient.context.read(['character-public']);
+  assert(requiredContextResp.ok === true, 'required context-read failed without runtime');
+  requiredContextClient.dispose();
   // Optional instead of required: the connection stands, route-only `vision` is
   // dropped from both `granted` and `has()`, and pre-route capabilities stay usable.
   const withheldOptionalClient = await window.NekoMiniGame.connect({
@@ -1939,9 +1974,20 @@ async function main() {
     `expected invalid_state from media.request(watch) without runtime, got ${mediaWatchErr?.code}`);
   withheldOptionalClient.dispose();
   // Bridge failure drops `speech-output` from grantedSet, granted, and has() consistently.
+  let speechBridgeStartCalls = 0;
+  let speechBridgeStopCalls = 0;
   const failingSpeechBridgeTransport = {
     ...routeAndPrerouteTransport,
-    startSpeechOutputBridge: () => false,
+    requestSpeechOutput: async () => ({ ok: true }),
+    preloadSpeechOutput: async () => ({ ok: true }),
+    mirrorSpeechOutput: async () => ({ ok: true }),
+    startSpeechOutputBridge: () => {
+      speechBridgeStartCalls += 1;
+      return false;
+    },
+    stopSpeechOutputBridge: () => {
+      speechBridgeStopCalls += 1;
+    },
   };
   const bridgeDropClient = await window.NekoMiniGame.connect({
     id: 'speech-bridge-drop',
@@ -1949,6 +1995,8 @@ async function main() {
     requiredCapabilities: ['logging'],
     optionalCapabilities: ['speech-output'],
   }, { transport: failingSpeechBridgeTransport });
+  assert(speechBridgeStartCalls === 1, 'startSpeechOutputBridge was not invoked once');
+  assert(speechBridgeStopCalls === 1, 'stopSpeechOutputBridge cleanup was not invoked once on bridge start failure');
   assert(!bridgeDropClient.capabilities.has('speech-output'),
     'speech-output remained enabled after bridge start failed');
   assert(!bridgeDropClient.capabilities.granted.includes('speech-output'),

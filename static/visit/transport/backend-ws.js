@@ -54,11 +54,11 @@
   BackendLink.prototype.start = function (token) {
     if (typeof token !== 'string' || !token) return;
     this.token = token;
-    if (!this.ws && !this.terminal && this.reconnectTimer === null) this.connect();
+    if (!this.ws && !this.terminal && !this.stopped && this.reconnectTimer === null) this.connect();
   };
 
   BackendLink.prototype.connect = function () {
-    if (this.terminal || !this.token) return;
+    if (this.terminal || this.stopped || !this.token) return;
     var self = this;
     var ws = new WebSocket(transportUrl(root.location, this.visitId, this.side));
     this.ws = ws;
@@ -148,7 +148,7 @@
         }),
       ]);
       Promise.all([delayDone, leftOrGaveUp]).then(function (res) {
-        if (self.terminal || self.ws) return;
+        if (self.terminal || self.stopped || self.ws) return;
         if (res[1] === 'deadline') {
           // 离房到重连窗口结束都没完成：不能在同一个 vendor 实例上重新入房，按连不上处理
           self.terminal = true;
@@ -207,6 +207,8 @@
 
   BackendLink.prototype.markStopped = function () {
     this.stopped = true;
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   };
 
   BackendLink.prototype.close = function () {

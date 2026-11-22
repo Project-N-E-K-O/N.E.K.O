@@ -62,9 +62,12 @@ function makeNode(tag, id = '') {
     querySelectorAll(selector) {
       const results = [];
       const ownerMatch = selector.match(/^\[data-neko-sidepanel-owner="([^"]+)"\]$/);
+      const idPrefixMatch = selector.match(/^\[id\^="([^"]+)"\]$/);
       const walk = (root) => {
         for (const child of root.children) {
           if (ownerMatch && child.getAttribute('data-neko-sidepanel-owner') === ownerMatch[1]) {
+            results.push(child);
+          } else if (idPrefixMatch && child.id && child.id.startsWith(idPrefixMatch[1])) {
             results.push(child);
           }
           walk(child);
@@ -175,4 +178,84 @@ test('F0377: createPopup is idempotent and home-steps cleanup preserves live pop
   assert.equal(showCalls[0].id, 'settings');
   assert.equal(showCalls[0].target, popup);
   assert.equal(popup.style.display, 'flex');
+});
+
+test('F0377: home-steps cleanup restores open menu across real delayed closeAllPopups animation', async () => {
+  const head = makeNode('head');
+  const body = makeNode('body');
+  body.isConnected = true;
+  const documentObj = {
+    head,
+    body,
+    createElement: (tag) => makeNode(tag),
+    getElementById: (id) => findById(body, id),
+    querySelectorAll: (sel) => body.querySelectorAll(sel),
+    querySelector: (sel) => (sel.startsWith('#') ? findById(body, sel.slice(1)) : null),
+  };
+
+  class FakeManager {}
+  FakeManager.prototype._createSettingsPopupContent = function (popup) {
+    popup.dataset.initialized = 'true';
+  };
+
+  const dispatchedEvents = [];
+  const context = {
+    window: null,
+    document: documentObj,
+    AbortController,
+    Live2DManager: FakeManager,
+    AgentHUD: { _createAgentPopupContent() {} },
+    CustomEvent: class {
+      constructor(type, init) {
+        this.type = type;
+        this.detail = init && init.detail;
+      }
+    },
+    requestAnimationFrame: (fn) => setTimeout(fn, 0),
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout,
+    clearTimeout,
+    Promise,
+    Map,
+    Set,
+  };
+  context.dispatchEvent = (evt) => { dispatchedEvents.push(evt.type); };
+  context.window = context;
+
+  vm.createContext(context);
+  vm.runInContext(fs.readFileSync(POPUP_PATH, 'utf8'), context, { filename: POPUP_PATH });
+  vm.runInContext("AvatarPopupMixin.apply(Live2DManager.prototype, 'live2d');", context);
+
+  const mgr = new FakeManager();
+  mgr._animationDurationMs = 25;
+  context.window.live2dManager = mgr;
+  const container = makeNode('div', 'live2d-floating-buttons');
+  const btnWrapper = makeNode('div');
+  const agentPopup = mgr.createPopup('agent');
+  btnWrapper.appendChild(agentPopup);
+  container.appendChild(btnWrapper);
+  body.appendChild(container);
+
+  context.window.universalTutorialManager = { constructor: { detectModelPrefix: () => 'live2d' } };
+  context.window.NekoClickGuide = {
+    resolveTarget: (sel) => (sel.startsWith('#') ? findById(body, sel.slice(1)) : null),
+    waitUntil: async (cond) => cond(),
+  };
+  vm.runInContext(fs.readFileSync(HOME_STEPS_PATH, 'utf8'), context, { filename: HOME_STEPS_PATH });
+
+  // Simulate open agent menu before tutorial starts, using real AvatarPopupMixin.closeAllPopups & showPopup.
+  agentPopup.style.display = 'flex';
+  agentPopup.style.opacity = '1';
+
+  const cleanup = await context.window.NekoClickGuide.prepareFloating();
+  await cleanup();
+
+  // Wait past _animationDurationMs + nested rAF frames so an uncancelled hide timer would fire.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  assert.equal(agentPopup._hideTimeoutId, null);
+  assert.equal(agentPopup.isConnected, true);
+  assert.equal(agentPopup.style.display, 'flex');
+  assert.equal(agentPopup.style.opacity, '1');
+  assert.ok(dispatchedEvents.includes('neko-popup-opening'));
 });

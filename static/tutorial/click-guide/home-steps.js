@@ -319,7 +319,7 @@
                 mgr?.closeAllPopups?.();
                 for (const id of openMenus) {
                     const popup = document.getElementById(`${prefix}-popup-${id}`);
-                    if (popup && popup.style.display !== 'flex') mgr?.showPopup?.(id, popup);
+                    if (popup && (popup.style.display !== 'flex' || popup._hideTimeoutId)) mgr?.showPopup?.(id, popup);
                 }
             } finally {
                 revealLock = () => {};

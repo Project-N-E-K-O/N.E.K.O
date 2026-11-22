@@ -3401,7 +3401,7 @@ const AvatarPopupMixin = {
 
         // 新增的核心方法
         ManagerProto.showPopup = function (buttonId, popup) {
-            const isVisible = popup.style.display === 'flex';
+            const isVisible = popup.style.display === 'flex' && !popup._hideTimeoutId;
             const popupUi = window.AvatarPopupUI || null;
             if (typeof popup._showToken !== 'number') popup._showToken = 0;
 

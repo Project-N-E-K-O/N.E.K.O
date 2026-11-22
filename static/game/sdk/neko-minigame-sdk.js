@@ -126,6 +126,15 @@
   const ROUTE_ONLY_CAPABILITIES = Object.freeze([
     'leaderboard-server', 'voice-input', 'vision',
   ]);
+  // Capabilities whose primary operations (`memory.submit()`, `media.mount()`,
+  // `media.request('watch'|'live')`) require an active runtime route. Optional
+  // `memory`/`media-timeline` may stay usable pre-route (consent/presentation
+  // or `media.request('history')`), but a manifest declaring them as *required*
+  // must fail fast at connect() when optional `runtime` is withheld rather than
+  // connecting into a dead end.
+  const CORE_ROUTE_REQUIRED_CAPABILITIES = Object.freeze([
+    ...ROUTE_ONLY_CAPABILITIES, 'memory', 'media-timeline',
+  ]);
   const CONTRACT_KINDS = Object.freeze(['events', 'states', 'controls', 'results', 'commands']);
   const CONTRACT_SCHEMA_TYPES = Object.freeze([
     'null', 'boolean', 'number', 'integer', 'string', 'array', 'object',
@@ -2182,7 +2191,8 @@
       (capability) => !ROUTE_ONLY_CAPABILITIES.includes(capability),
     );
     const missingRequired = manifest.requiredCapabilities.filter(
-      (capability) => !usableGranted.includes(capability),
+      (capability) => !usableGranted.includes(capability)
+        || (!runtimeGranted && CORE_ROUTE_REQUIRED_CAPABILITIES.includes(capability)),
     );
     if (missingRequired.length) {
       try { transport.dispose?.(); } catch (_) { /* rejected capability cleanup */ }

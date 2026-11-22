@@ -36,6 +36,7 @@ const HOSTED_UI_GLOBAL_NAMES = [
   'useDebounce', 'useDebouncedState', 'useForm', 'useAsync', 'showToast', 'useToast', 'useConfirm', 'render',
 ]
 const HOSTED_UI_GLOBAL_NAME_SET = new Set(HOSTED_UI_GLOBAL_NAMES)
+const HOSTED_UI_SPECIAL_VALUE_NAMES = new Set(['h', 'Fragment'])
 let cachedHostedUiExportedTypes = null
 const sourceTextCache = new Map()
 
@@ -558,10 +559,78 @@ function getHostedUiExportedTypes() {
   return names
 }
 
+function collectBindingNames(bindingName, target) {
+  if (!bindingName) return
+  if (ts.isIdentifier(bindingName)) {
+    target.add(bindingName.text)
+    return
+  }
+  if (ts.isObjectBindingPattern(bindingName) || ts.isArrayBindingPattern(bindingName)) {
+    for (const element of bindingName.elements) {
+      if (ts.isBindingElement(element)) {
+        collectBindingNames(element.name, target)
+      }
+    }
+  }
+}
+
+function collectLocalDeclarations(sourcePath, source) {
+  const sourceFile = sourceFileFor(sourcePath, source)
+  const localTypes = new Set()
+  const localValues = new Set()
+  for (const statement of sourceFile.statements) {
+    if (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement)) {
+      if (statement.name) localTypes.add(statement.name.text)
+    } else if (ts.isFunctionDeclaration(statement)) {
+      if (statement.name) localValues.add(statement.name.text)
+    } else if (ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) {
+      if (statement.name) {
+        localTypes.add(statement.name.text)
+        localValues.add(statement.name.text)
+      }
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        collectBindingNames(declaration.name, localValues)
+      }
+    } else if (ts.isModuleDeclaration(statement)) {
+      if (statement.name && ts.isIdentifier(statement.name)) {
+        localTypes.add(statement.name.text)
+        localValues.add(statement.name.text)
+      }
+    } else if (ts.isImportDeclaration(statement)) {
+      const specifier = moduleSpecifierText(statement.moduleSpecifier)
+      if (specifier === '@neko/plugin-ui' || specifier === 'neko:ui') continue
+      const clause = statement.importClause
+      if (!clause) continue
+      if (clause.name) {
+        localTypes.add(clause.name.text)
+        if (!clause.isTypeOnly) localValues.add(clause.name.text)
+      }
+      const bindings = clause.namedBindings
+      if (!bindings) continue
+      if (ts.isNamespaceImport(bindings)) {
+        localTypes.add(bindings.name.text)
+        if (!clause.isTypeOnly) localValues.add(bindings.name.text)
+      } else if (ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          localTypes.add(element.name.text)
+          if (!clause.isTypeOnly && !element.isTypeOnly) {
+            localValues.add(element.name.text)
+          }
+        }
+      }
+    }
+  }
+  return { localTypes, localValues }
+}
+
 function collectHostedUiImportAliases(sourcePath, source, exportedTypeSet) {
   const sourceFile = sourceFileFor(sourcePath, source)
-  const aliasedTypeImports = []
+  const explicitTypeImports = []
+  const explicitTypeLocalNames = new Set()
   const namespaceImports = []
+  const explicitUnaliasedValues = new Set()
+  const explicitValueLocalNames = new Set()
   const valueAliasDecls = []
   for (const statement of sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) continue
@@ -569,13 +638,20 @@ function collectHostedUiImportAliases(sourcePath, source, exportedTypeSet) {
     if (specifier !== '@neko/plugin-ui' && specifier !== 'neko:ui') continue
     const clause = statement.importClause
     if (!clause) continue
-    if (clause.name && !clause.isTypeOnly && clause.name.text !== 'NekoUi') {
-      valueAliasDecls.push(`const ${clause.name.text} = NekoUi;`)
+    if (clause.name && !clause.isTypeOnly) {
+      explicitValueLocalNames.add(clause.name.text)
+      if (clause.name.text !== 'NekoUi') {
+        valueAliasDecls.push(`const ${clause.name.text} = NekoUi;`)
+      }
     }
     const bindings = clause.namedBindings
     if (!bindings) continue
     if (ts.isNamespaceImport(bindings)) {
       const ns = bindings.name.text
+      explicitTypeLocalNames.add(ns)
+      if (!clause.isTypeOnly) {
+        explicitValueLocalNames.add(ns)
+      }
       if (ns !== 'NekoUi') {
         namespaceImports.push(
           clause.isTypeOnly
@@ -585,19 +661,38 @@ function collectHostedUiImportAliases(sourcePath, source, exportedTypeSet) {
       }
     } else if (ts.isNamedImports(bindings)) {
       for (const element of bindings.elements) {
-        if (!element.propertyName) continue
-        const orig = element.propertyName.text
+        const orig = element.propertyName ? element.propertyName.text : element.name.text
         const local = element.name.text
-        if (local === orig) continue
+        const isTypeOnly = Boolean(clause.isTypeOnly || element.isTypeOnly)
         if (exportedTypeSet.has(orig)) {
-          aliasedTypeImports.push(`${orig} as ${local}`)
-        } else if (!clause.isTypeOnly && !element.isTypeOnly && HOSTED_UI_GLOBAL_NAME_SET.has(orig)) {
-          valueAliasDecls.push(`const ${local} = NekoUi.${orig};`)
+          explicitTypeLocalNames.add(local)
+          explicitTypeImports.push(local === orig ? orig : `${orig} as ${local}`)
+        } else if (!isTypeOnly && (HOSTED_UI_GLOBAL_NAME_SET.has(orig) || HOSTED_UI_SPECIAL_VALUE_NAMES.has(orig))) {
+          if (local !== orig) {
+            explicitValueLocalNames.add(local)
+            valueAliasDecls.push(`const ${local} = NekoUi.${orig};`)
+          } else {
+            explicitUnaliasedValues.add(orig)
+          }
         }
       }
     }
   }
-  return { aliasedTypeImports, namespaceImports, valueAliasDecls }
+  return {
+    explicitTypeImports,
+    explicitTypeLocalNames,
+    namespaceImports,
+    explicitUnaliasedValues,
+    explicitValueLocalNames,
+    valueAliasDecls,
+  }
+}
+
+function normalizeTempEntryPath(targetPath) {
+  if (/\.(tsx|jsx|ts|js)$/i.test(targetPath)) {
+    return targetPath.replace(/\.(tsx|jsx|ts|js)$/i, '.tsx')
+  }
+  return `${targetPath}.tsx`
 }
 
 function stripHostedUiImports(sourcePath, source) {
@@ -757,9 +852,11 @@ function copyRelativeDependencies(
   assertHostedExportContract(source)
   assertHostedImportContract(source)
   assertNoDynamicImport(resolvedPath, source)
-  const targetPath = tempPathForSource(resolvedPath, tempDir)
-  mkdirForFile(targetPath, 'hosted TSX copy')
-  writeTextFile(targetPath, source, 'hosted TSX dependency copy')
+  if (depth > 0) {
+    const targetPath = tempPathForSource(resolvedPath, tempDir)
+    mkdirForFile(targetPath, 'hosted TSX copy')
+    writeTextFile(targetPath, source, 'hosted TSX dependency copy')
+  }
 
   try {
     const { runtime: runtimeSpecifiers, typeOnly: typeOnlySpecifiers } = findHostedRelativeImportSpecifiers(source)
@@ -795,28 +892,55 @@ function createCheckFile(entryPath, tempDir, surface, tomlPath) {
   const source = readSourceFile(resolvedEntryPath)
   const exportedTypes = getHostedUiExportedTypes()
   const exportedTypeSet = new Set(exportedTypes)
-  const { aliasedTypeImports, namespaceImports, valueAliasDecls } = collectHostedUiImportAliases(
+  const {
+    explicitTypeImports,
+    explicitTypeLocalNames,
+    namespaceImports,
+    explicitUnaliasedValues,
+    explicitValueLocalNames,
+    valueAliasDecls,
+  } = collectHostedUiImportAliases(
     resolvedEntryPath,
     source,
     exportedTypeSet,
   )
   const stripped = stripHostedUiImports(resolvedEntryPath, source)
-  const checkPath = tempPathForSource(resolvedEntryPath, tempDir)
+  const { localTypes, localValues } = collectLocalDeclarations(resolvedEntryPath, stripped)
+  const checkPath = normalizeTempEntryPath(tempPathForSource(resolvedEntryPath, tempDir))
   const prefixLines = 6
-  const typeImportSpecifiers = Array.from(new Set([...exportedTypes, ...aliasedTypeImports]))
-  const typeImportLine = [
-    `import type { ${typeImportSpecifiers.join(', ')} } from "@neko/plugin-ui";`,
-    ...namespaceImports,
-  ].join(' ')
-  const valueDestructureLine = [
-    `const { ${HOSTED_UI_GLOBAL_NAMES.join(', ')} } = NekoUi;`,
-    ...valueAliasDecls,
-  ].join(' ')
+  const autoInjectedTypes = exportedTypes.filter(
+    (name) => !localTypes.has(name) && !explicitTypeLocalNames.has(name),
+  )
+  const typeImportSpecifiers = Array.from(new Set([...autoInjectedTypes, ...explicitTypeImports]))
+  const typeImportParts = []
+  if (typeImportSpecifiers.length > 0) {
+    typeImportParts.push(`import type { ${typeImportSpecifiers.join(', ')} } from "@neko/plugin-ui";`)
+  }
+  typeImportParts.push(...namespaceImports)
+  const typeImportLine = typeImportParts.join(' ')
+  const destructureNames = HOSTED_UI_GLOBAL_NAMES.filter(
+    (name) => !explicitValueLocalNames.has(name)
+      && (!localValues.has(name) || explicitUnaliasedValues.has(name)),
+  )
+  const valueParts = []
+  if (destructureNames.length > 0) {
+    valueParts.push(`const { ${destructureNames.join(', ')} } = NekoUi;`)
+  }
+  valueParts.push(...valueAliasDecls)
+  const valueDestructureLine = valueParts.join(' ')
+  const hDeclLine = !explicitValueLocalNames.has('h')
+    && (!localValues.has('h') || explicitUnaliasedValues.has('h'))
+    ? 'declare const h: any;'
+    : ''
+  const fragmentDeclLine = !explicitValueLocalNames.has('Fragment')
+    && (!localValues.has('Fragment') || explicitUnaliasedValues.has('Fragment'))
+    ? 'declare const Fragment: any;'
+    : ''
   copyRelativeDependencies(resolvedEntryPath, tempDir, pluginRoot)
   mkdirForFile(checkPath, 'hosted TSX check')
   writeTextFile(
     checkPath,
-    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\n${typeImportLine}\n${valueDestructureLine}\ndeclare const h: any;\ndeclare const Fragment: any;\n${stripped}\n`,
+    `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\n${typeImportLine}\n${valueDestructureLine}\n${hDeclLine}\n${fragmentDeclLine}\n${stripped}\n`,
     'hosted TSX check file',
   )
   return {

@@ -31,7 +31,10 @@ describe('PluginDashboardGuideRuntime interrupt coordinates', () => {
         sentPayloads.push(payload)
         const detail = payload.detail as { requestId?: string } | undefined
         if (detail?.requestId) {
-          runtime.handleInterruptAckData({ requestId: detail.requestId })
+          runtime.handleInterruptAckData({
+            type: 'neko:yui-guide:plugin-dashboard:interrupt-ack',
+            requestId: detail.requestId,
+          })
         }
         return true
       },
@@ -69,6 +72,10 @@ describe('PluginDashboardGuideRuntime interrupt coordinates', () => {
 
     await Promise.resolve()
     await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
 
     expect(resistCalls).toEqual([{ x: finalClientX, y: finalClientY }])
     expect(sentPayloads).toHaveLength(1)
@@ -80,6 +87,8 @@ describe('PluginDashboardGuideRuntime interrupt coordinates', () => {
     expect(detail.screenY).toBe(finalScreenY)
     expect(detail.viewportWidth).toBe(window.innerWidth)
     expect(detail.viewportHeight).toBe(window.innerHeight)
+    expect(runtime.pendingInterruptAck).toBeNull()
+    expect(runtime.scenePausedForResistance).toBe(false)
 
     runtime.cleanup()
   })

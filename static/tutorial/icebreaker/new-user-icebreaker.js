@@ -1155,9 +1155,10 @@
     function speakViaProjectTts(text, voiceKey, signal) {
         var line = String(text || '').trim();
         if (!line) return Promise.resolve(false);
-        var sessionId = activeSession && activeSession.sessionId ? activeSession.sessionId : '';
+        var requestSession = activeSession;
+        var sessionId = requestSession && requestSession.sessionId ? requestSession.sessionId : '';
         var body = Object.assign({
-            lanlan_name: resolveSessionLanlanName(activeSession),
+            lanlan_name: resolveSessionLanlanName(requestSession),
             line: line,
             request_id: makeMessageId('icebreaker-tts'),
             session_id: sessionId,
@@ -1169,7 +1170,7 @@
                 source: SOURCE,
                 voice_key: String(voiceKey || '')
             }
-        }, conversationLanguagePayload(activeSession));
+        }, conversationLanguagePayload(requestSession));
         return getLocalMutationHeaders().then(function (headers) {
             var requestOptions = {
                 method: 'POST',
@@ -1184,15 +1185,11 @@
             return response.json();
         }).then(function (data) {
             if (data && data.skipped === 'stale_session') {
-                throw makeIcebreakerApiError('stale_session', data);
+                return false;
             }
             return !!(data && data.ok);
         }).catch(function (error) {
             if (error && error.name === 'AbortError') return false;
-            if (isIcebreakerRouteInactiveError(error)) {
-                deactivateInactiveIcebreakerSession(activeSession);
-                return false;
-            }
             console.warn('[NewUserIcebreaker] project TTS failed:', error);
             return false;
         });
@@ -1963,6 +1960,7 @@
                 return startForDay(dayKey, options);
             });
         }
+        var createdSession = null;
         pendingStartDay = dayKey;
         return Promise.all([loadScripts(), loadLocale(currentLocale())]).then(function (results) {
             if (activeSession && !force) return false;
@@ -1980,6 +1978,7 @@
                 lanlanName: resolveLanlanName(),
                 sessionId: makeIcebreakerSessionId(dayKey)
             };
+            createdSession = nextSession;
             return startIcebreakerRoute(nextSession).then(function (started) {
                 if (!started) return false;
                 activeSession = nextSession;
@@ -1999,8 +1998,8 @@
             return result;
         }).catch(function (error) {
             console.warn('[NewUserIcebreaker] start failed:', error);
-            if (isIcebreakerRouteInactiveError(error)) {
-                deactivateInactiveIcebreakerSession(activeSession);
+            if (isIcebreakerRouteInactiveError(error) && createdSession) {
+                deactivateInactiveIcebreakerSession(createdSession);
             }
             clearPendingStartDay(dayKey);
             return false;
