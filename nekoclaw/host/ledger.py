@@ -1835,8 +1835,12 @@ class Ledger:
 
         return await self.run(work)
 
-    async def move_project(self, project: str, workdir: str) -> bool:
-        """Write where a project's own sessions work, unless something is under way in it; returns whether it was written.
+    async def move_project(self, project: str, workdir: str) -> dict[str, str | None] | None:
+        """Write where a project's own sessions work, unless something is under way in it.
+
+        Returns where each of them worked before (by session), for
+        putting it back with ``restore_project``; None when nothing was
+        written because something is under way.
 
         Looked at and written in one transaction, for the sessions of
         every character: a commission that begins a moment later finds
@@ -1848,10 +1852,10 @@ class Ledger:
         were sent and are left as they are.
         """
 
-        def work(conn: sqlite3.Connection) -> bool:
-            rows = conn.execute("SELECT id, status FROM sessions WHERE project = ?", (project,)).fetchall()
+        def work(conn: sqlite3.Connection) -> dict[str, str | None] | None:
+            rows = conn.execute("SELECT id, kind, status, workdir FROM sessions WHERE project = ?", (project,)).fetchall()
             if any(row["status"] in ("running", "waiting", "compacting") for row in rows):
-                return False
+                return None
             ids = [row["id"] for row in rows]
             theirs = f" OR session_id IN ({', '.join('?' for _ in ids)})" if ids else ""
             under_way = conn.execute(
@@ -1860,11 +1864,20 @@ class Ledger:
                 (project, *ids),
             ).fetchone()
             if under_way is not None:
-                return False
+                return None
             conn.execute("UPDATE sessions SET workdir = ? WHERE project = ? AND kind = 'project'", (workdir, project))
-            return True
+            return {row["id"]: row["workdir"] for row in rows if row["kind"] == "project"}
 
         return await self.run(work)
+
+    async def restore_project(self, before: dict[str, str | None], workdir: str) -> None:
+        """Put back where sessions worked, as ``move_project`` returned it, for those that still say ``workdir``."""
+
+        def work(conn: sqlite3.Connection) -> None:
+            for session_id, was in before.items():
+                conn.execute("UPDATE sessions SET workdir = ? WHERE id = ? AND workdir = ?", (was, session_id, workdir))
+
+        await self.run(work)
 
     async def update_session(self, session_id: str, **values: Any) -> Session | None:
         """Write columns of a session; ``active=True`` also notes that it was in use just now."""

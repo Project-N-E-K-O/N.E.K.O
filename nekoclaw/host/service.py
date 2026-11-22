@@ -852,10 +852,17 @@ class NekoClawHost:
             # The project's own sessions of every character first, looked at once more and written in
             # one go: each starts from the directory it keeps, so a commission that begins from here
             # on begins in the new one, and one that began since the look above stops the change.
-            if not await self.ledger.move_project(project, str(wanted)):
+            before = await self.ledger.move_project(project, str(wanted))
+            if before is None:
                 raise ProjectBusy("at_work")
-            changed = await self.space.set_project_workdir(project, str(wanted))
+            # The record is written second: not written, the sessions go back, so that nothing is half changed.
+            try:
+                changed = await self.space.set_project_workdir(project, str(wanted))
+            except BaseException:
+                await self.ledger.restore_project(before, str(wanted))
+                raise
             if changed is None:
+                await self.ledger.restore_project(before, str(wanted))
                 raise LookupError(project)
             return changed.to_json()
 

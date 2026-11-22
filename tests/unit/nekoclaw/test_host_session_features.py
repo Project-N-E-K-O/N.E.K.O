@@ -5957,3 +5957,28 @@ async def test_two_changes_of_where_a_project_works_asked_for_at_once_leave_one_
     record = (await host.space.get_project("Budget app")).workdir
     assert record in (str(first), str(second))
     assert (await host.ledger.get_session(lan.id)).workdir == record
+
+
+@pytest.mark.parametrize("how", ["raises", "is gone"])
+async def test_a_change_of_where_a_project_works_that_is_not_recorded_is_not_half_taken(hosts, tmp_path, how):
+    """The sessions are written first; when the project's record then cannot be, they go back."""
+    host = _host(hosts, tmp_path, ScriptedLLM())
+    old = tmp_path / "old"
+    old.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(old))
+    lan, _ = await host.ledger.project_session("Lan", "Budget app", workdir=str(old))
+    mei, _ = await host.ledger.project_session("Mei", "Budget app")
+    new = tmp_path / "new"
+    new.mkdir()
+
+    async def fails(name: str, workdir: str) -> Any:
+        if how == "raises":
+            raise OSError("the record cannot be written")
+        return None
+
+    host.space.set_project_workdir = fails
+    with pytest.raises(OSError if how == "raises" else LookupError):
+        await host.set_project_workdir("Budget app", str(new))
+    assert (await host.ledger.get_session(lan.id)).workdir == str(old)
+    assert (await host.ledger.get_session(mei.id)).workdir != str(new)
+    assert (await host.space.get_project("Budget app")).workdir == str(old)
