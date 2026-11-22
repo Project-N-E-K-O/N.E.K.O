@@ -1773,3 +1773,17 @@ test('every getDisplayMedia call in the app goes through the numbered request (t
     assert.equal((screenSource.match(/await requestDisplayMediaStream\(/g) || []).length, 3);
     assert.match(websocketSource, /captureMask\.requestDisplayMedia\(navigator\.mediaDevices, displayMediaOptions\)/);
 });
+
+test('settings popup re-sync: mouse tracking follows the avatar type own state (MMD cursorFollow), like at creation', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup-config.js'), 'utf8');
+    const start = src.indexOf('function createSettingsPopupShowSync');
+    const fnSrc = '(' + src.slice(start, src.indexOf('\n}\n', start) + 2) + ')';
+    for (const [own, global, expected] of [[false, true, false], [true, false, true]]) {
+        const cb = { checked: 'untouched' };
+        const query = (sel) => (sel === '#mmd-mouse-tracking-toggle' ? cb : null);
+        const ctx = { document: { querySelector: query }, window: { mouseTrackingEnabled: global }, requestAnimationFrame() {} };
+        const sync = vm.runInNewContext(fnSrc, ctx)('mmd');
+        sync.call({ _getMouseTrackingState: () => own }, { querySelector: query }, 'settings');
+        assert.equal(cb.checked, expected, `own=${own} global=${global}`);
+    }
+});

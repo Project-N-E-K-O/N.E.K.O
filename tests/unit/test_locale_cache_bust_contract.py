@@ -66,10 +66,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
-        "2026-11-22-capture-mask-toggle-after-model-rename",
         "2026-11-22-drop-dead-api-keys",
         "2026-11-22-chat-model-rename-after-vision",
-        "2026-11-22-capture-self-ui-mask-toggle",
         "2026-11-22-chat-model-rename",
         "2026-11-22-legacy-vision-chat-model",
         "2026-11-22-agent-small-tier-memory-browser",

@@ -1799,9 +1799,9 @@
                 // 下一拍在新连接上继续（原生路径则停止整段分享，见 startNativeScreenStreaming）。
                 var captureSocket = S.socket;
                 // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
-                // 流实际截的源优先：选中源失效、回退到第一个 screen: 源时选中状态已被清空。
-                // Only the recorded source of this stream; null lets the shell use its
-                // getDisplayMedia record (see streamCaptureSourceId in app-proactive.js).
+                // Only the recorded source of this stream, never the selection cache;
+                // null lets the shell use its getDisplayMedia record (see
+                // streamCaptureSourceId in app-proactive.js).
                 var frameSourceId = getStreamCaptureSourceId(stream);
                 var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream', stream: stream });
                 var frame = captureCanvasFrame(video, 0.8);

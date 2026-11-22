@@ -36,7 +36,12 @@ function createSettingsPopupShowSync(prefix) {
         // Same reading as the mask module: only an explicit false is off.
         syncCheckbox(popup.querySelector(`#${prefix}-capture-self-ui-mask`),
             typeof window.captureSelfUiMaskEnabled === 'undefined' ? undefined : window.captureSelfUiMaskEnabled !== false);
-        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), window.mouseTrackingEnabled);
+        // Same source as the checkbox at creation: each avatar type's own
+        // getMouseTrackingState (MMD reads its cursorFollow, not the global).
+        const mouseTracking = this && typeof this._getMouseTrackingState === 'function'
+            ? this._getMouseTrackingState()
+            : window.mouseTrackingEnabled;
+        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), mouseTracking);
         if (window.CHAT_MODE_CONFIG) {
             window.CHAT_MODE_CONFIG.forEach(config => {
                 const cb = document.querySelector(`#${prefix}-proactive-${config.mode}-chat`);
