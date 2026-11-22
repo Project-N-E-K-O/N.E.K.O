@@ -336,9 +336,12 @@
      */
     function beginMaskSession(ctxHint) {
         var win = window;
-        // Switched off: no sample, no shell query.
-        if (!isMaskEnabled(win)) return null;
         var hint = ctxHint || {};
+        // Switched off: no sample, no shell query. The session still records
+        // that, so a frame whose capture started while off is sent as
+        // captured even if the switch is turned on before it is masked (no
+        // pre-capture sample to intersect with: when unsure, mask less).
+        if (!isMaskEnabled(win)) return { hint: hint, switchedOff: true };
         if (isDesktopMultiWindow(win)) {
             return { hint: hint, pending: queryShellMask(win, hint) };
         }
@@ -630,6 +633,7 @@
         // Switched off: the frame goes out as captured, without reading any
         // region or asking the desktop shell.
         if (!isMaskEnabled(window)) return dataUrl;
+        if (session && session.switchedOff) return dataUrl;
         var geometry;
         try {
             geometry = await resolveGeometry(session, ctx || {});

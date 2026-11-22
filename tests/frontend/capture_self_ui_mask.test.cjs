@@ -1537,7 +1537,7 @@ test('switch off: the frame is returned as captured, no region read, no shell qu
     const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0, y: 0, width: 0.5, height: 0.5 }] }));
     const env = makeWindow({ multiWindow: true, shell });
     env.w.appState = { captureSelfUiMaskEnabled: false };
-    assert.equal(env.w.appCaptureMask.beginMaskSession({ via: 'stream', sourceId: 'screen:0:0' }), null);
+    assert.equal(env.w.appCaptureMask.beginMaskSession({ via: 'stream', sourceId: 'screen:0:0' }).switchedOff, true);
     for (const via of ['stream', 'native', 'backend']) {
         assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: 'screen:0:0', via }), RAW_FRAME);
     }
@@ -1547,7 +1547,9 @@ test('switch off: the frame is returned as captured, no region read, no shell qu
     browser.w.appState = { captureSelfUiMaskEnabled: false };
     let reads = 0;
     browser.w.document.querySelectorAll = () => { reads += 1; return browser.state.elements; };
-    assert.equal(browser.w.appCaptureMask.beginMaskSession({ via: 'stream' }), null);
+    const offSession = browser.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    assert.equal(offSession.switchedOff, true);
+    assert.equal(offSession.local, undefined, 'no pre-capture sample while off');
     assert.equal(await browser.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
     assert.equal(reads, 0);
     // Read on every frame: switching back on takes effect on the next frame.
@@ -1592,5 +1594,32 @@ test('switch: wired through settings sync, the server allow-list, the popup and 
     for (const locale of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es']) {
         const toggles = JSON.parse(fs.readFileSync(path.join(repo, 'static/locales', locale + '.json'), 'utf8')).settings.toggles;
         assert.ok(toggles.captureSelfUiMask && toggles.captureSelfUiMaskTooltip, locale);
+    }
+});
+
+test('switch turned on while a frame is being captured: that frame is sent as captured, the next one is masked', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    env.w.appState = { captureSelfUiMaskEnabled: false };
+    const ctx = { captureType: 'screen', sourceId: 'screen:0:0', via: 'native' };
+    const session = env.w.appCaptureMask.beginMaskSession(ctx);
+    env.w.appState.captureSelfUiMaskEnabled = true;
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx, session), RAW_FRAME);
+    assert.equal(shell.calls.length, 0);
+    const next = env.w.appCaptureMask.beginMaskSession(ctx);
+    assert.deepEqual(fillsOf(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx, next)), [[800, 225, 400, 450]]);
+});
+
+test('settings popup re-sync reads the switch like the mask module (only false is off)', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup-config.js'), 'utf8');
+    const start = src.indexOf('function createSettingsPopupShowSync');
+    assert.ok(start >= 0);
+    for (const [value, expected] of [[true, true], [false, false], [null, true], [undefined, 'untouched']]) {
+        const cb = { checked: 'untouched' };
+        const query = (sel) => (sel === '#neko-capture-self-ui-mask' ? cb : null);
+        const ctx = { document: { querySelector: query }, window: { captureSelfUiMaskEnabled: value }, requestAnimationFrame() {} };
+        const sync = vm.runInNewContext('(' + src.slice(start, src.indexOf('\n}\n', start) + 2) + ')', ctx)('neko');
+        sync({ querySelector: query }, 'settings');
+        assert.equal(cb.checked, expected, String(value));
     }
 });
