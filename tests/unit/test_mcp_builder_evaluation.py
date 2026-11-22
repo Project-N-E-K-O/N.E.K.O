@@ -181,11 +181,13 @@ async def test_agent_loop_serializes_pydantic_style_tool_result_objects(
         def model_dump(self) -> dict:
             return self._payload
 
+    sample_path = Path("/tmp/sample.txt")
+
     class _PydanticConnection:
         async def call_tool(self, _name: str, _tool_input: dict):
             return [
                 _FakeContentModel({"type": "text", "text": "42"}),
-                _FakeContentModel({"type": "resource", "path": Path("/tmp/sample.txt")}),
+                _FakeContentModel({"type": "resource", "path": sample_path}),
             ]
 
     text, _metrics = await evaluation.agent_loop(
@@ -204,7 +206,7 @@ async def test_agent_loop_serializes_pydantic_style_tool_result_objects(
     assert "Error executing tool" not in entry["content"]
     assert json.loads(entry["content"]) == [
         {"type": "text", "text": "42"},
-        {"type": "resource", "path": "/tmp/sample.txt"},
+        {"type": "resource", "path": str(sample_path)},
     ]
 
 
@@ -376,3 +378,76 @@ async def test_agent_loop_serialization_error_does_not_mark_tool_error(
     entry = captured_turns[1][-1]["content"][0]
     assert "is_error" not in entry
     assert entry["content"] == "fallback-string-result"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_json_mode_failure_and_partial_list_item_isolation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Retry plain model_dump on mode='json' error, isolate broken list items, and guard broken __str__."""
+    evaluation = _load_evaluation_module(monkeypatch)
+
+    responses = [
+        SimpleNamespace(
+            stop_reason="tool_use",
+            content=[
+                _tool_use_block("toolu_json_fallback", "read_item", {"id": 4}),
+                _tool_use_block("toolu_mixed_list", "read_item", {"id": 5}),
+                _tool_use_block("toolu_broken_str", "read_item", {"id": 6}),
+            ],
+        ),
+        SimpleNamespace(
+            stop_reason="end_turn",
+            content=[_text_block("<response>ok</response>")],
+        ),
+    ]
+    captured_turns: list[list[dict]] = []
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            captured_turns.append(json.loads(json.dumps(kwargs["messages"], default=str)))
+            return responses.pop(0)
+
+    class _ModeJsonFailsModel:
+        def model_dump(self, *, mode: str = "python", exclude_none: bool = False) -> dict:
+            if mode == "json":
+                raise TypeError("Unable to serialize custom object in json mode")
+            data = {"ok": True, "empty": None, "tag": "fallback"}
+            return {k: v for k, v in data.items() if not (exclude_none and v is None)}
+
+    class _BrokenListItem:
+        def model_dump(self) -> dict:
+            raise RuntimeError("broken item")
+
+        def __str__(self) -> str:
+            return "broken-item-repr"
+
+    class _BrokenEverything:
+        def model_dump(self) -> dict:
+            raise RuntimeError("dump failed")
+
+        def __str__(self) -> str:
+            raise RuntimeError("str failed")
+
+    class _EdgeConnection:
+        async def call_tool(self, _name: str, tool_input: dict):
+            if tool_input["id"] == 4:
+                return _ModeJsonFailsModel()
+            if tool_input["id"] == 5:
+                return [{"good": "value"}, _BrokenListItem()]
+            return _BrokenEverything()
+
+    text, _metrics = await evaluation.agent_loop(
+        SimpleNamespace(messages=_FakeMessages()),
+        "claude-test",
+        "Check serialization edge cases",
+        [],
+        _EdgeConnection(),
+    )
+
+    assert text == "<response>ok</response>"
+    results = captured_turns[1][-1]["content"]
+    assert all("is_error" not in entry for entry in results)
+    assert json.loads(results[0]["content"]) == {"ok": True, "tag": "fallback"}
+    assert json.loads(results[1]["content"]) == [{"good": "value"}, "broken-item-repr"]
+    assert results[2]["content"] == "<unserializable _BrokenEverything>"

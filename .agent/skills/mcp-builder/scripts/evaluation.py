@@ -84,6 +84,14 @@ def extract_xml_content(text: str, tag: str) -> str | None:
     return matches[-1].strip() if matches else None
 
 
+def _safe_str(value: Any) -> str:
+    """Convert a value to str without letting broken __str__/__repr__ escape."""
+    try:
+        return str(value)
+    except Exception:
+        return f"<unserializable {type(value).__name__}>"
+
+
 def _serialize_tool_item(item: Any) -> Any:
     """Dump Pydantic/MCP content models while remaining compatible with zero-arg stubs."""
     model_dump = getattr(item, "model_dump", None)
@@ -96,7 +104,34 @@ def _serialize_tool_item(item: Any) -> Any:
         kwargs["mode"] = "json"
     if "exclude_none" in params or accepts_kwargs:
         kwargs["exclude_none"] = True
-    return model_dump(**kwargs)
+    try:
+        return model_dump(**kwargs)
+    except Exception:
+        if "mode" in kwargs:
+            fallback_kwargs = {k: v for k, v in kwargs.items() if k != "mode"}
+            return model_dump(**fallback_kwargs)
+        raise
+
+
+def _format_tool_result(tool_result: Any) -> str:
+    """Format a tool result into text, isolating serialization failures per list item."""
+    try:
+        if isinstance(tool_result, list):
+            serialized_items = []
+            for item in tool_result:
+                try:
+                    dumped = _serialize_tool_item(item)
+                    json.dumps(dumped, ensure_ascii=False, default=str)
+                    serialized_items.append(dumped)
+                except Exception:
+                    serialized_items.append(_safe_str(item))
+            return json.dumps(serialized_items, ensure_ascii=False, default=str)
+        serialized = _serialize_tool_item(tool_result)
+        if isinstance(serialized, (dict, list)):
+            return json.dumps(serialized, ensure_ascii=False, default=str)
+        return _safe_str(serialized)
+    except Exception:
+        return _safe_str(tool_result)
 
 
 async def agent_loop(
@@ -143,19 +178,7 @@ async def agent_loop(
                 tool_response = f"Error executing tool {tool_name}: {str(e)}\n"
                 tool_response += traceback.format_exc()
             else:
-                try:
-                    serialized = (
-                        [_serialize_tool_item(item) for item in tool_result]
-                        if isinstance(tool_result, list)
-                        else _serialize_tool_item(tool_result)
-                    )
-                    tool_response = (
-                        json.dumps(serialized, ensure_ascii=False, default=str)
-                        if isinstance(serialized, (dict, list))
-                        else str(serialized)
-                    )
-                except Exception:
-                    tool_response = str(tool_result)
+                tool_response = _format_tool_result(tool_result)
             tool_duration = time.time() - tool_start_ts
 
             if tool_name not in tool_metrics:
