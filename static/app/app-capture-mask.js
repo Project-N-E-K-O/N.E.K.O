@@ -351,8 +351,10 @@
         try {
             request = mediaDevices.getDisplayMedia(constraints);
         } catch (e) {
-            // Thrown before any request was made (bad constraints, not
-            // supported): the shell handler never ran, its record is unchanged.
+            // Thrown synchronously, so no request was made (in practice:
+            // mediaDevices missing or replaced; bad constraints and
+            // unsupported cases reject the promise instead and are counted):
+            // the shell handler never ran, its record is unchanged.
             displayMediaRequestsOpen -= 1;
             throw e;
         }
@@ -408,7 +410,10 @@
             if (preUnknown) {
                 return { hint: hint, pending: Promise.resolve({ known: false, rects: [], reason: preUnknown }) };
             }
-            return { hint: hint, pending: queryShellMask(win, hint) };
+            // The request number at the time of the query: a request that
+            // finishes before the frame is resolved may change what a query
+            // naming no source answers for (see resolveGeometry).
+            return { hint: hint, pending: queryShellMask(win, hint), displayMediaSeq: displayMediaRequestSeq };
         }
         // Keep the window geometry of this sample too: if the browser window
         // moves before the post-capture sample, each sample is mapped with
@@ -549,6 +554,14 @@
             // different surface; only the post-capture query applies then.
             if (session && session.pending && sameMaskTarget(session.hint, ctx)) {
                 pre = await session.pending;
+                // The pre-capture query named no source and a getDisplayMedia
+                // request finished since: it may have answered for the
+                // previous source, even if the frame comes from the new stream.
+                if (!ctx.sourceId && ctx.via !== 'backend'
+                    && typeof session.displayMediaSeq === 'number'
+                    && session.displayMediaSeq !== displayMediaRequestSeq) {
+                    return { known: false, rects: [], reason: 'display_media_changed_since_pre' };
+                }
             }
             // Another request may have opened, or opened and finished, while
             // the queries were in flight: the shell may have answered for

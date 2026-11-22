@@ -1844,6 +1844,31 @@ test('getDisplayMedia: a request that throws synchronously neither stays open no
     assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
 });
 
+test('getDisplayMedia: a pre-capture query without a stream is not intersected once a request finished after it', async () => {
+    const answer = { ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] };
+    let during = null;
+    const shell = shellStub(async () => { const d = during; during = null; if (d) await d(); return answer; });
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const mask = env.w.appCaptureMask;
+    const hint = { sourceId: null, via: 'stream' };
+    const B = displayStream('B');
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(B) }, {});
+    const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream: B };
+    // No request in between: the pre-capture answer is intersected, masked.
+    assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(hint))), [[800, 225, 400, 450]]);
+    // A request finishes while the pre-capture query is answered; the frame comes from its stream.
+    const C = displayStream('C');
+    during = async () => { await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(C) }, {}); };
+    const session = mask.beginMaskSession(hint);
+    await session.pending;
+    const ctxC = { captureType: 'screen', sourceId: null, via: 'stream', stream: C };
+    assert.equal(await mask.maskFrameForModel(RAW_FRAME, ctxC, session), RAW_FRAME);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+    // The next frame of the new stream is masked again.
+    assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctxC, mask.beginMaskSession(hint))), [[800, 225, 400, 450]]);
+});
+
 test('getDisplayMedia: a request that opens and finishes while the shell query is in flight voids that answer', async () => {
     const answer = { ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] };
     let during = null;
