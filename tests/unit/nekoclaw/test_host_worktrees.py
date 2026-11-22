@@ -1285,11 +1285,27 @@ def test_relative_paths() -> None:
         assert worktrees._relative(Path("Q:/elsewhere"), Path("C:/project")) is None
 
 
-async def test_a_git_command_that_fails_raises(repo: Path, manager: WorktreeManager, base: Path) -> None:
-    write(base / "a-file", "x")
+async def test_a_git_command_that_fails_raises(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    real = worktrees._claim_directory
+
+    def not_empty(path: Path) -> bool:  # git will not add a worktree into it
+        write(path / "x.txt", "x")
+        return real(path)
+
+    monkeypatch.setattr(worktrees, "_claim_directory", not_empty)
     with pytest.raises(worktrees.GitError) as raised:
-        await manager.create(repo, base / "a-file" / "w1")
+        await manager.create(repo, base / "w1")
     assert raised.value.returncode not in (0, None) and raised.value.git_args[:2] == ("worktree", "add")
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""
+
+
+async def test_a_directory_that_cannot_be_made_is_said(repo: Path, manager: WorktreeManager, base: Path) -> None:
+    write(base / "a-file", "x")
+    with pytest.raises(WorktreeError, match="could not be made") as raised:
+        await manager.create(repo, base / "a-file" / "w1")
+    assert not isinstance(raised.value, worktrees.GitError)
     assert git(repo, "for-each-ref", REF_PREFIX) == ""
 
 
@@ -3402,3 +3418,30 @@ async def test_a_landing_cancelled_while_copying_leaves_no_copies(
         await asyncio.sleep(0.05)
     assert not exists(where[0])
     assert digest(repo) == before
+
+
+async def test_a_make_cancelled_while_claiming_leaves_no_directory(
+    repo: Path, manager: WorktreeManager, base: Path, monkeypatch: Any
+) -> None:
+    import threading
+    import time
+
+    real = worktrees._claim_directory
+    claiming = threading.Event()
+    made = []
+
+    def slow(path: Path) -> bool:
+        claiming.set()
+        time.sleep(0.5)
+        made.append(real(path))
+        return made[-1]
+
+    monkeypatch.setattr(worktrees, "_claim_directory", slow)
+    making = asyncio.ensure_future(manager.create(repo, base / "w1"))
+    assert await asyncio.to_thread(claiming.wait, 30)
+    making.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await making
+    assert made == [True]  # made after all, then removed again
+    assert not exists(base / "w1")
+    assert git(repo, "for-each-ref", REF_PREFIX) == ""

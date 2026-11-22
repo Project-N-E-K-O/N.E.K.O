@@ -433,7 +433,19 @@ class WorktreeManager:
             raise WorktreeUnavailable(DISK_SPACE, f"{disk.free} bytes free, {disk.needed} needed")
         # Made here, at once (not merely found missing): a directory another
         # put there meanwhile is not taken for this one when cleaning up.
-        existed = not await asyncio.to_thread(_claim_directory, target)
+        # Waited for to the end; made, then cancelled, it goes again.
+        claiming = asyncio.ensure_future(asyncio.to_thread(_claim_directory, target))
+        cancelled = await _settle(claiming)
+        failed = claiming.exception()
+        if failed is not None:
+            if cancelled:
+                raise asyncio.CancelledError from failed
+            raise WorktreeError(f"the worktree's directory {target} could not be made: {failed}") from failed
+        if cancelled:
+            if claiming.result():
+                await _to_the_end(asyncio.to_thread(_unclaim_directory, target))
+            raise asyncio.CancelledError
+        existed = not claiming.result()
         try:
             await self._git(repo_root, "update-ref", ref, commit)
             await self._git(
@@ -1593,6 +1605,12 @@ def _claim_directory(target: Path) -> bool:
     except FileExistsError:
         return False
     return True
+
+
+def _unclaim_directory(target: Path) -> None:
+    """Remove the (still empty) directory ``_claim_directory`` made; fine when it is gone."""
+    with contextlib.suppress(FileNotFoundError):
+        os.rmdir(_fs(target))
 
 
 def _remove_index(index: Path) -> None:
