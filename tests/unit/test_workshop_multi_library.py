@@ -1031,7 +1031,8 @@ def test_model_files_by_name_fallback_uses_the_item_folder_in_workshop_urls(libr
 
 def test_model_files_by_name_fallback_keeps_both_levels_of_user_mods_urls(libraries, monkeypatch):
     """A /user_mods model two levels deep keeps its mod folder in the URL."""
-    # Skip the Workshop pass so the lookup reaches the /user_mods branch.
+    # /user_mods shares its root with the configured Workshop folder, which is searched
+    # first; skip that pass so the lookup reaches the /user_mods branch.
     monkeypatch.setattr(frontend_utils, "_resolve_workshop_search_dirs", lambda: [])
     _write_model(libraries.a / "mods" / "Delta", "live2d", "Delta")
     _write_model(libraries.a / "Foxtrot", "live2d", "Foxtrot")
