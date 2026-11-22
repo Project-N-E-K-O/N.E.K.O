@@ -308,6 +308,34 @@ def _derive_binding_asset_display_name(model_ref: str) -> str:
     return parts[-1] if parts else normalized_ref
 
 
+def _is_file_quietly(path: Path) -> bool:
+    """``Path.is_file`` that treats an unreadable path (e.g. permission denied) as absent."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_readable_file(path: Path) -> bool:
+    """A regular file that can actually be opened, so the search moves on to the
+    next library when this copy exists but cannot be read."""
+    if not _is_file_quietly(path):
+        return False
+    try:
+        with open(path, "rb"):
+            return True
+    except OSError:
+        return False
+
+
+def _is_dir_quietly(path: Path) -> bool:
+    """``Path.is_dir`` that treats an unreadable path (e.g. permission denied) as absent."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _collect_binding_live2d_roots(config_manager) -> list[Path]:
     get_live2d_lookup_roots = getattr(config_manager, "get_live2d_lookup_roots", None)
     if callable(get_live2d_lookup_roots):
@@ -347,6 +375,22 @@ def _collect_binding_workshop_roots(config_manager) -> list[Path]:
             if normalized_root not in seen_roots:
                 seen_roots.add(normalized_root)
                 roots.append(Path(configured_workshop_root))
+
+    # Workshop content folders of the other Steam libraries, in the order /workshop
+    # serves them (right after the configured root), before the local workshop_dir.
+    get_library_roots = getattr(config_manager, "get_steam_workshop_library_roots", None)
+    if callable(get_library_roots):
+        try:
+            library_roots = list(get_library_roots() or [])
+        except Exception:
+            library_roots = []
+        for library_root in library_roots:
+            if not library_root:
+                continue
+            normalized_root = os.path.normcase(os.path.normpath(str(library_root)))
+            if normalized_root not in seen_roots:
+                seen_roots.add(normalized_root)
+                roots.append(Path(library_root))
 
     fallback_workshop_root = getattr(config_manager, "workshop_dir", None)
     if fallback_workshop_root:
@@ -402,7 +446,7 @@ def _collect_workshop_character_origin_candidates(config_manager) -> dict[str, l
     seen_entries: set[tuple[str, str, str, str, str]] = set()
 
     for workshop_root in _collect_binding_workshop_roots(config_manager):
-        if not workshop_root.is_dir():
+        if not _is_dir_quietly(workshop_root):
             continue
         try:
             item_roots = sorted(child for child in workshop_root.iterdir() if child.is_dir())
@@ -629,7 +673,7 @@ def _infer_binding_source_from_resolved_path(
     asset_source: str,
     asset_source_id: str,
 ) -> tuple[str, str]:
-    if resolved_path is None or not resolved_path.is_file():
+    if resolved_path is None or not _is_file_quietly(resolved_path):
         return asset_source, asset_source_id
 
     for workshop_root in _collect_binding_workshop_roots(config_manager):
@@ -682,7 +726,7 @@ def _resolve_binding_file_path(
         ranked_candidates: list[tuple[int, int, str, Path]] = []
         for workshop_root in workshop_roots:
             item_root = workshop_root / asset_source_id
-            if not item_root.is_dir():
+            if not _is_dir_quietly(item_root):
                 continue
             try:
                 discovered_files = sorted(path for path in item_root.rglob("*.model3.json") if path.is_file())
@@ -710,6 +754,15 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
+        # The best-ranked model, from the first library whose copy can be read. Only
+        # copies of that same model (same rank and same path under their own root)
+        # are retried; a different model is never taken in its place.
+        best_key = ranked_candidates[0][:3]
+        for ranked_candidate in ranked_candidates:
+            if ranked_candidate[:3] != best_key:
+                break
+            if _is_readable_file(ranked_candidate[3]):
+                return ranked_candidate[3]
         return ranked_candidates[0][3]
 
     def _resolve_local_live2d_fallback() -> Path | None:
@@ -720,7 +773,7 @@ def _resolve_binding_file_path(
         ranked_candidates: list[tuple[int, int, str, Path]] = []
 
         def _append_candidates(search_root: Path, candidate_base: Path) -> None:
-            if not candidate_base.is_dir():
+            if not _is_dir_quietly(candidate_base):
                 return
             try:
                 discovered_files = sorted(path for path in candidate_base.rglob("*.model3.json") if path.is_file())
@@ -779,6 +832,17 @@ def _resolve_binding_file_path(
             return None
 
         ranked_candidates.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
+        # The best-ranked model, from the first root whose copy can be read. Only
+        # candidates with the same rank and the same path under their own root are
+        # retried; any other model ends the search. This fallback matches by name, so
+        # such a candidate can sit in a different Workshop item (e.g. two items both
+        # shipping Foo/Foo.model3.json), just as it could when the top one is missing.
+        best_key = ranked_candidates[0][:3]
+        for ranked_candidate in ranked_candidates:
+            if ranked_candidate[:3] != best_key:
+                break
+            if _is_readable_file(ranked_candidate[3]):
+                return ranked_candidate[3]
         return ranked_candidates[0][3]
 
     if model_type == "live2d":
@@ -823,20 +887,20 @@ def _resolve_binding_file_path(
                 candidates.append(workshop_root / relative_workshop_path)
 
     for candidate in candidates:
-        if candidate.is_file():
+        if _is_readable_file(candidate):
             return candidate
 
     fallback_candidate = _resolve_workshop_live2d_fallback()
-    if fallback_candidate is not None and fallback_candidate.is_file():
+    if fallback_candidate is not None and _is_readable_file(fallback_candidate):
         return fallback_candidate
     fallback_candidate = _resolve_local_live2d_fallback()
-    if fallback_candidate is not None and fallback_candidate.is_file():
+    if fallback_candidate is not None and _is_readable_file(fallback_candidate):
         return fallback_candidate
     return None
 
 
 def _derive_binding_asset_state(*, resolved_path: Path | None, asset_source: str, model_ref: str) -> str:
-    if resolved_path is not None and resolved_path.is_file():
+    if resolved_path is not None and _is_file_quietly(resolved_path):
         return "ready"
     if not str(model_ref or "").strip():
         return "missing"
@@ -896,6 +960,15 @@ def _derive_character_binding_summary(
         asset_source=asset_source,
         asset_source_id=asset_source_id,
     )
+    # Hash before anything relies on the path: a model file that exists but cannot be
+    # read (permissions, locked, vanished) is treated as unresolved, so one unavailable
+    # model does not stop this character's backup or the whole export.
+    asset_fingerprint = ""
+    if resolved_path is not None:
+        try:
+            asset_fingerprint = _sha256_file(resolved_path)
+        except OSError:
+            resolved_path = None
     asset_source, asset_source_id = _infer_binding_source_from_resolved_path(
         config_manager,
         resolved_path=resolved_path,
@@ -914,7 +987,6 @@ def _derive_character_binding_summary(
         model_type=binding_model_type,
         workshop_origin_index=workshop_origin_index,
     )
-    asset_fingerprint = _sha256_file(resolved_path) if resolved_path is not None else ""
 
     fallback_model_ref = ""
     if asset_state != "ready" and binding_model_type != "live2d":

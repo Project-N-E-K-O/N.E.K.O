@@ -644,8 +644,9 @@ def _print_issues(
 
 _WINDOWS_SHELL = os.name == "nt"
 # Expanded inside double quotes by cmd (%VAR%, !VAR! with delayed expansion)
-# or PowerShell ($name, ` escapes).
-_WINDOWS_EXPANDING_CHARS = "%!$`"
+# or PowerShell ($name, ` escapes), or ending the quoted argument in PowerShell,
+# which treats typographic double quotes (U+201C, U+201D, U+201E) like ".
+_WINDOWS_EXPANDING_CHARS = "%!$`\u201c\u201d\u201e"
 # Shown instead of a path no quoting keeps literal; the user fills it in.
 _PLUGIN_DIR_PLACEHOLDER = '"<plugin directory>"'
 

@@ -199,9 +199,9 @@ def test_unreadable_animation_file_is_counted_without_logging_paths(
 
 
 @pytest.mark.parametrize("router_name, endpoint, method", [
-    ("mmd", "/api/model/mmd/animations", "glob"),
+    ("mmd", "/api/model/mmd/animations", "iterdir"),
     ("mmd", "/api/model/mmd/animations/list", "iterdir"),
-    ("vrm", "/api/model/vrm/animations", "glob"),
+    ("vrm", "/api/model/vrm/animations", "iterdir"),
 ])
 def test_unreadable_animation_directory_does_not_log_paths(
     router_name, endpoint, method, mmd_env, vrm_env, tmp_path, monkeypatch,
