@@ -1979,7 +1979,20 @@ async def test_round14_promotion_merge_fence_and_retired_reflection_dedup_guard(
                         "reinforcement": 4.0,
                         "disputation": 0.0,
                         "created_at": now_iso,
-                    }
+                    },
+                    {
+                        "id": "p_retired_dup",
+                        "text": "周末喜欢去爬山看日出",
+                        "source": "reflection",
+                        "permanent_suppression": {"reason": "hollow"},
+                        "created_at": now_iso,
+                    },
+                    {
+                        "id": "p_active_dup",
+                        "text": "周末喜欢去爬山看日出",
+                        "source": "reflection",
+                        "created_at": now_iso,
+                    },
                 ]
             }
         },
@@ -2045,13 +2058,20 @@ async def test_round14_promotion_merge_fence_and_retired_reflection_dedup_guard(
         re_eng = ReflectionEngine(fact_store=fs, persona_manager=pm, event_log=ev_log)
         re_eng._config_manager = cm
 
-        # amerge_reflections must refuse retired keep_id/drop_id under lock
+        # amerge_reflections & amerge_persona_entries must refuse retired keep_id/drop_id under lock
         with pytest.raises(LookupError):
             await re_eng.amerge_reflections(
                 char_name, "r_retired", "r_active", "每天晚上十点准时去河边散步",
             )
         live_refls = await re_eng._aload_reflections_full(char_name)
         assert any(r.get("id") == "r_active" and r.get("status") == "confirmed" for r in live_refls)
+
+        with pytest.raises(LookupError):
+            await pm.amerge_persona_entries(
+                char_name, "master", "p_retired_dup", "p_active_dup", "周末喜欢去爬山看日出",
+            )
+        live_persona_facts = (await pm.aensure_persona(char_name))["master"]["facts"]
+        assert any(e.get("id") == "p_active_dup" for e in live_persona_facts)
 
         # Concurrent manual edit during promotion LLM await must fence stale merge_into
         async def _llm_merge_with_concurrent_edit(*_args, **_kwargs):

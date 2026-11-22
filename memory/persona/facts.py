@@ -1265,9 +1265,9 @@ class FactsMixin:
             section_facts = section.get('facts', [])
             keep_entry = self._find_entry_in_section(section_facts, keep_id)
             drop_entry = self._find_entry_in_section(section_facts, drop_id)
-            if keep_entry is None:
+            if keep_entry is None or is_permanently_suppressed(keep_entry):
                 raise LookupError("keep_id not found")
-            if drop_entry is None:
+            if drop_entry is None or is_permanently_suppressed(drop_entry):
                 raise LookupError("drop_id not found")
             if (
                 keep_entry.get('protected') or keep_entry.get('source') == 'character_card'
