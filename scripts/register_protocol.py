@@ -278,14 +278,14 @@ exec {quoted_python_exe} -m {HANDLER_MODULE} "$@"
 def _remove_macos() -> bool:
     """macOS: unregister the helper app from Launch Services and delete it."""
     app_dir = Path.home() / "Applications" / "NekoProtocolHandler.app"
-    unregistered = True
     if app_dir.exists():
         # Mirror registration: lsregister -u must run while the bundle exists.
-        unregistered = _run_required([LSREGISTER, "-u", str(app_dir)], "lsregister")
+        # On failure keep the bundle, so a rerun can still unregister it.
+        if not _run_required([LSREGISTER, "-u", str(app_dir)], "lsregister"):
+            print("[FAIL] neko:// protocol was not removed (macOS)")
+            print(f"     App bundle left at: {app_dir}")
+            return False
         shutil.rmtree(app_dir)
-    if not unregistered:
-        print("[FAIL] Helper app deleted, but Launch Services unregistration failed (macOS)")
-        return False
     print("[OK] Removed neko:// protocol (macOS)")
     return True
 
@@ -338,8 +338,11 @@ def _linux_mimeapps_paths() -> list[Path]:
     # The XDG spec ignores relative values.
     if not config_home or not os.path.isabs(config_home):
         config_home = str(Path.home() / ".config")
+    config_dir = Path(config_home)
     return [
-        Path(config_home) / "mimeapps.list",
+        config_dir / "mimeapps.list",
+        # Desktop-specific overrides such as gnome-mimeapps.list.
+        *sorted(config_dir.glob("*-mimeapps.list")),
         # Legacy location still written by older xdg-utils.
         Path.home() / ".local" / "share" / "applications" / "mimeapps.list",
     ]
@@ -353,7 +356,12 @@ def _drop_mimeapps_association(path: Path) -> None:
     """
     if not path.is_file():
         return
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    # Edit the real file so a symlinked mimeapps.list (dotfile managers)
+    # stays a symlink.
+    path = path.resolve()
+    # Work on bytes split at "\n" only, so CRLF endings and any other
+    # characters are written back exactly as read.
+    lines = path.read_bytes().decode("utf-8").split("\n")
     group = None
     changed = False
     kept: list[str] = []
@@ -367,13 +375,14 @@ def _drop_mimeapps_association(path: Path) -> None:
             and group in _MIMEAPPS_GROUPS
             and key.strip() == LINUX_SCHEME_MIME_TYPE
         ):
-            body = value.rstrip("\r\n")
+            body = value.rstrip("\r")
             ending = value[len(body):]
             handlers = [h.strip() for h in body.split(";") if h.strip()]
             remaining = [h for h in handlers if h != LINUX_DESKTOP_FILE_NAME]
             if remaining != handlers:
                 changed = True
                 if not remaining:
+                    # The removed line's "\n" goes with it.
                     continue
                 trailer = ";" if body.rstrip().endswith(";") else ""
                 line = f"{key}={';'.join(remaining)}{trailer}{ending}"
@@ -384,7 +393,7 @@ def _drop_mimeapps_association(path: Path) -> None:
     # user's associations.
     tmp = path.with_name(path.name + ".neko-tmp")
     try:
-        tmp.write_text("".join(kept), encoding="utf-8")
+        tmp.write_bytes("\n".join(kept).encode("utf-8"))
         shutil.copymode(path, tmp)
         os.replace(tmp, path)
     finally:
@@ -404,6 +413,9 @@ def _remove_linux() -> bool:
             ok = False
     if desktop_file.exists():
         desktop_file.unlink()
+    if desktop_file.parent.is_dir():
+        # Refresh even when the .desktop file was already gone, so a stale
+        # mimeinfo.cache entry is dropped too.
         _run_optional(["update-desktop-database", str(desktop_file.parent)])
     if not ok:
         print("[FAIL] neko:// protocol was only partly removed (Linux)")
