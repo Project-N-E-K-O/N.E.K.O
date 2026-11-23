@@ -568,7 +568,7 @@ async def test_a_cancelled_set_mode_whose_write_landed_holds_here_too(tmp_path):
     assert await store.mode("run_command") == "allow"
 
 
-async def test_an_always_answer_that_cannot_be_saved_holds_for_this_request_only(tmp_path, monkeypatch):
+async def test_an_always_answer_that_cannot_be_saved_holds_for_this_request_only(tmp_path, monkeypatch, caplog):
     store = PermissionStore(tmp_path / "permissions.json")
     asked: list[str] = []
 
@@ -580,8 +580,10 @@ async def test_an_always_answer_that_cannot_be_saved_holds_for_this_request_only
     before = await store.mode("browser")
     monkeypatch.setattr(store, "_write", _disk_full)
 
-    decision = await gate.check("c1", "browser")
+    with caplog.at_level("WARNING", logger="nekopower.host.permissions"):
+        decision = await gate.check("c1", "browser")
     assert decision.allow and decision.asked
+    assert any("browser" in r.getMessage() and "OSError" in r.getMessage() for r in caplog.records)
     assert await store.mode("browser") == before
     # Kept as an answer of "once": it covers the rest of this run, not this session.
     assert gate.run_grants("c1") == {("browser", None)} and not gate.session_grants("c1")

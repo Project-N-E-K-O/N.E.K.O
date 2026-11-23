@@ -185,11 +185,12 @@ Asker = Callable[[str, PermissionAsk], Awaitable[str]]
 ParentLookup = Callable[[str], Awaitable["str | None | tuple[str | None, bool]"]]
 
 
-def _log_unsaved_always(category: str) -> None:
+def _log_unsaved_always(category: str, exc: OSError) -> None:
     logger.warning(
-        "an 'always' answer for %s could not be saved (the permissions file cannot be written); "
+        "an 'always' answer for %s could not be saved (the permissions file cannot be written: %s); "
         "it holds for this request only and is asked again later",
         category,
+        type(exc).__name__,
     )
 
 
@@ -644,9 +645,9 @@ class PermissionGate:
         if choice == "always":
             try:
                 saved = await self._store.set_mode(category, "allow", key, expected_version=version)
-            except OSError:
+            except OSError as exc:
                 # Approved, but not remembered: it holds as "once", and is asked again later.
-                _log_unsaved_always(category)
+                _log_unsaved_always(category, exc)
                 choice = "once"
             else:
                 if not saved:
@@ -881,9 +882,9 @@ class PermissionGate:
                     # Only this rule can invalidate an approval, not a simultaneous edit elsewhere.
                     try:
                         await self._store.set_mode(category, "allow", key, expected_revision=revision)
-                    except OSError:
+                    except OSError as exc:
                         # Approved, but not remembered: it holds as "once", and is asked again later.
-                        _log_unsaved_always(category)
+                        _log_unsaved_always(category, exc)
                         choice = "once"
                 current = await self._store.mode(category, key)
                 if current == "deny":
