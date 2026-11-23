@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import sys
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -177,6 +178,81 @@ def _arg_names(args: ast.arguments) -> list[str]:
     return names
 
 
+def _raised_exc_name(exc: ast.expr | None) -> str | None:
+    if isinstance(exc, ast.Name):
+        return exc.id
+    if isinstance(exc, ast.Attribute):
+        return exc.attr
+    if isinstance(exc, ast.Call):
+        return _raised_exc_name(exc.func)
+    return None
+
+
+def _handler_exc_names(expr: ast.expr) -> set[str]:
+    if isinstance(expr, ast.Name):
+        return {expr.id}
+    if isinstance(expr, ast.Attribute):
+        return {expr.attr}
+    if isinstance(expr, ast.Tuple):
+        names: set[str] = set()
+        for elt in expr.elts:
+            names.update(_handler_exc_names(elt))
+        return names
+    return set()
+
+
+def _exc_matches_names(exc_name: str | None, handled_names: set[str]) -> bool:
+    if "BaseException" in handled_names:
+        return True
+    if exc_name is None:
+        return False
+    if exc_name in handled_names:
+        return True
+    exc_cls = getattr(builtins, exc_name, None)
+    if isinstance(exc_cls, type) and issubclass(exc_cls, BaseException):
+        for h_name in handled_names:
+            h_cls = getattr(builtins, h_name, None)
+            if (
+                isinstance(h_cls, type)
+                and issubclass(h_cls, BaseException)
+                and issubclass(exc_cls, h_cls)
+            ):
+                return True
+    return False
+
+
+def _handler_catches_exc(
+    handler: ast.ExceptHandler,
+    exc_name: str | None,
+    *,
+    is_try_star: bool,
+) -> bool:
+    if handler.type is None:
+        return True
+    handled = _handler_exc_names(handler.type)
+    if is_try_star:
+        return "BaseException" in handled
+    return _exc_matches_names(exc_name, handled)
+
+
+def _suppress_exc_names(expr: ast.expr) -> set[str] | None:
+    if not isinstance(expr, ast.Call):
+        return None
+    func = expr.func
+    is_suppress = (isinstance(func, ast.Name) and func.id == "suppress") or (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "contextlib"
+        and func.attr == "suppress"
+    )
+    if not is_suppress:
+        return None
+    names: set[str] = set()
+    for arg in expr.args:
+        names.update(_handler_exc_names(arg))
+    return names
+
+
 class _LoopFrame:
     __slots__ = ("breaks", "continues")
 
@@ -189,7 +265,7 @@ class _TryBodyFrame:
     __slots__ = ("raises",)
 
     def __init__(self) -> None:
-        self.raises: list[dict[str, bool]] = []
+        self.raises: list[tuple[str | None, dict[str, bool]]] = []
 
 
 class _TryFinallyFrame:
@@ -199,7 +275,15 @@ class _TryFinallyFrame:
         self.breaks: list[dict[str, bool]] = []
         self.continues: list[dict[str, bool]] = []
         self.returns: list[dict[str, bool]] = []
-        self.raises: list[dict[str, bool]] = []
+        self.raises: list[tuple[str | None, dict[str, bool]]] = []
+
+
+class _WithSuppressFrame:
+    __slots__ = ("suppressed_names", "suppressed_raises")
+
+    def __init__(self, suppressed_names: set[str]) -> None:
+        self.suppressed_names: set[str] = suppressed_names
+        self.suppressed_raises: list[dict[str, bool]] = []
 
 
 class TemperatureKwargChecker(ast.NodeVisitor):
@@ -209,7 +293,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         self.scopes: list[dict[str, bool]] = [{}]
         self._scope_is_class: list[bool] = [False]
         self._cf_stacks: list[
-            list[_LoopFrame | _TryBodyFrame | _TryFinallyFrame]
+            list[_LoopFrame | _TryBodyFrame | _TryFinallyFrame | _WithSuppressFrame]
         ] = [[]]
 
     def _push_scope(
@@ -227,11 +311,22 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         self._scope_is_class.pop()
         self._cf_stacks.pop()
 
-    def _record_jump(self, kind: str, snapshot: dict[str, bool]) -> None:
+    def _record_jump(
+        self,
+        kind: str,
+        snapshot: dict[str, bool],
+        exc_name: str | None = None,
+    ) -> None:
         for frame in reversed(self._cf_stacks[-1]):
+            if isinstance(frame, _WithSuppressFrame):
+                if kind == "raise" and _exc_matches_names(exc_name, frame.suppressed_names):
+                    frame.suppressed_raises.append(snapshot)
+                    return
+                continue
             if isinstance(frame, _TryBodyFrame):
                 if kind == "raise":
-                    frame.raises.append(snapshot)
+                    frame.raises.append((exc_name, snapshot))
+                    return
                 continue
             if isinstance(frame, _TryFinallyFrame):
                 if kind == "break":
@@ -241,7 +336,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 elif kind == "return":
                     frame.returns.append(snapshot)
                 elif kind == "raise":
-                    frame.raises.append(snapshot)
+                    frame.raises.append((exc_name, snapshot))
                 return
             if isinstance(frame, _LoopFrame):
                 if kind == "break":
@@ -361,7 +456,11 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             self.visit(node.exc)
         if node.cause is not None:
             self.visit(node.cause)
-        self._record_jump("raise", dict(self.scopes[-1]))
+        self._record_jump(
+            "raise",
+            dict(self.scopes[-1]),
+            exc_name=_raised_exc_name(node.exc),
+        )
         return False
 
     def visit_Break(self, node: ast.Break) -> bool:
@@ -373,11 +472,31 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         return False
 
     def _visit_with_node(self, node: ast.With | ast.AsyncWith) -> bool:
+        suppressed_names: set[str] = set()
         for item in node.items:
             self.visit(item.context_expr)
+            names = _suppress_exc_names(item.context_expr)
+            if names:
+                suppressed_names.update(names)
             if item.optional_vars is not None:
                 self._apply_assign_target(item.optional_vars, False)
-        return self._visit_stmt_list(node.body)
+        suppress_frame = (
+            _WithSuppressFrame(suppressed_names) if suppressed_names else None
+        )
+        if suppress_frame is not None:
+            self._cf_stacks[-1].append(suppress_frame)
+        try:
+            body_falls = self._visit_stmt_list(node.body)
+        finally:
+            if suppress_frame is not None:
+                self._cf_stacks[-1].pop()
+        if suppress_frame is not None and suppress_frame.suppressed_raises:
+            exits = list(suppress_frame.suppressed_raises)
+            if body_falls:
+                exits.append(dict(self.scopes[-1]))
+            self.scopes[-1] = self._merge_scopes(exits)
+            return True
+        return body_falls
 
     def visit_With(self, node: ast.With) -> bool:
         return self._visit_with_node(node)
@@ -527,15 +646,16 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 and len(val) >= len(target.elts) - 1
             ):
                 star_idx = star_indices[0]
+                trailing = len(target.elts) - star_idx - 1
+                mid_end = len(val) - trailing
                 for sub_target, sub_val in zip(target.elts[:star_idx], val[:star_idx]):
                     self._apply_assign_target(sub_target, sub_val)
                 star_node = target.elts[star_idx]
                 assert isinstance(star_node, ast.Starred)
-                self._apply_assign_target(star_node.value, False)
-                trailing = len(target.elts) - star_idx - 1
+                self._apply_assign_target(star_node.value, val[star_idx:mid_end])
                 if trailing:
                     for sub_target, sub_val in zip(
-                        target.elts[star_idx + 1 :], val[len(val) - trailing :]
+                        target.elts[star_idx + 1 :], val[mid_end:]
                     ):
                         self._apply_assign_target(sub_target, sub_val)
             else:
@@ -686,6 +806,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
 
     def _visit_try_node(self, node: ast.Try) -> bool:
         before = dict(self.scopes[-1])
+        is_try_star = hasattr(ast, "TryStar") and isinstance(node, ast.TryStar)
         finally_frame = _TryFinallyFrame() if node.finalbody else None
         if finally_frame is not None:
             self._cf_stacks[-1].append(finally_frame)
@@ -701,9 +822,16 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 if body_frame is not None:
                     self._cf_stacks[-1].pop()
             after_body = dict(self.scopes[-1])
-            handler_entry = self._merge_scopes(
-                [before, after_body, *(body_frame.raises if body_frame else ())]
-            )
+            body_raise_snaps: list[dict[str, bool]] = []
+            if body_frame is not None:
+                for exc_name, snap in body_frame.raises:
+                    body_raise_snaps.append(snap)
+                    if not any(
+                        _handler_catches_exc(h, exc_name, is_try_star=is_try_star)
+                        for h in node.handlers
+                    ):
+                        self._record_jump("raise", snap, exc_name=exc_name)
+            handler_entry = self._merge_scopes([before, after_body, *body_raise_snaps])
             for handler in node.handlers:
                 self.scopes[-1] = dict(handler_entry)
                 if handler.type is not None:
@@ -716,12 +844,22 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 if handler_falls:
                     fallthrough.append(snap)
             if node.orelse:
-                self.scopes[-1] = dict(after_body)
-                orelse_falls = self._visit_stmt_list(node.orelse)
-                snap = dict(self.scopes[-1])
-                all_snapshots.append(snap)
-                if body_falls and orelse_falls:
-                    fallthrough.append(snap)
+                if body_falls:
+                    self.scopes[-1] = dict(after_body)
+                    orelse_falls = self._visit_stmt_list(node.orelse)
+                    snap = dict(self.scopes[-1])
+                    all_snapshots.append(snap)
+                    if orelse_falls:
+                        fallthrough.append(snap)
+                else:
+                    saved_scope = self.scopes[-1]
+                    self.scopes[-1] = dict(after_body)
+                    self._cf_stacks.append([])
+                    try:
+                        self._visit_stmt_list(node.orelse)
+                    finally:
+                        self._cf_stacks.pop()
+                        self.scopes[-1] = saved_scope
             else:
                 all_snapshots.append(after_body)
                 if body_falls:
@@ -737,13 +875,13 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             return normal_falls
 
         assert finally_frame is not None
-        all_finally_entries: list[dict[str, bool]] = (
-            list(fallthrough) if fallthrough else list(all_snapshots)
-        )
+        all_finally_entries: list[dict[str, bool]] = list(fallthrough)
         all_finally_entries.extend(finally_frame.breaks)
         all_finally_entries.extend(finally_frame.continues)
         all_finally_entries.extend(finally_frame.returns)
-        all_finally_entries.extend(finally_frame.raises)
+        all_finally_entries.extend(snap for _, snap in finally_frame.raises)
+        if not all_finally_entries:
+            all_finally_entries = list(all_snapshots)
         finally_check_entry = self._merge_scopes(all_finally_entries)
 
         self.scopes[-1] = dict(finally_check_entry)
@@ -758,7 +896,6 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 ("break", finally_frame.breaks),
                 ("continue", finally_frame.continues),
                 ("return", finally_frame.returns),
-                ("raise", finally_frame.raises),
             ):
                 if snaps:
                     kind_entry = self._merge_scopes(snaps)
@@ -767,6 +904,17 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                     )
                     if kind_final_falls:
                         self._record_jump(kind, after_kind)
+            if finally_frame.raises:
+                raises_by_exc: dict[str | None, list[dict[str, bool]]] = {}
+                for exc_name, snap in finally_frame.raises:
+                    raises_by_exc.setdefault(exc_name, []).append(snap)
+                for exc_name, snaps in raises_by_exc.items():
+                    kind_entry = self._merge_scopes(snaps)
+                    after_kind, kind_final_falls = self._run_finalbody_silenced(
+                        node.finalbody, kind_entry, cache
+                    )
+                    if kind_final_falls:
+                        self._record_jump("raise", after_kind, exc_name=exc_name)
 
         if normal_falls:
             after_normal, normal_final_falls = self._run_finalbody_silenced(
@@ -793,40 +941,46 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         test: ast.expr | None = None,
         target: ast.AST | None = None,
     ) -> bool:
-        before = dict(self.scopes[-1])
-        state = dict(before)
-        header_base = before
-        break_states: list[dict[str, bool]] = []
+        state = dict(self.scopes[-1])
+        merged_breaks: dict[str, bool] | None = None
+        normal_exit = dict(state)
         iters = 0
         while True:
             iters += 1
             self.scopes[-1] = dict(state)
-            if target is not None:
-                self._apply_assign_target(target, False)
             if test is not None:
                 self.visit(test)
-                if iters == 1:
-                    header_base = dict(self.scopes[-1])
+                after_test = dict(self.scopes[-1])
+            else:
+                after_test = None
+            if target is not None:
+                self._apply_assign_target(target, False)
             loop_frame = _LoopFrame()
             self._cf_stacks[-1].append(loop_frame)
             try:
                 body_falls = self._visit_stmt_list(body)
             finally:
                 self._cf_stacks[-1].pop()
-            break_states = loop_frame.breaks
-            next_candidates = [header_base]
+            if loop_frame.breaks:
+                merged_breaks = self._merge_scopes(
+                    ([merged_breaks] if merged_breaks is not None else [])
+                    + loop_frame.breaks
+                )
+            next_candidates = [state]
             if body_falls:
                 next_candidates.append(dict(self.scopes[-1]))
             next_candidates.extend(loop_frame.continues)
             next_state = self._merge_scopes(next_candidates)
             if next_state == state or iters >= max(len(next_state) + 64, 256):
-                self.scopes[-1] = next_state
+                normal_exit = after_test if after_test is not None else next_state
                 break
             state = next_state
-        normal_exit = dict(self.scopes[-1])
+        self.scopes[-1] = dict(normal_exit)
         if orelse:
             orelse_falls = self._visit_stmt_list(orelse)
-            exits = list(break_states)
+            exits: list[dict[str, bool]] = []
+            if merged_breaks is not None:
+                exits.append(merged_breaks)
             if orelse_falls:
                 exits.append(dict(self.scopes[-1]))
             if exits:
@@ -834,7 +988,8 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 return True
             self.scopes[-1] = normal_exit
             return False
-        self.scopes[-1] = self._merge_scopes([normal_exit, *break_states])
+        if merged_breaks is not None:
+            self.scopes[-1] = self._merge_scopes([normal_exit, merged_breaks])
         return True
 
     def visit_For(self, node: ast.For) -> bool:

@@ -83,6 +83,13 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "def f():\n    a = {'temperature': 0.2}\n    b = {}\n    a, b = b, a\n    create_chat_llm(**b)\n",
         "def f():\n    opts, *rest = {'temperature': 0.2}, 1, 2\n    create_chat_llm(**opts)\n",
         "def f():\n    opts = {}\n    opts['temperature'], meta = 0.2, None\n    create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        opts = {'temperature': 0.2}\n        raise KeyError\n    except ValueError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        opts = {'temperature': 0.2}\n        raise ValueError\n    except ValueError:\n        raise\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f(flag):\n    opts = {}\n    if flag:\n        with contextlib.suppress(ValueError):\n            opts = {'temperature': 0.2}\n            raise ValueError\n    create_chat_llm(**opts)\n",
+        "def f(flag):\n    opts = {}\n    if flag:\n        with contextlib.suppress(ValueError):\n            raise ValueError\n        opts = {'temperature': 0.2}\n    create_chat_llm(**opts)\n",
+        "def f(flag):\n    opts = {}\n    if flag:\n        with suppress(Exception):\n            opts = {'temperature': 0.2}\n            raise ValueError\n    create_chat_llm(**opts)\n",
+        "def f():\n    head, *[opts, meta] = None, {'temperature': 0.2}, None\n    create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    while ((saved := opts.copy()), opts.clear())[0]:\n        break\n    else:\n        saved = {}\n    create_chat_llm(**saved)\n",
     ],
 )
 def test_flags_direct_and_unpacked_temperature_kwargs(snippet: str):
@@ -145,6 +152,15 @@ def test_flags_unpacked_dict_kwarg_call():
         "def f():\n    opts = {'temperature': 0.2}\n    opts, *rest = {}, 1, 2\n    create_chat_llm(**opts)\n",
         "def f():\n    opts = {'temperature': 0.2}\n    with ctx() as opts:\n        create_chat_llm(**opts)\n",
         "def f():\n    opts = {'temperature': 0.2}\n    del (opts, meta)\n    create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        opts = {'temperature': 0.2}\n        raise ValueError\n    except ValueError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        opts['temperature'] = 0.2\n        raise ValueError\n    except:\n        opts = {}\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        opts = {'temperature': 0.2}\n        raise ValueError\n    except ValueError:\n        opts.clear()\n        raise\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f(flag):\n    opts = {}\n    if flag:\n        with contextlib.suppress(ValueError):\n            opts = {'temperature': 0.2}\n            raise KeyError\n    create_chat_llm(**opts)\n",
+        "def f(flag):\n    opts = {}\n    if flag:\n        with contextlib.suppress(ValueError):\n            opts = {'temperature': 0.2}\n            return\n    create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    head, *[opts, meta] = None, {}, None\n    create_chat_llm(**opts)\n",
+        "def f():\n    head, *rest = None, {'temperature': 0.2}\n    create_chat_llm(**rest)\n",
+        "def f(items):\n    opts = {}\n    for _ in items:\n        try:\n            break\n        except ValueError:\n            pass\n        else:\n            opts = {'temperature': 0.2}\n            break\n    create_chat_llm(**opts)\n",
+        "def f(start):\n    opts = {}\n    while opts.pop('temperature', start):\n        opts['temperature'] = 0\n    create_chat_llm(**opts)\n",
     ],
 )
 def test_allows_legitimate_forwarding_and_cleared_dicts(snippet: str):
