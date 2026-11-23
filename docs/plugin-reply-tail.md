@@ -110,6 +110,12 @@ the original request. Register before returning: that scope accepts images only
 while its callback is running. A late background registration is rejected.
 Handler return values are ignored and never cause a model continuation.
 
+The subscribed entry must be a public `@plugin_entry` the plugin has registered
+with the host (its id does not start with `_`). The plugin service dispatches the
+completion callback only to such entries; any other entry id gets HTTP 404 with
+`detail.code="ENTRY_NOT_REGISTERED"` and the plugin is not invoked. The main server
+keeps that subscription, as with other non-`PLUGIN_NOT_RUNNING` 404 responses.
+
 Pass `role="Character"` to subscribe only to that character. Calling `subscribe`
 again for the same plugin and entry replaces its subscription and cancels the old
 callback work. Call `await self.ctx.reply_tail.unsubscribe("after_reply")` to stop
