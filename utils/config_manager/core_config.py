@@ -76,6 +76,28 @@ from ._shared import _as_bool, logger
 from .json_update import update_json_config
 from .tier_renames import canonical_model_type, migrate_renamed_tier_fields
 
+# Slots that are another tier unless set up in full on their own. Following it,
+# or a custom / named setting missing its URL or model, hands the whole slot to
+# that tier at runtime (URL, model, key and protocol alike); nothing is patched
+# field by field. prefix -> (model_type, default followed tier, follow value ->
+# followed tier, snapshot model key).
+# Familiar-tier URLs keep the fixed CN text endpoint: free-agent-model is served only there
+# (see _normalize_agent_url), so they are never region-rewritten nor make a config need the
+# region probe. The advanced slot can resolve to free-agent-model too (follow_assist / follow_core
+# on the free provider), so it gets the same treatment.
+AGENT_TIER_URL_KEYS = ('AGENT_MODEL_URL', 'AGENT_ADVANCED_MODEL_URL')
+
+WHOLE_FOLLOW_SLOTS = {
+    'agentSmall': (
+        'agent_small', 'recognition',
+        {'follow_recognition': 'recognition', 'follow_agent': 'agent'}, 'AGENT_SMALL_MODEL',
+    ),
+    'agentAdvanced': ('agent_advanced', 'agent', {'follow_agent': 'agent'}, 'AGENT_ADVANCED_MODEL'),
+    'gameRecognition': (
+        'game_recognition', 'recognition', {'follow_recognition': 'recognition'}, 'GAME_RECOGNITION_MODEL',
+    ),
+}
+
 
 # Startup migration write retries: Windows os.replace can encounter transient antivirus sharing locks and raise
 # PermissionError(WinError 5); abandoning after one attempt leaves old ports until the next startup.
@@ -155,9 +177,12 @@ class CoreConfigMixin:
         'vision': 'VISION_MODEL',
         'agent': 'AGENT_MODEL',
         # The small familiar tier has no profile default of its own: a named
-        # provider's tier default is that provider's small (emotion) model.
+        # provider's tier default is that provider's small (recognition) model.
         'agentSmall': 'RECOGNITION_MODEL',
+        'agentAdvanced': 'AGENT_MODEL',
+        'gameRecognition': 'RECOGNITION_MODEL',
     }
+
 
     @staticmethod
     def _migrated_openclaw_url(raw_url: object) -> str:
@@ -342,7 +367,7 @@ class CoreConfigMixin:
             # see _normalize_agent_url and the rewrite-loop exemption), so region selection has no effect on it.
             # Including it as needing region would start probing an unrewritten URL when neither core nor assist is free,
             # exposing IP pointlessly (invariant #2).
-            if key == 'AGENT_MODEL_URL':
+            if key in AGENT_TIER_URL_KEYS:
                 continue
             try:
                 parsed = urlparse(value)
@@ -1081,6 +1106,8 @@ class CoreConfigMixin:
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
             'AGENT_SMALL_MODEL': DEFAULT_RECOGNITION_MODEL,
+            'AGENT_ADVANCED_MODEL': '',
+            'GAME_RECOGNITION_MODEL': '',
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
             'TTS_MODEL': DEFAULT_TTS_MODEL,
             'CONVERSATION_MODEL_URL': DEFAULT_CONVERSATION_MODEL_URL,
@@ -1101,6 +1128,10 @@ class CoreConfigMixin:
             'AGENT_MODEL_API_KEY': DEFAULT_AGENT_MODEL_API_KEY,
             'AGENT_SMALL_MODEL_URL': DEFAULT_RECOGNITION_MODEL_URL,
             'AGENT_SMALL_MODEL_API_KEY': DEFAULT_RECOGNITION_MODEL_API_KEY,
+            'AGENT_ADVANCED_MODEL_URL': '',
+            'AGENT_ADVANCED_MODEL_API_KEY': '',
+            'GAME_RECOGNITION_MODEL_URL': '',
+            'GAME_RECOGNITION_MODEL_API_KEY': '',
             'REALTIME_MODEL_URL': DEFAULT_REALTIME_MODEL_URL,
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
@@ -1392,8 +1423,8 @@ class CoreConfigMixin:
         # Exclude credential ttsModelApiKey; tts_client.py still reads it from persisted
         # configuration, avoiding expanding sensitive fields in general configuration snapshots.
         for _model_provider_prefix in (
-            'conversation', 'memory', 'gameMain', 'gameSummary',
-            'recognition', 'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts',
+            'conversation', 'memory', 'gameMain', 'gameSummary', 'gameRecognition',
+            'recognition', 'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'omni', 'tts',
         ):
             _raw_provider = str(
                 core_cfg.get(f'{_model_provider_prefix}ModelProvider', '') or ''
@@ -1492,14 +1523,14 @@ class CoreConfigMixin:
                     return ''
                 # Slots whose seed is another slot's resolved value: under follow_assist
                 # they must take the assist provider's tier default instead.
-                is_game_slot = prefix in ('gameMain', 'gameSummary', 'agentSmall')
+                is_game_slot = prefix in ('gameMain', 'gameSummary', 'gameRecognition', 'agentSmall', 'agentAdvanced')
                 if provider == 'follow_core':
                     # URL and key now use the core provider, so the model must too; retaining the snapshot's
                     # assist model would send provider A's model name to provider B's endpoint.
                     follow_core_profile = assist_api_profiles.get(core_api_value)
                     if isinstance(follow_core_profile, dict):
                         return (follow_core_profile.get(profile_key, '')
-                                or (follow_core_profile.get('VISION_MODEL', '') if prefix == 'agent' else '')
+                                or (follow_core_profile.get('VISION_MODEL', '') if prefix in ('agent', 'agentAdvanced') else '')
                                 or follow_core_profile.get('CONVERSATION_MODEL', '')
                                 or config.get('CORE_MODEL', ''))
                     return config.get('CORE_MODEL', '')
@@ -1521,7 +1552,7 @@ class CoreConfigMixin:
                 if not slot_url or not any(same_endpoint(slot_url, c) for c in candidates):
                     return ''
                 return str(named_profile.get(profile_key)
-                           or (named_profile.get('VISION_MODEL') if prefix == 'agent' else '')
+                           or (named_profile.get('VISION_MODEL') if prefix in ('agent', 'agentAdvanced') else '')
                            or named_profile.get('CONVERSATION_MODEL') or '').strip()
 
             _custom_api_fields = [
@@ -1531,10 +1562,12 @@ class CoreConfigMixin:
                 ('gameMain',     'GAME_MAIN_MODEL',    'GAME_MAIN_MODEL_URL',    'GAME_MAIN_MODEL_API_KEY'),
                 ('gameSummary',  'GAME_SUMMARY_MODEL', 'GAME_SUMMARY_MODEL_URL', 'GAME_SUMMARY_MODEL_API_KEY'),
                 ('recognition',      'RECOGNITION_MODEL',       'RECOGNITION_MODEL_URL',      'RECOGNITION_MODEL_API_KEY'),
+                ('gameRecognition', 'GAME_RECOGNITION_MODEL', 'GAME_RECOGNITION_MODEL_URL', 'GAME_RECOGNITION_MODEL_API_KEY'),
                 ('decision',     'DECISION_MODEL',      'DECISION_MODEL_URL',     'DECISION_MODEL_API_KEY'),
                 ('vision',       'VISION_MODEL',        'VISION_MODEL_URL',       'VISION_MODEL_API_KEY'),
                 ('agent',        'AGENT_MODEL',         'AGENT_MODEL_URL',        'AGENT_MODEL_API_KEY'),
                 ('agentSmall',   'AGENT_SMALL_MODEL',   'AGENT_SMALL_MODEL_URL',  'AGENT_SMALL_MODEL_API_KEY'),
+                ('agentAdvanced', 'AGENT_ADVANCED_MODEL', 'AGENT_ADVANCED_MODEL_URL', 'AGENT_ADVANCED_MODEL_API_KEY'),
                 ('omni',         'REALTIME_MODEL',      'REALTIME_MODEL_URL',     'REALTIME_MODEL_API_KEY'),
                 ('tts',          'TTS_MODEL',           'TTS_MODEL_URL',          'TTS_MODEL_API_KEY'),
             ]
@@ -1543,16 +1576,18 @@ class CoreConfigMixin:
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
-                if prefix == 'agentSmall' and provider in ('', 'follow_recognition', 'follow_agent'):
+                whole_follow = WHOLE_FOLLOW_SLOTS.get(prefix)
+                # Stripped like the runtime dispatch, so " follow_recognition " clears the fields too.
+                if whole_follow and str(provider or '').strip() in ('', *whole_follow[2]):
                     # Followed at runtime: get_model_api_config delegates to the followed tier.
                     # Fields saved before switching must not linger in the snapshot; an old
                     # free-route URL here would wake the region probe for nothing.
                     config[model_key] = config[url_key] = config[apikey_key] = ''
                     continue
-                if prefix == 'agentSmall':
+                if whole_follow:
                     # Own settings start blank: only a URL and model the user (or the chosen
                     # provider) actually supplies count. Anything incomplete is handed whole to
-                    # the recognition tier at runtime, never patched field by field.
+                    # the followed tier at runtime, never patched field by field.
                     config[model_key] = config[url_key] = config[apikey_key] = ''
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
@@ -1752,15 +1787,16 @@ class CoreConfigMixin:
                     elif cfg_key is not None:
                         config[apikey_key] = cfg_key
 
-            # The small familiar tier stands on its own only with both a URL and a model;
-            # anything less is the recognition tier at runtime. Drop the unused fields here
-            # so a leftover free-route URL cannot wake the region probe (invariant #2).
-            if not (
-                str(config.get('AGENT_SMALL_MODEL') or '').strip()
-                and str(config.get('AGENT_SMALL_MODEL_URL') or '').strip()
-            ):
-                config['AGENT_SMALL_MODEL'] = config['AGENT_SMALL_MODEL_URL'] = ''
-                config['AGENT_SMALL_MODEL_API_KEY'] = ''
+            # A whole-follow slot stands on its own only with both a URL and a model; anything
+            # less is the followed tier at runtime. Drop the unused fields here so a leftover
+            # free-route URL cannot wake the region probe (invariant #2).
+            for *_, slot_model_key in WHOLE_FOLLOW_SLOTS.values():
+                if not (
+                    str(config.get(slot_model_key) or '').strip()
+                    and str(config.get(f'{slot_model_key}_URL') or '').strip()
+                ):
+                    config[slot_model_key] = config[f'{slot_model_key}_URL'] = ''
+                    config[f'{slot_model_key}_API_KEY'] = ''
 
             # TTS Voice ID serves as fallback for character voice_id.
             if core_cfg.get('ttsVoiceId') is not None:
@@ -1811,12 +1847,13 @@ class CoreConfigMixin:
                     # non_mainland=False rather than skipping the call entirely: livestream-prefix derivation
                     # precedes region rewriting in _adjust_free_api_url. Exempt region selection,
                     # not local forwarding.
-                    non_mainland=False if key == 'AGENT_MODEL_URL' else snapshot_non_mainland,
+                    non_mainland=False if key in AGENT_TIER_URL_KEYS else snapshot_non_mainland,
                 )
 
         # Agent model always uses international API regardless of region
-        if isinstance(config.get('AGENT_MODEL_URL'), str):
-            config['AGENT_MODEL_URL'] = self._normalize_agent_url(config['AGENT_MODEL_URL'])
+        for agent_url_key in AGENT_TIER_URL_KEYS:
+            if isinstance(config.get(agent_url_key), str):
+                config[agent_url_key] = self._normalize_agent_url(config[agent_url_key])
 
         # Keep a raw, independent image slot: no chat fallback or implicit generation.
         config["IMAGE_GENERATION_CONFIG"] = {
@@ -1847,6 +1884,8 @@ class CoreConfigMixin:
                 - 'vision': vision model (falls back to assist API)
                 - 'agent': familiar (task agent) model; used even without custom API
                 - 'agent_small': small familiar model (follows 'recognition' unless configured)
+                - 'agent_advanced': advanced familiar model (follows 'agent' unless configured)
+                - 'game_recognition': minigame recognition model (follows 'recognition' unless configured)
                 - 'realtime': realtime speech model (falls back to core API)
                 - 'tts_default': default TTS (falls back to core API, used by OmniOfflineClient)
                 - 'tts_custom': custom TTS (falls back to assist API, used for voice_id scenarios)
@@ -1963,6 +2002,20 @@ class CoreConfigMixin:
                 'default_model': 'AGENT_SMALL_MODEL',
                 'fallback_type': 'recognition',  # The small familiar model follows the recognition (small) model by default.
             },
+            'agent_advanced': {
+                'custom_model': 'AGENT_ADVANCED_MODEL',
+                'custom_url': 'AGENT_ADVANCED_MODEL_URL',
+                'custom_key': 'AGENT_ADVANCED_MODEL_API_KEY',
+                'default_model': 'AGENT_ADVANCED_MODEL',
+                'fallback_type': 'agent',
+            },
+            'game_recognition': {
+                'custom_model': 'GAME_RECOGNITION_MODEL',
+                'custom_url': 'GAME_RECOGNITION_MODEL_URL',
+                'custom_key': 'GAME_RECOGNITION_MODEL_API_KEY',
+                'default_model': 'GAME_RECOGNITION_MODEL',
+                'fallback_type': 'recognition',
+            },
             'realtime': {
                 'custom_model': 'REALTIME_MODEL',
                 'custom_url': 'REALTIME_MODEL_URL',
@@ -2023,6 +2076,8 @@ class CoreConfigMixin:
                 'vision': 'vision',
                 'agent': 'agent',
                 'agent_small': 'agentSmall',
+                'agent_advanced': 'agentAdvanced',
+                'game_recognition': 'gameRecognition',
                 'realtime': 'omni',
                 'tts_default': 'tts',
                 'tts_custom': 'tts',
@@ -2054,6 +2109,8 @@ class CoreConfigMixin:
                     return _resolved_provider_type_for_model('memory', seen)
                 if fallback_type == 'recognition':
                     return _resolved_provider_type_for_model('recognition', seen)
+                if fallback_type == 'agent':
+                    return _resolved_provider_type_for_model('agent', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
 
             # Named-provider **protocols** likewise apply only when the slot URL truly belongs to that provider.
@@ -2091,6 +2148,8 @@ class CoreConfigMixin:
                     return _resolved_provider_type_for_model('memory', seen)
                 if fallback_type == 'recognition':
                     return _resolved_provider_type_for_model('recognition', seen)
+                if fallback_type == 'agent':
+                    return _resolved_provider_type_for_model('agent', seen)
                 return _normalize_provider_type_value(core_config.get('PROVIDER_TYPE'))
             return _provider_type_from_assist_key(provider)
 
@@ -2131,22 +2190,33 @@ class CoreConfigMixin:
             provider = str(core_config.get('gameSummaryModelProvider') or 'follow_memory').strip()
             if not treat_as_custom or provider == 'follow_memory':
                 return self.get_model_api_config('memory', _core_config=core_config)
-        elif model_type == 'agent_small':
-            # Unless configured separately the small familiar model is the recognition
-            # (small) model; follow_agent makes it the familiar model instead. Delegating
-            # keeps each followed tier's own endpoint rules (region rewrite, pinned agent URL).
-            provider = str(core_config.get('agentSmallModelProvider') or 'follow_recognition').strip()
-            if not treat_as_custom:
-                return self.get_model_api_config('recognition', _core_config=core_config)
-            if provider == 'follow_agent':
-                return self.get_model_api_config('agent', _core_config=core_config)
-            if not (
-                str(core_config.get('AGENT_SMALL_MODEL') or '').strip()
-                and str(core_config.get('AGENT_SMALL_MODEL_URL') or '').strip()
-            ):
-                # Its own settings count only when complete (URL and model); otherwise the
-                # whole slot is the recognition model, key and protocol included.
-                return self.get_model_api_config('recognition', _core_config=core_config)
+        else:
+            whole_follow = next(
+                (
+                    (prefix, slot)
+                    for prefix, slot in WHOLE_FOLLOW_SLOTS.items()
+                    if slot[0] == model_type
+                ),
+                None,
+            )
+            if whole_follow:
+                # Unless set up in full on its own, the slot is the tier it follows (the small
+                # familiar model is the recognition model, or the familiar model on request).
+                # Delegating keeps each followed tier's own endpoint rules (region rewrite,
+                # pinned agent URL).
+                prefix, (_, default_tier, follows, slot_model_key) = whole_follow
+                provider = str(core_config.get(f'{prefix}ModelProvider') or '').strip()
+                if not treat_as_custom or not provider:
+                    return self.get_model_api_config(default_tier, _core_config=core_config)
+                if provider in follows:
+                    return self.get_model_api_config(follows[provider], _core_config=core_config)
+                if not (
+                    str(core_config.get(slot_model_key) or '').strip()
+                    and str(core_config.get(f'{slot_model_key}_URL') or '').strip()
+                ):
+                    # Its own settings count only when complete (URL and model); otherwise
+                    # the whole slot is the followed tier, key and protocol included.
+                    return self.get_model_api_config(default_tier, _core_config=core_config)
         
         # Agent always uses dedicated AGENT_MODEL_URL, but is_custom is True only with enableCustomApi.
         # AGENT_MODEL_URL does **not** undergo region rewriting: _normalize_agent_url

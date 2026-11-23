@@ -127,6 +127,14 @@ def test_agent_tier_uses_the_main_app_agent_model_and_its_client_headers(env):
     assert resolved.capabilities == ("text", "tool_calling", "image_input")
 
 
+def test_advanced_familiar_tier_resolves_its_own_main_app_tier(env):
+    env.host["agent_advanced"] = {"model": "big-model", "base_url": "https://big.test/v1", "api_key": "sk-big"}
+    write_slots(env, {PLAIN_ID: follow("agent_advanced")})
+    resolved = resolve_model_slot(PLAIN_ID, config_manager=env)
+    assert env.asked == ["agent_advanced"]
+    assert (resolved.host_api, resolved.model, resolved.base_url) == ("agent_advanced", "big-model", "https://big.test/v1")
+
+
 def test_small_familiar_tier_resolves_its_own_main_app_tier(env):
     env.host["agent_small"] = {"model": "small-model", "base_url": "https://small.test/v1", "api_key": "sk-small"}
     write_slots(env, {PLAIN_ID: follow("agent_small")})

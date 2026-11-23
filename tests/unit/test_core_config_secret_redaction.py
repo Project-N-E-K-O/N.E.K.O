@@ -23,7 +23,7 @@ _ASSIST_API_KEY_FIELDS = (
 
 _MODEL_TYPES = (
     'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
-    'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts', 'image',
+    'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'gameRecognition', 'omni', 'tts', 'image',
 )
 
 _MODEL_API_KEY_FIELDS = tuple(

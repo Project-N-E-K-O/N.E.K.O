@@ -29,9 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增「截图遮住聊天记录」开关（settings.toggles.captureSelfUiMask / captureSelfUiMaskTooltip）八语言文案，
-    // 并入删掉零引用旧 key、模型改名、星图手动命名冷却提示那批之后的 key 结构，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-22-capture-mask-toggle-after-star-map-cooldown';
+    // 新增「使魔模型·高级」「小游戏识别模型」（api.agentAdvanced* / api.gameRecognitionModelConfig）八语言文案，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-23-agent-advanced-game-recognition-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

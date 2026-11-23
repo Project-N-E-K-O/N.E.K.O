@@ -141,6 +141,7 @@ def test_sync_other_provider_calls_keep_existing_tracking(installed_hooks, provi
         assert state.calls[0][1]["stream_options"] == {"include_usage": True}
     state.record.assert_called_once_with(
         model="test-model", prompt_tokens=7, completion_tokens=3, total_tokens=10, cached_tokens=0, call_type="unknown",
+        success=True,
     )
 
 
@@ -154,6 +155,7 @@ async def test_async_other_provider_calls_keep_existing_tracking(installed_hooks
         assert state.calls[0][1]["stream_options"] == {"include_usage": True}
     state.record.assert_called_once_with(
         model="test-model", prompt_tokens=7, completion_tokens=3, total_tokens=10, cached_tokens=0, call_type="unknown",
+        success=True,
     )
 
 

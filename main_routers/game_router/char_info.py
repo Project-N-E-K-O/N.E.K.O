@@ -394,23 +394,33 @@ def _get_current_character_info() -> Dict[str, Any]:
     return _get_character_info()
 
 
-def _get_game_route_summary_llm_info(lanlan_name: str | None = None) -> Dict[str, Any]:
-    """Resolve character metadata but use the summary model tier for helper calls."""
+def _get_game_route_tier_llm_info(lanlan_name: str | None, model_type: str) -> Dict[str, Any]:
+    """Resolve character metadata but use the given minigame model tier for a helper call."""
     info = dict(_get_character_info(lanlan_name))
     try:
-        summary_config = get_config_manager().get_model_api_config("game_summary") or {}
+        tier_config = get_config_manager().get_model_api_config(model_type) or {}
     except RuntimeError:
         return info
-    model = str(summary_config.get("model") or "").strip()
-    base_url = str(summary_config.get("base_url") or "").strip()
-    api_key = str(summary_config.get("api_key") or "").strip()
+    model = str(tier_config.get("model") or "").strip()
+    base_url = str(tier_config.get("base_url") or "").strip()
+    api_key = str(tier_config.get("api_key") or "").strip()
     if not (model and base_url):
         return info
     info.update({
         "model": model,
         "base_url": base_url,
-        "api_type": summary_config.get("api_type") or info.get("api_type", ""),
-        "provider_type": summary_config.get("provider_type") or info.get("provider_type", ""),
+        "api_type": tier_config.get("api_type") or info.get("api_type", ""),
+        "provider_type": tier_config.get("provider_type") or info.get("provider_type", ""),
         "api_key": api_key,
     })
     return info
+
+
+def _get_game_route_summary_llm_info(lanlan_name: str | None = None) -> Dict[str, Any]:
+    """Minigame memory model (game_summary): organizing in-game context, picking archive memories."""
+    return _get_game_route_tier_llm_info(lanlan_name, "game_summary")
+
+
+def _get_game_route_recognition_llm_info(lanlan_name: str | None = None) -> Dict[str, Any]:
+    """Minigame recognition model (game_recognition): quick in-game judgements, e.g. the soccer passive guard."""
+    return _get_game_route_tier_llm_info(lanlan_name, "game_recognition")
