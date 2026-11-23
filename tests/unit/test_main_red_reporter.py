@@ -152,6 +152,7 @@ class FakeGitHub:
         ]
         self.writes: list[tuple[str, str, dict | None]] = []
         self.pages_read: list[str] = []
+        self.issue_comments: list[dict] = []
 
     @staticmethod
     def _commit(sha, message, login):
@@ -162,7 +163,7 @@ class FakeGitHub:
             return self.run
         if path.startswith(f"/repos/{REPO}/actions/workflows/"):
             return {"workflow_runs": self._page(path, self.runs)}
-        if path.startswith(f"/repos/{REPO}/actions/runs/{self.run['id']}/jobs"):
+        if path.startswith(f"/repos/{REPO}/actions/runs/") and "/jobs" in path:
             return {"jobs": [*self.failed_jobs, {"id": 1, "name": "ok", "conclusion": "success", "html_url": "x"}]}
         if path.startswith(f"/repos/{REPO}/issues?"):
             return self.issues
@@ -170,6 +171,8 @@ class FakeGitHub:
             return {"commits": self._page(path, self.commits), "total_commits": len(self.commits)}
         if path.startswith(f"/repos/{REPO}/commits/"):
             return self.commits[-1]
+        if path.startswith(f"/repos/{REPO}/issues/") and "/comments" in path:
+            return self._page(path, self.issue_comments)
         if path.startswith(f"/repos/{REPO}/issues/"):
             number = int(path.rsplit("/", 1)[1])
             return {"user": {"login": {10: "alice", 11: "dependabot[bot]"}[number]}}
@@ -333,14 +336,49 @@ def test_only_pushes_to_this_repos_main_are_reported(override):
     assert gh.writes == []
 
 
-def test_stale_event_is_skipped_unless_replayed_by_hand():
+def test_late_event_reports_the_newest_run_instead():
+    # Run 5 failed, then run 9 went green; run 5's event arrives last.
     current = _failure()
     runs = [*_history(current), _run(9, "success", "2026-01-09T00:00:00Z")]
-    gh = FakeGitHub(current, runs)
-    assert mr.run_reporter(gh, "5", dry_run=False, discord_url=None)[0].startswith("skip")
-    assert gh.writes == []
-    replay = mr.run_reporter(gh, "5", dry_run=True, discord_url=None, check_newer=False)
+    issue = {"number": 8, "body": mr.issue_marker("Unit Tests"), "labels": [], "html_url": "u"}
+    gh = FakeGitHub(current, runs, issues=[issue])
+    actions = mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
+    assert actions[0].startswith("note: run 5 is superseded")
+    assert ("PATCH", f"/repos/{REPO}/issues/8") in [w[:2] for w in gh.writes]
+    # A manual replay reports the run it was given.
+    gh2 = FakeGitHub(current, runs)
+    replay = mr.run_reporter(gh2, "5", dry_run=True, discord_url=None, check_newer=False)
     assert replay[0].startswith("note") and any("open issue" in a for a in replay)
+
+
+def test_failure_whose_own_report_was_dropped_is_reported_by_a_later_event():
+    # Run 9 failed but its queued report was replaced by the late event of run 5.
+    current = _failure()
+    newest = _run(9, "failure", "2026-01-09T00:00:00Z", sha="c" * 40)
+    gh = FakeGitHub(current, [newest, *_history(current)])
+    mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
+    body = next(w[2]["body"] for w in gh.writes if w[1] == f"/repos/{REPO}/issues")
+    assert mr.run_marker(9) in body and "`cccccccc`" in body
+
+
+def test_a_run_is_reported_once():
+    current = _failure()
+    issue = {"number": 8, "body": mr.issue_marker("Unit Tests"), "labels": [], "html_url": "u"}
+    gh = FakeGitHub(current, _history(current), issues=[issue])
+    gh.issue_comments = [{"body": "older"}, {"body": "x\n" + mr.run_marker(5)}]
+    actions = mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
+    assert actions[-1].startswith("noop") and gh.writes == []
+
+
+def test_commit_titles_never_ping():
+    current = _failure()
+    commits = [FakeGitHub._commit("c1", "fix: follow @bob advice (#10)", "merger")]
+    gh = FakeGitHub(current, _history(current), commits=commits)
+    report = mr.collect_failure(gh, current, _history(current))
+    for for_comment in (False, True):
+        body = mr.render_failure(report, for_comment=for_comment)
+        assert "@bob" not in body and "bob advice" in body
+    assert "@alice" in mr.render_failure(report, for_comment=False)
 
 
 def test_dry_run_writes_nothing():
@@ -396,6 +434,16 @@ def test_history_stops_paging_once_the_last_success_is_found():
     gh = FakeGitHub(current, [current, *older])
     mr.run_history(gh, current)
     assert sum("/actions/workflows/" in p for p in gh.pages_read) == 1
+
+
+def test_log_request_failure_still_reports(monkeypatch):
+    gh = mr.GitHub("token", REPO)
+
+    def unreachable(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(gh, "_request", unreachable)
+    assert gh.job_log(1) == ""
 
 
 def test_log_download_failure_still_reports(monkeypatch):

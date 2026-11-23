@@ -273,9 +273,10 @@ jobs:
 
       - name: Install test-only native dependencies
         # Same pins as the full job above (checked by test_select_related_tests.py).
-        run: |
-          uv pip install pyclipper==1.4.0
-          uv pip install kaldi-native-fbank==1.22.3
+        # One command: PowerShell only fails a step on its last native exit
+        # code, so a failed first install would otherwise pass silently and
+        # leave the rapidocr tests to skip.
+        run: uv pip install pyclipper==1.4.0 kaldi-native-fbank==1.22.3
 
       - name: Download selection
         uses: actions/download-artifact@v4

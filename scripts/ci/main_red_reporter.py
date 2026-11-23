@@ -81,6 +81,24 @@ def issue_marker(workflow_name: str) -> str:
     return f"<!-- main-red:workflow={workflow_name} -->"
 
 
+def run_marker(run_id: int) -> str:
+    return f"<!-- main-red:run={run_id} -->"
+
+
+def already_reported(gh, issue: dict, run: dict) -> bool:
+    """Whether the issue body or one of its comments already reports this run."""
+    marker = run_marker(run["id"])
+    if marker in (issue.get("body") or ""):
+        return True
+    for page in range(1, MAX_PAGES + 1):
+        comments = gh.get(f"/repos/{gh.repo}/issues/{issue['number']}/comments?per_page={PAGE_SIZE}&page={page}")
+        if any(marker in (c.get("body") or "") for c in comments):
+            return True
+        if len(comments) < PAGE_SIZE:
+            return False
+    return False
+
+
 def find_tracking_issue(issues: list[dict], workflow_name: str) -> dict | None:
     marker = issue_marker(workflow_name)
     for issue in issues:
@@ -153,6 +171,7 @@ def render_failure(report: FailureReport, *, for_comment: bool) -> str:
     run = report.run
     sha = run["head_sha"][:8]
     lines: list[str] = []
+    lines.append(run_marker(run["id"]))
     if not for_comment:
         lines += [issue_marker(report.workflow), ""]
         lines.append(f"**{report.workflow}** 在 main 上失败了。这个 issue 由 main-red-reporter 自动维护：")
@@ -213,7 +232,8 @@ def render_failure(report: FailureReport, *, for_comment: bool) -> str:
             author = f"@{suspect.author}"
         else:
             author = f"`{suspect.author}`"
-        title = suspect.title.replace("|", "\\|")
+        # A zero-width space after "@" keeps "@name" in a commit title from pinging.
+        title = suspect.title.replace("|", "\\|").replace("@", "@\u200b")
         lines.append(f"| `{suspect.sha[:8]}` | {pr} | {author} | {title} |")
     people = mentions(shown)
     if ping and people:
@@ -264,7 +284,11 @@ class GitHub:
         return self.call("GET", path)
 
     def job_log(self, job_id: int) -> str:
-        status, raw, headers = self._request("GET", f"/repos/{self.repo}/actions/jobs/{job_id}/logs")
+        try:
+            status, raw, headers = self._request("GET", f"/repos/{self.repo}/actions/jobs/{job_id}/logs")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            print(f"warning: could not request the log of job {job_id}: {exc}", file=sys.stderr)
+            return ""
         if status in (301, 302, 303, 307, 308):
             location = headers.get("Location") or headers.get("location")
             # The redirect target is a pre-signed blob URL: sending the API
@@ -392,10 +416,16 @@ def run_reporter(
     runs = run_history(gh, run)
     newer = newer_decisive_run(run, runs)
     if newer is not None:
-        note = f"a newer run #{newer.get('run_number')} ({newer['conclusion']}) already decided main's state"
         if check_newer:
-            return [f"skip: {note}"]
-        actions.append(f"note: {note}; continuing because this is a manual replay")
+            # Report what main looks like now. A newer run's own report may
+            # have been dropped: a concurrency group keeps one pending job, so
+            # an older event arriving later replaces it in the queue.
+            newest = _decisive(runs)[0]
+            actions.append(f"note: run {run_id} is superseded by #{newest.get('run_number')}; reporting that run")
+            run = newest
+        else:
+            note = f"a newer run #{newer.get('run_number')} ({newer['conclusion']}) already decided main's state"
+            actions.append(f"note: {note}; continuing because this is a manual replay")
 
     open_issues = gh.get(f"/repos/{repo}/issues?state=open&labels={urllib.parse.quote(LABEL)}&per_page=100")
     issue = find_tracking_issue(open_issues, name)
@@ -411,6 +441,8 @@ def run_reporter(
                 _post_discord(discord_url, f"🟢 main 恢复：{name}（{run['head_sha'][:8]}） {issue['html_url']}")
         return actions
 
+    if issue is not None and already_reported(gh, issue, run):
+        return [*actions, f"noop: run {run['id']} is already on issue #{issue['number']}"]
     report = collect_failure(gh, run, runs)
     if issue is None:
         title = f"main 红了：{name}"

@@ -26,6 +26,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -64,10 +65,16 @@ FILES = {
     "app/patched.py": "VALUE = 4\n",
     "app/dynamic.py": "VALUE = 5\n",
     "app/server_mod.py": "VALUE = 6\n",
-    "app/state_reset.py": "def reset():\n    pass\n",
+    "app/state_reset.py": "from app.reset_impl import do_reset\n\ndef reset():\n    do_reset()\n",
+    "app/reset_impl.py": "def do_reset():\n    pass\n",
+    "app/base_service.py": "VALUE = 7\n",
+    "app/sub_service.py": "VALUE = 8\n",
     "app/sub_state.py": "def reset():\n    pass\n",
     "tests/__init__.py": "",
-    "tests/conftest.py": "from tests.root_helper import guard\n",
+    "tests/conftest.py": (
+        "import pytest\nfrom tests.root_helper import guard\nfrom tests.gone_helper import gone\n\n"
+        "@pytest.fixture\ndef base_service():\n    from app import base_service\n    return base_service\n"
+    ),
     "tests/root_helper.py": "def guard():\n    return None\n",
     "tests/unit/__init__.py": "",
     "tests/unit/conftest.py": (
@@ -76,7 +83,8 @@ FILES = {
         "    from app.state_reset import reset\n    reset()\n"
         "    sys.modules.get('app.heavy')\n\n"
         "@pytest.fixture\ndef server():\n    from app import server_mod\n    return server_mod\n\n"
-        "@pytest.fixture\ndef wrapped_server(server):\n    return server\n"
+        "@pytest.fixture\ndef wrapped_server(server):\n    return server\n\n"
+        "@pytest.fixture\ndef wrapped(base_service):\n    return base_service\n"
     ),
     "tests/unit/fakes_helper.py": "from app.other import VALUE\n\ndef make():\n    return VALUE\n",
     "tests/unit/sibling_helper.py": "import app.heavy\n",
@@ -120,10 +128,15 @@ FILES = {
     ),
     "tests/unit/sub/__init__.py": "",
     "tests/unit/sub/conftest.py": (
-        "import pytest\nfrom tests.unit.sub.sub_helper import fixture_value\n\n"
-        "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n"
+        "import pytest\nimport tests.unit.pkgb\nfrom tests.unit.sub.sub_helper import fixture_value\n\n"
+        "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n\n"
+        "@pytest.fixture\ndef sub_service():\n    from app import sub_service\n    return sub_service\n\n"
+        "@pytest.fixture(autouse=True)\ndef _sub_bootstrap(sub_service):\n    return sub_service\n"
     ),
     "tests/unit/test_uses_fixture.py": "def test_server(server):\n    assert server\n",
+    "tests/unit/test_wrapped_chain.py": "def test_wrapped(wrapped):\n    assert wrapped\n",
+    "tests/unit/pkgb/__init__.py": "",
+    "tests/unit/pkgb/test_c.py": "def test_c():\n    assert True\n",
     "tests/unit/test_uses_fixture_indirectly.py": (
         "import pytest\n\n@pytest.mark.usefixtures('wrapped_server')\ndef test_wrapped():\n    pass\n"
     ),
@@ -260,6 +273,34 @@ def test_module_imported_by_a_root_autouse_fixture_selects_everything(index):
 
 def test_module_imported_by_a_sub_directory_autouse_fixture_selects_that_directory(index):
     assert _selected(index, "app/sub_state.py") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
+
+
+def test_fixture_chain_crosses_conftests(index):
+    # tests/unit/conftest.py's `wrapped` requests `base_service` from tests/conftest.py.
+    assert _selected(index, "app/base_service.py") == ["tests/unit/test_wrapped_chain.py"]
+
+
+def test_fixture_requested_by_an_autouse_fixture_runs_for_its_directory(index):
+    assert _selected(index, "app/sub_service.py") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
+
+
+def test_what_a_root_autouse_import_imports_selects_everything(index):
+    assert sel.select(index, ["app/reset_impl.py"]).mode == "full"
+
+
+def test_deleted_helper_of_a_root_conftest_selects_everything(repo):
+    # The change deletes tests/gone_helper.py, which tests/conftest.py still imports.
+    index = sel.build_index(repo, extra_modules={"tests.gone_helper": "tests/gone_helper.py"})
+    assert sel.select(index, ["tests/gone_helper.py"]).mode == "full"
+
+
+def test_package_init_keeps_the_scope_of_the_conftest_importing_it(index):
+    # tests/unit/sub/conftest.py imports tests.unit.pkgb, so its __init__ runs for sub/ too.
+    assert _selected(index, "tests/unit/pkgb/__init__.py") == [
+        "tests/unit/pkgb/test_c.py",
+        "tests/unit/sub/test_a.py",
+        "tests/unit/sub/test_b.py",
+    ]
 
 
 def test_shard_marked_files_are_left_to_the_shards(index):
@@ -422,7 +463,12 @@ def test_cli_writes_args_files_and_step_outputs(git_repo, tmp_path):
 def test_cli_balances_by_the_durations_report(git_repo, tmp_path):
     report_dir = tmp_path / "durations"
     report_dir.mkdir()
-    (report_dir / "full.xml").write_bytes(JUNIT.encode("utf-8"))
+    # Every file takes a second, except test_core.py, which takes 1000.
+    cases = "".join(
+        f'<testcase classname="c" name="t" file="{path}" time="{1000.0 if path.endswith("test_core.py") else 1.0}" />'
+        for path in ALL_CANDIDATES
+    )
+    (report_dir / "full.xml").write_bytes(f"<testsuites><testsuite>{cases}</testsuite></testsuites>".encode("utf-8"))
     changed = tmp_path / "changed.txt"
     changed.write_bytes(b"pytest.ini\n")
     out = tmp_path / "out"
@@ -433,7 +479,7 @@ def test_cli_balances_by_the_durations_report(git_repo, tmp_path):
     # The full suite is the full cost: it needs every shard, whatever the file count.
     assert len(report["shards"]) == sel.MAX_SHARDS
     heaviest = max(report["shards"], key=lambda s: s["cost"])
-    assert "tests/unit/test_core.py" in (out / f"shard-{heaviest['index']}.args").read_bytes().decode("utf-8").split()
+    assert (out / f"shard-{heaviest['index']}.args").read_bytes().decode("utf-8").split() == ["tests/unit/test_core.py"]
 
 
 def test_cli_falls_back_to_the_full_suite_when_the_diff_fails(git_repo, tmp_path):
@@ -504,8 +550,9 @@ def test_related_shards_run_exactly_like_the_full_job(workflow):
     marker_expr = '-m "not unit_fast and not runtime and not integration_serial and not frontend_contract"'
     for snippet in (marker_expr, "-n auto --dist loadfile", "--basetemp \"${{ runner.temp }}/", "-o junit_family=xunit1"):
         assert snippet in full and snippet in shard
-    for pin in ("uv pip install pyclipper==1.4.0", "uv pip install kaldi-native-fbank==1.22.3"):
-        assert pin in full and pin in shard
+    for package in ("pyclipper", "kaldi-native-fbank"):
+        pins = {re.search(rf"{package}==([\w.]+)", text).group(1) for text in (full, shard)}
+        assert len(pins) == 1, f"{package} pinned differently: {pins}"
     # The file list must never be spelled out on the Windows command line.
     assert '"@related-tests/shard-${{ matrix.shard }}.args"' in shard
 

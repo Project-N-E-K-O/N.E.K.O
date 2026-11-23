@@ -27,11 +27,12 @@ Selection rules (the "trans" strategy validated offline on 150 merged PRs):
   weak dependency: it selects the importer when that ``__init__`` itself
   changed, but does not pass on changes to everything else it imports.
 * Fixtures: a test that requests a conftest fixture (as a parameter or via
-  ``usefixtures``, also through fixtures requesting fixtures) depends on
-  what that fixture imports. A module imported at conftest level or inside
-  an autouse fixture runs for every test in the conftest's directory, so a
-  change to that module itself selects the whole directory (the full suite
-  for the root conftests).
+  ``usefixtures``, also through fixtures requesting fixtures, across the
+  conftests above it, a nearer one overriding a farther one) depends on what
+  that fixture imports. A module imported at conftest level or by an autouse
+  fixture (or a fixture it requests) runs for every test in the conftest's
+  directory, so a change to it or to anything it imports selects the whole
+  directory (the full suite for the root conftests).
 * A test file is selected when anything in its transitive closure changed,
   which also covers a changed test file itself and helpers that reach
   application code indirectly.
@@ -147,6 +148,8 @@ class RepoIndex:
     test_tree_tokens: dict[str, frozenset[str]] | None = None  # built lazily
     # conftest path -> modules outside tests/ that run for every test in its scope
     conftest_autouse: dict[str, set[str]] = field(default_factory=dict)
+    # module -> path, including modules the change deletes
+    known_paths: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_weight(self) -> int:
@@ -431,16 +434,13 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
 
     # Fixtures reach code without an import in the test: a test that takes a
     # conftest fixture as a parameter depends on what that fixture imports.
-    fixture_deps, conftest_autouse = _conftest_fixtures(modules, trees, resolver)
+    conftests = _conftest_fixtures(modules, trees, resolver)
     for rel, tree in trees.items():
         if tree is None or not rel.startswith(TEST_ROOT + "/") or not is_test_module(rel):
             continue
-        used = _used_fixture_names(tree)
         mod = module_name(rel)
-        for conftest_rel, fixtures in fixture_deps.items():
-            if rel.startswith(conftest_rel.rsplit("/", 1)[0] + "/"):
-                for name in used & fixtures.keys():
-                    deps[mod] |= fixtures[name] - {mod}
+        deps[mod] |= _expand(_visible_fixtures(conftests, rel), _used_fixture_names(tree), "deps") - {mod}
+    conftest_autouse = _autouse_closures(conftests, modules, deps)
 
     test_tree_text = {rel: text for rel, text in texts.items() if rel.startswith("tests/")}
     tests: dict[str, TestFile] = {}
@@ -458,6 +458,7 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
         tests=tests,
         path_to_module={rel: mod for mod, rel in modules.items()},
         conftest_autouse=conftest_autouse,
+        known_paths=known,
     )
 
 
@@ -492,57 +493,113 @@ def _resolve_nodes(resolver: _Resolver, rel: str, nodes: list[ast.stmt], imports
     return out
 
 
+@dataclass
+class _Fixture:
+    deps: set[str]  # modules it imports or names (dotted literals, attribute chains)
+    imports: set[str]  # modules it imports
+    params: set[str]  # fixtures it requests
+    autouse: bool
+
+
+@dataclass
+class _Conftest:
+    directory: str  # "tests/unit/" for tests/unit/conftest.py
+    fixtures: dict[str, _Fixture]
+    imports: set[str]  # module-level imports
+
+
 def _conftest_fixtures(
     modules: dict[str, str], trees: dict[str, ast.Module | None], resolver: _Resolver
-) -> tuple[dict[str, dict[str, set[str]]], dict[str, set[str]]]:
-    """Per conftest: fixture name -> modules it imports, and the modules every test in scope runs.
-
-    The second map holds what the conftest imports at module level or inside
-    an autouse fixture, outside tests/ (test-tree helpers are already scoped
-    by the conftest rule). Only those modules themselves count, not their
-    imports: an autouse fixture touches exactly what it imports.
-    """
-    fixture_deps: dict[str, dict[str, set[str]]] = {}
-    autouse: dict[str, set[str]] = {}
+) -> dict[str, _Conftest]:
+    """The fixtures each conftest under tests/ defines, keyed by conftest path."""
+    out: dict[str, _Conftest] = {}
     for rel in modules.values():
         tree = trees.get(rel)
         if tree is None or not rel.startswith("tests/") or PurePosixPath(rel).name != "conftest.py":
             continue
-        fixtures: dict[str, set[str]] = {}
-        params: dict[str, set[str]] = {}
-        always: list[ast.stmt] = []
+        fixtures: dict[str, _Fixture] = {}
+        top_level: list[ast.stmt] = []
         for node in tree.body:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
-                    always.append(node)
+                    top_level.append(node)
                 continue
             for dec in node.decorator_list:
                 is_fixture, is_autouse, alias = _fixture_decorator(dec)
                 if is_fixture:
-                    name = alias or node.name
-                    fixtures[name] = _resolve_nodes(resolver, rel, [node])
-                    params[name] = {a.arg for a in node.args.args + node.args.kwonlyargs}
-                    if is_autouse:
-                        always.append(node)
+                    fixtures[alias or node.name] = _Fixture(
+                        deps=_resolve_nodes(resolver, rel, [node]),
+                        # Import statements only: `sys.modules.get("pkg.mod")` in a
+                        # reset fixture touches a module some test already loaded.
+                        imports=_resolve_nodes(resolver, rel, [node], imports_only=True),
+                        params={a.arg for a in node.args.args + node.args.kwonlyargs},
+                        autouse=is_autouse,
+                    )
                     break
-        for _ in range(len(fixtures)):  # fixtures requesting other fixtures
-            changed = False
-            for name, requested in params.items():
-                for other in requested & fixtures.keys():
-                    if other != name and not fixtures[other] <= fixtures[name]:
-                        fixtures[name] |= fixtures[other]
-                        changed = True
-            if not changed:
-                break
-        fixture_deps[rel] = fixtures
-        # Import statements only: `sys.modules.get("pkg.mod")` in a reset
-        # fixture touches a module some test already loaded, it loads nothing.
-        autouse[rel] = {
-            m
-            for m in _resolve_nodes(resolver, rel, always, imports_only=True)
-            if not modules.get(m, "tests/").startswith("tests/")
-        }
-    return fixture_deps, autouse
+        out[rel] = _Conftest(
+            directory=rel.rsplit("/", 1)[0] + "/",
+            fixtures=fixtures,
+            imports=_resolve_nodes(resolver, rel, top_level, imports_only=True),
+        )
+    return out
+
+
+def _visible_fixtures(conftests: dict[str, _Conftest], rel: str) -> dict[str, _Fixture]:
+    """Fixtures a file under ``rel``'s directory can request; a nearer conftest overrides a farther one."""
+    visible: dict[str, _Fixture] = {}
+    for conftest in sorted(conftests.values(), key=lambda c: len(c.directory)):
+        if rel.startswith(conftest.directory):
+            visible.update(conftest.fixtures)
+    return visible
+
+
+def _expand(visible: dict[str, _Fixture], names: set[str], attr: str) -> set[str]:
+    """Modules reached by requesting ``names``, following fixtures that request fixtures."""
+    out: set[str] = set()
+    seen: set[str] = set()
+    stack = [n for n in names if n in visible]
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        fixture = visible[name]
+        out |= getattr(fixture, attr)
+        stack.extend(p for p in fixture.params if p in visible and p not in seen)
+    return out
+
+
+def _autouse_closures(
+    conftests: dict[str, _Conftest], modules: dict[str, str], deps: dict[str, set[str]]
+) -> dict[str, set[str]]:
+    """Per conftest: application modules that run for every test in its directory.
+
+    That is what the conftest imports at module level or through its autouse
+    fixtures (and the fixtures those request), plus everything those modules
+    import in turn. Test-tree helpers are left out here: the conftest rule
+    already scopes them, and the application code a helper merely imports
+    runs once at import time, which the tests that use that code catch.
+    Following helpers as well put 34 of the last 150 PRs on the full suite
+    instead of 18.
+    """
+
+    def outside_tests(mod: str) -> bool:
+        return not modules.get(mod, "tests/").startswith("tests/")
+
+    out: dict[str, set[str]] = {}
+    for rel, conftest in conftests.items():
+        visible = _visible_fixtures(conftests, rel)
+        autouse = {name for name, f in conftest.fixtures.items() if f.autouse}
+        roots = {m for m in conftest.imports | _expand(visible, autouse, "imports") if outside_tests(m)}
+        seen = set(roots)
+        stack = list(roots)
+        while stack:
+            for dep in deps.get(stack.pop(), ()):
+                if dep not in seen and outside_tests(dep):
+                    seen.add(dep)
+                    stack.append(dep)
+        out[rel] = seen
+    return out
 
 
 def _used_fixture_names(tree: ast.Module) -> set[str]:
@@ -590,11 +647,13 @@ def _test_tree_closure(index: RepoIndex, rel: str) -> set[str]:
     stack = [start]
     while stack:
         for dep in index.deps.get(stack.pop(), ()):
-            dep_rel = index.modules.get(dep, "")
+            # known_paths: a helper the change deletes still has to count.
+            dep_rel = index.known_paths.get(dep) or index.modules.get(dep, "")
             if dep not in seen and dep_rel.startswith("tests/"):
                 seen.add(dep)
                 stack.append(dep)
-    return {index.modules[m] for m in seen if m in index.modules}
+    paths = {**index.modules, **index.known_paths}
+    return {paths[m] for m in seen if m in paths}
 
 
 def _literal_for(rel: str) -> tuple[str, ...] | None:
@@ -655,7 +714,10 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
             continue
         if conftest_rel in ROOT_CONFTESTS:
             return Selection(
-                "full", f"{hit[0]} runs in a fixture of {conftest_rel} for every test", sorted(candidates), changed
+                "full",
+                f"{hit[0]} runs (directly or through its importers) in a fixture of {conftest_rel} for every test",
+                sorted(candidates),
+                changed,
             )
         scope = conftest_rel.rsplit("/", 1)[0] + "/"
         chosen |= {p for p in candidates if p.startswith(scope)}
@@ -664,11 +726,11 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
     for rel in changed:
         if _ignored(rel):
             continue
-        scope = conftest_scope.get(rel)
+        scopes = {conftest_scope.get(rel) or ""}
         if PurePosixPath(rel).name in ("conftest.py", "__init__.py") and rel.startswith(TEST_ROOT + "/"):
             # A test package's __init__ runs before every test module in it, like a conftest.
-            scope = rel.rsplit("/", 1)[0] + "/"
-        if scope:
+            scopes.add(rel.rsplit("/", 1)[0] + "/")
+        for scope in scopes - {""}:
             chosen |= {p for p in candidates if p.startswith(scope)}
         mod = module_name(rel)
         if mod is not None:
