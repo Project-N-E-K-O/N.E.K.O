@@ -26,7 +26,8 @@ from plugin.utils.source_paths import is_vendor_sync_path, iter_plugin_python_fi
 CAPABILITIES = tuple(sorted(spec.legacy_name for spec in PERMISSIONS.values() if spec.legacy_name))
 # Bump when a change to analysis makes persisted reports stale.
 # 5: permission ids, declarations, blind spots; legacy capabilities unchanged.
-ANALYZER_VERSION = 5
+# 6: run_in_executor(None, ...) is no longer a context_loss blind spot.
+ANALYZER_VERSION = 6
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -1055,8 +1056,14 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
     ):
         return "reflective_access"
     if reference.is_call and method.endswith(".run_in_executor"):
-        # Executor threads, the default one included, do not carry the
-        # caller's context variables.
+        # The plugin runtime installs a context-copying default executor on
+        # the loops it runs plugin code on, so a literal None executor keeps
+        # the caller's context variables. Any other executor does not, and
+        # the scan cannot tell a loop the plugin made itself, or a replaced
+        # default executor, from the runtime's.
+        executor = _call_argument(node, 0, "executor")
+        if isinstance(executor, ast.Constant) and executor.value is None:
+            return None
         return "context_loss"
     return None
 

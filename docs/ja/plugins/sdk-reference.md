@@ -352,7 +352,8 @@ chain.allows("plugin_sdk.main_agent.memory:read")
 - `None` になることはありません。呼び出しの外（タイマー、エントリが戻った後も動いているバックグラウンドタスク）では、自分のプラグインだけを含むチェーンになり、`rights_known=False` です。
 - `rights` には `plugin_sdk.main_agent.memory:read` のような権限 ID が入ります。1 バージョンの間は旧名（`memory.read`、`conversations.read`、`messages.push`）も併せて入り、`allows()` はどちらの形式も受け付けます。
 - `allows()` は参考情報です。権限が不明なときは常に `False` を返すため、「持っていない」と「わからない」はどちらも `False` になります。区別するには `rights_known` を見てください。各利用の可否はホストが判定します。ここで `False` でもホストが拒否するとは限らず、`True` も呼び出しが配送された時点のスナップショットです。
-- `loop.run_in_executor` や素の `threading.Thread` に渡した処理は呼び出しコンテキストを失い、ホストからはプラグインが自発的に行ったリクエストとして扱われます。`asyncio.to_thread` は保持します。独自のスレッドでは `contextvars.copy_context().run(...)` で処理を包んでください。
+- 素の `threading.Thread`、独自のスレッドプール、独自の executor を渡した `loop.run_in_executor` に渡した処理は呼び出しコンテキストを失い、ホストからはプラグインが自発的に行ったリクエストとして扱われます。`asyncio.to_thread` は保持します。独自のスレッドでは `contextvars.copy_context().run(...)` で処理を包んでください。
+- `loop.run_in_executor(None, ...)` も保持しますが、プラグインランタイムがコードを実行するイベントループ上に限ります。ランタイムがそのループのデフォルト executor をコンテキストをコピーするものに置き換えているためです。自分で作成したイベントループ上や、デフォルト executor を置き換えた後ではコンテキストを失います。`neko-plugin check` はこれらを区別できないため、`run_in_executor(None, ...)` をスキャンで見通せない箇所として表示しません。
 - 旧来の `plugin.sdk.shared.runtime.call_chain`（1 つのプラグインプロセス内の呼び出しだけを追跡）とは別物です。
 
 ホストはプラグイン間呼び出しと能力の利用を監査用に記録します（識別子と能力名のみで、引数・戻り値・メッセージ本文は記録しません）。設計：[`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md)。
