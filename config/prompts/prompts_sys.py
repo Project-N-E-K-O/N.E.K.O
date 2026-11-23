@@ -228,6 +228,7 @@ def get_context_summary_ready(
     ('audio' / 'text'); chat-platform plugins are always 'text'. Callers
     still ``.format(name=..., master=...)`` the result — the group variant
     simply has no ``{master}`` slot to fill."""
+    lang = normalize_sys_prompt_locale(lang)
     if is_group:
         return _loc(CONTEXT_SUMMARY_READY_GROUP, lang)
     if str(input_mode or '').strip() == 'text':

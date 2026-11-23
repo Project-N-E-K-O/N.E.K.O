@@ -225,8 +225,83 @@ _VALUE_TRANSLATIONS = {
         '女': 'Feminino',
         'T酱, 小T': 'T-chan, Pequena T',
     },
+    'ko': {
+        '哥哥': '오빠',
+        '男': '남성',
+        '女': '여성',
+        'T酱, 小T': 'T짱, 꼬마 T',
+    },
     # zh and zh-CN use original Chinese values without translation
 }
+
+
+CHARACTER_NICKNAME_FIELD_KEYS = (
+    "昵称",
+    "暱稱",
+    "Nickname",
+    "ニックネーム",
+    "닉네임",
+    "Прозвище",
+    "Apodo",
+    "Apelido",
+)
+
+CHARACTER_GENDER_FIELD_KEYS = (
+    "性别",
+    "性別",
+    "Gender",
+    "성별",
+    "Пол",
+    "Género",
+    "Gênero",
+)
+
+
+def get_character_field_value(payload: object, keys: tuple[str, ...]) -> str:
+    """Return the first non-empty localized character field value."""
+    if not isinstance(payload, dict):
+        return ""
+    for key in keys:
+        val = payload.get(key)
+        if val is not None:
+            text = str(val).strip()
+            if text:
+                return text
+    folded: dict[str, str] = {}
+    for k, v in payload.items():
+        if v is not None:
+            text = str(v).strip()
+            if text:
+                folded.setdefault(str(k).casefold(), text)
+    for key in keys:
+        val = folded.get(key.casefold())
+        if val:
+            return val
+    return ""
+
+
+def get_character_nickname(payload: object) -> str:
+    """Read localized nickname from a master or catgirl profile dict."""
+    return get_character_field_value(payload, CHARACTER_NICKNAME_FIELD_KEYS)
+
+
+def get_character_gender(payload: object) -> str:
+    """Read localized gender from a master or catgirl profile dict."""
+    return get_character_field_value(payload, CHARACTER_GENDER_FIELD_KEYS)
+
+
+def resolve_master_display_name(master_basic_config: object, fallback_name: str = "") -> str:
+    """Resolve the user's preferred display name across all localized profile schemas."""
+    nickname = get_character_nickname(master_basic_config)
+    if nickname:
+        first_nickname = nickname.split(",")[0].split("，")[0].strip()
+        if first_nickname:
+            return first_nickname
+    if isinstance(master_basic_config, dict):
+        profile_name = str(master_basic_config.get("档案名", "") or "").strip()
+        if profile_name:
+            return profile_name
+    return str(fallback_name or "").strip()
 
 
 def get_localized_default_characters(language: str | None = None) -> dict:
@@ -278,8 +353,10 @@ def get_localized_default_characters(language: str | None = None) -> dict:
             value_trans = _VALUE_TRANSLATIONS.get('es')
         elif lang_lower.startswith('pt'):
             value_trans = _VALUE_TRANSLATIONS.get('pt')
+        elif lang_lower.startswith('ko'):
+            value_trans = _VALUE_TRANSLATIONS.get('ko')
 
-    # Even when display fields need no translation (simplified Chinese/Korean, etc.), localize system_prompt
+    # Even when display fields need no translation (simplified Chinese, etc.), localize system_prompt
     if value_trans is None:
         result = deepcopy(DEFAULT_CHARACTERS_CONFIG)
         for char_config in result.get('猫娘', {}).values():
