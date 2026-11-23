@@ -130,7 +130,7 @@ async function _charTransferMutationFetch(url, options) {
             }
             return response;
         }
-        return send(true);
+        return await send(true);
     } finally {
         if (timeoutId !== null) clearTimeout(timeoutId);
         if (externalSignal && externalAbortListener && typeof externalSignal.removeEventListener === 'function') {

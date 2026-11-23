@@ -203,3 +203,69 @@ test('PR3981 #56: timely Molili card-meta update updates _cardMetas badge and _c
         (err) => err && err.name === 'AbortError'
     );
 });
+
+test('PR3981 #59: _charTransferMutationFetch keeps timeoutMs and external AbortSignal active across 403 retry', async () => {
+    // 1) timeoutMs remains armed when 403 csrf_validation_failed triggers send(true) and refresh hangs.
+    let pageConfigCount = 0;
+    const retryTimeoutMod = loadCharacterTransferModule({
+        fetchImpl: async (url) => {
+            const pathName = String(url);
+            if (pathName === '/api/config/page_config') {
+                pageConfigCount += 1;
+                if (pageConfigCount === 1) {
+                    return { ok: true, status: 200, json: async () => ({ autostart_csrf_token: 'tok-1' }) };
+                }
+                return new Promise(() => {});
+            }
+            return {
+                ok: false,
+                status: 403,
+                json: async () => ({ error_code: 'csrf_validation_failed' }),
+                clone() { return { json: async () => ({ error_code: 'csrf_validation_failed' }) }; },
+            };
+        },
+    });
+    await assert.rejects(
+        () => retryTimeoutMod.context._charTransferMutationFetch('/api/characters/catgirl/X/card-meta', {
+            method: 'PUT',
+            timeoutMs: 25,
+        }),
+        (err) => err && err.name === 'AbortError'
+    );
+
+    // 2) External AbortSignal listener stays attached across 403 csrf_validation_failed retry.
+    let retryPageConfigStartedResolve = null;
+    const retryPageConfigStarted = new Promise((resolve) => { retryPageConfigStartedResolve = resolve; });
+    let extPageConfigCount = 0;
+    const externalController = new AbortController();
+    const externalAbortMod = loadCharacterTransferModule({
+        fetchImpl: async (url) => {
+            const pathName = String(url);
+            if (pathName === '/api/config/page_config') {
+                extPageConfigCount += 1;
+                if (extPageConfigCount === 1) {
+                    return { ok: true, status: 200, json: async () => ({ autostart_csrf_token: 'tok-ext-1' }) };
+                }
+                retryPageConfigStartedResolve();
+                return new Promise(() => {});
+            }
+            return {
+                ok: false,
+                status: 403,
+                json: async () => ({ error_code: 'csrf_validation_failed' }),
+                clone() { return { json: async () => ({ error_code: 'csrf_validation_failed' }) }; },
+            };
+        },
+    });
+    const retryPromise = externalAbortMod.context._charTransferMutationFetch('/api/characters/catgirl/X/card-meta', {
+        method: 'PUT',
+        signal: externalController.signal,
+        timeoutMs: 5000,
+    });
+    await retryPageConfigStarted;
+    externalController.abort();
+    await assert.rejects(
+        () => retryPromise,
+        (err) => err && err.name === 'AbortError'
+    );
+});
