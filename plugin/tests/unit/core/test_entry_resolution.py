@@ -15,8 +15,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
-from plugin._types.exceptions import PluginEntryNotFoundError
+from plugin._types.exceptions import PluginEntryNotFoundError, PluginOutputSchemaError
 from plugin.core import entry_executor as entry_executor_module
 from plugin.core.entry_executor import EntryExecutor
 from plugin.core.host import PluginHost, _initial_entry_tables
@@ -175,28 +176,53 @@ def test_a_handler_of_another_event_type_is_not_a_plugin_entry(tmp_path):
     assert executor._resolve("custom_x", "ping", registered_only=True) is not None
 
 
-def test_an_entry_and_a_timer_sharing_an_id_resolve_to_the_entry(tmp_path, monkeypatch):
-    @neko_plugin
-    class Dual(NekoPluginBase):
-        @plugin_entry(id="dual")
-        async def as_entry(self, **_: Any) -> str:
-            return "entry"
+class _Params(BaseModel):
+    count: int
 
-        @timer_interval(id="dual", seconds=3600, auto_start=False)
-        async def as_timer(self, **_: Any) -> str:
-            return "timer"
 
-    ctx = _ctx(tmp_path)
-    instance = Dual(ctx)
+class _Count(BaseModel):
+    count: int
+
+
+@neko_plugin
+class _Dual(NekoPluginBase):
+    @plugin_entry(id="dual", params=_Params, strict_output=True)
+    async def as_entry(self, params: _Params, **_: Any) -> _Count:
+        result: Any = {"count": params.count} if params.count >= 0 else {"count": "not an integer"}
+        return result
+
+    @timer_interval(id="dual", seconds=3600, auto_start=False)
+    async def as_timer(self, **_: Any) -> str:
+        return "timer"
+
+
+def _dual_through_the_fallback_scan(tmp_path, monkeypatch):
+    instance = _Dual(_ctx(tmp_path))
 
     def broken(**_kwargs: object):
         raise RuntimeError("collect failed")
 
-    # The loader's fallback scan keeps both; the id map holds the timer.
     monkeypatch.setattr(instance, "collect_entries", broken)
-    executor, _instance, _logger = _runtime(tmp_path, instance=instance)
-    assert executor._metadata["dual"].event_type == "timer"
+    return _runtime(tmp_path, instance=instance)
+
+
+def test_an_entry_and_a_timer_sharing_an_id_keep_their_own_maps(tmp_path, monkeypatch):
+    executor, instance, _logger = _dual_through_the_fallback_scan(tmp_path, monkeypatch)
+    # The id-keyed maps hold the entry with its own metadata; the timer
+    # keeps its handler in the per-type map the timer scheduler reads.
+    assert executor._entries["dual"] == instance.as_entry
+    assert executor._metadata["dual"].event_type == "plugin_entry"
+    assert executor._events["timer"]["dual"] == instance.as_timer
     assert _resolve(executor, "dual") == instance.as_entry
+
+
+async def test_a_shared_id_entry_runs_with_its_own_contract(tmp_path, monkeypatch):
+    executor, _instance, _logger = _dual_through_the_fallback_scan(tmp_path, monkeypatch)
+    # Its params model builds the argument ...
+    assert await executor.invoke("plugin_entry", "dual", {"count": 3}) == {"count": 3}
+    # ... and its strict output contract applies.
+    with pytest.raises(PluginOutputSchemaError):
+        await executor.invoke("plugin_entry", "dual", {"count": -1})
 
 
 def test_a_wrapped_handler_of_another_event_type_is_not_a_plugin_entry(tmp_path):

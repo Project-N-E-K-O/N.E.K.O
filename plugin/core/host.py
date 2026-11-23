@@ -432,11 +432,21 @@ def _initial_entry_tables(instance: Any, logger: Any) -> tuple[Dict[str, Any], D
                     if key not in kept:
                         continue
                     event_meta = kept[key].meta
-                entry_map[eid] = member
-                entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
                 etype = getattr(event_meta, "event_type", "plugin_entry")
                 events_by_type.setdefault(etype, {})
                 events_by_type[etype][eid] = member
+                # The id-keyed maps hold one handler and its metadata per id:
+                # a plugin_entry keeps them when another event type shares the
+                # id (that one stays in events_by_type). Same type: later wins.
+                current = entry_meta_map.get(eid)
+                if (
+                    current is not None
+                    and (getattr(current, "event_type", None) or "plugin_entry") == "plugin_entry"
+                    and (etype or "plugin_entry") != "plugin_entry"
+                ):
+                    continue
+                entry_map[eid] = member
+                entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
             # Members without event metadata are not mapped: they are not
             # declared entries. Plain methods the manifest declares are
             # reached through the executor's attribute fallback.

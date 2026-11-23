@@ -299,9 +299,11 @@ class EntryExecutor:
     def _mapped_entry(self, event_id: str):
         """The plugin_entry handler the maps hold for ``event_id``, if any.
 
-        A handler of another event type sharing the id is not served as a
-        plugin_entry. (The maps hold only collected or decorated handlers:
-        the loader does not map members without event metadata.)
+        A handler of another event type is not served as a plugin_entry. The
+        id-keyed maps keep a plugin_entry's handler and metadata together
+        when another event type shares its id, so the metadata ``invoke``
+        reads is the entry's own. (The maps hold only collected or decorated
+        handlers: the loader does not map members without event metadata.)
         """
         method = self._entries.get(event_id)
         if method is None:
@@ -309,9 +311,7 @@ class EntryExecutor:
         meta = self._metadata.get(event_id)
         if meta is None or _event_type_of(meta) == "plugin_entry":
             return method
-        # The id map holds one handler per id; the per-type map keeps an
-        # entry that shares its id with another event type.
-        return self._events.get("plugin_entry", {}).get(event_id)
+        return None
 
     def _undeclared_method(self, event_id: str):
         """Resolve an id the maps do not hold to a public plugin method, or ``None``.
