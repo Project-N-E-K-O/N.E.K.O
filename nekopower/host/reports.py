@@ -113,6 +113,11 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
     mark between them that says the middle is not shown, so a cut is never
     silent and never takes what follows the quoted part with it.
     """
+    return _permission_subject_cut(question, lang, max_tokens)[0]
+
+
+def _permission_subject_cut(question: dict[str, Any], lang: str, max_tokens: int) -> tuple[str, bool]:
+    """Return ``_permission_subject`` and whether a middle was left out of it."""
     from config.prompts.prompts_nekopower_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_DETAIL_CUT_MARK
     from config.prompts.prompts_sys import _loc
     from utils.tokenize import count_tokens, truncate_head_tail_tokens
@@ -130,6 +135,7 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
         or detail.get("tool")
         or ""
     )
+    cut = False
     if specific:
         mark = _loc(PERMISSION_DETAIL_CUT_MARK, lang)
         mark_tokens = count_tokens(mark)
@@ -137,7 +143,9 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
         # leave no beginning in a small budget. It is added to that share
         # here, so the beginning and the end get the same.
         kept = max(max_tokens - mark_tokens, 0)
+        whole = specific
         specific = truncate_head_tail_tokens(specific, kept - kept // 2 + mark_tokens, kept // 2, separator=mark)
+        cut = specific != whole
     # What a question about usage states: how much was used, and how much more is asked for.
     amounts = {name: str(detail.get(name) or "") for name in ("used", "more")}
     action = categories.get(category, categories["other"]).format(detail=specific, **amounts).strip()
@@ -146,9 +154,10 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
         if count_tokens(recipient) > max_tokens // 2:
             room = max_tokens // 4
             recipient = truncate_head_tail_tokens(recipient, room, room, separator=_loc(PERMISSION_DETAIL_CUT_MARK, lang))
+            cut = True
         destination = categories["managed_delivery_content"].format(detail=recipient)
-        return f"{action} · {destination}"
-    return action
+        return f"{action} · {destination}", cut
+    return action, cut
 
 
 def tokens_text(tokens: int) -> str:
@@ -178,17 +187,35 @@ def render_question(title: str, question: dict[str, Any], lang: str) -> str:
         # Bounded here, on its own: the cut at the end of this function would
         # otherwise take the answers on offer and the instruction to hand the
         # answer back, which come after it in the sentence.
-        what = _permission_subject(question, lang, PERMISSION_SUBJECT_MAX_TOKENS)
-        offered = [names[option] for option in question.get("options") or [] if option in names]
-        text = words["permission"].format(title=title, what=what, options=" / ".join(offered))
-        if question.get("category") == "managed_delivery" or (question.get("detail") or {}).get("content_to"):
-            from utils.tokenize import count_tokens
+        from utils.tokenize import count_tokens
 
+        offered = " / ".join(names[option] for option in question.get("options") or [] if option in names)
+        room = PERMISSION_SUBJECT_MAX_TOKENS
+        shown_title = title
+        what, cut = _permission_subject_cut(question, lang, room)
+        text = words["permission"].format(title=shown_title, what=what, options=offered)
+        if question.get("category") == "managed_delivery" or (question.get("detail") or {}).get("content_to"):
             if count_tokens(text) > QUESTION_TEXT_MAX_TOKENS:
-                text = words["permission"].format(title="", what=what, options=" / ".join(offered))
+                shown_title = ""
+                text = words["permission"].format(title=shown_title, what=what, options=offered)
                 if count_tokens(text) > QUESTION_TEXT_MAX_TOKENS:
-                    what = _permission_subject(question, lang, PERMISSION_SUBJECT_MAX_TOKENS // 2)
-                    text = words["permission"].format(title="", what=what, options=" / ".join(offered))
+                    room = PERMISSION_SUBJECT_MAX_TOKENS // 2
+                    what, cut = _permission_subject_cut(question, lang, room)
+                    text = words["permission"].format(title=shown_title, what=what, options=offered)
+        if cut:
+            # Where to read what she could not say whole; answering her stays
+            # as it was. The quoted part, already cut, gives way to it, so
+            # the cap below takes none of the sentence.
+            from config.prompts.prompts_nekopower_brain import PERMISSION_DETAIL_CUT_HINT
+
+            hint = " " + _loc(PERMISSION_DETAIL_CUT_HINT, lang)
+            over = count_tokens(text + hint) - QUESTION_TEXT_MAX_TOKENS
+            while over > 0 and room > 0:
+                room = max(room - over, 0)
+                what, _ = _permission_subject_cut(question, lang, room)
+                text = words["permission"].format(title=shown_title, what=what, options=offered)
+                over = count_tokens(text + hint) - QUESTION_TEXT_MAX_TOKENS
+            text += hint
     elif kind == "confirmation":
         text = words["confirm"].format(title=title, question=str(question.get("question") or "").strip())
     else:

@@ -1007,6 +1007,19 @@ PERMISSION_DETAIL_CUT_MARK = {
     'pt': " …[parte central omitida, não aparece por inteiro]… ",
 }
 
+# Follows a permission question whose command or path lost its middle: where
+# the user can read it whole. The user may still answer her as before.
+PERMISSION_DETAIL_CUT_HINT = {
+    'zh': "中间没念全，请顺带告诉用户：完整内容可以在喵能力界面里看。",
+    'zh-TW': "中間沒唸全，請順帶告訴使用者：完整內容可以在喵能力介面裡看。",
+    'en': "Its middle was left out; also tell the user the full text can be seen in the NekoPower panel.",
+    'ja': "途中を省いたので、全文はにゃんパワーの画面で見られることもユーザーに伝えてください。",
+    'ko': "중간이 생략되었으니, 전체 내용은 냥파워 화면에서 볼 수 있다고 사용자에게 함께 알려 주세요.",
+    'ru': "Середина опущена; скажите пользователю, что полный текст можно посмотреть в окне NekoPower.",
+    'es': "Se omitió la parte central; dile también al usuario que el texto completo se puede ver en el panel de NekoPower.",
+    'pt': "A parte central foi omitida; diga também ao usuário que o texto completo pode ser visto no painel do NekoPower.",
+}
+
 # What a permission prompt is about, by category (``permissions.DEFAULT_MODES``).
 # ``{detail}`` is the command, the path, the server or the capability's title.
 # ``browser_reopen`` is not a category of the settings: it is what is asked

@@ -1766,7 +1766,7 @@ token 数是本地按 `count_tokens` 数的。
 - 读 `GET /console/board`（`host.board()`，17.7 节）。每 2 秒问一次，带上次的 `revision`，没变就不重画；页面不在前台时不问；问不到时改成 15 秒一次。老版本的服务没有这条路由，页面说「这个版本的服务还读不出面板」。
 - 按项目分群，主线在前，紧跟它的子使魔和副本；不属于项目的单件事归「散活」。每张卡片：职能的形象、名字或头衔、状态、手上的事。点卡片进使魔空间里它的那一页。
 - 顶上是开关和一条性能条（CPU、内存，读插件服务原有的 `/plugin/metrics`）。
-- 「新建使魔」：填名字、头衔、职能、负责什么、项目简介、起步的守则、工作目录。`POST /console/familiars` 调 `host.open_session`：建项目、写简介和守则、建项目的会话；名字不分大小写查重，归档的也算。建完什么都不会开始，等她把属于这里的事交来。
+- 「召唤使魔」：填名字、头衔、职能、负责什么、项目简介、起步的守则、工作目录。`POST /console/familiars` 调 `host.open_session`：建项目、写简介和守则、建项目的会话；名字不分大小写查重，归档的也算。建完什么都不会开始，等她把属于这里的事交来。
 - 「帮我填」调一次小模型（`POST /console/familiars/draft`，`host.draft_session`）：只看用户那句话和目录里的文件名。失败时说原因，不留半截表单。
 
 **使魔空间**
@@ -2628,7 +2628,7 @@ owner 2026-11-21 到 11-22 定的方向：同一个项目里可以有多个会�
 
 **`draft_session`**（`nekopower/host/drafts.py`）
 
-- 用户新建使魔时「帮我填」：一次 summary 模型调用（`TIER_SESSION_DRAFT`），回 `{name, title, preset, duty, description, rules}`。卡片各项的说明和复盘用的是同一段文字。
+- 用户召唤使魔时「帮我填」：一次 summary 模型调用（`TIER_SESSION_DRAFT`），回 `{name, title, preset, duty, description, rules}`。卡片各项的说明和复盘用的是同一段文字。
 - 只看用户写的话和所选目录里前 60 个条目的名字和大小，不打开文件。`preset` 只会是全局可用的模板之一，答别的就取 `boss`；给模型的选项里没有 `worker` 和 `general`（手动建的使魔是一个新项目的主线，实测时模型会把它选成 `worker`），提示词里写明多数情况就是主线，只有用户的话明显要只读、验收、规划时才选别的。`name` 里不能做目录名的字符会去掉。
 - 输入上限 2000 token，输出 500，45 秒超时。失败抛 `DraftError`，带原因键：`empty`、`no_model`、`no_preset`、`timeout`、`failed`、`unreadable`、`incomplete`；不回半截表单。不建任何东西。
 - `no_preset`：默认职能 `boss` 现在用不了（它的模板写错了，或者模板目录读不了）。在问模型之前就报，不让表单带着一个建不出会话的职能回去。

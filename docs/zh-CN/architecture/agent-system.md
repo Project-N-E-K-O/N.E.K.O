@@ -65,7 +65,7 @@ task agent 用的模型在它的会话建起来时按职能预设定下（`nekop
 
 每个会话还有一张**卡片**，存在台账的 `sessions` 表里：头衔、负责什么、摘要，每一项记着是谁写的（建它的一方、复盘、会话自己、用户）。建的时候只有「负责什么」：项目会话用项目简介（没有就用第一件委托的标题），单件会话用那件委托的标题，task agent 用起它时的那句描述。之后由收工后的复盘在同一次模型调用里重写（见下文使魔空间一节），不多调模型；「负责什么」这一句，项目会话和单件会话还可以在 `report` 里用可选的 `duty` 自己改，它自己说过的复盘不再盖；用户改过的项谁也不盖。项目简介是项目记录里的 `description`，同样记着谁写的。`list_sessions` 的每一行带上这个会话的预设和负责什么。
 
-宿主给界面准备了三个方法（界面经 `/console/board`、`/console/templates`、`/console/familiars/draft` 读）：`board()` 按项目分组给出每个会话的卡片、状态（干活中、等用户回话、开着没活、收起来了、在整理）和「正在做什么」（手上那件委托的标题、它待办清单里进行中的那一条、最近一步用的工具，从台账拼出来，不调模型），带一个变化标记，页面拿着标记来问、没变时只回「没变」；不是所有会话都在上面（很久没动的单件会话、起它的委托早就结束的 task agent、没在用的副本不列）。`templates()` 列出可用的预设，写错的模板带着原因。`draft_session()` 在用户新建使魔时用一次 summary 模型调用把表单填好（名字、头衔、预设、负责什么、项目简介、守则草稿），只看用户写的话和所选目录里的文件名与大小，不建任何东西。
+宿主给界面准备了三个方法（界面经 `/console/board`、`/console/templates`、`/console/familiars/draft` 读）：`board()` 按项目分组给出每个会话的卡片、状态（干活中、等用户回话、开着没活、收起来了、在整理）和「正在做什么」（手上那件委托的标题、它待办清单里进行中的那一条、最近一步用的工具，从台账拼出来，不调模型），带一个变化标记，页面拿着标记来问、没变时只回「没变」；不是所有会话都在上面（很久没动的单件会话、起它的委托早就结束的 task agent、没在用的副本不列）。`templates()` 列出可用的预设，写错的模板带着原因。`draft_session()` 在用户召唤使魔时用一次 summary 模型调用把表单填好（名字、头衔、预设、负责什么、项目简介、守则草稿），只看用户写的话和所选目录里的文件名与大小，不建任何东西。
 
 ### 会话之间的消息和唤醒
 
@@ -212,7 +212,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 派发、查询、事后检查 | `nekopower/host/task_brain.py` |
 | 插件筛选和决策模型 | `nekopower/host/selection.py`、`decision.py` |
 | 台账、outbox、汇报 | `nekopower/host/ledger.py`、`outbox.py`、`reports.py` |
-| 职能预设和模板、卡片、看板、新建使魔的表单 | `nekopower/host/templates.py`、`board.py`、`drafts.py`、`config/prompts/prompts_nekopower_presets.py` |
+| 职能预设和模板、卡片、看板、召唤使魔的表单 | `nekopower/host/templates.py`、`board.py`、`drafts.py`、`config/prompts/prompts_nekopower_presets.py` |
 | 会话之间的消息、唤醒、读别的会话的记录 | `nekopower/host/wakes.py`、`records.py`、`task_agents.py`、`config/prompts/prompts_nekopower_sessions.py` |
 | 会话之间发生了什么、谁在等谁（只读） | `nekopower/host/timeline.py` |
 | task agent 和 agent runtime | `nekopower/host/task_agents.py`、`nekopower/runtime/` |
