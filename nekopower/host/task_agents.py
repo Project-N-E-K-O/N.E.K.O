@@ -3667,9 +3667,13 @@ class TaskAgentManager:
         try:
             # By what the commission is when this is written, not by what
             # was read above: it may have been taken up again since (an
-            # answer came), and is then at work, which is on record.
-            await self._ledger.settle_session(session_id, commission_id)
-            commission = await self._ledger.get(commission_id)
+            # answer came), and is then at work, which is on record. What
+            # follows goes by that same read, not a later one: a commission
+            # that ended right after it had its session's status left as it
+            # was, and keeps the hold for the look its end brings, which
+            # writes the status. Let go here, that look would find the hold
+            # gone and write nothing, and the session would stay ``running``.
+            commission = await self._ledger.settle_session(session_id, commission_id)
         except Exception:  # noqa: BLE001 - the status is for showing; the hold is what counts
             # The hold is let go all the same: left here, nothing else
             # would ever start in the session.
