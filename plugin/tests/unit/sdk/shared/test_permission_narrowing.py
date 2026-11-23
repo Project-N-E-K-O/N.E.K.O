@@ -833,3 +833,164 @@ def test_the_executor_does_not_run_a_refused_entry_by_name(tmp_path):
         persist=lambda: None, logger=ctx.logger,
     )
     assert executor._resolve("plugin_entry", "outside", registered_only=False) is None
+
+
+# --- review round 3: replacements after a refusal, loader path, router hooks --------------------
+
+
+def _executor_over(instance, ctx, entries):
+    from plugin.core.entry_executor import EntryExecutor
+
+    def refresh():
+        entries.clear()
+        entries.update({eid: item.handler for eid, item in instance.collect_entries().items()})
+
+    return EntryExecutor(
+        plugin_id="p", context=ctx, instance=instance, entries=entries, metadata={}, events={},
+        default_timeout=5.0, refresh=refresh, should_persist=lambda method: False,
+        persist=lambda: None, logger=ctx.logger,
+    )
+
+
+def test_a_valid_replacement_of_a_refused_id_can_be_called(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="foo", permissions=[ENV])
+        async def foo(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    entries = {eid: item.handler for eid, item in instance.collect_entries().items()}
+    executor = _executor_over(instance, ctx, entries)
+    # Refused: neither the map nor the attribute fallback runs it.
+    assert executor._resolve("plugin_entry", "foo", registered_only=False) is None
+
+    def replacement(**_):
+        return "replacement"
+
+    assert instance.register_dynamic_entry("foo", replacement, permissions=[NET])
+    # Registered again with a valid narrowing: refreshed, and the new handler
+    # (not the refused method of the same name) is what runs.
+    assert executor._resolve("plugin_entry", "foo", registered_only=False) is replacement
+
+
+def test_a_router_entry_re_added_after_a_refusal_can_be_called(tmp_path):
+    class R(PluginRouter):
+        @plugin_entry(id="bar", permissions=[ENV])
+        async def bar(self, payload):
+            return Ok({})
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        pass
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    router = R(name="r")
+    instance.include_router(router)
+    entries = {eid: item.handler for eid, item in instance.collect_entries().items()}
+    executor = _executor_over(instance, ctx, entries)
+    assert executor._resolve("plugin_entry", "bar", registered_only=False) is None
+
+    other = PluginRouter(name="other")
+    instance.include_router(other)
+
+    async def handler(payload):
+        return Ok({})
+
+    assert isinstance(asyncio.run(other.add_entry("bar", handler, permissions=[FS])), Ok)
+    assert executor._resolve("plugin_entry", "bar", registered_only=False) is handler
+
+
+@pytest.mark.parametrize("hook_permissions,closed", [([ENV], True), ([FS], False)])
+def test_a_plain_entry_the_loader_scans_in_is_closed_by_its_hook(tmp_path, hook_permissions, closed):
+    from plugin.core.host import _initial_entry_tables
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        async def plain(self, **_):
+            return "ran"
+
+        @before_entry(target="plain", permissions=hook_permissions)
+        async def guard(self, **_): ...
+
+    ctx = _ctx(tmp_path, DECLARED_TOML + '[[plugin.entries]]\nid = "plain"\n')
+    instance = P(ctx)
+    # The real loader path: collect_entries() lists nothing, so the loader
+    # falls back to its method scan and maps "plain" by name.
+    entry_map, _meta, _events = _initial_entry_tables(instance, ctx.logger)
+    assert "plain" in entry_map
+    executor = _executor_over(instance, ctx, dict(entry_map))
+    resolved = executor._resolve("plugin_entry", "plain", registered_only=False)
+    assert (resolved is None) is closed
+
+
+def test_loader_fallback_keeps_an_entry_and_a_timer_sharing_an_id_apart(tmp_path, monkeypatch):
+    from plugin.core.host import _initial_entry_tables
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="dual", permissions=[NET])
+        async def as_entry(self, **_): ...
+
+        @timer_interval(id="dual", seconds=5, permissions=[FS])
+        async def as_timer(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+
+    def broken(**_kwargs):
+        raise RuntimeError("collect failed")
+
+    # The fallback scan runs only when collect_entries() fails.
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    _entry_map, meta_map, events = _initial_entry_tables(instance, ctx.logger)
+    assert set(events) == {"plugin_entry", "timer"}
+    # Each keeps its own metadata (the last scanned one owns meta_map["dual"]).
+    assert meta_map["dual"].event_type in {"plugin_entry", "timer"}
+    expected = (NET,) if meta_map["dual"].event_type == "plugin_entry" else (FS,)
+    assert meta_map["dual"].permissions == expected
+
+
+def test_add_entry_on_a_bound_router_applies_entry_hooks(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        @before_entry(target="*", permissions=[ENV])
+        async def bad(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    router = PluginRouter(name="dyn")
+    P(ctx).include_router(router)
+
+    async def handler(payload):
+        return Ok({})
+
+    result = asyncio.run(router.add_entry("x", handler, permissions=[FS]))
+    assert isinstance(result, Err) and isinstance(result.error, PermissionDeniedError)
+    assert "x" not in router.entry_ids
+
+
+def test_register_dynamic_entry_reports_a_duplicate_id_before_narrowing(tmp_path):
+    from plugin.sdk.shared.models.exceptions import EntryConflictError
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="taken")
+        async def taken(self, **_): ...
+
+    instance = P(_ctx(tmp_path))
+    with pytest.raises(EntryConflictError):
+        instance.register_dynamic_entry("taken", lambda **_: 1, permissions=[ENV])
+
+
+def test_unknown_ids_under_a_closing_star_hook_are_not_logged(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        @before_entry(target="*", permissions=[ENV])
+        async def bad(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    for index in range(20):
+        assert instance._entry_state(f"nothing_{index}") == "closed"
+    assert ctx.logger.errors == []

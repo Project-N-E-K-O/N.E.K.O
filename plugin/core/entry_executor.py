@@ -189,13 +189,25 @@ class EntryExecutor:
         if registered_only or event_type != "plugin_entry":
             return self._events.get(event_type, {}).get(event_id)
         method = self._entries.get(event_id)
+        # Permission narrowing: an id the check closed (a refused component,
+        # or an entry hook listing an undeclared permission, including for an
+        # entry only the manifest declares) is not run, whether it sits in the
+        # map (the loader's fallback scan maps plain methods) or would come
+        # from the attribute fallback. An id registered again with a valid
+        # narrowing is "registered" and is picked up by a refresh.
+        state_of = getattr(self._instance, "_entry_state", None)
+        try:
+            state = state_of(event_id) if callable(state_of) else None
+        except Exception:
+            # The check must not make an entry unreachable by failing itself;
+            # collect_entries() raises the same error on the next refresh.
+            state = None
+        if state == "closed":
+            return None
+        if method is None and state == "registered":
+            self._refresh()
+            method = self._entries.get(event_id)
         if method is None:
-            # The permission narrowing check closed the id (a refused
-            # component, or an entry hook listing an undeclared permission):
-            # the attribute fallback must not run it anyway.
-            closed = getattr(self._instance, "_entry_closed", None)
-            if callable(closed) and closed(event_id) is True:
-                return None
             method = getattr(self._instance, event_id, None) or getattr(self._instance, f"entry_{event_id}", None)
         if method is None:
             self._refresh()

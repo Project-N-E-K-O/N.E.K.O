@@ -357,8 +357,9 @@ class PluginRouter:
 
         ``permissions`` narrows the entry; left out, it inherits the router's.
         On a bound router the narrowing must be a subset of plugin.toml's
-        declarations, otherwise ``Err(PermissionDeniedError)`` with reason
-        ``not_declared``. An unbound router is checked when it is included.
+        declarations and entry hooks targeting the id join it, otherwise
+        ``Err(PermissionDeniedError)`` with reason ``not_declared``. An
+        unbound router is checked when it is included.
         """
         trimmed = entry_id.strip()
         if trimmed == "":
@@ -373,9 +374,20 @@ class PluginRouter:
         except TypeError as exc:
             return Err(PluginRouterError(str(exc)))
         effective = narrowed if narrowed is not None else self.permissions
-        declared = self._declared_permissions() if self.is_bound else None
-        if effective is not None and declared is not None:
-            denied = denied_narrowing(declared, effective, f"router {self._name!r} entry {full_entry_id!r}")
+        resolve = getattr(self._main_plugin, "_resolve_dynamic_entry_permissions", None) if self.is_bound else None
+        if callable(resolve):
+            # The plugin's check for runtime entries: the narrowing must fit
+            # plugin.toml, and entry hooks targeting the id join it or close it
+            # (it logs the refusal).
+            try:
+                effective = resolve(full_entry_id, effective)
+            except PermissionDeniedError as denied:
+                return Err(denied)
+        elif self.is_bound and effective is not None:
+            declared = self._declared_permissions()
+            denied = denied_narrowing(declared, effective, f"router {self._name!r} entry {full_entry_id!r}") if (
+                declared is not None
+            ) else None
             if denied is not None:
                 logger = self.logger
                 if logger is not None:

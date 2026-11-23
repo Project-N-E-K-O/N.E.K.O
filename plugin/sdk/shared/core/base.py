@@ -162,19 +162,37 @@ class NekoPluginBase:
             self._declared_permissions_cache = cached
         return cached  # type: ignore[return-value]
 
-    def _entry_closed(self, entry_id: str) -> bool:
-        """Whether the narrowing check keeps ``entry_id`` from being called.
+    def _entry_hooks(self) -> list:
+        """The class's entry hooks, scanned once (hooks are declared on the class)."""
+        cached = self.__dict__.get("_entry_hooks_cache")
+        if cached is None:
+            cached = static_entry_hooks(type(self))
+            self.__dict__["_entry_hooks_cache"] = cached
+        return cached
 
-        For callers that resolve an entry outside ``collect_entries`` (the
-        executor's attribute fallback, used for entries only the manifest
-        declares): an entry the check refused, or one an entry hook with an
-        undeclared permission targets, is closed.
+    def _entry_state(self, entry_id: str) -> str:
+        """Where the narrowing check leaves ``entry_id`` right now, for the executor.
+
+        ``"registered"``: ``collect_entries`` currently lists it (a valid
+        entry registered after an earlier refusal of the same id counts).
+        ``"closed"``: the check refused it, or an entry hook with an
+        undeclared permission targets it (also an entry only the manifest
+        declares, which the executor reaches by attribute name).
+        ``"unchecked"``: nothing to say; a plugin that narrows nothing always
+        gets this, without collecting anything.
         """
-        if (PLUGIN_ENTRY, entry_id) in getattr(self, "_narrowing_refused", ()):
-            return True
-        hooks = static_entry_hooks(type(self))
-        if all(hook.permissions is None for hook in hooks):
-            return False
+        refused = getattr(self, "_narrowing_refused", None) or set()
+        hooks = self._entry_hooks()
+        narrowing_hooks = any(hook.permissions is not None for hook in hooks)
+        if not refused and not narrowing_hooks:
+            return "unchecked"
+        current = self.collect_entries().get(entry_id)
+        if current is not None and (getattr(current.meta, "event_type", None) or PLUGIN_ENTRY) == PLUGIN_ENTRY:
+            return "registered"
+        if (PLUGIN_ENTRY, entry_id) in refused:
+            return "closed"
+        if not narrowing_hooks:
+            return "unchecked"
         component = Component(
             label=component_label(PLUGIN_ENTRY, entry_id), event_type=PLUGIN_ENTRY, entry_id=entry_id, permissions=None,
         )
@@ -182,13 +200,16 @@ class NekoPluginBase:
             {entry_id: component}, hooks, self._declared_permission_ids()
         )[entry_id]
         if resolution.registered:
-            return False
+            return "unchecked"
+        # Logged once, and only for an id that names something callable: a
+        # "*" hook would otherwise log every unknown id a caller tries.
+        has_target = callable(getattr(self, entry_id, None)) or callable(getattr(self, f"entry_{entry_id}", None))
         reported: set[object] = self.__dict__.setdefault("_narrowing_reported", set())
-        if (PLUGIN_ENTRY, entry_id, "unlisted") not in reported:
+        if has_target and (PLUGIN_ENTRY, entry_id, "unlisted") not in reported:
             reported.add((PLUGIN_ENTRY, entry_id, "unlisted"))
             for message in resolution.errors:
                 self.logger.error("Component not registered: {}", message)
-        return True
+        return "closed"
 
     def _resolve_dynamic_entry_permissions(self, entry_id: str, narrowed: object) -> object:
         """Registration check for an entry added at runtime; returns the permissions to record.
@@ -197,7 +218,7 @@ class NekoPluginBase:
         and the entry hooks targeting the entry join it. Raises
         ``PermissionDeniedError`` (reason ``not_declared``) when it does not fit.
         """
-        hooks = static_entry_hooks(type(self))
+        hooks = self._entry_hooks()
         if narrowed is None and all(hook.permissions is None for hook in hooks):
             return None
         component = Component(
@@ -352,7 +373,7 @@ class NekoPluginBase:
         after id conflicts are settled, so the permissions follow the handler
         that won. Without any narrowing the entries are returned untouched.
         """
-        hooks = static_entry_hooks(type(self))
+        hooks = self._entry_hooks()
         if all(getattr(item.meta, "permissions", None) is None for item in entries.values()) and all(
             hook.permissions is None for hook in hooks
         ):

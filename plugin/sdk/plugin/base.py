@@ -574,12 +574,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 raise TypeError("timeout must be a number or None")
             timeout = float(timeout)
         entry_id = entry_id.strip()
-        narrowed = self._resolve_dynamic_entry_permissions(
-            entry_id, normalize_narrowing(permissions, where=f"register_dynamic_entry({entry_id!r})")
-        )
+        requested = normalize_narrowing(permissions, where=f"register_dynamic_entry({entry_id!r})")
         existing_entries = self.collect_entries()
         if entry_id in existing_entries or entry_id in self._dynamic_entries:
             raise EntryConflictError(f"duplicate entry id: {entry_id!r}")
+        # After the conflict check, so a duplicate id still raises
+        # EntryConflictError whatever it narrows to.
+        narrowed = self._resolve_dynamic_entry_permissions(entry_id, requested)
         meta = EventMeta(
             event_type="plugin_entry",
             id=entry_id,
