@@ -54,7 +54,7 @@ def test_normal_configuration_consumer_still_migrates_after_runtime_preferences(
     assert config_manager_module.get_config_manager() is manager
     assert migrations == ["migrate_config_files", "migrate_default_card_faces",
                           "migrate_memory_files", "migrate_openclaw_url_port",
-                          "migrate_legacy_documents_memory"]
+                          "migrate_renamed_tiers", "migrate_legacy_documents_memory"]
 
 
 @pytest.mark.plugin_unit

@@ -512,6 +512,28 @@ class PluginPermissionStore:
             self._commit(manager, document)
             return True
 
+    def holds_unbound_grant(self, plugin_id: str) -> bool:
+        """Whether the record has no source yet and still grants a permission.
+
+        For a caller about to change the plugin's source without knowing the
+        current one. As in :meth:`bind_unbound_source`, no record is left
+        alone, and for an existing record a first-use import still held in
+        memory is saved first, so a failed save raises.
+        """
+        with self._lock:
+            self._load()
+            if plugin_id not in self._document["plugins"]:
+                return False
+            self._load_for_write()
+            record = self._document["plugins"].get(plugin_id)
+            if not record or PluginSource.from_dict(record.get("source")) is not None:
+                return False
+            permissions = record.get("permissions") or {}
+            return any(
+                isinstance(entry, dict) and entry.get("state") == STATE_GRANTED
+                for entry in permissions.values()
+            )
+
     @staticmethod
     def _apply_source(record: dict, current: PluginSource | None) -> bool:
         if current is None:

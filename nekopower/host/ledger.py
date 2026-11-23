@@ -2136,7 +2136,7 @@ class Ledger:
 
         return await self.run(work)
 
-    async def settle_session(self, session_id: str, commission_id: str) -> None:
+    async def settle_session(self, session_id: str, commission_id: str) -> Commission | None:
         """Write where a session stands once the commission that holds it has left its runtime.
 
         ``waiting`` when that commission waits for the user, ``closed``
@@ -2154,25 +2154,31 @@ class Ledger:
         A commission that rests has left the runtime for as long as it
         rests: its session is ``closed`` like that of one that is over,
         and is opened again when it is woken.
+
+        Returns the commission as it was read here, in the same
+        transaction as the write: whoever lets the hold go decides by what
+        the status was written from, not by a later read. A commission
+        that ended just after this read had its session left as it was;
+        the look its end brings writes it then.
         """
 
-        def work(conn: sqlite3.Connection) -> None:
-            row = conn.execute(
-                "SELECT status, resting_since, session_id FROM commissions WHERE id = ?", (commission_id,)
-            ).fetchone()
-            if row is not None and row["session_id"] != session_id:
+        def work(conn: sqlite3.Connection) -> Commission | None:
+            row = conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone()
+            commission = _commission(row)
+            if commission is not None and commission.session_id != session_id:
                 conn.execute("UPDATE sessions SET status = 'closed' WHERE id = ? AND status != 'cleared'", (session_id,))
-                return
-            status = row["status"] if row is not None else None
-            resting = status == "working" and row["resting_since"] is not None
+                return commission
+            status = commission.status if commission is not None else None
+            resting = status == "working" and commission.resting_since is not None
             if status in ("queued", "working") and not resting:
-                return
+                return commission
             if status == "waiting_user":
                 conn.execute("UPDATE sessions SET status = 'waiting' WHERE id = ?", (session_id,))
             else:
                 conn.execute("UPDATE sessions SET status = 'closed' WHERE id = ? AND status != 'cleared'", (session_id,))
+            return commission
 
-        await self.run(work)
+        return await self.run(work)
 
     async def mark_session_cleared(self, session_id: str) -> None:
         """Put on record that what was said in a session is gone, being old.

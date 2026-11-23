@@ -263,9 +263,7 @@ describe('usePluginPackageInstaller', () => {
     vi.mocked(installPluginPackage).mockResolvedValue(replaceResponse)
     const installer = usePluginPackageInstaller()
 
-    const response = await installer.installPackagePath('/packages/demo.neko-plugin', {
-      installSource: 'imported',
-    })
+    const response = await installer.installPackagePath('/packages/demo.neko-plugin')
 
     expect(planPluginInstall).toHaveBeenCalledWith({
       package: '/packages/demo.neko-plugin',
