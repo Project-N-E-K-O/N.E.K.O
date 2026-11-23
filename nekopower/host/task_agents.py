@@ -2010,12 +2010,16 @@ class TaskAgentManager:
                 guessed = {member for member in verdict.members if member not in self._writes_in}
                 for member in guessed:
                     self._writes_in[member] = (commission.project, member)
-            await self._note_writer(session.id, guessed=session.id in guessed)
+            await self._note_writer(session.id, guessed=session.id in guessed, batch=bool(verdict.members))
             if verdict.members:
                 # Task agents that became a project's members with it: each may be at work, and so
                 # may task agents they started, which were none of a project's when they began.
                 for other in {*verdict.members, *self._held_by} - {session.id}:
-                    await self._note_writer(other, guessed=other in guessed)
+                    await self._note_writer(other, guessed=other in guessed, batch=True)
+                # What waited for one that was taken off is looked at once all of them are noted:
+                # looked at sooner, it would start beside one that was not noted yet.
+                if self._queue and not self._closed:
+                    self._spawn(self._start_next())
             return commission
         commission = await self._file_under_project(commission)
         # What the session takes, as the first line of its card says until
@@ -2075,7 +2079,7 @@ class TaskAgentManager:
                 commission.id, kind="line", name=name, preset=WORKING_PRESET, duty=about
             )
 
-    async def _note_writer(self, session_id: str | None, *, guessed: bool = False) -> None:
+    async def _note_writer(self, session_id: str | None, *, guessed: bool = False, batch: bool = False) -> None:
         """Note whether a session writes files in a project, for one such to work there at a time (``_session_free_for``).
 
         A member of a project whose preset can change files, with a tool
@@ -2115,7 +2119,7 @@ class TaskAgentManager:
             or not member.project
             or member.project == DEFAULT_PROJECT
         ):
-            self._unnote_writer(session_id, guessed=guessed)
+            self._unnote_writer(session_id, guessed=guessed, batch=batch)
             return
         # A run under way has the tools it was opened with, whatever its preset says by now.
         live = self._sessions.get(self._held_by.get(session_id) or "")
@@ -2133,9 +2137,9 @@ class TaskAgentManager:
             self._writes_in[session_id] = (member.project, member.id)
         else:
             # (Known of the run itself, it is as good as looked at: taken off though it is at work.)
-            self._unnote_writer(session_id, guessed=guessed or opened is not None)
+            self._unnote_writer(session_id, guessed=guessed or opened is not None, batch=batch)
 
-    def _unnote_writer(self, session_id: str, *, guessed: bool = False) -> None:
+    def _unnote_writer(self, session_id: str, *, guessed: bool = False, batch: bool = False) -> None:
         """Take a session off the ones that change files in a project, unless a run of it is under way.
 
         One at work was opened with the tools its preset had then: a
@@ -2144,10 +2148,13 @@ class TaskAgentManager:
         next commission, once this one let go of it. One that was noted
         on a guess (``guessed``: as it became a project's member, before
         it was looked at) is taken off whether at work or not: nothing
-        but the guess said it changes files.
+        but the guess said it changes files. What waited for it is looked
+        at then, unless this is one of several being noted together
+        (``batch``): whoever notes them looks once they all are.
         """
         if guessed or self._held_by.get(session_id) is None:
-            if self._writes_in.pop(session_id, None) is not None and self._queue and not self._closed:
+            taken = self._writes_in.pop(session_id, None) is not None
+            if taken and not batch and self._queue and not self._closed:
                 # One that waited for it may start now, and nothing else may come by to say so.
                 self._spawn(self._start_next())
 

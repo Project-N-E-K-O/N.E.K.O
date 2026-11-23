@@ -2593,13 +2593,25 @@ async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_pro
         return verdict
 
     agents.families.decide = decided
+    looked: list[dict[str, Any]] = []
+
+    async def next_one() -> None:
+        looked.append(dict(agents._writes_in))
+
+    agents._start_next = next_one
+    agents._queue.append("another member's commission that waits")
     try:
         placed = await agents._give_session(commission)
+        await asyncio.sleep(0.01)
 
         # The one it started that can change files is noted with it; the one that reads is not. Nor
         # is the member that reads only, at work though it is: that it changes files was a guess.
         assert (await host.ledger.get_session(reads.id)).kind == "line"
         assert agents._writes_in == {one.id: (placed.project, one.id), started.id: (placed.project, one.id)}
+        # What waits is looked at once, when all of them are noted: not as the guess about one is
+        # taken back, with the task agent another started not noted yet.
+        assert looked == [{one.id: (placed.project, one.id), started.id: (placed.project, one.id)}]
+        agents._queue.clear()
         # A run under way stays noted whatever is read of its preset meanwhile: it has the tools it was opened with.
         await host.ledger.update_session(one.id, project="_daily")
         await agents._note_writer(one.id)
