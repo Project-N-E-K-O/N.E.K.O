@@ -527,9 +527,19 @@ def test_open_log_file_nofollow_rejects_fifo_and_validates_root_directory(tmp_pa
 
     orig_lstat = os.lstat
 
+    class _ZeroInoStatProxy:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+            self.st_ino = 0
+
+        def __getattr__(self, name: str):
+            return getattr(self._wrapped, name)
+
+        def __getitem__(self, idx):
+            return 0 if idx == 1 else self._wrapped[idx]
+
     def _zero_ino_lstat(p):
-        st = orig_lstat(p)
-        return os.stat_result((st.st_mode, 0, st.st_dev, st.st_nlink, st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+        return _ZeroInoStatProxy(orig_lstat(p))
 
     monkeypatch.setattr(logger_config.os, "lstat", _zero_ino_lstat)
     zero_ino_handler = _SafeRotatingFileHandler(
@@ -540,6 +550,7 @@ def test_open_log_file_nofollow_rejects_fifo_and_validates_root_directory(tmp_pa
         encoding="utf-8",
         delay=True,
     )
+    assert zero_ino_handler._allowed_root_identity is None
     try:
         if sym_root is not None:
             # Swap ancestor parent_dir with symlink -> outside_parent
