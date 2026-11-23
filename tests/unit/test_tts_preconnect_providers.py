@@ -773,7 +773,10 @@ def test_quiet_window_outlasts_qwens_gaps_between_sentences():
     assert qwen_mod.FINISHED_ROUND_QUIET_SECONDS == _preconnect.FINISHED_ROUND_QUIET_SECONDS
 
 
-def test_qwen_late_text_after_a_retire_is_not_taken_for_a_finished_round(monkeypatch):
+@pytest.mark.parametrize("sentence_done_before_commit", [False, True])
+def test_qwen_late_text_after_a_retire_is_not_taken_for_a_finished_round(
+    monkeypatch, sentence_done_before_commit,
+):
     # speech-1 finished and its socket was retired; a late chunk of the same
     # speech reconnects and commits again. Until a done event arrives on that
     # new connection, the earlier audio_done must not make it look finished.
@@ -783,7 +786,12 @@ def test_qwen_late_text_after_a_retire_is_not_taken_for_a_finished_round(monkeyp
     first = _qwen_socket("first")
     # Adopted by the late chunk; its audio for the new commit never arrives
     # in this test, so the round on it is still running.
-    late = _Sock("late", _type_kind, replies={"session.update": [{"type": "session.updated"}]})
+    replies = {"session.update": [{"type": "session.updated"}]}
+    if sentence_done_before_commit:
+        # server_commit mode synthesizes ahead of the commit: a sentence-level
+        # done on the new connection says nothing about the committed round.
+        replies["input_text_buffer.append"] = [{"type": "response.done"}]
+    late = _Sock("late", _type_kind, replies=replies)
     connects = _Connects(monkeypatch, [_qwen_socket("warmup"), first, late])
     responses = queue.Queue()
     observations = {}
@@ -796,6 +804,10 @@ def test_qwen_late_text_after_a_retire_is_not_taken_for_a_finished_round(monkeyp
             _PRECONNECT,  # retires first, opens late as the spare
             _wait(lambda: len(connects) == 3),
             ("speech-1", "A late chunk of the same speech, long enough to send."),
+            # The sentence-level done (if any) is read before the commit goes out.
+            _wait(lambda: any(e.get("type") == "input_text_buffer.append" for e in late.sent)
+                  and late._events.empty()),
+            _pause(0.05),
             (None, None),
             _wait(lambda: any(e.get("type") == "input_text_buffer.commit" for e in late.sent)),
             _PRECONNECT,

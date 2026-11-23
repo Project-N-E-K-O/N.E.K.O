@@ -109,6 +109,11 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         spare = None
         # Loop time of the last audio chunk, for _round_socket_finished.
         last_audio_at = None
+        # The socket on which a done event arrived after this round's commit:
+        # the only evidence _round_socket_finished accepts. Tied to the socket
+        # object, so evidence from an earlier connection of the same speech
+        # never counts for the next one.
+        round_done_ws = None
         current_speech_id = None
         receive_task = None
         session_ready = asyncio.Event()
@@ -257,20 +262,16 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             """Whether nothing is still expected on the socket ``ws`` holds.
 
             True for the warmup socket (bound to no speech; the first speech
-            replaces it anyway) and for a round whose commit went out, whose
-            end the core was already told about (audio_done), and that has
-            been quiet for FINISHED_ROUND_QUIET_SECONDS. A done event must
-            also have arrived on this connection: after a same-speech
-            reconnect (late text after a retire), audio_done and the last
-            audio time still describe the earlier connection, and only
-            ``response_done``, cleared by the reconnect, tells them apart.
+            replaces it anyway) and for a round whose commit went out, that
+            got a done event on this very socket after that commit, and that
+            has been quiet for FINISHED_ROUND_QUIET_SECONDS. Sentence-level
+            done events before the commit do not count, and neither does
+            anything from an earlier connection of the same speech (audio_done
+            is deduplicated per speech id, so it cannot tell connections apart).
             """
             if current_speech_id is None:
                 return True
-            if not buffer_committed or not response_done.is_set() or not (
-                audio_done.emitted(current_speech_id)
-                or audio_done.emitted(str(current_speech_id))
-            ):
+            if not buffer_committed or round_done_ws is None or round_done_ws is not ws:
                 return False
             if last_audio_at is None:
                 return True
@@ -688,7 +689,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
 
                         # Start a new receive task that also observes session.updated
                         async def receive_messages(bound_speech_id, bound_ws):
-                            nonlocal ws, audio_started, idle_closed, last_audio_at
+                            nonlocal ws, audio_started, idle_closed, last_audio_at, round_done_ws
                             cancelled = False
                             try:
                                 async for message in bound_ws:
@@ -725,6 +726,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         # flush already enqueued the tail audio; only now is this round's audio stream truly closed.
                                         _emit_audio_done(bound_speech_id)
                                         response_done.set()
+                                        if buffer_committed and ws is bound_ws:
+                                            round_done_ws = bound_ws
                             except websockets.exceptions.ConnectionClosed as exc:
                                 if _report_server_rejection(exc, bound_speech_id) and buffer_committed:
                                     qwen_audio_jitter.flush()
