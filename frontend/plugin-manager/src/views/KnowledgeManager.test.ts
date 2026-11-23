@@ -496,6 +496,34 @@ describe('KnowledgeManager overview', () => {
     expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe(String(sameBody))
   })
 
+  it.each([true, false])('applies a delayed disable only to the same displayed body (%s)', async sameBody => {
+    let finish!: (value: object) => void
+    const confirm = vi.spyOn(ElMessageBox, 'confirm')
+    api.setPackEnabled.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(true)] })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    expect(api.setPackEnabled).toHaveBeenCalledExactlyOnceWith({ pack_id: 'imp.test', enabled: false })
+    expect(confirm).not.toHaveBeenCalled()
+    // Another window can install and enable a new body before the old disable
+    // response arrives. A failed follow-up refresh must not hide its active state.
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(true, 'imp.test', (sameBody ? 'a' : 'b').repeat(64))] })
+    container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
+    await flush()
+    const manage = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === enUS.knowledge.managePack)!
+    manage.click()
+    await flush()
+    api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
+    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false })
+    await flush()
+    expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe(String(!sameBody))
+    expect(document.querySelector('.pack-summary .el-tag')!.textContent)
+      .toBe(sameBody ? enUS.knowledge.entryDisabled : enUS.knowledge.entryEnabled)
+  })
+
   it('reloads without enabling when a pack has no content identity', async () => {
     const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
     api.packs.mockResolvedValue({ ok: true, packs: [{ ...pack(), pack_sha256: undefined }] })

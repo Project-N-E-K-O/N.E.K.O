@@ -1279,10 +1279,10 @@ function setPackEnabled(row: KnowledgePack, enabled: boolean) {
       const response = await knowledgeApi.setPackEnabled({
         pack_id: packId, enabled, ...(enabled ? { expected_pack_sha256: confirmedDigest } : {}),
       })
-      // Polling can replace row during the save. Never enable a newer body
-      // from a response for the confirmed body, or recreate a removed row.
+      // Polling can replace row during the save. Neither enable nor disable
+      // responses belong to a newer body, and removed rows stay removed.
       const current = packs.value.find(pack => pack.pack_id === packId)
-      if (current && (!enabled || current.pack_sha256 === confirmedDigest)) current.enabled = response.pack_enabled ?? enabled
+      if (current && current.pack_sha256 === confirmedDigest) current.enabled = response.pack_enabled ?? enabled
     } catch (error) {
       if (knowledgeFailureReason(error) === 'pack_content_changed') await loadPacks({ silent: true })
       throw error
