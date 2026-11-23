@@ -28,6 +28,7 @@ from utils.tts.providers.mimo import (
     normalize_mimo_tts_voice,
 )
 
+from .._http_pool import make_tts_http_client
 from .._infra import _resample_audio, _enqueue_error, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
@@ -126,9 +127,8 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
             "Content-Type": "application/json",
             "api-key": audio_api_key,
         }
-        client = httpx.AsyncClient(
+        client = make_tts_http_client(
             timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
         )
 
         async def synthesize(text: str, speech_id: str) -> None:

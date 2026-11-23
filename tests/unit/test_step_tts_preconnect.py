@@ -19,7 +19,7 @@ from websockets.frames import Close
 from websockets.protocol import State
 
 from main_logic.core import LLMSessionManager
-from main_logic.tts_client import TTS_PRECONNECT_SENTINEL
+from main_logic.tts_client import TTS_PRECONNECT_SENTINEL, _preconnect
 from main_logic.tts_client.workers import _step_protocol
 from tests.unit.test_free_tts_connection_lifetime import (
     _OPENING,
@@ -117,9 +117,20 @@ def test_first_speech_adopts_the_preconnected_socket(monkeypatch):
     _route_to_lanlan_app(monkeypatch)
     spare = _socket("spare", final_events=_app_round_end("spare"))
     connects = _install_sockets(monkeypatch, _warmup_socket(), spare)
+    observations = {}
 
-    _run(_Requests(_PRECONNECT, ("speech-1", _OPENING), (None, None)), queue.Queue())
+    _run(
+        _Requests(
+            _PRECONNECT,
+            # Opened by the preconnect itself, not by the text's own connect.
+            _observe(observations, "spare_open_before_text", lambda: len(connects) == 2),
+            ("speech-1", _OPENING),
+            (None, None),
+        ),
+        queue.Queue(),
+    )
 
+    assert observations == {"spare_open_before_text": True}
     assert connects[1:] == [spare], "the speech must not open a socket of its own"
     assert _sent_types(spare) == ["tts.create", "tts.text.delta", "tts.text.done"]
     assert spare.sent[0]["data"]["session_id"] == "spare"
@@ -260,6 +271,61 @@ def test_spare_still_handshaking_gets_only_the_normal_confirm_window(monkeypatch
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
+class _ConfirmWaitSocket(_StatefulSocket):
+    """Reports when the spare starts reading it for tts.connection.done."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.confirm_wait_started = threading.Event()
+
+    async def __anext__(self):
+        self.confirm_wait_started.set()
+        return await super().__anext__()
+
+
+def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeypatch):
+    # The spare connected well before the speech arrived and is still
+    # waiting for tts.connection.done: a fresh socket's window would already
+    # be over, so the speech gives up on it at once instead of granting it a
+    # whole new window.
+    # Checked on the window the take hands to its wait, not on wall time:
+    # the pause below is a real sleep, so by the take the spare has been
+    # connected for longer than the window however the threads are scheduled.
+    _route_to_lanlan_app(monkeypatch)
+    monkeypatch.setattr(_step_protocol, "_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.4)
+    stuck = _ConfirmWaitSocket()  # connects at once, never confirms
+    fresh = _socket("fresh", final_events=_app_round_end("fresh"))
+    _install_sockets(monkeypatch, _warmup_socket(), stuck, fresh)
+    granted = []
+    observations = {}
+    real_wait = asyncio.wait
+
+    async def recording_wait(aws, *args, timeout=None, **kwargs):
+        if timeout is not None and timeout != 0.05:  # 0.05: the cleanup poll
+            granted.append(timeout)
+        return await real_wait(aws, *args, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(_preconnect.asyncio, "wait", recording_wait)
+
+    _run(
+        _Requests(
+            _PRECONNECT,
+            # Read only after connected_at is set: the window is running.
+            _observe(observations, "confirm_wait_started", stuck.confirm_wait_started.is_set),
+            _pause(0.6),  # connected 0.6s ago, past the 0.4s window
+            ("speech-1", _OPENING),
+            (None, None),
+        ),
+        queue.Queue(),
+    )
+
+    assert observations == {"confirm_wait_started": True}
+    assert granted == [0.0], f"granted the stuck spare more confirmation time: {granted}"
+    assert stuck.closed.is_set()
+    assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
+
+
 def test_slow_connecting_spare_is_not_cut_off_by_the_confirm_window(monkeypatch):
     # A fresh socket's confirmation window starts once it is connected, so a
     # spare still connecting (TLS to www.lanlan.app alone takes ~1s) must get
@@ -319,7 +385,7 @@ def test_no_spare_while_the_warmup_socket_is_still_closing(monkeypatch):
         {"type": "tts.response.created"},
     ])
     fresh = _socket("fresh", final_events=_app_round_end("fresh"))
-    connects = _install_sockets(monkeypatch, warmup, fresh)
+    connects, overlaps = _install_sockets_checking_overlap(monkeypatch, warmup, fresh)
     observations = {}
     backstop = threading.Timer(2.0, warmup.release.set)
     backstop.start()
@@ -330,6 +396,9 @@ def test_no_spare_while_the_warmup_socket_is_still_closing(monkeypatch):
                 _pause(0.1),
                 _observe(observations, "connects", lambda: len(connects), timeout=0),
                 warmup.release.set,
+                # The first speech does not wait for the warmup close by
+                # design; let it finish so any overlap below is a spare's.
+                _wait(warmup.closed.is_set),
                 ("speech-1", _OPENING),
                 (None, None),
             ),
@@ -339,6 +408,7 @@ def test_no_spare_while_the_warmup_socket_is_still_closing(monkeypatch):
         backstop.cancel()
 
     assert observations == {"connects": 1}, "a spare beside the closing warmup socket"
+    assert not any(overlaps), f"connected beside a socket still closing: {overlaps}"
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
@@ -349,7 +419,9 @@ def test_no_spare_while_the_previous_round_socket_is_still_closing(monkeypatch):
         on_send={"tts.text.done": _app_round_end("first")},
     )
     second = _socket("second", final_events=_app_round_end("second"))
-    connects = _install_sockets(monkeypatch, _warmup_socket(), first, second)
+    connects, overlaps = _install_sockets_checking_overlap(
+        monkeypatch, _warmup_socket(), first, second,
+    )
     observations = {}
     backstop = threading.Timer(2.0, first.release.set)
     backstop.start()
@@ -372,6 +444,7 @@ def test_no_spare_while_the_previous_round_socket_is_still_closing(monkeypatch):
         backstop.cancel()
 
     assert observations == {"connects": 2}, "a spare beside the closing round socket"
+    assert not any(overlaps), f"connected beside a socket still closing: {overlaps}"
     assert _sent_types(second) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
@@ -408,6 +481,23 @@ def test_cutting_off_a_spare_does_not_hold_a_queued_interrupt(monkeypatch):
 
     assert observations == {"interrupt_handled_while_spare_closing": True}
     assert stuck.closed.is_set(), "the cut-off spare is still closed in the end"
+
+
+def _install_sockets_checking_overlap(monkeypatch, *sockets):
+    """Like _install_sockets; also records, at every connect, the earlier
+    sockets that were not closed yet."""
+    remaining = list(sockets)
+    connects = []
+    overlaps = []
+
+    async def connect(*_args, **_kwargs):
+        overlaps.append([s for s in connects if not s.closed.is_set()])
+        socket = remaining.pop(0)
+        connects.append(socket)
+        return socket
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+    return connects, overlaps
 
 
 def _recording_connects(monkeypatch, sockets, on_connect):
@@ -556,13 +646,15 @@ def test_no_new_spare_while_a_retired_one_is_still_closing(monkeypatch):
         [{"type": "tts.connection.done", "data": {"session_id": "expired"}}],
     )
     fresh = _socket("fresh", final_events=_app_round_end("fresh"))
-    connects = _install_sockets(monkeypatch, _warmup_socket(), expired, fresh)
+    warmup = _warmup_socket()
+    connects, overlaps = _install_sockets_checking_overlap(monkeypatch, warmup, expired, fresh)
     observations = {}
     backstop = threading.Timer(2.0, expired.release.set)
     backstop.start()
     try:
         _run(
             _Requests(
+                _wait(warmup.closed.is_set),  # only the spares are under test here
                 _PRECONNECT,
                 _wait(lambda: expired.closing),  # expired, closing in the background
                 _PRECONNECT,
@@ -578,30 +670,52 @@ def test_no_new_spare_while_a_retired_one_is_still_closing(monkeypatch):
         backstop.cancel()
 
     assert observations == {"connects": 2}, "a spare beside the closing expired one"
+    assert not any(overlaps), f"connected beside a socket still closing: {overlaps}"
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
 def test_a_new_reply_restarts_the_kept_spares_idle_window(monkeypatch):
     # The second reply's preconnect keeps the existing spare; its idle window
     # must count from that reply, or it expires right under it.
+    # Each idle window is a gate the test opens itself, so no thread timing
+    # decides which window ran out.
     _route_to_lanlan_app(monkeypatch)
-    monkeypatch.setattr(_step_protocol, "_PRECONNECT_IDLE_SECONDS", 0.3)
     spare = _socket("spare", final_events=_app_round_end("spare"))
     fallback = _socket("fallback", final_events=_app_round_end("fallback"))
     connects = _install_sockets(monkeypatch, _warmup_socket(), spare, fallback)
+    windows = []
+
+    async def controlled_expire(self, owned_task):
+        window = {"elapsed": threading.Event(), "cancelled": False}
+        windows.append(window)
+        try:
+            while not window["elapsed"].is_set():
+                await asyncio.sleep(0.005)
+        except asyncio.CancelledError:
+            window["cancelled"] = True
+            raise
+        if self._task is owned_task:
+            self._discard(from_expiry=True)
+
+    monkeypatch.setattr(_preconnect.SpareSocket, "_expire", controlled_expire)
+    observations = {}
 
     _run(
         _Requests(
             _PRECONNECT,
-            _pause(0.2),
+            _wait(lambda: len(windows) == 1 and len(connects) == 2),
             _PRECONNECT,  # the next reply starts; the spare is still unused
-            _pause(0.2),  # past the first window, inside the restarted one
+            _wait(lambda: len(windows) == 2),
+            _observe(observations, "first_window_replaced", lambda: windows[0]["cancelled"], timeout=1.0),
+            lambda: windows[0]["elapsed"].set(),  # the first window running out changes nothing
+            _pause(0.05),
             ("speech-1", _OPENING),
             (None, None),
         ),
         queue.Queue(),
     )
 
+    assert observations == {"first_window_replaced": True}
     assert connects[1:] == [spare], "the spare expired under the reply"
     assert _sent_types(spare) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
@@ -631,11 +745,20 @@ def test_repeated_preconnects_open_one_spare(monkeypatch):
     spare = _socket("spare", final_events=_app_round_end("spare"))
     connects = _install_sockets(monkeypatch, _warmup_socket(), spare)
 
+    observations = {}
+
     _run(
-        _Requests(_PRECONNECT, _PRECONNECT, ("speech-1", _OPENING), (None, None)),
+        _Requests(
+            _PRECONNECT,
+            _PRECONNECT,
+            _observe(observations, "spare_open_before_text", lambda: len(connects) == 2),
+            ("speech-1", _OPENING),
+            (None, None),
+        ),
         queue.Queue(),
     )
 
+    assert observations == {"spare_open_before_text": True}
     assert connects[1:] == [spare]
     assert _sent_types(spare) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
@@ -658,7 +781,7 @@ def test_preconnect_is_a_control_id_not_a_speech():
 # ───────────────────────── core: who gets the request ─────────────────────────
 
 
-def test_only_step_protocol_workers_declare_preconnect():
+def test_only_workers_with_a_preconnect_branch_declare_it():
     from main_logic import tts_client
 
     supporting = {
@@ -667,7 +790,13 @@ def test_only_step_protocol_workers_declare_preconnect():
         and getattr(getattr(tts_client, name), "supports_preconnect", False)
     }
     # A worker added here needs a TTS_PRECONNECT_SENTINEL branch first.
-    assert supporting == {"free_realtime_tts_worker", "step_realtime_tts_worker"}
+    assert supporting == {
+        "free_realtime_tts_worker",
+        "step_realtime_tts_worker",
+        "qwen_realtime_tts_worker",
+        "grok_streaming_tts_worker",
+        "elevenlabs_tts_worker",
+    }
 
 
 def _make_mgr() -> LLMSessionManager:

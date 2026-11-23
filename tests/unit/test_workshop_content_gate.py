@@ -4350,8 +4350,8 @@ def _is_allowed_unclaimed(
 # worker-local partial claim + atomic write after #2627 and is no longer debt.
 _KNOWN_GAPS = {
     # Bind to exact source locations, not same-name operation counts within a function; fixing old sites and adding new ones are not interchangeable.
-    ('publish', 'publish_to_workshop', 711, 'copy2'),
-    ('publish', 'publish_to_workshop', 809, 'copy2'),
+    ('publish', 'publish_to_workshop', 745, 'copy2'),
+    ('publish', 'publish_to_workshop', 843, 'copy2'),
 }
 
 

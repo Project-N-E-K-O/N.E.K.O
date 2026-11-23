@@ -72,11 +72,14 @@ class AudioDoneEmitter:
     lands mid-teardown cannot slip through.
     """
 
-    __slots__ = ("_response_queue", "_emitted_speech_id", "_interrupted")
+    __slots__ = ("_response_queue", "_emitted_speech_id", "_delivered_speech_id", "_interrupted")
 
     def __init__(self, response_queue):
         self._response_queue = response_queue
+        # Dedup key: set on the attempt, so a failed put is not retried.
         self._emitted_speech_id = None
+        # Set only once the sentinel is on the queue (see emitted()).
+        self._delivered_speech_id = None
         self._interrupted = False
 
     def begin_interrupt(self) -> None:
@@ -90,6 +93,11 @@ class AudioDoneEmitter:
     def reset(self) -> None:
         """Clear dedup state for a new speech / reconnect / session restart."""
         self._emitted_speech_id = None
+        self._delivered_speech_id = None
+
+    def emitted(self, speech_id) -> bool:
+        """Whether the sentinel for ``speech_id`` is already on the queue."""
+        return bool(speech_id) and speech_id == self._delivered_speech_id
 
     def emit(self, speech_id) -> None:
         """Enqueue the sentinel at most once for ``speech_id``."""
@@ -102,6 +110,7 @@ class AudioDoneEmitter:
         self._emitted_speech_id = speech_id
         try:
             self._response_queue.put((TTS_AUDIO_DONE_SENTINEL, speech_id))
+            self._delivered_speech_id = speech_id
         except Exception:
             # Missing it is an acceptable fallback (the frontend has a give-up timer); do not interrupt the finalization path.
             logger.debug("audio_done 哨兵投递失败 speech_id=%s", speech_id)
