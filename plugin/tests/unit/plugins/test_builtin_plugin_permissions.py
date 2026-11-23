@@ -3,11 +3,13 @@
 Every plugin under plugin/plugins must declare the permissions its code uses
 (``[permissions.require]`` / ``[permissions.ask]``), with user-facing texts in
 all eight N.E.K.O locales, and the declarations must agree with the permission
-scan the way ``neko-plugin check`` judges them: no errors, no declaration
-left without a use, and only the reviewed "possible use" warnings below.
+scan the way ``neko-plugin check`` judges them: no errors, and only the
+reviewed exceptions below ("possible use" call sites left undeclared, and
+declared uses the scan cannot see yet).
 """
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -16,8 +18,8 @@ import pytest
 from plugin.core.capability_analysis import analyze_capabilities, compare_declarations
 from plugin.core.permission_declarations import parse_permission_declarations
 
-_PLUGINS = Path(__file__).resolve().parents[3] / "plugins"
-_BUILTIN = tuple(sorted(path.parent.name for path in _PLUGINS.glob("*/plugin.toml")))
+_REPO = Path(__file__).resolve().parents[4]
+_PLUGINS = _REPO / "plugin" / "plugins"
 _LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
 
 _NET = "system.network:connect"
@@ -30,12 +32,13 @@ _PUSH = "plugin_sdk.main_agent.messages:push"
 
 # Reviewed classification: permission -> (level, background).
 _EXPECTED = {
-    "app_launcher": {_SPAWN: ("require", False)},
+    "app_launcher": {_SPAWN: ("require", False), _ENV: ("require", False)},
     "claude_companion": {
         _FS_READ: ("require", False),
         _PUSH: ("require", False),
         _ENV: ("require", False),
         _LISTEN: ("require", False),
+        _FS_WRITE: ("require", False),
     },
     "game_agent_minecraft": {_NET: ("require", False), _ENV: ("require", False), _PUSH: ("ask", True)},
     "jukebox_controller": {_PUSH: ("require", False)},
@@ -48,15 +51,54 @@ _EXPECTED = {
     "web_search": {_NET: ("require", False)},
 }
 
-# Possible uses the scan reports that are deliberately not declared: files in
-# the plugin's own directory or data directory, and a DNS lookup (no connection).
+# Possible uses the scan reports that are deliberately not declared, pinned to
+# their call sites (file, function, method) so a new call is not let through:
+# writes inside the plugin's data directory, and a DNS-only socket import.
 _ALLOWED_POSSIBLE = {
-    "claude_companion": {_FS_WRITE},
-    "music_pusher": {_FS_WRITE, _NET},
-    "netease_music": {_FS_WRITE},
+    "music_pusher": {
+        _FS_WRITE: {
+            ("__init__.py", "MusicPusherPlugin._copy_static_ui_assets", "shutil.copy2"),
+            ("__init__.py", "MusicPusherPlugin._migrate_legacy_uploads", "shutil.copy2"),
+        },
+        _NET: {("__init__.py", "", "import")},
+    },
+    "netease_music": {
+        _FS_WRITE: {
+            ("credentials.py", "CredentialStore._save_sync", "pathlib.Path().mkdir"),
+            ("credentials.py", "CredentialStore._atomic_write", "os.replace"),
+            ("credentials.py", "CredentialStore._atomic_write", "pathlib.Path().unlink"),
+        },
+    },
+}
+
+# Declared uses the scan cannot see yet: app_launcher reads environment
+# variables through os.path.expandvars and its child processes inherit the
+# environment, neither of which the scanner recognises as system.env:read.
+_ALLOWED_UNUSED = {
+    "app_launcher": {_ENV},
 }
 
 pytestmark = pytest.mark.plugin_unit
+
+
+def _tracked_plugins() -> tuple[str, ...]:
+    """Plugins git tracks under plugin/plugins; local, ignored plugins are not built in."""
+    try:
+        completed = subprocess.run(
+            ["git", "ls-files", "plugin/plugins/*/plugin.toml"],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    return tuple(sorted(Path(line).parent.name for line in completed.stdout.splitlines() if line))
+
+
+# Parametrize over the reviewed list, so a local plugin in the checkout is not
+# picked up; the first test ties the list to what git actually tracks.
+_BUILTIN = tuple(sorted(_EXPECTED))
 
 
 def _manifest(plugin_id: str) -> dict:
@@ -64,7 +106,10 @@ def _manifest(plugin_id: str) -> dict:
 
 
 def test_every_builtin_plugin_has_a_reviewed_classification() -> None:
-    assert set(_BUILTIN) == set(_EXPECTED)
+    tracked = _tracked_plugins()
+    if not tracked:
+        pytest.skip("git cannot list the tracked built-in plugins here")
+    assert set(tracked) == set(_EXPECTED)
 
 
 @pytest.mark.parametrize("plugin_id", _BUILTIN)
@@ -103,7 +148,15 @@ def test_declarations_match_permission_scan(plugin_id: str) -> None:
     assert report["declarations"] == "declared"
     issues = compare_declarations(report)
     assert [(i.code, dict(i.params)) for i in issues if i.severity == "error"] == []
-    assert [i.params["permission"] for i in issues if i.code == "declared_unused"] == []
+    unused = {i.params["permission"] for i in issues if i.code == "declared_unused"}
+    assert unused == _ALLOWED_UNUSED.get(plugin_id, set())
+    allowed = _ALLOWED_POSSIBLE.get(plugin_id, {})
     possible = {i.params["permission"] for i in issues if i.code == "used_undeclared_possible"}
-    assert possible == _ALLOWED_POSSIBLE.get(plugin_id, set())
-    assert {i.code for i in issues} <= {"used_undeclared_possible"}
+    assert possible == set(allowed)
+    for permission, sites in allowed.items():
+        found = {
+            (row["file"], row["function"], row["method"])
+            for row in report["permissions"][permission]["findings"]
+        }
+        assert found == sites, permission
+    assert {i.code for i in issues} <= {"used_undeclared_possible", "declared_unused"}

@@ -83,4 +83,4 @@ reason = { zh-CN = "读取系统时区设置，用来显示当地时间。", zh-
 reason = { zh-CN = "读取系统的时区文件，用来显示当地时间。", zh-TW = "讀取系統的時區檔案，用來顯示當地時間。", en = "Read your system's time zone file to show local times.", ja = "現地時刻を表示するため、システムのタイムゾーンファイルを読み取ります。", ko = "현지 시간을 표시하기 위해 시스템의 시간대 파일을 읽습니다.", ru = "Читать системный файл часового пояса, чтобы показывать местное время.", es = "Leer el archivo de zona horaria del sistema para mostrar la hora local.", pt = "Ler o arquivo de fuso horário do sistema para mostrar o horário local." }
 
 [permissions.ask."plugin_sdk.main_agent.messages:push"]
-reason = { zh-CN = "把查询结果以卡片形式显示在对话里。", zh-TW = "把查詢結果以卡片形式顯示在對話裡。", en = "Show the results as cards in the chat.", ja = "調べた結果をカードとして会話に表示します。", ko = "조회 결과를 대화에 카드로 표시합니다.", ru = "Показывать результаты карточками в чате.", es = "Mostrar los resultados como tarjetas en el chat.", pt = "Mostrar os resultados como cartões no chat." }
+reason = { zh-CN = "把查询结果发到对话里。", zh-TW = "把查詢結果發到對話裡。", en = "Post the results in the chat.", ja = "調べた結果を会話に送ります。", ko = "조회 결과를 대화에 보냅니다.", ru = "Отправлять результаты в чат.", es = "Publicar los resultados en el chat.", pt = "Enviar os resultados para o chat." }
