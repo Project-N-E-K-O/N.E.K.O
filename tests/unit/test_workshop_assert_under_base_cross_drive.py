@@ -236,3 +236,41 @@ async def test_permission_error_resolving_the_root_stays_500(workshop, monkeypat
     assert status == 500
     assert payload['success'] is False
     assert '路径不在允许的范围内' not in payload['error']
+
+
+# ── GET /voice-reference/{id} and /voice-reference/{id}/audio ──────────
+
+
+@pytest.mark.parametrize(
+    'route_name', ['get_workshop_voice_reference', 'get_workshop_voice_reference_audio']
+)
+@pytest.mark.parametrize('kind', ['escape', 'cross-drive'])
+@pytest.mark.asyncio
+async def test_voice_reference_routes_answer_400_for_a_reference_outside_the_item(
+    tmp_path, cross_drive, monkeypatch, route_name, kind
+):
+    from main_routers.workshop_router import voice_refs
+
+    item = tmp_path / 'item'
+    item.mkdir()
+    target_dir = tmp_path / ('outside' if kind == 'escape' else _OTHER_DRIVE)
+    target_dir.mkdir()
+    (target_dir / 'voice.wav').write_bytes(b'RIFF')
+    try:
+        os.symlink(target_dir / 'voice.wav', item / 'voice.wav')
+    except (OSError, NotImplementedError) as e:  # e.g. Windows without symlink privilege
+        pytest.skip(f'symlinks unavailable: {e}')
+    _write_manifest(item, 'voice.wav')
+
+    async def _find(_item_id):
+        return {'installedFolder': str(item), 'title': 't'}
+
+    monkeypatch.setattr(voice_refs, '_find_subscribed_item_by_id', _find)
+
+    response = await getattr(voice_refs, route_name)('123')
+    payload = json.loads(response.body)
+    assert response.status_code == 400
+    assert payload['success'] is False
+    body = json.dumps(payload, ensure_ascii=False)
+    assert str(tmp_path) not in body
+    assert 'same drive' not in body
