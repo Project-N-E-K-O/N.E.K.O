@@ -384,6 +384,8 @@ class LLMSessionManager(
         # Every queued text chunk resets timer; done enqueue / interruption / teardown cancels it.
         self._tts_soft_flush_task: Optional[asyncio.Task] = None
         self._tts_soft_flush_supported: bool = False  # Set by _start_tts_thread using provider capabilities.
+        # Worker opens the next speech's socket when a reply's LLM request starts (request_tts_preconnect).
+        self._tts_preconnect_supported: bool = False  # Set by _start_tts_thread from the worker callable.
         # Keep one utterance ledger so a replacement worker can replay consumed text.
         # Raw-text ledger already submitted to current worker. On configured-provider runtime failure,
         # replay this turn's text + done to replacement, avoiding a wholly silent response.

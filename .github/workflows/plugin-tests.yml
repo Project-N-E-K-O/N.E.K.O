@@ -7,10 +7,11 @@ name: Plugin Tests
 # monkeypatch namespaces in 4 tests, #1480's install_source field broke the
 # query-status expectations — none of it surfaced until a manual full run).
 #
-# Everything under tests/unit/ is covered by unit-tests.yml (#2492), which runs
-# `pytest tests/unit -q` in full on every PR with no paths filter. This workflow
-# therefore only runs plugin/tests and only triggers on plugin-scoped changes —
-# naming individual tests/unit files here would just run them twice.
+# Everything under tests/unit/ is covered by unit-tests.yml (#2492): on every
+# PR it runs the tests/unit files related to the change, and on every push to
+# main the whole directory. This workflow therefore only runs plugin/tests and
+# only triggers on plugin-scoped changes — naming individual tests/unit files
+# here would just run them twice.
 on:
   push:
     branches: [main]

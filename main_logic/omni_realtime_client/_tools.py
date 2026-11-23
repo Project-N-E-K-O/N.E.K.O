@@ -741,6 +741,15 @@ class _ToolingMixin:
         as StepFun (see the example in the Aliyun client-events docs)."""
         return [t.to_openai_chat() for t in self._tool_definitions] if self.has_tools() else []
 
+    def _tooling_realtime_dialect(self) -> str:
+        resolver = getattr(self, "_resolved_realtime_dialect", None)
+        if callable(resolver):
+            return resolver()
+        cached = getattr(self, "_realtime_dialect", None)
+        if cached is not None:
+            return cached
+        return canonical_realtime_dialect(getattr(self, "_api_type", ""))
+
     async def apply_tools_to_session(self) -> None:
         """Push the current tools list to the connected session
         mid-conversation. Caller is responsible for calling this only
@@ -752,7 +761,7 @@ class _ToolingMixin:
             # tool list is fixed at connect time. Log + ignore.
             logger.info("apply_tools_to_session: Gemini Live does not support mid-session tools update — ignoring")
             return
-        api = canonical_realtime_dialect(self._api_type)
+        api = self._tooling_realtime_dialect()
         if api == 'step' or api == 'free':
             # stepaudio-2.5-realtime no longer supports built-in web_search; match
             # update_session initialization by sending only caller-registered tools.
@@ -885,7 +894,7 @@ class _ToolingMixin:
         if owner is not None and not self._tool_task_owner_is_current(owner):
             return
 
-        api = canonical_realtime_dialect(self._api_type)
+        api = self._tooling_realtime_dialect()
         item_events: List[Dict[str, Any]] = []
         for result in results:
             item: Dict[str, Any] = {

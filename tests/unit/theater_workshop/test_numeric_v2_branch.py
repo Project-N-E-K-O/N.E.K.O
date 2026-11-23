@@ -134,18 +134,19 @@ def test_branch_allows_shared_goal_to_follow_previous_goal():
     assert goals[1]["sources"] == ["previous_goal"]
 
 
-def test_branch_does_not_match_scene_boundary_prefixes():
+def test_branch_rejects_scene_boundary_without_negative_prefix():
     state = _character_state()
     state["scene_boundaries"] = ["避免把女主展示证物的职责转交给男主"]
 
-    normalized = NumericV2BranchService._validate_character_state(
-        state,
-        path="scenes[0].character_state",
-    )
+    with pytest.raises(NumericV2BranchError) as exc_info:
+        NumericV2BranchService._validate_character_state(
+            state,
+            path="scenes[0].character_state",
+        )
 
-    assert normalized["scene_boundaries"] == [
-        "避免把女主展示证物的职责转交给男主"
-    ]
+    assert exc_info.value.code == "invalid_branch_generation"
+    assert exc_info.value.details["path"] == "scenes[0].character_state.scene_boundaries[0]"
+    assert exc_info.value.details["issue_code"] == "character_state_boundary_polarity_invalid"
 
 
 def _character_state() -> dict:
@@ -2031,3 +2032,96 @@ def test_silent_branch_without_counter_returns_validation_error():
     _, _, plan, result, _ = _silent_exit_path("scene", "optional", ["forbidden"])
     with pytest.raises(NumericV2BranchError, match="branch_transition_silent_choice_required"):
         NumericV2BranchService().finish_path(plan, result)
+
+
+def test_branch_ending_contract_populates_defaults_and_rejects_non_ending_goals():
+    from pydantic import ValidationError
+    from services.theater_workshop.sdk.contracts import BranchEndingContractPayload
+
+    minimal_ending = {
+        "title": "终局",
+        "summary": "结局总结",
+        "opening_scene": "终局开场",
+        "ordered_goals": [
+            {
+                "description": "展示终局已经成立的事实",
+            }
+        ],
+        "irreversible_facts": ["无法回头的决定"],
+        "character_state": _character_state(),
+        "catgirl_situation": "她已经知道全部真相。",
+        "tone": "沉稳收束",
+    }
+    parsed = BranchEndingContractPayload.model_validate(minimal_ending)
+    dumped = parsed.model_dump()
+    validated = NumericV2BranchService()._validate_ending(dumped)
+    assert validated["ordered_goals"][0]["timing"] == "opening"
+    assert validated["ordered_goals"][0]["sources"] == ["opening"]
+    assert validated["ordered_goals"][0]["anchors"] == []
+    assert validated["ordered_goals"][0]["dialogue_policy_after"] == "unchanged"
+
+    # Rejects non-ending goal shapes and multiple goals at the transport contract layer.
+    bad_owner = deepcopy(minimal_ending)
+    bad_owner["ordered_goals"][0]["owner"] = "catgirl"
+    with pytest.raises(ValidationError):
+        BranchEndingContractPayload.model_validate(bad_owner)
+
+    too_many_goals = deepcopy(minimal_ending)
+    too_many_goals["ordered_goals"].append({"description": "第二个目标"})
+    with pytest.raises(ValidationError):
+        BranchEndingContractPayload.model_validate(too_many_goals)
+
+
+def test_branch_build_story_omits_empty_fixed_narrations_on_ending():
+    from services.theater_workshop.sdk.contracts import BranchEndingContractPayload
+    from utils.tokenize import count_tokens
+
+    project = branchable_project()
+    service = NumericV2BranchService(token_counter=count_tokens)
+    options = service.options(project, "main_3")
+    confirmed_input = {
+        "title": "终局",
+        "summary": "结局总结",
+        "opening_scene": "终局开场",
+        "ordered_goals": [{"description": "终局事实"}],
+        "irreversible_facts": ["无法回头的决定"],
+        "character_state": _character_state(),
+        "catgirl_situation": "她已经知道全部真相。",
+        "tone": "沉稳收束",
+    }
+    confirmed = BranchEndingContractPayload.model_validate(confirmed_input).model_dump()
+    assert confirmed["fixed_narrations"] == []
+    ending_plan = service.prepare_ending(
+        project,
+        source_node_id="main_3",
+        ending_direction="走向全新结局。",
+        condition_selection={"mode": "fixed", "key": options["condition_candidates"][0]["key"]},
+    )
+    ending_draft = service.finish_ending(
+        ending_plan,
+        {k: v for k, v in confirmed.items() if k != "fixed_narrations"},
+    )
+    plan = service.prepare_path(
+        project,
+        source_node_id=None,
+        endpoint_mode="new_ending",
+        endpoint_node_id=None,
+        direction="走向全新结局。",
+        length=1,
+        condition_selection=None,
+        ending_draft=ending_draft,
+        confirmed_ending=confirmed,
+    )
+    result = _path_result(plan)
+    draft = service.finish_path(plan, result)
+    story, _, _ = service.build_story(project, draft)
+    ending_node = next(n for n in story["nodes"] if n["id"] == draft["ending_node_id"])
+    assert "fixed_narrations" not in ending_node["story_beat"]
+
+
+@pytest.mark.parametrize("prefix", ["不得", "禁止", "不能"])
+def test_branch_character_state_accepts_all_negative_boundary_prefixes(prefix: str):
+    state = _character_state()
+    state["scene_boundaries"] = [f"{prefix}离开调查现场"]
+    normalized = NumericV2BranchService._validate_character_state(state, path="scenes[0].character_state")
+    assert normalized["scene_boundaries"] == [f"{prefix}离开调查现场"]
