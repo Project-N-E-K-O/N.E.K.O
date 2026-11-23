@@ -783,3 +783,119 @@ async def test_publish_auto_discovers_mismatched_extension_thumbnail_and_copies_
     )
     assert bad_resp.status_code == 400
     assert json.loads(bad_resp.body)["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_publish_skips_copy_when_canonical_preview_path_is_directory(tmp_path, monkeypatch):
+    from main_routers.workshop_router import publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_dir_collision"
+    (content_folder / "preview.png").mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+    staging_folder = workshop / "WorkshopExport" / "_preview_staging" / "stage_keep"
+    staging_folder.mkdir(parents=True)
+    staged_preview = staging_folder / "cover.png"
+    staged_preview.write_bytes(_png_bytes())
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+
+    captured = {}
+
+    def _fake_preflight(_sw, _title, _desc, _cf, preview_arg, *_rest):
+        captured["preview_image"] = preview_arg
+        return "9993"
+
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", _fake_preflight)
+    resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Dir Target Collision",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": str(staged_preview),
+        })
+    )
+    assert resp.status_code == 200
+    assert captured["preview_image"] == str(staged_preview.resolve())
+    assert staging_folder.exists()
+    assert not (content_folder / "preview.png" / "cover.png").exists()
+
+
+@pytest.mark.asyncio
+async def test_publish_does_not_delete_content_folder_inside_preview_staging(tmp_path, monkeypatch):
+    from main_routers.workshop_router import publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    export_dir = workshop / "WorkshopExport"
+    content_inside_staging = export_dir / "_preview_staging" / "item_in_staging"
+    content_inside_staging.mkdir(parents=True)
+    (content_inside_staging / "card.json").write_text("{}", encoding="utf-8")
+    source_cover = content_inside_staging / "cover.png"
+    source_cover.write_bytes(_png_bytes())
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", lambda *_a: "9994")
+
+    resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Content Under Staging",
+            "content_folder": str(content_inside_staging),
+            "visibility": 0,
+            "preview_image": str(source_cover),
+        })
+    )
+    assert resp.status_code == 200
+    assert (content_inside_staging / "card.json").is_file()
+
+    # Separate staging dir is still cleaned up after successful publish into a normal folder.
+    normal_content = export_dir / "normal_item"
+    normal_content.mkdir(parents=True)
+    (normal_content / "card.json").write_text("{}", encoding="utf-8")
+    separate_stage = export_dir / "_preview_staging" / "ephemeral_stage"
+    separate_stage.mkdir(parents=True)
+    separate_cover = separate_stage / "cover.png"
+    separate_cover.write_bytes(_png_bytes())
+
+    resp2 = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Normal Content Separate Staging",
+            "content_folder": str(normal_content),
+            "visibility": 0,
+            "preview_image": str(separate_cover),
+        })
+    )
+    assert resp2.status_code == 200
+    assert not separate_stage.exists()
+
+
+@pytest.mark.asyncio
+async def test_publish_explicit_preview_rejects_mismatched_jpeg_named_png(tmp_path, monkeypatch):
+    from main_routers.workshop_router import publish as wr_publish
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color=(15, 90, 200)).save(buf, format="JPEG")
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_explicit_mismatch"
+    content_folder.mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+    mismatched_file = content_folder / "thumbnail.png"
+    mismatched_file.write_bytes(buf.getvalue())
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+
+    resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Explicit Mismatched Preview",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": str(mismatched_file),
+        })
+    )
+    assert resp.status_code == 400
+    assert json.loads(resp.body)["success"] is False

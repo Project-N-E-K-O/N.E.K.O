@@ -1135,3 +1135,19 @@ async def read_json_async(
     encoding: str = "utf-8",
 ) -> Any:
     return await asyncio.to_thread(read_json, path, encoding=encoding)
+
+
+def extract_unc_share(raw_path: str) -> tuple[str, str] | None:
+    """Extract normalized ``(server, share)`` from a Windows UNC path, else ``None``."""
+    unified = raw_path.replace("/", "\\")
+    if unified.startswith(("\\??\\", "\\\\.\\", "\\\\?\\")):
+        return None
+    if not unified.startswith("\\\\"):
+        return None
+    remainder = unified[2:]
+    if not remainder or remainder.startswith("\\"):
+        return None
+    parts = remainder.split("\\")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return None
+    return parts[0].lower(), parts[1].lower()

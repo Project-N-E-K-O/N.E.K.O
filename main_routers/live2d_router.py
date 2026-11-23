@@ -139,14 +139,15 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _is_valid_live2d_model_name(model_name: str | None) -> bool:
+def _is_valid_live2d_model_name(model_name: str | None, *, for_upload: bool = False) -> bool:
     """Return whether ``model_name`` is a single safe directory/item identifier."""
     if not isinstance(model_name, str):
         return False
     stripped = model_name.strip()
     if not stripped or stripped in {".", ".."} or stripped.strip(".") == "":
         return False
-    if ".." in model_name or any(ch in model_name for ch in ("/", "\\", ":", "\x00")):
+    forbidden_chars = ("/", "\\", ":", "\x00") if (for_upload or os.name == "nt") else ("/", "\\", "\x00")
+    if ".." in model_name or any(ch in model_name for ch in forbidden_chars):
         return False
     return True
 
@@ -1704,6 +1705,18 @@ def _sanitize_live2d_upload_relpath(raw_filename: str | None) -> pathlib.PurePos
     return pathlib.PurePosixPath(*parts)
 
 
+async def _write_staged_upload_bytes(target_file_path: pathlib.Path, content: bytes) -> None:
+    """Write staged upload bytes without letting cancellation exit TemporaryDirectory early."""
+    writer = asyncio.ensure_future(asyncio.to_thread(target_file_path.write_bytes, content))
+    try:
+        await asyncio.shield(writer)
+    except asyncio.CancelledError:
+        while not writer.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({writer})
+        raise
+
+
 @upload_router.post('/upload_model')
 async def upload_live2d_model(files: list[UploadFile] = File(...)):
     """Upload a Live2D model to the user documents directory."""
@@ -1736,7 +1749,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                 
                 # Save file via asyncio.to_thread to avoid blocking the event loop.
                 content = await file.read()
-                await asyncio.to_thread(target_file_path.write_bytes, content)
+                await _write_staged_upload_bytes(target_file_path, content)
             
             # Recursively find .model3.json in temp directory.
             model_json_files = list(temp_path.rglob('*.model3.json'))
@@ -1754,7 +1767,7 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             if model_root_dir.resolve() == resolved_temp:
                 return JSONResponse(status_code=400, content={"success": False, "error": "模型文件必须位于模型子目录中"})
             model_name = model_root_dir.name
-            if not _is_valid_live2d_model_name(model_name):
+            if not _is_valid_live2d_model_name(model_name, for_upload=True):
                 return JSONResponse(status_code=400, content={"success": False, "error": "非法模型名称"})
             
             # Get user-documents live2d directory.

@@ -139,7 +139,7 @@
                     await security.refreshToken();
                 }
                 const headers = await security.getMutationHeaders();
-                if (headers && typeof headers === 'object') {
+                if (headers && typeof headers === 'object' && (headers['X-CSRF-Token'] || headers['x-csrf-token'])) {
                     return headers;
                 }
             }

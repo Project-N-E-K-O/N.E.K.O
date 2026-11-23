@@ -504,3 +504,51 @@ def test_vrm_uploads_reject_unauthenticated_and_cross_origin(tmp_path, monkeypat
         assert r_evil.json()["error_code"] == "csrf_validation_failed"
 
     assert list(user_vrm.iterdir()) == []
+
+
+def test_live2d_model_name_allows_colon_on_posix_lookup_but_rejects_on_upload_and_windows(monkeypatch):
+    from main_routers import live2d_router
+
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
+    monkeypatch.setattr(live2d_router.os, "name", "posix")
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night") is True
+    assert live2d_router._is_valid_live2d_model_name("../Blue:Night") is False
+    assert live2d_router._is_valid_live2d_model_name("Blue/Night") is False
+    assert live2d_router._is_valid_live2d_model_name("Blue\\Night") is False
+
+    monkeypatch.setattr(live2d_router.os, "name", "nt")
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night") is False
+
+
+@pytest.mark.asyncio
+async def test_write_staged_upload_bytes_waits_for_worker_on_cancellation(tmp_path):
+    import asyncio
+    import threading
+    from pathlib import Path
+    from main_routers import live2d_router
+
+    writer_started = threading.Event()
+    allow_finish = threading.Event()
+    dest = tmp_path / "staged.bin"
+
+    class _SlowTarget:
+        def __init__(self, real_path: Path):
+            self._real_path = real_path
+
+        def write_bytes(self, data: bytes) -> int:
+            writer_started.set()
+            assert allow_finish.wait(timeout=2.0)
+            return self._real_path.write_bytes(data)
+
+    task = asyncio.create_task(live2d_router._write_staged_upload_bytes(_SlowTarget(dest), b"payload"))
+    while not writer_started.is_set():
+        await asyncio.sleep(0.01)
+
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done(), "cancellation returned before worker write completed"
+
+    allow_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert dest.read_bytes() == b"payload"

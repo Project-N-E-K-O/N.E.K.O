@@ -687,23 +687,26 @@ async def publish_to_workshop(request: Request):
                     }, status_code=403)
                 if os.path.normcase(os.path.realpath(preview_image)) != os.path.normcase(os.path.realpath(new_preview_path)):
                     source_preview = preview_image
-                    try:
-                        import shutil
-                        await asyncio.to_thread(shutil.copy2, source_preview, new_preview_path)
-                        logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
-                        preview_image = new_preview_path
-                        consumed_staged_preview = source_preview
-                    except Exception as e:
-                        logger.error(f'复制预览图片到内容文件夹失败: {e}')
-                        if os.path.isfile(source_preview):
-                            logger.warning(f'继续使用已验证的源预览图片路径: {source_preview}')
-                            preview_image = source_preview
-                        else:
-                            return JSONResponse(content={
-                                "success": False,
-                                "error": "预览图片处理失败",
-                                "message": "无法复制预览图片到内容文件夹"
-                            }, status_code=500)
+                    if os.path.isdir(new_preview_path):
+                        logger.warning(f'目标预览路径已是目录，保留已验证的源预览图片: {new_preview_path}')
+                    else:
+                        try:
+                            import shutil
+                            await asyncio.to_thread(shutil.copy2, source_preview, new_preview_path)
+                            logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
+                            preview_image = new_preview_path
+                            consumed_staged_preview = source_preview
+                        except Exception as e:
+                            logger.error(f'复制预览图片到内容文件夹失败: {e}')
+                            if os.path.isfile(source_preview):
+                                logger.warning(f'继续使用已验证的源预览图片路径: {source_preview}')
+                                preview_image = source_preview
+                            else:
+                                return JSONResponse(content={
+                                    "success": False,
+                                    "error": "预览图片处理失败",
+                                    "message": "无法复制预览图片到内容文件夹"
+                                }, status_code=500)
         else:
             # If no preview is specified, try automatic discovery.
             auto_preview = find_preview_image_in_folder(content_folder)
@@ -761,21 +764,26 @@ async def publish_to_workshop(request: Request):
                                 "error": "权限错误",
                                 "message": "预览图片路径不在允许的范围内"
                             }, status_code=403)
-                        try:
-                            import shutil
-                            await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
-                            logger.info(f'自动找到的预览图片已统一命名: {new_preview_path}')
-                            preview_image = new_preview_path
-                        except Exception as e:
-                            logger.error(f'重命名自动预览图片失败: {e}')
-                            if os.path.isfile(preview_image):
-                                logger.warning(f'继续使用已验证的自动预览图片路径: {preview_image}')
-                            else:
-                                return JSONResponse(content={
-                                    "success": False,
-                                    "error": "预览图片处理失败",
-                                    "message": "无法处理自动发现的预览图片"
-                                }, status_code=500)
+                        if os.path.isdir(new_preview_path):
+                            logger.warning(f'自动预览目标路径已是目录，继续使用原预览图片: {new_preview_path}')
+                        elif detected_format not in allowed_for_ext and os.path.exists(new_preview_path):
+                            logger.warning(f'目标预览文件已存在，避免覆盖: {new_preview_path}')
+                        else:
+                            try:
+                                import shutil
+                                await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
+                                logger.info(f'自动找到的预览图片已统一命名: {new_preview_path}')
+                                preview_image = new_preview_path
+                            except Exception as e:
+                                logger.error(f'重命名自动预览图片失败: {e}')
+                                if os.path.isfile(preview_image):
+                                    logger.warning(f'继续使用已验证的自动预览图片路径: {preview_image}')
+                                else:
+                                    return JSONResponse(content={
+                                        "success": False,
+                                        "error": "预览图片处理失败",
+                                        "message": "无法处理自动发现的预览图片"
+                                    }, status_code=500)
 
         # Record information about the upload content.
         logger.info(f"准备发布创意工坊物品: {title}")
@@ -823,7 +831,12 @@ async def publish_to_workshop(request: Request):
 
         if consumed_staged_preview:
             try:
-                await asyncio.to_thread(_cleanup_consumed_preview_staging, consumed_staged_preview, workshop_base)
+                await asyncio.to_thread(
+                    _cleanup_consumed_preview_staging,
+                    consumed_staged_preview,
+                    workshop_base,
+                    content_folder=content_folder,
+                )
             except Exception:
                 pass
         

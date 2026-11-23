@@ -2157,7 +2157,11 @@ async function main() {
         return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
       }
       if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
-        endCalls.push({ url: pathName, init, body: init.body ? JSON.parse(init.body) : {} });
+        const body = init.body ? JSON.parse(init.body) : {};
+        endCalls.push({ url: pathName, init, body });
+        if (!init.headers?.['X-CSRF-Token'] && !body._csrf_token) {
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
         return jsonResponse(RAW_END_RESPONSE);
       }
       return jsonResponse({ ok: true, accepted: true });
@@ -2224,8 +2228,10 @@ async function main() {
     noTokenHost.dispose({ preservePendingOperations: ['route_end'] });
     const noTokenResult = await noTokenEndPromise;
     assert(beaconSentCount === 0, 'tokenless sendBeacon must not be invoked');
-    assert(noTokenResult.ok === true && endCalls.length === 2,
+    assert(endCalls.length === 2 && endCalls[1].init.keepalive === true,
       'tokenless unload did not fall back to synchronous keepalive fetch');
+    assert(noTokenResult.ok === false && noTokenResult.status === 403,
+      `expected tokenless unload fallback to preserve 403 CSRF rejection, got ${JSON.stringify(noTokenResult)}`);
 
     // Aborting one caller while page_config is pending cancels only that caller
     // without breaking concurrent waiters sharing the CSRF fetch.
@@ -2333,6 +2339,8 @@ async function main() {
   {
     let pageConfigGate = null;
     let releasePageConfig = null;
+    let resolveRefreshStarted = null;
+    const refreshPageConfigStarted = new Promise((resolve) => { resolveRefreshStarted = resolve; });
     let pageConfigCount = 0;
     let chatPostCount = 0;
     let endPostCount = 0;
@@ -2342,6 +2350,9 @@ async function main() {
       if (pathName.startsWith('/api/config/page_config')) {
         pageConfigCount += 1;
         pageConfigGate = new Promise((resolve) => { releasePageConfig = resolve; });
+        if (pageConfigCount === 3) {
+          resolveRefreshStarted?.();
+        }
         await pageConfigGate;
         return jsonResponse({ autostart_csrf_token: `cancel-test-token-${pageConfigCount}` });
       }
@@ -2404,7 +2415,7 @@ async function main() {
     chat403First = true;
     const refreshCancelPromise = cancelHost.requestDialogue({ event: { kind: 'refresh_cancel' } })
       .then(() => null, (err) => err);
-    await new Promise((resolve) => setTimeout(resolve, 15));
+    await refreshPageConfigStarted;
     assert(chatPostCount === 1 && pageConfigCount === 3,
       `expected 1 initial /chat attempt waiting on refresh page_config, got chat=${chatPostCount}, page_config=${pageConfigCount}`);
     cancelHost.cancelPendingRequests();
@@ -2413,6 +2424,127 @@ async function main() {
     assert(refreshErr?.code === 'cancelled' && chatPostCount === 1,
       `expected 403 refresh cancel to stop retry /chat POST, err=${refreshErr?.code}, chat=${chatPostCount}`);
     cancelHost.dispose();
+  }
+
+  // Threads #42, #44, #45:
+  // #42: Keep last known _cachedCsrfToken while forceRefresh is pending so synchronous unload succeeds.
+  {
+    let pageConfigCalls = 0;
+    let releaseBlockedRefresh = null;
+    const blockedRefreshGate = new Promise((resolve) => { releaseBlockedRefresh = resolve; });
+    const unloadDuringRefreshCalls = [];
+    const refreshKeepFetch = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        pageConfigCalls += 1;
+        if (pageConfigCalls === 1) {
+          return jsonResponse({ autostart_csrf_token: 'initial-valid-token' });
+        }
+        await blockedRefreshGate;
+        return jsonResponse({ autostart_csrf_token: 'new-valid-token' });
+      }
+      if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+        const body = init.body ? JSON.parse(init.body) : {};
+        unloadDuringRefreshCalls.push({ headers: init.headers || {}, body });
+        if (init.headers?.['X-CSRF-Token'] !== 'initial-valid-token'
+          && body._csrf_token !== 'initial-valid-token') {
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
+        return jsonResponse(RAW_END_RESPONSE);
+      }
+      return jsonResponse({ ok: true });
+    };
+    const refreshKeepHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'refresh-keep-token-session',
+      fetchImpl: refreshKeepFetch,
+      windowImpl: windowMock,
+      navigatorImpl: { ...windowMock.navigator, sendBeacon: () => false },
+    });
+    refreshKeepHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    await refreshKeepHost.getMutationHeaders();
+    const pendingRefresh = refreshKeepHost.refreshMutationHeaders();
+    await new Promise((resolve) => setImmediate(resolve));
+    const endProm = refreshKeepHost.end({ reason: 'pagehide' }, { useBeacon: true });
+    refreshKeepHost.dispose({ preservePendingOperations: ['route_end'] });
+    const endResp = await endProm;
+    releaseBlockedRefresh();
+    await pendingRefresh;
+    assert(endResp.ok === true && unloadDuringRefreshCalls.length === 1,
+      `expected unload during blocked refresh to keep previous token and succeed: ${JSON.stringify(endResp)}`);
+    assert(unloadDuringRefreshCalls[0].headers['X-CSRF-Token'] === 'initial-valid-token',
+      'unload during blocked refresh dropped previous CSRF header token');
+  }
+
+  // #44: sendRealtimeContextWithCsrf retries at most once (2 total POSTs) even when page_config returns no token.
+  {
+    let rtPosts = 0;
+    const rtHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'single-retry-rt-session',
+      fetchImpl: async (url) => {
+        const pathName = String(url);
+        if (pathName.startsWith('/api/config/page_config')) {
+          return jsonResponse({});
+        }
+        if (pathName.endsWith('/realtime-context')) {
+          rtPosts += 1;
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    rtHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    const rtResp = await rtHost.sendRealtimeContextWithCsrf({ stage: 1 });
+    assert(rtResp.status === 403 && rtPosts === 2,
+      `expected single CSRF retry (2 total POSTs) on sendRealtimeContextWithCsrf, got status=${rtResp.status}, posts=${rtPosts}`);
+    rtHost.dispose();
+  }
+
+  // #45: _postWithCsrf disables keepalive when adding _csrf_token pushes body over 60 KiB.
+  {
+    const endKeepaliveFlags = [];
+    const boundToken = 'k'.repeat(24);
+    const keepaliveHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'keepalive-bound-session',
+      fetchImpl: async (url, init = {}) => {
+        const pathName = String(url);
+        if (pathName.startsWith('/api/config/page_config')) {
+          return jsonResponse({ autostart_csrf_token: boundToken });
+        }
+        if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+          endKeepaliveFlags.push(Boolean(init.keepalive));
+          return jsonResponse(RAW_END_RESPONSE);
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    keepaliveHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    await keepaliveHost.getMutationHeaders();
+    const emptyBodyBytes = Buffer.byteLength(
+      JSON.stringify(keepaliveHost._trustedRuntimePayload({ note: '' })),
+      'utf8',
+    );
+    // Leaves pre-token body <= 60 KiB while post-_csrf_token body exceeds 60 KiB.
+    const noteLen = (60 * 1024) - emptyBodyBytes - 4;
+    await keepaliveHost.end({ note: 'a'.repeat(noteLen) }, { useBeacon: false });
+    assert(endKeepaliveFlags.length === 1 && endKeepaliveFlags[0] === false,
+      `expected keepalive=false when final body with _csrf_token exceeds 60 KiB, got ${JSON.stringify(endKeepaliveFlags)}`);
+    keepaliveHost.dispose();
   }
 
   // F0433: enableLoggerAfterRouteStart must POST /api/game/logs/enable even when a

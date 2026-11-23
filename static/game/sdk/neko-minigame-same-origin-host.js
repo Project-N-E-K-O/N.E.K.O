@@ -1437,6 +1437,7 @@
         }
         return this._post(path, body, {
           ...options,
+          ...(options.keepalive ? { keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES } : {}),
           headers: { ...headers, ...(options.headers || {}) },
           credentials: options.credentials || 'same-origin',
         });
@@ -2166,7 +2167,6 @@
     getMutationHeaders(options = {}) {
       const forceRefresh = options?.forceRefresh === true;
       if (forceRefresh) {
-        this._cachedCsrfToken = '';
         this._csrfFetchPromise = null;
       }
       const loadFromPageConfig = (useCached = !forceRefresh) => {
@@ -2344,10 +2344,7 @@
     }
 
     sendRealtimeContextWithCsrf(payload) {
-      return this.withCsrfRetry(
-        (headers) => this.sendRealtimeContext(payload, { headers }),
-        { operation: 'realtime_context', trackCancellation: true },
-      );
+      return this.sendRealtimeContext(payload);
     }
 
     startSpeechPlaybackBridge(options = {}) {

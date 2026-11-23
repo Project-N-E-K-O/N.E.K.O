@@ -20,7 +20,6 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 """
 
 from ._shared import logger, router
-from main_routers.system_router._shared import _extract_unc_share
 
 import asyncio
 import io
@@ -34,7 +33,7 @@ from datetime import datetime
 from pathlib import Path
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from utils.file_utils import atomic_write_bytes, atomic_write_json
+from utils.file_utils import atomic_write_bytes, atomic_write_json, extract_unc_share as _extract_unc_share
 from utils.config_manager import get_reserved
 from utils.workshop_utils import get_workshop_path_async
 
@@ -670,7 +669,12 @@ def _cleanup_stale_preview_staging(
         return
 
 
-def _cleanup_consumed_preview_staging(source_preview: str, workshop_base: str) -> None:
+def _cleanup_consumed_preview_staging(
+    source_preview: str,
+    workshop_base: str,
+    *,
+    content_folder: str | None = None,
+) -> None:
     """Best-effort delete a consumed per-upload staging directory under _preview_staging."""
     if not source_preview or not workshop_base:
         return
@@ -691,6 +695,16 @@ def _cleanup_consumed_preview_staging(source_preview: str, workshop_base: str) -
         return
     if os.path.normcase(os.path.dirname(resolved_parent)) != os.path.normcase(staging_root):
         return
+    if content_folder:
+        try:
+            resolved_content = os.path.realpath(os.path.normpath(content_folder))
+            norm_parent = os.path.normcase(resolved_parent)
+            norm_content = os.path.normcase(resolved_content)
+            overlap = os.path.commonpath([norm_parent, norm_content])
+            if overlap in {norm_parent, norm_content}:
+                return
+        except ValueError:
+            pass
     if os.path.isdir(resolved_parent):
         shutil.rmtree(resolved_parent, ignore_errors=True)
 

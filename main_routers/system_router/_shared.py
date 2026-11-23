@@ -34,6 +34,7 @@ from config import (
     AUTOSTART_ALLOWED_ORIGINS,
     AUTOSTART_CSRF_TOKEN,
 )
+from utils.file_utils import extract_unc_share as _extract_unc_share
 from utils.logger_config import get_module_logger
 from utils.config_manager import get_config_manager as get_runtime_config_manager
 from config import APP_NAME
@@ -231,22 +232,6 @@ def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
     except (ValueError, TypeError):
         # Different drives or invalid paths
         return False
-
-
-def _extract_unc_share(raw_path: str) -> tuple[str, str] | None:
-    """Extract normalized ``(server, share)`` from a Windows UNC path, else ``None``."""
-    unified = raw_path.replace("/", "\\")
-    if unified.startswith(("\\??\\", "\\\\.\\", "\\\\?\\")):
-        return None
-    if not unified.startswith("\\\\"):
-        return None
-    remainder = unified[2:]
-    if not remainder or remainder.startswith("\\"):
-        return None
-    parts = remainder.split("\\")
-    if len(parts) < 2 or not parts[0] or not parts[1]:
-        return None
-    return parts[0].lower(), parts[1].lower()
 
 
 def _is_unsafe_windows_unc_or_device_path(
