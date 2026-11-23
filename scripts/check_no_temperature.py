@@ -61,7 +61,7 @@ tracks local and module-level dict bindings, literals, ``dict(...)``,
 ``.copy()``, ``.update()``, ``.setdefault()``, ``.clear()``,
 ``.pop('temperature', ...)``, ``del d['temperature']``, static default
 parameter dicts, walrus assignments, destructuring assignments, ``with`` target
-bindings, and structured control-flow merges.
+bindings, import bindings, and structured control-flow merges.
 It intentionally does NOT perform points-to alias analysis (e.g.
 ``alias = opts; alias['temperature'] = 0.2``), attribute-target tracking
 (``self.opts[...]``), ``copy.copy`` / ``copy.deepcopy``, forward-declared
@@ -72,6 +72,13 @@ short-circuit / conditional expression mutations (e.g.
 dict-literal side effects mutating a source dict while unpacking it
 (``{**opts, 'max_tokens': (opts.clear() or 100)}``), ``match``/``case``
 branch isolation, or comprehension walrus bindings (``[o := {...} for ...]``).
+External exception classes not declared in the same file (other than known
+``BaseException`` subclasses such as ``CancelledError``) and bare ``raise``
+inside bare ``except:`` are treated as ``Exception`` subclasses when checked
+against ``except Exception`` / ``suppress(Exception)`` so third-party
+exceptions do not trigger false positives; dynamic ``ExceptionGroup``
+payloads whose member classes are not statically listed are handled
+conservatively.
 
 Output
 ------
@@ -178,6 +185,18 @@ def _arg_names(args: ast.arguments) -> list[str]:
     return names
 
 
+_KNOWN_NON_EXCEPTION_BASE_EXCEPTIONS = frozenset(
+    {
+        "BaseException",
+        "BaseExceptionGroup",
+        "GeneratorExit",
+        "KeyboardInterrupt",
+        "SystemExit",
+        "CancelledError",
+    }
+)
+
+
 def _raised_exc_name(exc: ast.expr | None) -> str | None:
     if isinstance(exc, ast.Name):
         return exc.id
@@ -186,6 +205,22 @@ def _raised_exc_name(exc: ast.expr | None) -> str | None:
     if isinstance(exc, ast.Call):
         return _raised_exc_name(exc.func)
     return None
+
+
+def _raised_exc_group_members(exc: ast.expr | None) -> tuple[str, ...] | None:
+    if not isinstance(exc, ast.Call):
+        return None
+    if _raised_exc_name(exc.func) not in ("ExceptionGroup", "BaseExceptionGroup"):
+        return None
+    if len(exc.args) < 2 or not isinstance(exc.args[1], (ast.List, ast.Tuple)):
+        return None
+    members: list[str] = []
+    for elt in exc.args[1].elts:
+        name = _raised_exc_name(elt)
+        if name is None:
+            return None
+        members.append(name)
+    return tuple(members) if members else None
 
 
 def _handler_exc_names(expr: ast.expr) -> set[str]:
@@ -201,24 +236,66 @@ def _handler_exc_names(expr: ast.expr) -> set[str]:
     return set()
 
 
-def _exc_matches_names(exc_name: str | None, handled_names: set[str]) -> bool:
+def _collect_class_bases(tree: ast.AST) -> dict[str, set[str]]:
+    bases: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            names: set[str] = set()
+            for base in node.bases:
+                names.update(_handler_exc_names(base))
+            if names:
+                bases.setdefault(node.name, set()).update(names)
+    return bases
+
+
+def _resolve_exc_ancestors(
+    exc_name: str,
+    class_bases: dict[str, set[str]],
+) -> set[str]:
+    ancestors: set[str] = set()
+    visited: set[str] = {exc_name}
+    stack: list[str] = [exc_name]
+    while stack:
+        curr = stack.pop()
+        direct = class_bases.get(curr)
+        if direct is not None:
+            for parent in direct:
+                ancestors.add(parent)
+                if parent not in visited:
+                    visited.add(parent)
+                    stack.append(parent)
+            continue
+        cls = getattr(builtins, curr, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            for base_cls in cls.__mro__[1:]:
+                if issubclass(base_cls, BaseException):
+                    ancestors.add(base_cls.__name__)
+    return ancestors
+
+
+def _exc_matches_names(
+    exc_name: str | None,
+    handled_names: set[str],
+    class_bases: dict[str, set[str]] | None = None,
+) -> bool:
     if "BaseException" in handled_names:
         return True
     if exc_name is None:
         return "Exception" in handled_names
     if exc_name in handled_names:
         return True
-    exc_cls = getattr(builtins, exc_name, None)
-    if isinstance(exc_cls, type) and issubclass(exc_cls, BaseException):
-        for h_name in handled_names:
-            h_cls = getattr(builtins, h_name, None)
-            if (
-                isinstance(h_cls, type)
-                and issubclass(h_cls, BaseException)
-                and issubclass(exc_cls, h_cls)
-            ):
-                return True
+    bases = class_bases or {}
+    ancestors = _resolve_exc_ancestors(exc_name, bases)
+    if ancestors & handled_names:
+        return True
+    if ((ancestors | {exc_name}) & _KNOWN_NON_EXCEPTION_BASE_EXCEPTIONS) and (
+        "Exception" not in ancestors
+    ):
         return False
+    if exc_name not in bases:
+        exc_cls = getattr(builtins, exc_name, None)
+        if isinstance(exc_cls, type) and issubclass(exc_cls, BaseException):
+            return False
     return "Exception" in handled_names
 
 
@@ -227,6 +304,7 @@ def _handler_catches_exc(
     exc_name: str | None,
     *,
     is_try_star: bool,
+    class_bases: dict[str, set[str]] | None = None,
 ) -> bool:
     if handler.type is None:
         return True
@@ -236,8 +314,8 @@ def _handler_catches_exc(
             return "BaseException" in handled
         if exc_name == "ExceptionGroup":
             return "BaseException" in handled or "Exception" in handled
-        return _exc_matches_names(exc_name, handled)
-    return _exc_matches_names(exc_name, handled)
+        return _exc_matches_names(exc_name, handled, class_bases)
+    return _exc_matches_names(exc_name, handled, class_bases)
 
 
 def _is_const_truthy(expr: ast.expr | None) -> bool:
@@ -274,7 +352,7 @@ class _TryBodyFrame:
     __slots__ = ("raises",)
 
     def __init__(self) -> None:
-        self.raises: list[tuple[str | None, dict[str, bool]]] = []
+        self.raises: list[tuple[str | None, tuple[str, ...] | None, dict[str, bool]]] = []
 
 
 class _TryFinallyFrame:
@@ -305,6 +383,11 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             list[_LoopFrame | _TryBodyFrame | _TryFinallyFrame | _WithSuppressFrame]
         ] = [[]]
         self._active_exc_names: list[list[set[str] | None]] = [[]]
+        self._class_bases: dict[str, set[str]] = {}
+
+    def visit_Module(self, node: ast.Module) -> None:
+        self._class_bases = _collect_class_bases(node)
+        self.generic_visit(node)
 
     def _push_scope(
         self,
@@ -328,16 +411,19 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         kind: str,
         snapshot: dict[str, bool],
         exc_name: str | None = None,
+        group_members: tuple[str, ...] | None = None,
     ) -> None:
         for frame in reversed(self._cf_stacks[-1]):
             if isinstance(frame, _WithSuppressFrame):
-                if kind == "raise" and _exc_matches_names(exc_name, frame.suppressed_names):
+                if kind == "raise" and _exc_matches_names(
+                    exc_name, frame.suppressed_names, self._class_bases
+                ):
                     frame.suppressed_raises.append(snapshot)
                     return
                 continue
             if isinstance(frame, _TryBodyFrame):
                 if kind == "raise":
-                    frame.raises.append((exc_name, snapshot))
+                    frame.raises.append((exc_name, group_members, snapshot))
                     return
                 continue
             if isinstance(frame, _TryFinallyFrame):
@@ -457,6 +543,17 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 return False
         return True
 
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            bound = alias.asname or alias.name.split(".", 1)[0]
+            self._set_local(bound, False)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            if alias.name != "*":
+                bound = alias.asname or alias.name
+                self._set_local(bound, False)
+
     def visit_Return(self, node: ast.Return) -> bool:
         if node.value is not None:
             self.visit(node.value)
@@ -470,7 +567,12 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             self.visit(node.cause)
         snap = dict(self.scopes[-1])
         if node.exc is not None:
-            self._record_jump("raise", snap, exc_name=_raised_exc_name(node.exc))
+            self._record_jump(
+                "raise",
+                snap,
+                exc_name=_raised_exc_name(node.exc),
+                group_members=_raised_exc_group_members(node.exc),
+            )
         else:
             active = (
                 self._active_exc_names[-1][-1] if self._active_exc_names[-1] else None
@@ -832,6 +934,44 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         cache[key] = result
         return result
 
+    @staticmethod
+    def _active_handler_exc_names(
+        handler: ast.ExceptHandler,
+        *,
+        is_try_star: bool,
+    ) -> set[str] | None:
+        if handler.type is None:
+            return None
+        handled = _handler_exc_names(handler.type)
+        if is_try_star:
+            return {"BaseExceptionGroup"} if "BaseException" in handled else {"ExceptionGroup"}
+        return handled or None
+
+    def _run_handler_silenced(
+        self,
+        handler: ast.ExceptHandler,
+        entry: dict[str, bool],
+        *,
+        is_try_star: bool,
+    ) -> dict[str, bool]:
+        saved_violations = self.violations
+        saved_scope = self.scopes[-1]
+        self.violations = set()
+        self.scopes[-1] = dict(entry)
+        self._cf_stacks.append([])
+        active_exc = self._active_handler_exc_names(handler, is_try_star=is_try_star)
+        self._active_exc_names[-1].append(active_exc)
+        try:
+            if handler.name:
+                self._set_local(handler.name, False)
+            self._visit_stmt_list(handler.body)
+            return dict(self.scopes[-1])
+        finally:
+            self._active_exc_names[-1].pop()
+            self._cf_stacks.pop()
+            self.scopes[-1] = saved_scope
+            self.violations = saved_violations
+
     def _visit_try_node(self, node: ast.Try) -> bool:
         before = dict(self.scopes[-1])
         is_try_star = hasattr(ast, "TryStar") and isinstance(node, ast.TryStar)
@@ -852,30 +992,26 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             after_body = dict(self.scopes[-1])
             body_raise_snaps: list[dict[str, bool]] = []
             if body_frame is not None:
-                for exc_name, snap in body_frame.raises:
+                for exc_name, _members, snap in body_frame.raises:
                     body_raise_snaps.append(snap)
-                    if not any(
-                        _handler_catches_exc(h, exc_name, is_try_star=is_try_star)
+                    if not is_try_star and not any(
+                        _handler_catches_exc(
+                            h, exc_name, is_try_star=False, class_bases=self._class_bases
+                        )
                         for h in node.handlers
                     ):
                         self._record_jump("raise", snap, exc_name=exc_name)
             handler_entry = self._merge_scopes([before, after_body, *body_raise_snaps])
+            star_entry = dict(handler_entry)
             for handler in node.handlers:
-                self.scopes[-1] = dict(handler_entry)
+                self.scopes[-1] = dict(star_entry if is_try_star else handler_entry)
                 if handler.type is not None:
                     self.visit(handler.type)
                 if handler.name:
                     self._set_local(handler.name, False)
-                if is_try_star:
-                    active_exc: set[str] | None = (
-                        {"ExceptionGroup"} if handler.type is not None else None
-                    )
-                else:
-                    active_exc = (
-                        _handler_exc_names(handler.type) or None
-                        if handler.type is not None
-                        else None
-                    )
+                active_exc = self._active_handler_exc_names(
+                    handler, is_try_star=is_try_star
+                )
                 self._active_exc_names[-1].append(active_exc)
                 try:
                     handler_falls = self._visit_stmt_list(handler.body)
@@ -885,6 +1021,38 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 all_snapshots.append(snap)
                 if handler_falls:
                     fallthrough.append(snap)
+                    if is_try_star:
+                        star_entry = self._merge_scopes([star_entry, snap])
+            if is_try_star and body_frame is not None:
+                for exc_name, members, snap in body_frame.raises:
+                    if members is not None:
+                        remaining = list(members)
+                        post_snap = dict(snap)
+                        for handler in node.handlers:
+                            matched = [
+                                m
+                                for m in remaining
+                                if _handler_catches_exc(
+                                    handler,
+                                    m,
+                                    is_try_star=False,
+                                    class_bases=self._class_bases,
+                                )
+                            ]
+                            if matched:
+                                remaining = [m for m in remaining if m not in matched]
+                                post_snap = self._run_handler_silenced(
+                                    handler, post_snap, is_try_star=True
+                                )
+                        if remaining:
+                            self._record_jump("raise", post_snap, exc_name=exc_name)
+                    elif not any(
+                        _handler_catches_exc(
+                            h, exc_name, is_try_star=True, class_bases=self._class_bases
+                        )
+                        for h in node.handlers
+                    ):
+                        self._record_jump("raise", snap, exc_name=exc_name)
             if node.orelse:
                 if body_falls:
                     self.scopes[-1] = dict(after_body)
