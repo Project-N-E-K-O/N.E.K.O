@@ -755,6 +755,7 @@ const CHARACTER_PROFILE_RESERVED_ROUTE_NAMES = new Set([
     'agenthud',
     'toast',
     'card_maker',
+    'emote_maker',
     'theater',
     'chara_manager',
     'visit_persona',

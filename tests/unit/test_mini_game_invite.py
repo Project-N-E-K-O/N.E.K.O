@@ -113,6 +113,7 @@ def _stub_persistent_counter(monkeypatch):
     and sr_history._invite_ever_delivered[lanlan]."""  # noqa: DOCSTRING_CJK
     async def _noop_load():
         sr_history._proactive_chat_totals_loaded = True
+        return True
 
     async def _bump_only(lanlan_name: str) -> int:
         n = sr_history._proactive_chat_totals.get(lanlan_name, 0) + 1

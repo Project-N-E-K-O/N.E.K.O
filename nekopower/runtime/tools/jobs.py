@@ -121,14 +121,23 @@ def status_line(job: Job, extra: str | None = None) -> str:
     return f"[status: {job.status}, {detail}]" if detail is not None else f"[status: {job.status}]"
 
 
-def render_delta(out: str, err: str, lossy: bool, spill_paths: list[str]) -> str:
+def render_delta(
+    out: str,
+    err: str,
+    lossy: bool,
+    spill_paths: list[str],
+    spill_truncated: bool = False,
+) -> str:
     """Combine one read of both streams the way every job read is shown."""
     separator = "\n" if out and not out.endswith("\n") else ""
     body = out + (f"{separator}[stderr]\n{err}" if err else "")
     if not lossy:
         return body
     where = ", ".join(spill_paths) if spill_paths else "(unavailable)"
-    notice = f"[some output was dropped from memory; full output: {where}]"
+    if spill_paths and spill_truncated:
+        notice = f"[some output was dropped from memory; partial output: {where}]"
+    else:
+        notice = f"[some output was dropped from memory; full output: {where}]"
     gap = "\n" if body and not body.endswith("\n") else ""
     return f"{body}{gap}{notice}"
 
@@ -267,7 +276,17 @@ class JobRegistry:
             for path in (job.process.stdout.spill_path, job.process.stderr.spill_path)
             if path is not None
         ]
-        return render_delta(out, err, out_lossy or err_lossy, spill), (out_next, err_next)
+        spill_truncated = any(
+            buf.spill_path is not None and buf.spill_truncated
+            for buf in (job.process.stdout, job.process.stderr)
+        )
+        return render_delta(
+            out,
+            err,
+            out_lossy or err_lossy,
+            spill,
+            spill_truncated=spill_truncated,
+        ), (out_next, err_next)
 
     def commit(self, job: Job, cursors: tuple[int, int]) -> None:
         job.stdout_offset = max(job.stdout_offset, cursors[0])

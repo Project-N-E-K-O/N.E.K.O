@@ -2416,12 +2416,15 @@ async def test_sealed_upload_of_another_character_is_not_uploaded(tmp_path):
 
 
 @pytest.mark.parametrize("change", [{"v": 2}, {"transport": "webrtc"}], ids=["newer_version", "new_transport"])
-async def test_sealed_upload_of_another_version_is_kept_not_deleted(tmp_path, change):
+@pytest.mark.parametrize("corrupt_stream", [False, True])
+async def test_sealed_upload_of_another_version_is_kept_not_deleted(tmp_path, change, corrupt_stream):
     v = vid(120)
     d = _spool_dir(tmp_path)
     d.mkdir(parents=True)
     sealed = d / f"{v}.upload.json"
     sealed.write_text(json.dumps({**_sealed(v), **change}), encoding="utf-8")
+    if corrupt_stream:
+        (d / f"{v}.upload.jsonl").write_text("{broken")
     report_path = _queue_report(tmp_path, v, include_transcript=True)
     uploads, reports = Uploads(), Reports()
     await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
@@ -3067,3 +3070,148 @@ async def test_crashed_memory_on_visit_without_lines_is_abandoned_not_retried(tm
     before = spool.state_path.stat().st_mtime_ns
     await _recover(tmp_path, render_chips=chips, summary_llm=llm)
     assert chips.calls == [] and spool.state_path.stat().st_mtime_ns == before
+
+
+async def test_f0184_sealed_upload_with_stamp_end_extra_rows_and_metadata_is_preserved(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(130)
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    sealed_path = _spool_dir(tmp_path) / f"{v}.upload.json"
+
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    # Simulate UploadJournal.seal(): _stamp_end moves ended_at/duration_s past last line ts,
+    # plus in-memory buffered line, higher usage/anomalies, and upload retry/rejection metadata.
+    doc["request"]["ended_at"] += 25.0
+    doc["request"]["usage"]["duration_s"] += 25
+    doc["request"]["usage"]["tts_chars"] += 120
+    doc["request"]["anomalies"] += 1
+    doc["request"]["lines"].append({
+        "lp": 99, "side": "host", "from": "own_cat",
+        "ts": doc["request"]["ended_at"] - 1.0, "text": "in-memory tail", "truncated": False,
+    })
+    doc["parts"] = {"head": "p1"}
+    doc["accepted_parts"] = ["head"]
+    doc["rejected"] = {"code": "already_settled"}
+    sealed_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    uploads = Uploads(ok=True)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (uploaded_vid, uploaded_doc), = uploads.calls
+    assert uploaded_vid == v
+    assert uploaded_doc == doc
+    assert not stream.exists()
+
+
+async def test_sealed_upload_recovers_identity_when_state_corrupt_and_stream_has_extra_line(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(131)
+    records = _stream_records(v)
+    # Remove own_char_uid from stream header & make state.json unreadable, with no memory spool header.
+    records_no_char = [{k: val for k, val in records[0].items() if k != "own_char_uid"}, *records[1:]]
+    (_spool_dir(tmp_path)).mkdir(parents=True, exist_ok=True)
+    (_spool_dir(tmp_path) / f"{v}.state.json").write_text("{corrupt", encoding="utf-8")
+
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    # Force a stream mismatch (extra line in stream not in sealed) so recovery reseals using sealed_doc's identity.
+    records_with_extra = [*records_no_char, {
+        "kind": "line", "lp": 99, "side": "host", "from": "own_cat",
+        "ts": doc["request"]["ended_at"] + 1.0, "text": "extra-in-stream", "truncated": False,
+    }]
+    stream = _write_stream(tmp_path, v, records_with_extra)
+    sealed_path = _spool_dir(tmp_path) / f"{v}.upload.json"
+    sealed_path.write_text(json.dumps(doc), encoding="utf-8")
+    queued = _queue_report(tmp_path, v, include_transcript=True)
+
+    uploads, reports = Uploads(ok=True), Reports()
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    (uploaded_vid, uploaded), = uploads.calls
+    assert uploaded_vid == v
+    assert uploaded["own_char_uid"] == CHAR_UID_A
+    assert "extra-in-stream" in [line["text"] for line in uploaded["request"]["lines"]]
+    assert not stream.exists()
+    assert reports.calls and not queued.exists()
+
+
+async def test_sealed_upload_recovers_identity_when_state_corrupt_and_stream_matches(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(134)
+    records = _stream_records(v)
+    records_no_char = [{k: val for k, val in records[0].items() if k != "own_char_uid"}, *records[1:]]
+    stream = _write_stream(tmp_path, v, records_no_char)
+    (_spool_dir(tmp_path) / f"{v}.state.json").write_text("{corrupt", encoding="utf-8")
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+    queued = _queue_report(tmp_path, v, include_transcript=True)
+
+    uploads, reports = Uploads(ok=True), Reports()
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    assert uploads.calls == [(v, doc)]
+    assert not stream.exists()
+    assert reports.calls and not queued.exists()
+
+
+async def test_spool_header_identity_overrides_tampered_sealed_upload_when_state_corrupt(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(135)
+    await make_visit(tmp_path, v, [ln(0)], own_char_uid=CHAR_UID_B, last_summary_done=True, write_jsonl=True)
+    (_spool_dir(tmp_path) / f"{v}.state.json").write_text("{corrupt", encoding="utf-8")
+    records = _stream_records(v)
+    records_no_char = [{k: val for k, val in records[0].items() if k != "own_char_uid"}, *records[1:]]
+    _write_stream(tmp_path, v, records_no_char)
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    doc["own_char_uid"] = "tampered-char-uid"
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (uploaded_vid, uploaded), = uploads.calls
+    assert uploaded_vid == v
+    assert uploaded["own_char_uid"] == CHAR_UID_B
+
+
+async def test_f0184_truncated_sealed_upload_is_still_resealed_from_stream(tmp_path):
+    from main_logic.visit.recovery import build_upload_doc
+
+    v = vid(132)
+    records = _stream_records(v)
+    _write_stream(tmp_path, v, records)
+    doc = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    doc["request"]["ended_at"] = doc["request"]["started_at"]  # Truncated timestamp
+    (_spool_dir(tmp_path) / f"{v}.upload.json").write_text(json.dumps(doc), encoding="utf-8")
+
+    uploads = Uploads(ok=False)
+    await _recover(tmp_path, upload_transcript=uploads)
+    (_, uploaded), = uploads.calls
+    expected = build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    assert uploaded["request"]["ended_at"] == expected["request"]["ended_at"]
+
+
+
+async def test_failed_reseal_defers_upload_and_report_until_full_transcript_is_available(tmp_path, monkeypatch):
+    from main_logic.visit import recovery
+
+    v = vid(133)
+    records = _stream_records(v)
+    stream = _write_stream(tmp_path, v, records)
+    path = _spool_dir(tmp_path) / f"{v}.upload.json"
+    stale = recovery.build_upload_doc(records, visit_id=v, finalized_reason="wrap_up")
+    stale["request"]["lines"].pop()
+    path.write_text(json.dumps(stale), encoding="utf-8")
+    queued = _queue_report(tmp_path, v, include_transcript=True)
+    uploads, reports = Uploads(), Reports()
+    with monkeypatch.context() as patch:
+        def locked(*args):
+            raise PermissionError("locked")
+        patch.setattr(recovery, "_write_private_json", locked)
+        await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    assert not uploads.calls and not reports.calls
+    assert stream.exists() and queued.exists() and json.loads(path.read_text()) == stale
+    await _recover(tmp_path, upload_transcript=uploads, submit_report=reports)
+    (_, uploaded), = uploads.calls
+    assert len(uploaded["request"]["lines"]) == len(stale["request"]["lines"]) + 1
+    assert reports.calls and not queued.exists()
