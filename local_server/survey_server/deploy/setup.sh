@@ -50,24 +50,53 @@ for f in server.py models.py security.py storage.py requirements.txt; do
     fi
 done
 
-# 创建目录
+# 创建目录并提前在独立的 root 所有暂存目录构建全新虚拟环境，安装成功后再切换，
+# 既不以 root 运行旧 nobody 目录中的 pip，也不会在安装失败时破坏线上服务
 echo "→ Installing to $INSTALL_DIR ..."
-sudo mkdir -p "$INSTALL_DIR/data"
-sudo chown root:root "$INSTALL_DIR"
-sudo chmod 755 "$INSTALL_DIR"
+if [ -L "$INSTALL_DIR/venvs" ]; then
+    sudo rm -f "$INSTALL_DIR/venvs"
+fi
+sudo mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/venvs"
+sudo chown root:root "$INSTALL_DIR" "$INSTALL_DIR/venvs"
+sudo chmod 755 "$INSTALL_DIR" "$INSTALL_DIR/venvs"
 
-# 安全替换脚本与依赖清单（清理旧文件并保持 root 所有，防止旧 nobody 目录残留符号链接劫持）
+STAGING_VENV="$INSTALL_DIR/venvs/venv-$(date +%Y%m%d%H%M%S)-$$"
+TMP_LINK=""
+cleanup_staging_venv() {
+    if [ -n "${TMP_LINK:-}" ] && [ -L "$TMP_LINK" ]; then
+        sudo rm -f "$TMP_LINK"
+    fi
+    if [ -n "${STAGING_VENV:-}" ] && [ -d "$STAGING_VENV" ]; then
+        sudo rm -rf "$STAGING_VENV"
+    fi
+}
+trap cleanup_staging_venv EXIT
+
+echo "→ Creating virtualenv in $STAGING_VENV ..."
+sudo python3 -m venv "$STAGING_VENV"
+echo "→ Installing dependencies ..."
+sudo "$STAGING_VENV/bin/pip" install --no-cache-dir --require-hashes --only-binary :all: -r "$SOURCE_DIR/requirements.txt" -i https://pypi.org/simple/
+sudo chown -R root:root "$STAGING_VENV"
+sudo chmod -R a+rX,go-w "$STAGING_VENV"
+
+# 仅在新依赖全部就绪后再安全替换脚本、清单并原子切换 venv 指向
 for f in server.py models.py security.py storage.py requirements.txt; do
     sudo rm -f "$INSTALL_DIR/$f"
     sudo install -o root -g root -m 644 "$SOURCE_DIR/$f" "$INSTALL_DIR/$f"
 done
 
-# 创建虚拟环境并安装依赖（升级时先销毁旧 venv，避免执行旧 nobody 目录下的 pip）
-echo "→ Creating virtualenv ..."
-sudo rm -rf "$INSTALL_DIR/venv"
-sudo python3 -m venv "$INSTALL_DIR/venv"
-echo "→ Installing dependencies ..."
-sudo "$INSTALL_DIR/venv/bin/pip" install --no-cache-dir --require-hashes --only-binary :all: -r "$INSTALL_DIR/requirements.txt" -i https://pypi.org/simple/
+OLD_LEGACY_VENV=""
+if [ -e "$INSTALL_DIR/venv" ] && [ ! -L "$INSTALL_DIR/venv" ]; then
+    OLD_LEGACY_VENV="$INSTALL_DIR/venv.legacy.$$"
+    sudo mv "$INSTALL_DIR/venv" "$OLD_LEGACY_VENV"
+fi
+TMP_LINK="$INSTALL_DIR/venv.link.$$"
+sudo ln -sfn "$STAGING_VENV" "$TMP_LINK"
+sudo mv -Tf "$TMP_LINK" "$INSTALL_DIR/venv"
+sudo chown -h root:root "$INSTALL_DIR/venv"
+ACTIVE_VENV="$STAGING_VENV"
+TMP_LINK=""
+STAGING_VENV=""
 
 PYTHON_BIN="$INSTALL_DIR/venv/bin/python3"
 
@@ -118,13 +147,25 @@ WantedBy=multi-user.target
 EOF
 
 # 设置目录权限（venv 保持 root 所有且只读，仅 data 需要 nobody 可写）
-sudo chown -R root:root "$INSTALL_DIR/venv"
-sudo chmod -R a+rX,go-w "$INSTALL_DIR/venv"
+sudo chown -R root:root "$ACTIVE_VENV"
+sudo chmod -R a+rX,go-w "$ACTIVE_VENV"
 sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/data"
 
-# 启动
+# 启动 / 重启服务后再清理旧版本环境
 sudo systemctl daemon-reload
-sudo systemctl enable --now $SERVICE_NAME
+sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl restart "$SERVICE_NAME"
+
+if [ -n "$OLD_LEGACY_VENV" ] && [ -e "$OLD_LEGACY_VENV" ]; then
+    sudo rm -rf "$OLD_LEGACY_VENV"
+fi
+ACTIVE_VENV_NAME="$(basename "$ACTIVE_VENV")"
+for old_venv in "$INSTALL_DIR/venvs"/venv-*; do
+    [ -e "$old_venv" ] || continue
+    if [ "$(basename "$old_venv")" != "$ACTIVE_VENV_NAME" ]; then
+        sudo rm -rf "$old_venv"
+    fi
+done
 
 echo ""
 sleep 1

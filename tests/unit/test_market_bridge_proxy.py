@@ -326,3 +326,42 @@ async def test_remote_market_pairing_through_main_keeps_plugin_cors_headers(monk
         # The remote page itself can never mint a code.
         refused = await main.post("/market/pair-code", headers={"Origin": market_origin})
         assert refused.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_market_proxy_strips_client_internal_service_header(monkeypatch):
+    """proxy_user_plugin_market_bridge must strip any client-supplied X-Neko-Internal-Service header."""
+    seen_headers: dict[str, str] = {}
+    asgi_client = httpx.AsyncClient
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def request(self, _method, _url, *, content, headers):
+            seen_headers.update(headers)
+            return httpx.Response(200, content=b"{}", headers={"content-type": "application/json"})
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: "http://127.0.0.1:48916")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+
+    app = FastAPI()
+    app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
+    async with asgi_client(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:48911") as client:
+        resp = await client.post(
+            "/market/ordinary",
+            headers={
+                "X-Neko-Internal-Service": "attacker-forged-proof",
+                "X-Neko-Market-Internal": "attacker-market-proof",
+                "Origin": "http://localhost:48911",
+            },
+            content=b"{}",
+        )
+
+    assert resp.status_code == 200
+    lowered = {k.lower(): v for k, v in seen_headers.items()}
+    assert "x-neko-internal-service" not in lowered
+    assert "x-neko-market-internal" not in lowered

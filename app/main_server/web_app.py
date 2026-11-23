@@ -731,12 +731,13 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Browser cookies are signed for the public host, not this private HTTP
     # hop. Replace any caller-supplied proof after the main entry guard passed;
     # retain Market's independent Authorization credential unchanged.
-    from utils.instance_access import instance_key, market_internal_proof, remote_instance_identity, request_public_origin
+    from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, market_internal_proof, remote_instance_identity, request_public_origin
     from utils.deployment import has_forwarding_metadata
     from filelock import Timeout as FileLockTimeout
 
-    headers.pop("x-neko-market-internal", None)
-    headers.pop("x-neko-market-public-origin", None)
+    for internal_header in ("x-neko-market-internal", "x-neko-market-public-origin", INTERNAL_SERVICE_HEADER):
+        for hdr_key in [k for k in headers if k.lower() == internal_header]:
+            headers.pop(hdr_key, None)
     # Knowledge calls (manager page -> plugin server's /market/knowledge) are
     # streamed through under their size cap instead; see below.
     knowledge_path = path == "knowledge" or path.startswith("knowledge/")

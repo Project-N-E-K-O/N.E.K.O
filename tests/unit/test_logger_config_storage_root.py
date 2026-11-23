@@ -394,12 +394,10 @@ def test_iter_handlers_rejects_symlinked_main_and_error_log_targets(tmp_path, mo
 
 
 @pytest.mark.unit
-def test_safe_rotating_file_handler_blocks_symlink_swap_and_supports_rollover(tmp_path, monkeypatch):
-    """_SafeRotatingFileHandler refuses delayed/swap symlinks and rotates normal log files cleanly."""
-    import logging
-    from utils.logger_config import RobustLoggerConfig, _SafeRotatingFileHandler
+def test_safe_rotating_file_handler_blocks_symlink_swap(tmp_path):
+    """_SafeRotatingFileHandler refuses delayed/swap symlinks without touching outside files."""
+    from utils.logger_config import _SafeRotatingFileHandler
 
-    # Prevent delayed symlink-swap case from writing to an outside file even after __init__.
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
     outside = tmp_path / "outside_swap.log"
@@ -425,7 +423,13 @@ def test_safe_rotating_file_handler_blocks_symlink_swap_and_supports_rollover(tm
     finally:
         handler.close()
 
-    # Verify normal logging and rotation continue working end-to-end.
+
+@pytest.mark.unit
+def test_safe_rotating_file_handler_supports_rollover(tmp_path, monkeypatch):
+    """Normal logging and size rollover keep working and write expected records to .1 and active logs."""
+    import logging
+    from utils.logger_config import RobustLoggerConfig, _SafeRotatingFileHandler
+
     selected_root = tmp_path / "storage"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
     config = RobustLoggerConfig(service_name="Main", max_bytes=80, backup_count=2)
@@ -445,5 +449,82 @@ def test_safe_rotating_file_handler_blocks_symlink_swap_and_supports_rollover(tm
             test_logger.removeHandler(h)
             h.close()
 
-    assert Path(config.log_file).exists()
-    assert (config.log_dir / f"{config.log_file.name}.1").exists()
+    active_file = Path(config.log_file)
+    backup_file = config.log_dir / f"{config.log_file.name}.1"
+    assert active_file.exists()
+    assert backup_file.exists()
+    active_text = active_file.read_text(encoding="utf-8")
+    backup_text = backup_file.read_text(encoding="utf-8")
+    assert "line-4-" in active_text
+    assert "line-3-" in backup_text
+
+
+@pytest.mark.unit
+def test_open_log_file_nofollow_rejects_fifo_and_root_directory_replacement(tmp_path):
+    """Readerless FIFOs must fail immediately without blocking, and replaced allowed_root must be rejected."""
+    import os
+    from utils.logger_config import _SafeRotatingFileHandler, _open_log_file_nofollow
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    if hasattr(os, "mkfifo"):
+        fifo_path = logs_dir / "pipe.log"
+        os.mkfifo(fifo_path)
+        with pytest.raises(OSError):
+            _open_log_file_nofollow(fifo_path, "a", "utf-8", None, logs_dir)
+
+    swap_root = tmp_path / "swap_logs"
+    swap_root.mkdir()
+    replacement_root = tmp_path / "replacement_logs"
+    replacement_root.mkdir()
+    log_path = swap_root / "app.log"
+    handler = _SafeRotatingFileHandler(
+        log_path,
+        allowed_root=swap_root,
+        maxBytes=128,
+        backupCount=1,
+        encoding="utf-8",
+        delay=True,
+    )
+    try:
+        swap_root.rename(tmp_path / "swap_logs_old")
+        replacement_root.rename(swap_root)
+        with pytest.raises(OSError, match="identity changed"):
+            handler._open()
+        with pytest.raises(OSError, match="identity changed"):
+            handler.doRollover()
+    finally:
+        handler.close()
+
+
+@pytest.mark.unit
+def test_is_symlink_or_reparse_point_allows_onedrive_cloud_tags_and_blocks_symlinks_junctions(
+    tmp_path, monkeypatch
+):
+    """Windows reparse check allows OneDrive cloud placeholder tags while blocking symlinks and junctions."""
+    import stat as stat_mod
+    from types import SimpleNamespace
+    from utils import logger_config
+
+    sample = tmp_path / "onedrive.log"
+    sample.write_text("ok", encoding="utf-8")
+
+    monkeypatch.setattr(logger_config.os.path, "islink", lambda _p: False)
+    monkeypatch.setattr(stat_mod, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400, raising=False)
+    monkeypatch.setattr(stat_mod, "IO_REPARSE_TAG_SYMLINK", 0xA000000C, raising=False)
+    monkeypatch.setattr(stat_mod, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003, raising=False)
+
+    monkeypatch.setattr(
+        logger_config.os,
+        "lstat",
+        lambda _p: SimpleNamespace(st_file_attributes=0x0400, st_reparse_tag=0x9000001A),
+    )
+    assert logger_config._is_symlink_or_reparse_point(sample) is False
+
+    for bad_tag in (0xA000000C, 0xA0000003):
+        monkeypatch.setattr(
+            logger_config.os,
+            "lstat",
+            lambda _p, tag=bad_tag: SimpleNamespace(st_file_attributes=0x0400, st_reparse_tag=tag),
+        )
+        assert logger_config._is_symlink_or_reparse_point(sample) is True

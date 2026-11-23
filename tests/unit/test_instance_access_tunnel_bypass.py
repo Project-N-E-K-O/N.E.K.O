@@ -12,8 +12,11 @@ from fastapi import FastAPI, Request as FastAPIRequest, WebSocket
 from fastapi.testclient import TestClient
 from starlette.requests import Request as StarletteRequest
 
+from config import MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from utils.http.internal_client import (
+    InternalServiceSigningError,
     _httpx_signing_path,
+    _should_attach_internal_service_proof,
     aclose_internal_http_client_current_loop,
     attach_internal_service_proof,
     attach_internal_service_proof_sync,
@@ -166,7 +169,7 @@ async def test_internal_http_client_attaches_signed_proof_in_remote_mode_and_val
             event_hooks=internal_client.event_hooks,
         )
         async with hooked_client:
-            resp = await hooked_client.post("http://127.0.0.1:48911/private")
+            resp = await hooked_client.post(f"http://127.0.0.1:{MAIN_SERVER_PORT}/private")
             assert resp.status_code == 200
             assert resp.json() == {"ok": True}
     finally:
@@ -181,19 +184,24 @@ def test_internal_service_proof_rejects_forged_expired_wrong_path_and_forwarded_
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
 
     app = _build_guarded_app()
-    local_client = TestClient(app, base_url="http://127.0.0.1:48911", client=("127.0.0.1", 50000))
-    remote_client = TestClient(app, base_url="http://127.0.0.1:48911", client=("203.0.113.9", 50000))
+    base = f"http://127.0.0.1:{MAIN_SERVER_PORT}"
+    local_client = TestClient(app, base_url=base, client=("127.0.0.1", 50000))
+    remote_client = TestClient(app, base_url=base, client=("203.0.113.9", 50000))
 
-    valid_proof = internal_service_proof(KEY, "GET", "/private")
+    valid_proof = internal_service_proof(KEY, "GET", "/private", port=MAIN_SERVER_PORT)
     assert local_client.get("/private", headers={INTERNAL_SERVICE_HEADER: valid_proof}).status_code == 200
 
-    # Wrong method or wrong path fails.
+    # Wrong method, wrong path, or wrong target port fails.
     assert local_client.post("/private", headers={INTERNAL_SERVICE_HEADER: valid_proof}).status_code == 401
-    wrong_path_proof = internal_service_proof(KEY, "GET", "/other")
+    wrong_path_proof = internal_service_proof(KEY, "GET", "/other", port=MAIN_SERVER_PORT)
     assert local_client.get("/private", headers={INTERNAL_SERVICE_HEADER: wrong_path_proof}).status_code == 401
+    wrong_port_proof = internal_service_proof(KEY, "GET", "/private", port=USER_PLUGIN_SERVER_PORT)
+    assert local_client.get("/private", headers={INTERNAL_SERVICE_HEADER: wrong_port_proof}).status_code == 401
+    portless_proof = internal_service_proof(KEY, "GET", "/private")
+    assert local_client.get("/private", headers={INTERNAL_SERVICE_HEADER: portless_proof}).status_code == 401
 
     # Expired proof fails.
-    expired_proof = internal_service_proof(KEY, "GET", "/private", expires=int(time.time()) - 10)
+    expired_proof = internal_service_proof(KEY, "GET", "/private", port=MAIN_SERVER_PORT, expires=int(time.time()) - 10)
     assert local_client.get("/private", headers={INTERNAL_SERVICE_HEADER: expired_proof}).status_code == 401
 
     # Forwarding headers or non-loopback peer fail even with a valid proof.
@@ -231,7 +239,7 @@ async def test_raw_path_signing_parity_across_client_and_middleware(
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
 
-    url = "http://127.0.0.1:48911/release/%E5%96%B5%3F%23?a=1&b=2"
+    url = f"http://127.0.0.1:{MAIN_SERVER_PORT}/release/%E5%96%B5%3F%23?a=1&b=2"
     raw_req = httpx.Request("GET", url)
     assert _httpx_signing_path(raw_req) == "/release/%E5%96%B5%3F%23"
 
@@ -244,7 +252,7 @@ async def test_raw_path_signing_parity_across_client_and_middleware(
             "query_string": b"a=1&b=2",
             "headers": [],
             "scheme": "http",
-            "server": ("127.0.0.1", 48911),
+            "server": ("127.0.0.1", MAIN_SERVER_PORT),
         }
     )
     assert _request_signing_path(starlette_req) == "/release/%E5%96%B5%3F%23"
@@ -263,7 +271,7 @@ async def test_raw_path_signing_parity_across_client_and_middleware(
     async with httpx.AsyncClient(transport=transport) as unsigned:
         assert (await unsigned.get(url)).status_code == 401
 
-    wrong_decoded_proof = internal_service_proof(KEY, "GET", "/release/喵")
+    wrong_decoded_proof = internal_service_proof(KEY, "GET", "/release/喵", port=MAIN_SERVER_PORT)
     async with httpx.AsyncClient(transport=transport) as bad_signed:
         assert (
             await bad_signed.get(url, headers={INTERNAL_SERVICE_HEADER: wrong_decoded_proof})
@@ -341,11 +349,11 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
     # Sanity check: headerless callers are rejected on every internal endpoint.
     async with httpx.AsyncClient(transport=transport) as raw_client:
         for method, path in (
-            ("POST", "http://127.0.0.1:48915/notify_config_changed"),
-            ("POST", "http://127.0.0.1:48912/reload"),
-            ("GET", "http://127.0.0.1:48916/plugins"),
-            ("POST", "http://127.0.0.1:48911/api/tools/register"),
-            ("POST", "http://127.0.0.1:48916/api/llm-tools/callback/p/t"),
+            ("POST", f"http://127.0.0.1:{TOOL_SERVER_PORT}/notify_config_changed"),
+            ("POST", f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload"),
+            ("GET", f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"),
+            ("POST", f"http://127.0.0.1:{MAIN_SERVER_PORT}/api/tools/register"),
+            ("POST", f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/api/llm-tools/callback/p/t"),
         ):
             assert (await raw_client.request(method, path)).status_code == 401
     assert recorded == []
@@ -404,7 +412,7 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
     try:
         tool_res = await tool_router._remote_dispatch(
             ToolCall(name="t", arguments={"x": 1}, call_id="c1"),
-            {"source": "plugin:p", "callback_url": "http://127.0.0.1:48916/api/llm-tools/callback/p/t"},
+            {"source": "plugin:p", "callback_url": f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/api/llm-tools/callback/p/t"},
         )
         assert tool_res.is_error is False
         assert tool_res.output == {"ran": True}
@@ -593,3 +601,108 @@ def test_ast_guard_all_internal_loopback_httpx_clients_sign_requests():
     assert not unhooked, f"unsigned httpx client(s) in internal-service paths: {unhooked}"
     stale_exemptions = exempt_sites - seen_exemptions
     assert not stale_exemptions, f"stale exemption(s) in exempt_sites: {sorted(stale_exemptions)}"
+
+
+async def test_untrusted_loopback_ports_do_not_receive_proof_while_dynamic_plugin_port_is_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Untrusted arbitrary local ports must never receive X-Neko-Internal-Service; dynamic plugin port is honored."""
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.delenv("NEKO_USER_PLUGIN_SERVER_PORT", raising=False)
+
+    arbitrary_req = httpx.Request("POST", "http://127.0.0.1:59999/arbitrary-callback")
+    assert _should_attach_internal_service_proof(arbitrary_req) is False
+
+    seen_headers: list[dict[str, str]] = []
+    mock_transport = httpx.MockTransport(
+        lambda req: (seen_headers.append(dict(req.headers)), httpx.Response(200, json={"ok": True}))[1]
+    )
+    async with httpx.AsyncClient(
+        transport=mock_transport,
+        event_hooks=internal_service_event_hooks(),
+    ) as client:
+        resp = await client.post("http://127.0.0.1:59999/arbitrary-callback")
+        assert resp.status_code == 200
+    assert seen_headers and INTERNAL_SERVICE_HEADER not in seen_headers[0]
+
+    # When launcher publishes a dynamically bound plugin port, that port becomes trusted.
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "59998")
+    dynamic_req = httpx.Request("POST", "http://127.0.0.1:59998/api/llm-tools/callback/p/t")
+    assert _should_attach_internal_service_proof(dynamic_req) is True
+    assert _should_attach_internal_service_proof(httpx.Request("POST", "http://127.0.0.1:59999/other")) is False
+
+
+async def test_signing_failure_raises_request_error_and_agent_router_rolls_back_switches(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Signing hook failures raise InternalServiceSigningError (httpx.RequestError) and trigger take_back; ReadTimeout stays taken."""
+    from main_routers import agent_router
+    import utils.instance_access as access
+
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    req = httpx.Request("POST", f"http://127.0.0.1:{TOOL_SERVER_PORT}/agent/command")
+
+    for err in (OSError("unreadable key"), ValueError("short key")):
+        monkeypatch.setattr(access, "instance_key", lambda exc=err: (_ for _ in ()).throw(exc))
+        with pytest.raises(InternalServiceSigningError) as async_exc:
+            await attach_internal_service_proof(httpx.Request("POST", req.url))
+        assert isinstance(async_exc.value, httpx.RequestError)
+        assert isinstance(async_exc.value, httpx.HTTPError)
+
+        with pytest.raises(InternalServiceSigningError) as sync_exc:
+            attach_internal_service_proof_sync(httpx.Request("POST", req.url))
+        assert isinstance(sync_exc.value, httpx.RequestError)
+
+    class _Manager:
+        def __init__(self) -> None:
+            self.agent_flags: dict = {"agent_enabled": False, "user_plugin_enabled": False}
+
+        def update_agent_flags(self, flags: dict) -> None:
+            self.agent_flags.update(flags)
+
+    class _Config:
+        def get_character_data(self):
+            return (None, "Lan", None, None, None, None, None, None, None)
+
+        def is_agent_free(self) -> bool:
+            return False
+
+    class _Asked:
+        async def json(self) -> dict:
+            return {"command": "set_agent_enabled", "enabled": True}
+
+    monkeypatch.setattr(access, "instance_key", lambda: (_ for _ in ()).throw(OSError("key unreadable")))
+    manager_sign_fail = _Manager()
+    transport_ok = httpx.MockTransport(lambda _r: httpx.Response(200, json={"success": True}))
+    signing_client = httpx.AsyncClient(transport=transport_ok, event_hooks=internal_service_event_hooks())
+    monkeypatch.setattr(agent_router, "_remote_backend_block", lambda: None)
+    monkeypatch.setattr(agent_router, "get_session_manager", lambda: {"Lan": manager_sign_fail})
+    monkeypatch.setattr(agent_router, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: signing_client)
+
+    try:
+        answer = await agent_router.post_agent_command(_Asked())
+    finally:
+        await signing_client.aclose()
+    assert answer.status_code == 502
+    assert manager_sign_fail.agent_flags == {"agent_enabled": False, "user_plugin_enabled": False}
+
+    # ReadTimeout remains treated as potentially delivered (taken=True, not rolled back).
+    monkeypatch.setattr(access, "instance_key", lambda: KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    manager_timeout = _Manager()
+    timeout_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ReadTimeout("slow", request=r))),
+        event_hooks=internal_service_event_hooks(),
+    )
+    monkeypatch.setattr(agent_router, "_remote_backend_block", lambda: None)
+    monkeypatch.setattr(agent_router, "get_session_manager", lambda: {"Lan": manager_timeout})
+    monkeypatch.setattr(agent_router, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: timeout_client)
+    try:
+        timeout_answer = await agent_router.post_agent_command(_Asked())
+    finally:
+        await timeout_client.aclose()
+    assert timeout_answer.status_code == 502
+    assert manager_timeout.agent_flags == {"agent_enabled": True, "user_plugin_enabled": True}

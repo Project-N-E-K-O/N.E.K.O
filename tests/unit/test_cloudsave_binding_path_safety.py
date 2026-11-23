@@ -175,8 +175,8 @@ def test_local_live2d_fallback_rejects_symlinked_workshop_item_dir(tmp_path: Pat
     """F0517: symlinked workshop item directories pointing outside workshop_root must be skipped."""
     cm = _make_config_manager(tmp_path)
     outside_dir = tmp_path / "outside_item"
-    outside_dir.mkdir(parents=True)
-    outside_model = outside_dir / "evil.model3.json"
+    outside_model = outside_dir / "escape_item" / "evil.model3.json"
+    outside_model.parent.mkdir(parents=True, exist_ok=True)
     outside_model.write_text('{"Version": 3}', encoding="utf-8")
 
     workshop_dir = Path(cm.get_workshop_path())
@@ -232,7 +232,9 @@ def test_invalid_or_escaping_ref_fails_closed_even_when_workshop_fallback_exists
     )
     assert relocated == legit_file
 
-    # 3. Symlink inside workshop_root pointing outside workshop_root fails closed even with legit model present.
+    # 3. Escaping symlink inside workshop_root is skipped via continue (never returning outside_secret):
+    # with legit_file present in item 123 it falls back to legit_file, while an isolated item 456 with
+    # only the escaping symlink returns None.
     outside_secret = tmp_path / "outside_escape.model3.json"
     outside_secret.write_text('{"Version": 3}', encoding="utf-8")
     symlink_target = workshop_root / "123" / "evil_link.model3.json"
@@ -249,5 +251,48 @@ def test_invalid_or_escaping_ref_fails_closed_even_when_workshop_fallback_exists
             asset_source="steam_workshop",
             asset_source_id="123",
         )
+        == legit_file
+    )
+
+    isolated_dir = workshop_root / "456"
+    isolated_dir.mkdir(parents=True, exist_ok=True)
+    isolated_link = isolated_dir / "evil_link.model3.json"
+    isolated_link.symlink_to(outside_secret)
+    assert (
+        bindings._resolve_binding_file_path(
+            cm,
+            model_type="live2d",
+            model_ref="/workshop/456/evil_link.model3.json",
+            asset_source="steam_workshop",
+            asset_source_id="456",
+        )
         is None
     )
+
+
+def test_escaping_first_candidate_continues_to_next_valid_root(tmp_path: Path):
+    """Escaping first candidate (readable_live2d_dir symlink) must skip and resolve the next valid candidate."""
+    cm = _make_config_manager(tmp_path)
+    outside_secret = tmp_path / "outside_escape_user_live2d.model3.json"
+    outside_secret.write_text('{"Version": 3}', encoding="utf-8")
+
+    bad_dir = cm.readable_live2d_dir / "hero"
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    bad_link = bad_dir / "hero.model3.json"
+    try:
+        bad_link.symlink_to(outside_secret)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    valid_file = cm.live2d_dir / "hero" / "hero.model3.json"
+    valid_file.parent.mkdir(parents=True, exist_ok=True)
+    valid_file.write_text('{"Version": 3}', encoding="utf-8")
+
+    resolved = bindings._resolve_binding_file_path(
+        cm,
+        model_type="live2d",
+        model_ref="/user_live2d/hero/hero.model3.json",
+        asset_source="local_imported",
+        asset_source_id="",
+    )
+    assert resolved == valid_file

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import weakref
 from typing import Optional
@@ -95,6 +96,10 @@ def get_internal_http_client() -> httpx.AsyncClient:
         return client
 
 
+class InternalServiceSigningError(httpx.RequestError):
+    """Raised when signing an internal loopback service request fails before transmission."""
+
+
 def _httpx_signing_path(request: httpx.Request) -> str:
     """Return the raw path component (excluding query string) from an httpx.Request."""
     raw = request.url.raw_path
@@ -105,8 +110,56 @@ def _httpx_signing_path(request: httpx.Request) -> str:
     return path or (request.url.path or "/")
 
 
+def _httpx_signing_port(request: httpx.Request) -> int | None:
+    """Return the target TCP port for an httpx.Request."""
+    if request.url.port is not None:
+        return int(request.url.port)
+    scheme = (request.url.scheme or "").lower()
+    if scheme == "https":
+        return 443
+    if scheme == "http":
+        return 80
+    return None
+
+
+def _trusted_internal_service_ports() -> set[int]:
+    """Return the loopback ports belonging to N.E.K.O internal services."""
+    from urllib.parse import urlsplit
+    import config
+
+    ports: set[int] = set()
+    for attr in (
+        "MAIN_SERVER_PORT",
+        "MEMORY_SERVER_PORT",
+        "TOOL_SERVER_PORT",
+        "USER_PLUGIN_SERVER_PORT",
+    ):
+        val = getattr(config, attr, None)
+        if isinstance(val, int) and not isinstance(val, bool) and 0 < val <= 65535:
+            ports.add(val)
+
+    raw_plugin_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw_plugin_port:
+        try:
+            parsed_port = int(raw_plugin_port)
+            if 0 < parsed_port <= 65535:
+                ports.add(parsed_port)
+        except ValueError:
+            pass
+
+    base_url = str(getattr(config, "USER_PLUGIN_BASE", "") or "").strip()
+    if base_url:
+        try:
+            parsed_base = urlsplit(base_url)
+            if parsed_base.port is not None and 0 < parsed_base.port <= 65535:
+                ports.add(int(parsed_base.port))
+        except ValueError:
+            pass
+    return ports
+
+
 def _should_attach_internal_service_proof(request: httpx.Request) -> bool:
-    """Return True when a request targets loopback under proxy/remote mode without a pre-set header."""
+    """Return True when a request targets a trusted loopback internal service under proxy/remote mode."""
     from utils.deployment import is_behind_proxy, is_remote_backend_deployment
     from utils.instance_access import INTERNAL_SERVICE_HEADER
 
@@ -114,30 +167,44 @@ def _should_attach_internal_service_proof(request: httpx.Request) -> bool:
         return False
     if INTERNAL_SERVICE_HEADER in request.headers:
         return False
+    if (request.url.scheme or "").lower() not in {"http", "https"}:
+        return False
     host = (request.url.host or "").strip().strip("[]").lower()
     if not host:
         return False
-    if host == "localhost":
-        return True
-    import ipaddress
+    if host != "localhost":
+        import ipaddress
 
-    try:
-        ip = ipaddress.ip_address(host)
-        return bool((getattr(ip, "ipv4_mapped", None) or ip).is_loopback)
-    except ValueError:
-        return False
+        try:
+            ip = ipaddress.ip_address(host)
+            if not bool((getattr(ip, "ipv4_mapped", None) or ip).is_loopback):
+                return False
+        except ValueError:
+            return False
+    port = _httpx_signing_port(request)
+    return port is not None and port in _trusted_internal_service_ports()
 
 
 async def attach_internal_service_proof(request: httpx.Request) -> None:
-    """Attach signed internal-service header on loopback hops when proxy/remote mode is active."""
+    """Attach port-bound signed internal-service header on loopback hops when proxy/remote mode is active."""
     if not _should_attach_internal_service_proof(request):
         return
+    from filelock import Timeout as FileLockTimeout
     from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
 
-    key = await asyncio.to_thread(instance_key)
-    request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
-        key, request.method, _httpx_signing_path(request)
-    )
+    try:
+        key = await asyncio.to_thread(instance_key)
+        port = _httpx_signing_port(request)
+        if port is None:
+            raise ValueError("missing internal service target port")
+        request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+            key, request.method, _httpx_signing_path(request), port=port
+        )
+    except (OSError, ValueError, FileLockTimeout) as exc:
+        raise InternalServiceSigningError(
+            f"failed to sign internal service request: {type(exc).__name__}",
+            request=request,
+        ) from exc
 
 
 _attach_internal_service_proof = attach_internal_service_proof
@@ -147,12 +214,22 @@ def attach_internal_service_proof_sync(request: httpx.Request) -> None:
     """Sync variant of attach_internal_service_proof for blocking httpx.Client callers."""
     if not _should_attach_internal_service_proof(request):
         return
+    from filelock import Timeout as FileLockTimeout
     from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
 
-    key = instance_key()
-    request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
-        key, request.method, _httpx_signing_path(request)
-    )
+    try:
+        key = instance_key()
+        port = _httpx_signing_port(request)
+        if port is None:
+            raise ValueError("missing internal service target port")
+        request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+            key, request.method, _httpx_signing_path(request), port=port
+        )
+    except (OSError, ValueError, FileLockTimeout) as exc:
+        raise InternalServiceSigningError(
+            f"failed to sign internal service request: {type(exc).__name__}",
+            request=request,
+        ) from exc
 
 
 def internal_service_event_hooks(*, sync: bool = False) -> dict[str, list]:

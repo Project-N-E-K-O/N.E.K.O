@@ -89,7 +89,7 @@ def mark_project_handler(handler):
 
 
 def _is_symlink_or_reparse_point(path: str | os.PathLike[str]) -> bool:
-    """Return True if path is a symbolic link (even if dangling) or a Windows reparse point."""
+    """Return True if path is a symbolic link or Windows symlink/junction reparse point."""
     try:
         if os.path.islink(path):
             return True
@@ -97,10 +97,27 @@ def _is_symlink_or_reparse_point(path: str | os.PathLike[str]) -> bool:
         if reparse_flag:
             st = os.lstat(path)
             if getattr(st, "st_file_attributes", 0) & reparse_flag:
-                return True
+                reparse_tag = getattr(st, "st_reparse_tag", 0)
+                blocked_tags = {
+                    getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
+                    getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003),
+                }
+                if reparse_tag in blocked_tags:
+                    return True
     except OSError:
         return os.path.islink(path)
     return False
+
+
+def _dir_identity(path: Path) -> tuple[int, int] | None:
+    """Return a stable (st_dev, st_ino) identity for an existing directory when supported."""
+    try:
+        st = os.stat(os.fspath(path))
+    except OSError:
+        return None
+    if getattr(st, "st_ino", 0):
+        return (int(st.st_dev), int(st.st_ino))
+    return None
 
 
 def _assert_safe_log_file_target(path: str | os.PathLike[str], allowed_root: Path) -> Path:
@@ -139,7 +156,7 @@ def _open_log_file_nofollow(
     else:
         raise ValueError(f"Unsupported log file mode: {mode!r}")
 
-    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     if "b" in mode and hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
 
@@ -173,6 +190,7 @@ class _SafeRotatingFileHandler(RotatingFileHandler):
     ):
         """Initialize the handler after validating the initial target path."""
         self._allowed_root = Path(allowed_root)
+        self._allowed_root_identity = _dir_identity(self._allowed_root)
         _assert_safe_log_file_target(filename, self._allowed_root)
         super().__init__(
             filename,
@@ -184,8 +202,17 @@ class _SafeRotatingFileHandler(RotatingFileHandler):
             errors=errors,
         )
 
+    def _assert_allowed_root_unchanged(self) -> None:
+        """Ensure allowed_root still refers to the same directory observed at handler initialization."""
+        if self._allowed_root_identity is None:
+            return
+        current = _dir_identity(self._allowed_root)
+        if current != self._allowed_root_identity:
+            raise OSError(f"Allowed log root directory identity changed: {self._allowed_root}")
+
     def _open(self):
         """Open the active log file without following symlinks."""
+        self._assert_allowed_root_unchanged()
         return _open_log_file_nofollow(
             self.baseFilename,
             self.mode,
@@ -193,6 +220,15 @@ class _SafeRotatingFileHandler(RotatingFileHandler):
             self.errors,
             self._allowed_root,
         )
+
+    def doRollover(self):
+        """Validate root identity and rotation targets before performing rollover."""
+        self._assert_allowed_root_unchanged()
+        _assert_safe_log_file_target(self.baseFilename, self._allowed_root)
+        for idx in range(1, self.backupCount + 1):
+            rotated = self.rotation_filename(f"{self.baseFilename}.{idx}")
+            _assert_safe_log_file_target(rotated, self._allowed_root)
+        return super().doRollover()
 
 
 def format_log_message(message, args):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
+import logging
 import queue
 
 import httpx
@@ -12,6 +14,35 @@ from main_logic.tts_client._infra import TTS_SHUTDOWN_SENTINEL
 from main_logic.tts_client.workers import gemini as gemini_worker_mod
 
 
+class _RecordingHandler(logging.Handler):
+    def __init__(self, records: list[logging.LogRecord], level: int) -> None:
+        super().__init__(level)
+        self._records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._records.append(record)
+
+
+@contextmanager
+def _capture_worker_logs(level: int = logging.WARNING):
+    """Capture records directly from gemini_worker_mod.logger regardless of parent logger propagate."""
+    worker_logger = gemini_worker_mod.logger
+    records: list[logging.LogRecord] = []
+    handler = _RecordingHandler(records, level)
+    prev_propagate = worker_logger.propagate
+    prev_level = worker_logger.level
+    worker_logger.propagate = False
+    if prev_level == logging.NOTSET or prev_level > level:
+        worker_logger.setLevel(level)
+    worker_logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        worker_logger.removeHandler(handler)
+        worker_logger.setLevel(prev_level)
+        worker_logger.propagate = prev_propagate
+
+
 def _drain_queue(q: queue.Queue) -> list:
     items = []
     while not q.empty():
@@ -19,7 +50,7 @@ def _drain_queue(q: queue.Queue) -> list:
     return items
 
 
-def test_gemini_tts_worker_sends_key_in_header_not_url_and_redacts_errors(monkeypatch, caplog):
+def test_gemini_tts_worker_sends_key_in_header_not_url_and_redacts_errors(monkeypatch):
     """F0013: API key must travel in x-goog-api-key header, never in URLs, logs, or error payloads."""
     secret_key = "AIzaSySecretTestKey-DO-NOT-LEAK-98765"
     captured_requests: list[httpx.Request] = []
@@ -49,7 +80,7 @@ def test_gemini_tts_worker_sends_key_in_header_not_url_and_redacts_errors(monkey
     req_q.put((None, None))
     req_q.put((TTS_SHUTDOWN_SENTINEL, None))
 
-    with caplog.at_level("WARNING"):
+    with _capture_worker_logs(logging.INFO) as log_records:
         gemini_worker_mod.gemini_tts_worker(req_q, resp_q, f" {secret_key} ", "Leda")
 
     assert len(captured_requests) == 2
@@ -60,7 +91,9 @@ def test_gemini_tts_worker_sends_key_in_header_not_url_and_redacts_errors(monkey
 
     out = _drain_queue(resp_q)
     assert any(isinstance(item, bytes) for item in out)
-    assert all(secret_key not in str(rec.message) for rec in caplog.records)
+    assert log_records
+    assert all(secret_key not in rec.getMessage() for rec in log_records)
+    assert all("upstream warmup error" not in rec.getMessage() for rec in log_records)
 
 
 @pytest.mark.parametrize(
@@ -72,7 +105,6 @@ def test_gemini_tts_worker_sends_key_in_header_not_url_and_redacts_errors(monkey
 )
 def test_gemini_tts_worker_preserves_status_code_without_leaking_key_or_body(
     monkeypatch,
-    caplog,
     status_code: int,
     expected_snippet: str,
 ):
@@ -101,7 +133,7 @@ def test_gemini_tts_worker_preserves_status_code_without_leaking_key_or_body(
     req_q.put((None, None))
     req_q.put((TTS_SHUTDOWN_SENTINEL, None))
 
-    with caplog.at_level("WARNING"):
+    with _capture_worker_logs(logging.WARNING) as log_records:
         gemini_worker_mod.gemini_tts_worker(req_q, resp_q, secret_key, "Leda")
 
     out = _drain_queue(resp_q)
@@ -110,11 +142,12 @@ def test_gemini_tts_worker_preserves_status_code_without_leaking_key_or_body(
     assert expected_snippet in errors[0]
     assert secret_key not in errors[0]
     assert "sensitive details" not in errors[0]
-    assert all(secret_key not in rec.getMessage() for rec in caplog.records)
-    assert all("sensitive details" not in rec.getMessage() for rec in caplog.records)
+    assert any(f"HTTP {status_code}" in rec.getMessage() for rec in log_records)
+    assert all(secret_key not in rec.getMessage() for rec in log_records)
+    assert all("sensitive details" not in rec.getMessage() for rec in log_records)
 
 
-def test_gemini_tts_worker_sanitizes_transport_exception(monkeypatch, caplog):
+def test_gemini_tts_worker_sanitizes_transport_exception(monkeypatch):
     """Non-HTTP exceptions (ConnectError etc.) must not leak URL/headers/secrets."""
     secret_key = "AIzaSySecretConnectError-999"
 
@@ -137,7 +170,7 @@ def test_gemini_tts_worker_sanitizes_transport_exception(monkeypatch, caplog):
     req_q.put((None, None))
     req_q.put((TTS_SHUTDOWN_SENTINEL, None))
 
-    with caplog.at_level("WARNING"):
+    with _capture_worker_logs(logging.WARNING) as log_records:
         gemini_worker_mod.gemini_tts_worker(req_q, resp_q, secret_key, "Leda")
 
     out = _drain_queue(resp_q)
@@ -145,10 +178,11 @@ def test_gemini_tts_worker_sanitizes_transport_exception(monkeypatch, caplog):
     assert len(errors) == 1
     assert "ConnectError" in errors[0]
     assert secret_key not in errors[0]
-    assert all(secret_key not in rec.getMessage() for rec in caplog.records)
+    assert any("ConnectError" in rec.getMessage() for rec in log_records)
+    assert all(secret_key not in rec.getMessage() for rec in log_records)
 
 
-def test_gemini_tts_worker_warmup_connect_error_redacts_secret_and_synthesizes(monkeypatch, caplog):
+def test_gemini_tts_worker_warmup_connect_error_redacts_secret_and_synthesizes(monkeypatch):
     """Warmup GET ConnectError must be logged without secret leakage while subsequent POST synthesis succeeds."""
     secret_key = "AIzaSySecretWarmupConnect-777"
     captured_methods: list[str] = []
@@ -178,13 +212,13 @@ def test_gemini_tts_worker_warmup_connect_error_redacts_secret_and_synthesizes(m
     req_q.put((None, None))
     req_q.put((TTS_SHUTDOWN_SENTINEL, None))
 
-    with caplog.at_level("WARNING"):
+    with _capture_worker_logs(logging.WARNING) as log_records:
         gemini_worker_mod.gemini_tts_worker(req_q, resp_q, secret_key, "Leda")
 
     assert captured_methods == ["GET", "POST"]
     out = _drain_queue(resp_q)
     assert any(isinstance(item, bytes) and len(item) > 0 for item in out)
     assert not any(isinstance(item, tuple) and item[0] == "__error__" for item in out)
-    assert any("ConnectError" in rec.getMessage() for rec in caplog.records)
-    assert all(secret_key not in rec.getMessage() for rec in caplog.records)
+    assert any("ConnectError" in rec.getMessage() for rec in log_records)
+    assert all(secret_key not in rec.getMessage() for rec in log_records)
     assert all(secret_key not in repr(item) for item in out)

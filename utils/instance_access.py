@@ -390,10 +390,18 @@ def market_internal_proof(key: str, method: str, path: str, public_origin: str =
                    "market", int(time.time()) + 60)
 
 
-def internal_service_proof(key: str, method: str, path: str, expires: int | None = None) -> str:
-    """Bind an internal service-to-service hop to its HTTP method and path for 60 seconds."""
+def internal_service_proof(
+    key: str,
+    method: str,
+    path: str,
+    *,
+    port: int | None = None,
+    expires: int | None = None,
+) -> str:
+    """Bind an internal service-to-service hop to its method, optional target port, and path for 60 seconds."""
     deadline = int(time.time()) + 60 if expires is None else int(expires)
-    return _signed(key, "internal-service", f"{method.upper()}:{path}", "internal", deadline)
+    target = f"{method.upper()}:{int(port)}:{path}" if port is not None else f"{method.upper()}:{path}"
+    return _signed(key, "internal-service", target, "internal", deadline)
 
 
 def _request_signing_path(request: Request) -> str:
@@ -409,6 +417,27 @@ def _request_signing_path(request: Request) -> str:
     return request.url.path
 
 
+def _request_signing_port(request: Request) -> int | None:
+    """Return the target service port from ASGI server scope or the request URL."""
+    server = request.scope.get("server")
+    if (
+        isinstance(server, (tuple, list))
+        and len(server) >= 2
+        and isinstance(server[1], int)
+        and not isinstance(server[1], bool)
+        and 0 < server[1] <= 65535
+    ):
+        return server[1]
+    if request.url.port is not None:
+        return int(request.url.port)
+    scheme = (request.url.scheme or "").lower()
+    if scheme in {"https", "wss"}:
+        return 443
+    if scheme in {"http", "ws"}:
+        return 80
+    return None
+
+
 def _internal_service_identity(request: Request, key: str) -> str | None:
     proof = request.headers.get(INTERNAL_SERVICE_HEADER, "")
     if not proof or has_forwarding_metadata(request.headers):
@@ -420,7 +449,15 @@ def _internal_service_identity(request: Request, key: str) -> str | None:
         return None
     if not local_peer:
         return None
-    return _verified(key, "internal-service", f"{request.method.upper()}:{_request_signing_path(request)}", proof)
+    port = _request_signing_port(request)
+    if port is None:
+        return None
+    return _verified(
+        key,
+        "internal-service",
+        f"{request.method.upper()}:{port}:{_request_signing_path(request)}",
+        proof,
+    )
 
 
 def _market_internal_identity(request: Request, key: str) -> str | None:

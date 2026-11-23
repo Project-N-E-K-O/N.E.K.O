@@ -965,7 +965,7 @@ def _resolve_binding_file_path(
 
     for intended_root, candidate in candidates:
         if not _is_strictly_within(candidate, intended_root):
-            return None
+            continue
         if _is_readable_file(candidate):
             return candidate
 

@@ -300,19 +300,29 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     assert re.search(r"pip[\"']?\s+install[^\n]*--require-hashes[^\n]*--only-binary\s+:all:", setup_sh)
     assert not re.search(r"chown\b[^\n]*nobody[^\n]*\$INSTALL_DIR/venv", setup_sh)
     assert re.search(r"chown\b[^\n]*nobody[^\n]*\$INSTALL_DIR/data", setup_sh)
-    assert re.search(r"chown\b[^\n]*root:root[^\n]*\$INSTALL_DIR/venv", setup_sh)
+    assert re.search(r"chown\b[^\n]*root:root[^\n]*\$STAGING_VENV", setup_sh)
+    assert re.search(r"chmod\b[^\n]*a\+rX,go-w[^\n]*\$STAGING_VENV", setup_sh)
+    assert re.search(r"chown\b[^\n]*-h[^\n]*root:root[^\n]*\$INSTALL_DIR/venv", setup_sh)
 
-    # Upgrade safety: reclaim root ownership on $INSTALL_DIR before installing files, and destroy any
-    # pre-existing venv before creating a fresh venv or invoking pip as root.
-    chown_root_pos = setup_sh.find('chown root:root "$INSTALL_DIR"')
-    chmod_root_pos = setup_sh.find('chmod 755 "$INSTALL_DIR"')
-    install_pos = setup_sh.find("install -o root -g root")
-    rm_venv_pos = setup_sh.find('rm -rf "$INSTALL_DIR/venv"')
-    create_venv_pos = setup_sh.find('python3 -m venv "$INSTALL_DIR/venv"')
-    pip_pos = setup_sh.find('$INSTALL_DIR/venv/bin/pip')
-    assert 0 <= chown_root_pos < install_pos < create_venv_pos
-    assert 0 <= chmod_root_pos < install_pos < create_venv_pos
-    assert 0 <= rm_venv_pos < create_venv_pos < pip_pos
+    # Upgrade safety: build and hash-verify dependencies inside an isolated root-owned STAGING_VENV
+    # with cleanup trap on failure before replacing installed scripts or switching $INSTALL_DIR/venv,
+    # and never execute pip from an existing $INSTALL_DIR/venv.
+    assert "$INSTALL_DIR/venv/bin/pip" not in setup_sh
+    assert 'STAGING_VENV="$INSTALL_DIR/venvs/venv-' in setup_sh
+    assert "trap cleanup_staging_venv EXIT" in setup_sh
+    chown_root_pos = setup_sh.find('chown root:root "$INSTALL_DIR" "$INSTALL_DIR/venvs"')
+    chmod_root_pos = setup_sh.find('chmod 755 "$INSTALL_DIR" "$INSTALL_DIR/venvs"')
+    create_staging_pos = setup_sh.find('python3 -m venv "$STAGING_VENV"')
+    pip_staging_pos = setup_sh.find('$STAGING_VENV/bin/pip')
+    chown_staging_pos = setup_sh.find('chown -R root:root "$STAGING_VENV"')
+    chmod_staging_pos = setup_sh.find('chmod -R a+rX,go-w "$STAGING_VENV"')
+    install_files_pos = setup_sh.find("install -o root -g root")
+    switch_link_pos = setup_sh.find('mv -Tf "$TMP_LINK" "$INSTALL_DIR/venv"')
+    restart_pos = setup_sh.find('systemctl restart "$SERVICE_NAME"')
+    cleanup_old_pos = setup_sh.find('rm -rf "$OLD_LEGACY_VENV"')
+    assert 0 <= chown_root_pos < create_staging_pos < pip_staging_pos < chown_staging_pos < install_files_pos < switch_link_pos < restart_pos < cleanup_old_pos
+    assert 0 <= chmod_root_pos < create_staging_pos
+    assert 0 <= pip_staging_pos < chmod_staging_pos < install_files_pos
 
     if server_dir == TELEMETRY_DIR:
         readme_text = (server_dir / "README.md").read_text(encoding="utf-8")

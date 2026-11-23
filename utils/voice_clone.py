@@ -505,7 +505,11 @@ class QwenVoiceCloneClient:
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in url):
             raise QwenVoiceCloneError('无效的URL格式: contains control characters')
         candidate = url.strip()
-        parsed = urlsplit(candidate)
+        try:
+            parsed = urlsplit(candidate)
+            _ = parsed.port
+        except ValueError as exc:
+            raise QwenVoiceCloneError(f'无效的URL格式: {candidate}') from exc
         scheme = parsed.scheme.lower()
         if scheme not in {'http', 'https'}:
             raise QwenVoiceCloneError(f'无效的URL协议（仅允许HTTP/HTTPS）: {candidate}')
@@ -514,22 +518,6 @@ class QwenVoiceCloneClient:
         host = (parsed.hostname or '').rstrip('.').casefold()
         if not host:
             raise QwenVoiceCloneError(f'无效的URL（缺少主机名）: {candidate}')
-
-        try:
-            ip = ipaddress.ip_address(host)
-        except ValueError:
-            ip = None
-
-        if ip is not None and (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-            or not ip.is_global
-        ):
-            raise QwenVoiceCloneError(f'拒绝不安全的内网/保留IP地址: {candidate}')
 
         if self._allowed_hosts is not None:
             raw_hosts = self._allowed_hosts
@@ -542,11 +530,32 @@ class QwenVoiceCloneClient:
             for entry in raw_hosts
             if str(entry).strip()
         }
+        host_allowed = bool(allowlist and host in allowlist)
 
-        if scheme == 'http' and (not allowlist or host not in allowlist):
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+
+        if (
+            ip is not None
+            and not host_allowed
+            and (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+                or not ip.is_global
+            )
+        ):
+            raise QwenVoiceCloneError(f'拒绝不安全的内网/保留IP地址: {candidate}')
+
+        if scheme == 'http' and not host_allowed:
             raise QwenVoiceCloneError(f'无效的URL协议（非白名单主机仅允许HTTPS）: {candidate}')
 
-        if require_allowlist and (not allowlist or host not in allowlist):
+        if require_allowlist and not host_allowed:
             raise QwenVoiceCloneError(f'URL主机不在tfLink白名单内: {host}')
 
         return candidate
@@ -612,19 +621,33 @@ class QwenVoiceCloneClient:
 
                 tmp_url = self._validate_tflink_url(tmp_url, require_allowlist=True)
 
-                # Test URL accessibility without following off-allowlist redirects
+                # Test URL accessibility hop-by-hop without following off-allowlist redirects
+                visited_urls = {tmp_url}
                 test_resp = await client.head(tmp_url, timeout=10)
-                if 300 <= test_resp.status_code < 400:
+                for _ in range(5):
+                    if not (300 <= test_resp.status_code < 400):
+                        break
                     location = test_resp.headers.get('location', '')
                     if not location:
                         raise QwenVoiceCloneError(
                             f'生成的临时URL重定向缺少Location头: {tmp_url}, 状态码: {test_resp.status_code}'
                         )
+                    if any(ord(ch) < 32 or ord(ch) == 127 for ch in location):
+                        raise QwenVoiceCloneError('无效的重定向URL格式: contains control characters')
+                    try:
+                        joined_target = urljoin(tmp_url, location)
+                    except ValueError as exc:
+                        raise QwenVoiceCloneError(f'无效的重定向URL格式: {location}') from exc
                     redirect_target = self._validate_tflink_url(
-                        urljoin(tmp_url, location), require_allowlist=True
+                        joined_target, require_allowlist=True
                     )
-                    test_resp = await client.head(redirect_target, timeout=10)
+                    if redirect_target in visited_urls:
+                        raise QwenVoiceCloneError(f'生成的临时URL存在重定向循环: {redirect_target}')
+                    visited_urls.add(redirect_target)
                     tmp_url = redirect_target
+                    test_resp = await client.head(tmp_url, timeout=10)
+                if 300 <= test_resp.status_code < 400:
+                    raise QwenVoiceCloneError(f'生成的临时URL重定向次数过多: {tmp_url}')
                 if test_resp.status_code >= 300:
                     raise QwenVoiceCloneError(
                         f'生成的临时URL无法访问: {tmp_url}, 状态码: {test_resp.status_code}'
