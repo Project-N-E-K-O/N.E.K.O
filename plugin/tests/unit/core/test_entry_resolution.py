@@ -8,6 +8,8 @@ deprecation grace, with a rate-limited warning.
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import queue
 from contextlib import nullcontext
 from pathlib import Path
@@ -340,9 +342,38 @@ async def test_a_manifest_method_sharing_a_timer_id_runs_without_the_timer_metad
     instance = _Shadowed(_ctx(tmp_path))
     executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["refresh"])
     assert executor._metadata["refresh"].event_type == "timer"
-    assert executor._call_meta("plugin_entry", "refresh") is None
-    assert executor._call_meta("timer", "refresh") is executor._metadata["refresh"]
+    assert executor._call_meta("plugin_entry", "refresh", instance.refresh) is None
+    assert executor._call_meta("timer", "refresh", instance.ticker) is executor._metadata["refresh"]
     assert await executor.invoke("plugin_entry", "refresh", {"x": 1}) == {"x": 1}
+
+
+@neko_plugin
+class _Budgets(NekoPluginBase):
+    @plugin_entry(id="shared", timeout=0.01)
+    async def as_entry(self, **_: Any) -> str:
+        return "entry"
+
+    @timer_interval(id="shared", seconds=3600, auto_start=False, metadata={"timeout": 30})
+    async def as_timer(self, **_: Any) -> str:
+        await asyncio.sleep(0.05)
+        return "timer"
+
+
+async def test_a_handler_sharing_an_id_keeps_its_own_budget(tmp_path, monkeypatch):
+    instance = _Budgets(_ctx(tmp_path))
+
+    def broken(**_kwargs: object):
+        raise RuntimeError("collect failed")
+
+    # Fallback scan: the id-keyed metadata is the entry's (0.01 s).
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance)
+    assert executor._metadata["shared"].event_type == "plugin_entry"
+    timer_meta = executor._call_meta("timer", "shared", instance.as_timer)
+    assert timer_meta is not None and timer_meta.event_type == "timer"
+    # The timer runs with its own 30 s budget, not the entry's 0.01 s.
+    assert await executor.invoke("timer", "shared", {}, registered_only=True) == "timer"
+    assert await executor.invoke("plugin_entry", "shared", {}) == "entry"
 
 
 def test_a_property_is_not_evaluated_by_a_call_to_its_name(tmp_path):
@@ -365,6 +396,88 @@ def test_a_property_is_not_evaluated_by_a_call_to_its_name(tmp_path):
     assert evaluated == []
 
 
+def test_the_narrowing_state_check_does_not_evaluate_a_property(tmp_path):
+    evaluated: list[str] = []
+
+    async def target(**_: Any) -> str:
+        return "ran"
+
+    @neko_plugin
+    class Narrowing(NekoPluginBase):
+        # Narrows outside plugin.toml: refused, so the state check runs per call.
+        @plugin_entry(id="refused", permissions=["system.env:read"])
+        async def refused(self, **_: Any) -> str:
+            return "refused"
+
+        @property
+        def exposed(self):
+            evaluated.append("exposed")
+            return target
+
+    instance = Narrowing(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["exposed"])
+    assert instance._narrowing_refused
+    evaluated.clear()
+    assert instance._entry_state("exposed") != "closed"
+    assert _resolve(executor, "exposed") is None
+    assert evaluated == []
+
+
+def test_partialmethods_and_getattr_names_still_resolve(tmp_path):
+    async def _impl(self, value: str, **_: Any) -> str:
+        return value
+
+    @neko_plugin
+    class Dynamic(NekoPluginBase):
+        via_partial = functools.partialmethod(_impl, "partial")
+
+        def __getattr__(self, name: str):
+            if name == "via_getattr":
+                async def provided(**_: Any) -> str:
+                    return "getattr"
+                return provided
+            raise AttributeError(name)
+
+    instance = Dynamic(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["via_partial", "via_getattr"])
+    assert _resolve(executor, "via_partial") is not None
+    assert _resolve(executor, "via_getattr") is not None
+
+
+def test_data_descriptors_are_not_evaluated(tmp_path):
+    evaluated: list[str] = []
+
+    async def target(**_: Any) -> str:
+        return "ran"
+
+    class Descriptor:
+        def __get__(self, obj, owner=None):
+            evaluated.append("descriptor")
+            return target
+
+        def __set__(self, obj, value):
+            raise AttributeError("read-only")
+
+    @neko_plugin
+    class WithDescriptors(NekoPluginBase):
+        data = Descriptor()
+
+        @functools.cached_property
+        def cached(self):
+            evaluated.append("cached")
+            return target
+
+    instance = WithDescriptors(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["data", "cached"])
+    # Building the tables scans members (and caches the cached property):
+    # only what the call does counts.
+    instance.__dict__.pop("cached", None)
+    evaluated.clear()
+    assert _resolve(executor, "data") is None
+    assert _resolve(executor, "cached") is None
+    assert evaluated == []
+
+
 async def test_a_failing_collection_reports_an_unknown_id_as_not_found(tmp_path, monkeypatch):
     instance = _Plugin(_ctx(tmp_path))
 
@@ -376,6 +489,10 @@ async def test_a_failing_collection_reports_an_unknown_id_as_not_found(tmp_path,
     executor, _instance, _logger = _runtime(tmp_path, instance=instance)
     with pytest.raises(PluginEntryNotFoundError):
         await executor.invoke("plugin_entry", "no_such_entry", {})
+    # Logged (error type only), so a broken collection is told apart from a typo.
+    assert [w for w in _logger.warnings if "collection failed" in w] == [
+        "Plugin entry collection failed while resolving entry='no_such_entry': error_type=RuntimeError"
+    ]
     assert await executor.invoke("plugin_entry", "registered", {}) == "registered"
 
 

@@ -32,6 +32,7 @@ from plugin.core.responses import is_envelope
 from plugin.sdk.plugin.llm_tool import LLM_TOOL_META_ATTR
 from plugin.sdk.plugin.ui import UI_CONTEXT_META_ATTR
 from plugin.sdk.shared.constants import EVENT_META_ATTR, HOOK_META_ATTR
+from plugin.sdk.shared.core.base import is_computed_attribute
 from plugin.sdk.shared.core.output_contract import (
     OutputCheck,
     build_output_check,
@@ -89,6 +90,19 @@ _SDK_DECLARATION_ATTRS = (
     LLM_TOOL_META_ATTR,
     UI_CONTEXT_META_ATTR,
 )
+
+
+def _own_event_meta(member: Any) -> Any:
+    """The event metadata ``member`` (or a function it wraps) carries, if any."""
+    current = member
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        meta = getattr(current, EVENT_META_ATTR, None)
+        if meta is not None:
+            return meta
+        current = getattr(current, "__wrapped__", None)
+    return None
 
 
 def _has_sdk_declaration(member: Any) -> bool:
@@ -314,9 +328,17 @@ class EntryExecutor:
         if method is None:
             try:
                 self._refresh()
-            except Exception:
+            except Exception as exc:
                 # The plugin's own collection is failing: the id stays
-                # unknown (entry not found), as with the rebuild above.
+                # unknown (entry not found), as with the rebuild above. Logged
+                # so it is not mistaken for a mistyped id.
+                self._warn_limited(
+                    "",
+                    f"collection_failed:{type(exc).__name__}",
+                    f"Plugin entry collection failed while resolving entry={event_id[:64]!r}: "
+                    f"error_type={type(exc).__name__}",
+                    records=self._deprecation_warned,
+                )
                 return None
             method = self._mapped_entry(event_id)
         return method
@@ -348,13 +370,7 @@ class EntryExecutor:
         """
         if event_id.startswith("_") or _defined_by_sdk(self._instance, event_id):
             return None
-        # Looked up statically first: a property (or any other non-callable
-        # descriptor) is not evaluated just because its name was called.
-        try:
-            static = inspect.getattr_static(self._instance, event_id)
-        except AttributeError:
-            return None
-        if not callable(static) and not isinstance(static, (staticmethod, classmethod)):
+        if is_computed_attribute(self._instance, event_id):
             return None
         method = getattr(self._instance, event_id, None)
         if not method or not callable(method):
@@ -377,17 +393,22 @@ class EntryExecutor:
             )
         return method
 
-    def _call_meta(self, event_type: str, event_id: str) -> Any:
-        """The metadata a call to ``event_id`` runs with.
+    def _call_meta(self, event_type: str, event_id: str, method: Any) -> Any:
+        """The metadata a call of ``event_type`` to ``event_id`` runs with.
 
-        A plugin_entry call never takes another event type's metadata: a
-        manifest-declared plain method sharing its id with, say, a timer
-        runs with no metadata rather than the timer's.
+        The id-keyed table holds one handler's metadata per id. When it
+        belongs to another event type (two handlers share the id), the
+        handler being called runs with the metadata its own decorator
+        attached, or with none (a manifest-declared plain method): never
+        with the other handler's timeout, params or output contract.
         """
         meta = self._metadata.get(event_id)
-        if event_type == "plugin_entry" and meta is not None and _event_type_of(meta) != "plugin_entry":
-            return None
-        return meta
+        if meta is None or _event_type_of(meta) == event_type:
+            return meta
+        own = _own_event_meta(method)
+        if own is not None and _event_type_of(own) == event_type:
+            return own
+        return None
 
     def _timeout(self, meta: Any, requested: Any) -> float | None:
         # Keep existing direct-entry configuration semantics. The RPC deadline
@@ -428,7 +449,7 @@ class EntryExecutor:
             )
         label = f"{event_type}.{event_id}"
         # Resolved with the handler, not re-read after it returns.
-        entry_meta = self._call_meta(event_type, event_id)
+        entry_meta = self._call_meta(event_type, event_id, method)
         budget = self._timeout(entry_meta, timeout)
         budget = remaining_budget(budget, deadline)
         if budget is not None and budget <= 0:

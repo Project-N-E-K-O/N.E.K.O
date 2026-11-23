@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import functools
 import inspect
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -32,6 +33,22 @@ from .types import InputSchema, PluginContextProtocol, RouterProtocol
 
 
 DEFAULT_PLUGIN_VERSION = "0.0.0"
+
+
+def is_computed_attribute(instance: object, name: str) -> bool:
+    """Whether reading ``name`` would run code: a property, a cached property
+    or another data descriptor. Such an attribute is not evaluated just
+    because its name was called. Methods, ``partialmethod``, non-data
+    descriptors and names a class ``__getattr__`` provides are not.
+    """
+    try:
+        static = inspect.getattr_static(instance, name)
+    except AttributeError:
+        return False
+    if isinstance(static, (property, functools.cached_property)):
+        return True
+    kind = type(static)
+    return hasattr(kind, "__get__") and (hasattr(kind, "__set__") or hasattr(kind, "__delete__"))
 
 
 @runtime_checkable
@@ -213,6 +230,9 @@ class NekoPluginBase:
         # only; ``entry_<id>`` is still checked here (the first truthy one
         # closes), which only ever closes more.
         for name in (entry_id, f"entry_{entry_id}"):
+            # A property is not evaluated here (nor resolved by the executor).
+            if is_computed_attribute(self, name):
+                continue
             candidate = getattr(self, name, None)
             if not candidate:
                 continue
