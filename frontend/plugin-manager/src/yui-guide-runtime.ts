@@ -1310,7 +1310,7 @@ function injectStyle() {
   document.head.appendChild(style)
 }
 
-class PluginDashboardGuideRuntime {
+export class PluginDashboardGuideRuntime {
   root: HTMLDivElement | null = null
   backdrop: SVGSVGElement | null = null
   backdropBase: SVGRectElement | null = null
@@ -1340,6 +1340,7 @@ class PluginDashboardGuideRuntime {
   lastInterruptAt = 0
   lastPassiveResistanceAt = 0
   lastPointerPoint: { x: number; y: number; t: number; speed: number } | null = null
+  lastInterruptScreenPoint: { x: number; y: number } | null = null
   resistanceCursorTimer: number | null = null
   userCursorRevealMoveCount = 0
   userCursorRevealSuppressed = false
@@ -1873,6 +1874,10 @@ class PluginDashboardGuideRuntime {
       interruptCount: number
       x?: number
       y?: number
+      screenX?: number
+      screenY?: number
+      viewportWidth?: number
+      viewportHeight?: number
     },
   ) {
     this.clearPendingInterruptAck(false)
@@ -3013,10 +3018,15 @@ class PluginDashboardGuideRuntime {
     this.cancelCursorMotion()
 
     if (this.interruptCount >= 4) {
+      this.lastInterruptScreenPoint = null
       void this.abortAsAngryExit()
       return
     }
 
+    const screenPoint = this.getEventScreenPoint(event)
+    this.lastInterruptScreenPoint = screenPoint && Number.isFinite(screenPoint.screenX) && Number.isFinite(screenPoint.screenY)
+      ? { x: screenPoint.screenX, y: screenPoint.screenY }
+      : null
     void this.playLightResistance(x, y)
   }
 
@@ -3113,6 +3123,10 @@ class PluginDashboardGuideRuntime {
     const line = RESISTANCE_LINES[voiceIndex] || RESISTANCE_LINES[0]
     const voiceKey = RESISTANCE_VOICE_KEYS[voiceIndex] || RESISTANCE_VOICE_KEYS[0]
     const textKey = resolveResistanceTextKey(this.interruptCount)
+    const screenPoint = this.lastInterruptScreenPoint
+    this.lastInterruptScreenPoint = null
+    const viewportWidth = Number.isFinite(window.innerWidth) && window.innerWidth > 0 ? window.innerWidth : undefined
+    const viewportHeight = Number.isFinite(window.innerHeight) && window.innerHeight > 0 ? window.innerHeight : undefined
     const resistanceMotionPromise = this.resistTo(x, y)
     const handledByHome = await this.requestHomeInterruptPlayback({
       kind: 'interrupt_resist_light',
@@ -3122,6 +3136,8 @@ class PluginDashboardGuideRuntime {
       interruptCount: this.interruptCount,
       x,
       y,
+      ...(screenPoint ? { screenX: screenPoint.x, screenY: screenPoint.y } : {}),
+      ...(viewportWidth && viewportHeight ? { viewportWidth, viewportHeight } : {}),
     })
     if (!isSameSession()) {
       return
@@ -3312,6 +3328,7 @@ class PluginDashboardGuideRuntime {
     this.lastInterruptAt = 0
     this.lastPassiveResistanceAt = 0
     this.lastPointerPoint = null
+    this.lastInterruptScreenPoint = null
     this.narrationResumeTimer = null
     this.cursorMotionToken = 0
     this.cursorReactionInFlight = false

@@ -119,6 +119,25 @@
           <p class="muted">{{ t('power.runtime.builtin.changeNote') }}</p>
         </template>
       </section>
+
+      <!-- Not a capability, and not held by the switch for all of it: whether the main page shows the task HUD. -->
+      <section v-if="switches.task_hud_visible !== undefined" class="panel">
+        <h2>{{ t('power.runtime.builtin.taskHud') }}</h2>
+        <div class="row">
+          <div class="label">
+            {{ t('power.runtime.builtin.taskHudSwitch') }}
+            <small>{{ t('power.runtime.builtin.taskHudHint') }}</small>
+          </div>
+          <el-switch
+            :model-value="switches.task_hud_visible"
+            :loading="switching === 'task_hud_visible'"
+            :disabled="switching !== ''"
+            :aria-label="t('power.runtime.builtin.taskHudSwitch')"
+            data-testid="switch-task-hud"
+            @change="(value: string | number | boolean) => flip('task_hud_visible', value === true)"
+          />
+        </div>
+      </section>
     </template>
   </div>
 </template>
@@ -127,7 +146,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getBrowser, getSwitches, setBrowser, setDeviceSwitch } from '@/api/console'
-import type { BrowserSettings, BrowserView, DeviceSwitch, Switches } from '@/api/console'
+import type { BrowserSettings, BrowserView, ConsoleSwitch, Switches } from '@/api/console'
 import { describeConsoleError } from './powerFormat'
 
 const { t, te, locale } = useI18n()
@@ -177,7 +196,7 @@ async function load() {
   }
 }
 
-async function flip(key: DeviceSwitch, value: boolean) {
+async function flip(key: ConsoleSwitch, value: boolean) {
   switching.value = key
   try {
     await setDeviceSwitch(key, value)

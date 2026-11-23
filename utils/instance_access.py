@@ -300,15 +300,16 @@ def request_public_origin(request: Request) -> str:
     return _own_origin(request)
 
 
-def _same_origin(request: Request) -> bool:
+def _same_origin(request: Request, origin: str | None = None) -> bool:
     """Authenticate cookies without permitting cross-site mutations.
 
     Every entry the deployment serves is accepted: the request's own
     (Host-derived) origin and the pinned public origin. Pinning therefore
     does not narrow Origin to one value; Host-bound cookies, not Origin,
     keep a rebinding hostname from reusing an existing session.
+    ``origin`` overrides the Origin header (e.g. an origin taken from Referer).
     """
-    origin = request.headers.get("origin", "").rstrip("/")
+    origin = (request.headers.get("origin", "") if origin is None else origin).rstrip("/")
     if not origin:
         return request.headers.get("sec-fetch-site", "").lower() not in {"cross-site", "same-site"}
     page = _origin_key(origin)

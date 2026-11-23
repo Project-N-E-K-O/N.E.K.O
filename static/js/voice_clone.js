@@ -579,7 +579,7 @@ function getConfiguredTtsProviderLabel(provider) {
         follow_core: 'api.customModelProviderFollowCore',
         follow_assist: 'api.customModelProviderFollowAssist',
         follow_conversation: 'api.customModelProviderFollowConversation',
-        follow_summary: 'api.customModelProviderFollowSummary',
+        follow_memory: 'api.customModelProviderFollowSummary',
         custom: 'api.customModelProviderCustom',
         vllm_omni: 'api.providerNames.vllm_omni',
     };

@@ -209,7 +209,7 @@ class DecisionClient:
                 logger.debug("[DecisionClient] unable to load config_manager for fallback: %s", exc)
                 cm = None
         if cm is not None:
-            for tier in ("emotion", "summary"):
+            for tier in ("recognition", "memory"):
                 try:
                     cfg = await cm.aget_model_api_config(tier)
                 except Exception as exc:

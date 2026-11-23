@@ -167,6 +167,9 @@ const messages: PowerMessages = {
       headless: 'Sem janela',
       headlessHint: 'Trabalha em segundo plano; você não vê onde ele clica.',
       changeNote: 'Alterar uma configuração fecha o navegador que os familiares estiverem usando; a próxima tarefa começa com a nova configuração.',
+      taskHud: 'Painel de tarefas',
+      taskHudSwitch: 'Mostrar o painel de tarefas na janela principal',
+      taskHudHint: 'O que ela e os familiares estão fazendo aparece num painel flutuante ao lado da personagem, onde você acompanha e pode interromper. Desativado, o trabalho continua; só não aparece.',
     },
     plugins: {
       title: 'Plugins do dsh',

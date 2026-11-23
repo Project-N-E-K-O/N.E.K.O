@@ -887,6 +887,7 @@
         "reactWindowInputHint": "Enter 发送，Shift + Enter 换行",
         "messageListAriaLabel": "聊天消息列表",
         "composerToolsAriaLabel": "输入工具栏",
+        "composerOverflowMenu": "更多工具",
         "pendingImagesAriaLabel": "待发送图片",
         "pendingImageAlt": "图片 {{index}}",
         "removePendingImage": "移除图片",
@@ -1170,6 +1171,7 @@
         "exportMarkdownPreviewSubtitle": "导出 Markdown 的渲染预览",
         "exportPreviewLoading": "正在生成预览…",
         "exportPreviewFailed": "预览生成失败",
+        "exportActionFailed": "导出失败，请稍后重试。",
         "previewOpenWindow": "在新窗口打开",
         "previewClose": "关闭",
         "previewOpenBlocked": "无法打开新的预览窗口",
@@ -1507,6 +1509,7 @@
         "gameModelsConfig": "小游戏模型",
         "gameMainModelConfig": "小游戏聊天模型",
         "gameSummaryModelConfig": "小游戏记忆模型",
+        "gameRecognitionModelConfig": "小游戏识别模型",
         "emotionModelConfig": "识别模型（小模型）",
         "decisionModelConfig": "决策模型（专用接口）",
         "realtimeModelConfig": "实时语音（本地）",
@@ -1516,6 +1519,7 @@
         "modelId": "模型ID",
         "agentApiConfigTitle": "使魔模型·通用",
         "agentSmallApiConfigTitle": "使魔模型·小型",
+        "agentAdvancedApiConfigTitle": "使魔模型·高级",
         "summaryModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "gameMainModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "gameSummaryModelApiKeyPlaceholder": "可选，本地服务商可留空",
@@ -1534,6 +1538,7 @@
         "agentSmallModelUrlPlaceholder": "地址和模型ID都填才单独生效，否则整格跟随识别模型",
         "agentSmallModelIdPlaceholder": "地址和模型ID都填才单独生效，否则整格跟随识别模型",
         "agentSmallModelApiKeyPlaceholder": "单独生效时使用；留空表示不带 Key",
+        "agentAdvancedModelPlaceholder": "地址和模型ID都填才单独生效，否则整格跟随使魔模型·通用",
         "omniApiUrlNote": "（必须是WebSocket地址，以ws://或wss://开头）",
         "pleaseEnterApiKeyError": "请输入API Key",
         "currentUsingCustomApi": "当前使用：按功能单独指定模型",
@@ -2347,6 +2352,8 @@
         "deleteEntryAria": "删除 {{speaker}} 的第 {{position}} 条记忆",
         "pleaseSelectFile": "请先选择文件",
         "saveFailed": "保存失败：{{error}}",
+        "recentFileConflict": "近期记忆已在其他任务中更新，请重新加载并合并后再保存",
+        "recentFileTheaterReadonly": "小剧场记忆不能在记忆浏览器中编辑，请重新加载后再保存",
         "saveFailedGeneral": "保存失败",
         "saveSuccess": "保存成功",
         "clearedChatKeptMemo": "已清空对话记录，备忘录已保留",
@@ -4188,6 +4195,8 @@
             "autoMemoryRecallTooltip": "开启后，文字聊天（含语音转文字）时，回复前会自动想起和你这句话相关的往事；关闭后只在需要时主动回忆。",
             "slopFilter": "自然表达",
             "slopFilterTooltip": "减少历史回复中重复、套路化的说法，让她表达得更自然。",
+            "captureSelfUiMask": "截图遮住聊天记录",
+            "captureSelfUiMaskTooltip": "看屏幕时，能确定 N.E.K.O 自己的聊天记录和选项区域在画面里的位置，就先涂掉再把画面发给模型；确定不了（例如整屏共享时浏览器不在最前面）就照原样发送，不涂。输入框不遮。",
             "catSettings": "猫咪设置",
             "autoCat": "自动变猫",
             "autoCatTooltip": "一段时间无互动后自动变成小猫",
@@ -7335,8 +7344,8 @@
             "body": "在这里选择要分享的屏幕或窗口，右侧按钮控制开始和停止共享。不需要开启也能继续。"
         },
         "agent": {
-            "title": "Agent 功能",
-            "body": "猫爪按钮里是 Agent 功能，可以让我帮你处理电脑、浏览器或插件里的任务。任务面板能查看进度，也能随时停止。"
+            "title": "喵能力",
+            "body": "点这个按钮会打开喵能力界面。开着喵能力，我就能帮你处理电脑、浏览器或插件里的任务；开关、使魔和插件都在那里管。任务面板能查看进度，也能随时停止。"
         },
         "agentMaster": {
             "title": "Agent 总开关",
@@ -7435,6 +7444,10 @@
             "unavailable": "现在还出不了门，可以再试一次"
         },
         "socialHub": {
+            "windowTitle": "喵宇宙串门",
+            "friendFallback": "喵友",
+            "selfFallback": "我",
+            "avatarFallbackChar": "喵",
             "preparing": "正在准备邀请",
             "sending": "发送中",
             "waitingResponse": "等待回应",

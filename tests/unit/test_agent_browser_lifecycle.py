@@ -24,7 +24,7 @@ import pytest
 capabilities = importlib.import_module("app.agent_server.capabilities")
 api_routes = importlib.import_module("app.agent_server.api_routes")
 api_runtime = importlib.import_module("app.agent_server.api_runtime")
-nekoclaw_builtins = importlib.import_module("app.agent_server.nekoclaw_builtins")
+nekopower_builtins = importlib.import_module("app.agent_server.nekopower_builtins")
 
 
 pytestmark = pytest.mark.unit
@@ -115,9 +115,9 @@ def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(state, "state_revision", state.state_revision)
     # A lock of this test's own event loop.
     monkeypatch.setattr(capabilities, "_llm_check_lock", asyncio.Lock())
-    monkeypatch.setattr(nekoclaw_builtins, "_in_use", {})
+    monkeypatch.setattr(nekopower_builtins, "_in_use", {})
     # A shutdown sets it for good, on the provider every test of this process shares.
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_shut_down", False)
+    monkeypatch.setattr(nekopower_builtins.provider, "_shut_down", False)
 
     async def ignore_status_update(*_args: Any, **_kwargs: Any) -> None:
         return None
@@ -132,10 +132,10 @@ def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
 @pytest.fixture
 def search(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Search:
     fake = Search()
-    monkeypatch.setattr("nekoclaw.builtin.browser.launcher.find_browsers", fake)
+    monkeypatch.setattr("nekopower.builtin.browser.launcher.find_browsers", fake)
     # No browser is named in the settings unless the test names one.
-    fake.settings_root = tmp_path / "settings" / "nekoclaw"
-    monkeypatch.setattr("nekoclaw.builtin.browser.settings._root", lambda: fake.settings_root)
+    fake.settings_root = tmp_path / "settings" / "nekopower"
+    monkeypatch.setattr("nekopower.builtin.browser.settings._root", lambda: fake.settings_root)
     monkeypatch.setattr(capabilities, "_browser_search", None)
     return fake
 
@@ -143,9 +143,9 @@ def search(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Search:
 @pytest.fixture
 def browser(monkeypatch: pytest.MonkeyPatch) -> Browser:
     fake = Browser()
-    monkeypatch.setattr(nekoclaw_builtins.provider, "close_browser", fake.close)
+    monkeypatch.setattr(nekopower_builtins.provider, "close_browser", fake.close)
     # No browser tools are built by anything here; a test can tell if they were.
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_browser", None)
+    monkeypatch.setattr(nekopower_builtins.provider, "_browser", None)
     return fake
 
 
@@ -289,7 +289,7 @@ async def test_availability_without_a_browser_names_the_missing_browser(modules,
 
     status = await api_routes.browser_use_availability()
 
-    assert status == {"enabled": True, "ready": False, "reasons": ["AGENT_BROWSER_NOT_FOUND"], "provider": "nekoclaw"}
+    assert status == {"enabled": True, "ready": False, "reasons": ["AGENT_BROWSER_NOT_FOUND"], "provider": "nekopower"}
     assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_BROWSER_NOT_FOUND"}
     # The model is not what is missing: it is not probed for this.
     assert checks == []
@@ -303,7 +303,7 @@ async def test_availability_with_a_model_that_did_not_answer_says_so_and_probes_
     status = await api_routes.browser_use_availability()
     await asyncio.sleep(0)
 
-    assert status == {"enabled": True, "ready": False, "reasons": ["Read timeout"], "provider": "nekoclaw"}
+    assert status == {"enabled": True, "ready": False, "reasons": ["Read timeout"], "provider": "nekopower"}
     assert modules.capability_cache["browser_use"] == {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
     assert checks == [{}]
 
@@ -324,10 +324,10 @@ async def test_availability_is_ready_with_a_browser_and_a_model_that_answers_and
     status = await api_routes.browser_use_availability()
     await asyncio.sleep(0)
 
-    assert status == {"enabled": True, "ready": True, "reasons": [], "provider": "nekoclaw"}
+    assert status == {"enabled": True, "ready": True, "reasons": [], "provider": "nekopower"}
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     # Asked on every poll of the settings page: nothing is built, started or probed.
-    assert nekoclaw_builtins.provider._browser is None
+    assert nekopower_builtins.provider._browser is None
     assert checks == [] and browser.closes == 0
 
 
@@ -361,7 +361,7 @@ async def test_enabling_with_a_browser_and_a_model_that_answers_starts_no_browse
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     assert modules.notification is None
     # The browser is started by the first browser tool call, not by the switch.
-    assert nekoclaw_builtins.provider._browser is None
+    assert nekopower_builtins.provider._browser is None
     assert checks == [] and scheduled == [] and browser.closes == 0
 
 
@@ -547,7 +547,7 @@ def _keyboard(monkeypatch: pytest.MonkeyPatch, *, ready: bool, reasons: list[str
 
     def availability() -> dict[str, Any]:
         asked.append(1)
-        return {"enabled": True, "ready": ready, "reasons": list(reasons or []), "provider": "nekoclaw", "model": "m"}
+        return {"enabled": True, "ready": ready, "reasons": list(reasons or []), "provider": "nekopower", "model": "m"}
 
     monkeypatch.setattr(capabilities, "_keyboard_mouse_availability", availability)
     return asked
@@ -562,7 +562,7 @@ async def test_a_passed_probe_makes_each_group_as_ready_as_its_own_means(modules
     assert modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
     assert asked == [1] and search.searches == 1
-    assert nekoclaw_builtins.provider._browser is None
+    assert nekopower_builtins.provider._browser is None
 
 
 async def test_a_passed_probe_does_not_make_the_browser_ready_without_a_browser(modules, search, browser, monkeypatch):
@@ -636,8 +636,8 @@ async def test_a_failed_probe_while_a_task_is_using_the_tools_switches_nothing_o
     modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
     # A commission occupies one of the groups: the model is demonstrably
     # answering it, so the probe lost a race.
-    nekoclaw_builtins._in_use[group] = "c1"
-    assert nekoclaw_builtins.group_in_use(group) is True
+    nekopower_builtins._in_use[group] = "c1"
+    assert nekopower_builtins.group_in_use(group) is True
 
     await capabilities._fire_agent_llm_connectivity_check()
 
@@ -819,8 +819,8 @@ def process(modules, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(api_runtime, "_ensure_plugin_lifecycle_stopped", record("plugins stopped"))
     monkeypatch.setattr(api_runtime, "_fire_agent_llm_connectivity_check", record("probe"))
     monkeypatch.setattr(api_runtime, "_emit_agent_status_update", record("status"))
-    monkeypatch.setattr(api_runtime, "shutdown_nekoclaw_host", record("host"))
-    monkeypatch.setattr(api_runtime, "mount_nekoclaw_host", lambda change_token=None: calls.append("mount"))
+    monkeypatch.setattr(api_runtime, "shutdown_nekopower_host", record("host"))
+    monkeypatch.setattr(api_runtime, "mount_nekopower_host", lambda change_token=None: calls.append("mount"))
     monkeypatch.setattr(api_runtime, "AgentServerEventBridge", Bridge)
     monkeypatch.setattr(
         api_runtime,
@@ -857,7 +857,7 @@ async def test_startup_builds_the_probe_and_neither_looks_for_nor_starts_a_brows
     # Startup stays free of file checks and processes: the browser is the
     # business of the first browser tool call.
     assert search.searches == 0
-    assert nekoclaw_builtins.provider._browser is None and browser.closes == 0
+    assert nekopower_builtins.provider._browser is None and browser.closes == 0
 
 
 async def test_shutdown_closes_the_browser_and_lets_go_of_held_keys_after_the_host_has_stopped(
@@ -873,8 +873,8 @@ async def test_shutdown_closes_the_browser_and_lets_go_of_held_keys_after_the_ho
     async def close() -> None:
         order.append("browser closed")
 
-    monkeypatch.setattr(nekoclaw_builtins.provider, "close_browser", close)
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", Desktop())
+    monkeypatch.setattr(nekopower_builtins.provider, "close_browser", close)
+    monkeypatch.setattr(nekopower_builtins.provider, "_desktop", Desktop())
     modules.capability_cache["browser_use"] = {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}
 
     await api_runtime.shutdown()
@@ -892,19 +892,19 @@ async def test_shutdown_closes_the_browser_and_lets_go_of_held_keys_after_the_ho
 async def test_from_the_start_of_a_shutdown_no_call_of_the_built_in_tools_is_carried_out(
     modules, process, search, browser, monkeypatch
 ):
-    from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER
+    from nekopower.host.capabilities import BUILTIN_GROUP_BROWSER
 
     seen: list[Any] = []
-    real_host_shutdown = api_runtime.shutdown_nekoclaw_host
+    real_host_shutdown = api_runtime.shutdown_nekopower_host
 
     async def host_shutdown() -> None:
         # The first step of the shutdown: a task agent whose runtime is not stopped yet calls a tool now.
-        seen.append(nekoclaw_builtins.provider._ready(BUILTIN_GROUP_BROWSER))
+        seen.append(nekopower_builtins.provider._ready(BUILTIN_GROUP_BROWSER))
         await real_host_shutdown()
 
-    monkeypatch.setattr(api_runtime, "shutdown_nekoclaw_host", host_shutdown)
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_state", lambda group: (True, ""))
-    assert nekoclaw_builtins.provider._ready(BUILTIN_GROUP_BROWSER) == (True, "")
+    monkeypatch.setattr(api_runtime, "shutdown_nekopower_host", host_shutdown)
+    monkeypatch.setattr(nekopower_builtins.provider, "_state", lambda group: (True, ""))
+    assert nekopower_builtins.provider._ready(BUILTIN_GROUP_BROWSER) == (True, "")
 
     await api_runtime.shutdown()
 
@@ -969,7 +969,7 @@ async def test_a_switch_set_anew_while_the_search_runs_keeps_its_word(modules, s
 
 def test_the_ports_the_browser_is_kept_from_are_those_of_every_service_of_this_application(monkeypatch):
     import config
-    from nekoclaw.host import mount
+    from nekopower.host import mount
 
     monkeypatch.setattr(mount, "peek_host", lambda: None)
     services = {
@@ -980,14 +980,14 @@ def test_the_ports_the_browser_is_kept_from_are_those_of_every_service_of_this_a
         config.TOOL_SERVER_PORT,
         config.USER_PLUGIN_SERVER_PORT,
     }
-    assert nekoclaw_builtins._own_ports() == services
+    assert nekopower_builtins._own_ports() == services
     # The capability gateway picks its port when it starts to listen.
     monkeypatch.setattr(mount, "peek_host", lambda: SimpleNamespace(gateway=SimpleNamespace(port=51234)))
-    assert nekoclaw_builtins._own_ports() == services | {51234}
+    assert nekopower_builtins._own_ports() == services | {51234}
     monkeypatch.setattr(mount, "peek_host", lambda: SimpleNamespace(gateway=SimpleNamespace(port=None)))
-    assert nekoclaw_builtins._own_ports() == services
+    assert nekopower_builtins._own_ports() == services
     # They are what the provider of this process hands to the browser it starts.
-    assert nekoclaw_builtins.provider._own_ports is nekoclaw_builtins._own_ports
+    assert nekopower_builtins.provider._own_ports is nekopower_builtins._own_ports
 
 
 async def test_shutdown_kills_a_browser_that_does_not_close_in_the_time_it_has(
@@ -995,11 +995,11 @@ async def test_shutdown_kills_a_browser_that_does_not_close_in_the_time_it_has(
 ):
     import threading
 
-    import config.nekoclaw_settings as settings
+    import config.nekopower_settings as settings
 
     killed_in: list[threading.Thread] = []
     monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_SHUTDOWN_SECONDS", 0.05)
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
     # The browser is asked to close and takes its time: longer than the process has left.
     browser.hold = asyncio.Event()
 
@@ -1015,8 +1015,8 @@ async def test_shutdown_kills_a_browser_that_does_not_close_in_the_time_it_has(
 
 async def test_shutdown_does_not_kill_a_browser_that_closes_in_time(modules, process, search, browser, monkeypatch):
     killed: list[int] = []
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed.append(1))
-    import config.nekoclaw_settings as settings
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", lambda: killed.append(1))
+    import config.nekopower_settings as settings
 
     assert settings.BROWSER_CLOSE_AT_SHUTDOWN_SECONDS == 4.0
     # Within what the launcher gives the process (8 seconds), with time left to kill in.
@@ -1043,11 +1043,11 @@ async def test_shutdown_kills_the_browser_though_an_earlier_step_takes_all_the_t
     async def host_that_will_not_stop() -> None:
         await stuck.wait()
 
-    import config.nekoclaw_settings as settings
+    import config.nekopower_settings as settings
 
     monkeypatch.setattr(settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", 0.05)
-    monkeypatch.setattr(api_runtime, "shutdown_nekoclaw_host", host_that_will_not_stop)
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
+    monkeypatch.setattr(api_runtime, "shutdown_nekopower_host", host_that_will_not_stop)
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
 
     shutting_down = asyncio.ensure_future(api_runtime.shutdown())
     try:
@@ -1074,7 +1074,7 @@ def test_the_last_resort_of_a_shutdown_does_not_fail_when_the_browser_cannot_be_
     def cannot() -> None:
         raise OSError("access denied")
 
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", cannot)
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", cannot)
     # On a thread of its own, where nothing would hear of it.
     api_runtime._kill_browser_at_last()
 
@@ -1092,13 +1092,13 @@ async def test_asking_for_availability_after_a_probe_lost_a_race_takes_nothing_f
     modules.agent_flags.update(computer_use_enabled=True, browser_use_enabled=True)
     ready = {"ready": True, "reason": ""}
     modules.capability_cache.update(computer_use=dict(ready), browser_use=dict(ready))
-    nekoclaw_builtins._in_use[group] = "c1"
+    nekopower_builtins._in_use[group] = "c1"
     await capabilities._fire_agent_llm_connectivity_check()
     # The check let it pass, but what the probe found stays written on the probe.
     assert modules.model_probe.init_ok is False
 
     def keyboard() -> dict[str, Any]:
-        return {"enabled": True, "ready": False, "reasons": ["the model did not answer"], "provider": "nekoclaw", "model": "m"}
+        return {"enabled": True, "ready": False, "reasons": ["the model did not answer"], "provider": "nekopower", "model": "m"}
 
     async def images() -> dict[str, Any]:
         return {"sees": True}
@@ -1121,7 +1121,7 @@ async def test_asking_for_availability_after_a_probe_lost_a_race_takes_nothing_f
     assert modules.notification is None
 
     # With the task over, the same answers are taken at their word.
-    nekoclaw_builtins._in_use.clear()
+    nekopower_builtins._in_use.clear()
     await api_routes.computer_use_availability()
     await api_routes.browser_use_availability()
     assert modules.agent_flags["computer_use_enabled"] is False
@@ -1136,10 +1136,10 @@ async def test_a_model_that_answers_is_not_excused_by_a_task_under_way(modules, 
     modules.model_probe = Probe(init_ok=True)
     modules.agent_flags.update(computer_use_enabled=True)
     modules.capability_cache["computer_use"] = {"ready": True, "reason": ""}
-    nekoclaw_builtins._in_use["browser"] = "c1"
+    nekopower_builtins._in_use["browser"] = "c1"
 
     def keyboard() -> dict[str, Any]:
-        return {"enabled": True, "ready": False, "reasons": ["AGENT_CU_INPUT_UNAVAILABLE"], "provider": "nekoclaw", "model": "m"}
+        return {"enabled": True, "ready": False, "reasons": ["AGENT_CU_INPUT_UNAVAILABLE"], "provider": "nekopower", "model": "m"}
 
     async def images() -> dict[str, Any]:
         return {"sees": True}
@@ -1156,10 +1156,10 @@ async def test_a_model_that_answers_is_not_excused_by_a_task_under_way(modules, 
 def test_a_probe_has_lost_a_race_only_when_it_failed_and_a_task_is_using_the_tools(modules):
     modules.model_probe = Probe(init_ok=False)
     assert capabilities._probe_lost_a_race() is False
-    nekoclaw_builtins._in_use["keyboard_mouse"] = "c1"
+    nekopower_builtins._in_use["keyboard_mouse"] = "c1"
     assert capabilities._probe_lost_a_race() is True
-    nekoclaw_builtins._in_use.clear()
-    nekoclaw_builtins._in_use["browser"] = "c2"
+    nekopower_builtins._in_use.clear()
+    nekopower_builtins._in_use["browser"] = "c2"
     assert capabilities._probe_lost_a_race() is True
     modules.model_probe = Probe(init_ok=True)
     assert capabilities._probe_lost_a_race() is False
@@ -1242,9 +1242,9 @@ async def test_shutdown_kills_a_browser_that_was_asked_in_time_and_could_not_be_
     modules, process, search, browser, monkeypatch
 ):
     killed: list[int] = []
-    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed.append(1))
+    monkeypatch.setattr(nekopower_builtins.provider, "kill_browser", lambda: killed.append(1))
     # Closing it failed: the session keeps it to be closed the next time, and there is none.
-    monkeypatch.setattr(nekoclaw_builtins.provider, "browser_unclosed", lambda: True)
+    monkeypatch.setattr(nekopower_builtins.provider, "browser_unclosed", lambda: True)
 
     await asyncio.wait_for(api_runtime.shutdown(), 10.0)
 

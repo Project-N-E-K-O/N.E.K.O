@@ -203,7 +203,7 @@ function applyPreset(groupKey, draft, providerKey, providers, inputs) {
   draft.provider = providerKey;
   draft.base_url = p.base_url || draft.base_url;
   inputs.base_url.value = draft.base_url;
-  // memory 组默认用 summary_model, 其余用 conversation_model.
+  // memory 组默认用 memory_model, 其余用 conversation_model.
   const recommend = groupKey === 'memory'
     ? (p.suggested_models?.summary || p.suggested_models?.conversation)
     : p.suggested_models?.conversation;

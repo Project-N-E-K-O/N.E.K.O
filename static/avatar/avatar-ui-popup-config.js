@@ -33,7 +33,17 @@ function createSettingsPopupShowSync(prefix) {
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-chat`), window.proactiveChatEnabled);
         // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), window.proactiveVisionEnabled, true);
-        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), window.mouseTrackingEnabled);
+        // Same reading as the mask module: only an explicit false is off.
+        syncCheckbox(popup.querySelector(`#${prefix}-capture-self-ui-mask`),
+            typeof window.captureSelfUiMaskEnabled === 'undefined' ? undefined : window.captureSelfUiMaskEnabled !== false);
+        // Same source as the checkbox at creation: each avatar type's own
+        // getMouseTrackingState (MMD reads its cursorFollow, not the global).
+        const mouseTracking = this && typeof this._getMouseTrackingState === 'function'
+            ? this._getMouseTrackingState()
+            : window.mouseTrackingEnabled;
+        // The switch lives in the animation settings side panel, which is
+        // appended to document.body, not to the popup.
+        syncCheckbox(document.querySelector(`#${prefix}-mouse-tracking-toggle`), mouseTracking);
         if (window.CHAT_MODE_CONFIG) {
             window.CHAT_MODE_CONFIG.forEach(config => {
                 const cb = document.querySelector(`#${prefix}-proactive-${config.mode}-chat`);
@@ -184,7 +194,14 @@ const _mmdPopupConfig = {
         console.log(`[MMD] 跟踪鼠标已${enabled ? '开启' : '关闭'}`);
     },
     getMouseTrackingState: function() {
-        return this.cursorFollow ? this.cursorFollow.enabled : false;
+        // Before the model (and its cursorFollow) is loaded, show the saved
+        // global setting instead of "off".
+        return this.cursorFollow ? this.cursorFollow.enabled : window.mouseTrackingEnabled !== false;
+    },
+    // Same show-time refresh as Live2D / VRM: a setting changed in another
+    // window must not leave a stale checkbox here.
+    overrides: {
+        _onPopupShow: createSettingsPopupShowSync('mmd')
     }
 };
 

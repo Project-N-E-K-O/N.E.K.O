@@ -534,7 +534,7 @@ def _write_label_cache_sync(char_dir: Path, cache_payload: dict[str, Any]) -> No
 
 async def _arequest_cluster_labels(cm, prompt: str, clusters: list[dict[str, Any]]) -> dict[str, str]:
     """One summary-tier call; returns cleaned labels or raises."""
-    api_config = await cm.aget_model_api_config("summary")
+    api_config = await cm.aget_model_api_config("memory")
     if not isinstance(api_config, dict) or not all(
         api_config.get(key) for key in ("model", "base_url")
     ):

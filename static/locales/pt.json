@@ -887,6 +887,7 @@
         "reactWindowInputHint": "Pressione Enter para enviar, Shift + Enter para uma nova linha",
         "messageListAriaLabel": "Mensagens de bate-papo",
         "composerToolsAriaLabel": "Ferramentas do compositor",
+        "composerOverflowMenu": "Mais ferramentas",
         "pendingImagesAriaLabel": "Imagens pendentes",
         "pendingImageAlt": "Imagem {{index}}",
         "removePendingImage": "Remover imagem",
@@ -1170,6 +1171,7 @@
         "exportMarkdownPreviewSubtitle": "Visualização renderizada do conteúdo Markdown exportado.",
         "exportPreviewLoading": "Gerando visualização...",
         "exportPreviewFailed": "Falha ao criar a visualização.",
+        "exportActionFailed": "Falha ao exportar. Tente novamente.",
         "previewOpenWindow": "Abrir na janela",
         "previewClose": "Fechar",
         "previewOpenBlocked": "Não é possível abrir uma nova janela de visualização.",
@@ -1507,6 +1509,7 @@
         "gameModelsConfig": "Modelo de minijogo",
         "gameMainModelConfig": "Modelo de chat de minijogos",
         "gameSummaryModelConfig": "Modelo de memória de minijogos",
+        "gameRecognitionModelConfig": "Modelo de reconhecimento de minijogos",
         "emotionModelConfig": "Modelo de reconhecimento (pequeno)",
         "decisionModelConfig": "Modelo de decisão (API dedicada)",
         "realtimeModelConfig": "Voz em tempo real (local)",
@@ -1516,6 +1519,7 @@
         "modelId": "ID do modelo",
         "agentApiConfigTitle": "Modelo do familiar (geral)",
         "agentSmallApiConfigTitle": "Modelo do familiar (pequeno)",
+        "agentAdvancedApiConfigTitle": "Modelo do familiar (avançado)",
         "summaryModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "gameMainModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "gameSummaryModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
@@ -1534,6 +1538,7 @@
         "agentSmallModelUrlPlaceholder": "Só vale quando URL e ID do modelo estão preenchidos; caso contrário, todo o item segue o modelo de reconhecimento",
         "agentSmallModelIdPlaceholder": "Só vale quando URL e ID do modelo estão preenchidos; caso contrário, todo o item segue o modelo de reconhecimento",
         "agentSmallModelApiKeyPlaceholder": "Usado quando o item é configurado à parte; em branco = nenhuma chave enviada",
+        "agentAdvancedModelPlaceholder": "Só vale quando URL e ID do modelo estão preenchidos; caso contrário, todo o item segue o modelo do familiar geral",
         "omniApiUrlNote": "(Deve ser um endereço WebSocket começando com ws:// ou wss://)",
         "pleaseEnterApiKeyError": "Insira a chave da API",
         "currentUsingCustomApi": "Atualmente em uso: modelos por função",
@@ -2347,6 +2352,8 @@
         "deleteEntryAria": "Excluir a memória {{position}} de {{speaker}}",
         "pleaseSelectFile": "Selecione um arquivo primeiro",
         "saveFailed": "Falha ao salvar: {{error}}",
+        "recentFileConflict": "A memória recente foi atualizada em outra tarefa. Recarregue e mescle antes de salvar.",
+        "recentFileTheaterReadonly": "Memórias de teatro não podem ser editadas no navegador de memória. Recarregue antes de salvar.",
         "saveFailedGeneral": "Falha ao salvar",
         "saveSuccess": "Salvamento bem-sucedido",
         "clearedChatKeptMemo": "Mensagens do chat apagadas; o memorando foi mantido",
@@ -4188,6 +4195,8 @@
             "autoMemoryRecallTooltip": "Quando ativado, antes de responder no chat de texto (incluindo voz transcrita) momentos passados relacionados são lembrados automaticamente; quando desativado, só se lembra quando for preciso.",
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",
+            "captureSelfUiMask": "Ocultar chat nas capturas",
+            "captureSelfUiMaskTooltip": "Quando ela olha sua tela, o histórico de chat e as opções do N.E.K.O são cobertos antes de a imagem ir para o modelo, desde que dê para saber onde eles estão na tela. Se não der (por exemplo, o navegador não está em primeiro plano ao compartilhar a tela inteira), a imagem é enviada sem cobertura. A caixa de texto continua visível.",
             "catSettings": "Configurações de gata",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
@@ -7335,8 +7344,8 @@
             "body": "Escolha uma tela ou janela. O botão à direita inicia ou para o compartilhamento. É opcional."
         },
         "agent": {
-            "title": "Agent",
-            "body": "A patinha abre as ferramentas Agent para ajudar com o computador, navegador e plugins. O painel de tarefas mostra o andamento e permite interromper tarefas."
+            "title": "NekoPower",
+            "body": "Este botão abre o NekoPower. Com o NekoPower ativado, posso ajudar com o computador, o navegador e os plugins; o interruptor, os familiares e os plugins ficam todos lá. O painel de tarefas mostra o andamento e permite interromper tarefas."
         },
         "agentMaster": {
             "title": "Interruptor do Agent",
@@ -7435,6 +7444,10 @@
             "unavailable": "Ela ainda não pode sair agora. Tente de novo"
         },
         "socialHub": {
+            "windowTitle": "Visita ao Nekoverso",
+            "friendFallback": "Amigo",
+            "selfFallback": "Eu",
+            "avatarFallbackChar": "N",
             "preparing": "Preparando o convite",
             "sending": "Enviando",
             "waitingResponse": "Aguardando resposta",

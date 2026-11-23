@@ -89,7 +89,7 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # The database is derived but moves with the rest: migration runs with
     # every server stopped, exactly like memory's SQLite files.
     "knowledge",
-    # NekoClaw: what it keeps as plain files, each on its own (the ledger of
+    # NekoPower: what it keeps as plain files, each on its own (the ledger of
     # commissions with its write-ahead log, the permission settings, what
     # was learned about plugins and models, the browser settings). Not the
     # directory as a whole: below it are the task agents' working
@@ -101,17 +101,17 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # that was taken up before the move goes on in the session it had there:
     # the ledger records where that is (``Commission.session_dir``). The ledger's
     # write-ahead log is no entry of its own right: see ``_COMPANION_ENTRIES``.
-    "nekoclaw/ledger.db",
-    "nekoclaw/ledger.db-wal",
-    "nekoclaw/permissions.json",
-    "nekoclaw/plugin_short_descriptions.json",
-    "nekoclaw/model_capabilities.json",
-    "nekoclaw/browser.json",
+    "nekopower/ledger.db",
+    "nekopower/ledger.db-wal",
+    "nekopower/permissions.json",
+    "nekopower/plugin_short_descriptions.json",
+    "nekopower/model_capabilities.json",
+    "nekopower/browser.json",
     # What task agents keep for later commissions: rules, indexes, entries,
     # reviews, archived projects. Plain text the host alone writes, kept in
     # a directory of its own, apart from the session directories, so that it
-    # can move as a whole (``nekoclaw.host.paths.SpacePaths``).
-    "nekoclaw/task_agent_space",
+    # can move as a whole (``nekopower.host.paths.SpacePaths``).
+    "nekopower/task_agent_space",
     "plugins",
     # What plugins publish for other plugins to read, one directory per
     # publishing plugin (``PluginBase.shared_path``). User data like the
@@ -167,7 +167,7 @@ V1_MIGRATED_RUNTIME_ENTRY_NAMES = (
 # beside a database from the other root it would corrupt that database. So
 # the log is copied only together with its database; where the target keeps
 # its own database, its own log (or none) stays with it.
-_COMPANION_ENTRIES = {"nekoclaw/ledger.db-wal": "nekoclaw/ledger.db"}
+_COMPANION_ENTRIES = {"nekopower/ledger.db-wal": "nekopower/ledger.db"}
 
 # Completed migrations may already have different plugin approvals and code
 # at the target. Only move installed code as part of a full storage migration.

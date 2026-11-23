@@ -188,6 +188,18 @@ carries the details.
 { "name": "get_weather", "role": null }
 ```
 
+Optional fields: `expected_source` (remove only a tool owned by that
+source; other owners are reported in `refused_roles`) and
+`expected_registration_id` (remove only the registration whose
+`registration_id` `/register` returned; a different registration of the
+name is reported in `refused_roles` with `"reason": "different
+registration"` and that registration's `registration_id`; these two
+fields are only added when `expected_source` is given and matches the
+tool's source, and `expected_host_instance_id`, if given, matches too).
+`/register` accepts an optional `registration_id` and
+always returns the one it stored. Without these fields the behaviour is
+unchanged.
+
 ### `POST /api/tools/clear`
 
 ```json
@@ -476,6 +488,127 @@ self.register_llm_tool(
 `unregister_llm_tool(name)` reverses it; `list_llm_tools()` returns the
 current set as plain dicts. Duplicate names raise `EntryConflictError`.
 
+Both calls are fire-and-forget: `True` means the tool was recorded in
+the plugin and the host was notified, not that `main_server` accepted
+it. When the plugin needs the real outcome, use the async variants:
+
+```python
+result = await self.register_llm_tool_async(
+    name="custom_tool",
+    description="...",
+    parameters={"type": "object", "properties": {...}},
+    handler=my_async_callable,
+    request_timeout=40.0,  # seconds to wait, at most 60 (default 40)
+)
+if not result["ok"]:
+    self.logger.warning("tool not registered: {} {}", result["error"], result["failed_roles"])
+
+result = await self.unregister_llm_tool_async("custom_tool")
+```
+
+The host makes the same `main_server` call as for the notification and
+returns what `main_server` answered:
+
+| Field | `register_llm_tool_async` | `unregister_llm_tool_async` |
+|---|---|---|
+| `ok` | At least one role accepted the tool. | No role still holds this plugin's tool. |
+| `removed` | — | `main_server` actually removed something. |
+| `affected_roles` | Roles that now have the tool. | Roles it was removed from. |
+| `failed_roles` | `[{"role", "error"}]` roles that did not accept it (also on partial success). | `[{"role", "error"}]` roles where removal failed. |
+| `refused_roles` | — | `[{"role", "owned_by"}]` roles where the name belongs to another source, or (with `"reason": "different registration"`) to another registration of this plugin; left untouched. |
+| `error` | `None` or a code (below). | `None` or a code (below). |
+| `message` | Human-readable detail, or `None`. | Human-readable detail, or `None`. |
+| `cleanup` | `None`, or the unregister result of the cleanup after a failed register (below). | — |
+
+`error` codes: `rejected` (register: no role accepted, e.g. the name is
+owned by another source), `partial_failure` (unregister: some roles
+failed), `main_server_unavailable` (the request could not reach
+`main_server`; nothing was applied), `main_server_error`
+(HTTP status >= 400, e.g. unknown role), `timeout` (no usable answer: none
+from the host within `request_timeout`, none from `main_server` after the
+request was sent, or an answer that is not a JSON object; the outcome is
+unknown), `host_unavailable` (the request could
+not reach the host), `busy` (earlier calls for the same name used up the
+budget before this one could be sent; nothing was sent and `cleanup` is
+`None`), `not_registered` (unregister: the plugin had no local
+record of the name and `main_server` removed nothing of this plugin's under
+it; with a local record the same answer is `ok=True, removed=False` and the
+local handler is dropped), `invalid_request`.
+
+Local state follows `ok`, so the plugin and the host agree:
+
+- `register_llm_tool_async` installs the handler before asking the host
+  (the model may call the tool as soon as `main_server` has it) and
+  rolls it back when `ok` is false or the call is cancelled. The same
+  name can then be registered again.
+- A failed register is not always a no-op on `main_server`: it stores the
+  tool before syncing it to each role and keeps it if every role's sync
+  fails, and a `timeout` says nothing about what was applied. So after a
+  register fails with `rejected`, `timeout` or `host_unavailable`, the SDK
+  sends one unregister for that name, in order with the name's other
+  async calls, and reports it in `cleanup` (it may add up to 15 s to the
+  call). Other errors mean nothing was stored, so `cleanup` stays `None`.
+  If `cleanup["ok"]` is false, call `unregister_llm_tool_async(name)`
+  later. After a `timeout` the cleanup is best effort: `main_server` may
+  still be processing the register and store the tool after the cleanup
+  ran, so `removed=False` does not prove nothing is left; call
+  `unregister_llm_tool_async(name)` again a little later when that
+  matters. A cancelled register rolls back locally but sends no cleanup.
+- Each `register_llm_tool_async` call carries its own registration id,
+  and its cleanup and a later `unregister_llm_tool_async` remove only
+  that registration. So a cleanup or unregister that timed out but is
+  still running on `main_server` cannot remove a newer registration of
+  the same name; that role is reported in `refused_roles` with
+  `"reason": "different registration"`. Such a registration is stale
+  (e.g. a register that timed out and landed late), so both the cleanup
+  and `unregister_llm_tool_async` then remove it too, by the id
+  `main_server` reported (never with an unfiltered request), and report
+  `ok` only once every reported registration is gone. Tools registered through the
+  sync call or `@llm_tool`, and names the plugin no longer holds, are
+  unregistered without an id (any registration of this plugin), as
+  before.
+- `unregister_llm_tool_async` removes the handler only when `ok` is
+  true. Otherwise the tool stays registered in the plugin, as it does on
+  the host, so the roles that still have it keep working and calling it
+  again retries.
+- The host always unregisters with `expected_source=plugin:{plugin_id}`
+  taken from the plugin's connection, so a plugin can never remove
+  another source's tool of the same name.
+- `unregister_llm_tool_async(name)` also works for a name the plugin no
+  longer holds locally: it is still sent to the host, for every role, so
+  a leftover on `main_server` is removed. Stopping the plugin also tries
+  to clear all of the plugin's tools, but only best effort: if
+  `main_server` is unreachable at that moment, tools can stay there, so
+  check (or clear them) once it is back.
+- Async calls for the same name run one at a time, in call order, each
+  waiting for the previous one's answer, also when they come from
+  different event loops (e.g. an entry and an interval timer). For example,
+  in `gather(register_llm_tool_async("t", ...), unregister_llm_tool_async("t"))`
+  the unregister is sent only after the register got its answer. The
+  ordering is all this promises: check each call's own result (an
+  unregister with `ok=False` keeps the local handler). Different names do not wait for each
+  other. `request_timeout` covers the whole call, including the time spent
+  waiting behind earlier calls for the same name; if too little of it is
+  left to send the request (under 5 s, or under half of it for small
+  values), the result is `busy` and nothing was sent to the host. Called
+  from an entry that has a deadline, the effective budget of each request,
+  including the cleanup, is the smaller of its own budget and the entry's
+  remaining time; when the entry's time is used up, no cleanup is sent
+  (`cleanup` then reports `timeout`).
+
+Argument errors raise like the sync calls (`ValueError`, `TypeError`,
+`EntryConflictError`). The async calls also raise `ValueError` for a
+`request_timeout` outside (0, 60] (the host's limit), a name made only of
+dots, and, for register, a `timeout` outside (0, 300] (`main_server`'s
+limit); the sync calls keep their existing behaviour. Host and
+`main_server` failures never raise. Pick one style per tool name: the
+sync calls are not part of the per-name ordering and travel on a
+different IPC channel, so mixing them for the same name has no ordering
+guarantee. `@llm_tool` methods are registered through that notification
+channel at startup; if the plugin may unregister one with
+`unregister_llm_tool_async` right after startup, register it with
+`register_llm_tool_async` instead of the decorator.
+
 ### Returning errors
 
 Returning a plain value (`str`, `dict`, `int`, ...) is treated as
@@ -516,9 +649,10 @@ plugin doesn't crash — only that one tool call fails.
 
 | File | Role |
 |---|---|
-| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` decorator, `LlmToolMeta`, name validation, method collector. |
-| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools` + auto-registration in `__init__`. |
+| `plugin/sdk/plugin/llm_tool.py` | `@llm_tool` decorator, `LlmToolMeta`, name validation, method collector, async result types (`LlmToolRegisterResult` / `LlmToolUnregisterResult`). |
+| `plugin/sdk/plugin/base.py` | `NekoPluginBase.register_llm_tool` / `unregister_llm_tool` / `list_llm_tools`, their `_async` variants, and auto-registration in `__init__`. |
 | `plugin/core/communication.py` | Host-side IPC handlers `_handle_llm_tool_register` / `_handle_llm_tool_unregister` (routed by message type in `_MESSAGE_ROUTING`). |
+| `plugin/server/messaging/handlers/llm_tools.py` | Host-side request-response handlers `LLM_TOOL_REGISTER_REQUEST` / `LLM_TOOL_UNREGISTER_REQUEST` behind the `_async` variants. |
 | `plugin/server/messaging/llm_tool_registry.py` | Process-global tracking + httpx wrappers around `main_server`'s `/api/tools/{register,unregister,clear}`. |
 | `plugin/server/routes/llm_tools.py` | The `/api/llm-tools/callback/{plugin_id}/{tool_name}` route that receives main_server's dispatches and forwards them through `host.trigger`. |
 | `plugin/server/application/plugins/lifecycle_service.py` | Calls `clear_plugin_tools` on plugin stop. |

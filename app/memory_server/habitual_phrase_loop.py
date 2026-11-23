@@ -56,7 +56,7 @@ from utils.language_utils import (
 )
 from utils.natural_expression_candidates import CandidateMinerError, normalize_language
 
-from . import gates, runtime
+from . import gates, review, runtime
 from ._shared import logger, validate_lanlan_name
 from .gates import _INITIAL_DELAY_HABITUAL_PHRASES
 from .locale_state import get_character_prompt_locale
@@ -283,6 +283,11 @@ async def _arefresh_habitual_phrases_once() -> None:
     for raw_name in raw_names:
         if not gates._is_idle():
             break
+        # The request lease below only refuses a held name; a rename that
+        # completed while an earlier character was being reviewed is caught
+        # by the roster re-read here.
+        if not await review.ais_character_periodic_write_admitted(raw_name):
+            continue
         try:
             await _arefresh_habitual_phrases_one(raw_name, now=time.time())
         except Exception as e:

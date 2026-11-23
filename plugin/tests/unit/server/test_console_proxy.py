@@ -157,6 +157,9 @@ async def test_an_agent_that_does_not_answer_is_told_as_such(app, agent, answer)
         ({"enabled": False}, {"command": "set_agent_enabled", "enabled": False}),
         ({"key": "browser_use_enabled", "value": True}, {"command": "set_flag", "key": "browser_use_enabled", "value": True}),
         ({"key": "computer_use_enabled", "value": False}, {"command": "set_flag", "key": "computer_use_enabled", "value": False}),
+        # Not a capability: whether the main page shows the task HUD.
+        ({"key": "task_hud_visible", "value": False}, {"command": "set_task_hud_visible", "value": False}),
+        ({"key": "task_hud_visible", "value": True}, {"command": "set_task_hud_visible", "value": True}),
     ],
 )
 async def test_a_switch_goes_to_the_main_server_as_the_command_it_is(app, agent, payload, command):
@@ -179,6 +182,9 @@ async def test_a_switch_goes_to_the_main_server_as_the_command_it_is(app, agent,
         {"enabled": "yes"},
         {"enabled": True, "key": "browser_use_enabled", "value": True},
         {"key": "browser_use_enabled", "value": 1},
+        {"key": "task_hud_visible", "value": "false"},
+        {"key": "task_hud_visible", "value": None},
+        {"command": "set_task_hud_visible", "value": True},
         {"command": "refresh_state"},
         {"command": "set_agent_enabled", "profile": {"x": 1}},
         {"key": [], "value": True},
@@ -222,7 +228,7 @@ async def test_a_switch_that_was_not_taken_is_told_as_such(app, agent, answer, c
     "path",
     [
         "/console/..%2Fagent%2Fcommand",
-        "/console/..%2Fnekoclaw%2Fdispatch",
+        "/console/..%2Fnekopower%2Fdispatch",
         "/console/space/..%2F..%2Fagent%2Fflags",
         "/console/space/%2E%2E/%2E%2E/agent/flags",
         "/console/.%2Fruntime",

@@ -28,6 +28,7 @@ export default {
 
     loading: '加载中...',
     refresh: '刷新',
+    retry: '重试',
     search: '搜索',
     filter: '筛选',
     reset: '重置',
@@ -826,6 +827,22 @@ export default {
       verify: '校验',
       install: '安装',
       analyze: '分析'
+    },
+    messages: {
+      selectPluginToBuild: '请先选择要构建的插件',
+      bundleRequiresTwoPlugins: '整合包至少需要选择两个插件',
+      bundleBuildFailedWithError: '整合包构建失败：{error}',
+      bundleBuildCompleted: '整合包构建完成',
+      bundleBuildPartialFailed: '整合包构建失败 {count} 个',
+      buildFailedWithError: '构建失败：{error}',
+      buildCompletedWithFailures: '构建完成，成功 {built} 个，失败 {failed} 个',
+      buildCompleted: '构建完成，成功 {built} 个',
+      inspectCompleted: '包检查完成',
+      verifyPassed: '包校验通过',
+      verifyFailed: '包未通过校验',
+      selectAtLeastOnePlugin: '请至少选择一个插件',
+      analyzeCompleted: '分析完成',
+      analyzeFailedWithError: '分析失败：{error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics

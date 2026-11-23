@@ -69,6 +69,14 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-22-emote-maker-model-memory-sync",
         "2026-11-22-star-map-cooldown-after-key-cleanup",
         "2026-11-22-emote-maker-bailian-sync",
+        "2026-11-23-agent-advanced-game-recognition-merge",
+        "2026-11-23-frontend-i18n-after-capture-mask-merge",
+        "2026-11-22-capture-mask-toggle-after-star-map-cooldown",
+        "2026-11-22-pr03-i18n-rebase",
+        "2026-11-23-agent-advanced-game-recognition",
+        "2026-11-22-frontend-i18n-sync",
+        "2026-11-22-emote-maker-star-map-sync",
+        "2026-11-23-frontend-i18n-after-agent-advanced-merge",
         "2026-11-22-star-map-label-cooldown-hint",
         "2026-11-22-drop-dead-api-keys",
         "2026-11-22-chat-model-rename-after-vision",
@@ -611,7 +619,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "3fe1fbf66f678d04f65c825c50f4f766df872794346990a4aeecd51a8f437ed6"
+LOCALE_KEY_SIGNATURE = "fafeaeb9fbd5e3693d14aa98150e952632546ee4a565a029f8b88b2d5f2e0c20"
+
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
