@@ -14,10 +14,14 @@ starts, it just commits several hundred MiB more.
 from __future__ import annotations
 
 import ast
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
-import config
+import pytest
+
 from config.native_runtime import (
     DEFAULT_OPENBLAS_THREADS,
     OPENBLAS_THREADS_ENV,
@@ -48,9 +52,51 @@ def test_blank_setting_counts_as_unset() -> None:
         assert env == {OPENBLAS_THREADS_ENV: "1"}
 
 
-def test_importing_config_leaves_the_variable_set_in_this_process() -> None:
-    assert config is not None
-    assert os.environ.get(OPENBLAS_THREADS_ENV, "").strip()
+# Only ``config`` is imported in the child. That package sits at the bottom of
+# the layering and builds no ConfigManager, so the child touches no storage
+# root; the probe reports any other product package so that stays true.
+_CHILD_PROBE = """
+import json, os, sys
+sys.path.insert(0, sys.argv[1])
+import config
+roots = {name.partition(".")[0] for name in sys.modules}
+print(json.dumps({
+    "value": os.environ.get(sys.argv[2]),
+    "numpy_loaded": "numpy" in roots,
+    "other_product": sorted(roots & {"app", "main_logic", "main_routers", "memory", "plugin", "services", "utils"}),
+}))
+"""
+
+
+@pytest.mark.parametrize(
+    ("inherited", "expected"),
+    [(None, "1"), ("", "1"), ("   ", "1"), ("4", "4")],
+    ids=["unset", "empty", "blank", "explicit"],
+)
+def test_importing_config_in_a_fresh_interpreter(inherited: str | None, expected: str) -> None:
+    # The test process imported ``config`` during collection, so its own
+    # environment cannot show which branch ran. A new interpreter can.
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    env.pop(OPENBLAS_THREADS_ENV, None)
+    if inherited is not None:
+        env[OPENBLAS_THREADS_ENV] = inherited
+
+    result = subprocess.run(
+        [sys.executable, "-c", _CHILD_PROBE, str(ROOT), OPENBLAS_THREADS_ENV],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    seen = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert seen["value"] == expected
+    # The default only helps if it lands before the library loads.
+    assert seen["numpy_loaded"] is False
+    assert seen["other_product"] == []
 
 
 def test_config_applies_the_default_before_any_other_import() -> None:
