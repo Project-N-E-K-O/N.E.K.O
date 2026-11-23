@@ -60,3 +60,7 @@ retry_base_delay_seconds = 0.5
 duckduckgo_retry_base_delay_seconds = 2
 # HTML and Lite share an upstream; never switch endpoints in the same burst.
 duckduckgo_fallback_delay_seconds = 3
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."system.network:connect"]
+reason = { zh-CN = "联网搜索你要查的内容。", zh-TW = "連網搜尋你要查的內容。", en = "Search the web for what you ask about.", ja = "尋ねられた内容をウェブで検索します。", ko = "요청한 내용을 웹에서 검색합니다.", ru = "Искать в интернете то, о чём вы спрашиваете.", es = "Buscar en la web lo que preguntes.", pt = "Pesquisar na web o que você perguntar." }
