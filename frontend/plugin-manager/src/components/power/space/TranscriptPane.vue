@@ -124,10 +124,12 @@ async function open(entry: TranscriptEntry) {
 }
 
 watch(() => props.sessionId, () => {
+  // Another familiar: nothing of the one before stays, neither why that one could not be read.
   entries.value = []
   before.value = null
   loaded.value = false
   opening.value = null
+  unreadable.value = ''
   void latest()
 }, { immediate: true })
 </script>

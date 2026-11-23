@@ -224,6 +224,19 @@ describe('what was said in a familiar', () => {
     expect(document.querySelectorAll('[data-entry]').length).toBe(2)
   })
 
+  it('does not say of another familiar why the one before could not be read', async () => {
+    api.getTranscript.mockResolvedValueOnce({ readable: false, reason: 'dsh', entries: [], before: null })
+    const { state } = await mount(TranscriptPane, { sessionId: 's1' })
+    expect(byTest('transcript-unreadable')?.textContent).toBe(words.transcript.inDsh)
+    // The next one cannot be read right now: that is said, with the way to read again, and not what held for the first.
+    api.getTranscript.mockRejectedValueOnce(refused('record_unreadable', 409))
+    state.props = { sessionId: 's2' }
+    await flush()
+    expect(byTest('transcript-unreadable')).toBeNull()
+    expect(byTest('transcript-error')?.textContent).toContain(words.errors.record_unreadable)
+    expect(byTest('transcript-latest')).toBeTruthy()
+  })
+
   it('does not put an entry that was read whole into the conversation of another familiar opened meanwhile', async () => {
     api.getTranscript.mockResolvedValueOnce({ readable: true, before: null, entries: [said({ at: 0, text: 'the first of A…', cut: true })] })
     const { state } = await mount(TranscriptPane, { sessionId: 's1' })
@@ -296,6 +309,26 @@ describe('what a familiar used', () => {
     state.props = { sessionId: 's1', refresh: 'b' }
     await flush()
     expect(api.getSessionUsage).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows nothing of the familiar before when another one is opened, read or not', async () => {
+    api.getSessionUsage.mockResolvedValueOnce(usage())
+    const { state } = await mount(UsagePane, { sessionId: 's1', refresh: 'a' })
+    expect(byTest('usage-tiles')?.textContent).toContain('38')
+    // Read again for the same one: its numbers stay while the read is out.
+    let again: (answer: unknown) => void = () => {}
+    api.getSessionUsage.mockReturnValueOnce(new Promise(resolve => { again = resolve }))
+    state.props = { sessionId: 's1', refresh: 'b' }
+    await flush()
+    expect(byTest('usage-tiles')?.textContent).toContain('38')
+    again(usage())
+    await flush()
+    // Another one, whose usage cannot be read: the numbers of the first are gone, and why is said.
+    api.getSessionUsage.mockRejectedValueOnce(refused('no_familiar', 404))
+    state.props = { sessionId: 's2', refresh: 'b' }
+    await flush()
+    expect(byTest('usage-tiles')).toBeNull()
+    expect(byTest('usage-error')?.textContent).toContain(words.errors.no_familiar)
   })
 
   it('says so when no limit is set, and shows nothing in hand for one that never had a task', async () => {

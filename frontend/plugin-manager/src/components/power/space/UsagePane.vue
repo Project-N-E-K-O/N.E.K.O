@@ -70,8 +70,12 @@ async function load() {
     error.value = describeConsoleError(failure, t, te)
   }
 }
-// Read again when what the familiar has in hand moved on (`refresh` changes then).
-watch(() => [props.sessionId, props.refresh], () => void load(), { immediate: true })
+// Read again when what the familiar has in hand moved on (`refresh` changes then): the numbers
+// stay meanwhile. Another familiar: none of the one before stay, read or not.
+watch(() => [props.sessionId, props.refresh], ([sessionId], before) => {
+  if (before && sessionId !== before[0]) usage.value = null
+  void load()
+}, { immediate: true })
 </script>
 
 <style scoped>
