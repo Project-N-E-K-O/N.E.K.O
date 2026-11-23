@@ -12,6 +12,7 @@ import {
   hasBlindSpots,
   needsPermissionReview,
   usedPermissions,
+  capabilityOrigin,
 } from './pluginCapabilities'
 import type { CapabilityAnalysis } from '@/api/pluginConsent'
 import { pluginConsentMessages } from '@/i18n/plugin-consent'
@@ -123,6 +124,40 @@ describe('permission findings of an analysis', () => {
     })
     expect(usedPermissions(report)).toEqual([])
     expect(analysisFoundNothing(report)).toBe(false)
+  })
+
+  it('keeps the origin and code locations of a permission listed under its earlier name', () => {
+    const report = analysis({
+      capabilities: ['memory.read', 'messages.push', 'conversations.read'],
+      evidence: [
+        { capability: 'memory.read', method: 'bus.memory.get', file: 'main.py', line: 1 },
+        { capability: 'conversations.read', method: 'bus.conversations.get', file: 'main.py', line: 4 },
+      ],
+      permissions: {
+        'plugin_sdk.main_agent.memory:read': {
+          declared: 'require',
+          findings: [{ file: 'main.py', line: 1 }],
+        },
+        // The evidence list was already full when this call was found.
+        'plugin_sdk.main_agent.messages:push': {
+          declared: null,
+          findings: [{ file: 'main.py', line: 900 }],
+        },
+      },
+    })
+    expect(capabilityOrigin(report, 'memory.read')).toEqual({
+      declared: true,
+      locations: ['main.py:1'],
+    })
+    expect(capabilityOrigin(report, 'messages.push')).toEqual({
+      declared: false,
+      locations: ['main.py:900'],
+    })
+    // No permission entry: no origin to show, evidence still listed.
+    expect(capabilityOrigin(report, 'conversations.read')).toEqual({
+      declared: null,
+      locations: ['main.py:4'],
+    })
   })
 
   it.each([

@@ -21,6 +21,14 @@
             <el-tag size="small" :type="statusTag(capability).type">
               {{ statusTag(capability).label }}
             </el-tag>
+            <el-tag
+              v-if="origin(capability).declared !== null"
+              size="small"
+              type="info"
+              data-testid="capability-origin"
+            >
+              {{ t(originKey(origin(capability).declared)) }}
+            </el-tag>
           </div>
           <p class="capability__desc">
             {{ t(capabilityMessageKey(capability, 'description')) }}
@@ -53,13 +61,7 @@
             <div class="capability__head">
               <strong>{{ permissionTitle(permission.id) }}</strong>
               <el-tag size="small" type="info">
-                {{
-                  t(
-                    permission.declared
-                      ? 'pluginConsent.findings.declared'
-                      : 'pluginConsent.findings.detected',
-                  )
-                }}
+                {{ t(originKey(permission.declared)) }}
               </el-tag>
             </div>
             <p v-if="permissionDescription(permission.id)" class="capability__desc">
@@ -132,6 +134,7 @@ import {
   blindSpotLocation,
   blindSpots,
   capabilityMessageKey,
+  capabilityOrigin,
   usedPermissions,
 } from '@/utils/pluginCapabilities'
 import { useI18n } from 'vue-i18n'
@@ -202,13 +205,10 @@ function statusTag(capability: string): { type: 'success' | 'warning' | 'info'; 
     }
   return { type: 'info', label: t('pluginConsent.pending') }
 }
-const locations = (capability: string) => [
-  ...new Set(
-    (report.value?.analysis.evidence ?? [])
-      .filter((entry) => entry.capability === capability)
-      .map((entry) => `${entry.file}:${entry.line}`),
-  ),
-]
+const origin = (capability: string) => capabilityOrigin(report.value?.analysis, capability)
+const locations = (capability: string) => origin(capability).locations
+const originKey = (declared: boolean | null) =>
+  declared ? 'pluginConsent.findings.declared' : 'pluginConsent.findings.detected'
 function toggle(capability: string) {
   const next = new Set(expanded.value)
   if (next.has(capability)) next.delete(capability)

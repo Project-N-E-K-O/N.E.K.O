@@ -258,6 +258,31 @@ describe('PluginPermissions', () => {
       expect(root.querySelector('[data-testid="blind-spots"]')).toBeNull()
     })
 
+    it('shows the origin of a permission listed under its earlier capability name', async () => {
+      seed({
+        ...clearRecord,
+        analysis: analysis({
+          capabilities: ['memory.read'],
+          permissions: {
+            'plugin_sdk.main_agent.memory:read': {
+              declared: 'require',
+              findings: [{ file: 'main.py', line: 900 }],
+            },
+          },
+        }),
+      })
+      const root = mount()
+      await flush()
+      expect(root.querySelector('[data-testid="used-permissions"]')).toBeNull()
+      const origin = root.querySelector('[data-testid="capability-origin"]')!
+      expect(origin.textContent).toContain('pluginConsent.findings.declared')
+      const toggle = root.querySelector<HTMLButtonElement>('.capability__toggle')!
+      expect(toggle.textContent).toContain('pluginConsent.evidenceToggle {"n":1}')
+      toggle.click()
+      await flush()
+      expect(root.querySelector('.evidence code')?.textContent).toBe('main.py:900')
+    })
+
     it('counts blind spots instead of reporting nothing found', async () => {
       seed({
         ...clearRecord,

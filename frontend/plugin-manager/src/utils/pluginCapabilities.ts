@@ -4,6 +4,7 @@ import type {
   CapabilityAnalysis,
   ConsentSnapshot,
   PluginConsent,
+  PermissionFinding,
   PluginConsentSummary,
 } from '@/api/pluginConsent'
 import { readErrorCode } from '@/utils/request'
@@ -49,9 +50,44 @@ export interface UsedPermission {
   locations: string[]
 }
 
+function findingLocations(findings: PermissionFinding[] | null | undefined): string[] {
+  return (findings ?? []).map((row) => `${row.file}:${row.line}`)
+}
+
+export interface CapabilityOrigin {
+  /** Declared by the author, found by the scan, or null when the report has no permission entry. */
+  declared: boolean | null
+  locations: string[]
+}
+
+/**
+ * Origin of an entry in the capability list. An earlier name (`memory.read`)
+ * also carries its permission entry's declaration and code locations, since
+ * that entry is not listed again under "used permissions".
+ */
+export function capabilityOrigin(
+  analysis: CapabilityAnalysis | null | undefined,
+  capability: string,
+): CapabilityOrigin {
+  const evidence = (analysis?.evidence ?? [])
+    .filter((entry) => entry.capability === capability)
+    .map((entry) => `${entry.file}:${entry.line}`)
+  const id = Object.keys(LEGACY_CAPABILITY_NAMES).find(
+    (key) => LEGACY_CAPABILITY_NAMES[key] === capability,
+  )
+  const entry = id ? analysis?.permissions?.[id] : undefined
+  const found = findingLocations(entry?.findings)
+  const declared = Boolean(entry?.declared)
+  return {
+    declared: declared || found.length ? declared : null,
+    locations: [...new Set([...evidence, ...found])],
+  }
+}
+
 /**
  * Permissions the analysis reports as declared or found in code. Ids already
- * listed under their earlier capability name are left to that list.
+ * listed under their earlier capability name are left to that list, which
+ * shows their origin through `capabilityOrigin`.
  */
 export function usedPermissions(analysis: CapabilityAnalysis | null | undefined): UsedPermission[] {
   if (!analysis?.permissions) return []
@@ -61,7 +97,7 @@ export function usedPermissions(analysis: CapabilityAnalysis | null | undefined)
     .map(([id, item]) => ({
       id,
       declared: Boolean(item?.declared),
-      locations: [...new Set((item?.findings ?? []).map((row) => `${row.file}:${row.line}`))],
+      locations: [...new Set(findingLocations(item?.findings))],
     }))
     .filter((item) => item.declared || item.locations.length)
     .sort((a, b) => a.id.localeCompare(b.id))
