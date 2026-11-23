@@ -2748,7 +2748,7 @@ async function main() {
     }
   }
 
-  // 3) Overlapping forceRefresh calls resolving out of order never overwrite newer cached CSRF tokens.
+  // 3) Overlapping forceRefresh calls never overwrite newer cached tokens and superseded callers join the latest refresh.
   {
     let resolveFirstRefresh;
     let resolveSecondRefresh;
@@ -2781,12 +2781,88 @@ async function main() {
       `expected newer forceRefresh to return tok-fresh-2, got ${JSON.stringify(secondHeaders)}`);
     resolveFirstRefresh();
     const firstHeaders = await firstPromise;
-    assert(!firstHeaders['X-CSRF-Token'],
-      `expected superseded forceRefresh not to return stale token, got ${JSON.stringify(firstHeaders)}`);
+    assert(firstHeaders['X-CSRF-Token'] === 'tok-fresh-2',
+      `expected superseded forceRefresh to join newer token instead of returning tokenless headers, got ${JSON.stringify(firstHeaders)}`);
     const cachedHeaders = await seqHost.getMutationHeaders();
     assert(cachedHeaders['X-CSRF-Token'] === 'tok-fresh-2' && fetchCount === 2,
       `expected stale response not to overwrite newer token or trigger refetch, got ${JSON.stringify(cachedHeaders)}, fetchCount=${fetchCount}`);
     seqHost.dispose();
+
+    // 3b) Refresh #1 resolves BEFORE Refresh #2 completes -> joins Refresh #2 without overwriting cache or losing token.
+    let resolveEarlyFirst;
+    let resolveLateSecond;
+    const earlyFirstGate = new Promise((resolve) => { resolveEarlyFirst = resolve; });
+    const lateSecondGate = new Promise((resolve) => { resolveLateSecond = resolve; });
+    let joinFetchCount = 0;
+    const joinHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'csrf-refresh-join',
+      fetchImpl: async (url) => {
+        if (String(url).startsWith('/api/config/page_config')) {
+          joinFetchCount += 1;
+          const idx = joinFetchCount;
+          if (idx === 1) {
+            await earlyFirstGate;
+            return jsonResponse({ autostart_csrf_token: 'tok-early-stale-1' });
+          }
+          await lateSecondGate;
+          return jsonResponse({ autostart_csrf_token: 'tok-late-fresh-2' });
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+    });
+    const earlyFirstPromise = joinHost.getMutationHeaders({ forceRefresh: true });
+    const lateSecondPromise = joinHost.getMutationHeaders({ forceRefresh: true });
+    resolveEarlyFirst();
+    await Promise.resolve();
+    await Promise.resolve();
+    resolveLateSecond();
+    const [earlyFirstHeaders, lateSecondHeaders] = await Promise.all([earlyFirstPromise, lateSecondPromise]);
+    assert(earlyFirstHeaders['X-CSRF-Token'] === 'tok-late-fresh-2'
+      && lateSecondHeaders['X-CSRF-Token'] === 'tok-late-fresh-2'
+      && joinFetchCount === 2,
+    `expected early-finishing superseded refresh to join in-flight newer refresh, got h1=${JSON.stringify(earlyFirstHeaders)}, h2=${JSON.stringify(lateSecondHeaders)}, fetches=${joinFetchCount}`);
+    joinHost.dispose();
+
+    // 3c) Overlapping forceRefresh via shared nekoLocalMutationSecurity joins newer token without overwriting cache.
+    let resolveSecFirst;
+    let resolveSecSecond;
+    const secFirstGate = new Promise((resolve) => { resolveSecFirst = resolve; });
+    const secSecondGate = new Promise((resolve) => { resolveSecSecond = resolve; });
+    let secCalls = 0;
+    const secWindow = {
+      ...windowMock,
+      nekoLocalMutationSecurity: {
+        async getMutationHeaders() {
+          secCalls += 1;
+          const idx = secCalls;
+          if (idx === 1) {
+            await secFirstGate;
+            return { 'X-CSRF-Token': 'tok-sec-stale-1' };
+          }
+          await secSecondGate;
+          return { 'X-CSRF-Token': 'tok-sec-fresh-2' };
+        },
+      },
+    };
+    const secHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'csrf-security-seq',
+      fetchImpl: async () => jsonResponse({ ok: true }),
+      windowImpl: secWindow,
+    });
+    const secFirstPromise = secHost.getMutationHeaders({ forceRefresh: true });
+    const secSecondPromise = secHost.getMutationHeaders({ forceRefresh: true });
+    resolveSecSecond();
+    const secSecondHeaders = await secSecondPromise;
+    assert(secSecondHeaders['X-CSRF-Token'] === 'tok-sec-fresh-2',
+      `expected newer security forceRefresh to return tok-sec-fresh-2, got ${JSON.stringify(secSecondHeaders)}`);
+    resolveSecFirst();
+    const secFirstHeaders = await secFirstPromise;
+    assert(secFirstHeaders['X-CSRF-Token'] === 'tok-sec-fresh-2' && secHost._cachedCsrfToken === 'tok-sec-fresh-2',
+      `expected superseded security caller to join newer token without overwriting cache, got ${JSON.stringify(secFirstHeaders)}, cached=${secHost._cachedCsrfToken}`);
+    secHost.dispose();
   }
 
   // 4) _awaitWithAbortSignal detaches abort/waiter listeners immediately when timeout settles before promise.

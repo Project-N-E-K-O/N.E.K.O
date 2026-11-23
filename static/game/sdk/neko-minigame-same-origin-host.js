@@ -2187,6 +2187,18 @@
         this._csrfFetchPromise = null;
       }
       const requestSeq = this._csrfRefreshSeq;
+      const resolveSuperseded = () => {
+        if (this._cachedCsrfToken && !this._csrfTokenStale) {
+          return Promise.resolve({
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': this._cachedCsrfToken,
+          });
+        }
+        if (this._csrfFetchPromise) {
+          return this._csrfFetchPromise.then((cached) => ({ ...cached }));
+        }
+        return this.getMutationHeaders({ forceRefresh: false });
+      };
       const loadFromPageConfig = (useCached = !forceRefresh) => {
         if (useCached && this._cachedCsrfToken && !this._csrfTokenStale) {
           return Promise.resolve({
@@ -2201,10 +2213,10 @@
         const pending = this.getPageConfig(lanlanName)
           .then((response) => (response.ok ? response.json() : null))
           .then((config) => {
-            const headers = { 'Content-Type': 'application/json' };
             if (requestSeq !== this._csrfRefreshSeq) {
-              return headers;
+              return resolveSuperseded();
             }
+            const headers = { 'Content-Type': 'application/json' };
             if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
               headers['X-CSRF-Token'] = config.autostart_csrf_token;
               this._cachedCsrfToken = config.autostart_csrf_token;
@@ -2212,7 +2224,11 @@
             }
             return headers;
           })
-          .catch(() => ({ 'Content-Type': 'application/json' }))
+          .catch(() => (
+            requestSeq !== this._csrfRefreshSeq
+              ? resolveSuperseded()
+              : { 'Content-Type': 'application/json' }
+          ))
           .then((headers) => {
             if (this._csrfFetchPromise === pending) {
               this._csrfFetchPromise = null;
@@ -2227,7 +2243,7 @@
         return Promise.resolve(security.getMutationHeaders())
           .then((mutationHeaders) => {
             if (requestSeq !== this._csrfRefreshSeq) {
-              return { 'Content-Type': 'application/json' };
+              return resolveSuperseded();
             }
             const headers = { 'Content-Type': 'application/json', ...(mutationHeaders || {}) };
             const resolvedToken = csrfTokenFromHeaders(headers);
@@ -2240,7 +2256,7 @@
           })
           .catch(() => (
             requestSeq !== this._csrfRefreshSeq
-              ? { 'Content-Type': 'application/json' }
+              ? resolveSuperseded()
               : loadFromPageConfig(false)
           ));
       }

@@ -2705,7 +2705,9 @@
           return security.getMutationHeaders();
         }).then(function (headers) {
           if (requestSeq !== _badmintonCsrfSeq) {
-            return {};
+            return _badmintonCsrfToken
+              ? { 'X-CSRF-Token': _badmintonCsrfToken }
+              : (_badmintonCsrfInflight || _getBadmintonMutationHeaders(false, signal));
           }
           var token = headers && (headers['X-CSRF-Token'] || headers['x-csrf-token']);
           if (token) _badmintonCsrfToken = token;
@@ -2713,6 +2715,11 @@
         }), signal).catch(function (error) {
           if ((error && error.name === 'AbortError') || (signal && signal.aborted)) {
             throw (error && error.name === 'AbortError') ? error : _badmintonCreateAbortError();
+          }
+          if (requestSeq !== _badmintonCsrfSeq) {
+            return _badmintonCsrfToken
+              ? { 'X-CSRF-Token': _badmintonCsrfToken }
+              : (_badmintonCsrfInflight || _getBadmintonMutationHeaders(false, signal));
           }
           return {};
         });
@@ -2746,7 +2753,7 @@
         .then(function (r) { return r && r.ok ? r.json() : null; })
         .then(function (cfg) {
           if (requestSeq !== _badmintonCsrfSeq) {
-            return {};
+            return null;
           }
           var token = cfg && cfg.autostart_csrf_token;
           if (typeof token === 'string' && token) {
@@ -2755,7 +2762,9 @@
           }
           return {};
         })
-        .catch(function () { return {}; })
+        .catch(function () {
+          return requestSeq !== _badmintonCsrfSeq ? null : {};
+        })
         .then(function (headers) {
           if (settled) return;
           settled = true;
@@ -2764,6 +2773,16 @@
             bootstrapTimer = null;
           }
           if (_badmintonCsrfInflight === inflight) _badmintonCsrfInflight = null;
+          if (headers === null) {
+            if (_badmintonCsrfToken) {
+              resolve({ 'X-CSRF-Token': _badmintonCsrfToken });
+            } else if (_badmintonCsrfInflight) {
+              _badmintonCsrfInflight.then(resolve, reject);
+            } else {
+              _getBadmintonMutationHeaders(false).then(resolve, reject);
+            }
+            return;
+          }
           resolve(headers);
         });
     });

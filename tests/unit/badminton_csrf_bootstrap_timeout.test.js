@@ -182,6 +182,43 @@ test('PR3981 #68: out-of-order forceRefresh responses do not overwrite newer cac
 
     resolveFirst();
     const firstHeaders = await firstPromise;
-    assert.equal(firstHeaders['X-CSRF-Token'], undefined);
+    assert.equal(firstHeaders['X-CSRF-Token'], 'tok-new');
     assert.equal(context._getCachedBadmintonCsrfToken(), 'tok-new');
+    assert.equal(pageConfigCalls, 2);
+});
+
+test('PR3981 #69: superseded badminton refresh resolving before newer refresh completes joins newer refresh', async () => {
+    let resolveFirst;
+    let resolveSecond;
+    const firstGate = new Promise((resolve) => { resolveFirst = resolve; });
+    const secondGate = new Promise((resolve) => { resolveSecond = resolve; });
+    let pageConfigCalls = 0;
+
+    const { context } = loadBadmintonCsrfRuntime({
+        fastTimeoutMs: 5000,
+        fetchImpl: async (url) => {
+            assert.equal(String(url), '/api/config/page_config');
+            pageConfigCalls += 1;
+            const callIdx = pageConfigCalls;
+            if (callIdx === 1) {
+                await firstGate;
+                return { ok: true, json: async () => ({ autostart_csrf_token: 'tok-early-old' }) };
+            }
+            await secondGate;
+            return { ok: true, json: async () => ({ autostart_csrf_token: 'tok-late-new' }) };
+        },
+    });
+
+    const firstPromise = context._getBadmintonMutationHeaders(false);
+    const secondPromise = context._getBadmintonMutationHeaders(true);
+
+    resolveFirst();
+    await new Promise((r) => setImmediate(r));
+    resolveSecond();
+
+    const [firstHeaders, secondHeaders] = await Promise.all([firstPromise, secondPromise]);
+    assert.equal(firstHeaders['X-CSRF-Token'], 'tok-late-new');
+    assert.equal(secondHeaders['X-CSRF-Token'], 'tok-late-new');
+    assert.equal(context._getCachedBadmintonCsrfToken(), 'tok-late-new');
+    assert.equal(pageConfigCalls, 2);
 });
