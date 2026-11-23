@@ -449,6 +449,9 @@ class _Session:
     refused_until: float = 0.0
     # The address and the name of the model the session was started with.
     model: tuple[Any, Any] | None = None
+    # Whether what it sends goes with the built-in free key: only then are
+    # its requests counted against the free daily quota (``_charge``).
+    free: bool = False
     # Set once the task agent was told to hand over what it has, the user
     # having allowed no more to be used: how many model requests it has left
     # for that. None while it works as usual.
@@ -1012,6 +1015,7 @@ class TaskAgentManager:
         dsh_runtime_factory: Any = None,
         conversation: Any = None,
         switched_on: Callable[[], bool] | None = None,
+        model_slots: Any = None,
     ) -> None:
         self._meter = meter
         # ``nekopower.host.conversation.RecentConversation``, or None: then a
@@ -1050,6 +1054,20 @@ class TaskAgentManager:
 
         self.templates = TemplateStore(paths.space)
         self._model_config = model_config
+        # Which model the sessions of each preset are sent to
+        # (``role_models.py``). ``model_slots`` are the slots of the model
+        # panel (``role_models.PluginModelSlots``); None where there are none
+        # to read: then every session is sent to ``model_config``.
+        from nekopower.host.role_models import RoleModels, RoleModelStore
+
+        self.role_models = RoleModels(
+            store=RoleModelStore(paths.role_models_json),
+            slots=model_slots,
+            # Read through the manager each time: what it was given may be
+            # replaced while the host runs.
+            agent_config=lambda: self._model_config(),
+            default_of=self.model_default_of,
+        )
         self._gateway = gateway
         self._enabled = enabled
         self._max_concurrent = max_concurrent
@@ -1332,8 +1350,13 @@ class TaskAgentManager:
         """
         return await self._runtimes.retire_dsh(lambda: bool(self.sessions_in(RUNTIME_DSH)), then)
 
-    async def available(self) -> tuple[bool, str]:
-        """Return whether a task agent could be started, and if not, why."""
+    async def available(self, session: Session | None = None) -> tuple[bool, str]:
+        """Return whether a task agent could be started, and if not, why.
+
+        In ``session`` when one is given: by the model it is sent to
+        (``session_model``, which is looked at, not settled). Otherwise in
+        a new session of a commission she hands over (preset ``general``).
+        """
         if self._closed:
             return False, "disabled"
         if self._enabled is not None:
@@ -1343,13 +1366,24 @@ class TaskAgentManager:
             except Exception:  # noqa: BLE001 - an unreadable switch counts as off
                 return False, "not_enabled"
         try:
-            config = await self._model_config()
+            if session is not None:
+                choice = await self.session_model(session, record=False)
+            else:
+                choice = await self._new_session_model()
+            config = choice.config
         except Exception as exc:  # noqa: BLE001 - no usable configuration
             logger.warning("the task agent model configuration cannot be read: %s", type(exc).__name__)
             return False, "not_enabled"
         if not config or not config.get("model"):
             return False, "not_enabled"
         return True, ""
+
+    async def _new_session_model(self) -> Any:
+        """Return the model a new session of a commission she hands over would be sent to (preset ``general``)."""
+        async def nobody() -> Any:
+            return None
+
+        return await self.role_models.choose("general", None, nobody)
 
     # -- runtime ----------------------------------------------------------
 
@@ -1840,6 +1874,8 @@ class TaskAgentManager:
                 duty=commission.title,
             )
         self._session_of[commission.id] = session.id
+        # The model it is sent to is settled as the commission starts in it,
+        # which is now unless it waits for a place (``_start``).
         return commission
 
     async def _preset_chosen(self, commission_id: str) -> str | None:
@@ -1923,6 +1959,157 @@ class TaskAgentManager:
                     raise RuntimeError(PRESET_OF_STARTER_UNUSABLE.format(reason=exc)) from exc
                 template = template.under(over)
         return template
+
+    # -- which model a session is sent to ----------------------------------
+
+    async def model_default_of(self, preset: str, project: str | None) -> str:
+        """Return a preset's default model for a project, as its template says (``Template.model``)."""
+        from nekopower.host.role_models import INHERIT
+        from nekopower.host.templates import TemplateError, builtin_templates
+
+        try:
+            template = await asyncio.to_thread(self.templates.resolve, preset, project)
+        except TemplateError:
+            # A session of it is not opened (``_template_of``); what it
+            # would be sent to is said as the built-in preset of the name has it.
+            found = builtin_templates().get(preset)
+            return found.model if found is not None else INHERIT
+        return template.model
+
+    async def session_model(self, kept: Session, *, record: bool = True) -> Any:
+        """Return the model a session's task agent is sent to now (``role_models.Choice``).
+
+        Settled when the session is made: by the setting of its preset,
+        else its default, and written on its row (with ``record``; a look
+        that is only a look leaves the row alone). A session that was
+        settled is sent to the slot it was settled on, which is read anew
+        (an address or a key the user changed there is taken); when that
+        slot cannot be used any more, to its preset's default, with why
+        on its row. A copy is sent where the session it was copied from is.
+        """
+        return await self._session_model(kept, record=record, depth=0)
+
+    async def _session_model(self, kept: Session, *, record: bool, depth: int) -> Any:
+        from nekopower.host.role_models import SlotUnavailable, dataclass_replace, recorded
+
+        if depth > _COPY_CHAIN_MAX:
+            # Started by, or copied from, more sessions in a row than are
+            # followed: as if there were none to follow.
+            return await self.role_models.agent_default()
+        if kept.kind == "fork" and kept.forked_from:
+            origin = await self._ledger.get_session(kept.forked_from)
+            if origin is not None:
+                choice = await self._session_model(origin, record=record, depth=depth + 1)
+                await self._keep_model(kept, choice, record)
+                return choice
+        if recorded(kept):
+            try:
+                choice = dataclass_replace(await self.role_models.again(kept.model_slot), fallback=kept.model_fallback)
+            except SlotUnavailable as exc:
+                logger.info(
+                    "the model slot session %s was settled on cannot be used (%s); its preset's default is",
+                    kept.id,
+                    exc.code,
+                )
+                choice = await self._choose_model(kept, record=record, depth=depth, use_setting=False, fallback=exc.code)
+        else:
+            choice = await self._choose_model(kept, record=record, depth=depth)
+        await self._keep_model(kept, choice, record)
+        return choice
+
+    async def _choose_model(
+        self, kept: Session, *, record: bool, depth: int, use_setting: bool = True, fallback: str = ""
+    ) -> Any:
+        """Return the model a session is settled on by its preset (``RoleModels.choose``)."""
+
+        async def inherited() -> Any:
+            # The session that started it; else, for one that no session
+            # started, the lead of its project.
+            if kept.parent_id:
+                lead = await self._ledger.get_session(kept.parent_id)
+            elif kept.kind != "project":
+                lead = await self._ledger.lead_session(kept.lanlan_name, kept.project)
+            else:
+                lead = None
+            if lead is None:
+                return None
+            return await self._session_model(lead, record=record, depth=depth + 1)
+
+        return await self.role_models.choose(
+            kept.preset, kept.project, inherited, use_setting=use_setting, fallback=fallback
+        )
+
+    async def _keep_model(self, kept: Session, choice: Any, record: bool) -> None:
+        """Write on a session's row what it is sent to, where that is not what it says already."""
+        from nekopower.host.role_models import recorded, same_as_kept
+
+        if not choice.ident and recorded(kept):
+            # No model is configured where it goes just now: what it was
+            # settled on stays, to be read again the next time.
+            return
+        if record and not same_as_kept(kept, choice):
+            try:
+                await self._ledger.update_session(kept.id, **choice.columns())
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the model is used all the same; it is written the next time
+                logger.warning("writing down the model of session %s failed", kept.id)
+
+    async def model_of_commission(self, commission_id: str) -> dict[str, Any] | None:
+        """Return what the session of a commission would be opened with now (looked at, not settled); None without a model.
+
+        A commission that has no session yet: what a new one of hers would be.
+        """
+        commission = await self._ledger.get(commission_id)
+        kept = await self._ledger.get_session(commission.session_id) if commission is not None else None
+        choice = await self.session_model(kept, record=False) if kept is not None else await self._new_session_model()
+        return choice.config
+
+    async def settle_model(self, session: Session) -> None:
+        """Settle the model of a session that was just made (``session_model``), unless it is settled.
+
+        One that cannot be settled now is settled when it is first opened.
+        """
+        from nekopower.host.role_models import recorded
+
+        if recorded(session):
+            return
+        try:
+            await self.session_model(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - settled when it is opened instead
+            logger.warning("settling the model of session %s failed; it is settled when it is opened", session.id)
+
+    async def _goes_free(self, kept: Session | None) -> bool:
+        """Return whether what a session sends goes with the built-in free key, as it was settled.
+
+        A session that was not settled yet, or none (a new one), by what it
+        would be settled on. Not known: as if it did, so it is counted as
+        before there were settings.
+        """
+        from nekopower.host.role_models import recorded
+
+        if kept is not None and recorded(kept):
+            return bool(kept.model_free)
+        try:
+            choice = await (self.session_model(kept, record=False) if kept is not None else self._new_session_model())
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - counted, as it was before
+            logger.warning("whether a session goes with the free key could not be told; it is counted")
+            return True
+        return bool(choice.free)
+
+    async def _charge(self, free: bool, key: str) -> bool:
+        """Count a model request against the free daily quota, for a session whose requests go with the free key.
+
+        Returns whether it may be made. One that goes with another key
+        is not counted and always may.
+        """
+        if not free or self._meter is None:
+            return True
+        return bool(await self._meter(key))
 
     def _base_instructions(
         self, commission: Commission, *, with_gateway: bool, template: Any = None, roster: tuple[Any, ...] = ()
@@ -2801,7 +2988,13 @@ class TaskAgentManager:
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
                 self._discard(commission_id)
                 return False
-            config = await self._model_config()
+            kept = await self._ledger.get_session(session.session_id)
+            if kept is None:
+                raise RuntimeError("the session of the commission is not on record")
+            # The model the session is sent to: settled when it was made
+            # (now, where it was not), and read anew.
+            choice = await self.session_model(kept)
+            config = choice.config
             if not config or not config.get("model"):
                 raise RuntimeError("no model is configured for task agents")
             await self._use_project(commission)
@@ -2853,11 +3046,25 @@ class TaskAgentManager:
             opened = opened_at is not None
             at_it = opened and await self._ledger.opened_last(session.session_id) == commission.id
 
+            builtin_only = template.needs_builtin
+            if not choice.agent:
+                # A model the user set for the preset is used in the
+                # built-in runtime only, for now: dsh starts its processes
+                # by the task agent model. A session that was begun in dsh
+                # goes on there, with that model, as before.
+                if begun_in == RUNTIME_DSH:
+                    choice = await self.role_models.agent()
+                    config = choice.config
+                    if not config or not config.get("model"):
+                        raise RuntimeError("no model is configured for task agents")
+                else:
+                    builtin_only = True
             model = await self._model_of(config)
             session.model = (config.get("base_url"), config.get("model"))
+            session.free = choice.free
 
             runtime_name, runtime, fallback = await self._choose_runtime(
-                commission, model, begun_in, builtin_only=template.needs_builtin
+                commission, model, begun_in, builtin_only=builtin_only
             )
             # Uninstall/replace must see this commission before gateway setup yields.
             session.runtime, session.runtime_name = runtime, runtime_name
@@ -3402,6 +3609,9 @@ class TaskAgentManager:
         if session.commission_id in self._prepaid_starts:
             self._prepaid_starts.discard(session.commission_id)
             session.prepaid_requests += 1
+            return True
+        if not session.free:
+            # Not sent with the free key: nothing is counted.
             return True
         try:
             allowed = await self._meter(session.commission_id)
@@ -5227,7 +5437,7 @@ class TaskAgentManager:
             if session.carries_on_for is not None:
                 self._last_request_at[session.carries_on_for] = now
         await self._note_usage(session.session_id, session.commission_id, event)
-        if self._meter is None or session.closing or event.get("summary"):
+        if self._meter is None or not session.free or session.closing or event.get("summary"):
             return
         if session.prepaid_requests > 0:
             # Counted before it was sent.
@@ -7158,7 +7368,9 @@ class TaskAgentManager:
             # for task agents). No turn is started with NekoPower switched
             # off or the quota used up; its first request is counted here,
             # ahead of it.
-            held = await self._may_start(commission_id)
+            held = await self._may_start(
+                commission_id, session=await self._ledger.get_session(commission.session_id)
+            )
             if held is not None:
                 return held
             counted = True
@@ -7232,7 +7444,9 @@ class TaskAgentManager:
             raise
         return Handover("handed")
 
-    async def _may_start(self, key: str, *, mark: str | None = None) -> Handover | None:
+    async def _may_start(
+        self, key: str, *, mark: str | None = None, session: Session | None = None
+    ) -> Handover | None:
         """Say why a turn must not be started for what waits right now, or None when it may.
 
         NekoPower switched off, or no model to work with: it stays where it
@@ -7244,17 +7458,23 @@ class TaskAgentManager:
 
         ``mark`` is what the counted request is kept under, where that
         is not ``key``: one counted for a session with no commission yet
-        (``_session_mark``).
+        (``_session_mark``). ``session`` is the session the turn is
+        started in: whether there is a model to work with, and whether its
+        requests are counted at all, is told by the model it is sent to
+        (``session_model``); only those that go with the free key are.
         """
         from config.nekopower_settings import WAKE_HELD_RETRY_SECONDS
 
         mark = key if mark is None else mark
         if not self._is_switched_on():
             return Handover("held", WAKE_HELD_RETRY_SECONDS)
-        available, _reason = await self.available()
+        kept = session
+        available, _reason = await self.available(kept)
         if not available:
             return Handover("held", WAKE_HELD_RETRY_SECONDS)
         if self._meter is None or mark in self._prepaid_starts:
+            return None
+        if not await self._goes_free(kept):
             return None
         now = self._ledger._clock()
         if self._quota_out and now < self._quota_asked_again_at:
@@ -7323,7 +7543,7 @@ class TaskAgentManager:
             # A stop of everything is dropping these this moment.
             return Handover("held", WAKE_HELD_RETRY_SECONDS)
         counted_for = self._session_mark(target.id)
-        held = await self._may_start(target.id, mark=counted_for)
+        held = await self._may_start(target.id, mark=counted_for, session=target)
         if held is not None:
             return held
         # A request was counted just now, for the session (not where no
@@ -9269,6 +9489,13 @@ class TaskAgentManager:
                 forked_from=source.id,
                 forked_at=forked_at,
                 status="closed",
+                # Sent where the session it was copied from is, or what a
+                # provider kept of the conversation is not read.
+                model_slot=source.model_slot,
+                model_name=source.model_name,
+                model_ident=source.model_ident,
+                model_free=source.model_free,
+                model_fallback=source.model_fallback,
             )
         except Exception as exc:  # noqa: BLE001 - told as a copy that was not made
             # Written, and not on record: nothing would ever come by it to remove it.
@@ -9313,18 +9540,29 @@ class TaskAgentManager:
         if timer is not None:
             timer.cancel()
 
-    async def _idle_after(self) -> float:
+    async def _idle_model(self, session_id: str) -> dict[str, Any] | None:
+        """Return what a session would be opened with now (``session_model``, looked at only); None when it has no model.
+
+        One that is not on record: what a new session would be. (Nothing
+        is summed up for it: it is looked up when the time comes.)
+        """
+        kept = await self._ledger.get_session(session_id)
+        choice = await self.session_model(kept, record=False) if kept is not None else await self._new_session_model()
+        config = choice.config
+        return config if config and config.get("model") else None
+
+    async def _idle_after(self, session_id: str) -> float:
         """Return how long a session is idle before it is summed up, in seconds.
 
-        What the user set for the task agent model, else the setting
-        (``ModelCapabilityStore.idle_compact_after``).
+        What the user set for the model the session is sent to, else the
+        setting (``ModelCapabilityStore.idle_compact_after``).
         """
         from config.nekopower_settings import TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS
 
         if self._model_capabilities is not None:
             try:
-                config = await self._model_config()
-                if config and config.get("model"):
+                config = await self._idle_model(session_id)
+                if config is not None:
                     return float(
                         await self._model_capabilities.idle_compact_after(config.get("base_url"), config.get("model"))
                     )
@@ -9334,8 +9572,8 @@ class TaskAgentManager:
                 logger.warning("looking up how long a session is idle before it is summed up failed", exc_info=True)
         return float(TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS)
 
-    async def _idle_compact_wanted(self) -> bool:
-        """Return whether the user has idle sessions of the task agent model summed up (``idle_compact_on``).
+    async def _idle_compact_wanted(self, session_id: str) -> bool:
+        """Return whether the user has idle sessions of the model a session is sent to summed up (``idle_compact_on``).
 
         True when it cannot be told: it is on unless switched off, and what
         decides which model a session is sent to is checked apart from this
@@ -9344,8 +9582,8 @@ class TaskAgentManager:
         if self._model_capabilities is None:
             return True
         try:
-            config = await self._model_config()
-            if config and config.get("model"):
+            config = await self._idle_model(session_id)
+            if config is not None:
                 return await self._model_capabilities.idle_compact_on(config.get("base_url"), config.get("model"))
         except asyncio.CancelledError:
             raise
@@ -9362,14 +9600,14 @@ class TaskAgentManager:
             return None
         return model_key(config.get("base_url"), config.get("model"))
 
-    async def _task_model_key(self) -> str | None:
-        """Return the key of the task agent model as it is configured now; None when that cannot be told."""
+    async def _task_model_key(self, session_id: str) -> str | None:
+        """Return the key of the model a session is sent to as things are now; None when that cannot be told."""
         try:
-            return self._model_key_of(await self._model_config())
+            return self._model_key_of(await self._idle_model(session_id))
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - not knowing is the same as no model
-            logger.warning("looking up the task agent model failed", exc_info=True)
+            logger.warning("looking up the model of a task agent session failed", exc_info=True)
             return None
 
     async def _schedule_idle_compact(
@@ -9389,9 +9627,10 @@ class TaskAgentManager:
         been idle, read now when it is not given: the timer keeps it, and
         looks at the session by it when it comes due, whatever the user sets
         meanwhile (the next session that is let go gets the new time).
-        ``model`` is the key of the task agent model the wait was set under
-        (read now when ``idle_for`` is): the timer keeps it, and nothing is
-        summed up when the model is another by the time it comes due (the
+        ``model`` is the key of the model the session is sent to as the wait
+        is set (``session_model``; read now when ``idle_for`` is): the timer
+        keeps it, and nothing is summed up when the session is sent to
+        another by the time it comes due (the
         user moved to another provider: what was said in the session is not
         sent there without the user going on with it). In memory only.
         ``after`` is how long from now, when that is not the whole time (the
@@ -9410,11 +9649,11 @@ class TaskAgentManager:
             return
         stops = self._idle_stops
         if idle_for is None:
-            if not await self._idle_compact_wanted():
+            if not await self._idle_compact_wanted(session_id):
                 # Switched off for this model by the user: no timer is set.
                 return
-            idle_for = await self._idle_after()
-            model = await self._task_model_key()
+            idle_for = await self._idle_after(session_id)
+            model = await self._task_model_key(session_id)
             if model is None:
                 # No model is configured, or it cannot be read: which provider the
                 # wait is set under cannot be told, and a timer that checked nothing
@@ -9559,8 +9798,8 @@ class TaskAgentManager:
         ``after`` is how long the session has to have been idle: the time
         its timer was set for (``_schedule_idle_compact``), so that what the
         user sets while a session waits does not change that wait; read now
-        when it is not given. ``model`` is the key of the task agent model the
-        wait was set under: with another one configured now, nothing is
+        when it is not given. ``model`` is the key of the model the session
+        was sent to when the wait was set: with it sent to another now, nothing is
         asked of it (no failure is counted and no wait is set again), so that
         what was said in the session does not go to a provider the user
         moved to meanwhile without the user going on with it.
@@ -9602,7 +9841,7 @@ class TaskAgentManager:
             return False
         if not self._is_switched_on():
             return False
-        if not await self._idle_compact_wanted():
+        if not await self._idle_compact_wanted(session_id):
             # Switched off since the timer was set: it comes due and does nothing.
             return False
         if not self._idle_now(session_id) or (stops is not None and stops != self._idle_stops):
@@ -9623,10 +9862,15 @@ class TaskAgentManager:
         too_early: float | None = None
         try:
             if after is None:
-                after = await self._idle_after()
-            config = await self._model_config()
+                after = await self._idle_after(session_id)
+            kept = await self._ledger.get_session(session_id)
+            choice = await self.session_model(kept, record=False) if kept is not None else None
+            config = choice.config if choice is not None else None
             if model is not None and self._model_key_of(config) != model:
-                logger.info("the task agent model changed while session %s waited; it is not summed up", session_id)
+                # The session's own model: where it is sent now is another
+                # than where it was when the wait was set (the user moved
+                # it, or what its slot follows, to another provider).
+                logger.info("the model of session %s changed while it waited; it is not summed up", session_id)
                 return False
             now = self._ledger._clock()
             kept = await self._ledger.get_session(session_id)
@@ -9709,7 +9953,7 @@ class TaskAgentManager:
                         # made, and not before the session was marked
                         # and opened: nothing is charged for a summing
                         # up that never got as far as asking.
-                        if self._meter is not None and not await self._meter(commission.id):
+                        if not await self._charge(choice is not None and choice.free, commission.id):
                             # The daily quota is used up: the host makes no request of its own.
                             return
                         if not self._is_switched_on():

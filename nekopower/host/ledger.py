@@ -272,7 +272,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     duty TEXT NOT NULL DEFAULT '',
     duty_by TEXT NOT NULL DEFAULT '',
     summary TEXT NOT NULL DEFAULT '',
-    summary_by TEXT NOT NULL DEFAULT ''
+    summary_by TEXT NOT NULL DEFAULT '',
+    model_slot TEXT NOT NULL DEFAULT '',
+    model_name TEXT NOT NULL DEFAULT '',
+    model_ident TEXT NOT NULL DEFAULT '',
+    model_free INTEGER NOT NULL DEFAULT 0,
+    model_fallback TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_by_name ON sessions (lanlan_name, name);
 CREATE INDEX IF NOT EXISTS sessions_by_project ON sessions (lanlan_name, project, kind);
@@ -543,6 +548,21 @@ class Session:
     duty_by: str = ""
     summary: str = ""
     summary_by: str = ""
+    # The model its task agent is sent to (``role_models.py``), settled when
+    # it is made and kept for as long as it lasts: a model chosen anew
+    # midway would lose what the provider cached of the conversation.
+    # ``model_slot`` is the slot of the model panel it goes by, "" for the
+    # task agent model of the main app; ``model_name`` the model's name;
+    # ``model_ident`` stands for its address and name (a digest: neither is
+    # kept), "" while nothing is settled; ``model_free`` whether what is
+    # sent goes with the built-in free key; ``model_fallback`` why the
+    # preset's setting could not be used and its default was ("" when it
+    # could). Never an address or a key.
+    model_slot: str = ""
+    model_name: str = ""
+    model_ident: str = ""
+    model_free: int = 0
+    model_fallback: str = ""
 
     @property
     def tokens(self) -> int:
@@ -567,7 +587,14 @@ _ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("duty_by", "TEXT NOT NULL DEFAULT ''"),
     ("summary", "TEXT NOT NULL DEFAULT ''"),
     ("summary_by", "TEXT NOT NULL DEFAULT ''"),
+    ("model_slot", "TEXT NOT NULL DEFAULT ''"),
+    ("model_name", "TEXT NOT NULL DEFAULT ''"),
+    ("model_ident", "TEXT NOT NULL DEFAULT ''"),
+    ("model_free", "INTEGER NOT NULL DEFAULT 0"),
+    ("model_fallback", "TEXT NOT NULL DEFAULT ''"),
 )
+# The columns that say which model a session's task agent is sent to, other than whether it goes free.
+_MODEL_TEXT_COLUMNS: tuple[str, ...] = ("model_slot", "model_name", "model_ident", "model_fallback")
 # The columns of a session's card: its lines, and who wrote each.
 _CARD_COLUMNS: frozenset[str] = frozenset(CARD_FIELDS) | {f"{name}_by" for name in CARD_FIELDS}
 # Columns ``update_session`` may write. What was used is written by
@@ -1717,7 +1744,8 @@ class Ledger:
         row: dict[str, Any] = {name: None for name in _SESSION_COLUMNS}
         row.update(id=new_session_id(), kind="single", status="closed", created_at=now, last_active_at=now)
         row.update({name: 0 for name in (*_USAGE_COLUMNS, "context_tokens")})
-        row.update({name: "" for name in ("preset", *_CARD_COLUMNS)})
+        row.update({name: "" for name in ("preset", *_CARD_COLUMNS, *_MODEL_TEXT_COLUMNS)})
+        row["model_free"] = 0
         row.update(values)
         if row["status"] not in SESSION_STATUSES:
             raise ValueError(f"unknown session status {row['status']!r}")
@@ -1793,6 +1821,18 @@ class Ledger:
             return self._insert_session(conn, made), True
 
         return await self.run(work)
+
+    async def lead_session(self, lanlan_name: str, project: str | None) -> Session | None:
+        """Return the session of a project for one character (``project_session``); None when it has none. Makes none."""
+        return await self.run(
+            lambda conn: _session(
+                conn.execute(
+                    "SELECT * FROM sessions WHERE lanlan_name = ? AND project = ? AND kind = 'project' "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    (lanlan_name, project),
+                ).fetchone()
+            )
+        )
 
     @staticmethod
     def _set_session(conn: sqlite3.Connection, commission_id: str, session_id: str) -> None:

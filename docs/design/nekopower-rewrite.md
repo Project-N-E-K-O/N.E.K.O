@@ -2750,3 +2750,38 @@ owner 要的面板参考了 Antigravity 的 Swarm：成员之间的线（做完�
 
 - 「这件事到现在用了几步工具」这类计数没给：要数得扫每件委托的全部事件，看板（第 1 个 PR 的 `board()`）有用量。
 - 路由和界面不在这一步。
+
+### 17.10 落地说明（按职能换模型）
+
+使魔原来只用一个模型：本体 API 设置页里的「使魔模型」（`agent` 档）。这一步让每种职能预设各有一格模型设置，出厂时所有使魔用的仍是使魔模型，请求和花费都不变。代码在 `nekopower/host/role_models.py`，会话怎么取模型在 `TaskAgentManager.session_model`。
+
+**设置**
+
+- 每种预设（内置六种，加上用户模板目录里的模板；副本 `shadow` 不给配）一格，存在 `<数据根>/nekopower/role_models.json`（`{"version": 1, "roles": {预设名: 值}}`）。值是三种之一：模型接口页的一个槽位编号（`plugin_models.json` 里的，跟随使魔模型的、跟随使魔模型·小的、手填的都行，必须声明了 `tool_calling`）；`inherit`（跟随派它的会话；`boss`、`general` 没有这一项，没有谁派它们）；不写，就是这种预设的默认值。
+- 默认值是模板里写的 `model`。内置的：`boss`、`general` 是 `agent`，`worker`、`scout`、`inspector`、`planner` 是 `inherit`。`agent` 指「跟随本体使魔模型」的那个槽位（从 `list_model_slots()` 里按 `source == "host_follow"` 且 `host_api == "agent"` 找）；没有这个槽位（用户删了、插件服务从没起过）就直接用本体的使魔模型，和以前一样。`inherit` 是派它的会话的模型；没有派它的会话时用这个项目主线的；不属于项目的，按 `agent` 算。
+- 宿主给读写的两个方法，没有路由：`NekoPowerHost.role_models()` 一次给全，每种预设现在配的什么、默认值是什么、能不能选「跟随」、新建一个这种会话现在会用哪个模型（槽位、模型名、是不是使魔模型、是不是免费密钥；跟随的写 `{"follows": "starter"}`）和退回原因，加上能选的槽位清单（只列声明了工具调用的，按面板顺序，不带地址和密钥）和读槽位失败的原因；`set_role_model(preset, value)` 写一格，值不对时抛 `ValueError`，文字是原因代码，什么都不写。
+- 槽位用 #3741 给的 `list_model_slots` / `resolve_model_slot(slot_id, require=("tool_calling",))`，两个都是同步读文件，宿主里包在 `asyncio.to_thread` 里（`PluginModelSlots`）。宿主进程由 `app/agent_server/nekopower_mount.py` 传进去；`NekoPowerHost` 不给就没有槽位，所有会话用使魔模型（测试默认这样）。
+
+**一个会话从建起来到结束用同一个模型**
+
+- 会话建起来时按它的职能定下来，记在会话行上。用户开的项目建好就定（`settle_model`）；派活建的会话在委托开工时定，正常就是建好的同一刻，只有排队等位子时晚一点；副本照抄它复制的会话。行上记的是：`model_slot`（槽位编号，直接用使魔模型时是空的）、`model_name`（模型名）、`model_ident`（地址加模型名的摘要，地址本身不存）、`model_free`（发出去的是不是内置免费密钥）、`model_fallback`（设置用不了退回默认值时的原因）。不存地址和密钥。
+- 之后每次开工照行上记的槽位重新解析出地址和密钥（用户在本体改了那一档的服务商或密钥，下一次开工就生效，和以前一样），只在内存里。用户改了某种职能的设置，只影响之后新建的会话。
+- 跟随使魔模型的槽位，开工时拿的配置和以前是同一个函数读出来的（`configured_task_agent_model`），所以出厂设置下请求逐字相同（测试钉住了单件会话、项目主线、子使魔、副本四种，槽位在、被删、从没有三种情况）。手填的槽位：协议是 `anthropic_messages` 的按 `anthropic` 建客户端，否则按 `openai_compatible`。
+- 副本记的和它复制的会话一样，开工时也跟着它复制的会话取（否则读不到缓存）。
+- 「全局只有一个使魔模型」的地方都改成按会话取：能不能派活（`available(session)`；不带会话时按新建一个 `general` 会话算）、开工、闲置压缩等多久和开不开、闲置压缩到点时比对模型（比的是这个会话自己的模型，不再是全局使魔模型）、`usage()` 里的窗口、看不看图（按会话的地址加模型名查 `model_capabilities`）。`model_window` / `set_model_window` 是设置页给全局使魔模型用的，没动。
+- 退回：设置的槽位解析失败（`slot_not_found`、`model_config_unreadable`、`host_api_not_configured`、`host_api_unsupported`、`capability_missing`）就用这种预设的默认值，原因记在会话行上，`board()` 的卡片新加一项 `model_fallback`（没退回是 `null`）。会话开着开着它的槽位用不了了，也退回默认值（不是退到用户后来改的设置），原因照记。那一档暂时没配模型时，行上原来记的不改，下次再解析。
+- 卡片原有的 `model` 一项现在是这个会话自己的模型名（以前一律是使魔模型的名字）；还没定下的会话照旧显示使魔模型的名字。
+
+**dsh**
+
+配了非默认模型的会话这一期只在内置 runtime 里跑；在 dsh 里开过的会话照旧在 dsh 里用使魔模型（dsh 进程是按模型起的，要改它的分组，放后面）。
+
+**每日免费额度**
+
+以前按全局使魔模型的模型名判（`is_agent_free()`），全局一个计数。现在看会话：建会话时定下的 `free` 为真（发出去的是 `free-access`）才扣，用的是 `aconsume_free_daily_quota`，和插件网关一个口径；自己填密钥的槽位一律不扣。「开工前预扣第一次请求、之后每次请求扣一次」和闲置压缩的那一次都不变，只是先看这个会话是不是免费的。`is_agent_free()` 没动（键鼠、浏览器、「免费模型可能拥挤」的提示还用它）。`free` 每次开工跟着重新解析的结果更新，用户从免费档位换成自己的密钥后不会再被扣。
+
+**没做的**
+
+- 设置界面和路由（以后另做）；模型接口页和本体设置页不动。
+- 只有项目里才有的模板（`projects/<项目>/templates/`）不能单独配，按名字共用全局那一格；`role_models()` 只列全局能看到的预设。
+- 槽位上的超时（`timeout_seconds`）和备用槽位没接，会话照旧用运行时的默认超时。

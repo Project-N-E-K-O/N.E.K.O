@@ -90,17 +90,11 @@ async def configured_task_agent_model() -> dict[str, Any] | None:
 
     The address is taken as configured, ``http://`` included.
     """
+    from nekopower.host.role_models import host_model_config
     from utils.config_manager import get_config_manager
 
     config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, "agent")
-    if not config.get("model") or not config.get("base_url"):
-        return None
-    return {
-        "model": config["model"],
-        "base_url": config["base_url"],
-        "api_key": config.get("api_key"),
-        "provider_type": config.get("provider_type"),
-    }
+    return host_model_config(config)
 
 
 # The states of a session in which something is being done with it.
@@ -160,6 +154,7 @@ class NekoPowerHost:
         dsh: Any = None,
         dsh_runtime_factory: Any = None,
         conversation: Any = None,
+        model_slots: Any = None,
     ) -> None:
         self.paths = HostPaths(root)
         # What she and the user said lately, from which a commission that
@@ -243,6 +238,10 @@ class NekoPowerHost:
             dsh_runtime_factory=dsh_runtime_factory,
             conversation=self.conversation,
             switched_on=enabled,
+            # The slots of the model panel the presets' models are chosen
+            # from (``role_models.PluginModelSlots``); None: every session
+            # is sent to the task agent model, as before there were slots.
+            model_slots=model_slots,
         )
         # Hands sessions what waits for them: a note another session wrote,
         # a time a task agent set for itself. Started by the first call that
@@ -487,9 +486,10 @@ class NekoPowerHost:
         """Return what a commission has used, what it may, and what its model's sessions are managed for.
 
         ``TaskAgentManager.usage_of``, with ``window``: what
-        ``ModelCapabilityStore.describe_window`` says of the task agent
-        model as it is configured now (its window, where a conversation is
-        summed up, what was learned of it). None for an unknown commission.
+        ``ModelCapabilityStore.describe_window`` says of the model the
+        commission's session is sent to (``TaskAgentManager.session_model``:
+        its window, where a conversation is summed up, what was learned of
+        it). None for an unknown commission.
         """
         self._first_use()
         usage = await self.task_agents.usage_of(commission_id)
@@ -497,7 +497,7 @@ class NekoPowerHost:
             return None
         window = None
         try:
-            config = await self._task_agent_model()
+            config = await self.task_agents.model_of_commission(commission_id)
             if config and config.get("model"):
                 window = await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
         except Exception:  # noqa: BLE001 - what was used is told all the same
@@ -546,6 +546,115 @@ class NekoPowerHost:
         asked, and nothing is started.
         """
         return await self._board.view(project, lanlan_name, known_revision)
+
+    # -- the model each preset's sessions are sent to ------------------------
+    #
+    # For a page that sets them (``role_models.py``). No route leads here
+    # yet; whoever adds one calls these.
+
+    async def role_models(self) -> dict[str, Any]:
+        """Return the model setting of every preset, what it comes to, and the slots it can be set to.
+
+        ``{"presets": [...], "slots": [...], "slots_error"}``. A preset
+        (the built-in ones first, then the user's templates, as
+        ``templates(None)`` lists them; never a copy's, which has no
+        setting) is ``{"preset", "label", "source", "valid", "setting",
+        "default", "can_inherit", "in_effect"}``: ``setting`` is a slot's
+        id, ``"inherit"`` or None (its default); ``default`` is ``"agent"``
+        or ``"inherit"``, as its template says; ``can_inherit`` whether it
+        can be set to the model of the session that starts it;
+        ``in_effect`` is what a new session of it is sent to now
+        (``RoleModels.describe``), with why its setting could not be used.
+        ``slots`` are the slots of the model panel that declare tool
+        calling, in panel order: ``{"slot_id", "name", "source",
+        "host_api", "model", "configured", "free", "error_code"}``.
+        ``slots_error`` is why they could not be read (None when they
+        could). Names and codes only: no address and no key.
+        """
+        from nekopower.host.role_models import REQUIRED_CAPABILITIES, SlotUnavailable
+        from nekopower.host.templates import NOT_FOR_CHILDREN
+
+        self._first_use()
+        roles = self.task_agents.role_models
+        settings = await roles.store.all()
+        presets = []
+        for item in await self.templates(None):
+            name = item["name"]
+            presets.append(
+                {
+                    "preset": name,
+                    "label": item["label"],
+                    "source": item["source"],
+                    "valid": item["valid"],
+                    "setting": settings.get(name),
+                    "default": await self.task_agents.model_default_of(name, None),
+                    "can_inherit": name not in NOT_FOR_CHILDREN,
+                    "in_effect": await roles.describe(name),
+                }
+            )
+        slots: list[dict[str, Any]] = []
+        slots_error = None
+        if roles.slots is not None:
+            try:
+                listed = await roles.slots.list()
+            except SlotUnavailable as exc:
+                listed, slots_error = [], exc.code
+            slots = [
+                {
+                    "slot_id": item.slot_id,
+                    "name": item.name,
+                    "source": item.source,
+                    "host_api": item.host_api,
+                    "model": item.model or None,
+                    "configured": item.configured,
+                    "free": item.free,
+                    "error_code": item.error_code,
+                }
+                for item in listed
+                if set(REQUIRED_CAPABILITIES) <= set(item.capabilities)
+            ]
+        return {"presets": presets, "slots": slots, "slots_error": slots_error}
+
+    async def set_role_model(self, preset: str, value: str | None) -> dict[str, Any]:
+        """Set the model a preset's new sessions are sent to; returns ``role_models``.
+
+        ``value`` is a slot's id (one of the model panel that declares tool
+        calling), ``"inherit"`` (the model of the session that starts it;
+        not for a preset that no session starts) or None (its default).
+        Sessions there are keep the model they were settled on. Raises
+        ``ValueError`` with a code: ``unknown_preset`` (not one the
+        presets list, or a copy's), ``cannot_inherit``, ``bad_value``,
+        ``no_slots`` (there are none to choose from in this process), or
+        why the slot will not do (``slot_not_found``,
+        ``model_config_unreadable``, ``capability_missing``). Nothing is
+        written then.
+        """
+        from nekopower.host.role_models import INHERIT, REQUIRED_CAPABILITIES, SlotUnavailable
+        from nekopower.host.templates import NOT_FOR_CHILDREN
+
+        self._first_use()
+        roles = self.task_agents.role_models
+        if not isinstance(preset, str) or preset not in {item["name"] for item in await self.templates(None)}:
+            raise ValueError("unknown_preset")
+        if value == INHERIT:
+            if preset in NOT_FOR_CHILDREN:
+                raise ValueError("cannot_inherit")
+        elif value is not None:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("bad_value")
+            if roles.slots is None:
+                raise ValueError("no_slots")
+            try:
+                listed = await roles.slots.list()
+            except SlotUnavailable as exc:
+                raise ValueError(exc.code) from None
+            found = next((item for item in listed if item.slot_id == value), None)
+            if found is None:
+                raise ValueError("slot_not_found")
+            if not set(REQUIRED_CAPABILITIES) <= set(found.capabilities):
+                raise ValueError("capability_missing")
+        await roles.store.put(preset, value)
+        return await self.role_models()
 
     async def templates(self, project: str | None = None) -> list[dict[str, Any]]:
         """Return the presets a session can have, for a project or for none; see ``nekopower/host/templates.py``.
@@ -898,6 +1007,8 @@ class NekoPowerHost:
                 title=title, title_by="user" if title.strip() else None,
                 duty=duty, duty_by="user" if duty.strip() else None,
             )
+        # The model it is sent to, by its preset, as it is made.
+        await self.task_agents.settle_model(session)
         return {"project": project.to_json(), "session_id": session.id}
 
     async def set_project_workdir(self, project: str, workdir: str) -> dict[str, Any]:
