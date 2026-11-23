@@ -72,6 +72,8 @@ record (pid, instance id, negotiated ports) next to that lock.
 |----------|---------|-------------|
 | `NEKO_MERGED` | Source: `0`; frozen package: `1` | `1` runs main, memory, and agent HTTP services in one process while preserving their contracts; `0` keeps three service processes. A partial or mixed existing backend is never reused and forces a three-process launch on isolated fallback ports, even when merged mode would otherwise be selected. |
 
+| `OPENBLAS_NUM_THREADS` | `1`, applied when unset or blank | Thread count for the OpenBLAS library bundled with numpy. OpenBLAS reserves a 32 MiB buffer per thread when numpy loads, so its CPU-count default commits several hundred MiB in every process that imports numpy without ever using it. A value set in the shell, `.env`, or the container is kept. Plugin processes inherit the setting. |
+
 Keep multi-process mode for development, independent service supervision, or
 agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged
 deployments.

@@ -18,6 +18,13 @@
 All names formerly defined by this module are re-exported from domain modules.
 """
 
+# Keep this first. OpenBLAS reads its thread count once, when numpy loads its
+# library, and every entry point imports ``config`` before anything that pulls
+# numpy in. See config/native_runtime.py for what the default saves.
+from .native_runtime import apply_native_runtime_defaults as _apply_native_runtime_defaults
+
+_apply_native_runtime_defaults()
+
 from .application import (  # noqa: F401
     logging,
     APP_NAME,
