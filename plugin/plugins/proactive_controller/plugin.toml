@@ -26,3 +26,7 @@ auto_start = false
 default_mode_on_first_run = "off"
 api_base = "http://127.0.0.1"
 api_timeout_seconds = 5.0
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."system.network:connect"]
+reason = { zh-CN = "连接设置里填写的 N.E.K.O 服务地址（默认是这台电脑），调整主动搭话的设置。", zh-TW = "連線到設定裡填寫的 N.E.K.O 服務位址（預設是這台電腦），調整主動搭話的設定。", en = "Connect to the N.E.K.O service address in the settings (this computer by default) to change proactive chat settings.", ja = "設定に入力された N.E.K.O サービスのアドレス（既定ではこのコンピューター）に接続し、自発的な話しかけの設定を変更します。", ko = "설정에 입력한 N.E.K.O 서비스 주소(기본값은 이 컴퓨터)에 연결해 먼저 말 걸기 설정을 변경합니다.", ru = "Подключаться к адресу службы N.E.K.O из настроек (по умолчанию — этот компьютер), чтобы менять настройки проактивных сообщений.", es = "Conectarse a la dirección del servicio de N.E.K.O indicada en los ajustes (este equipo por defecto) para cambiar los ajustes de conversación proactiva.", pt = "Conectar-se ao endereço do serviço do N.E.K.O nas configurações (este computador por padrão) para mudar as configurações de conversa proativa." }
