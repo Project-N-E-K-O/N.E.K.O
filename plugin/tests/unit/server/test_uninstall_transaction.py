@@ -1519,7 +1519,8 @@ async def test_uninstall_rollback_leaves_unusable_permission_store_untouched(
     harness.stop_error = RuntimeError("stop failed")
     harness.install(monkeypatch)
     path = _write_permission_file(tmp_path, "{not json")
-    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+    log = _ErrorLog()
+    monkeypatch.setattr(uninstall_module, "logger", log)
 
     with pytest.raises(UninstallPluginError) as captured:
         await uninstall_plugin("demo")
@@ -1528,6 +1529,46 @@ async def test_uninstall_rollback_leaves_unusable_permission_store_untouched(
     assert "permission_rollback" not in _details_of(captured.value)
     assert harness.plugin_dir.is_dir()
     assert path.read_text(encoding="utf-8") == "{not json"
+    # The plugin stays, so nothing claims its grants were left behind.
+    assert log.errors == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_uninstall_rollback_keeps_remembered_grants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A rolled-back uninstall keeps the plugin, so its remembered grants stay
+    available for a later read failure."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    granted = "plugin_sdk.main_agent.memory:read"
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.install(monkeypatch)
+    _grant_demo()
+    assert permission_service.permission_snapshot("demo")["states"][granted]["status"] == "granted"
+
+    class _MovedManager:
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "moved" / name
+
+    moved = tmp_path / "moved" / "plugin_permissions.json"
+    moved.parent.mkdir()
+    moved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_MovedManager())
+    )
+    harness.stop_error = RuntimeError("stop failed")
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+
+    with pytest.raises(UninstallPluginError):
+        await uninstall_plugin("demo")
+
+    after = permission_service.permission_snapshot("demo")
+    assert after.get("read_failed") is True
+    assert after["states"][granted]["status"] == "granted"
 
 
 @pytest.mark.plugin_unit

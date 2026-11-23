@@ -813,15 +813,8 @@ async def _forget_permissions_precommit(
         return await asyncio.to_thread(forget_permissions, plugin_id), None
     except ServerDomainError as exc:
         if exc.code in UNUSABLE_STORE_CODES:
-            logger.error(
-                "uninstall could not clear permission grants, store unusable; "
-                "continuing plugin_id={} code={}",
-                plugin_id,
-                exc.code,
-            )
-            # Nothing was written, so no store notification drops the
-            # in-process copy of the old grants; drop it here.
-            forget_remembered_permissions(plugin_id)
+            # Logged and acted on after the commit (see uninstall_plugin): a
+            # rollback keeps the plugin, so nothing is reported here.
             return None, {
                 "code": exc.code,
                 "message": (
@@ -1112,6 +1105,19 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         await asyncio.to_thread(forget_plugin, plugin_id)
     except Exception as exc:
         logger.warning("Could not clear uninstalled plugin consent: plugin_id={}, error={}", plugin_id, type(exc).__name__)
+    if permission_warning is not None:
+        logger.error(
+            "uninstall committed without clearing permission grants, store unusable "
+            "plugin_id={} code={}",
+            plugin_id,
+            permission_warning["code"],
+        )
+        # Nothing was written to the store, so no change notification drops
+        # the in-process copy of the old grants. Drop it before a restored
+        # built-in starts, so a read failure cannot hand it the removed
+        # plugin's grants. Only after the commit: a rollback keeps the plugin
+        # and its grants.
+        forget_remembered_permissions(plugin_id)
     if restored_builtin:
         from plugin.server.application.plugins.capability_analysis_service import schedule_analysis
 
