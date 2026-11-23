@@ -49,6 +49,12 @@ class FakeDecisionLLM:
         # (the last one repeats); kept apart from what the other tests count.
         self.side: list[Any] = [{"side_question": True}]
         self.side_calls: list[list[dict[str, Any]]] = []
+        # Answers of where a new commission belongs (the orchestrator's one
+        # request), like ``fine``: the last one repeats. Kept apart as well:
+        # asked only where a commission's words match something that is
+        # there without naming it, which most tests have nothing of.
+        self.belongs: list[Any] = [{"goes_to": 0, "relation": "new"}]
+        self.belongs_calls: list[list[dict[str, Any]]] = []
         self.short_calls: list[list[dict[str, Any]]] = []
         # Answers of the task agent space's own calls (the review of a
         # finished commission, the summary of an archived project): dicts,
@@ -78,6 +84,12 @@ class FakeDecisionLLM:
         if tier == "side_question":
             self.side_calls.append([dict(message) for message in messages])
             answer = self.side[min(len(self.side_calls) - 1, len(self.side) - 1)]
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+        if tier == "orchestrate":
+            self.belongs_calls.append([dict(message) for message in messages])
+            answer = self.belongs[min(len(self.belongs_calls) - 1, len(self.belongs) - 1)]
             if isinstance(answer, BaseException):
                 raise answer
             return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)

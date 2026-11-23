@@ -89,6 +89,9 @@ AUTO_POLICY: dict[str, str] = {
     "plugin_entry": "allow",
     "managed_delivery": "first_ask",
     MCP_SERVER_CATEGORY: "first_ask",
+    # Another task agent that can change files, opened beside the ones a
+    # project has (``OPEN_SESSION``).
+    "open_session": "first_ask",
 }
 DEFAULT_MODES = dict.fromkeys(AUTO_POLICY, "auto")
 
@@ -113,6 +116,11 @@ RUN_SCOPED_CATEGORIES: frozenset[str] = frozenset({"keyboard_mouse", "browser"})
 DENIED_BY_SETTINGS = "permission denied: the permission settings forbid this"
 DENIED_BY_USER = "permission denied: the user declined"
 DENIED_NO_ANSWER = "permission denied: the request for approval could not be answered"
+
+# The leader of a project hands a commission to a new task agent that can
+# change files. Asked first by default; "always" allows it from then on, and
+# with ``deny`` none is opened. One that reads only is not asked about.
+OPEN_SESSION = "open_session"
 
 # Not a category of the settings: asked each time it comes up, whatever the
 # settings say of the browser (``PermissionGate.ask_each_time``).

@@ -77,6 +77,8 @@ AGENT_KEY = "agent:"
 # The preset of a task agent that works and may start others: what a loose
 # commission gets, and a project that has no leader.
 WORKING_PRESET = "general"
+# How many of the candidates a verdict was chosen among are kept on record.
+RECORDED_CANDIDATES = 5
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +203,8 @@ class Verdict:
     candidates: list[Match] = field(default_factory=list)
     model_calls: int = 0
     reason: str = ""
+    # How long finding it took, the small model's answer included.
+    seconds: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -598,20 +602,25 @@ def settle(
 def by_rules(dispatch_text: str, user_text: str, standing: Standing, bars: Bars) -> Verdict | None:
     """Return where a sentence goes when its words say so outright, or None."""
     sentence = sentence_of(dispatch_text, user_text)
+    key = named(sentence, standing, bars)
+    if key is not None and key.startswith(PROJECT_KEY):
+        # A project that is named has it, whatever else the sentence says.
+        return settle(key, FOLLOW_UP, standing, bars, reason="named")
     if _has("fresh_start", sentence):
         return settle(None, NEW, standing, bars, reason="asked for a new one")
-    key = named(sentence, standing, bars)
     if key is not None:
-        names_agent = key.startswith(AGENT_KEY)
-        relation = relation_by_words(sentence, names_agent=names_agent) if names_agent else FOLLOW_UP
-        return settle(key, relation, standing, bars, reason="named")
+        return settle(key, relation_by_words(sentence, names_agent=True), standing, bars, reason="named")
     return None
 
 
 def by_retrieval(
     dispatch_text: str, user_text: str, standing: Standing, bars: Bars
 ) -> tuple[Verdict | None, list[Match]]:
-    """Return where a sentence goes when retrieval settles it (else None), and the matches."""
+    """Return where a sentence goes when retrieval settles it (else None), and the matches.
+
+    Not settled, besides what ``clear_match`` leaves open: a clear match
+    that would make a project of loose task agents.
+    """
     sentence = sentence_of(dispatch_text, user_text)
     matches = rank(sentence, standing)
     if matches and unseen(sentence, standing):
@@ -622,7 +631,13 @@ def by_retrieval(
     if best is None:
         return settle(None, NEW, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="nothing matches"), matches
     relation = relation_by_words(sentence) if best.key.startswith(AGENT_KEY) else FOLLOW_UP
-    return settle(best.key, relation, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="clear match"), matches
+    verdict = settle(best.key, relation, standing, bars, matches=matches, layer=LAYER_RETRIEVAL, reason="clear match")
+    if verdict.action == FORM_FAMILY:
+        # No project is made on words alone: whether this is the same job
+        # once more, or one more change to what was made, the words do not
+        # tell (``relation_by_words`` guesses). The small model says.
+        return None, matches
+    return verdict, matches
 
 
 def shown_keys(matches: Sequence[Match], bars: Bars, sentence: str = "", standing: Standing | None = None) -> list[str]:
@@ -636,20 +651,23 @@ def shown_keys(matches: Sequence[Match], bars: Bars, sentence: str = "", standin
     return [match.key for match in matches[: bars.shown] if match.hits > 0]
 
 
-def to_json(verdict: Verdict) -> str:
+def as_record(verdict: Verdict) -> dict[str, Any]:
     """Return a verdict as it is kept on record: no sentence, only keys and numbers."""
-    return json.dumps(
-        {
-            "action": verdict.action,
-            "agent": verdict.agent,
-            "project": verdict.project,
-            "preset": verdict.preset,
-            "members": list(verdict.members),
-            "relation": verdict.relation,
-            "layer": verdict.layer,
-            "candidates": [[match.key, round(match.score, 3)] for match in verdict.candidates[:5]],
-            "model_calls": verdict.model_calls,
-            "reason": verdict.reason,
-        },
-        ensure_ascii=False,
-    )
+    return {
+        "action": verdict.action,
+        "agent": verdict.agent,
+        "project": verdict.project,
+        "preset": verdict.preset,
+        "members": list(verdict.members),
+        "relation": verdict.relation,
+        "layer": verdict.layer,
+        "candidates": [[match.key, round(match.score, 3), match.hits] for match in verdict.candidates[:RECORDED_CANDIDATES]],
+        "model_calls": verdict.model_calls,
+        "reason": verdict.reason,
+        "seconds": verdict.seconds,
+    }
+
+
+def to_json(verdict: Verdict) -> str:
+    """Return ``as_record`` as a text."""
+    return json.dumps(as_record(verdict), ensure_ascii=False)

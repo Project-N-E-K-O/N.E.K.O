@@ -281,3 +281,7 @@ class HostPaths:
 
     def work_dir(self, commission_id: str, project: str | None = None) -> Path:
         return self.session_dir(commission_id, project) / "work"
+
+    def project_work_dir(self, project: str) -> Path:
+        """Return the directory the host gives a project to work in when the user named none; raises ValueError for an unsafe name."""
+        return self.root() / "task_agents" / "projects" / _segment(project, "project") / "work"

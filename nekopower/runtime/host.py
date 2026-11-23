@@ -141,6 +141,16 @@ The four ``subagent_*`` callbacks are offered together or not at all;
 
 Each of these five is offered when its callback is there.
 
+``hand_over``  (tool ``hand_over``)
+    Payload: ``{"to": str | None, "preset": str | None, "description": str,
+    "brief": str}``. Result: ``{"message": str}``: who has the commission
+    now. The host moves the commission to that session once the run that
+    called this is over; the session that called it is free again. For the
+    leader of a project only: the host withholds the tool from every other
+    session. A commission that is not handed over (no such member, a
+    preset that cannot be used, the user did not allow another task agent
+    that writes) raises with the reason.
+
 ``budget``  (no tool)
     Asked before every model request of a run, between two steps: whether
     what the session works on may use more. Payload: ``{}``. Result:
@@ -186,6 +196,7 @@ HOST_CALLS: tuple[str, ...] = (
     "web_search",
     *SUBAGENT_CALLS,
     *SESSION_CALLS,
+    "hand_over",
     "budget",
     "task_control_begin",
 )
@@ -224,6 +235,7 @@ class HostCallbacks:
     session_send: HostCallback | None = None
     wake_schedule: HostCallback | None = None
     session_ask: HostCallback | None = None
+    hand_over: HostCallback | None = None
     budget: HostCallback | None = None
     execution_action: HostCallback | None = None
     native_execution_action: HostCallback | None = None

@@ -70,6 +70,9 @@ from nekopower.host.ledger import ENDED_STATUSES, Commission, Ledger, Listener
 from nekopower.host.model_capabilities import ModelCapabilityStore
 from nekopower.host.outbox import OutboxSender, SendReport
 from nekopower.host.paths import HostPaths
+
+# The preset of a project's leader: a task agent the user makes with it is one.
+LEADER_PRESET = "boss"
 from nekopower.host.runtimes import RUNTIME_DSH
 from nekopower.host.delivery import ManagedDelivery
 from nekopower.host.permissions import PermissionGate, PermissionStore
@@ -286,6 +289,11 @@ class NekoPowerHost:
         judge = getattr(decision, "side_question", None)
         if judge is not None:
             self.task_agents.set_side_question_judge(judge)
+        # Where a new commission belongs, when its words neither name nor
+        # clearly match what is there: one request of the small model.
+        belongs = getattr(decision, "belongs", None)
+        if belongs is not None:
+            self.task_agents.set_orchestrator_judge(belongs)
         self.brain = TaskBrain(
             ledger=self.ledger,
             preferences=self.preferences,
@@ -1001,17 +1009,46 @@ class NekoPowerHost:
                 project = await self.space.describe_project(name, description, by="user") or project
             if rules.strip():
                 await self.space.write_rules(rules, name)
-            session, _made = await self.ledger.project_session(
-                lanlan_name.strip(), name,
-                workdir=str(wanted) if wanted else None, preset=preset,
+            card = {
+                "workdir": str(wanted) if wanted else None, "preset": preset,
                 # The user's where the user wrote something. A line left empty in the form was not
                 # emptied by the user: it is nobody's, and the first review fills it in.
-                title=title, title_by="user" if title.strip() else None,
-                duty=duty, duty_by="user" if duty.strip() else None,
-            )
+                "title": title, "title_by": "user" if title.strip() else None,
+                "duty": duty, "duty_by": "user" if duty.strip() else None,
+            }
+            if preset == LEADER_PRESET:
+                # The project's leader: its commissions come to it, and it hands them out.
+                session, _made = await self.ledger.project_session(lanlan_name.strip(), name, **card)
+            else:
+                # A member: it does the project's work itself.
+                session = await self.ledger.create_session(
+                    name=name, lanlan_name=lanlan_name.strip(), project=name, kind="line", **card
+                )
         # The model it is sent to, by its preset, as it is made.
         await self.task_agents.settle_model(session)
         return {"project": project.to_json(), "session_id": session.id}
+
+    async def derive_leader(self, project: str, lanlan_name: str) -> dict[str, Any]:
+        """Give a project a leader for one character, as the user asks; returns ``{"session_id", "made"}``.
+
+        From then on the project's commissions come to the leader, which
+        hands them out and does none of the work; the task agents the
+        project has are its members. It is told where the project stands
+        with the first commission that opens in it, from what is on
+        record: no model is asked. A project that has a leader keeps it
+        (``made`` is False). Raises ``ValueError("no_character")``, and
+        ``LookupError`` for a project that is not there (or is archived).
+        """
+        if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+            raise ValueError("no_character")
+        # With the lock a project's record and its sessions are written under: none is made
+        # between a look at the project and the write of where it works.
+        async with self._project_lock:
+            session, made = await self.task_agents.families.derive_leader(lanlan_name.strip(), project)
+        if made:
+            # The model it is sent to, by its preset, as it is made.
+            await self.task_agents.settle_model(session)
+        return {"session_id": session.id, "made": made}
 
     async def set_project_workdir(self, project: str, workdir: str) -> dict[str, Any]:
         """Change where the task agents of a project work, as the user asks; returns the project as a page shows it.
@@ -1060,7 +1097,7 @@ class NekoPowerHost:
             # The project's own sessions of every character first, looked at once more and written in
             # one go: each starts from the directory it keeps, so a commission that begins from here
             # on begins in the new one, and one that began since the look above stops the change.
-            before = await self.ledger.move_project(project, str(wanted))
+            before = await self.ledger.move_project(project, str(wanted), was=kept.workdir)
             if before is None:
                 raise ProjectBusy("at_work")
             # The record is written second: not written, the sessions go back, so that nothing is half changed.

@@ -119,15 +119,27 @@ SESSION_STATUSES: tuple[str, ...] = ("idle", "running", "waiting", "compacting",
 # Open in a runtime, or kept for an answer: only a host process that runs
 # can have a session so. What an earlier one left so is closed on opening.
 LIVE_SESSION_STATUSES: frozenset[str] = frozenset({"idle", "running", "waiting", "compacting"})
-# "project": the one session of a project, for one character. "single": of
-# one commission that belongs to no project, and of what follows it up.
+# "project": the leader of a project, for one character; a project has one
+# or none. "line": a member of a project, which works on the commissions
+# that are the project's; a project may have several. "single": of one
+# commission that belongs to no project, and of what follows it up.
 # "child": of a task agent that another task agent started. "fork": made
 # from another session by copying what was said in it (``forked_from``).
-SESSION_KINDS: tuple[str, ...] = ("project", "single", "child", "fork")
+SESSION_KINDS: tuple[str, ...] = ("project", "line", "single", "child", "fork")
+# The kinds her commissions of a project are worked on in, one after the other.
+PROJECT_KINDS: tuple[str, ...] = ("project", "line")
 # The preset a session has when whoever makes it names none, by its kind
-# (``templates.py`` has what each preset is). A copy has one that is no
-# template: it is opened as the session it was copied from, and reads only.
-PRESET_OF_KIND: dict[str, str] = {"project": "boss", "single": "general", "child": "worker", "fork": "shadow"}
+# (``templates.py`` has what each preset is). A member that nobody named a
+# preset for is one that works and may start others, like a session of one
+# commission. A copy has one that is no template: it is opened as the
+# session it was copied from, and reads only.
+PRESET_OF_KIND: dict[str, str] = {
+    "project": "boss",
+    "line": "general",
+    "single": "general",
+    "child": "worker",
+    "fork": "shadow",
+}
 # Who wrote a line of a session's card: whoever made the session, the review
 # of a commission worked on in it, the session itself (in a report), or the
 # user. Empty for a line nobody wrote. In that order of standing: a line is
@@ -173,8 +185,13 @@ HOST_ENDED_REASON = "the host process ended before this finished"
 
 # (5: the notes sessions write to one another and what a session asked to be
 # woken for have tables of their own, and a commission may rest. 7: a session
-# has a preset and a card.)
-_SCHEMA_VERSION = 7
+# has a preset and a card. 8: a project has members, and a leader or none.)
+_SCHEMA_VERSION = 8
+# The first version in which the session of kind ``project`` is a project's
+# leader, which hands work out and does none. In a ledger of an earlier one
+# it was the project's one session, which did the work: those are members
+# from here on (``line``), with the preset of one that works.
+_LEADERS_SINCE_VERSION = 8
 # The first version in which a session has a preset: the sessions of a ledger
 # of an earlier one are given theirs by their kind.
 _PRESETS_SINCE_VERSION = 7
@@ -409,6 +426,15 @@ class Commission:
     # The commission this one follows up: one that was done or stopped, and
     # is gone on with as a commission of its own in the same session.
     continues: str | None = None
+    # How it was filed when it was given its session (``orchestrator.py``):
+    # ``new`` for one that belongs with nothing that was there, ``follow_up``
+    # for one that changes or asks about what was made, ``recurrence`` for
+    # the same job once more. None for one that was not looked at so (a task
+    # agent's own, one filed in a copy).
+    relation: str | None = None
+    # The session of the leader that handed it over to the member it is
+    # worked on in; None for one that was not handed over.
+    handed_by: str | None = None
     # Since when it rests: ``working``, with nobody at work on it, until
     # something it asked to be woken for comes (``Ledger.rest``). No runtime
     # has its session open meanwhile, and it does not hold its session. None
@@ -473,6 +499,8 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("tokens_cache_read", "INTEGER NOT NULL DEFAULT 0"),
     ("tokens_cache_write", "INTEGER NOT NULL DEFAULT 0"),
     ("usage_allowed", "INTEGER"),
+    ("relation", "TEXT"),
+    ("handed_by", "TEXT"),
 )
 # What is counted of the model requests, with a commission and with a session.
 _USAGE_COLUMNS: tuple[str, ...] = ("requests", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write")
@@ -909,6 +937,17 @@ _CARRIED_IN = (
 )
 
 
+def _same_place(first: Any, second: Any) -> bool:
+    """Whether two working directories on record are one; a session with none works where its project does."""
+    import os
+
+    if not second:
+        return not first
+    if not first:
+        return True
+    return os.path.normcase(os.path.normpath(str(first))) == os.path.normcase(os.path.normpath(str(second)))
+
+
 def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
@@ -1046,6 +1085,14 @@ class Ledger:
                 # the version is written, so one cut off here is made again.
                 for kind, preset in PRESET_OF_KIND.items():
                     conn.execute("UPDATE sessions SET preset = ? WHERE kind = ? AND preset = ''", (preset, kind))
+            if version < _LEADERS_SINCE_VERSION:
+                # The sessions of projects a build without leaders made: each
+                # did its project's work, and goes on doing it as a member.
+                # (One statement: done, or not at all.)
+                conn.execute(
+                    "UPDATE sessions SET kind = 'line', preset = CASE WHEN preset IN ('', 'boss') THEN 'general' "
+                    "ELSE preset END WHERE kind = 'project'"
+                )
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             # Where the file stands, before this process writes to it.
             high = conn.execute(
@@ -1800,12 +1847,12 @@ class Ledger:
         )
 
     async def project_session(self, lanlan_name: str, project: str, **values: Any) -> tuple[Session, bool]:
-        """Return the session of a project for one character, made now when there is none; and whether it was.
+        """Return the leader of a project for one character, made now when there is none; and whether it was.
 
-        A project has one session for each character, which takes the
-        commissions filed under it one after the other. Looking and making
-        are one transaction, so two commissions of a project that are
-        handed over at the same time get the same session. ``values`` are
+        A project has one leader for each character at most, to which the
+        commissions filed under it come one after the other. Looking and
+        making are one transaction, so two commissions of a project that
+        are handed over at the same time get the same one. ``values`` are
         for the session that is made.
         """
         unknown = set(values) - set(_SESSION_COLUMNS)
@@ -1828,7 +1875,7 @@ class Ledger:
         return await self.run(work)
 
     async def lead_session(self, lanlan_name: str, project: str | None) -> Session | None:
-        """Return the session of a project for one character (``project_session``); None when it has none. Makes none."""
+        """Return the leader of a project for one character (``project_session``); None when it has none. Makes none."""
         return await self.run(
             lambda conn: _session(
                 conn.execute(
@@ -1936,7 +1983,68 @@ class Ledger:
 
         return await self.run(work)
 
-    async def move_project(self, project: str, workdir: str) -> dict[str, str | None] | None:
+    async def members(self, lanlan_name: str, project: str) -> list[Session]:
+        """Return the members of a project for one character (kind ``line``), the one last in use first."""
+        return await self.run(
+            lambda conn: [
+                item
+                for item in (
+                    _session(row)
+                    for row in conn.execute(
+                        "SELECT * FROM sessions WHERE lanlan_name = ? AND project = ? AND kind = 'line' "
+                        "ORDER BY last_active_at DESC, rowid DESC",
+                        (lanlan_name, project),
+                    ).fetchall()
+                )
+                if item is not None
+            ]
+        )
+
+    async def adopt(self, session_ids: Iterable[str], project: str) -> list[Session]:
+        """Make sessions of one commission (kind ``single``) members of a project; returns those that were.
+
+        Where each works, what was said in it and its card stay as they
+        are: only whose it is changes. One that is a project's already,
+        or is no session of one commission, is left alone. One
+        transaction: all of them, or none.
+        """
+        wanted = [str(item) for item in session_ids]
+
+        def work(conn: sqlite3.Connection) -> list[Session]:
+            made: list[Session] = []
+            for session_id in wanted:
+                done = conn.execute(
+                    "UPDATE sessions SET kind = 'line', project = ? WHERE id = ? AND kind = 'single'",
+                    (project, session_id),
+                )
+                if done.rowcount:
+                    found = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+                    if found is not None:
+                        made.append(found)
+            return made
+
+        return await self.run(work)
+
+    async def handed_work(self, session_id: str, *, limit: int) -> list[Commission]:
+        """Return the commissions a leader handed over that are over and that it was not told of yet, the most recent first.
+
+        Done, stuck or failed, with what came of them. One the leader was
+        told of has a ``told_to_session`` event, as what a copy finished
+        has (``forked_work``).
+        """
+
+        def work(conn: sqlite3.Connection) -> list[Commission]:
+            rows = conn.execute(
+                "SELECT * FROM commissions WHERE handed_by = ? AND status IN ('done', 'blocked', 'failed') "
+                "AND NOT EXISTS (SELECT 1 FROM events WHERE events.commission_id = commissions.id "
+                "AND events.type = 'told_to_session') ORDER BY updated_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+            return [item for item in (_commission(row) for row in rows) if item is not None]
+
+        return await self.run(work)
+
+    async def move_project(self, project: str, workdir: str, *, was: str | None = None) -> dict[str, str | None] | None:
         """Write where a project's own sessions work, unless something is under way in it.
 
         Returns where each of them worked before (by session), for
@@ -1950,7 +2058,11 @@ class Ledger:
         session of the project open with a run, waiting or being
         summed up, or a commission of it queued, at work or waiting.
         The sessions task agents started, and copies, work where they
-        were sent and are left as they are.
+        were sent and are left as they are. So is a member that works
+        somewhere else than the project did (``was``, where the project
+        worked until now): one that was a session of its own before it
+        became the project's, and keeps its directory. A member that
+        works where the project does moves with it, like its leader.
         """
 
         def work(conn: sqlite3.Connection) -> dict[str, str | None] | None:
@@ -1966,8 +2078,14 @@ class Ledger:
             ).fetchone()
             if under_way is not None:
                 return None
-            conn.execute("UPDATE sessions SET workdir = ? WHERE project = ? AND kind = 'project'", (workdir, project))
-            return {row["id"]: row["workdir"] for row in rows if row["kind"] == "project"}
+            moved = [
+                row
+                for row in rows
+                if row["kind"] == "project" or (row["kind"] == "line" and _same_place(row["workdir"], was))
+            ]
+            for row in moved:
+                conn.execute("UPDATE sessions SET workdir = ? WHERE id = ?", (workdir, row["id"]))
+            return {row["id"]: row["workdir"] for row in moved}
 
         return await self.run(work)
 
@@ -2092,8 +2210,8 @@ class Ledger:
     ) -> BoardRows:
         """Return the sessions that are on the board, each with the commission in hand and its latest tool calls.
 
-        Not every session there ever was: the session of every project
-        (of ``project`` alone, when one is named); the sessions of one
+        Not every session there ever was: the leader and the members of
+        every project (of ``project`` alone, when one is named); the sessions of one
         commission in which one is under way or which were in use since
         ``recent_since``, ``loose_max`` of them at most and none when a
         project is named; under each of these the task agents it started
@@ -2129,12 +2247,13 @@ class Ledger:
             def sessions_of(sql: str, params: list[Any]) -> list[Session]:
                 return [item for item in (_session(row) for row in conn.execute(sql, params).fetchall()) if item]
 
-            sql = f"SELECT * FROM sessions WHERE kind = 'project'{who}"
+            sql = f"SELECT * FROM sessions WHERE kind IN ('project', 'line'){who}"
             params: list[Any] = list(whose)
             if project is not None:
                 sql += " AND project = ?"
                 params.append(project)
-            leads = sessions_of(sql + " ORDER BY last_active_at DESC, rowid DESC", params)
+            # A leader before the members of its project.
+            leads = sessions_of(sql + " ORDER BY kind = 'project' DESC, last_active_at DESC, rowid DESC", params)
             if project is None:
                 leads += sessions_of(
                     "SELECT * FROM (SELECT sessions.*, sessions.rowid AS number, EXISTS (SELECT 1 FROM commissions "
@@ -2364,7 +2483,7 @@ class Ledger:
 
         The one place that says so; everything that would give a session
         new work asks here. Only a session of one commission (kind
-        ``single``) ends: it is over once its last commission ended
+        ``single``) and a member of a project (kind ``line``) end: it is over once its last commission ended
         ``SESSION_SINGLE_LIFETIME_DAYS`` days ago (that day counts as
         over), unless a commission is still under way in it
         (``UNDER_WAY_STATUSES``: at work, queued, waiting for the user, or
@@ -2372,7 +2491,7 @@ class Ledger:
         of ``Session.last_active_at``: written whenever a commission in the
         session changes its status, so, with none under way, it is when the
         last one ended. What other sessions write to it, what a request of
-        it used, and the host summing it up do not move it. The session of
+        it used, and the host summing it up do not move it. The leader of
         a project never ends this way (an old one is cleaned up, and the
         next commission starts over in it); the sessions of task agents
         another one started, and copies, have their own rules and are
@@ -2388,7 +2507,7 @@ class Ledger:
 
         if session is None:
             return False
-        if session.kind != "single":
+        if session.kind not in ("single", "line"):
             return True
         at = self._clock() if now is None else now
         lifetime = SESSION_SINGLE_LIFETIME_DAYS * 86400.0
@@ -3616,10 +3735,12 @@ class Ledger:
             row = conn.execute(
                 "SELECT events.commission_id FROM events "
                 "JOIN commissions ON commissions.id = events.commission_id "
-                "WHERE commissions.session_id IN (?, (SELECT forked_from FROM sessions WHERE id = ?)) "
+                "WHERE (commissions.session_id IN (?, (SELECT forked_from FROM sessions WHERE id = ?)) "
+                # One a leader took and handed over is its member's by now.
+                "OR commissions.handed_by = ?) "
                 f"AND events.type = 'opened' AND {_OPENED_IN} = ? "
                 "ORDER BY events.rowid DESC LIMIT 1",
-                (session_id, session_id, session_id),
+                (session_id, session_id, session_id, session_id),
             ).fetchone()
             return str(row["commission_id"]) if row is not None else None
 
@@ -3721,6 +3842,18 @@ class Ledger:
     async def has_event(self, commission_id: str, kind: str) -> bool:
         """Return whether a commission has an event of a kind."""
         return await self.first_event_at(commission_id, kind) is not None
+
+    async def last_event(self, commission_id: str, kind: str) -> dict[str, Any] | None:
+        """Return what a commission's latest event of a kind says; None when it has none."""
+
+        def work(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            row = conn.execute(
+                "SELECT payload FROM events WHERE commission_id = ? AND type = ? ORDER BY seq DESC LIMIT 1",
+                (commission_id, kind),
+            ).fetchone()
+            return _load(row["payload"]) if row is not None else None
+
+        return await self.run(work)
 
     async def events(self, commission_id: str, *, after: int = 0, limit: int = 500) -> list[LedgerEvent]:
         def work(conn: sqlite3.Connection) -> list[LedgerEvent]:
