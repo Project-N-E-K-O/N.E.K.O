@@ -42,7 +42,7 @@ CORE_CONFIG_SECRET_SENTINEL = "__NEKO_SECRET_MASKED__"
 
 CORE_CONFIG_MODEL_TYPES = (
     'conversation', 'memory', 'gameMain', 'gameSummary', 'recognition',
-    'decision', 'vision', 'agent', 'agentSmall', 'omni', 'tts', 'image',
+    'decision', 'vision', 'agent', 'agentAdvanced', 'agentSmall', 'gameRecognition', 'omni', 'tts', 'image',
 )
 
 # Model types merged away; their saved fields are dropped on the next save.

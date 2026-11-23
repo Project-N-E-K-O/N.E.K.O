@@ -275,7 +275,7 @@ test('all secret-bearing form fields use masked loading and masked save accessor
     // No 'vision': the settings page has no vision card any more (#3957); see the next test.
     const modelTypes = [
         'conversation', 'memory', 'gameMain', 'gameSummary',
-        'recognition', 'decision', 'agent', 'agentSmall', 'omni', 'tts',
+        'recognition', 'decision', 'agentAdvanced', 'agent', 'agentSmall', 'gameRecognition', 'omni', 'tts',
     ];
     for (const modelType of modelTypes) {
         assert.match(

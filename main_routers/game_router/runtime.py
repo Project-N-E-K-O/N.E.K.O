@@ -60,7 +60,7 @@ from .char_info import (
     _extract_request_render_language_full,
     _get_character_info,
     _get_current_character_info,
-    _get_game_route_summary_llm_info,
+    _get_game_route_recognition_llm_info,
     _resolve_game_prompt_locale,
 )
 from .game_context import (
@@ -1519,7 +1519,7 @@ def _normalize_passive_guard_result(value: Any, *, stage: Any, prompt_type: str)
 
 async def _run_soccer_passive_guard_ai(data: Dict[str, Any], lanlan_name: str) -> Dict[str, Any]:
     route_state = _find_game_route_state_for_session("soccer", str(data.get("session_id") or ""), lanlan_name)
-    char_info = _get_game_route_summary_llm_info(lanlan_name)
+    char_info = _get_game_route_recognition_llm_info(lanlan_name)
     # Full locale code: short codes collapse zh-TW to zh, making the soccer Traditional Chinese template unreachable
     # (#2500 step 2). _resolve_game_prompt_locale is the full-code twin of
     # _absorb_request_language's priority chain: explicit request > explicit manager preference > render-only
