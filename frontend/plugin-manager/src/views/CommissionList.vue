@@ -216,16 +216,19 @@ async function toggle(item: CommissionRow) {
   opened.value = item.id
 }
 // What the one that is open used: read when it is opened, and again whenever the list says it
-// used more or stands otherwise (it went on, it ended).
+// used more or stands otherwise (it went on, it ended). Of several reads the one asked for last
+// holds, whichever answers first: an older answer would put back what it had used before.
+let usageTurn = 0
 watch(() => {
   const item = items.value.find(some => some.id === opened.value)
   return item ? `${item.id}:${item.status}:${item.usage.requests}:${item.usage.tokens}` : ''
 }, async key => {
   const id = opened.value
+  const mine = ++usageTurn
   if (!key || !id) return
   try {
     const answer = await getCommissionUsage(id)
-    if (opened.value === id) usage.value = answer
+    if (mine === usageTurn) usage.value = answer
   } catch {
     // Shown without what it used.
   }

@@ -759,6 +759,38 @@ describe('the commissions', () => {
     expect(api.getCommissionUsage).toHaveBeenLastCalledWith('c1')
   })
 
+  it('shows what the open one used as it was read last, whichever read answers first', async () => {
+    const used = (requests: number, tokens: number) => ({
+      commission: { requests, input: tokens, output: 0, cache_read: 0, cache_write: 0, tokens }, used: tokens, limit: 5_000_000, session: null, window: null,
+    })
+    let early: (answer: unknown) => void = () => {}
+    api.getCommissionUsage.mockReset()
+    api.getCommissionUsage.mockReturnValueOnce(new Promise(resolve => { early = resolve }))
+    api.getCommissionUsage.mockResolvedValueOnce(used(31, 900_000))
+    await mount(Commissions)
+    await click(document.querySelector('[data-commission="c1"]'))
+    // It used more before the first read answered: read again, and that one answers first.
+    api.listCommissions.mockResolvedValue({
+      commissions: listed().map(item => (item.id === 'c1' ? { ...item, usage: { requests: 31, tokens: 900_000 } } : item)), more: false,
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(byTest('commission-usage')?.textContent).toContain('31')
+    early(used(9, 314_000))
+    await flush()
+    expect(byTest('commission-usage')?.textContent).toContain('31')
+    // Closed while a read is out: what comes back is not shown for the one opened next.
+    let late: (answer: unknown) => void = () => {}
+    api.getCommissionUsage.mockReturnValueOnce(new Promise(resolve => { late = resolve }))
+    api.getCommissionUsage.mockResolvedValueOnce(used(2, 2_000))
+    await click(document.querySelector('[data-commission="c2"]'))
+    await click(document.querySelector('[data-commission="c3"]'))
+    expect(byTest('commission-usage')?.textContent).toContain('2 ')
+    late(used(77, 7_000_000))
+    await flush()
+    expect(byTest('commission-usage')?.textContent).not.toContain('77')
+  })
+
   it('says why one that is stuck stopped, and still offers to call it off', async () => {
     api.listCommissions.mockResolvedValue({ commissions: [
       row({ id: 'c7', status: 'blocked', reason: 'the build never finished' }),
