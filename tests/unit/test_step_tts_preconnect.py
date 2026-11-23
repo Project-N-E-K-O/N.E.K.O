@@ -260,6 +260,42 @@ def test_spare_still_handshaking_gets_only_the_normal_confirm_window(monkeypatch
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
+def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeypatch):
+    # The spare connected well before the speech arrived and is still
+    # waiting for tts.connection.done: a fresh socket's window would already
+    # be over, so the speech gives up on it at once instead of granting it a
+    # whole new window.
+    _route_to_lanlan_app(monkeypatch)
+    monkeypatch.setattr(_step_protocol, "_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.4)
+    stuck = _StatefulSocket()  # connects at once, never confirms
+    fresh = _socket("fresh", final_events=_app_round_end("fresh"))
+    marks = {}
+
+    def on_connect(socket):
+        if socket is fresh:
+            marks["fresh_connect"] = time.monotonic()
+
+    connects = _recording_connects(monkeypatch, [_warmup_socket(), stuck, fresh], on_connect)
+
+    _run(
+        _Requests(
+            _PRECONNECT,
+            _wait(lambda: len(connects) == 2),
+            _pause(0.6),  # connected 0.6s ago, past the 0.4s window
+            lambda: marks.setdefault("speech", time.monotonic()),
+            ("speech-1", _OPENING),
+            (None, None),
+        ),
+        queue.Queue(),
+    )
+
+    waited = marks["fresh_connect"] - marks["speech"]
+    assert waited < 0.25, f"granted the stuck spare a new window ({waited:.2f}s)"
+    assert stuck.closed.is_set()
+    assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
+
+
 def test_slow_connecting_spare_is_not_cut_off_by_the_confirm_window(monkeypatch):
     # A fresh socket's confirmation window starts once it is connected, so a
     # spare still connecting (TLS to www.lanlan.app alone takes ~1s) must get
@@ -658,7 +694,7 @@ def test_preconnect_is_a_control_id_not_a_speech():
 # ───────────────────────── core: who gets the request ─────────────────────────
 
 
-def test_only_step_protocol_workers_declare_preconnect():
+def test_only_workers_with_a_preconnect_branch_declare_it():
     from main_logic import tts_client
 
     supporting = {
@@ -667,7 +703,13 @@ def test_only_step_protocol_workers_declare_preconnect():
         and getattr(getattr(tts_client, name), "supports_preconnect", False)
     }
     # A worker added here needs a TTS_PRECONNECT_SENTINEL branch first.
-    assert supporting == {"free_realtime_tts_worker", "step_realtime_tts_worker"}
+    assert supporting == {
+        "free_realtime_tts_worker",
+        "step_realtime_tts_worker",
+        "qwen_realtime_tts_worker",
+        "grok_streaming_tts_worker",
+        "elevenlabs_tts_worker",
+    }
 
 
 def _make_mgr() -> LLMSessionManager:

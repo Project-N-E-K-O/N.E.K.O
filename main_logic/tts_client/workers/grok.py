@@ -20,20 +20,34 @@ import json
 import base64
 import websockets
 import asyncio
+import time
+from collections import deque
 
 from utils.tts.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
 
 from .._infra import (
     AudioDoneEmitter,
+    TTS_PRECONNECT_SENTINEL,
     TTS_SHUTDOWN_SENTINEL,
     _resample_audio,
     make_audio_jitter_buffer,
     _enqueue_error,
 )
+from .._preconnect import (
+    FINISHED_ROUND_QUIET_SECONDS,
+    SpareSocket,
+    defer_queued_work_until_control,
+    ws_may_hold_connection,
+)
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
+
+_XAI_TTS_HOST = "api.x.ai"
+# Every socket closes with this bound: a half-open connection must not hold the
+# main loop (or a later connect waiting for the close) for websockets' default 10s.
+_XAI_TTS_CLOSE_TIMEOUT_SECONDS = 0.5
 
 # xAI documents individual deltas as capped at 15,000 characters.
 # Accumulated pending_text/merged long utterances may exceed this limit; split before sending.
@@ -88,7 +102,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
             "codec": "pcm",
             "sample_rate": 24000,
         })
-        tts_url = f"wss://api.x.ai/v1/tts?{params}"
+        tts_url = f"wss://{_XAI_TTS_HOST}/v1/tts?{params}"
         headers = {"Authorization": f"Bearer {audio_api_key}"}
 
         ws = None
@@ -119,15 +133,102 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         # into the new reply.
         pending_text: list[str] = []
         pending_text_sid: str | None = None
+        # Requests read ahead of a queued interrupt/shutdown (see
+        # defer_queued_work_until_control); consumed before the queue.
+        deferred_requests = deque()
+        # Loop time of the last audio chunk, for _round_socket_finished.
+        last_audio_at = None
+
+        def _defer_control() -> bool:
+            return defer_queued_work_until_control(request_queue, deferred_requests)
+
+        async def _connect_socket():
+            return await websockets.connect(
+                tts_url,
+                additional_headers=headers,
+                close_timeout=_XAI_TTS_CLOSE_TIMEOUT_SECONDS,
+            )
+
+        # Socket opened ahead of the next speech on core's preconnect request,
+        # bound to no speech until a connect adopts it. xAI has no session
+        # handshake (configuration rides on the URL), so the spare is the
+        # whole connection.
+        spare = SpareSocket(connect=_connect_socket, defer_control=_defer_control)
+
+        async def _open_speech_socket(speech_id):
+            """Adopt the spare or connect, once retired sockets are closed.
+
+            Returns None when a queued interrupt or shutdown preempts the wait
+            for those closes; it is then at the front of deferred_requests.
+            """
+            connect_started = time.perf_counter()
+            try:
+                adopted = await spare.take()
+            except asyncio.TimeoutError:
+                adopted = None
+            if adopted is not None:
+                new_ws = adopted[0]
+            else:
+                if not await spare.await_cleanup():
+                    return None
+                new_ws = await _connect_socket()
+            logger.info(
+                "[voice-chain] stage=tts_socket speech_id=%s host=%s preconnected=%s wait_ms=%d",
+                speech_id,
+                _XAI_TTS_HOST,
+                adopted is not None,
+                int((time.perf_counter() - connect_started) * 1000),
+            )
+            return new_ws
+
+        def _round_socket_finished() -> bool:
+            """Whether nothing is still expected on the socket ``ws`` holds.
+
+            True for the warmup socket (bound to no speech; the first speech
+            replaces it anyway) and for a round whose text.done went out,
+            whose end the core was already told about (audio_done), and that
+            has been quiet for FINISHED_ROUND_QUIET_SECONDS.
+            """
+            if current_speech_id is None:
+                return True
+            if not text_done_sent or not audio_done.emitted(current_speech_id):
+                return False
+            if last_audio_at is None:
+                return True
+            return asyncio.get_running_loop().time() - last_audio_at >= FINISHED_ROUND_QUIET_SECONDS
+
+        async def _retire_finished_socket() -> None:
+            """Close a finished round's socket so a spare can replace it.
+
+            The next speech would close it anyway before connecting; doing it
+            when the next reply starts lets the spare open without a second
+            connection. Closed in the background, tracked by the spare so the
+            next connect still waits for it.
+            """
+            nonlocal ws, receive_task
+            old_ws = ws
+            ws = None
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.debug(f"xAI TTS retired receive task cleanup failed: {e}")
+            receive_task = None
+            spare.close_tracked(old_ws)
 
         async def receive_messages(bound_speech_id):
             # xAI may send binary raw PCM or JSON-wrapped base64 audio.delta;
             # Documentation is unclear, so retain both paths. Prefer 'delta', the OpenAI Realtime standard,
             # with 'audio' fallback against future xAI naming changes.
+            nonlocal last_audio_at
             cancelled = False
             try:
                 async for message in ws:
                     if isinstance(message, bytes):
+                        last_audio_at = asyncio.get_running_loop().time()
                         try:
                             audio_array = np.frombuffer(message, dtype=np.int16)
                             audio_jitter.append(_resample_audio(audio_array, 24000, 48000, resampler))
@@ -146,6 +247,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         if not audio_b64:
                             logger.warning(f"xAI TTS audio.delta 无音频字段，event keys={list(event.keys())}")
                             continue
+                        last_audio_at = asyncio.get_running_loop().time()
                         try:
                             audio_bytes = base64.b64decode(audio_b64)
                             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
@@ -181,7 +283,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
         try:
             # close_timeout=0.5 bounds handshakes, preventing half-open connections from blocking main loops for seconds
             # during sid changes/interruption/finally cleanup and delaying later TTS.
-            ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+            ws = await _connect_socket()
             # Warmup connections carry no speech; the first real sid necessarily reconnects, so bind None.
             receive_task = asyncio.create_task(receive_messages(current_speech_id))
 
@@ -190,13 +292,26 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
 
             loop = asyncio.get_running_loop()
             while True:
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                if deferred_requests:
+                    sid, tts_text = deferred_requests.popleft()
+                else:
+                    try:
+                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    except Exception:
+                        break
 
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
+
+                if sid == TTS_PRECONNECT_SENTINEL:
+                    # A reply's LLM request just started; have its socket ready
+                    # before the first text. A finished round's socket (kept
+                    # until the next speech) is retired first so the spare is
+                    # never a second connection.
+                    if ws_may_hold_connection(ws) and _round_socket_finished():
+                        await _retire_finished_socket()
+                    spare.start(lambda: ws_may_hold_connection(ws), after_cleanup=True)
+                    continue
 
                 if sid == "__interrupt__":
                     audio_jitter.begin_interrupt()
@@ -223,6 +338,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         text_done_sent = False
                         pending_text.clear()
                         pending_text_sid = None
+                        deferred_requests.clear()
                         audio_jitter.reset()  # Interruption: discard buffered audio not yet released.
                         audio_jitter.end_interrupt()
                         audio_done.reset()
@@ -237,7 +353,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     # Give up on failure; this extra attempt protects short replies from transient network loss.
                     if ws is None and pending_text and pending_text_sid is not None:
                         try:
-                            ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+                            ws = await _open_speech_socket(pending_text_sid)
+                            if ws is None:
+                                raise RuntimeError("preempted by a queued interrupt/shutdown")
                             # Bind pending_text_sid; current_speech_id is assigned only on the next line.
                             receive_task = asyncio.create_task(receive_messages(pending_text_sid))
                             current_speech_id = pending_text_sid
@@ -270,7 +388,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                     except asyncio.CancelledError:
                                         pass
                                 try:
-                                    ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+                                    ws = await _open_speech_socket(current_speech_id)
+                                    if ws is None:
+                                        raise RuntimeError("preempted by a queued interrupt/shutdown")
                                     receive_task = asyncio.create_task(receive_messages(current_speech_id))
                                     # New receive_task: like last-chance reconnect, reset unflushed old-connection
                                     # audio before retry audio. Only previously live, appended paths can retain data;
@@ -315,7 +435,10 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                             pass
                         receive_task = None
                     try:
-                        ws = await websockets.connect(tts_url, additional_headers=headers, close_timeout=0.5)
+                        ws = await _open_speech_socket(sid)
+                        if ws is None:
+                            # A queued interrupt/shutdown owns this boundary.
+                            continue
                         # Bind sid now; commit current_speech_id only after connect succeeds.
                         receive_task = asyncio.create_task(receive_messages(sid))
                     except Exception as e:
@@ -397,6 +520,11 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
         finally:
+            try:
+                spare.discard()
+                await spare.drain(2.5)
+            except Exception as e:
+                logger.debug(f"关闭预建 TTS socket 失败: {e}")
             if receive_task and not receive_task.done():
                 receive_task.cancel()
                 try:
@@ -414,6 +542,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
     except Exception as e:
         logger.error(f"xAI Grok TTS Worker 启动失败: {type(e).__name__}: {e!r}", exc_info=True)
         response_queue.put(("__ready__", False))
+
+# Recognizes TTS_PRECONNECT_SENTINEL (see .._preconnect.SpareSocket).
+grok_streaming_tts_worker.supports_preconnect = True
 
 # Built-in xAI Grok voices eve/ara/leo/rex/sal also use CORE_API_KEY.
 # Without registration, nonempty voice_id makes core._has_custom_tts() return True,

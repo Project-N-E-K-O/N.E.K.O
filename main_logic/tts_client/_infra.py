@@ -91,6 +91,10 @@ class AudioDoneEmitter:
         """Clear dedup state for a new speech / reconnect / session restart."""
         self._emitted_speech_id = None
 
+    def emitted(self, speech_id) -> bool:
+        """Whether the sentinel already went out for ``speech_id``."""
+        return bool(speech_id) and speech_id == self._emitted_speech_id
+
     def emit(self, speech_id) -> None:
         """Enqueue the sentinel at most once for ``speech_id``."""
         if self._interrupted:
