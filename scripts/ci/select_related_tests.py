@@ -46,8 +46,9 @@ Selection rules (the "trans" strategy validated offline on 150 merged PRs):
   unit-test-shards.yml and are never selected here.
 * Global files force the full suite; a changed sub-directory conftest.py
   (or a test-tree helper it imports) selects every test under its directory.
-* docs/** and Markdown files stay out of the import graph; they select only
-  the tests that read them by name.
+* Markdown files (docs/ or elsewhere) are not Python, so they only select
+  the tests that read them by name; Python files under docs/ are modules
+  like any other.
 * A data file under tests/ also matches through its nearest specific
   directory name, for tests that glob a directory of samples.
 * Tests that scan the whole repository (layering, locale and template
@@ -114,13 +115,12 @@ SHARD_SHARE = 0.30
 MAX_SHARDS = 4
 MIN_LITERAL_LEN = 6
 VENDOR_ROOT = "deps"
-# Directory names too generic to stand for the data files in them.
-GENERIC_DIRS = frozenset(
-    {
-        "fixtures", "fixture", "data", "assets", "static", "resources", "testdata",
-        "files", "samples", "inputs", "outputs", "golden", "snapshots", "unit", "tests",
-    }
+# Directories holding test samples; a file below one may be globbed by directory.
+DATA_DIRS = frozenset(
+    {"fixtures", "fixture", "data", "testdata", "samples", "golden", "snapshots", "assets", "resources", "inputs", "outputs", "files"}
 )
+# Directory names too generic to stand for the files in them.
+GENERIC_DIRS = DATA_DIRS | {"static", "unit", "tests"}
 COMMON_NAME_COUNT = 2  # a Python file name shared by this many files needs its directories too
 MIN_FILE_SECONDS = 0.01  # a fully skipped file still costs its import
 # Base names too generic to identify a file on their own; they are matched
@@ -225,7 +225,7 @@ def _walk(root: Path) -> tuple[list[str], list[str], list[str]]:
         for name in sorted(filenames):
             if name.endswith(".py"):
                 files.append((Path(dirpath) / name).relative_to(root).as_posix())
-            elif name.endswith(SCRIPT_SUFFIXES) and here.startswith("tests/"):
+            elif name.endswith(SCRIPT_SUFFIXES) and (here == "tests" or here.startswith("tests/")):
                 scripts.append((Path(dirpath) / name).relative_to(root).as_posix())
     return files, dist_roots, scripts
 
@@ -821,9 +821,11 @@ def _literal_for(rel: str, common: frozenset[str] = frozenset()) -> tuple[str, .
     path = PurePosixPath(rel)
     if len(path.name) < MIN_LITERAL_LEN:
         return None
-    if (path.name in GENERIC_BASENAMES or path.name in common) and path.parent.name:
+    if path.name in GENERIC_BASENAMES or path.name in common:
+        if not path.parent.name:
+            return None  # a bare "README.md" at the root names nothing in particular
         # "templates/index.html" is often spelled ROOT / "templates" / "index.html",
-        # so the parts are matched as separate tokens next to each other.
+        # so the parts are matched as separate tokens.
         return (*path.parent.parts[-2:], path.name)
     return (path.name,)
 
@@ -839,13 +841,16 @@ def _mentioning(index: RepoIndex, literal: tuple[str, ...]) -> set[str]:
     ``"config" / "__init__.py"``, ``"config", "__init__.py"``): "config" and
     "__init__.py" anywhere in a big conftest name nothing. A data file is
     often read through a parameter (``["index.html"]`` then
-    ``ROOT / "templates" / name``), so for it both words anywhere are enough.
+    ``ROOT / "templates" / name``), so for it both words anywhere are enough,
+    unless the directory is itself a generic word ("tests/README.md": "tests"
+    is everywhere).
     """
     if index.test_tree_tokens is None:
         index.test_tree_tokens = {p: _tokens(text) for p, text in index.test_tree_text.items()}
     wanted = set(literal)
     found = {p for p, tokens in index.test_tree_tokens.items() if wanted <= tokens}
-    if len(literal) == 1 or not literal[-1].endswith(".py"):
+    generic_dir = any(part.lower() in GENERIC_DIRS or part == "docs" for part in literal[:-1])
+    if len(literal) == 1 or (not literal[-1].endswith(".py") and not generic_dir):
         return found
     # Quotes and a closing parenthesis may sit between the parts: (Path("pkg") / "core.py"),
     # and a Windows path may spell the separator as an escaped backslash.
@@ -865,8 +870,7 @@ def _data_dir_literal(rel: str) -> tuple[str, ...] | None:
     if not rel.startswith("tests/") or rel.endswith(".py"):
         return None
     parts = PurePosixPath(rel).parent.parts
-    data_dirs = {"fixtures", "fixture", "data", "testdata", "samples", "golden", "snapshots"}
-    if not any(part.lower() in data_dirs for part in parts):
+    if not any(part.lower() in DATA_DIRS for part in parts):
         return None
     for part in reversed(parts):
         if part.lower() in GENERIC_DIRS:

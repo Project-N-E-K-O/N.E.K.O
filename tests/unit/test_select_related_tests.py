@@ -79,6 +79,7 @@ FILES = {
     ),
     "layouts/index.html": "<html></html>\n",
     "tests/frontend/panel_flow.test.cjs": "test('x', () => {});\n",
+    "tests/root_level_check.mjs": "export {};\n",
     "static/widget-board.mjs": "export const board = 1;\n",
     "static/widget-core.mjs": "export const core = 1;\n",
     "static/sub-widget.mjs": "export const sub = 1;\n",
@@ -490,6 +491,10 @@ def test_node_scripts_run_by_a_python_wrapper_select_the_wrapper(index):
     assert "tests/unit/test_broad_glob.py" not in _selected(index, "static/widget-board.mjs")
 
 
+def test_scripts_directly_under_tests_are_indexed(index):
+    assert "tests/root_level_check.mjs" in index.script_tokens
+
+
 def test_deleting_a_globbed_script_selects_its_wrapper(repo):
     gone = "tests/frontend/test_widget_flow_gone.mjs"
     index = sel.build_index(repo, extra_scripts=[gone])
@@ -516,8 +521,12 @@ def test_docs_nobody_reads_select_nothing(index, changed):
 def test_doc_a_test_reads_selects_that_test(index):
     # Docs stay out of the import graph, but a contract test that reads one by name still runs.
     assert _selected(index, "docs/guide.md") == ["tests/unit/test_docs_reader.py"]
-    # README.md is too generic on its own: it counts only together with its directory.
+    # README.md is too generic on its own: it counts only together with its directory,
+    # and a root README.md names nothing in particular.
     assert _selected(index, "notes/README.md") == []
+    assert sel._literal_for("README.md") is None
+    # "tests" is everywhere, so tests/README.md needs the two words next to each other.
+    assert "tests/unit/test_docs_reader.py" not in _selected(index, "tests/README.md")
 
 
 def test_other_workflows_only_select_tests_that_read_them(index):
