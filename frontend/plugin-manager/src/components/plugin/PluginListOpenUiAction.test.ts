@@ -285,6 +285,11 @@ describe('permission marks', () => {
       [{ state: 'confirm', decision: null, upgraded: false }, true, false],
       [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 3 }, false, true],
       [{ state: 'confirm', decision: null, upgraded: false, blind_spots: 1 }, true, true],
+      [
+        { state: 'clear', decision: 'approved', upgraded: false, blind_spots: 0, analysis_incomplete: true },
+        false,
+        true,
+      ],
     ]
     for (const [consent, pending, partial] of consents) {
       const { container } = await mountEntry(component, { ...makePlugin(null), consent })

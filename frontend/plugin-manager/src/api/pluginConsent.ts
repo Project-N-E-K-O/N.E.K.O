@@ -58,6 +58,8 @@ export interface PluginConsentSummary {
   upgraded: boolean
   /** Blind spots of the cached analysis; older servers omit it. */
   blind_spots?: number
+  /** The analysis was partial or failed, so some code was not checked. */
+  analysis_incomplete?: boolean
 }
 export interface ConsentSnapshot {
   version: string

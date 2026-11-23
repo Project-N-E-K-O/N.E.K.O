@@ -33,7 +33,7 @@
             data-testid="plugin-permission-review"
           >{{ t('pluginConsent.pending') }}</el-tag>
           <el-tag
-            v-if="hasBlindSpots(plugin.consent)"
+            v-if="isPartlyUnconfirmed(plugin.consent)"
             size="small"
             type="info"
             effect="plain"
@@ -96,7 +96,7 @@ import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { hasNewerVersion } from '@/utils/version'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
-import { hasBlindSpots, needsPermissionReview } from '@/utils/pluginCapabilities'
+import { isPartlyUnconfirmed, needsPermissionReview } from '@/utils/pluginCapabilities'
 import type { PluginListAction, PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {

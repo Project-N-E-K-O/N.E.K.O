@@ -133,7 +133,10 @@ export function needsPermissionReview(consent: PluginConsentSummary | null | und
   return consent?.state === 'confirm'
 }
 
-/** The list's "partly unconfirmable" mark: the analysis has blind spots. */
-export function hasBlindSpots(consent: PluginConsentSummary | null | undefined): boolean {
-  return (consent?.blind_spots ?? 0) > 0
+/**
+ * The list's "partly unconfirmable" mark: the analysis has blind spots, or it
+ * was partial or failed and so did not check all of the code.
+ */
+export function isPartlyUnconfirmed(consent: PluginConsentSummary | null | undefined): boolean {
+  return (consent?.blind_spots ?? 0) > 0 || Boolean(consent?.analysis_incomplete)
 }

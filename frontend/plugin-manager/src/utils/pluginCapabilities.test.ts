@@ -9,7 +9,7 @@ import {
   blindSpots,
   capabilityMessageKey,
   consentSaveErrorKey,
-  hasBlindSpots,
+  isPartlyUnconfirmed,
   needsPermissionReview,
   usedPermissions,
   capabilityOrigin,
@@ -179,9 +179,12 @@ describe('list marks', () => {
     [{ state: 'confirm', decision: 'approved', upgraded: true }, true, false],
     [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 2 }, false, true],
     [{ state: 'confirm', decision: null, upgraded: false, blind_spots: 1 }, true, true],
-  ] as const)('%o -> pending %s, blind spots %s', (consent, pending, partial) => {
+    // A failed analysis reports no blind spots but checked none of the code.
+    [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 0, analysis_incomplete: true }, false, true],
+    [{ state: 'confirm', decision: null, upgraded: false, blind_spots: 0, analysis_incomplete: true }, true, true],
+  ] as const)('%o -> pending %s, partly unconfirmed %s', (consent, pending, partial) => {
     expect(needsPermissionReview(consent)).toBe(pending)
-    expect(hasBlindSpots(consent)).toBe(partial)
+    expect(isPartlyUnconfirmed(consent)).toBe(partial)
   })
 })
 

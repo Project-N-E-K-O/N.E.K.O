@@ -44,7 +44,7 @@ const en = {
   saveFailed: 'The decision could not be saved. Please retry.',
   unknown:
     'Its exact data use is not yet known. Plugin SDKs can read conversations and memory, and send content to N.E.K.O.',
-  noneFound: 'No issues found: the plugin uses no permissions, and no code was left unconfirmed by the analysis.',
+  noneFound: 'No issues found: the code scan found no permission use and no code it could not confirm.',
   retry: 'Analyze again',
   findings: {
     usedTitle: 'Permissions this plugin uses',
@@ -126,7 +126,7 @@ const zhCN = {
   loadFailed: '暂时无法加载能力信息。',
   saveFailed: '确认保存失败，请重试。',
   unknown: '具体数据使用情况暂不明确。插件可通过 SDK 读取对话、记忆，或向本体发送内容。',
-  noneFound: '未发现问题：插件没有用到任何权限，也没有静态分析无法确认的代码。',
+  noneFound: '未发现问题：代码扫描没有发现用到任何权限，也没有无法静态确认的代码。',
   retry: '重新分析',
   findings: {
     usedTitle: '插件用到了以下权限',
@@ -207,7 +207,7 @@ const zhTW = {
   loadFailed: '暫時無法載入能力資訊。',
   saveFailed: '確認儲存失敗，請重試。',
   unknown: '具體資料使用情況暫不明確。外掛可透過 SDK 讀取對話、記憶，或向本體發送內容。',
-  noneFound: '未發現問題：外掛沒有用到任何權限，也沒有靜態分析無法確認的程式碼。',
+  noneFound: '未發現問題：程式碼掃描沒有發現用到任何權限，也沒有無法靜態確認的程式碼。',
   retry: '重新分析',
   findings: {
     usedTitle: '外掛用到了以下權限',
@@ -289,7 +289,7 @@ const ja = {
   saveFailed: '確認を保存できませんでした。再試行してください。',
   unknown:
     '具体的なデータ利用はまだ不明です。SDK は会話や記憶の読み取り、本体へのコンテンツ送信に対応しています。',
-  noneFound: '問題は見つかりませんでした：このプラグインは権限を使用しておらず、静的解析で確認できないコードもありません。',
+  noneFound: '問題は見つかりませんでした：コードスキャンでは権限の使用も、静的に確認できないコードも見つかりませんでした。',
   retry: '再解析',
   findings: {
     usedTitle: 'このプラグインが使用する権限',
@@ -371,7 +371,7 @@ const ko = {
   saveFailed: '확인을 저장하지 못했습니다. 다시 시도하세요.',
   unknown:
     '정확한 데이터 사용 여부는 아직 알 수 없습니다. 플러그인 SDK는 대화와 메모리를 읽고 N.E.K.O에 콘텐츠를 보낼 수 있습니다.',
-  noneFound: '문제가 발견되지 않았습니다: 이 플러그인은 권한을 사용하지 않으며, 정적 분석으로 확인할 수 없는 코드도 없습니다.',
+  noneFound: '문제가 발견되지 않았습니다: 코드 스캔에서 권한 사용도, 정적으로 확인할 수 없는 코드도 발견되지 않았습니다.',
   retry: '다시 분석',
   findings: {
     usedTitle: '이 플러그인이 사용하는 권한',
@@ -453,7 +453,7 @@ const ru = {
   saveFailed: 'Не удалось сохранить решение. Повторите попытку.',
   unknown:
     'Точное использование данных пока неизвестно. SDK плагинов могут читать диалоги и память, а также отправлять содержимое в N.E.K.O.',
-  noneFound: 'Проблем не обнаружено: плагин не использует разрешений, и в нём нет кода, который статический анализ не смог проверить.',
+  noneFound: 'Проблем не обнаружено: сканирование кода не нашло ни использования разрешений, ни кода, который не удалось проверить статически.',
   retry: 'Проанализировать снова',
   findings: {
     usedTitle: 'Разрешения, которые использует плагин',
@@ -535,7 +535,7 @@ const es = {
   saveFailed: 'No se pudo guardar la decisión. Inténtalo de nuevo.',
   unknown:
     'Aún se desconoce su uso exacto de datos. Los SDK de plugins pueden leer conversaciones y memoria, y enviar contenido a N.E.K.O.',
-  noneFound: 'No se encontraron problemas: el plugin no usa ningún permiso y no hay código que el análisis estático no haya podido confirmar.',
+  noneFound: 'No se encontraron problemas: el análisis del código no encontró uso de permisos ni código que no se pudiera confirmar estáticamente.',
   retry: 'Analizar de nuevo',
   findings: {
     usedTitle: 'Permisos que usa este plugin',
@@ -617,7 +617,7 @@ const pt = {
   saveFailed: 'Não foi possível salvar a decisão. Tente novamente.',
   unknown:
     'O uso exato de dados ainda é desconhecido. Os SDKs de plugins podem ler conversas e memória e enviar conteúdo ao N.E.K.O.',
-  noneFound: 'Nenhum problema encontrado: o plugin não usa nenhuma permissão e não há código que a análise estática não tenha conseguido confirmar.',
+  noneFound: 'Nenhum problema encontrado: a análise do código não encontrou uso de permissões nem código que não pudesse ser confirmado estaticamente.',
   retry: 'Analisar novamente',
   findings: {
     usedTitle: 'Permissões que este plugin usa',
