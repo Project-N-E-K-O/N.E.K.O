@@ -180,7 +180,12 @@ def test_realtime_workers_guard_interrupt_close_windows():
         end = source.index("continue", start)
         block = source[start:end]
         assert block.index(".begin_interrupt()") < block.index("receive_task.cancel()"), provider
-        assert block.index("receive_task.cancel()") < block.index("ws.close"), provider
+        # The socket closes inline or through the preconnect spare's tracked
+        # close (Grok); either way only after the receiver is cancelled.
+        close_at = min(
+            i for i in (block.find("ws.close"), block.find("close_tracked(ws)")) if i >= 0
+        )
+        assert block.index("receive_task.cancel()") < close_at, provider
 
     elevenlabs = REALTIME_WORKERS["elevenlabs"].read_text(encoding="utf-8")
     interrupt_start = elevenlabs.index('if sid == "__interrupt__":')
