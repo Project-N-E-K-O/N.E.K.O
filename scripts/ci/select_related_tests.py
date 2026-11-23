@@ -86,6 +86,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from fnmatch import fnmatch
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -147,6 +148,8 @@ PRUNE_DIRS = frozenset({"node_modules", "__pycache__", "venv", "build", "dist", 
 _IMPORT_MODULE_RE = re.compile(r"import_module\(\s*['\"]([\w.]+)['\"]")
 _DOTTED_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
 _TOKEN_RE = re.compile(r"[\w.\-]+")
+_GLOB_RE = re.compile(r"""['"]([^'"\n]*\*[^'"\n]*)['"]""")
+SCRIPT_SUFFIXES = (".js", ".mjs", ".cjs")
 
 
 @dataclass
@@ -166,6 +169,10 @@ class RepoIndex:
     tests: dict[str, TestFile]  # candidate test files under tests/unit
     path_to_module: dict[str, str] = field(default_factory=dict)
     test_tree_tokens: dict[str, frozenset[str]] | None = None  # built lazily
+    # JavaScript test scripts under tests/: their file-name tokens, and the
+    # Python wrappers that run them
+    script_tokens: dict[str, frozenset[str]] = field(default_factory=dict)
+    script_runners: dict[str, set[str]] = field(default_factory=dict)
     # conftest path -> modules outside tests/ that run for every test in its scope
     conftest_autouse: dict[str, set[str]] = field(default_factory=dict)
     # module -> path, including modules the change deletes
@@ -198,14 +205,16 @@ def is_test_module(rel: str) -> bool:
     return base.endswith(".py") and (base.startswith("test_") or base.endswith("_test.py"))
 
 
-def _walk(root: Path) -> tuple[list[str], list[str]]:
-    """Python files, and vendored packages (under deps/, with their own pyproject.toml or setup.py).
+def _walk(root: Path) -> tuple[list[str], list[str], list[str]]:
+    """Python files, vendored packages, and JavaScript test scripts under tests/.
 
-    A vendored package such as deps/rapidocr_pillow is put on sys.path by the
-    code that uses it, so its modules are imported by names relative to it.
+    A vendored package (under deps/, with its own pyproject.toml or setup.py)
+    such as deps/rapidocr_pillow is put on sys.path by the code that uses it,
+    so its modules are imported by names relative to it.
     """
     files: list[str] = []
     dist_roots: list[str] = []
+    scripts: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
             d for d in dirnames if not d.startswith(".") and d not in PRUNE_DIRS and not d.endswith(".egg-info")
@@ -216,7 +225,9 @@ def _walk(root: Path) -> tuple[list[str], list[str]]:
         for name in sorted(filenames):
             if name.endswith(".py"):
                 files.append((Path(dirpath) / name).relative_to(root).as_posix())
-    return files, dist_roots
+            elif name.endswith(SCRIPT_SUFFIXES) and here.startswith("tests/"):
+                scripts.append((Path(dirpath) / name).relative_to(root).as_posix())
+    return files, dist_roots, scripts
 
 
 def _read(path: Path) -> str:
@@ -430,7 +441,7 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
     modules: dict[str, str] = {}
     trees: dict[str, ast.Module | None] = {}
     texts: dict[str, str] = {}
-    files, dist_roots = _walk(root)
+    files, dist_roots, scripts = _walk(root)
     for rel in files:
         mod = module_name(rel)
         if not mod:
@@ -513,6 +524,8 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
     conftest_autouse = _autouse_closures(conftests, known, deps, weak_deps)
 
     test_tree_text = {rel: text for rel, text in texts.items() if rel.startswith("tests/")}
+    script_tokens = {rel: _tokens(_read(root / rel)) for rel in scripts}
+    script_runners = _script_runners(test_tree_text, script_tokens)
     tests: dict[str, TestFile] = {}
     for rel, tree in trees.items():
         if not rel.startswith(TEST_ROOT + "/") or not is_test_module(rel):
@@ -529,7 +542,38 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
         path_to_module={rel: mod for mod, rel in modules.items()},
         conftest_autouse=conftest_autouse,
         known_paths=known,
+        script_tokens=script_tokens,
+        script_runners=script_runners,
     )
+
+
+def _script_runners(test_tree_text: dict[str, str], script_tokens: dict[str, frozenset[str]]) -> dict[str, set[str]]:
+    """Which Python test-tree files run each JavaScript test script.
+
+    A wrapper either names the script, or globs for it
+    (``(ROOT / 'tests/frontend').glob('test_watch_together*.mjs')``): a glob
+    pattern with a specific fixed part that matches the script's file name
+    counts when the wrapper also names the script's directory.
+    """
+    runners: dict[str, set[str]] = {rel: set() for rel in script_tokens}
+    if not script_tokens:
+        return runners
+    names = {rel: PurePosixPath(rel).name for rel in script_tokens}
+    for py, text in test_tree_text.items():
+        tokens = _tokens(text)
+        # Only globs with a specific fixed part ("test_watch_together*.mjs"); "*.mjs"
+        # next to the word "frontend" would claim every script in the directory.
+        globs = [
+            g
+            for g in (g.rsplit("/", 1)[-1] for g in _GLOB_RE.findall(text))
+            if len(re.sub(r"[*?\[\]]", "", g).rsplit(".", 1)[0]) >= MIN_LITERAL_LEN
+        ]
+        for rel, name in names.items():
+            if name in tokens:
+                runners[rel].add(py)
+            elif globs and PurePosixPath(rel).parent.name in tokens and any(fnmatch(name, g) for g in globs):
+                runners[rel].add(py)
+    return runners
 
 
 def _fixture_decorator(dec: ast.expr) -> tuple[bool, bool, str | None]:
@@ -894,6 +938,8 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
                 # (an exclusion list, say) does not make its conftest's tests depend on it.
                 scoped_literal_seeds |= hits
 
+    literal_seeds |= _script_wrappers(index, changed, common_names)
+
     # A file a conftest (or a helper it loads) reads by name matters to every
     # test in that conftest's directory, not only to the tests importing it.
     for hit in sorted(scoped_literal_seeds):
@@ -942,6 +988,31 @@ def shard_costs(index: RepoIndex, durations: dict[str, float]) -> tuple[dict[str
     rate = sum(known.values()) / known_tests
     costs = {p: max(known.get(p, t.weight * rate), MIN_FILE_SECONDS) for p, t in candidates.items()}
     return costs, "durations"
+
+
+def _script_wrappers(index: RepoIndex, changed: list[str], common_names: frozenset[str]) -> set[str]:
+    """Python wrappers running a JavaScript test script that is, or reaches, a changed file.
+
+    A script reaches a file it names (an ``import`` of ``../../static/x.mjs``),
+    and the files the scripts it names reach (a shared harness).
+    """
+    touched = {rel for rel in changed if rel in index.script_tokens}
+    for rel in changed:
+        literal = _literal_for(rel, common_names)
+        if literal:
+            wanted = set(literal)
+            touched |= {s for s, tokens in index.script_tokens.items() if wanted <= tokens}
+    frontier = set(touched)
+    while frontier:
+        names = {PurePosixPath(s).name for s in frontier}
+        frontier = {
+            s for s, tokens in index.script_tokens.items() if s not in touched and names & tokens
+        }
+        touched |= frontier
+    wrappers: set[str] = set()
+    for script in touched:
+        wrappers |= index.script_runners.get(script, set())
+    return wrappers
 
 
 def plan_shards(

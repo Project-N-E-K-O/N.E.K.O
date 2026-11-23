@@ -79,6 +79,20 @@ FILES = {
     ),
     "layouts/index.html": "<html></html>\n",
     "tests/frontend/panel_flow.test.cjs": "test('x', () => {});\n",
+    "static/widget-board.mjs": "export const board = 1;\n",
+    "static/widget-core.mjs": "export const core = 1;\n",
+    "tests/frontend/test_widget_flow_board.mjs": "import {board} from '../../static/widget-board.mjs';\n",
+    "tests/frontend/test_widget_flow_core.mjs": "import './widget_harness.mjs';\n",
+    "tests/frontend/widget_harness.mjs": "import {core} from '../../static/widget-core.mjs';\n",
+    "tests/unit/test_widget_frontend.py": (
+        "from pathlib import Path\n\n"
+        "SCRIPTS = sorted((Path('.') / 'tests/frontend').glob('test_widget_flow*.mjs'))\n\n"
+        "def test_scripts():\n    assert SCRIPTS is not None\n"
+    ),
+    "tests/unit/test_broad_glob.py": (
+        "from pathlib import Path\n\n"
+        "def test_all():\n    assert list(Path('tests/frontend').glob('*.mjs')) is not None\n"
+    ),
     "tests/unit/test_mentions_frontend.py": "def test_frontend():\n    assert 'tests/frontend'\n",
     "tests/unit/test_template_param.py": (
         "import pytest\nfrom pathlib import Path\n\n"
@@ -458,6 +472,17 @@ def test_only_vendored_packages_get_import_name_aliases(index):
     # plugin/plugins/kitx has a pyproject.toml but is imported as plugin.plugins.kitx:
     # "routes_table.main" in a test must not resolve to it.
     assert _selected(index, "plugin/plugins/kitx/routes_table.py") == []
+
+
+def test_node_scripts_run_by_a_python_wrapper_select_the_wrapper(index):
+    # The wrapper globs test_widget_flow*.mjs in tests/frontend; the script imports the module.
+    assert _selected(index, "static/widget-board.mjs") == ["tests/unit/test_widget_frontend.py"]
+    # Through a shared harness the script imports.
+    assert _selected(index, "static/widget-core.mjs") == ["tests/unit/test_widget_frontend.py"]
+    # A change to the script itself.
+    assert _selected(index, "tests/frontend/test_widget_flow_board.mjs") == ["tests/unit/test_widget_frontend.py"]
+    # "*.mjs" next to "tests/frontend" is too broad to claim a script.
+    assert "tests/unit/test_broad_glob.py" not in _selected(index, "static/widget-board.mjs")
 
 
 def test_shard_marked_files_are_left_to_the_shards(index):
