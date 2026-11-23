@@ -504,7 +504,10 @@ async def test_failed_local_upgrade_restarts_the_previous_plugin_under_its_own_s
 
 
 @pytest.mark.asyncio
-async def test_local_upgrade_rollback_after_a_failed_lock_save(environment, monkeypatch):
+@pytest.mark.parametrize("failing_writes", ["once", "always"])
+async def test_local_upgrade_rollback_after_a_failed_lock_save(
+    environment, monkeypatch, failing_writes,
+):
     """The lock file cannot be written while the new source is recorded and
     a later stage fails: the lock still names the previous package and its
     grants are back."""
@@ -521,7 +524,7 @@ async def test_local_upgrade_rollback_after_a_failed_lock_save(environment, monk
     def write_fails_once(lock_path, payload):
         nonlocal writes
         writes += 1
-        if writes == 1:
+        if writes == 1 or failing_writes == "always":
             raise OSError("disk full")
         real_write(lock_path, payload)
 
@@ -667,7 +670,7 @@ async def test_local_upgrade_rollback_when_the_previous_lock_row_is_unknown(
     only a source that was actually recorded makes the rollback incomplete."""
     env = environment
     _permission, package, plan = await _installed_with_grant(env)
-    monkeypatch.setattr(cli, "_lock_entry_for_plugin", lambda *_args: None)
+    monkeypatch.setattr(cli, "_lock_row_for_directory", lambda *_args: (None, False))
     if record_fails:
         def cannot_record(*_args, **_kwargs):
             raise OSError("lock file is busy")
@@ -879,6 +882,7 @@ async def test_failed_market_replacement_restarts_the_previous_plugin_under_its_
 
     async def rollback_install_source():
         await asyncio.to_thread(env.manager.restore_entry_for_rollback, entry)
+        return True
 
     with pytest.raises(replace.ReplacePluginError):
         await market_bridge._replace_market_plugin_transaction(
@@ -896,16 +900,17 @@ async def test_failed_market_replacement_restarts_the_previous_plugin_under_its_
 
 
 @pytest.mark.asyncio
-async def test_local_upgrade_reports_grants_it_could_not_drop(environment, monkeypatch):
+async def test_local_upgrade_rolls_back_when_it_can_neither_record_nor_drop(
+    environment, monkeypatch,
+):
+    """Without a recorded source and with the previous grants still stored,
+    the new code would start with them: the replacement rolls back instead,
+    and the new code never starts."""
     from plugin.server.application.plugins import permission_service
 
     env = environment
-    first_package = env.packages / "original.neko-plugin"
-    build_plugin(_source(env.root / "original"), first_package)
-    await env.service.install(package=str(first_package), install_source="imported")
-    package = env.packages / "replacement.neko-plugin"
-    build_plugin(_source(env.root / "replacement", version="2.0.0"), package)
-    plan = await env.service.plan_install(package=str(package))
+    permission, package, plan = await _installed_with_grant(env)
+    first_source = permission_service.current_source(PLUGIN_ID)
 
     def cannot_record(*_args, **_kwargs):
         raise OSError("lock file is busy")
@@ -913,17 +918,174 @@ async def test_local_upgrade_reports_grants_it_could_not_drop(environment, monke
     def cannot_forget(_plugin_id):
         raise OSError("store is busy")
 
+    started_versions: list[str] = []
+
+    async def running(_plugin_id):
+        return True
+
+    async def stop(_plugin_id):
+        return None
+
+    async def start(plugin_id):
+        started_versions.append((env.user / PLUGIN_ID / "plugin.toml").read_text(encoding="utf-8"))
+
     monkeypatch.setattr(cli, "_record_install_source_for_install_result", cannot_record)
     monkeypatch.setattr(permission_service, "forget_permissions", cannot_forget)
+    monkeypatch.setattr(replace, "_plugin_is_running", running)
+    monkeypatch.setattr(replace, "_stop_plugin", stop)
+    monkeypatch.setattr(replace, "_start_plugin", start)
 
-    result = await env.service.install(
-        package=str(package), install_source="imported", confirm_upgrade=True,
-        confirmation_token=plan["confirmation_token"],
-    )
+    with pytest.raises(ServerDomainError) as captured:
+        await env.service.install(
+            package=str(package), install_source="imported", confirm_upgrade=True,
+            confirmation_token=plan["confirmation_token"],
+        )
 
-    assert "permission grants of the previous package could not be cleared" in result[
-        "install_source_warning"
-    ]
+    assert captured.value.code == "PLUGIN_UPGRADE_ROLLED_BACK"
+    assert captured.value.details["stage"] == "install"
+    assert captured.value.details.get("rollback_status") == "completed"
+    assert len(started_versions) == 1 and 'version="1.0.0"' in started_versions[0]
+    assert permission_service.current_source(PLUGIN_ID) == first_source
+    record = permission_service.permission_record(PLUGIN_ID)
+    assert record["permissions"][permission]["state"] == "granted"
+
+
+@pytest.mark.asyncio
+async def test_rollback_keeps_the_new_source_while_the_new_code_stays_on_disk(
+    environment, monkeypatch,
+):
+    """When the rollback cannot take the new code off disk, the lock keeps
+    naming the new package, so the restart does not hand that code the
+    previous package's grants."""
+    from plugin.server.application.plugins import permission_service
+
+    env = environment
+    permission, package, plan = await _installed_with_grant(env)
+    first_source = permission_service.current_source(PLUGIN_ID)
+    target_dir = env.user / PLUGIN_ID
+    seen_at_restart: list[tuple[object, dict]] = []
+    starts = 0
+
+    async def running(_plugin_id):
+        return True
+
+    async def stop(_plugin_id):
+        return None
+
+    async def start(plugin_id):
+        nonlocal starts
+        starts += 1
+        if starts == 1:
+            raise RuntimeError("new package does not start")
+        permission_service.reconcile_permission_source(plugin_id)
+        seen_at_restart.append(
+            (permission_service.current_source(plugin_id), permission_service.permission_record(plugin_id))
+        )
+
+    real_remove = replace.remove_directory
+
+    async def cannot_remove_code(path):
+        if Path(path) == target_dir:
+            raise OSError("directory in use")
+        await real_remove(path)
+
+    monkeypatch.setattr(replace, "_plugin_is_running", running)
+    monkeypatch.setattr(replace, "_stop_plugin", stop)
+    monkeypatch.setattr(replace, "_start_plugin", start)
+    monkeypatch.setattr(replace, "remove_directory", cannot_remove_code)
+
+    with pytest.raises(ServerDomainError) as captured:
+        await env.service.install(
+            package=str(package), install_source="imported", confirm_upgrade=True,
+            confirmation_token=plan["confirmation_token"],
+        )
+
+    assert captured.value.details.get("rollback_status") == "incomplete"
+    assert 'version="2.0.0"' in (target_dir / "plugin.toml").read_text(encoding="utf-8")
+    [(source_at_restart, record_at_restart)] = seen_at_restart
+    assert source_at_restart != first_source
+    assert permission not in record_at_restart.get("permissions", {})
+
+
+@pytest.mark.asyncio
+async def test_rollback_does_not_restart_the_previous_plugin_without_its_source(
+    environment, monkeypatch,
+):
+    """When the previous lock entry cannot be written back, the previous
+    plugin is not started under the new package's source; the rollback is
+    reported incomplete."""
+    env = environment
+    _permission, package, plan = await _installed_with_grant(env)
+    starts = 0
+
+    async def running(_plugin_id):
+        return True
+
+    async def stop(_plugin_id):
+        return None
+
+    async def start(_plugin_id):
+        nonlocal starts
+        starts += 1
+        if starts == 1:
+            raise RuntimeError("new package does not start")
+
+    def cannot_restore(_entry):
+        raise OSError("lock file is busy")
+
+    monkeypatch.setattr(replace, "_plugin_is_running", running)
+    monkeypatch.setattr(replace, "_stop_plugin", stop)
+    monkeypatch.setattr(replace, "_start_plugin", start)
+    monkeypatch.setattr(env.manager, "restore_entry_for_rollback", cannot_restore)
+
+    with pytest.raises(ServerDomainError) as captured:
+        await env.service.install(
+            package=str(package), install_source="imported", confirm_upgrade=True,
+            confirmation_token=plan["confirmation_token"],
+        )
+
+    assert starts == 1
+    assert captured.value.details.get("rollback_status") == "incomplete"
+    assert captured.value.details.get("source_rollback") == "incomplete"
+    assert 'version="1.0.0"' in (env.user / PLUGIN_ID / "plugin.toml").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_manifestless_replacement_rollback_soft_deletes_the_recorded_row(
+    environment, monkeypatch,
+):
+    """A code-less state directory has no lock row; the row a failed
+    replacement recorded is soft-deleted again, which reads as no row."""
+    from plugin.server.application.plugins import permission_service
+
+    env = environment
+    state_file = env.user / PLUGIN_ID / "data" / "user.db"
+    state_file.parent.mkdir(parents=True)
+    state_file.write_bytes(b"state")
+    package = env.packages / "replacement.neko-plugin"
+    build_plugin(_source(env.root / "replacement"), package)
+    plan = await env.service.plan_install(package=str(package))
+    assert plan["reason"] == "manifestless_state"
+    assert env.manager.entry_for_directory(env.user / PLUGIN_ID, include_removed=True) is None
+
+    def invalid_identity(_layout):
+        raise RuntimeError("installed identity does not match")
+
+    monkeypatch.setattr(replace, "_validate_installed_identity", invalid_identity)
+
+    with pytest.raises(ServerDomainError) as captured:
+        await env.service.install(
+            package=str(package), install_source="imported", confirm_upgrade=True,
+            confirmation_token=plan["confirmation_token"],
+        )
+
+    assert captured.value.details.get("rollback_status") == "completed"
+    assert "source_rollback" not in captured.value.details
+    assert not (env.user / PLUGIN_ID / "plugin.toml").exists()
+    assert state_file.read_bytes() == b"state"
+    assert env.manager.entry_for_directory(env.user / PLUGIN_ID) is None
+    assert env.manager.entry_for_directory(env.user / PLUGIN_ID, include_removed=True).removed
+    assert permission_service.current_source(PLUGIN_ID) is None
 
 
 @pytest.mark.asyncio

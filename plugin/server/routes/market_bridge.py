@@ -4586,7 +4586,7 @@ async def _replace_market_plugin_transaction(
     validate_channel_specific: Callable[[], Awaitable[None]] | None = None,
     on_rollback_start: Callable[[], None] | None = None,
     manual_snapshot_sha256: str = "",
-    rollback_install_source: Callable[[], Awaitable[None]] | None = None,
+    rollback_install_source: Callable[[], Awaitable[bool]] | None = None,
 ) -> ReplacePluginResult:
     """Revalidate and replace under the shared plugin filesystem lock."""
     reload_install_source = getattr(manager, "load", None)
@@ -4878,11 +4878,11 @@ async def _do_upgrade(
                 _analyze_after_commit=False,
             )
 
-        async def rollback_install_source() -> None:
+        async def rollback_install_source() -> bool:
             nonlocal source_restored
             restore_source = getattr(mgr, "restore_entry_for_rollback", None)
             if not source_write_attempted or not callable(restore_source):
-                return
+                return source_restored
             try:
                 await asyncio.to_thread(restore_source, entry)
             except Exception as restore_exc:
@@ -4892,6 +4892,7 @@ async def _do_upgrade(
                     installed_plugin_id,
                     restore_exc,
                 )
+            return source_restored
 
         async def validate_channel_specific() -> None:
             if continues_builtin_override:

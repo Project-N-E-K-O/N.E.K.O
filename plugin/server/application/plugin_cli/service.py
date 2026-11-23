@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from dataclasses import asdict, dataclass, replace
 import hashlib
 import secrets
@@ -600,6 +601,16 @@ class PluginCliService:
         # replacement that records no source keeps the current one, so it
         # needs no binding.
         current_entry: LockEntry | None = None
+        # The directory's exact lock row (also a soft-deleted one, or one
+        # naming another plugin id), put back if the replacement records a
+        # source and then rolls back; ``previous_lock_row_known`` tells "no
+        # row" apart from "could not be read".
+        previous_lock_row: LockEntry | None = None
+        previous_lock_row_known = False
+        if install_source is not None:
+            previous_lock_row, previous_lock_row_known = await asyncio.to_thread(
+                _lock_row_for_directory, install_source_manager, target_dir
+            )
         if install_source is not None or plan.reason == "manual_takeover":
             current_entry = await asyncio.to_thread(
                 _lock_entry_for_plugin,
@@ -764,14 +775,23 @@ class PluginCliService:
                     if not await asyncio.to_thread(
                         forget_plugin_grants, (plan.plugin_id,)
                     ):
-                        warning += "; permission grants of the previous package could not be cleared"
+                        # The new code must not start with them: fail this
+                        # stage so the replacement rolls back.
+                        logger.error(
+                            "replacement stopped: previous grants could not be dropped plugin_id={}",
+                            plan.plugin_id,
+                        )
+                        raise RuntimeError(
+                            "permission grants of the previous package could not be cleared"
+                        )
                 requested_source_warning = warning
             return install_result
 
-        async def restore_source_before_restart() -> None:
-            # Runs on rollback, before the previous plugin restarts, so it
-            # starts under its own source. Restoring an entry that was not
-            # changed is a no-op, so any attempted write is undone.
+        async def restore_source_before_restart() -> bool:
+            # Runs on rollback once the previous code is back, before the
+            # previous plugin restarts, so it starts under its own source.
+            # Restoring an entry that was not changed is a no-op, so any
+            # attempted write is undone. Returns whether the source is back.
             nonlocal source_restored
             if manual_entry is not None and source_write_attempted:
                 try:
@@ -788,17 +808,26 @@ class PluginCliService:
                         type(restore_exc).__name__,
                     )
             if not requested_source_attempted:
-                return
+                return source_restored
             try:
                 assert install_source_manager is not None
-                if current_entry is not None:
+                if previous_lock_row is not None:
                     await asyncio.to_thread(
                         install_source_manager.restore_entry_for_rollback,
-                        current_entry,
+                        previous_lock_row,
+                    )
+                elif previous_lock_row_known:
+                    # The directory had no row (manifest-less state): the
+                    # recorded one is soft-deleted, which reads as no row.
+                    await asyncio.to_thread(
+                        functools.partial(
+                            install_source_manager.mark_removed,
+                            directory_path=target_dir,
+                            reason="replace_rollback",
+                        )
                     )
                 elif requested_source_written:
-                    # No previous entry could be read (a replacement of a
-                    # directory without one is not planned), so a recorded
+                    # The previous row could not be read, so a recorded
                     # source cannot be undone.
                     source_restored = False
             except Exception as restore_exc:
@@ -813,6 +842,7 @@ class PluginCliService:
                     "requested install source not restored after rollback plugin_id={}",
                     plan.plugin_id,
                 )
+            return source_restored
 
         try:
             result = await replacement_transaction.replace_plugin(
@@ -2827,6 +2857,23 @@ class PluginCliService:
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )
+
+
+def _lock_row_for_directory(
+    manager: InstallSourceManager | None, target_dir: Path
+) -> tuple[LockEntry | None, bool]:
+    """The lock row of ``target_dir`` (soft-deleted rows included) and
+    whether it could be read; ``(None, False)`` without a usable, trusted
+    lock."""
+    if manager is None or getattr(manager, "is_degraded", False):
+        return None, False
+    finder = getattr(manager, "entry_for_directory", None)
+    if not callable(finder):
+        return None, False
+    try:
+        return finder(target_dir, include_removed=True), True
+    except (InstallSourceError, ValueError):
+        return None, False
 
 
 def _lock_entry_for_plugin(

@@ -362,7 +362,9 @@ async def replace_plugin(
     preserve_targets: tuple[Path, ...] = (),
     initialize_runtime_config: bool = True,
     install_changed_permissions: Callable[[], bool] | None = None,
-    restore_source_before_restart: Callable[[], Awaitable[None]] | None = None,
+    # Rollback only: puts the previous install source back and returns
+    # whether it is back (anything falsy counts as not restored).
+    restore_source_before_restart: Callable[[], Awaitable[bool]] | None = None,
     validate_backup: Callable[[Path], Awaitable[None]] | None = None,
     validate_channel_specific: Callable[[], Awaitable[None]] | None = None,
     on_rollback_start: Callable[[], None] | None = None,
@@ -501,17 +503,25 @@ async def replace_plugin(
             )
         # The source and the grants go back before the old plugin restarts:
         # its start reconciles the grants with the recorded source and hands
-        # them to the plugin, so both must already be the old package's.
+        # them to the plugin, so both must already be the old package's. The
+        # source goes back only with the old code: while the new code stays
+        # on disk the lock keeps naming it, so its start drops the grants.
+        source_restored = True
         if restore_source_before_restart is not None:
-            try:
-                await restore_source_before_restart()
-            except Exception as source_exc:
+            if code_restored:
+                try:
+                    source_restored = bool(await restore_source_before_restart())
+                except Exception as source_exc:
+                    source_restored = False
+                    logger.error(
+                        "plugin rollback source restore failed plugin_id={} err_type={}",
+                        plugin_id,
+                        type(source_exc).__name__,
+                    )
+            else:
+                source_restored = False
+            if not source_restored:
                 restored = False
-                logger.error(
-                    "plugin rollback source restore failed plugin_id={} err_type={}",
-                    plugin_id,
-                    type(source_exc).__name__,
-                )
         # Grants change only through a plugin start (which reconciles them)
         # or through ``install_new`` when the caller reports that it dropped
         # them; without either, a missing snapshot does not make this
@@ -528,7 +538,16 @@ async def replace_plugin(
             )
         ):
             restored = False
-        if was_running:
+        # A failed source restore leaves the lock naming the new package; the
+        # old code is not started under it (it stays stopped). A missing
+        # code directory keeps the new package's source and restarts as
+        # before.
+        if was_running and code_restored and not source_restored:
+            logger.error(
+                "plugin rollback restart skipped: previous source not restored plugin_id={}",
+                plugin_id,
+            )
+        elif was_running:
             try:
                 await _start_plugin(plugin_id)
             except Exception as restart_exc:

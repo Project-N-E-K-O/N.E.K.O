@@ -1455,20 +1455,20 @@ class InstallSourceManager:
     # Write-path helpers (tasks 2.4 / 2.5)
     # ------------------------------------------------------------------
 
-    def _publish(self, old_lock: LockFile, new_lock: LockFile) -> None:
-        """Make ``new_lock`` current and persist it; keep ``old_lock`` on failure.
+    def _publish(self, new_lock: LockFile) -> None:
+        """Persist ``new_lock``, then make it current.
 
-        Callers hold ``self._lock``. Readers must never see an entry that
-        was not written to disk, so a failed save puts the previous
-        snapshot back before the error propagates.
+        Callers hold ``self._lock``. ``new_lock`` is written first, so
+        readers never see an entry that was not written to disk, and a
+        failed write leaves the current snapshot as it was. A degraded
+        manager writes nothing (see ``save``) and still publishes.
         """
 
+        if self._read_only:
+            logger.debug("InstallSourceManager: save skipped (degraded)")
+        else:
+            _atomic_write(self.lock_path, _serialize_lock(new_lock))
         self._current = new_lock
-        try:
-            self.save()
-        except BaseException:
-            self._current = old_lock
-            raise
 
     @staticmethod
     def _find_entry(
@@ -1665,7 +1665,7 @@ class InstallSourceManager:
             new_lock = self._replace_entry(
                 old_lock, new_entry, updated_at=now
             )
-            self._publish(old_lock, new_lock)
+            self._publish(new_lock)
 
     # ------------------------------------------------------------------
     # Write path: record_market (design §8.2 / task 2.5)
@@ -1843,7 +1843,7 @@ class InstallSourceManager:
             new_lock = self._replace_entry(
                 old_lock, new_entry, updated_at=now
             )
-            self._publish(old_lock, new_lock)
+            self._publish(new_lock)
 
     # ------------------------------------------------------------------
     # Write path: record_market_install / record_market_upgrade (design §3.2)
@@ -2140,11 +2140,16 @@ class InstallSourceManager:
         Market upgrade writes the replacement entry before lifecycle restart.
         If that restart fails, filesystem rollback must restore this lock row
         as part of the same transaction. Replacing only the matching primary
-        key preserves unrelated install-source updates.
+        key preserves unrelated install-source updates. When the current
+        row already equals ``entry`` nothing is written.
         """
 
         with self._lock:
             old_lock = self._current
+            if self._find_entry(old_lock, entry.root_id, entry.directory_name) == entry:
+                # Never changed (e.g. the replacement's own write failed):
+                # nothing to write back.
+                return
             now = self._now_iso()
             try:
                 self._current = self._replace_entry(old_lock, entry, updated_at=now)
@@ -2352,7 +2357,7 @@ class InstallSourceManager:
                 updated_at=now,
             )
             new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
-            self._publish(old_lock, new_lock)
+            self._publish(new_lock)
 
     # ------------------------------------------------------------------
     # Read path: list_entries / to_api_view (task 2.6 / design §11.3 / §12.3)
