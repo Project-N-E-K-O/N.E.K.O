@@ -57,6 +57,16 @@ def _one_after_the_other(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("config.nekopower_settings.TASK_AGENT_REVIEW_ENABLED", False)
 
 
+@pytest.fixture(autouse=True)
+def _leaders_in_git_repositories(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A project in a git repository gets a leader with its first commission here (``_in_git``).
+
+    Off as shipped (``test_a_project_in_a_git_repository_has_no_leader_as_shipped``): switched on
+    for this file, where it is the shortest way to a project with a leader.
+    """
+    monkeypatch.setattr(settings, "LEADER_IN_GIT_REPOSITORIES", True)
+
+
 @pytest.fixture
 async def hosts() -> Any:
     made: list[Any] = []
@@ -1893,3 +1903,38 @@ async def test_a_leader_starts_no_task_agent_that_could_change_files(hosts, tmp_
     release.set()
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "header fixed"
+
+
+async def test_a_project_in_a_git_repository_has_no_leader_as_shipped(hosts, tmp_path, monkeypatch):
+    import importlib
+
+    # As the settings file has it, not as this file's fixture sets it.
+    shipped = importlib.util.find_spec("config.nekopower_settings").origin
+    assert "\nLEADER_IN_GIT_REPOSITORIES = False\n" in Path(shipped).read_text(encoding="utf-8")
+    monkeypatch.setattr(settings, "LEADER_IN_GIT_REPOSITORIES", False)
+    scripts = {"the header": ScriptedLLM([_report("header fixed")]), "the footer": ScriptedLLM([_report("footer fixed")])}
+    specs: dict[str, Any] = {}
+    host = _host(hosts, tmp_path, _recording(scripts_by_commission(scripts), specs))
+    workdir = await _project(host, "Shop site", tmp_path)
+    looked: list[str] = []
+
+    async def probe(directory: str) -> bool:
+        looked.append(directory)
+        return True
+
+    host.task_agents.families._probe = probe
+
+    first = await wait_status(host, (await _dispatch(host, "fix the header of the shop site")).commission_id, "done")
+    await _let_go(host)
+    second = await wait_status(host, (await _dispatch(host, "fix the footer of the shop site")).commission_id, "done")
+
+    # A member that works, in the project's directory, for both: no leader, nothing handed over, and git not asked.
+    member = await host.ledger.get_session(first.session_id)
+    assert (member.kind, member.preset, member.workdir) == ("line", "general", str(workdir))
+    assert second.session_id == first.session_id and (first.handed_by, second.handed_by) == (None, None)
+    assert await host.ledger.lead_session("Lan", "Shop site") is None
+    assert not set(LEADER_TOOLS) & set(specs[member.id].disabled_tools)
+    assert looked == []
+    assert await _events(host, first.id, "leader_derived") == []
+    # The user asking for one still makes one.
+    assert (await host.derive_leader("Shop site", "Lan"))["made"] is True

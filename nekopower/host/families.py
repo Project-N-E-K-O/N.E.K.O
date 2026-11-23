@@ -24,10 +24,11 @@ tell, and then writes down what follows:
 * loose task agents that did the same job before become a project (a
   family): a project is made with a directory of its own, and they are its
   members from then on, each where it worked;
-* a project gets a leader: when it is in a git repository, when a third
-  member would be opened, when the member its work goes to has too much
-  waiting for it,
-  or when the user asks for one. From then on the project's commissions
+* a project gets a leader: when a third member would be opened, when the
+  member its work goes to has too much waiting for it, or when the user
+  asks for one (and, where the settings say so, with its first commission
+  when it is in a git repository:
+  ``LEADER_IN_GIT_REPOSITORIES``, off as shipped). From then on the project's commissions
   come to the leader, which hands them out and does none of the work.
 
 Every decision is put on record with the commission (``orchestrated``):
@@ -241,11 +242,13 @@ class Families:
                 if verdict is None:
                     verdict = await self._ask(commission, standing, matches, bars)
         if (
-            verdict.project
+            settings.LEADER_IN_GIT_REPOSITORIES
+            and verdict.project
             and verdict.action in (orch.CONTINUE, orch.SUMMON_IN_PROJECT)
             and await self.in_git(getattr(known.get(verdict.project), "workdir", None))
         ):
-            # A project in a git repository has a leader from its first commission on.
+            # Where the settings say so, a project in a git repository has a leader from its
+            # first commission on. (Not looked at otherwise: no git is run.)
             verdict = replace(verdict, action=orch.TO_LEADER, agent=None, preset=None, reason=LEADER_GIT)
         verdict.seconds = round(time.perf_counter() - started, 4)
         return verdict

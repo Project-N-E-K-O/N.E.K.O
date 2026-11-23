@@ -249,13 +249,21 @@ this share of that one's score. They become members of the project with it."""
 LEADER_AT_MEMBERS = 3
 """A project gets a leader when this many task agents would be its members,
 those that take no more work counted: the third is the leader's to start.
-The backstop; a project in a git repository has a leader from its first
-commission, and one whose member has too much waiting gets one sooner
+The backstop; one whose member has too much waiting gets one sooner
 (``LEADER_WHEN_UNDER_WAY``)."""
+
+LEADER_IN_GIT_REPOSITORIES = False
+"""Whether a project whose directory is in a git repository gets a leader
+with its first commission. Off: as long as one task agent writes in a
+project at a time, a leader there only adds its own requests to every
+commission (two more, some 17,000 to 19,000 tokens sent and ten to twenty
+seconds, measured on the free tier), so a project gets one when there is
+work to hand out: a third member, a member with too much waiting, or the
+user asking."""
 
 LEADER_WHEN_UNDER_WAY = 3
 """A project without a leader gets one when a new commission would be this
-many under way in its one member or more: the one it is at, and those that
+many under way in the member it would go to, or more: the one it is at, and those that
 wait for it (``families.family_is_busy``)."""
 
 LEADER_GIT_PROBE_SECONDS = 300.0
