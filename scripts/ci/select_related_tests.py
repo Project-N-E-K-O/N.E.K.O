@@ -180,15 +180,26 @@ def is_test_module(rel: str) -> bool:
     return base.endswith(".py") and (base.startswith("test_") or base.endswith("_test.py"))
 
 
-def _iter_python_files(root: Path):
+def _walk(root: Path) -> tuple[list[str], list[str]]:
+    """Python files, and directories below the root that are packaged on their own.
+
+    A directory with its own pyproject.toml or setup.py (the vendored
+    deps/rapidocr_pillow) is put on sys.path by the code that uses it, so its
+    modules are imported by names relative to that directory.
+    """
+    files: list[str] = []
+    dist_roots: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(
             d for d in dirnames if not d.startswith(".") and d not in PRUNE_DIRS and not d.endswith(".egg-info")
         )
+        here = Path(dirpath).relative_to(root).as_posix()
+        if here != "." and ("pyproject.toml" in filenames or "setup.py" in filenames):
+            dist_roots.append(here)
         for name in sorted(filenames):
             if name.endswith(".py"):
-                full = Path(dirpath) / name
-                yield full.relative_to(root).as_posix()
+                files.append((Path(dirpath) / name).relative_to(root).as_posix())
+    return files, dist_roots
 
 
 def _read(path: Path) -> str:
@@ -340,8 +351,15 @@ class _Resolver:
     but not when some unrelated module the facade also imports changes.
     """
 
-    def __init__(self, known: dict[str, str], packages: set[str], exports: dict[str, dict[str, str]]):
+    def __init__(
+        self,
+        known: dict[str, str],
+        packages: set[str],
+        exports: dict[str, dict[str, str]],
+        aliases: dict[str, str] | None = None,
+    ):
         self.known = known
+        self.aliases = aliases or {}
         self.packages = packages
         self.exports = exports
 
@@ -350,6 +368,7 @@ class _Resolver:
         if hit is None:
             return set(), set()
         mod, used = hit
+        mod = self.aliases.get(mod, mod)
         parts = name.split(".")
         weak = _parents(mod, self.known)
         for _ in range(8):  # follow re-exports through nested facades
@@ -393,7 +412,8 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
     modules: dict[str, str] = {}
     trees: dict[str, ast.Module | None] = {}
     texts: dict[str, str] = {}
-    for rel in _iter_python_files(root):
+    files, dist_roots = _walk(root)
+    for rel in files:
         mod = module_name(rel)
         if not mod:
             continue
@@ -408,9 +428,21 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
     known = dict(modules)
     for mod, rel in (extra_modules or {}).items():
         known.setdefault(mod, rel)
+    # Modules of a separately packaged directory also answer to their import
+    # name ("rapidocr_onnxruntime._pillow_cv" for
+    # deps/rapidocr_pillow/rapidocr_onnxruntime/_pillow_cv.py); real modules win.
+    aliases: dict[str, str] = {}
+    for dist_root in dist_roots:
+        prefix = dist_root + "/"
+        for mod, rel in list(known.items()):
+            if rel.startswith(prefix):
+                alias = module_name(rel[len(prefix):])
+                if alias and alias not in known:
+                    aliases[alias] = mod
+    resolvable = {**{a: known[m] for a, m in aliases.items()}, **known}
     packages = {mod for mod, rel in modules.items() if rel.endswith("/__init__.py")}
-    exports = {mod: _package_exports(modules[mod], trees.get(modules[mod]), known) for mod in packages}
-    resolver = _Resolver(known, packages, exports)
+    exports = {mod: _package_exports(modules[mod], trees.get(modules[mod]), resolvable) for mod in packages}
+    resolver = _Resolver(resolvable, packages, exports, aliases)
 
     deps: dict[str, set[str]] = {}
     weak_deps: dict[str, set[str]] = {}

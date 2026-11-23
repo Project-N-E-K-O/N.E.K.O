@@ -73,6 +73,13 @@ FILES = {
     "tests/fixtures/policy.json": "{}\n",
     "tests/fixtures/test_payload.py": "PAYLOAD = 1\n",
     "pages/index.html": "<html></html>\n",
+    "vendor/libx/pyproject.toml": "[project]\nname = 'libx'\n",
+    "vendor/libx/libx_pkg/__init__.py": "",
+    "vendor/libx/libx_pkg/geometry_ops.py": "VALUE = 14\n",
+    "tests/unit/test_vendored.py": (
+        "import sys\n\ndef test_vendored():\n    sys.path.insert(0, 'vendor/libx')\n"
+        "    from libx_pkg.geometry_ops import VALUE\n    assert VALUE\n"
+    ),
     "app/base_service.py": "VALUE = 7\n",
     "app/sub_service.py": "VALUE = 8\n",
     "app/engine.py": "VALUE = 9\n",
@@ -395,6 +402,11 @@ def test_shared_file_names_need_their_directories(index):
     # "tests/conftest.py" in a comment is not plugin/tests/conftest.py.
     assert sel._literal_for("plugin/tests/conftest.py") == ("plugin", "tests", "conftest.py")
     assert _selected(index, "plugin/tests/conftest.py") == []
+
+
+def test_separately_packaged_directory_resolves_by_its_import_name(index):
+    # vendor/libx has its own pyproject.toml; the test puts it on sys.path and imports libx_pkg.
+    assert _selected(index, "vendor/libx/libx_pkg/geometry_ops.py") == ["tests/unit/test_vendored.py"]
 
 
 def test_shard_marked_files_are_left_to_the_shards(index):
