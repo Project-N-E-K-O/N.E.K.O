@@ -476,7 +476,7 @@ const messages = {
   },
   roles: {
     title: 'Models by kind of familiar',
-    hint: 'Which model the familiars of each kind are sent to. The slots on offer are those of the Model API page that can call tools.',
+    hint: 'Which model the familiars of each kind are sent to. The slots on offer are those of the Plugin API page that can call tools.',
     preset: 'Kind',
     setting: 'Sent to',
     inEffect: 'A new one would use',
@@ -489,7 +489,7 @@ const messages = {
     noModel: 'no model',
     slotEmpty: 'no model filled in',
     goneSlot: 'A slot that is not there any more',
-    slotsUnreadable: 'The slots of the Model API page cannot be read ({reason}). Only the default and "whoever starts it" can be chosen.',
+    slotsUnreadable: 'The slots of the Plugin API page cannot be read ({reason}). Only the default and "whoever starts it" can be chosen.',
     fellBack: 'fell back',
     fellBackWhy: 'Its setting cannot be used, so the default is: {reason}',
     fallbacks: {

@@ -22,8 +22,12 @@ const CENTRE: Spot = { x: 0.5, y: 0.52 }
 const REACH_X = 0.4
 const REACH_Y = 0.34
 // How far one that another started stands from it: a familiar is drawn about a quarter of a territory wide.
-const CHILD_X = 0.27
-const CHILD_Y = 0.3
+const CHILD_X = 0.2
+const CHILD_Y = 0.26
+// How far from the middle the territory's own stand: further than those the one in the middle
+// started, so that each of those is nearer to its starter than to anyone else.
+const RING_X = 0.32
+const RING_Y = 0.27
 
 /** Whether a spot lies within the oval of a territory. */
 export function inTerritory(spot: Spot): boolean {
@@ -69,7 +73,7 @@ export function defaultSpots(members: Stander[]): Record<string, Spot> {
     const lap = Math.floor(index / 8)
     const onLap = Math.min(8, ring.length - lap * 8)
     const grow = 1 + lap * 0.45
-    const [spot] = around(CENTRE, onLap, 0.26 * grow, 0.22 * grow, Math.PI + lap * 0.4).slice(index % 8)
+    const [spot] = around(CENTRE, onLap, RING_X * grow, RING_Y * grow, Math.PI + lap * 0.4).slice(index % 8)
     spots[member.id] = intoTerritory(spot)
   })
   // Those another one started, beside it: breadth first, so each finds its starter placed.
@@ -87,16 +91,18 @@ export function defaultSpots(members: Stander[]): Record<string, Spot> {
       children.forEach((child, index) => {
         let angle: number
         if (!atMiddle) {
-          // Fanned out behind one that stands off the middle.
-          angle = outward + (index - (children.length - 1) / 2) * 0.8
+          // Beside one that stands off the middle, along the ring and not towards its edge or the
+          // middle: to one side, then the other, then further out on each.
+          angle = outward + (index % 2 ? -1 : 1) * Math.PI / 2
         } else if (children.length <= 4) {
           // Below the one in the middle, side by side: the room is wider than it is high.
           const step = Math.min(0.5, 0.9 / Math.max(children.length - 1, 1))
-          angle = Math.PI * (0.5 + (index - (children.length - 1) / 2) * step)
+          // The first of them to the left, as they are read.
+          angle = Math.PI * (0.5 + ((children.length - 1) / 2 - index) * step)
         } else {
           angle = Math.PI / 2 + (index / children.length) * Math.PI * 2
         }
-        const reach = atMiddle ? 1 : 0.7
+        const reach = atMiddle ? 1 : 0.7 * (1 + Math.floor(index / 2) * 0.8)
         spots[child.id] = intoTerritory({
           x: base.x + Math.cos(angle) * CHILD_X * reach, y: base.y + Math.sin(angle) * CHILD_Y * reach,
         })

@@ -22,8 +22,10 @@ import { describeConsoleError, familiarName } from '../powerFormat'
 /** What happened among the familiars of one project, or with `project` null among all of them. */
 const props = defineProps<{ project: string | null }>()
 const { t, te } = useI18n()
+// Of one project all there is, from its beginning: its own history is what is looked for here, and reading
+// it took a tenth of a second on a ledger of three hundred thousand events. Of all of them, the last stretch.
 const { entries, loading, error, whole, fromBeginning } = useTimeline(
-  () => props.project, failure => describeConsoleError(failure, t, te),
+  () => props.project, failure => describeConsoleError(failure, t, te), () => props.project !== null,
 )
 const cards = ref<BoardCard[]>([])
 let turn = 0

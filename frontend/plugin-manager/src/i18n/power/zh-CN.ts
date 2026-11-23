@@ -469,7 +469,7 @@ const messages: PowerMessages = {
   },
   roles: {
     title: '每种使魔用哪个模型',
-    hint: '每种职能的使魔各用哪个模型。可选的是「模型接口」页里支持工具调用的槽位。',
+    hint: '每种职能的使魔各用哪个模型。可选的是「Plugin API」页里支持工具调用的槽位。',
     preset: '职能',
     setting: '用哪个',
     inEffect: '现在新开一只会用',
@@ -482,7 +482,7 @@ const messages: PowerMessages = {
     noModel: '没有模型',
     slotEmpty: '还没填模型',
     goneSlot: '已经不在了的槽位',
-    slotsUnreadable: '「模型接口」页的槽位读不出来（{reason}）。现在只能选「默认」和「跟随派它的使魔」。',
+    slotsUnreadable: '「Plugin API」页的槽位读不出来（{reason}）。现在只能选「默认」和「跟随派它的使魔」。',
     fellBack: '退回了默认',
     fellBackWhy: '它的设置用不了，退回了默认：{reason}',
     fallbacks: {

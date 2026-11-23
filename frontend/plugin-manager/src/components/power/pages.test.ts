@@ -314,6 +314,8 @@ describe('the model of each kind of familiar', () => {
     await choose(document.querySelector('[data-setting="boss"]'), 'slot_premium')
     expect(byTest('roles-error')?.textContent).toContain(words.errors.capability_missing)
     expect((document.querySelector('[data-setting="boss"]') as HTMLSelectElement).value).toBe('')
+    // What is shown was read anew: the slots may be others by now.
+    expect(api.getRoleModels).toHaveBeenCalledTimes(2)
   })
 
   it('says so when the slots cannot be read, and names a reason it has no words for by its code', async () => {
@@ -550,11 +552,25 @@ describe('what happened in a project', () => {
         peer: { type: 'session', session_id: 'gone', commission_id: 'c2' }, text: 'Find the templates', detail: {} },
     ] })
     api.getProjectBoard.mockResolvedValue({ revision: 'r', projects: [{ name: 'Blog', members: [{ id: 's1', name: 'Blog lead', preset: 'boss', label: '' }] }], loose: [] })
-    await mount(ActivityPane, { project: 'Blog' })
+    const { state } = await mount(ActivityPane, { project: 'Blog' })
     expect(api.getTimeline).toHaveBeenCalledWith({ project: 'Blog', after: undefined, limit: 1000 })
+    // Of one project all of it is read, from its beginning: where the last stretch begins is not asked.
+    expect(api.getTimelineStart).not.toHaveBeenCalled()
+    expect(byTest('activity-whole')).toBeNull()
     const lines = [...document.querySelectorAll('.row')].map(item => item.textContent)
     expect(lines[0]).toContain('Blog lead started working')
     // One that is not on the board any more is named as the entries name it.
     expect(lines[1]).toContain('Blog lead sent out Find the templates')
+
+    // Of all the familiars together the last stretch is read, and the rest is offered.
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValueOnce({ next: 'e99.m9', more: false, latest: 'e99.m9', entries: [
+      { cursor: 'e99.m9', at: 30, kind: 'started', lanlan_name: 'Lan', project: null, session_id: 's9', commission_id: 'c9', peer: null, text: '', detail: {} },
+    ] })
+    state.props = { project: null }
+    await flush()
+    expect(api.getTimelineStart).toHaveBeenCalledTimes(1)
+    expect(api.getTimeline).toHaveBeenLastCalledWith({ project: null, after: 'e50.m2', limit: 1000 })
+    expect(byTest('activity-whole')).toBeTruthy()
   })
 })

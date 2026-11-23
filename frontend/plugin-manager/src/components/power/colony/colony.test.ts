@@ -64,7 +64,12 @@ const board = (over: Partial<Board> = {}): Board => ({
 
 let cleanup: (() => void) | undefined
 const NativeMutationObserver = globalThis.MutationObserver
-async function flush() { for (let i = 0; i < 8; i++) { await Promise.resolve(); await nextTick() } }
+async function flush() {
+  for (let i = 0; i < 8; i++) { await Promise.resolve(); await nextTick() }
+  // What is loaded when it is first needed (the dialogs) is there by then.
+  await vi.dynamicImportSettled()
+  for (let i = 0; i < 4; i++) { await Promise.resolve(); await nextTick() }
+}
 async function mount(component: Component, props: Record<string, unknown> = {}) {
   const container = document.createElement('div')
   document.body.append(container)
@@ -137,6 +142,12 @@ describe('how the familiars stood at a moment of what happened', () => {
     expect(story[7].at - story[5].at).toBeGreaterThan(SAID_SECONDS)
     expect(sceneAt(story, 7).get('scout')?.said).toBe('')
     expect(sceneAt(story, 7).get('lead')?.said).toBe('Overwrite the old theme?')
+    // Still waiting ten minutes on, while others went about their work: it is still what it asks.
+    const waitingLong = [
+      entry('asked_user', { at: 100, text: 'Which day?', peer: { type: 'user' } }),
+      entry('started', { at: 700, session_id: 'other', commission_id: 'c9' }),
+    ]
+    expect(sceneAt(waitingLong, 1).get('lead')).toEqual({ look: 'waiting_user', said: 'Which day?', saidAt: 100 })
   })
 
   it('knows where each session is first named, and who is named that the board does not hold', () => {
@@ -173,7 +184,7 @@ describe('where the familiars of a territory stand', () => {
   it('puts a single leader in the middle, its own around it, and whoever one started beside that one', () => {
     const spots = defaultSpots([
       { id: 'lead', leader: true, parent: null }, { id: 'a', leader: false, parent: null }, { id: 'b', leader: false, parent: null },
-      { id: 'a1', leader: false, parent: 'a' }, { id: 'l1', leader: false, parent: 'lead' },
+      { id: 'a1', leader: false, parent: 'a' }, { id: 'l1', leader: false, parent: 'lead' }, { id: 'l2', leader: false, parent: 'lead' },
     ])
     expect(spots.lead).toEqual({ x: 0.5, y: 0.52 })
     const far = (p: string, q: string) => Math.hypot(spots[p].x - spots[q].x, spots[p].y - spots[q].y)
@@ -181,18 +192,28 @@ describe('where the familiars of a territory stand', () => {
     expect(far('a1', 'a')).toBeLessThan(far('a1', 'b'))
     expect(far('a1', 'a')).toBeLessThan(far('a1', 'lead'))
     expect(far('l1', 'lead')).toBeLessThan(far('l1', 'a'))
+    expect(far('l1', 'lead')).toBeLessThan(0.35)
+    expect(far('l2', 'lead')).toBeLessThan(0.35)
+    expect(far('a1', 'a')).toBeLessThan(0.3)
+    // Beside its starter, not between it and the leader, where it would look like one of the leader's.
+    expect(far('a1', 'lead')).toBeGreaterThan(far('a', 'lead') * 0.9)
+    // The two the leader started stand below it, one on either side.
+    expect(spots.l1.x).toBeLessThan(spots.lead.x)
+    expect(spots.l2.x).toBeGreaterThan(spots.lead.x)
+    expect(Math.min(spots.l1.y, spots.l2.y)).toBeGreaterThan(spots.lead.y)
     for (const spot of Object.values(spots)) expect(inTerritory(spot)).toBe(true)
     // No two on one spot.
-    expect(new Set(Object.values(spots).map(spot => `${spot.x.toFixed(3)},${spot.y.toFixed(3)}`)).size).toBe(5)
+    expect(new Set(Object.values(spots).map(spot => `${spot.x.toFixed(3)},${spot.y.toFixed(3)}`)).size).toBe(6)
   })
 
   it('needs no leader: one alone stands in the middle, several stand around it', () => {
     expect(defaultSpots([{ id: 'only', leader: false, parent: null }]).only).toEqual({ x: 0.5, y: 0.52 })
     const three = defaultSpots([1, 2, 3].map(n => ({ id: `m${n}`, leader: false, parent: null })))
     expect(Object.values(three).some(spot => spot.x === 0.5 && spot.y === 0.52)).toBe(false)
-    // Two leaders are no single one either.
+    // Two leaders are no single one either: neither stands in the middle.
     const two = defaultSpots([{ id: 'x', leader: true, parent: null }, { id: 'y', leader: true, parent: null }])
     expect(two.x).not.toEqual(two.y)
+    expect([two.x, two.y].some(spot => spot.x === 0.5 && spot.y === 0.52)).toBe(false)
     // Twenty of its own still all stand within it, each on a spot of its own.
     const many = defaultSpots(Array.from({ length: 20 }, (_, n) => ({ id: `m${n}`, leader: false, parent: null })))
     expect(Object.values(many).every(inTerritory)).toBe(true)
@@ -221,6 +242,7 @@ describe('where the familiars of a territory stand', () => {
     keepSpots('project:Blog', {}, ['lead'])
     expect(keptSpots('project:Blog')).toEqual({})
     expect(keptSpots('loose')).toEqual({ odd: { x: 0.5, y: 0.5 } })
+    expect(Object.keys(JSON.parse(localStorage.getItem('neko-power-colony-spots') ?? '{}'))).toEqual(['loose'])
     // What is in the storage is not trusted: no spot, a spot outside, something else altogether.
     localStorage.setItem('neko-power-colony-spots', JSON.stringify({ a: { one: { x: 'left', y: 1 }, two: { x: 9, y: 0.52 } }, b: 3 }))
     expect(keptSpots('a').one).toBeUndefined()
@@ -293,6 +315,17 @@ describe('a territory of the colony', () => {
     expect(opened).toEqual([])
     expect(keptSpots('project:Blog')).toEqual({ lead: { x: 0.3, y: 0.5 } })
     expect([cat('lead')!.style.left, cat('lead')!.style.top]).toEqual(['30%', '50%'])
+
+    // One that another started: a line to that one, and none to the third.
+    pointer(cat('kid'), 'pointerdown', 100, 200)
+    pointer(cat('kid'), 'pointermove', 110, 215)
+    await flush()
+    expect(byTest('colony-lines')?.querySelectorAll('line').length).toBe(1)
+    pointer(cat('kid'), 'pointerup', 110, 215)
+    // No click came after this drag (the pointer was let go elsewhere): the next one opens it all the same.
+    await new Promise(resolve => setTimeout(resolve, 5))
+    cat('kid')!.click()
+    expect(opened).toEqual(['kid'])
   })
 
   it('leaves a familiar dropped outside at the edge of its territory', async () => {
@@ -302,6 +335,7 @@ describe('a territory of the colony', () => {
     pointer(cat('other'), 'pointermove', 5000, 156)
     pointer(cat('other'), 'pointerup', 5000, 156)
     await flush()
+    expect(parseFloat(cat('other')!.style.left)).toBeLessThan(91)
     const kept = keptSpots('project:Blog').other
     expect(kept.x).toBeCloseTo(0.9)
     expect(inTerritory({ x: kept.x - 0.001, y: kept.y })).toBe(true)
@@ -321,6 +355,13 @@ describe('a territory of the colony', () => {
     expect(parted).toBe(1)
     // It goes back to where it stood: nothing is kept of the drag.
     expect(keptSpots('project:Blog')).toEqual({})
+    // Dropped anywhere else it is only put there.
+    pointer(cat('kid'), 'pointerdown', 100, 100)
+    pointer(cat('kid'), 'pointermove', 160, 150)
+    pointer(cat('kid'), 'pointerup', 160, 150)
+    await flush()
+    expect(parted).toBe(1)
+    expect(keptSpots('project:Blog').kid).toEqual({ x: 0.4, y: 0.5 })
 
     state.props = { territory: pair(), canDismiss: false, onDismiss: () => { parted += 1 } }
     await flush()
@@ -406,6 +447,8 @@ describe('the colony on the home page', () => {
     expect([...document.querySelectorAll('[data-territory]')].map(element => element.getAttribute('data-territory'))).toEqual(['project:Blog', 'loose'])
     expect(cat('lead')?.getAttribute('data-look')).toBe('working')
     expect(cat('kid')?.getAttribute('data-look')).toBe('waiting_user')
+    // What it said long ago is not above it now.
+    expect(cat('lead')?.querySelector('.bubble')).toBeNull()
     const waiting = byTest('colony-waiting')
     // One that another familiar started is called by what kind it is: its own name is the starter's with a number.
     expect(waiting?.textContent).toContain(words.home.presets.worker)
@@ -416,6 +459,43 @@ describe('the colony on the home page', () => {
     // It began where the host said to, and read on from there.
     expect(api.getTimeline).toHaveBeenCalledWith({ project: null, after: undefined, limit: 1000 })
     expect(document.querySelectorAll('.row').length).toBe(story.length)
+    // Where it began is the beginning: there is nothing earlier to offer.
+    expect(byTest('replay-whole')).toBeNull()
+  })
+
+  it('calls a familiar by the title it earned, and shows what one said lately only while it is fresh', async () => {
+    const titled = board()
+    titled.projects![0].members[1].title = 'Build checker'
+    api.getBoard.mockResolvedValue(titled)
+    // Said long ago by the clock on the wall, though it is the last thing that happened.
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e1.m0', more: false, latest: 'e1.m0' })
+    api.getTimeline.mockResolvedValueOnce({ next: 'e1.m0', more: false, latest: 'e1.m0', entries: [entry('reported', { at: 100, text: 'half way' })] })
+    await mount(FamiliarColony)
+    expect(cat('kid')?.textContent).toContain('Build checker')
+    expect(byTest('colony-waiting')?.textContent).toContain('Build checker')
+    expect(cat('lead')?.querySelector('.bubble')).toBeNull()
+    // Replayed to the moment it was said, it is above it.
+    ;(document.querySelector('.row button') as HTMLElement).click()
+    await flush()
+    expect(cat('lead')?.querySelector('.bubble')?.textContent).toBe('half way')
+  })
+
+  it('does not show a familiar of the board at a moment before it was first named', async () => {
+    const withScout = board()
+    withScout.projects![0].members.push(card({ id: 'scout', name: 'Blog/agent-1', kind: 'child', preset: 'scout', avatar: 'scout', leader: false, parent: 'lead' }))
+    api.getBoard.mockResolvedValue(withScout)
+    await mount(FamiliarColony)
+    expect(cat('scout')).toBeTruthy()
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '1'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(cat('scout')).toBeNull()
+    slider.value = '4'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(cat('scout')?.getAttribute('data-look')).toBe('working')
   })
 
   it('answers a familiar that waits from the colony, with what it asks shown whole', async () => {
@@ -529,10 +609,12 @@ describe('the colony on the home page', () => {
     await mount(FamiliarColony)
     expect(api.getTimeline).toHaveBeenCalledWith({ project: null, after: 'e50.m2', limit: 1000 })
     api.getTimeline.mockClear()
+    api.getTimeline.mockResolvedValueOnce({ entries: story, next: 'e9.m0', more: false, latest: 'e9.m0' })
     byTest('replay-whole')!.click()
     await flush()
     expect(api.getTimeline).toHaveBeenCalledWith({ project: null, after: undefined, limit: 1000 })
     // All of it is held now: there is nothing more to offer.
+    expect(document.querySelectorAll('.row').length).toBe(story.length)
     expect(byTest('replay-whole')).toBeNull()
   })
 })

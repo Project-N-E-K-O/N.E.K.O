@@ -62,30 +62,21 @@
       <ActivityFeed :entries="entries" :current="position" :name-of="nameOf" :loading="timelineLoading" @pick="seek" />
     </template>
 
-    <el-dialog v-model="askOpen" :title="askingCard ? nameOfCard(askingCard) : ''" width="600px">
-      <p v-if="askingCard?.commission" class="muted">{{ askingCard.commission.title }}</p>
-      <AskBox v-if="askingCard?.commission?.ask" :ask="askingCard.commission.ask" :busy="busy" @answer="answer" />
-      <el-alert v-if="actionError" :title="actionError" type="error" :closable="false" show-icon data-testid="colony-ask-error" />
-    </el-dialog>
-
-    <el-dialog v-model="partOpen" :title="t('power.colony.partTitle', { project: parting })" width="480px">
-      <p>{{ t('power.colony.partText') }}</p>
-      <el-alert v-if="actionError" :title="actionError" type="error" :closable="false" show-icon data-testid="colony-part-error" />
-      <template #footer>
-        <el-button @click="parting = ''">{{ t('common.cancel') }}</el-button>
-        <el-button type="danger" :loading="busy === 'part'" data-testid="colony-part-confirm" @click="part">{{ t('power.colony.part') }}</el-button>
-      </template>
-    </el-dialog>
+    <!-- Loaded when first needed: what a dialog is drawn with is not part of the first page. -->
+    <ColonyDialogs
+      v-if="dialogs"
+      :asking="askingCard" :asking-name="askingCard ? nameOfCard(askingCard) : ''" :parting="parting" :busy="busy" :error="actionError"
+      @answer="answer" @part="part" @close-ask="asking = ''" @close-part="parting = ''"
+    />
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { answerCommission, archiveProject, getWaits } from '@/api/console'
 import type { BoardCard } from '@/api/console'
-import AskBox from '../AskBox.vue'
 import { askSummary } from '../ask'
 import { describeConsoleError, familiarLook, familiarName } from '../powerFormat'
 import ActivityFeed from './ActivityFeed.vue'
@@ -94,6 +85,8 @@ import ColonyTerritory from './ColonyTerritory.vue'
 import type { ColonyMember, Territory } from './ColonyTerritory.vue'
 import { useBoard } from './useBoard'
 import { useTimeline } from './useTimeline'
+
+const ColonyDialogs = defineAsyncComponent(() => import('./ColonyDialogs.vue'))
 
 /**
  * The familiars as a colony: each project a territory they stand about in,
@@ -187,8 +180,11 @@ const tally = computed(() => ({
 }))
 const waiting = computed(() => cards.value.filter(card => card.state === 'waiting_user' && card.commission))
 const askingCard = computed(() => waiting.value.find(card => card.id === asking.value) ?? null)
-const askOpen = computed({ get: () => Boolean(askingCard.value), set: (open: boolean) => { if (!open) asking.value = '' } })
-const partOpen = computed({ get: () => Boolean(parting.value), set: (open: boolean) => { if (!open) parting.value = '' } })
+// Whether a dialog was ever asked for: they are loaded then, and stay.
+const dialogs = ref(false)
+watch([asking, parting], () => { if (asking.value || parting.value) dialogs.value = true })
+// Why the last one was not taken is not said of the next.
+watch([asking, parting], () => { actionError.value = '' })
 const momentLabel = computed(() => {
   if (position.value === null) return t('power.colony.live')
   const entry = entries.value[position.value]
@@ -301,7 +297,8 @@ defineExpose({ load })
 .plain { font: inherit; font-size: 13px; color: var(--el-text-color-regular); background: var(--el-bg-color); border: 1px solid var(--el-border-color); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
 .plain:disabled { opacity: 0.5; cursor: default; }
 .field { position: relative; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 18px; padding: 18px 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 16px; background: var(--el-bg-color); overflow: hidden; }
-.gate { position: absolute; right: 12px; bottom: 12px; padding: 6px 12px; font-size: 12px; color: var(--el-color-danger); border: 1.5px dashed var(--el-color-danger); border-radius: 10px; background: var(--el-bg-color); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+/* Fixed to the window, not to the field: the field can be taller than the window, and a familiar that is held must be able to reach it. */
+.gate { position: fixed; z-index: 5; right: 32px; bottom: 28px; padding: 6px 12px; font-size: 12px; color: var(--el-color-danger); border: 1.5px dashed var(--el-color-danger); border-radius: 10px; background: var(--el-bg-color); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
 .gate.on { opacity: 1; }
 .replay input { flex: 1; min-width: 80px; }
 .moment { flex: none; min-width: 70px; }

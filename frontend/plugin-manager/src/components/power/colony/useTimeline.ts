@@ -17,7 +17,13 @@ const PAGE_ROWS = 1000
 const POLL_MS = 2000
 const POLL_FAILED_MS = 15000
 
-export function useTimeline(project: () => string | null, describe: (failure: unknown) => string) {
+/**
+ * `wholeAtFirst` says whether a page begins with everything there is and not
+ * with the last stretch: asked each time it begins anew.
+ */
+export function useTimeline(
+  project: () => string | null, describe: (failure: unknown) => string, wholeAtFirst: () => boolean = () => false,
+) {
   const entries = shallowRef<TimelineEntry[]>([])
   const loading = ref(true)
   const error = ref('')
@@ -94,10 +100,10 @@ export function useTimeline(project: () => string | null, describe: (failure: un
     void readOn(turn)
   }
 
-  watch(project, () => void begin(false))
+  watch(project, () => void begin(wholeAtFirst()))
   onMounted(() => {
     document.addEventListener('visibilitychange', onVisibility)
-    void begin(false)
+    void begin(wholeAtFirst())
   })
   onBeforeUnmount(() => {
     alive = false

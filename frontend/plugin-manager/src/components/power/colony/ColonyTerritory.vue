@@ -172,7 +172,11 @@ function drop(event: PointerEvent) {
   letGo()
 }
 function letGo() {
-  if (moved) emit('holding', false)
+  if (moved) {
+    emit('holding', false)
+    // The click that ends a drag comes before this; where none comes, the next one is not taken for it.
+    setTimeout(() => { moved = false }, 0)
+  }
   held.value = ''
   start = null
 }
