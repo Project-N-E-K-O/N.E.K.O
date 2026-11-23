@@ -1982,7 +1982,7 @@ async def game_route_start(game_type: str, request: Request):
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
     name_check = validate_character_name(lanlan_name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS)
-    if not name_check.ok:
+    if not name_check.ok and name_check.code != "reserved_route_name":
         return {"ok": False, "reason": "invalid_lanlan_name"}
     lanlan_name = name_check.normalized
     # route/start is a valid new-route entry; resolving prompt locale synchronizes the request's

@@ -850,12 +850,14 @@
         return postOnce(false).then(function (response) {
             if (response.status === 403 && typeof response.clone === 'function') {
                 return response.clone().json().then(function (errPayload) {
-                    if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
-                        return postOnce(true);
+                    return !!(errPayload && errPayload.error_code === 'csrf_validation_failed');
+                }).catch(function (parseErr) {
+                    if ((controller && controller.signal && controller.signal.aborted) || (parseErr && parseErr.name === 'AbortError')) {
+                        throw parseErr;
                     }
-                    return response;
-                }).catch(function () {
-                    return response;
+                    return false;
+                }).then(function (shouldRetryCsrf) {
+                    return shouldRetryCsrf ? postOnce(true) : response;
                 });
             }
             return response;

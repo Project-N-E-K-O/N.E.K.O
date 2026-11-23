@@ -483,12 +483,19 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
             }
             response = await putCardFaceOnce(false);
             if (response.status === 403 && typeof response.clone === 'function') {
+                let shouldRetryCsrf = false;
                 try {
                     const errPayload = await response.clone().json();
-                    if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
-                        response = await putCardFaceOnce(true);
+                    shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
+                } catch (parseErr) {
+                    if (controller.signal.aborted || (parseErr && parseErr.name === 'AbortError')) {
+                        throw parseErr;
                     }
-                } catch (_) { /* keep original 403 */ }
+                    /* keep original 403 */
+                }
+                if (shouldRetryCsrf) {
+                    response = await putCardFaceOnce(true);
+                }
             }
         } catch (error) {
             if (error && error.name === 'AbortError') {

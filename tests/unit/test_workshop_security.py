@@ -781,7 +781,7 @@ async def test_publish_auto_discovers_mismatched_extension_thumbnail_and_copies_
     assert (content_folder / "preview.jpg").is_file()
     assert captured["preview_image"] == str((content_folder / "preview.jpg").resolve())
 
-    # Unsupported image formats (e.g. BMP disguised as thumbnail.png) must still return 400.
+    # Unsupported auto-discovered formats (e.g. BMP disguised as thumbnail.png) degrade to publishing without preview.
     bmp_folder = workshop / "WorkshopExport" / "item_auto_bmp"
     bmp_folder.mkdir(parents=True)
     (bmp_folder / "card.json").write_text("{}", encoding="utf-8")
@@ -789,15 +789,17 @@ async def test_publish_auto_discovers_mismatched_extension_thumbnail_and_copies_
     Image.new("RGB", (4, 4), color=(1, 2, 3)).save(bmp_buf, format="BMP")
     (bmp_folder / "thumbnail.png").write_bytes(bmp_buf.getvalue())
 
-    bad_resp = await wr_publish.publish_to_workshop(
+    captured.clear()
+    degraded_resp = await wr_publish.publish_to_workshop(
         _StubJsonRequest({
             "title": "Auto Discovered BMP",
             "content_folder": str(bmp_folder),
             "visibility": 0,
         })
     )
-    assert bad_resp.status_code == 400
-    assert json.loads(bad_resp.body)["success"] is False
+    assert degraded_resp.status_code == 200
+    assert json.loads(degraded_resp.body)["success"] is True
+    assert captured["preview_image"] == ""
 
 
 @pytest.mark.asyncio
@@ -1065,22 +1067,24 @@ async def test_publish_auto_discovery_existing_target_is_validated_not_skipped(t
     assert ok_resp.status_code == 200
     assert captured["preview_image"] == str(existing_jpg.resolve())
 
-    # Corrupt existing canonical preview.jpg must be rejected cleanly with 400.
+    # Corrupt auto-discovered preview.jpg degrades with a warning and publishes without preview.
     folder_corrupt = workshop / "WorkshopExport" / "item_existing_corrupt_jpg"
     folder_corrupt.mkdir(parents=True)
     (folder_corrupt / "card.json").write_text("{}", encoding="utf-8")
     (folder_corrupt / "thumbnail.png").write_bytes(jpeg_bytes)
     (folder_corrupt / "preview.jpg").write_bytes(b"corrupt")
 
-    bad_resp = await wr_publish.publish_to_workshop(
+    captured.clear()
+    degraded_resp = await wr_publish.publish_to_workshop(
         _StubJsonRequest({
             "title": "Existing Corrupt Preview",
             "content_folder": str(folder_corrupt),
             "visibility": 0,
         })
     )
-    assert bad_resp.status_code == 400
-    assert json.loads(bad_resp.body)["success"] is False
+    assert degraded_resp.status_code == 200
+    assert json.loads(degraded_resp.body)["success"] is True
+    assert captured["preview_image"] == ""
 
 
 def test_write_preview_image_writes_marker_first_and_rolls_back_on_failure(tmp_path, monkeypatch):
@@ -1147,7 +1151,9 @@ async def test_publish_rejects_content_folder_enclosing_preview_staging(tmp_path
             })
         )
         assert resp.status_code == 403
-        assert json.loads(resp.body)["success"] is False
+        body = json.loads(resp.body)
+        assert body["success"] is False
+        assert "包含预览暂存目录" in body["message"]
     assert published_calls == []
     assert staged_file.is_file()
 
@@ -1201,4 +1207,130 @@ async def test_publish_writes_workshop_meta_before_cleaning_staged_preview(tmp_p
     assert events == ["write_workshop_meta", "cleanup_staged_preview"]
     assert not staged_dir.exists()
 
+
+@pytest.mark.asyncio
+async def test_upload_and_verify_accept_camera_mpo_and_truncated_jpeg_and_hint_select_file(tmp_path, monkeypatch):
+    """P6/P7/P8: accept camera MPO and EOI-truncated JPEGs, and hint Select File on 403 outside preview."""
+    from main_routers.workshop_router import preview_cards, publish as wr_publish
+
+    # Build real camera-style MPO bytes (JPEG + MPF APP2 marker) verified by Pillow as format == 'MPO'.
+    mpo_buf = io.BytesIO()
+    Image.new("RGB", (8, 8), color=(30, 120, 210)).save(
+        mpo_buf,
+        format="MPO",
+        save_all=True,
+        append_images=[Image.new("RGB", (8, 8), color=(60, 150, 240))],
+    )
+    mpo_bytes = mpo_buf.getvalue()
+    with Image.open(io.BytesIO(mpo_bytes)) as probe_mpo:
+        assert probe_mpo.format == "MPO"
+
+    # Build a slightly truncated JPEG missing the trailing EOI marker (0xFF 0xD9) so Image.load() fails.
+    jpeg_buf = io.BytesIO()
+    Image.new("RGB", (16, 16), color=(200, 100, 50)).save(jpeg_buf, format="JPEG")
+    full_jpeg = jpeg_buf.getvalue()
+    assert full_jpeg.endswith(b"\xff\xd9")
+    truncated_jpeg = full_jpeg[:-2]
+    with Image.open(io.BytesIO(truncated_jpeg)) as probe_trunc:
+        with pytest.raises(OSError):
+            probe_trunc.load()
+
+    assert preview_cards._validate_preview_image_bytes(mpo_bytes) == "JPEG"
+    assert preview_cards._validate_preview_image_bytes(truncated_jpeg) == "JPEG"
+
+    workshop = tmp_path / "workshop"
+    outside = tmp_path / "outside"
+    export_mpo = workshop / "WorkshopExport" / "item_mpo"
+    export_trunc = workshop / "WorkshopExport" / "item_trunc"
+    for d in (outside, export_mpo, export_trunc):
+        d.mkdir(parents=True)
+    (export_mpo / "card.json").write_text("{}", encoding="utf-8")
+    (export_trunc / "card.json").write_text("{}", encoding="utf-8")
+
+    mpo_file = export_mpo / "camera.jpg"
+    mpo_file.write_bytes(mpo_bytes)
+    trunc_file = export_trunc / "trunc.jpeg"
+    trunc_file.write_bytes(truncated_jpeg)
+    assert preview_cards._verify_preview_image_file(str(mpo_file)) == "JPEG"
+    assert preview_cards._verify_preview_image_file(str(trunc_file)) == "JPEG"
+
+    monkeypatch.setattr(preview_cards, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+
+    staged_mpo = await preview_cards.upload_preview_image(
+        _StubFormRequest(_StubUpload(mpo_bytes, content_type="image/jpeg"), content_folder=None)
+    )
+    assert staged_mpo.status_code == 200
+    assert json.loads(staged_mpo.body)["file_path"].endswith("preview.jpg")
+
+    staged_trunc = await preview_cards.upload_preview_image(
+        _StubFormRequest(_StubUpload(truncated_jpeg, content_type="image/jpeg"), content_folder=None)
+    )
+    assert staged_trunc.status_code == 200
+    assert json.loads(staged_trunc.body)["file_path"].endswith("preview.jpg")
+
+    outside_img = outside / "local.png"
+    outside_img.write_bytes(_png_bytes())
+    resp_outside = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Outside Preview Hint",
+            "content_folder": str(export_mpo),
+            "visibility": 0,
+            "preview_image": str(outside_img),
+        })
+    )
+    assert resp_outside.status_code == 403
+    assert "选择文件" in json.loads(resp_outside.body)["message"]
+
+
+@pytest.mark.asyncio
+async def test_publish_rejects_symlinked_preview_staging_and_its_target(tmp_path, monkeypatch):
+    """Reject publishing enclosing folders or target paths when _preview_staging is a symlink."""
+    from main_routers.workshop_router import publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    export_dir = workshop / "WorkshopExport"
+    ordinary_target = export_dir / "ordinary_staging_target"
+    stage_child = ordinary_target / "stage1"
+    stage_child.mkdir(parents=True)
+    (ordinary_target / "card.json").write_text("{}", encoding="utf-8")
+    (stage_child / "card.json").write_text("{}", encoding="utf-8")
+    staged_file = stage_child / "preview.png"
+    staged_file.write_bytes(_png_bytes())
+
+    staging_link = export_dir / "_preview_staging"
+    try:
+        staging_link.symlink_to(ordinary_target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlinks are not supported in this test environment: {exc}")
+
+    published_calls: list[tuple] = []
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+    monkeypatch.setattr(
+        wr_publish,
+        "_preflight_and_publish",
+        lambda *args: published_calls.append(args) or "9990",
+    )
+
+    for forbidden_folder in (
+        str(export_dir),
+        str(workshop),
+        str(staging_link / "stage1"),
+        str(ordinary_target),
+    ):
+        resp = await wr_publish.publish_to_workshop(
+            _StubJsonRequest({
+                "title": "Symlinked Staging Publish",
+                "content_folder": forbidden_folder,
+                "visibility": 0,
+            })
+        )
+        assert resp.status_code == 403
+        assert json.loads(resp.body)["success"] is False
+
+    assert published_calls == []
+    assert staged_file.is_file()
 

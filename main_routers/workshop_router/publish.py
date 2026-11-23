@@ -604,7 +604,7 @@ async def publish_to_workshop(request: Request):
             return JSONResponse(content={
                 "success": False,
                 "error": "权限错误",
-                "message": "指定的内容文件夹不能位于预览暂存目录内"
+                "message": "指定的内容文件夹不能位于或包含预览暂存目录"
             }, status_code=403)
         
         # Verify the content folder exists and is a directory.
@@ -684,7 +684,7 @@ async def publish_to_workshop(request: Request):
                 return JSONResponse(content={
                     "success": False,
                     "error": "权限错误",
-                    "message": "预览图片路径不在允许的范围内"
+                    "message": "预览图片路径不在工坊目录范围内，请点击「选择文件」上传本地图片"
                 }, status_code=403)
 
             # Verify preview-image existence; do not silently fall back when an explicit preview expired or vanished.
@@ -774,85 +774,74 @@ async def publish_to_workshop(request: Request):
 
                 if preview_image:
                     file_extension = os.path.splitext(preview_image)[1].lower()
+                    detected_format = ""
                     if file_extension not in WORKSHOP_STANDARD_PREVIEW_EXTENSIONS:
-                        return JSONResponse(content={
-                            "success": False,
-                            "error": "预览图片无效",
-                            "message": "预览图片格式不支持"
-                        }, status_code=400)
-                    try:
-                        detected_format = await asyncio.to_thread(
-                            _verify_preview_image_file,
-                            preview_image,
-                            require_extension_match=False,
-                        )
-                    except Exception:
-                        return JSONResponse(content={
-                            "success": False,
-                            "error": "预览图片无效",
-                            "message": "预览图片文件无效或已损坏"
-                        }, status_code=400)
-                    allowed_for_ext = _PREVIEW_EXTENSION_TO_FORMATS.get(file_extension, set())
-                    target_extension = (
-                        file_extension
-                        if detected_format in allowed_for_ext
-                        else _PREVIEW_FORMAT_TO_EXTENSION.get(detected_format, file_extension)
-                    )
-                    needs_canonical_copy = (
-                        not os.path.basename(preview_image).lower().startswith('preview.')
-                        or detected_format not in allowed_for_ext
-                    )
-                    if needs_canonical_copy:
+                        logger.warning(f'自动发现的预览图片格式不支持，将不带预览继续发布: {preview_image}')
+                        preview_image = ''
+                    else:
                         try:
-                            new_preview_path = _assert_direct_preview_target(
-                                content_folder,
-                                f'preview{target_extension}',
+                            detected_format = await asyncio.to_thread(
+                                _verify_preview_image_file,
+                                preview_image,
+                                require_extension_match=False,
                             )
-                        except PermissionError:
-                            return JSONResponse(content={
-                                "success": False,
-                                "error": "权限错误",
-                                "message": "预览图片路径不在允许的范围内"
-                            }, status_code=403)
-                        if os.path.isdir(new_preview_path):
-                            return JSONResponse(content={
-                                "success": False,
-                                "error": "预览图片无效",
-                                "message": "内容文件夹中已存在同名预览目录，无法写入预览图片"
-                            }, status_code=400)
-                        elif detected_format not in allowed_for_ext and os.path.exists(new_preview_path):
-                            if not os.path.isfile(new_preview_path):
+                        except Exception as e:
+                            logger.warning(f'自动发现的预览图片无效或已损坏，将不带预览继续发布 ({preview_image}): {e}')
+                            preview_image = ''
+                    if preview_image:
+                        allowed_for_ext = _PREVIEW_EXTENSION_TO_FORMATS.get(file_extension, set())
+                        target_extension = (
+                            file_extension
+                            if detected_format in allowed_for_ext
+                            else _PREVIEW_FORMAT_TO_EXTENSION.get(detected_format, file_extension)
+                        )
+                        needs_canonical_copy = (
+                            not os.path.basename(preview_image).lower().startswith('preview.')
+                            or detected_format not in allowed_for_ext
+                        )
+                        if needs_canonical_copy:
+                            try:
+                                new_preview_path = _assert_direct_preview_target(
+                                    content_folder,
+                                    f'preview{target_extension}',
+                                )
+                            except PermissionError:
                                 return JSONResponse(content={
                                     "success": False,
-                                    "error": "预览图片无效",
-                                    "message": "内容文件夹中已存在同名但无效的预览图片"
-                                }, status_code=400)
-                            try:
-                                await asyncio.to_thread(_verify_preview_image_file, new_preview_path)
-                            except Exception:
-                                return JSONResponse(content={
-                                    "success": False,
-                                    "error": "预览图片无效",
-                                    "message": "内容文件夹中已存在同名但无效的预览图片"
-                                }, status_code=400)
-                            logger.warning(f'目标预览文件已存在且有效，直接使用: {new_preview_path}')
-                            preview_image = new_preview_path
-                        else:
-                            try:
-                                import shutil
-                                await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
-                                logger.info(f'自动找到的预览图片已统一命名: {new_preview_path}')
-                                preview_image = new_preview_path
-                            except Exception as e:
-                                logger.error(f'重命名自动预览图片失败: {e}')
-                                if os.path.isfile(preview_image):
-                                    logger.warning(f'继续使用已验证的自动预览图片路径: {preview_image}')
+                                    "error": "权限错误",
+                                    "message": "预览图片路径不在允许的范围内"
+                                }, status_code=403)
+                            if os.path.isdir(new_preview_path):
+                                logger.warning(f'目标预览路径为目录，将不带预览继续发布: {new_preview_path}')
+                                preview_image = ''
+                            elif detected_format not in allowed_for_ext and os.path.exists(new_preview_path):
+                                if not os.path.isfile(new_preview_path):
+                                    logger.warning(f'目标预览路径不是有效文件，将不带预览继续发布: {new_preview_path}')
+                                    preview_image = ''
                                 else:
-                                    return JSONResponse(content={
-                                        "success": False,
-                                        "error": "预览图片处理失败",
-                                        "message": "无法处理自动发现的预览图片"
-                                    }, status_code=500)
+                                    try:
+                                        await asyncio.to_thread(_verify_preview_image_file, new_preview_path)
+                                        logger.warning(f'目标预览文件已存在且有效，直接使用: {new_preview_path}')
+                                        preview_image = new_preview_path
+                                    except Exception as e:
+                                        logger.warning(f'目标预览文件无效或已损坏，将不带预览继续发布 ({new_preview_path}): {e}')
+                                        preview_image = ''
+                            else:
+                                try:
+                                    import shutil
+                                    await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
+                                    logger.info(f'自动找到的预览图片已统一命名: {new_preview_path}')
+                                    preview_image = new_preview_path
+                                except Exception as e:
+                                    logger.error(f'重命名自动预览图片失败: {e}')
+                                    if os.path.isfile(preview_image):
+                                        logger.warning(f'继续使用已验证的自动预览图片路径: {preview_image}')
+                                    else:
+                                        return JSONResponse(content={
+                                            "success": False,
+                                            "error": "预览图片处理失败",
+                                            "message": "无法处理自动发现的预览图片"
+                                        }, status_code=500)
 
         # Record information about the upload content.
         logger.info(f"准备发布创意工坊物品: {title}")

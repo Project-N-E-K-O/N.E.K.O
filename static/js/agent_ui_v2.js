@@ -214,12 +214,14 @@
         }
         let r = await postOnce(false);
         if (r.status === 403 && typeof r.clone === 'function') {
+            let shouldRetryCsrf = false;
             try {
                 const errPayload = await r.clone().json();
-                if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
-                    r = await postOnce(true);
-                }
+                shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
             } catch (_) { /* keep original 403 */ }
+            if (shouldRetryCsrf) {
+                r = await postOnce(true);
+            }
         }
         if (!r.ok) throw new Error(`command status ${r.status}`);
         const j = await r.json();

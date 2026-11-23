@@ -311,7 +311,7 @@
         "contentFolderPlaceholder": "Caminho da pasta de conteúdo obtido de itens locais",
         "previewImagePath": "Visualizar caminho da imagem *",
         "previewImagePlaceholder": "Selecione a imagem de visualização ou obtenha automaticamente de itens locais",
-        "previewImageSizeHint": "Nota: o tamanho da imagem de visualização do Steam deve ser inferior a 1 MB",
+        "previewImageSizeHint": "Nota: o tamanho de la imagem de visualização do Steam deve ser inferior a 1 MB; use \"Selecione o arquivo\" para imagens locais fora da pasta da Oficina",
         "uploadInstructions": "Selecione primeiro um item não publicado na seção 'Gerenciar itens locais' e depois clique no botão 'Carregar para o Workshop'. O caminho da pasta de conteúdo e o caminho da imagem de visualização serão preenchidos automaticamente.",
         "unnamedItem": "Item sem nome",
         "unknownItem": "Item desconhecido",

@@ -129,24 +129,27 @@ def _check_preview_image_dimensions(img) -> None:
         raise ValueError("Preview image dimensions exceed allowed limit")
 
 
+def _normalize_preview_image_format(raw_format: str | None) -> str:
+    """Normalize camera MPO (JPEG with MPF metadata) to JPEG."""
+    fmt = (raw_format or "").upper()
+    return "JPEG" if fmt == "MPO" else fmt
+
+
 def _validate_preview_image_bytes(image_bytes: bytes) -> str:
-    """Verify uploaded preview bytes decode as JPEG or PNG and return the PIL format."""
+    """Verify uploaded preview bytes as JPEG or PNG and return the normalized format."""
     from PIL import Image
 
     with Image.open(io.BytesIO(image_bytes)) as img:
         _check_preview_image_dimensions(img)
-        img.verify()
-    with Image.open(io.BytesIO(image_bytes)) as img:
-        _check_preview_image_dimensions(img)
-        fmt = (img.format or "").upper()
+        fmt = _normalize_preview_image_format(img.format)
         if fmt not in {"JPEG", "PNG"}:
             raise ValueError("Unsupported preview image format")
-        img.load()
+        img.verify()
         return fmt
 
 
 def _verify_preview_image_file(file_path: str, *, require_extension_match: bool = True) -> str:
-    """Verify an on-disk preview image file decodes cleanly and optionally matches its extension."""
+    """Verify an on-disk preview image file header/checksums cleanly and optionally match its extension."""
     from PIL import Image
 
     ext = os.path.splitext(file_path)[1].lower()
@@ -159,15 +162,10 @@ def _verify_preview_image_file(file_path: str, *, require_extension_match: bool 
     )
     with Image.open(file_path) as img:
         _check_preview_image_dimensions(img)
-        if (img.format or "").upper() not in allowed_formats:
-            raise ValueError("Preview image content does not match its file extension")
-        img.verify()
-    with Image.open(file_path) as img:
-        _check_preview_image_dimensions(img)
-        fmt = (img.format or "").upper()
+        fmt = _normalize_preview_image_format(img.format)
         if fmt not in allowed_formats:
             raise ValueError("Preview image content does not match its file extension")
-        img.load()
+        img.verify()
         return fmt
 
 
@@ -658,15 +656,31 @@ def _is_path_inside_preview_staging(path: str, workshop_base: str) -> bool:
     if not path or not workshop_base:
         return False
     staging_root = _resolve_preview_staging_root(workshop_base)
-    if not staging_root:
-        staging_root = os.path.join(os.path.realpath(workshop_base), "WorkshopExport", "_preview_staging")
+    if staging_root:
+        candidate_roots = [staging_root]
+    else:
+        literal_staging = os.path.join(
+            os.path.realpath(workshop_base),
+            "WorkshopExport",
+            "_preview_staging",
+        )
+        candidate_roots = [literal_staging]
+        resolved_staging = os.path.realpath(literal_staging)
+        if os.path.normcase(resolved_staging) != os.path.normcase(literal_staging):
+            candidate_roots.append(resolved_staging)
     try:
         resolved_path = os.path.realpath(path)
-        norm_path = os.path.normcase(resolved_path)
-        norm_root = os.path.normcase(staging_root)
-        return os.path.commonpath([norm_path, norm_root]) in {norm_path, norm_root}
     except ValueError:
         return False
+    norm_path = os.path.normcase(resolved_path)
+    for root in candidate_roots:
+        try:
+            norm_root = os.path.normcase(root)
+            if os.path.commonpath([norm_path, norm_root]) in {norm_path, norm_root}:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _is_owned_preview_staging_dir(

@@ -4351,7 +4351,7 @@ def _is_allowed_unclaimed(
 _KNOWN_GAPS = {
     # Bind to exact source locations, not same-name operation counts within a function; fixing old sites and adding new ones are not interchangeable.
     ('publish', 'publish_to_workshop', 745, 'copy2'),
-    ('publish', 'publish_to_workshop', 843, 'copy2'),
+    ('publish', 'publish_to_workshop', 832, 'copy2'),
 }
 
 

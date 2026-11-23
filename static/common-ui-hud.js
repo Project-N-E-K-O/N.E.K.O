@@ -138,18 +138,20 @@ window.AgentHUD.saveTaskHudPreference = function (visible, options) {
             return fetch(url, { method: 'POST', headers: headers, body: body })
                 .then(async function (r) {
                     if (r && r.status === 403 && typeof r.clone === 'function') {
+                        let shouldRetryCsrf = false;
                         try {
                             const errPayload = await r.clone().json();
-                            if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
-                                const csrfHeaders = await _getAgentHudMutationHeaders(true);
-                                const retryResp = await fetch(url, {
-                                    method: 'POST',
-                                    headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
-                                    body: body,
-                                });
-                                return !!(retryResp && retryResp.ok);
-                            }
+                            shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
                         } catch (_) { /* keep original 403 */ }
+                        if (shouldRetryCsrf) {
+                            const csrfHeaders = await _getAgentHudMutationHeaders(true);
+                            const retryResp = await fetch(url, {
+                                method: 'POST',
+                                headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
+                                body: body,
+                            });
+                            return !!(retryResp && retryResp.ok);
+                        }
                     }
                     return !!(r && r.ok);
                 })

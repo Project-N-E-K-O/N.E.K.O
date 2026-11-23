@@ -311,7 +311,7 @@
         "contentFolderPlaceholder": "로컬 항목에서 얻은 콘텐츠 폴더 경로",
         "previewImagePath": "미리보기 이미지 경로 *",
         "previewImagePlaceholder": "미리보기 이미지를 선택하거나 로컬 아이템에서 자동 획득",
-        "previewImageSizeHint": "참고: Steam 미리보기 이미지 크기는 1MB 미만이어야 합니다.",
+        "previewImageSizeHint": "참고: Steam 미리보기 이미지 크기는 1MB 미만이어야 합니다. 워크숍 폴더 외부의 로컬 이미지는 '파일 선택'을 사용하세요.",
         "uploadInstructions": "먼저 '로컬 항목 관리' 섹션에서 게시되지 않은 항목을 선택한 다음 '워크샵에 업로드' 버튼을 클릭하세요. 콘텐츠 폴더 경로와 미리보기 이미지 경로가 자동으로 채워집니다.",
         "unnamedItem": "이름이 없는 항목",
         "unknownItem": "알 수 없는 항목",

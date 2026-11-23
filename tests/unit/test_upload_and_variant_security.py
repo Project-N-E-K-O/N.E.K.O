@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 import tracemalloc
 from types import SimpleNamespace
@@ -165,9 +166,6 @@ def test_live2d_uploads_require_csrf_and_origin():
 @pytest.mark.parametrize(
     "malicious_filename",
     [
-        "C:/Users/Public/evil.py",
-        "C:\\Users\\Public\\evil.py",
-        "D:evil.py",
         "../escape.txt",
         "a/../../escape.txt",
         "a/..",
@@ -197,6 +195,45 @@ def test_live2d_upload_model_rejects_drive_letters_and_traversal(tmp_path, monke
         resp = client.post(
             "/api/live2d/upload_model",
             files=[("files", (malicious_filename, b"evil", "application/octet-stream"))],
+        )
+    assert resp.status_code == 400
+    assert resp.json()["success"] is False
+    assert list(user_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "windows_only_filename",
+    [
+        "C:/Users/Public/evil.py",
+        "C:\\Users\\Public\\evil.py",
+        "D:evil.py",
+        "Model/bad?.json",
+        "Model/bad*.json",
+    ],
+)
+def test_live2d_upload_model_rejects_windows_drive_and_reserved_chars_on_windows(
+    tmp_path, monkeypatch, windows_only_filename
+):
+    from main_routers import live2d_router
+
+    user_dir = tmp_path / "user_live2d"
+    user_dir.mkdir()
+    monkeypatch.setattr(live2d_router, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        live2d_router,
+        "get_config_manager",
+        lambda: SimpleNamespace(ensure_live2d_directory=lambda: True, live2d_dir=user_dir),
+    )
+
+    app = FastAPI()
+    app.include_router(live2d_router.router)
+    with TestClient(
+        app,
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
+    ) as client:
+        resp = client.post(
+            "/api/live2d/upload_model",
+            files=[("files", (windows_only_filename, b"evil", "application/octet-stream"))],
         )
     assert resp.status_code == 400
     assert resp.json()["success"] is False
@@ -506,18 +543,77 @@ def test_vrm_uploads_reject_unauthenticated_and_cross_origin(tmp_path, monkeypat
     assert list(user_vrm.iterdir()) == []
 
 
-def test_live2d_model_name_allows_colon_on_posix_lookup_but_rejects_on_upload_and_windows(monkeypatch):
+def test_live2d_model_name_and_upload_relpath_respect_platform_chars(monkeypatch):
     from main_routers import live2d_router
+    from utils import frontend_utils
 
-    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
-    monkeypatch.setattr(live2d_router.os, "name", "posix")
+    monkeypatch.setattr(frontend_utils, "_is_windows", lambda: False)
+    monkeypatch.setattr(live2d_router, "_is_windows", lambda: False)
+    assert frontend_utils.is_valid_live2d_model_name("Blue:Night", for_upload=True) is True
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is True
     assert live2d_router._is_valid_live2d_model_name("Blue:Night") is True
     assert live2d_router._is_valid_live2d_model_name("../Blue:Night") is False
     assert live2d_router._is_valid_live2d_model_name("Blue/Night") is False
     assert live2d_router._is_valid_live2d_model_name("Blue\\Night") is False
+    assert str(live2d_router._sanitize_live2d_upload_relpath("Model:v2/tex?.png")) == "Model:v2/tex?.png"
+    assert str(live2d_router._sanitize_live2d_upload_relpath("Model:v2/a<b|c>.json")) == "Model:v2/a<b|c>.json"
 
-    monkeypatch.setattr(live2d_router.os, "name", "nt")
+    monkeypatch.setattr(frontend_utils, "_is_windows", lambda: True)
+    monkeypatch.setattr(live2d_router, "_is_windows", lambda: True)
+    assert frontend_utils.is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
     assert live2d_router._is_valid_live2d_model_name("Blue:Night") is False
+    assert live2d_router._sanitize_live2d_upload_relpath("Model:v2/tex?.png") is None
+    assert live2d_router._sanitize_live2d_upload_relpath("Model/a<b|c>.json") is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filename characters")
+def test_live2d_upload_model_and_file_allow_colon_and_question_on_posix(tmp_path, monkeypatch):
+    from main_routers import live2d_router
+
+    user_dir = tmp_path / "user_live2d"
+    user_dir.mkdir()
+    monkeypatch.setattr(
+        live2d_router,
+        "get_config_manager",
+        lambda: SimpleNamespace(
+            ensure_live2d_directory=lambda: True,
+            live2d_dir=user_dir,
+            readable_live2d_dir=None,
+        ),
+    )
+    monkeypatch.setattr(
+        live2d_router,
+        "find_model_directory",
+        lambda name: (str(user_dir / name), f"/user_live2d/{name}") if name == "Model:v2" else (None, None),
+    )
+
+    app = FastAPI()
+    app.include_router(live2d_router.router)
+    with TestClient(
+        app,
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
+    ) as client:
+        r_model = client.post(
+            "/api/live2d/upload_model",
+            files=[
+                ("files", ("Model:v2/Model:v2.model3.json", b'{"Version": 3}', "application/json")),
+                ("files", ("Model:v2/tex?.png", b"png-bytes", "image/png")),
+            ],
+        )
+        assert r_model.status_code == 200
+        assert r_model.json()["success"] is True
+        assert (user_dir / "Model:v2" / "Model:v2.model3.json").is_file()
+        assert (user_dir / "Model:v2" / "tex?.png").is_file()
+
+        r_file = client.post(
+            "/api/live2d/upload_file/Model:v2",
+            params={"file_type": "motion"},
+            files={"file": ("idle:01.motion3.json", b"{}", "application/json")},
+        )
+        assert r_file.status_code == 200
+        assert r_file.json()["success"] is True
+        assert (user_dir / "Model:v2" / "motions" / "idle:01.motion3.json").is_file()
 
 
 @pytest.mark.asyncio
@@ -555,20 +651,20 @@ async def test_write_staged_upload_bytes_waits_for_worker_on_cancellation(tmp_pa
 
 
 def test_cards_and_publish_live2d_name_validation_matches_posix_and_windows(monkeypatch):
-    import os
     from main_routers import live2d_router
     from main_routers.characters_router import cards
     from main_routers.workshop_router import publish
+    from utils import frontend_utils
 
-    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
-
-    monkeypatch.setattr(os, "name", "posix")
+    monkeypatch.setattr(frontend_utils, "_is_windows", lambda: False)
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is True
     assert cards._is_valid_live2d_model_name("Blue:Night") is True
     assert publish._is_valid_live2d_model_name("Blue:Night") is True
     assert cards._is_valid_live2d_model_name("../Blue:Night") is False
     assert publish._is_valid_live2d_model_name("Blue/Night") is False
 
-    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(frontend_utils, "_is_windows", lambda: True)
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
     assert cards._is_valid_live2d_model_name("Blue:Night") is False
     assert publish._is_valid_live2d_model_name("Blue:Night") is False
 

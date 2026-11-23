@@ -4299,12 +4299,14 @@ async function saveApiKey(params) {
         }
         let response = await postCoreApiOnce(false);
         if (response.status === 403 && typeof response.clone === 'function') {
+            let shouldRetryCsrf = false;
             try {
                 const errPayload = await response.clone().json();
-                if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
-                    response = await postCoreApiOnce(true);
-                }
+                shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
             } catch (_) { /* keep original 403 */ }
+            if (shouldRetryCsrf) {
+                response = await postCoreApiOnce(true);
+            }
         }
 
         if (response.ok) {

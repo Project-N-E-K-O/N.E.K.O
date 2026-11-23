@@ -1116,6 +1116,11 @@ def _resolve_workshop_search_dirs() -> list:
     return dirs
 
 
+def _is_windows() -> bool:
+    """Return True when running on Windows."""
+    return os.name == "nt"
+
+
 def is_valid_live2d_model_name(model_name: str | None, *, for_upload: bool = False) -> bool:
     """Return whether ``model_name`` is a single safe Live2D directory/item identifier."""
     if not isinstance(model_name, str):
@@ -1123,7 +1128,8 @@ def is_valid_live2d_model_name(model_name: str | None, *, for_upload: bool = Fal
     stripped = model_name.strip()
     if not stripped or stripped in {".", ".."} or stripped.strip(".") == "":
         return False
-    forbidden_chars = ("/", "\\", ":", "\x00") if (for_upload or os.name == "nt") else ("/", "\\", "\x00")
+    del for_upload
+    forbidden_chars = ("/", "\\", ":", "\x00") if _is_windows() else ("/", "\\", "\x00")
     if ".." in model_name or any(ch in model_name for ch in forbidden_chars):
         return False
     return True

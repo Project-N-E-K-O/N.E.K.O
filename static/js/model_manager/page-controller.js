@@ -8797,12 +8797,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 const firstResp = await sendVrmUpload(false);
                 if (firstResp.status === 403 && typeof firstResp.clone === 'function') {
+                    let shouldRetryCsrf = false;
                     try {
                         const errPayload = await firstResp.clone().json();
-                        if (errPayload && errPayload.error_code === 'csrf_validation_failed') {
-                            return sendVrmUpload(true);
-                        }
+                        shouldRetryCsrf = Boolean(errPayload && errPayload.error_code === 'csrf_validation_failed');
                     } catch (_) { /* keep original 403 */ }
+                    if (shouldRetryCsrf) {
+                        return sendVrmUpload(true);
+                    }
                 }
                 return firstResp;
             })();

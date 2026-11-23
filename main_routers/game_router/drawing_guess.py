@@ -4385,7 +4385,7 @@ async def drawing_guess_round_start(request: Request):
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
     name_check = validate_character_name(lanlan_name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS)
-    if not name_check.ok:
+    if not name_check.ok and name_check.code != "reserved_route_name":
         return {"ok": False, "reason": "invalid_lanlan_name"}
     lanlan_name = name_check.normalized
     if not session_id:

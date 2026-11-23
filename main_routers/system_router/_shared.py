@@ -150,6 +150,7 @@ def _validate_local_mutation_request(
     *,
     payload: dict[str, Any] | None = None,
     error_defaults: dict[str, Any] | None = None,
+    require_csrf: bool = True,
 ) -> JSONResponse | None:
     csrf_token = request.headers.get(_AUTOSTART_CSRF_HEADER, "")
     if not csrf_token and payload:
@@ -166,7 +167,7 @@ def _validate_local_mutation_request(
     allowed_origins = _get_allowed_local_origins(request)
     has_valid_origin = bool(request_origin and request_origin in allowed_origins)
 
-    if has_valid_csrf and has_valid_origin:
+    if has_valid_origin and (has_valid_csrf or not require_csrf):
         return None
 
     # Port-independent hostname fallback: Docker's internal port (such as 48911) may differ

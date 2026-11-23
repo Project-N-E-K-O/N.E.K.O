@@ -140,6 +140,48 @@ def test_route_start_and_drawing_guess_round_start_allow_55_char_name_and_reject
         assert r_bad_dg.json() == {"ok": False, "reason": "invalid_lanlan_name"}
 
 
+@pytest.mark.parametrize("reserved_name", ["focus", "market", "theater", "templates"])
+def test_route_start_and_drawing_guess_round_start_allow_reserved_route_names_for_existing_characters(
+    monkeypatch, reserved_name
+):
+    from main_routers import game_router
+    from main_routers.game_router import drawing_guess as dg_router
+    from main_routers.game_router import runtime as gr_runtime
+
+    monkeypatch.setattr(gr_runtime, "_resolve_game_prompt_locale", lambda *_a, **_kw: "zh-CN")
+    monkeypatch.setattr(gr_runtime, "get_session_manager", dict)
+    monkeypatch.setattr(gr_runtime, "_route_slot_owned_by_external", lambda *_a, **_kw: True)
+
+    app = FastAPI()
+    app.include_router(game_router.router)
+    app.include_router(dg_router.router)
+    headers = {"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()}
+    with TestClient(app, headers=headers) as client:
+        r_game = client.post(
+            "/api/game/soccer/route/start",
+            json={"lanlan_name": reserved_name, "session_id": "s1"},
+        )
+        assert r_game.json().get("reason") != "invalid_lanlan_name"
+
+        r_dg = client.post(
+            "/api/game/drawing_guess/round/start",
+            json={"lanlan_name": reserved_name, "session_id": "s1"},
+        )
+        assert r_dg.json().get("reason") != "invalid_lanlan_name"
+
+        r_con_game = client.post(
+            "/api/game/soccer/route/start",
+            json={"lanlan_name": "CON", "session_id": "s1"},
+        )
+        assert r_con_game.json() == {"ok": False, "reason": "invalid_lanlan_name"}
+
+        r_con_dg = client.post(
+            "/api/game/drawing_guess/round/start",
+            json={"lanlan_name": "CON", "session_id": "s1"},
+        )
+        assert r_con_dg.json() == {"ok": False, "reason": "invalid_lanlan_name"}
+
+
 # ---------------------------------------------------------------------------
 # F0018 & F0019: CSRF / Origin / Content-Type guards on all game POST routes
 # ---------------------------------------------------------------------------

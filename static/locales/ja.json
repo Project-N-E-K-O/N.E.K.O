@@ -311,7 +311,7 @@
         "contentFolderPlaceholder": "ローカルアイテムから取得したコンテンツフォルダパス",
         "previewImagePath": "プレビュー画像パス *",
         "previewImagePlaceholder": "プレビュー画像を選択するか、ローカルアイテムから自動取得",
-        "previewImageSizeHint": "注意: Steamプレビュー画像のサイズは1MB未満である必要があります",
+        "previewImageSizeHint": "注意: Steamプレビュー画像のサイズは1MB未満である必要があります。ワークショップ外のローカル画像は「ファイルを選択」を使用してください",
         "uploadInstructions": "まず「ローカルアイテム管理」セクションで未公開アイテムを選択し、「ワークショップにアップロード」ボタンをクリックしてください。コンテンツフォルダパスとプレビュー画像パスが自動的に入力されます。",
         "unnamedItem": "名前なしアイテム",
         "unknownItem": "不明なアイテム",

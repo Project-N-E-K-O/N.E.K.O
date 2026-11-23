@@ -1673,11 +1673,17 @@ class _Live2dUploadGuardedRoute(APIRoute):
 upload_router = APIRouter(route_class=_Live2dUploadGuardedRoute)
 
 
+def _is_windows() -> bool:
+    """Return True when running on Windows."""
+    return os.name == "nt"
+
+
 def _sanitize_live2d_upload_relpath(raw_filename: str | None) -> pathlib.PurePosixPath | None:
     """Validate and sanitize a multipart upload filename into a relative POSIX path."""
     if not isinstance(raw_filename, str) or not raw_filename:
         return None
-    if "\x00" in raw_filename or ":" in raw_filename:
+    windows = _is_windows()
+    if "\x00" in raw_filename or (windows and ":" in raw_filename):
         return None
     if raw_filename.startswith(("/", "\\")):
         return None
@@ -1688,7 +1694,7 @@ def _sanitize_live2d_upload_relpath(raw_filename: str | None) -> pathlib.PurePos
     for part in parts:
         if part in ("", ".", ".."):
             return None
-        if any(ch in part for ch in '<>:"|?*'):
+        if windows and any(ch in part for ch in '<>:"|?*'):
             return None
     return pathlib.PurePosixPath(*parts)
 
@@ -1990,7 +1996,12 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         
         # Basename only, avoiding traversal.
         safe_filename = pathlib.Path(filename.replace("\\", "/")).name
-        if not safe_filename or safe_filename in {".", ".."} or ":" in safe_filename or "\x00" in safe_filename:
+        if (
+            not safe_filename
+            or safe_filename in {".", ".."}
+            or "\x00" in safe_filename
+            or (_is_windows() and any(ch in safe_filename for ch in '<>:"|?*'))
+        ):
             return JSONResponse(status_code=400, content={"success": False, "error": "非法文件名"})
 
         target_file_path = target_dir / safe_filename

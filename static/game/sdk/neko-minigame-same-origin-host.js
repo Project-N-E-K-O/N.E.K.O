@@ -1429,7 +1429,16 @@
     }
 
     _postWithCsrf(path, payload, options = {}) {
-      const deadlineMs = Number.isFinite(options?.deadlineMs) ? options.deadlineMs : null;
+      let deadlineMs = null;
+      if (Number.isFinite(options?.deadlineMs)) {
+        deadlineMs = options.deadlineMs;
+      } else {
+        const rawTimeoutMs = Number(options?.timeoutMs);
+        const budgetMs = Number.isFinite(rawTimeoutMs) && rawTimeoutMs !== 0
+          ? Math.max(1, rawTimeoutMs)
+          : DEFAULT_REQUEST_TIMEOUT_MS;
+        deadlineMs = Date.now() + budgetMs;
+      }
       return this.withCsrfRetry((headers) => {
         const body = jsonBody(payload, headers);
         // Include host identity and the actual token on every CSRF attempt.

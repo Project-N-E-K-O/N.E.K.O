@@ -311,7 +311,7 @@
         "contentFolderPlaceholder": "从本地物品中获取的内容文件夹路径",
         "previewImagePath": "预览图片路径 *",
         "previewImagePlaceholder": "选择预览图片或从本地物品自动获取",
-        "previewImageSizeHint": "提示：Steam 预览图片大小必须小于1MB",
+        "previewImageSizeHint": "提示：Steam 预览图片大小必须小于1MB；选择工坊目录外的本地图片请点击「选择文件」",
         "uploadInstructions": "请先在\"管理本地物品\"区域选择一个未发布的物品，然后点击\"上传到创意工坊\"按钮。内容文件夹路径和预览图片路径将自动填充。",
         "unnamedItem": "未命名物品",
         "unknownItem": "未知物品",
