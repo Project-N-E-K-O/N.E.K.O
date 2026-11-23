@@ -5,6 +5,7 @@ import type { Component } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import words from '@/i18n/power/en-US'
+import chinese from '@/i18n/power/zh-CN'
 import type {
   BoardAsk, CommissionRow, McpView, RoleModelsView, SessionUsage, TranscriptEntry, UsageLimit,
 } from '@/api/console'
@@ -32,6 +33,8 @@ vi.mock('vue-router', () => ({ useRouter: () => ({ push }) }))
 
 const refused = (code: string, status = 400) => ({ code, response: { status, data: { detail: { code } } } })
 let cleanup: (() => void) | undefined
+// The language of the page that was mounted last: set it to see the page in another.
+let language: { value: string } | undefined
 const NativeMutationObserver = globalThis.MutationObserver
 async function flush() { for (let i = 0; i < 8; i++) { await Promise.resolve(); await nextTick() } }
 async function mount(component: Component, props: Record<string, unknown> = {}) {
@@ -40,7 +43,12 @@ async function mount(component: Component, props: Record<string, unknown> = {}) 
   const state = reactive({ props })
   const app = createApp({ render: () => h(component, state.props) })
   app.use(ElementPlus)
-  app.use(createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': { power: words, common: { cancel: 'Cancel' } } } }))
+  const mounted = createI18n({
+    legacy: false, locale: 'en-US',
+    messages: { 'en-US': { power: words, common: { cancel: 'Cancel' } }, 'zh-CN': { power: chinese, common: { cancel: '取消' } } },
+  })
+  language = mounted.global.locale as unknown as { value: string }
+  app.use(mounted)
   app.mount(container)
   cleanup = () => { app.unmount(); container.remove() }
   await flush()
@@ -66,6 +74,14 @@ async function type(testId: string, value: string) {
   input.value = value
   input.dispatchEvent(new Event('input', { bubbles: true }))
   await flush()
+}
+/** Press Enter in a field. */
+function enter(testId: string) {
+  const input = document.querySelector([
+    `input[data-testid="${testId}"]`, `[data-testid="${testId}"] input`,
+  ].join(', ')) as HTMLInputElement
+  expect(input).toBeTruthy()
+  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
 }
 const i18n = createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': { power: words } } })
 const { t, te } = i18n.global
@@ -123,12 +139,33 @@ describe('what a familiar asks the user', () => {
 
   it('takes an answer in words for a question put in words, and none that says nothing', async () => {
     const answers: unknown[] = []
-    await mount(AskBox, { ask: { id: 'q2', question: 'Which day?' }, busy: '', onAnswer: (given: unknown) => answers.push(given) })
+    const { state } = await mount(AskBox, { ask: { id: 'q2', question: 'Which day?' }, busy: '', onAnswer: (given: unknown) => answers.push(given) })
     expect(byTest('ask-whole')).toBeNull()
     expect((byTest('familiar-answer') as HTMLButtonElement).disabled).toBe(true)
     await type('familiar-reply', 'Friday')
     await click(byTest('familiar-answer'))
     expect(answers).toEqual([{ text: 'Friday' }])
+    // Enter sends as the button does: nothing while an answer is on its way.
+    state.props = { ...state.props, busy: 'answer' }
+    await flush()
+    enter('familiar-reply')
+    expect(answers).toEqual([{ text: 'Friday' }])
+    state.props = { ...state.props, busy: '' }
+    await flush()
+    enter('familiar-reply')
+    expect(answers).toEqual([{ text: 'Friday' }, { text: 'Friday' }])
+  })
+
+  it('marks the whole command, to be copied with the keys, where the page has no clipboard', async () => {
+    vi.stubGlobal('navigator', { clipboard: { writeText: async () => { throw new Error('not allowed') } } })
+    await mount(AskBox, { ask: permission(), busy: '' })
+    await click(byTest('ask-copy'))
+    // It does not say it was copied; all of it is marked instead.
+    expect(byTest('ask-copy')?.textContent).toBe(words.ask.copy)
+    const marked = window.getSelection()
+    expect(marked?.rangeCount).toBe(1)
+    expect(marked?.getRangeAt(0).commonAncestorContainer).toBe(byTest('ask-whole'))
+    expect(marked?.toString()).toBe(LONG)
   })
 })
 
@@ -191,10 +228,18 @@ describe('what was said in a familiar', () => {
     api.getTranscript.mockResolvedValueOnce({ readable: false, reason: 'dsh', entries: [], before: null })
     const { state } = await mount(TranscriptPane, { sessionId: 's1' })
     expect(byTest('transcript-unreadable')?.textContent).toBe(words.transcript.inDsh)
+    // It runs elsewhere: there will never be anything here to read again.
+    expect(byTest('transcript-latest')).toBeNull()
     api.getTranscript.mockResolvedValueOnce({ readable: false, reason: 'empty', entries: [], before: null })
     state.props = { sessionId: 's2' }
     await flush()
     expect(byTest('transcript-unreadable')?.textContent).toBe(words.transcript.empty)
+    // Nothing was said in it yet; once something was, it is read from right here.
+    api.getTranscript.mockResolvedValueOnce({ readable: true, before: null, entries: [said({ at: 0 })] })
+    await click(byTest('transcript-latest'))
+    expect(api.getTranscript).toHaveBeenLastCalledWith('s2', { before: null })
+    expect(document.querySelectorAll('[data-entry]').length).toBe(1)
+    expect(byTest('transcript-unreadable')).toBeNull()
     // Another familiar: what is shown is its own, read anew.
     api.getTranscript.mockRejectedValueOnce(refused('no_familiar', 404))
     state.props = { sessionId: 's3' }
@@ -356,6 +401,45 @@ describe('the usage limit', () => {
     await click(byTest('limit-default'))
     expect(api.setUsageLimit).toHaveBeenLastCalledWith(null)
     expect(amount.value).toBe('5000')
+  })
+
+  it('keeps the tokens that were meant when the language, and with it the unit, changes', async () => {
+    api.getUsageLimit.mockResolvedValue(limit())
+    await mount(UsageLimitCard)
+    const amount = byTest('limit-amount') as HTMLInputElement
+    expect(amount.value).toBe('5000')
+    // Chinese counts in ten thousands: the same five million tokens are five hundred of those.
+    language!.value = 'zh-CN'
+    await flush()
+    expect(amount.value).toBe('500')
+    expect((byTest('limit-save') as HTMLButtonElement).disabled).toBe(true)
+    // What was typed and not saved yet is turned as well, and saved as the tokens it meant.
+    await type('limit-amount', '80')
+    language!.value = 'en-US'
+    await flush()
+    expect(amount.value).toBe('800')
+    api.setUsageLimit.mockResolvedValueOnce(limit({ tokens: 800_000, set: 800_000 }))
+    await click(byTest('limit-save'))
+    expect(api.setUsageLimit).toHaveBeenCalledWith(800_000)
+  })
+
+  it('is saved once however often Enter is pressed while it is being saved', async () => {
+    api.getUsageLimit.mockResolvedValue(limit())
+    await mount(UsageLimitCard)
+    let saved: (now: UsageLimit) => void = () => {}
+    api.setUsageLimit.mockImplementation(() => new Promise(resolve => { saved = resolve }))
+    await type('limit-amount', '800')
+    enter('limit-amount')
+    enter('limit-amount')
+    await flush()
+    expect(api.setUsageLimit).toHaveBeenCalledTimes(1)
+    saved(limit({ tokens: 800_000, set: 800_000 }))
+    await flush()
+    // Saved: Enter saves again.
+    await type('limit-amount', '900')
+    enter('limit-amount')
+    await flush()
+    expect(api.setUsageLimit).toHaveBeenCalledTimes(2)
   })
 
   it('says why a number was not taken and keeps what was typed', async () => {
@@ -527,6 +611,54 @@ describe('the commissions', () => {
     expect(byTest('commission-stop')).toBeNull()
   })
 
+  it('is opened with the keys as well: its title is a button that says whether it is open', async () => {
+    await mount(Commissions)
+    const title = document.querySelector('[data-commission="c2"] button.title') as HTMLButtonElement
+    expect(title.getAttribute('aria-expanded')).toBe('false')
+    await click(title)
+    expect(title.getAttribute('aria-expanded')).toBe('true')
+    const detail = document.querySelector('[data-detail="c2"]')
+    expect(detail?.id).toBeTruthy()
+    expect(title.getAttribute('aria-controls')).toBe(detail?.id)
+    await click(title)
+    expect(document.querySelector('[data-detail="c2"]')).toBeNull()
+  })
+
+  it('tells one at work a thing once, and takes away only what was sent', async () => {
+    api.listCommissions.mockResolvedValue({ commissions: [...listed(), row({ id: 'c5', title: 'Write the notes' })], more: false })
+    let taken: (answer: unknown) => void = () => {}
+    api.tellCommission.mockImplementation(() => new Promise(resolve => { taken = resolve }))
+    const typed = () => (document.querySelector('[data-testid="commission-say"] input, input[data-testid="commission-say"]') as HTMLInputElement).value
+    await mount(Commissions)
+    await click(document.querySelector('[data-commission="c1"]'))
+    await type('commission-say', 'the dark theme too')
+    enter('commission-say')
+    enter('commission-say')
+    await flush()
+    expect(api.tellCommission).toHaveBeenCalledTimes(1)
+    // More was typed before it was taken: that stays.
+    await type('commission-say', 'and the light one')
+    taken({ success: true })
+    await flush()
+    expect(typed()).toBe('and the light one')
+    // What was sent and not changed since is taken away.
+    enter('commission-say')
+    await flush()
+    taken({ success: true })
+    await flush()
+    expect(api.tellCommission).toHaveBeenCalledTimes(2)
+    expect(typed()).toBe('')
+    // Another one was opened meanwhile and the same words typed for it: they are that one's, and stay.
+    await type('commission-say', 'same words')
+    enter('commission-say')
+    await flush()
+    await click(document.querySelector('[data-commission="c5"]'))
+    await type('commission-say', 'same words')
+    taken({ success: true })
+    await flush()
+    expect(typed()).toBe('same words')
+  })
+
   it('says so when there is nothing, when more is left out, and when the list could not be read', async () => {
     api.listCommissions.mockResolvedValueOnce({ commissions: [], more: false })
     await mount(Commissions)
@@ -543,6 +675,74 @@ describe('the commissions', () => {
 })
 
 describe('what happened in a project', () => {
+  it('is not read a second time beside a read that is under way when the page is looked at again', async () => {
+    api.getTimelineStart.mockResolvedValue({ after: '', latest: 'e2.m0' })
+    api.getProjectBoard.mockResolvedValue({ revision: 'r', projects: [], loose: [] })
+    let answer: (page: unknown) => void = () => {}
+    api.getTimeline.mockReturnValue(new Promise(resolve => { answer = resolve }))
+    await mount(ActivityPane, { project: 'Blog' })
+    expect(api.getTimeline).toHaveBeenCalledTimes(1)
+    // Looked away and back while the read is still out: the one read is waited for.
+    document.dispatchEvent(new Event('visibilitychange'))
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(api.getTimeline).toHaveBeenCalledTimes(1)
+    answer({ next: 'e1.m0', more: false, latest: 'e1.m0', entries: [
+      { cursor: 'e1.m0', at: 10, kind: 'started', lanlan_name: 'Lan', project: 'Blog', session_id: 's1', commission_id: 'c1', peer: null, text: '', detail: {} },
+    ] })
+    await flush()
+    // Each thing that happened is listed once.
+    expect(document.querySelectorAll('.row').length).toBe(1)
+  })
+
+  it('asks again where to begin after that could not be read, and never reads everything instead', async () => {
+    vi.useFakeTimers()
+    api.getProjectBoard.mockResolvedValue({ revision: 'r', projects: [], loose: [] })
+    api.getTimelineStart.mockRejectedValueOnce(refused('unavailable', 503))
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e99.m9', more: false, latest: 'e99.m9' })
+    await mount(ActivityPane, { project: null })
+    expect(api.getTimeline).not.toHaveBeenCalled()
+    expect(document.querySelector('.el-alert')).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(15_100)
+    await flush()
+    expect(api.getTimelineStart).toHaveBeenCalledTimes(2)
+    expect(api.getTimeline).toHaveBeenCalledWith({ project: null, after: 'e50.m2', limit: 1000 })
+    expect(document.querySelector('.el-alert')).toBeNull()
+    // Known now: what came since is asked for from where the last read stopped, not from there again.
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(api.getTimelineStart).toHaveBeenCalledTimes(2)
+    expect(api.getTimeline).toHaveBeenLastCalledWith({ project: null, after: 'e99.m9', limit: 1000 })
+  })
+
+  it('reads no further page while nobody looks, and reads on from there when they look again', async () => {
+    let hidden = false
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
+    try {
+      api.getProjectBoard.mockResolvedValue({ revision: 'r', projects: [], loose: [] })
+      let answer: (page: unknown) => void = () => {}
+      api.getTimeline.mockResolvedValue({ entries: [], next: 'e9.m0', more: false, latest: 'e9.m0' })
+      api.getTimeline.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+      await mount(ActivityPane, { project: 'Blog' })
+      hidden = true
+      answer({ next: 'e1.m0', more: true, latest: 'e9.m0', entries: [
+        { cursor: 'e1.m0', at: 10, kind: 'started', lanlan_name: 'Lan', project: 'Blog', session_id: 's1', commission_id: 'c1', peer: null, text: '', detail: {} },
+      ] })
+      await flush()
+      // What came is shown; the page after it is not asked for.
+      expect(api.getTimeline).toHaveBeenCalledTimes(1)
+      expect(document.querySelectorAll('.row').length).toBe(1)
+      hidden = false
+      document.dispatchEvent(new Event('visibilitychange'))
+      await flush()
+      expect(api.getTimeline).toHaveBeenCalledTimes(2)
+      expect(api.getTimeline).toHaveBeenLastCalledWith({ project: 'Blog', after: 'e1.m0', limit: 1000 })
+    } finally {
+      delete (document as unknown as { hidden?: boolean }).hidden
+    }
+  })
+
   it('is read for that project and told with the names the board has', async () => {
     api.getTimelineStart.mockResolvedValue({ after: '', latest: 'e2.m0' })
     api.getTimeline.mockResolvedValue({ entries: [], next: 'e2.m0', more: false, latest: 'e2.m0' })

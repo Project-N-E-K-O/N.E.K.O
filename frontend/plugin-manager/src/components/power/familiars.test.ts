@@ -12,6 +12,7 @@ import FamiliarsPane from './space/FamiliarsPane.vue'
 const api = vi.hoisted(() => ({
   getTemplates: vi.fn(), draftFamiliar: vi.fn(), makeFamiliar: vi.fn(), pickDirectory: vi.fn(),
   getProjectBoard: vi.fn(), writeCard: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(), stopCommission: vi.fn(),
+  getTranscript: vi.fn(), getSessionUsage: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { response?: { data?: { detail?: { code?: string } } } })?.response?.data?.detail?.code ?? null,
 }))
 vi.mock('@/api/console', () => api)
@@ -215,6 +216,17 @@ describe('a familiar up close', () => {
     expect(field('familiar-say').value).toBe('still there?')
   })
 
+  it('passes a sentence on once however often Enter is pressed while it is on its way', async () => {
+    const working = card({ state: 'working', commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 } })
+    await show([working])
+    api.tellCommission.mockReturnValue(new Promise(() => {}))
+    await type('familiar-say', 'use openpyxl')
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+    field('familiar-say').dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+    await flush()
+    expect(api.tellCommission).toHaveBeenCalledTimes(1)
+  })
+
   it('shows a question with its choices and answers it by the one that was pressed', async () => {
     const asking = card({ state: 'waiting_user', commission: { id: 'c1', title: 'Add an Excel export', status: 'waiting_user', started_at: 0, ask: {
       id: 'q1', kind: 'permission', category: 'run_command', detail: { tool: 'bash', command: 'pip install openpyxl' }, options: ['always', 'session', 'once', 'deny'],
@@ -252,6 +264,59 @@ describe('a familiar up close', () => {
     expect(lines).toEqual(['1. Which day? (Friday / Saturday)', '2. Window seat?'])
     // Answered in words, like a question that is one.
     expect(byTest('familiar-reply')).toBeTruthy()
+  })
+
+  it('shows what was said in it and what it used when asked, and reads what it used anew as it uses more', async () => {
+    vi.useFakeTimers()
+    const working = (tokens: number) => card({
+      state: 'working', usage: { requests: 3, tokens }, context_tokens: 900,
+      commission: { id: 'c1', title: 'Add an Excel export', status: 'working', started_at: 0 },
+    })
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [
+      { at: 0, role: 'user', text: 'add an export', cut: false, calls: [], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    api.getSessionUsage.mockResolvedValue({
+      session: { requests: 3, input: 100, output: 20, cache_read: 0, cache_write: 0, tokens: 120, context_tokens: 900 },
+      window: null, commission: null,
+    })
+    await show([working(120)])
+    // What it has in hand at first; neither of the other two was read for nothing.
+    expect(byTest('familiar-summary')).toBeTruthy()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    expect(api.getSessionUsage).not.toHaveBeenCalled()
+    await click(document.querySelector('[data-view="talk"]'))
+    expect(api.getTranscript).toHaveBeenCalledWith('s1', { before: null })
+    expect(byTest('transcript-pane')?.textContent).toContain('add an export')
+    expect(byTest('familiar-summary')).toBeNull()
+    await click(document.querySelector('[data-view="usage"]'))
+    expect(api.getSessionUsage).toHaveBeenCalledTimes(1)
+
+    // The board says it used more, the same thing still in hand: read again. Nothing new on it: not read again.
+    api.getProjectBoard.mockResolvedValue(boardOf([working(120)], 'r2'))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(api.getSessionUsage).toHaveBeenCalledTimes(1)
+    api.getProjectBoard.mockResolvedValue(boardOf([working(4_300)], 'r3'))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(api.getSessionUsage).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows the whole command it asks about, and says when its model is not the one that was set', async () => {
+    const long = `npm run build ${'--flag '.repeat(200)}&& echo done`
+    const asking = card({
+      state: 'waiting_user', model_fallback: 'slot_not_found',
+      commission: { id: 'c1', title: 'Build it', status: 'waiting_user', started_at: 0, ask: {
+        id: 'q1', kind: 'permission', category: 'run_command', detail: { tool: 'bash', command: long, cwd: 'D:/code' }, options: ['once', 'deny'],
+      } },
+    })
+    await show([asking])
+    expect(byTest('ask-whole')?.textContent).toBe(long)
+    expect(byTest('familiar-fallback')?.textContent).toBe(words.roles.fellBack)
+    cleanup?.()
+    await show([card()])
+    expect(byTest('familiar-fallback')).toBeNull()
+    expect(byTest('ask-whole')).toBeNull()
   })
 
   it('writes only the lines of the card that were changed', async () => {

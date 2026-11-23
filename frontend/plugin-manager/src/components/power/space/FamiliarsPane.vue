@@ -54,7 +54,11 @@
         >{{ t(`power.space.familiars.views.${name}`) }}</button>
       </div>
       <TranscriptPane v-if="view === 'talk'" :session-id="selected.id" />
-      <UsagePane v-else-if="view === 'usage'" :session-id="selected.id" :refresh="selected.commission?.id + ':' + selected.state" />
+      <!-- Read again whenever the board says it used more, not only when what it has in hand changes. -->
+      <UsagePane
+        v-else-if="view === 'usage'" :session-id="selected.id"
+        :refresh="`${selected.commission?.id}:${selected.state}:${selected.usage?.tokens ?? 0}:${selected.context_tokens ?? 0}`"
+      />
       <template v-else>
       <h4>{{ t('power.space.familiars.summary') }}</h4>
       <p class="text" data-testid="familiar-summary">{{ selected.summary || t('power.space.familiars.noSummary') }}</p>
@@ -219,7 +223,7 @@ async function act(name: string, work: () => Promise<unknown>, done = ''): Promi
 async function tell() {
   const commission = selected.value?.commission
   const text = sentence.value.trim()
-  if (!commission || !text) return
+  if (!commission || !text || busy.value) return
   if (await act('tell', () => tellCommission(commission.id, text), t('power.space.familiars.sent'))) sentence.value = ''
 }
 

@@ -1,7 +1,14 @@
 <template>
   <section class="talk" data-testid="transcript-pane">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon data-testid="transcript-error" />
-    <p v-if="unreadable" class="muted" data-testid="transcript-unreadable">{{ t(`power.transcript.${unreadable}`) }}</p>
+    <div v-if="unreadable" class="more">
+      <p class="muted" data-testid="transcript-unreadable">{{ t(`power.transcript.${unreadable}`) }}</p>
+      <span class="grow" />
+      <!-- Nothing was said in it yet: there may be by now. One that runs elsewhere never has anything here. -->
+      <el-button v-if="unreadable === 'empty'" size="small" :loading="loading" data-testid="transcript-latest" @click="latest">
+        {{ t('power.transcript.refresh') }}
+      </el-button>
+    </div>
     <template v-else-if="loaded">
       <div class="more">
         <el-button v-if="before !== null" size="small" :loading="loading" data-testid="transcript-earlier" @click="earlier">

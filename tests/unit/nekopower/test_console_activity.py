@@ -104,6 +104,19 @@ async def _at_rest(host: Any, session_id: str) -> None:
     raise AssertionError("the session stayed at work")
 
 
+async def _over(console: Any, commission_id: str) -> Any:
+    """Wait until a commission is done and nothing more is written for it; return it.
+
+    It is done when its report is taken. Its session still ends its turn
+    after that: it writes the last of what was said and says so in events.
+    What is read before that is over is not yet all there is.
+    """
+    done = await wait_status(console.host, commission_id, "done")
+    await _at_rest(console.host, done.session_id)
+    await console.host.task_agents.settle()
+    return done
+
+
 def _code(response: httpx.Response) -> tuple[int, str]:
     return response.status_code, response.json()["detail"]["code"]
 
@@ -166,7 +179,7 @@ async def test_the_timeline_and_the_waits_tell_a_task_agent_that_asks_the_user_a
 
     answered = await console.post(f"/commissions/{first.id}/answer", {"text": "the one on the desktop"})
     assert answered.status_code == 200
-    await wait_status(console.host, first.id, "done")
+    await _over(console, first.id)
     new = (await console.get("/timeline", after=page["latest"])).json()
     assert [item["kind"] for item in new["entries"]][-1] == "ended"
     assert (await console.get("/waits")).json()["waits"] == []
@@ -186,8 +199,7 @@ async def test_a_page_that_opens_begins_reading_a_stretch_before_the_end_and_mis
     scripts = {f"job {n}": ScriptedLLM([_report("ready", f"done {n}")]) for n in range(4)}
     console = consoles(tmp_path, scripts_by_commission(scripts))
     for n in range(4):
-        await wait_status(console.host, (await console.dispatch(f"job {n}")).id, "done")
-    await console.host.task_agents.settle()
+        await _over(console, (await console.dispatch(f"job {n}")).id)
     whole = (await console.get("/timeline")).json()
     assert len(whole["entries"]) >= 8
 
@@ -308,8 +320,7 @@ async def test_what_was_said_in_a_task_agent_is_read_a_page_at_a_time_and_one_en
     )
     console = consoles(tmp_path, llm)
     first = await console.dispatch("sort the photos")
-    done = await wait_status(console.host, first.id, "done")
-    await console.host.task_agents.settle()
+    done = await _over(console, first.id)
 
     page = (await console.get(f"/familiars/{done.session_id}/transcript")).json()
     assert page["success"] and page["readable"] is True and page["before"] is None
@@ -338,8 +349,7 @@ async def test_what_was_said_in_a_task_agent_is_read_a_page_at_a_time_and_one_en
 
 async def test_an_entry_too_large_to_show_whole_is_said_to_be(consoles, tmp_path, monkeypatch):
     console = consoles(tmp_path, ScriptedLLM([_report("ready", "sorted")]))
-    done = await wait_status(console.host, (await console.dispatch("sort the photos")).id, "done")
-    await console.host.task_agents.settle()
+    done = await _over(console, (await console.dispatch("sort the photos")).id)
     page = (await console.get(f"/familiars/{done.session_id}/transcript")).json()
     monkeypatch.setattr(settings, "CONSOLE_TRANSCRIPT_WHOLE_ENTRY_MAX_BYTES", 10)
     refused = await console.get(f"/familiars/{done.session_id}/transcript", at=page["entries"][0]["at"])
@@ -374,8 +384,7 @@ async def test_what_a_task_agent_and_a_commission_used_is_read_with_what_may_be_
         ]
     )
     console = consoles(tmp_path, llm)
-    done = await wait_status(console.host, (await console.dispatch("sort the photos")).id, "done")
-    await console.host.task_agents.settle()
+    done = await _over(console, (await console.dispatch("sort the photos")).id)
 
     of_session = (await console.get(f"/familiars/{done.session_id}/usage")).json()
     assert (of_session["session"]["requests"], of_session["session"]["tokens"]) == (2, 2_270)
@@ -460,6 +469,45 @@ async def test_the_commissions_are_listed_newest_first_with_what_each_asks_and_k
         ({"project": " "}, "bad_name"),
     ):
         assert _code(await console.get("/commissions", **params)) == (400, code), params
+
+
+async def test_what_is_kept_to_is_looked_for_before_the_listing_is_cut(consoles, tmp_path, monkeypatch):
+    from tests.unit.nekopower.test_host_timeline import _file, _session
+
+    console = consoles(tmp_path)
+    ledger = console.host.ledger
+
+    async def ended(project: str | None, title: str, outcome: str = "done") -> str:
+        session = await _session(ledger, title, project=project, kind="single")
+        commission = await _file(ledger, session, title)
+        assert (await ledger.transition(commission.id, "working")).applied
+        assert (await ledger.transition(commission.id, outcome)).applied
+        return commission.id
+
+    # Two of one project, then many of another filed after them.
+    old = [await ended("Garden", f"garden {n}") for n in range(2)]
+    failed = await ended(None, "a loose one that failed", "failed")
+    newer = [await ended("Blog", f"blog {n}") for n in range(8)]
+    monkeypatch.setattr(settings, "CONSOLE_COMMISSIONS_ROWS", 3)
+
+    async def listing(**params: Any) -> tuple[list[str], bool]:
+        answer = (await console.get("/commissions", **params)).json()
+        return [item["id"] for item in answer["commissions"]], answer["more"]
+
+    # Everything: the three newest, and more are left out.
+    assert await listing() == (newer[:-4:-1], True)
+    # Kept to the project whose commissions are the oldest: both are found, and that is all of them.
+    assert await listing(project="Garden") == (old[::-1], False)
+    assert await listing(loose="1") == ([failed], False)
+    assert await listing(status="failed") == ([failed], False)
+    # Kept to the one with many: the newest of it, and more of it are left out.
+    assert await listing(project="Blog") == (newer[:-4:-1], True)
+    assert await listing(project="Blog", limit=8) == (newer[::-1], False)
+    # Nothing is at work or resting among them.
+    assert await listing(status="working,resting") == ([], False)
+    # A look that goes as far as it may says that there may be more beyond it.
+    monkeypatch.setattr(settings, "CONSOLE_COMMISSIONS_SCAN_ROWS", 4)
+    assert await listing(project="Garden") == ([], True)
 
 
 # ---------------------------------------------------------------------------

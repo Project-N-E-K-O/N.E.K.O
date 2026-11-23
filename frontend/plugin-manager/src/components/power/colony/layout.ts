@@ -45,6 +45,14 @@ export function intoTerritory(spot: Spot): Spot {
   return { x: CENTRE.x + dx * reach * REACH_X, y: CENTRE.y + dy * reach * REACH_Y }
 }
 
+// Two that stand nearer than this, as parts of the territory, cannot be told apart.
+const APART_X = 0.1
+const APART_Y = 0.12
+
+function free(spot: Spot, taken: Spot[]): boolean {
+  return taken.every(other => Math.hypot((spot.x - other.x) / APART_X, (spot.y - other.y) / APART_Y) >= 1)
+}
+
 function around(centre: Spot, count: number, radiusX: number, radiusY: number, turn: number): Spot[] {
   return Array.from({ length: count }, (_, index) => {
     const angle = turn + (index / Math.max(count, 1)) * Math.PI * 2
@@ -103,9 +111,14 @@ export function defaultSpots(members: Stander[]): Record<string, Spot> {
           angle = Math.PI / 2 + (index / children.length) * Math.PI * 2
         }
         const reach = atMiddle ? 1 : 0.7 * (1 + Math.floor(index / 2) * 0.8)
-        spots[child.id] = intoTerritory({
-          x: base.x + Math.cos(angle) * CHILD_X * reach, y: base.y + Math.sin(angle) * CHILD_Y * reach,
+        const beside = (turned: number) => intoTerritory({
+          x: base.x + Math.cos(angle + turned) * CHILD_X * reach, y: base.y + Math.sin(angle + turned) * CHILD_Y * reach,
         })
+        // Where it belongs, unless one stands there already: then a little further round its
+        // starter, to one side and the other, until a place is free.
+        const taken = Object.values(spots)
+        const turns = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6].map(step => (step * Math.PI) / 6)
+        spots[child.id] = beside(turns.find(turned => free(beside(turned), taken)) ?? 0)
       })
     }
   }
@@ -129,9 +142,11 @@ const STORE_KEY = 'neko-power-colony-spots'
 
 type Kept = Record<string, Record<string, Spot>>
 
-function readKept(storage: Pick<Storage, 'getItem'>): Kept {
+// The browser's own store is asked for inside the `try`: where a page may not keep anything,
+// asking for it is what fails.
+function readKept(storage?: Pick<Storage, 'getItem'>): Kept {
   try {
-    const raw = JSON.parse(storage.getItem(STORE_KEY) || '{}') as unknown
+    const raw = JSON.parse((storage ?? localStorage).getItem(STORE_KEY) || '{}') as unknown
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
     const kept: Kept = {}
     for (const [territory, spots] of Object.entries(raw as Record<string, unknown>)) {
@@ -153,7 +168,7 @@ function readKept(storage: Pick<Storage, 'getItem'>): Kept {
 }
 
 /** Return where the user put the familiars of a territory, by familiar. */
-export function keptSpots(territory: string, storage: Pick<Storage, 'getItem'> = localStorage): Record<string, Spot> {
+export function keptSpots(territory: string, storage?: Pick<Storage, 'getItem'>): Record<string, Spot> {
   return readKept(storage)[territory] ?? {}
 }
 
@@ -164,7 +179,7 @@ export function keptSpots(territory: string, storage: Pick<Storage, 'getItem'> =
  */
 export function keepSpots(
   territory: string, spots: Record<string, Spot>, present: Iterable<string>,
-  storage: Pick<Storage, 'getItem' | 'setItem'> = localStorage,
+  storage?: Pick<Storage, 'getItem' | 'setItem'>,
 ): void {
   const kept = readKept(storage)
   const here = new Set(present)
@@ -172,7 +187,7 @@ export function keepSpots(
   if (Object.keys(good).length) kept[territory] = good
   else delete kept[territory]
   try {
-    storage.setItem(STORE_KEY, JSON.stringify(kept))
+    (storage ?? localStorage).setItem(STORE_KEY, JSON.stringify(kept))
   } catch {
     // Storage that is full or switched off: they stand where they were put until the page is left.
   }

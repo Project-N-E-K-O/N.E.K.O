@@ -118,6 +118,9 @@ afterEach(() => {
   vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals()
 })
 
+const names: Record<string, string> = { lead: 'Blog', scout: 'Scout' }
+const nameOf = (id: string | null | undefined) => names[id ?? ''] ?? 'a familiar'
+
 describe('how the familiars stood at a moment of what happened', () => {
   it('is worked out from the entries up to it, one that asks the user waiting until it goes on', () => {
     expect([...sceneAt(story, 1)].map(([id, at]) => [id, at.look])).toEqual([['lead', 'working']])
@@ -161,7 +164,6 @@ describe('how the familiars stood at a moment of what happened', () => {
   it('says an entry in a line, by its outcome where it has one, and names a kind it has no words for', () => {
     const i18n = createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': { power: words } } })
     const { t, te } = i18n.global
-    const nameOf = (id: string | null | undefined) => ({ lead: 'Blog', scout: 'Scout' }[id ?? ''] ?? 'a familiar')
     const line = (index: number) => describeEntry(story[index], nameOf, t, te)
     expect(line(0)).toBe('Blog was given: Move the blog')
     expect(line(2)).toBe('Blog sent out Scout')
@@ -204,6 +206,38 @@ describe('where the familiars of a territory stand', () => {
     for (const spot of Object.values(spots)) expect(inTerritory(spot)).toBe(true)
     // No two on one spot.
     expect(new Set(Object.values(spots).map(spot => `${spot.x.toFixed(3)},${spot.y.toFixed(3)}`)).size).toBe(6)
+  })
+
+  it('puts one that another started beside it where nobody stands yet', () => {
+    // Four of its own around a leader: the fourth stands right below it, where the one the leader started would.
+    const spots = defaultSpots([
+      { id: 'lead', leader: true, parent: null }, ...['a', 'b', 'c', 'd'].map(id => ({ id, leader: false, parent: null })),
+      { id: 'l1', leader: false, parent: 'lead' },
+    ])
+    const ids = Object.keys(spots)
+    expect(ids.length).toBe(6)
+    for (const p of ids) {
+      for (const q of ids) {
+        if (p >= q) continue
+        // Far enough apart to be told apart: a tenth of the width, or an eighth of the height.
+        expect(Math.hypot((spots[p].x - spots[q].x) / 0.1, (spots[p].y - spots[q].y) / 0.12), `${p} and ${q}`).toBeGreaterThanOrEqual(1)
+      }
+    }
+    // Still beside the one that started it, and within the territory.
+    expect(Math.hypot(spots.l1.x - spots.lead.x, spots.l1.y - spots.lead.y)).toBeLessThan(0.35)
+    expect(inTerritory(spots.l1)).toBe(true)
+  })
+
+  it('keeps nothing, and does not fail, where the page may not use the store of the browser', () => {
+    const own = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, get() { throw new DOMException('denied', 'SecurityError') } })
+    try {
+      expect(keptSpots('project:Blog')).toEqual({})
+      expect(() => keepSpots('project:Blog', { lead: { x: 0.3, y: 0.4 } }, ['lead'])).not.toThrow()
+    } finally {
+      if (own) Object.defineProperty(globalThis, 'localStorage', own)
+      else delete (globalThis as { localStorage?: Storage }).localStorage
+    }
   })
 
   it('needs no leader: one alone stands in the middle, several stand around it', () => {
@@ -410,8 +444,6 @@ describe('a territory of the colony', () => {
 })
 
 describe('the list of what happened', () => {
-  const nameOf = (id: string | null | undefined) => ({ lead: 'Blog', scout: 'Scout' }[id ?? ''] ?? 'a familiar')
-
   it('lists the entries a line each, marks the moment shown, and asks to be shown the one pressed', async () => {
     const picked: number[] = []
     const { state } = await mount(ActivityFeed, { entries: story, current: null, nameOf, onPick: (index: number) => picked.push(index) })
@@ -438,6 +470,15 @@ describe('the list of what happened', () => {
     await flush()
     expect(document.querySelectorAll('.row').length).toBe(200)
     expect(byTest('activity-feed')?.textContent).toContain(words.activity.earlierLeftOut.replace('{count}', '250'))
+    // The ones before them are drawn when asked for, two hundred at a time, until all are there.
+    byTest('activity-earlier')!.click()
+    await flush()
+    expect(document.querySelectorAll('.row').length).toBe(400)
+    expect(byTest('activity-feed')?.textContent).toContain(words.activity.earlierLeftOut.replace('{count}', '50'))
+    byTest('activity-earlier')!.click()
+    await flush()
+    expect(document.querySelectorAll('.row').length).toBe(450)
+    expect(byTest('activity-earlier')).toBeNull()
   })
 })
 
@@ -510,6 +551,29 @@ describe('the colony on the home page', () => {
     expect(api.getBoard).toHaveBeenCalledTimes(2)
   })
 
+  it('closes the question of one that waits no more, and does not open it by itself when it asks again', async () => {
+    vi.useFakeTimers()
+    await mount(FamiliarColony)
+    ;(document.querySelector('[data-waiting="kid"] button') as HTMLElement).click()
+    await flush()
+    expect(byTest('ask-whole')).toBeTruthy()
+    // Answered elsewhere: it works on.
+    const went = board({ revision: 'r2' })
+    went.projects![0].members[1] = card({
+      ...went.projects![0].members[1], state: 'working', commission: { id: 'c3', title: 'Swap the template', status: 'working', started_at: 0 },
+    })
+    api.getBoard.mockResolvedValue(went)
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(byTest('ask-whole')).toBeNull()
+    // It asks the next thing: said among those that wait, and opened only when the user asks for it.
+    api.getBoard.mockResolvedValue(board({ revision: 'r3' }))
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(document.querySelector('[data-waiting="kid"]')).toBeTruthy()
+    expect(byTest('ask-whole')).toBeNull()
+  })
+
   it('replays what happened: each familiar as the entries leave it, those gone since back where they were', async () => {
     await mount(FamiliarColony)
     const slider = byTest('replay-slider') as HTMLInputElement
@@ -540,6 +604,27 @@ describe('the colony on the home page', () => {
     expect(cat('kid')?.getAttribute('data-look')).toBe('waiting_user')
     expect(byTest('colony-waiting')).toBeTruthy()
     expect(byTest('replay-moment')?.textContent).toBe(words.colony.live)
+  })
+
+  it('stays at the moment that is replayed when the oldest entries are let go for new ones', async () => {
+    vi.useFakeTimers()
+    const step = (n: number) => entry('reported', { at: n, cursor: `e${n}.m0`, text: `step ${n}` })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e9.m0', more: false, latest: 'e9.m0' })
+    // As many as are held at most, then five more with the next read.
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 3000 }, (_, n) => step(n)), next: 'e9.m0', more: false, latest: 'e9.m0' })
+    await mount(FamiliarColony)
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '100'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(document.querySelector('.row.now')?.textContent).toContain('step 100')
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 5 }, (_, n) => step(3000 + n)), next: 'e9.m0', more: false, latest: 'e9.m0' })
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    // Five were let go at the front: the same entry is five places further to the front.
+    expect(slider.value).toBe('95')
+    expect(document.querySelector('.row.now')?.textContent).toContain('step 100')
   })
 
   it('plays through to the end and comes back to now', async () => {
@@ -591,6 +676,17 @@ describe('the colony on the home page', () => {
     pointer(cat('odd'), 'pointerup', 350, 280)
     await flush()
     expect(document.body.textContent).not.toContain(words.colony.partText)
+    // Nor a project while a moment of the past is shown: one dropped at the gate then is only put down.
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '2'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    pointer(cat('lead'), 'pointerdown', 100, 100)
+    pointer(cat('lead'), 'pointermove', 350, 280)
+    pointer(cat('lead'), 'pointerup', 350, 280)
+    await flush()
+    expect(document.body.textContent).not.toContain(words.colony.partText)
+    expect(api.archiveProject).not.toHaveBeenCalled()
   })
 
   it('says so when there are no familiars, and when the service has no board', async () => {

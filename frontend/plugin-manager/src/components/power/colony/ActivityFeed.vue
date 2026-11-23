@@ -2,7 +2,11 @@
   <section class="feed" data-testid="activity-feed">
     <p v-if="!rows.length" class="muted">{{ loading ? t('power.activity.loading') : t('power.activity.nothing') }}</p>
     <ol v-else ref="list" class="rows">
-      <li v-if="left > 0" class="muted">{{ t('power.activity.earlierLeftOut', { count: left }) }}</li>
+      <li v-if="left > 0" class="muted">
+        <el-button link type="primary" size="small" data-testid="activity-earlier" @click="showEarlier">
+          {{ t('power.activity.earlierLeftOut', { count: left }) }}
+        </el-button>
+      </li>
       <li
         v-for="row in rows"
         :key="row.entry.cursor"
@@ -39,13 +43,15 @@ const props = defineProps<{
 const emit = defineEmits<{ pick: [index: number] }>()
 const { t, te } = useI18n()
 const list = ref<HTMLElement | null>(null)
-// So many lines are drawn at most: the latest, or those around the moment shown.
+// So many lines are drawn at first: the latest, or those around the moment shown. Pressing the
+// line that says how many are left out draws as many more of those before them.
 const SHOWN = 200
+const shown = ref(SHOWN)
 
 const window = computed(() => {
   const total = props.entries.length
   const end = props.current === null ? total : Math.min(total, props.current + 1 + SHOWN / 4)
-  return { from: Math.max(0, Math.floor(end) - SHOWN), to: Math.floor(end) }
+  return { from: Math.max(0, Math.floor(end) - shown.value), to: Math.floor(end) }
 })
 const left = computed(() => window.value.from)
 const rows = computed(() =>
@@ -55,6 +61,15 @@ const rows = computed(() =>
     line: describeEntry(entry, props.nameOf, t, te),
   })),
 )
+
+/** Draw as many more of the entries before those drawn, and stay at the line that was at the top. */
+async function showEarlier() {
+  const box = list.value
+  const before = box ? box.scrollHeight - box.scrollTop : 0
+  shown.value += SHOWN
+  await nextTick()
+  if (box) box.scrollTop = box.scrollHeight - before
+}
 
 // What is new comes at the bottom and is scrolled to; while a moment is replayed, that moment is.
 watch(() => [props.entries.length, props.current], async () => {

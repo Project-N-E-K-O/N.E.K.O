@@ -11,7 +11,7 @@
       <li v-for="card in waiting" :key="card.id" :data-waiting="card.id">
         <span class="who">{{ nameOfCard(card) }}</span>
         <span class="what">{{ card.commission?.ask ? askSummary(card.commission.ask, t, te) : card.commission?.title }}</span>
-        <button type="button" class="reply" @click="asking = card.id">{{ t('power.colony.answer') }}</button>
+        <el-button type="primary" size="small" @click="asking = card.id">{{ t('power.colony.answer') }}</el-button>
       </li>
     </ul>
 
@@ -22,7 +22,7 @@
           <span :class="{ loud: tally.waiting > 0 }">{{ t('power.home.waiting', { count: tally.waiting }) }}</span>
         </span>
         <span class="grow" />
-        <button type="button" class="plain" data-testid="colony-tidy" @click="tidy += 1">{{ t('power.colony.tidy') }}</button>
+        <el-button size="small" data-testid="colony-tidy" @click="tidy += 1">{{ t('power.colony.tidy') }}</el-button>
       </div>
 
       <div class="field" data-testid="colony-field">
@@ -42,19 +42,19 @@
       <p class="muted hint">{{ t('power.colony.hint') }}</p>
 
       <div class="replay" data-testid="colony-replay">
-        <button type="button" class="plain" :disabled="!entries.length" data-testid="replay-play" @click="togglePlay">
+        <el-button size="small" :disabled="!entries.length" data-testid="replay-play" @click="togglePlay">
           {{ playing ? t('power.colony.pause') : t('power.colony.replay') }}
-        </button>
+        </el-button>
         <input
           type="range" min="0" :max="Math.max(0, entries.length - 1)" :value="position ?? Math.max(0, entries.length - 1)"
           :disabled="entries.length < 2" :aria-label="t('power.colony.moment')" data-testid="replay-slider"
           @input="seek(Number(($event.target as HTMLInputElement).value))"
         >
         <span class="muted moment" data-testid="replay-moment">{{ momentLabel }}</span>
-        <button v-if="position !== null" type="button" class="plain" data-testid="replay-now" @click="toNow">{{ t('power.colony.now') }}</button>
-        <button v-else-if="!whole && entries.length" type="button" class="plain" data-testid="replay-whole" @click="fromBeginning">
+        <el-button v-if="position !== null" size="small" data-testid="replay-now" @click="toNow">{{ t('power.colony.now') }}</el-button>
+        <el-button v-else-if="!whole && entries.length" size="small" data-testid="replay-whole" @click="fromBeginning">
           {{ t('power.colony.fromBeginning') }}
-        </button>
+        </el-button>
       </div>
       <p v-if="timelineError" class="muted" role="status">{{ timelineError }}</p>
 
@@ -98,7 +98,7 @@ const router = useRouter()
 const describe = (failure: unknown) => describeConsoleError(failure, t, te)
 const { board, loaded, error, load } = useBoard(() => t('power.home.unavailable'), describe)
 const {
-  entries, loading: timelineLoading, error: timelineError, whole, fromBeginning,
+  entries, loading: timelineLoading, error: timelineError, whole, dropped, fromBeginning,
 } = useTimeline(() => null, describe)
 
 // The entry what happened is replayed up to; null: as things stand now.
@@ -180,6 +180,11 @@ const tally = computed(() => ({
 }))
 const waiting = computed(() => cards.value.filter(card => card.state === 'waiting_user' && card.commission))
 const askingCard = computed(() => waiting.value.find(card => card.id === asking.value) ?? null)
+// The moment shown is an entry, kept by where it is among those held: when the oldest are let go to
+// make room for new ones, it is that many places further to the front.
+watch(dropped, (now, before) => {
+  if (position.value !== null && now > before) position.value = Math.max(0, position.value - (now - before))
+})
 // Whether a dialog was ever asked for: they are loaded then, and stay.
 const dialogs = ref(false)
 watch([asking, parting], () => { if (asking.value || parting.value) dialogs.value = true })
@@ -289,13 +294,10 @@ defineExpose({ load })
 .waiting li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--el-color-warning); border-radius: 10px; background: var(--el-color-warning-light-9); }
 .who { flex: none; font-weight: 600; }
 .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.reply { flex: none; font: inherit; color: #fff; background: var(--el-color-primary); border: 0; border-radius: 6px; padding: 3px 12px; cursor: pointer; }
 .tools, .replay { display: flex; align-items: center; gap: 10px; }
 .tally { display: flex; gap: 18px; color: var(--el-text-color-secondary); font-size: 13px; }
 .tally .loud { color: var(--el-color-warning); font-weight: 600; }
 .grow { flex: 1; }
-.plain { font: inherit; font-size: 13px; color: var(--el-text-color-regular); background: var(--el-bg-color); border: 1px solid var(--el-border-color); border-radius: 6px; padding: 3px 12px; cursor: pointer; }
-.plain:disabled { opacity: 0.5; cursor: default; }
 .field { position: relative; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 18px; padding: 18px 12px; border: 1px solid var(--el-border-color-lighter); border-radius: 16px; background: var(--el-bg-color); overflow: hidden; }
 /* Fixed to the window, not to the field: the field can be taller than the window, and a familiar that is held must be able to reach it. */
 .gate { position: fixed; z-index: 5; right: 32px; bottom: 28px; padding: 6px 12px; font-size: 12px; color: var(--el-color-danger); border: 1.5px dashed var(--el-color-danger); border-radius: 10px; background: var(--el-bg-color); opacity: 0; pointer-events: none; transition: opacity 0.2s; }

@@ -910,7 +910,8 @@ class NekoPowerHost:
         to those of one project (``""`` for those of none). ``limit`` at
         most (``CONSOLE_COMMISSIONS_ROWS`` when not given, never more than
         ``CONSOLE_COMMISSIONS_MAX_ROWS``); ``more`` says some were left
-        out. Each is ``{"id", "title", "status", "reason", "result",
+        out, or that so many were looked through for a project or a status
+        that the look stopped (``CONSOLE_COMMISSIONS_SCAN_ROWS``). Each is ``{"id", "title", "status", "reason", "result",
         "source", "route", "project", "lanlan_name", "parent_id",
         "session_id", "session", "runtime", "plugin_id", "entry_id",
         "created_at", "started_at", "ended_at", "updated_at", "usage",
@@ -938,17 +939,29 @@ class NekoPowerHost:
                 return False
             return project is None or (item.project or "") == project
 
-        # One more than asked for of each: what is left over says there is more.
         found: dict[str, Commission] = {}
         under_way = await self.ledger.select(statuses=tuple(ACTIVE_STATUSES))
-        criteria: dict[str, Any] = {"limit": rows + 1 + len(under_way)}
+        criteria: dict[str, Any] = {}
         if span > 0:
             criteria["updated_since"] = time.time() - span * 86400.0
-        for item in [*under_way, *await self.ledger.select(**criteria)]:
+        if wanted is not None:
+            # What the ledger can keep to by itself. It knows of none that "rests": those are at
+            # work as it has it, and so among the ones under way, which were read above.
+            criteria["statuses"] = tuple(sorted(wanted))
+        # The ledger cuts off before anything is looked at here. So it is asked for as many as
+        # are wanted only when nothing is left to look at; kept to a project, or told apart by
+        # whether they rest, they are looked through first and cut afterwards: one of a project
+        # with hundreds of another's filed after it is found all the same.
+        looked_at_here = project is not None or (wanted is not None and bool(wanted & {"working", "resting"}))
+        reach = settings.CONSOLE_COMMISSIONS_SCAN_ROWS if looked_at_here else rows + 1 + len(under_way)
+        read = await self.ledger.select(limit=reach, **criteria)
+        for item in [*under_way, *read]:
             if kept(item):
                 found.setdefault(item.id, item)
         listed = sorted(found.values(), key=lambda item: item.created_at, reverse=True)
-        more = len(listed) > rows
+        # One more than asked for was read: what is left over says there is more. So does a
+        # look that went as far as it may: what lies beyond it was not looked at.
+        more = len(listed) > rows or (looked_at_here and len(read) >= reach)
         listed = listed[:rows]
 
         sessions: dict[str, Any] = {}

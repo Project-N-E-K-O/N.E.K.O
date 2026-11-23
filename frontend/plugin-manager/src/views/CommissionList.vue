@@ -41,14 +41,19 @@
         <template v-for="row in rows" :key="row.item.id">
           <tr class="row" :class="{ child: row.child, open: opened === row.item.id }" :data-commission="row.item.id" @click="toggle(row.item)">
             <td><span class="state" :class="`state--${row.item.status}`">{{ statusName(row.item.status) }}</span></td>
-            <td class="what">{{ row.item.title }}</td>
+            <td class="what">
+              <button
+                type="button" class="title" :aria-expanded="opened === row.item.id" :aria-controls="`commission-detail-${row.item.id}`"
+                @click.stop="toggle(row.item)"
+              >{{ row.item.title }}</button>
+            </td>
             <td>{{ doer(row.item) }}</td>
             <td>{{ row.item.project || t('power.home.loose') }}</td>
             <td class="num">{{ began(row.item) }}</td>
             <td class="num">{{ formatDuration(took(row.item)) }}</td>
             <td class="num">{{ row.item.usage.tokens ? formatTokens(row.item.usage.tokens) : '' }}</td>
           </tr>
-          <tr v-if="opened === row.item.id" class="detail" :data-detail="row.item.id">
+          <tr v-if="opened === row.item.id" :id="`commission-detail-${row.item.id}`" class="detail" :data-detail="row.item.id">
             <td colspan="7">
               <p v-if="row.item.result" class="text"><strong>{{ t('power.commissions.result') }}</strong> {{ row.item.result }}</p>
               <p v-if="row.item.reason && isOver(row.item)" class="muted">{{ t('power.commissions.reason') }} {{ row.item.reason }}</p>
@@ -228,9 +233,12 @@ async function act(name: string, work: () => Promise<unknown>, done = '') {
   return !failed
 }
 async function tell(item: CommissionRow) {
-  const text = sentence.value.trim()
-  if (!text) return
-  if (await act('tell', () => tellCommission(item.id, text), t('power.space.familiars.sent'))) sentence.value = ''
+  const typed = sentence.value
+  const text = typed.trim()
+  if (!text || busy.value) return
+  const sent = await act('tell', () => tellCommission(item.id, text), t('power.space.familiars.sent'))
+  // Only what was sent is taken away: what was typed since, for this one or another, stays.
+  if (sent && opened.value === item.id && sentence.value === typed) sentence.value = ''
 }
 const answer = (item: CommissionRow, given: { text?: string; choice?: string }) =>
   act(given.choice ? `choice:${given.choice}` : 'answer', () =>
@@ -278,6 +286,7 @@ h1 { margin: 0 0 8px; font-size: 26px; }
 .row:hover, .row.open { background: var(--el-fill-color-lighter); }
 .row.child .what { padding-left: 28px; }
 .what { overflow-wrap: anywhere; }
+.title { font: inherit; color: inherit; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; overflow-wrap: anywhere; }
 .num { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .state { display: inline-block; padding: 0 8px; font-size: 12px; white-space: nowrap; border-radius: 10px; color: var(--el-text-color-secondary); background: var(--el-fill-color); }
 .state--working { color: var(--el-color-success); background: var(--el-color-success-light-9); }

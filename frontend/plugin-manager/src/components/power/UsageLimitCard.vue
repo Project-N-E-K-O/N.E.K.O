@@ -21,7 +21,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getUsageLimit, setUsageLimit } from '@/api/console'
 import type { UsageLimit } from '@/api/console'
@@ -46,13 +46,21 @@ const typed = computed(() => {
 })
 const changed = computed(() => typed.value !== null && typed.value !== view.value?.tokens)
 
+// Another language counts in another unit: the number shown is turned into it, so that what is
+// saved is the tokens that were meant and not ten times as many.
+watch(unit, (now, before) => {
+  const value = Number(amount.value)
+  if (amount.value === '' || !Number.isFinite(value) || !before || !now) return
+  amount.value = String(Math.round(((value * before) / now) * 100) / 100)
+})
+
 function show(now: UsageLimit) {
   view.value = now
   amount.value = now.tokens === null ? '' : shown(now.tokens)
 }
 
 async function save(toDefault: boolean) {
-  if (!toDefault && typed.value === null) return
+  if (saving.value || (!toDefault && typed.value === null)) return
   saving.value = true
   note.value = ''
   try {

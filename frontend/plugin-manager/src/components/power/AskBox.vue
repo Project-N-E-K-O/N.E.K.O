@@ -9,7 +9,7 @@
         <span class="muted">{{ t(`power.ask.${whole.kind}`) }}</span>
         <button type="button" class="copy" data-testid="ask-copy" @click="copy">{{ copied ? t('power.ask.copied') : t('power.ask.copy') }}</button>
       </div>
-      <pre class="whole" data-testid="ask-whole" tabindex="0">{{ whole.text }}</pre>
+      <pre ref="wholeText" class="whole" data-testid="ask-whole" tabindex="0">{{ whole.text }}</pre>
     </template>
     <dl v-if="facts.length" class="facts" data-testid="ask-facts">
       <div v-for="fact in facts" :key="fact.name"><dt>{{ fact.label }}</dt><dd>{{ fact.value }}</dd></div>
@@ -51,6 +51,7 @@ const emit = defineEmits<{ answer: [given: { text?: string; choice?: string }] }
 const { t, te } = useI18n()
 const reply = ref('')
 const copied = ref(false)
+const wholeText = ref<HTMLElement | null>(null)
 
 const lines = computed(() => askLines(props.ask, t, te))
 const whole = computed(() => askWhole(props.ask))
@@ -61,7 +62,9 @@ function choiceLabel(option: string): string {
   return te(key) ? t(key) : option
 }
 function send() {
-  if (reply.value.trim()) emit('answer', { text: reply.value })
+  // Enter sends no more than the button would: nothing while an answer is on its way.
+  if (props.busy !== '' || !reply.value.trim()) return
+  emit('answer', { text: reply.value })
 }
 async function copy() {
   if (!whole.value) return
@@ -69,8 +72,17 @@ async function copy() {
     await navigator.clipboard.writeText(whole.value.text)
     copied.value = true
   } catch {
-    // No clipboard here: the text is there to be selected by hand.
+    // No clipboard here (a page that is not served safely has none): all of the text is marked
+    // instead, so that the keys copy it and it shows that nothing was copied yet.
     copied.value = false
+    const box = wholeText.value
+    const marked = window.getSelection()
+    if (!box || !marked) return
+    const all = document.createRange()
+    all.selectNodeContents(box)
+    marked.removeAllRanges()
+    marked.addRange(all)
+    box.focus()
   }
 }
 // Another question: what was typed for the last one is not its answer.
