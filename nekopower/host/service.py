@@ -860,8 +860,11 @@ class NekoPowerHost:
         (``ModelCapabilityStore.describe_window``; None when its model
         cannot be told), ``commission`` what ``usage`` says of the
         commission it has in hand (``id``, ``used``, ``limit``, its own
-        count): its latest, while that is under way
-        (``UNDER_WAY_STATUSES``). None for a session that has none in
+        count). That is the one the board shows for it
+        (``Ledger.board_rows``): of those under way in the session
+        (``UNDER_WAY_STATUSES``), the one at work or waiting for the user
+        before one that rests, and that before one that waits for its
+        turn; the oldest of several. None for a session that has none in
         hand: one that is over is not held against a limit any more.
         """
         from nekopower.host.ledger import UNDER_WAY_STATUSES
@@ -870,18 +873,29 @@ class NekoPowerHost:
         kept = await self.ledger.get_session(session_id)
         if kept is None:
             return None
-        latest = await self.ledger.select(session_id=session_id, limit=1)
+
+        def turn(item: Commission) -> int:
+            if item.status == "queued":
+                return 2
+            return 1 if item.resting else 0
+
+        under_way = await self.ledger.select(
+            session_id=session_id, statuses=tuple(UNDER_WAY_STATUSES), oldest_first=True
+        )
+        held = min(under_way, key=turn) if under_way else None
+        # The window is the model's: told by the latest commission where none is in hand.
+        latest = [held] if held is not None else await self.ledger.select(session_id=session_id, limit=1)
         in_hand = None
         window = None
         if latest:
             usage = await self.usage(latest[0].id)
             if usage is not None:
                 window = usage.get("window")
-            if usage is not None and latest[0].status in UNDER_WAY_STATUSES:
+            if usage is not None and held is not None:
                 in_hand = {
-                    "id": latest[0].id,
-                    "title": latest[0].title,
-                    "status": "resting" if latest[0].resting else latest[0].status,
+                    "id": held.id,
+                    "title": held.title,
+                    "status": "resting" if held.resting else held.status,
                     "used": usage["used"],
                     "limit": usage["limit"],
                     "own": usage["commission"],
@@ -1109,7 +1123,8 @@ class NekoPowerHost:
         commissions under way as well; what the user allowed one of them
         beyond the limit stays. Raises ``ValueError`` (``out_of_range``)
         for what is no whole number within the bounds, and nothing is
-        written.
+        written; ``OSError`` when its file cannot be written, and the
+        limit is what it was.
         """
         await self.usage_limit_store.put(tokens)
         return await self.usage_limit()
@@ -1140,15 +1155,21 @@ class NekoPowerHost:
                 raise ProjectUnreadable(project)
             if await self._project_busy(project) is not None:
                 raise ProjectBusy("at_work")
-            # Looked at again where it is moved, under the lock commissions are filed under:
-            # one filed since the look above leaves it where it is.
-            archived = await self.space.archive_project(project, commissions=kept.commissions)
+            # Looked at again where it is moved, under the lock commissions are filed and taken
+            # up under: one filed since the look above leaves it where it is, and so does one
+            # taken up again since (that one was counted before; it shows in when the project
+            # was last in use).
+            archived = await self.space.archive_project(
+                project, commissions=kept.commissions, unless_touched_since=kept.last_commission_at
+            )
             if archived is None:
-                again, _readable = await self.space.read_project(project)
+                again, readable = await self.space.read_project(project)
                 if again is None:
                     # Put away meanwhile by the host itself, which does not wait for this lock.
                     raise LookupError(project)
-                if again.commissions != kept.commissions:
+                if not readable:
+                    raise ProjectUnreadable(project)
+                if again.commissions != kept.commissions or again.last_commission_at > kept.last_commission_at:
                     raise ProjectBusy("at_work")
                 # Its directory could not be moved (on Windows, while a file in it is held open).
                 raise ProjectNotMoved(project)

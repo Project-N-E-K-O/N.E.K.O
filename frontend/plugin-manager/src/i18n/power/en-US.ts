@@ -66,6 +66,7 @@ const messages = {
     model_config_unreadable: 'The model settings cannot be read.',
     capability_missing: 'That slot does not say it can call tools, so familiars cannot use it.',
     role_models_unreadable: 'The file of these settings cannot be read. Nothing was written over it; repair or remove it.',
+    limit_not_saved: 'The limit could not be saved (its file cannot be written). It is still what it was.',
     bad_status: 'That is not a status.',
     bad_days: 'That is not a number of days.',
     bad_server: 'That is not the name of a server.',

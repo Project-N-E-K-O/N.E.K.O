@@ -1009,6 +1009,9 @@ def build_console_router(
             view = await host.set_usage_limit(tokens)
         except ValueError:
             raise _refuse(400, "out_of_range", field="tokens") from None
+        except OSError:
+            # Its file could not be written: the limit is what it was.
+            raise _refuse(409, "limit_not_saved") from None
         return {"success": True, **view}
 
     # -- how she likes tasks done -----------------------------------------

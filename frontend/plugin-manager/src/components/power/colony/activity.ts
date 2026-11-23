@@ -42,22 +42,35 @@ function put(cats: Map<string, SceneCat>, id: string | null | undefined, look?: 
  * A session that no entry up to there names is not in the answer: whoever
  * draws it decides whether it was there already. What was asked through a
  * tool is not recorded as answered; the commission going on (`started`)
- * says that it was.
+ * says that it was. A session is at one commission at a time: another that
+ * waits for its turn in it, or is called off there, leaves it as it stands.
  */
 export function sceneAt(entries: TimelineEntry[], index: number): Map<string, SceneCat> {
   const cats = new Map<string, SceneCat>()
+  // The commission each session is at, by session.
+  const atWork = new Map<string, string | null>()
+  const busyWithAnother = (entry: TimelineEntry) =>
+    Boolean(entry.session_id) && atWork.has(entry.session_id as string) && atWork.get(entry.session_id as string) !== entry.commission_id
   const last = Math.min(index, entries.length - 1)
   for (let at = 0; at <= last; at++) {
     const entry = entries[at]
     const id = entry.session_id
     switch (entry.kind) {
       case 'filed': put(cats, id); break
-      case 'queued': put(cats, id, 'queued'); break
-      case 'started': put(cats, id, 'working'); break
+      case 'queued': put(cats, id, busyWithAnother(entry) ? undefined : 'queued'); break
+      case 'started':
+        put(cats, id, 'working')
+        if (id) atWork.set(id, entry.commission_id)
+        break
       case 'asked_user': put(cats, id, 'waiting_user'); break
       case 'resting': put(cats, id, 'resting'); break
       case 'rest_over': put(cats, id, 'idle'); break
-      case 'ended': case 'child_returned': case 'ask_answered': put(cats, id, 'idle'); break
+      case 'ended':
+        if (busyWithAnother(entry)) break
+        put(cats, id, 'idle')
+        if (id) atWork.delete(id)
+        break
+      case 'child_returned': case 'ask_answered': put(cats, id, 'idle'); break
       case 'child_started':
         put(cats, id)
         // The one it started is there from now on.

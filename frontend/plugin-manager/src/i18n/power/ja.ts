@@ -59,6 +59,7 @@ const messages: PowerMessages = {
     model_config_unreadable: 'モデル設定を読み取れません。',
     capability_missing: 'このスロットはツール呼び出し対応と宣言されていないため、使い魔では使えません。',
     role_models_unreadable: 'この設定のファイルを読み込めません。上書きはしていません。修復するか削除してからお試しください。',
+    limit_not_saved: '上限を保存できませんでした（ファイルに書き込めません）。以前の値のままです。',
     bad_status: 'そのような状態はありません。',
     bad_days: '日数として正しくありません。',
     bad_server: 'サーバーの名前として正しくありません。',

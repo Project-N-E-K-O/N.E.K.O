@@ -88,6 +88,8 @@ const stroll = reactive<Record<string, Spot>>({})
 const held = ref('')
 let moved = false
 let start: { x: number; y: number } | null = null
+// Where the one that is held was put by the user before it was picked up; null: nowhere.
+let from: Spot | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 const STROLL_MS = 2800
 const STROLL_REACH = 0.05
@@ -142,6 +144,7 @@ function grab(id: string, event: PointerEvent) {
   start = { x: event.clientX, y: event.clientY }
   moved = false
   held.value = id
+  from = placed[id] ? { ...placed[id] } : null
   ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
 }
 function drag(event: PointerEvent) {
@@ -160,7 +163,9 @@ function drop(event: PointerEvent) {
   if (!id) return
   if (moved) {
     if (props.canDismiss && overGate(event)) {
-      delete placed[id]
+      // Back to where it stood, put there by the user or not: the user may still say no.
+      if (from) placed[id] = from
+      else delete placed[id]
       emit('dismiss')
     } else {
       // Dropped outside the territory, it stands at its edge.

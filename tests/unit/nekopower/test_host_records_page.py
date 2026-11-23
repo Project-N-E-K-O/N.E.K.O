@@ -226,3 +226,21 @@ def test_a_record_that_is_not_there_says_so(tmp_path):
     empty = tmp_path / "empty.jsonl"
     empty.write_bytes(b"")
     assert _page(empty) == {"entries": [], "before": None}
+
+
+def test_the_lines_before_a_place_are_the_same_whatever_the_size_of_the_blocks_they_are_read_in(tmp_path, monkeypatch):
+    # Empty lines, short ones, and ones that reach over many blocks, as a picture kept in a record does.
+    lines = [b"", b"a", b"x" * 37, b"", b"hello world", b"y" * 5, b"z" * 64, b"last"]
+    path = tmp_path / "record.jsonl"
+    path.write_bytes(b"".join(line + b"\n" for line in lines))
+    places, at = [], 0
+    for line in lines:
+        places.append((at, line))
+        at += len(line) + 1
+    ends = [place for place, _line in places] + [at]
+    for block in (1, 2, 3, 7, 8, 16, 1000):
+        monkeypatch.setattr(records, "_BACKWARD_CHUNK_BYTES", block)
+        with path.open("rb") as handle:
+            for count, end in enumerate(ends):
+                found = list(records._lines_before(handle, end, 10**9))
+                assert found == places[:count][::-1], (block, end)

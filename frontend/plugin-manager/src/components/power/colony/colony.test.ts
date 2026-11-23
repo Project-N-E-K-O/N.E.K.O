@@ -153,6 +153,18 @@ describe('how the familiars stood at a moment of what happened', () => {
     expect(sceneAt(waitingLong, 1).get('lead')).toEqual({ look: 'waiting_user', said: 'Which day?', saidAt: 100 })
   })
 
+  it('leaves one at work as it stands when another commission waits for its turn in it or is called off', () => {
+    const of = (kind: string, commission: string, at: number) => entry(kind, { commission_id: commission, at })
+    const turns = [of('started', 'c1', 1), of('queued', 'c2', 2), of('ended', 'c2', 3), of('ended', 'c1', 4), of('queued', 'c3', 5)]
+    expect(sceneAt(turns, 0).get('lead')?.look).toBe('working')
+    // Another one waits for its turn behind the one it is at, and is called off: still at work.
+    expect(sceneAt(turns, 1).get('lead')?.look).toBe('working')
+    expect(sceneAt(turns, 2).get('lead')?.look).toBe('working')
+    // The one it was at is over; the next one that comes waits for its turn with nobody at it.
+    expect(sceneAt(turns, 3).get('lead')?.look).toBe('idle')
+    expect(sceneAt(turns, 4).get('lead')?.look).toBe('queued')
+  })
+
   it('knows where each session is first named, and who is named that the board does not hold', () => {
     expect([...firstSeen(story, true)]).toEqual([['lead', 0], ['scout', 2]])
     // Entries that begin later than the record: only the one that was started among them is known to be new.
@@ -398,6 +410,14 @@ describe('a territory of the colony', () => {
     await flush()
     expect(parted).toBe(1)
     expect(keptSpots('project:Blog').kid).toEqual({ x: 0.4, y: 0.5 })
+    // Dropped at the gate from where the user put it: asked about, and it stands there again
+    // (the user may say no), not where it stands by itself.
+    pointer(cat('kid'), 'pointerdown', 160, 150)
+    pointer(cat('kid'), 'pointermove', 350, 280)
+    pointer(cat('kid'), 'pointerup', 350, 280)
+    await flush()
+    expect(parted).toBe(2)
+    expect(keptSpots('project:Blog').kid).toEqual({ x: 0.4, y: 0.5 })
 
     state.props = { territory: pair(), canDismiss: false, onDismiss: () => { parted += 1 } }
     await flush()
@@ -405,7 +425,7 @@ describe('a territory of the colony', () => {
     pointer(cat('kid'), 'pointermove', 350, 280)
     pointer(cat('kid'), 'pointerup', 350, 280)
     await flush()
-    expect(parted).toBe(1)
+    expect(parted).toBe(2)
     expect(keptSpots('project:Blog').kid).toBeTruthy()
   })
 

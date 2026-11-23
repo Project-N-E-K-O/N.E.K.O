@@ -405,26 +405,36 @@ def _lines_before(handle: Any, end: int, budget: int) -> Iterator[tuple[int, byt
     was given: a line longer than the budget is read whole all the same,
     or whoever reads a page at a time would be handed the same place again
     and never get past it.
+
+    A line that reaches over many blocks (a picture kept in the record) is
+    put together once, when the block it begins in is read: its blocks
+    wait in a list till then.
     """
-    buffer, position, read, given = b"", end, 0, False
+    # The end of a line whose beginning is not read yet, the block read last at the end.
+    waiting: list[bytes] = []
+    position, read, given = end, 0, False
     while position > 0 and (read < budget or not given):
         step = min(_BACKWARD_CHUNK_BYTES, position)
         position -= step
         handle.seek(position)
-        buffer = handle.read(step) + buffer
+        block = handle.read(step)
         read += step
-        pieces = buffer.split(b"\n")
         # What stands before the first newline began before ``position``,
         # unless the file begins there: it waits for the block before this.
-        first = 0 if position == 0 else 1
-        places, start = [], position
-        for piece in pieces[:-1]:
+        cut = -1 if position == 0 else block.find(b"\n")
+        if position > 0 and cut < 0:
+            waiting.append(block)
+            continue
+        start = position + cut + 1
+        whole = b"".join([block[cut + 1 :], *reversed(waiting)])
+        waiting = [block[: cut + 1]] if position > 0 else []
+        places = []
+        for piece in whole.split(b"\n")[:-1]:
             places.append((start, piece))
             start += len(piece) + 1
-        for found in reversed(places[first:]):
+        for found in reversed(places):
             given = True
             yield found
-        buffer = pieces[0] + b"\n" if first else b""
 
 
 def _at_line_start(handle: Any, place: int) -> bool:

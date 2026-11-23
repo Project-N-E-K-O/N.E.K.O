@@ -69,7 +69,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { consoleErrorCode, getMcp, setMcpPermission } from '@/api/console'
+import { getMcp, setMcpPermission } from '@/api/console'
 import type { McpView, PermissionMode } from '@/api/console'
 import { describeConsoleError } from '@/components/power/powerFormat'
 
@@ -120,8 +120,9 @@ async function change(server: string | null, mode: PermissionMode) {
     error.value = ''
   } catch (failure) {
     const why = describeConsoleError(failure, t, te)
-    // Changed elsewhere meanwhile, or not taken: shown as it is now, with why still said.
-    if (consoleErrorCode(failure)) await load()
+    // Changed elsewhere meanwhile, not taken, or never reached the service: shown as it is set
+    // now and not as it was picked, with why still said.
+    await load()
     error.value = why
   } finally {
     saving.value = false

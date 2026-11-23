@@ -59,6 +59,7 @@ const messages: PowerMessages = {
     model_config_unreadable: '모델 설정을 읽을 수 없어요.',
     capability_missing: '이 슬롯은 도구 호출을 지원한다고 표시되어 있지 않아서 사역마가 쓸 수 없어요.',
     role_models_unreadable: '이 설정의 파일을 읽을 수 없어요. 덮어쓰지 않았으니, 파일을 고치거나 지운 뒤 다시 시도해 주세요.',
+    limit_not_saved: '한도를 저장하지 못했습니다(파일에 쓸 수 없음). 이전 값 그대로입니다.',
     bad_status: '그런 상태는 없어요.',
     bad_days: '일수로 쓸 수 없는 값이에요.',
     bad_server: '서버 이름으로 쓸 수 없는 값이에요.',

@@ -56,7 +56,7 @@
           <tr v-if="opened === row.item.id" :id="`commission-detail-${row.item.id}`" class="detail" :data-detail="row.item.id">
             <td colspan="7">
               <p v-if="row.item.result" class="text"><strong>{{ t('power.commissions.result') }}</strong> {{ row.item.result }}</p>
-              <p v-if="row.item.reason && isOver(row.item)" class="muted">{{ t('power.commissions.reason') }} {{ row.item.reason }}</p>
+              <p v-if="row.item.reason && saysWhy(row.item)" class="muted">{{ t('power.commissions.reason') }} {{ row.item.reason }}</p>
               <p v-if="usage" class="muted" data-testid="commission-usage">
                 {{ t('power.commissions.usage', {
                   requests: usage.commission.requests, input: formatTokens(usage.commission.input + usage.commission.cache_read + usage.commission.cache_write),
@@ -156,6 +156,8 @@ function statusName(name: string): string {
   return te(key) ? t(key) : name
 }
 const isOver = (item: CommissionRow) => OVER.has(item.status)
+// Why it stopped is said of one that is stuck as well; that one can still be called off.
+const saysWhy = (item: CommissionRow) => isOver(item) || item.status === 'blocked'
 function doer(item: CommissionRow): string {
   if (item.session) {
     // The title it earned; the name of a project's own familiar; else what kind it is

@@ -537,6 +537,24 @@ describe('the MCP tools', () => {
     expect((document.querySelector('[data-server="notes"]') as HTMLSelectElement).value).toBe('deny')
   })
 
+  it('shows a server as it is still set when the change did not reach the service at all', async () => {
+    api.getMcp.mockResolvedValue(mcp())
+    await mount(McpTools)
+    const notes = () => document.querySelector('[data-server="notes"]') as HTMLSelectElement
+    // No answer with a code: the service is not there. Read anew, which works again by then.
+    api.setMcpPermission.mockRejectedValueOnce(new Error('Network Error'))
+    await choose(notes(), 'allow')
+    expect(api.getMcp).toHaveBeenCalledTimes(2)
+    expect(notes().value).toBe('deny')
+    expect(document.querySelector('.el-alert')).toBeTruthy()
+    // Nor can it be read anew: what is shown is still what was read last, not what was picked.
+    api.setMcpPermission.mockRejectedValueOnce(new Error('Network Error'))
+    api.getMcp.mockRejectedValueOnce(new Error('Network Error'))
+    await choose(notes(), 'allow')
+    expect(notes().value).toBe('deny')
+    expect(document.querySelector('.el-alert')).toBeTruthy()
+  })
+
   it('says why no tool is on offer, and lets nothing be set while the permission file cannot be read', async () => {
     api.getMcp.mockResolvedValueOnce(mcp({ adapter: 'missing', servers: [] }))
     await mount(McpTools)
@@ -707,6 +725,20 @@ describe('the commissions', () => {
     taken({ success: true })
     await flush()
     expect(typed()).toBe('same words')
+  })
+
+  it('says why one that is stuck stopped, and still offers to call it off', async () => {
+    api.listCommissions.mockResolvedValue({ commissions: [
+      row({ id: 'c7', status: 'blocked', reason: 'the build never finished' }),
+      row({ id: 'c8', status: 'working', reason: 'left from an earlier try' }),
+    ], more: false })
+    await mount(Commissions)
+    await click(document.querySelector('[data-commission="c7"]'))
+    expect(document.querySelector('[data-detail="c7"]')?.textContent).toContain('the build never finished')
+    expect(byTest('commission-stop')).toBeTruthy()
+    // One at work says nothing of why an earlier try of it stopped.
+    await click(document.querySelector('[data-commission="c8"]'))
+    expect(document.querySelector('[data-detail="c8"]')?.textContent).not.toContain('left from an earlier try')
   })
 
   it('says so when there is nothing, when more is left out, and when the list could not be read', async () => {

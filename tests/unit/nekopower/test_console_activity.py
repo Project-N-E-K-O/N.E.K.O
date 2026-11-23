@@ -816,6 +816,19 @@ async def test_the_usage_limit_is_shown_set_within_its_bounds_and_put_back(conso
     assert not console.host.paths.usage_limit_json().exists()
 
 
+async def test_a_limit_that_could_not_be_written_is_said_with_a_code_and_stays_what_it_was(consoles, tmp_path, monkeypatch):
+    console = consoles(tmp_path)
+    assert (await console.post("/usage-limit", {"tokens": 800_000})).json()["set"] == 800_000
+
+    def full(*args: Any) -> None:
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(console.host.usage_limit_store, "_write", full)
+    assert _code(await console.post("/usage-limit", {"tokens": 900_000})) == (409, "limit_not_saved")
+    assert _code(await console.post("/usage-limit", {"tokens": None})) == (409, "limit_not_saved")
+    assert (await console.get("/usage-limit")).json()["set"] == 800_000
+
+
 async def test_a_limit_file_that_holds_no_such_number_is_read_as_nothing_set(consoles, tmp_path):
     console = consoles(tmp_path)
     kept = console.host.paths.usage_limit_json()
@@ -936,6 +949,66 @@ async def test_a_project_is_put_away_from_the_page_and_stays_while_something_is_
     assert _code(await console.post("/space/projects/archive", {"project": " "})) == (400, "bad_name")
 
 
+async def test_a_project_taken_up_again_while_it_is_being_put_away_stays(consoles, tmp_path, monkeypatch):
+    console = consoles(tmp_path)
+    (await console.post("/familiars", {"name": "Garden", "preset": "boss"})).json()
+    looked = console.host._project_busy
+
+    async def taken_up_after_the_look(project: str) -> Any:
+        why = await looked(project)
+        # A commission of it that had failed is taken up again right after the look. It was
+        # counted for the project before: all it leaves is that the project is in use again.
+        monkeypatch.setattr(console.host.space, "_clock", lambda: time.time() + 60)
+        await console.host.space.use_project(project)
+        return why
+
+    monkeypatch.setattr(console.host, "_project_busy", taken_up_after_the_look)
+    refused = await console.post("/space/projects/archive", {"project": "Garden"})
+    assert (refused.status_code, refused.json()["detail"]) == (409, {"code": "project_busy", "reason": "at_work"})
+    assert (await console.host.space.get_project("Garden")).status != "archived"
+
+
+async def test_what_a_task_agent_has_in_hand_is_what_it_is_at_and_not_what_waits_for_its_turn(consoles, tmp_path):
+    from tests.unit.nekopower.test_host_timeline import _file, _session
+
+    console = consoles(tmp_path)
+    ledger = console.host.ledger
+    session = await _session(ledger, "Blog", project=None, kind="single")
+    at_work = await _file(ledger, session, "move the blog")
+    assert (await ledger.transition(at_work.id, "working")).applied
+    waiting = await _file(ledger, session, "then the photos")
+
+    def apart(conn: Any) -> None:
+        conn.execute("UPDATE commissions SET created_at = created_at + 10 WHERE id = ?", (waiting.id,))
+
+    await ledger.run(apart)
+
+    async def in_hand() -> Any:
+        return (await console.get(f"/familiars/{session.id}/usage")).json()["commission"]
+
+    # The newer one waits for its turn: the one it is at is in its hands.
+    assert ((await in_hand())["id"], (await in_hand())["status"]) == (at_work.id, "working")
+    # The newer one is called off: still the one it is at.
+    assert (await ledger.transition(waiting.id, "cancelled")).applied
+    assert (await in_hand())["id"] == at_work.id
+    # Only one that waits for its turn: that one, and none once nothing is under way.
+    assert (await ledger.transition(at_work.id, "done")).applied
+    next_one = await _file(ledger, session, "and the notes")
+    assert ((await in_hand())["id"], (await in_hand())["status"]) == (next_one.id, "queued")
+    # Two that wait for their turn: the one that came first is next.
+    after_it = await _file(ledger, session, "and the letters")
+
+    def later(conn: Any) -> None:
+        conn.execute("UPDATE commissions SET created_at = created_at + 20 WHERE id = ?", (after_it.id,))
+
+    await ledger.run(later)
+    assert (await in_hand())["id"] == next_one.id
+    assert (await ledger.transition(next_one.id, "cancelled")).applied
+    assert (await in_hand())["id"] == after_it.id
+    assert (await ledger.transition(after_it.id, "cancelled")).applied
+    assert await in_hand() is None
+
+
 async def test_a_project_whose_directory_cannot_be_moved_stays_and_the_page_is_told(consoles, tmp_path, monkeypatch):
     console = consoles(tmp_path)
     (await console.post("/familiars", {"name": "Garden", "preset": "boss"})).json()
@@ -956,3 +1029,15 @@ async def test_a_project_whose_directory_cannot_be_moved_stays_and_the_page_is_t
 
     monkeypatch.setattr(console.host.space, "read_project", gone_at_the_second_look)
     assert _code(await console.post("/space/projects/archive", {"project": "Garden"})) == (404, "no_project")
+
+    # Not moved, and its record cannot be read at the second look: said as that, not as a file held open.
+    looks.clear()
+
+    async def unreadable_at_the_second_look(name: str) -> Any:
+        looks.append(name)
+        project, readable = await read(name)
+        return (project, False) if len(looks) > 1 else (project, readable)
+
+    monkeypatch.setattr(console.host.space, "read_project", unreadable_at_the_second_look)
+    refused = await console.post("/space/projects/archive", {"project": "Garden"})
+    assert refused.status_code != 200 and refused.json()["detail"]["code"] not in ("archive_failed", "no_project")

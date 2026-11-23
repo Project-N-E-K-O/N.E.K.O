@@ -59,6 +59,7 @@ const messages: PowerMessages = {
     model_config_unreadable: '模型設定讀不出來。',
     capability_missing: '這個槽位沒有宣告支援工具呼叫，使魔不能用。',
     role_models_unreadable: '這些設定的檔案讀不了。沒有覆寫它；請修好或刪掉它再試。',
+    limit_not_saved: '上限沒有存上（檔案寫不進去），還是原來的數。',
     bad_status: '沒有這種狀態。',
     bad_days: '這不是一個天數。',
     bad_server: '這不是一個伺服器的名字。',

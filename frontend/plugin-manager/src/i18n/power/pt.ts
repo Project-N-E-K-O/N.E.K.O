@@ -59,6 +59,7 @@ const messages: PowerMessages = {
     model_config_unreadable: 'Não foi possível ler as configurações do modelo.',
     capability_missing: 'Esse slot não informa que aceita chamadas de ferramentas, então os familiares não podem usá-lo.',
     role_models_unreadable: 'Não foi possível ler o arquivo destas configurações. Ele não foi sobrescrito; conserte-o ou exclua-o e tente de novo.',
+    limit_not_saved: 'Não foi possível salvar o limite (o arquivo não pode ser gravado). Continua como estava.',
     bad_status: 'Esse status não existe.',
     bad_days: 'Isso não é um número de dias.',
     bad_server: 'Isso não é o nome de um servidor.',
