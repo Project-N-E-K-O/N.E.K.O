@@ -59,6 +59,7 @@
           {{ t('power.colony.fromBeginning') }}
         </el-button>
       </div>
+      <p v-if="gone && position !== null" class="muted" role="status" data-testid="replay-gone">{{ t('power.colony.momentGone') }}</p>
       <p v-if="timelineError" class="muted" role="status">{{ timelineError }}</p>
 
       <h2 class="feed-title">{{ t('power.activity.title') }}</h2>
@@ -185,9 +186,20 @@ const waiting = computed(() => cards.value.filter(card => card.state === 'waitin
 const askingCard = computed(() => waiting.value.find(card => card.id === asking.value) ?? null)
 // The moment shown is an entry, kept by where it is among those held: when the oldest are let go to
 // make room for new ones, it is that many places further to the front.
+// Whether the moment that was shown went with them: said until another moment is asked for, since
+// what is shown then is another entry, the oldest that is left.
+const gone = ref(false)
 watch(dropped, (now, before) => {
-  if (position.value !== null && now > before) position.value = Math.max(0, position.value - (now - before))
+  if (position.value === null || now <= before) return
+  const kept = position.value - (now - before)
+  if (kept < 0) gone.value = true
+  position.value = Math.max(0, kept)
 })
+/** Show the moment the user asks for (null: as things stand now). */
+function show(index: number | null) {
+  gone.value = false
+  position.value = index
+}
 // Whether a dialog was ever asked for: they are loaded then, and stay.
 const dialogs = ref(false)
 watch([asking, parting], () => { if (asking.value || parting.value) dialogs.value = true })
@@ -230,22 +242,22 @@ function stopPlaying() {
 }
 function seek(index: number) {
   stopPlaying()
-  position.value = Math.min(Math.max(0, index), Math.max(0, entries.value.length - 1))
+  show(Math.min(Math.max(0, index), Math.max(0, entries.value.length - 1)))
 }
 function toNow() {
   stopPlaying()
-  position.value = null
+  show(null)
 }
 function togglePlay() {
   if (playing.value) return stopPlaying()
   if (!entries.value.length) return
   // From the beginning, unless a moment before the end is shown already.
-  if (position.value === null || position.value >= entries.value.length - 1) position.value = 0
+  if (position.value === null || position.value >= entries.value.length - 1) show(0)
   playing.value = true
   stepping = setInterval(() => {
     const next = (position.value ?? 0) + 1
     if (next >= entries.value.length) return toNow()
-    position.value = next
+    show(next)
   }, STEP_MS)
 }
 

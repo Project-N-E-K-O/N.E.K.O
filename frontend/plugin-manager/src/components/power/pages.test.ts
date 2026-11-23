@@ -440,6 +440,27 @@ describe('the usage limit', () => {
     expect(api.setUsageLimit).toHaveBeenCalledWith(800_000)
   })
 
+  it('keeps them to the token: a number that does not come out even in the other unit is not rounded', async () => {
+    // Set to a number that is not a round one in either unit: shown as it is, and not as changed.
+    api.getUsageLimit.mockResolvedValue(limit({ tokens: 5_000_001, set: 5_000_001 }))
+    await mount(UsageLimitCard)
+    const amount = byTest('limit-amount') as HTMLInputElement
+    expect(amount.value).toBe('5000.001')
+    expect((byTest('limit-save') as HTMLButtonElement).disabled).toBe(true)
+    language!.value = 'zh-CN'
+    await flush()
+    expect(amount.value).toBe('500.0001')
+    expect((byTest('limit-save') as HTMLButtonElement).disabled).toBe(true)
+    // Typed in one unit and saved in the other: the tokens that were typed.
+    await type('limit-amount', '123.4567')
+    language!.value = 'en-US'
+    await flush()
+    expect(amount.value).toBe('1234.567')
+    api.setUsageLimit.mockResolvedValueOnce(limit({ tokens: 1_234_567, set: 1_234_567 }))
+    await click(byTest('limit-save'))
+    expect(api.setUsageLimit).toHaveBeenCalledWith(1_234_567)
+  })
+
   it('is saved once however often Enter is pressed while it is being saved', async () => {
     api.getUsageLimit.mockResolvedValue(limit())
     await mount(UsageLimitCard)
@@ -670,6 +691,15 @@ describe('the commissions', () => {
     enter('commission-say')
     await flush()
     await click(document.querySelector('[data-commission="c5"]'))
+    await type('commission-say', 'same words')
+    taken({ success: true })
+    await flush()
+    expect(typed()).toBe('same words')
+    // Sent, another one opened, back to the first and the same words typed again before the
+    // answer came: they are a new draft, and stay.
+    enter('commission-say')
+    await flush()
+    await click(document.querySelector('[data-commission="c1"]'))
     await type('commission-say', 'same words')
     taken({ success: true })
     await flush()

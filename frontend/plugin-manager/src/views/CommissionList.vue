@@ -121,6 +121,9 @@ const projects = ref<string[]>([])
 const opened = ref('')
 const usage = ref<CommissionUsage | null>(null)
 const sentence = ref('')
+// Which draft it is: another one with every change, also when the same words are typed again.
+let draft = 0
+watch(sentence, () => { draft += 1 }, { flush: 'sync' })
 const busy = ref('')
 const note = ref('')
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -233,12 +236,12 @@ async function act(name: string, work: () => Promise<unknown>, done = '') {
   return !failed
 }
 async function tell(item: CommissionRow) {
-  const typed = sentence.value
-  const text = typed.trim()
+  const text = sentence.value.trim()
   if (!text || busy.value) return
+  const mine = draft
   const sent = await act('tell', () => tellCommission(item.id, text), t('power.space.familiars.sent'))
   // Only what was sent is taken away: what was typed since, for this one or another, stays.
-  if (sent && opened.value === item.id && sentence.value === typed) sentence.value = ''
+  if (sent && draft === mine) sentence.value = ''
 }
 const answer = (item: CommissionRow, given: { text?: string; choice?: string }) =>
   act(given.choice ? `choice:${given.choice}` : 'answer', () =>

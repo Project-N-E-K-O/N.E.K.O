@@ -377,6 +377,7 @@ const messages: PowerMessages = {
     at: '回放到 {time}',
     now: '回到现在',
     fromBeginning: '从头读',
+    momentGone: '回放的那一刻太早，已经被新的动态挤掉了；现在停在还留着的最早一条。',
     partTitle: '把「{project}」送走？',
     partText: '这个项目会收进归档，它的使魔离开群落。什么都不会删：守则、经验、复盘在使魔空间里照样能看；以后她再接到这个项目的事，它会自己回来。',
     part: '送走',

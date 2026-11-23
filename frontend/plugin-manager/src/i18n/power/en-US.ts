@@ -384,6 +384,7 @@ const messages = {
     at: 'At {time}',
     now: 'Back to now',
     fromBeginning: 'Read from the beginning',
+    momentGone: 'The moment you were replaying was pushed out by newer activity; this is the earliest one still kept.',
     partTitle: 'Send "{project}" away?',
     partText: 'The project goes into the archive and its familiars leave the colony. Nothing is deleted: its rules, notes and reviews stay readable in the familiar space, and it comes back by itself when she is given something for it again.',
     part: 'Send away',

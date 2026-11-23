@@ -37,8 +37,10 @@ const note = ref('')
 // The number is typed in the unit people of the language count large numbers by; how many tokens that is.
 const unit = computed(() => Number(t('power.limit.unitTokens')) || 1000)
 
+// To the token: a number that is rounded for the eye reads back as another one, and would be
+// saved as that.
 function shown(tokens: number): string {
-  return String(Math.round((tokens / unit.value) * 100) / 100)
+  return String(tokens / unit.value)
 }
 const typed = computed(() => {
   const value = Number(amount.value)
@@ -51,7 +53,7 @@ const changed = computed(() => typed.value !== null && typed.value !== view.valu
 watch(unit, (now, before) => {
   const value = Number(amount.value)
   if (amount.value === '' || !Number.isFinite(value) || !before || !now) return
-  amount.value = String(Math.round(((value * before) / now) * 100) / 100)
+  amount.value = String(Math.round(value * before) / now)
 })
 
 function show(now: UsageLimit) {

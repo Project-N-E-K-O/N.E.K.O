@@ -377,6 +377,7 @@ const messages: PowerMessages = {
     at: '重播到 {time}',
     now: '回到現在',
     fromBeginning: '從頭讀',
+    momentGone: '回放的那一刻太早，已經被新的動態擠掉了；現在停在還留著的最早一條。',
     partTitle: '把「{project}」送走？',
     partText: '這個專案會收進封存，它的使魔離開群落。什麼都不會刪：守則、經驗、回顧在使魔空間裡照樣能看；以後她再接到這個專案的事，它會自己回來。',
     part: '送走',

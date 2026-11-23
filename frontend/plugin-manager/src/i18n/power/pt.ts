@@ -377,6 +377,7 @@ const messages: PowerMessages = {
     at: 'Mostrando: {time}',
     now: 'Voltar ao presente',
     fromBeginning: 'Ler desde o início',
+    momentGone: 'O momento que você estava reproduzindo foi removido por atividades mais recentes; este é o mais antigo ainda guardado.',
     partTitle: 'Mandar “{project}” embora?',
     partText: 'O projeto é arquivado e os familiares dele deixam a colônia. Nada é excluído: as regras, a experiência e as retrospectivas dele continuam disponíveis para leitura no espaço dos familiares, e o projeto volta sozinho quando ela receber de novo algo para ele.',
     part: 'Mandar embora',

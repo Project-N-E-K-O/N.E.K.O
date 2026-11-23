@@ -646,6 +646,24 @@ describe('the colony on the home page', () => {
     // Five were let go at the front: the same entry is five places further to the front.
     expect(slider.value).toBe('95')
     expect(document.querySelector('.row.now')?.textContent).toContain('step 100')
+    expect(byTest('replay-gone')).toBeNull()
+
+    // A moment among the oldest goes with them: the oldest that is left is shown, and it is said.
+    slider.value = '2'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(document.querySelector('.row.now')?.textContent).toContain('step 7')
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 5 }, (_, n) => step(3005 + n)), next: 'e9.m0', more: false, latest: 'e9.m0' })
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(slider.value).toBe('0')
+    expect(document.querySelector('.row.now')?.textContent).toContain('step 10')
+    expect(byTest('replay-gone')?.textContent).toBe(words.colony.momentGone)
+    // Another moment is asked for: nothing is said of the one before.
+    slider.value = '50'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(byTest('replay-gone')).toBeNull()
   })
 
   it('plays through to the end and comes back to now', async () => {

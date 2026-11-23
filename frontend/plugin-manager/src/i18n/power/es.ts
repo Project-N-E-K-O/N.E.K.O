@@ -377,6 +377,7 @@ const messages: PowerMessages = {
     at: 'Mostrando: {time}',
     now: 'Volver al presente',
     fromBeginning: 'Leer desde el principio',
+    momentGone: 'El momento que estabas reproduciendo quedó desplazado por actividad más reciente; este es el más antiguo que se conserva.',
     partTitle: '¿Despedir «{project}»?',
     partText: 'El proyecto se archiva y sus familiares dejan la colonia. No se elimina nada: sus normas, su experiencia y sus retrospectivas se pueden seguir leyendo en el espacio de familiares, y el proyecto vuelve solo cuando ella reciba de nuevo algo para él.',
     part: 'Despedir',
