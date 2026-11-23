@@ -17,7 +17,7 @@ import subprocess
 import copy
 from urllib.parse import urljoin
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 import httpx
 from pydantic import BaseModel, Field
@@ -1243,7 +1243,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             if not isinstance(server_cfg, dict):
                 continue
             
-            if not server_cfg.get("enabled", True):
+            if not self._coerce_bool(server_cfg.get("enabled", True), True):
                 self.ctx.logger.info(f"Skipping disabled MCP server: {server_name}")
                 continue
             
@@ -1532,7 +1532,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         tool_name: str,
         description: str,
         schema: Optional[Dict[str, object]],
-    ) -> bool:
+    ) -> Literal["registered", "skipped_schema", "failed"]:
         """Locally register one MCP tool for chat injection (pending batch confirmation).
 
         Requires ``_chat_tools_lock``. Remote confirmation is batched by
@@ -1540,18 +1540,24 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         enabling the toggle) must not await each tool's confirmation here, which would multiply stalls by tool count.
         """
         if tool_id in self._chat_tools or tool_id in self._pending_chat_tools:
-            return True
-        foreign = await self._fetch_foreign_llm_tool_names()
-        llm_name = self._alloc_llm_tool_name(tool_id, foreign)
-        if llm_name is None:
-            self.ctx.logger.warning(
-                f"Skip chat injection for MCP tool '{tool_id}': no free LLM tool name"
-            )
-            return False
+            return "registered"
         try:
             parameters = portable_chat_schema(
                 schema if isinstance(schema, dict) else {"type": "object", "properties": {}}
             )
+        except ValueError as exc:
+            self.ctx.logger.warning(
+                f"Skip chat injection for MCP tool '{tool_id}': incompatible schema ({exc})"
+            )
+            return "skipped_schema"
+        foreign = await self._fetch_foreign_llm_tool_names()
+        llm_name = self._alloc_llm_tool_name(tool_id, foreign)
+        if llm_name is None:
+            self.ctx.logger.warning(
+                f"Failed to inject MCP tool '{tool_id}' into chat context: no free LLM tool name"
+            )
+            return "failed"
+        try:
             self.register_llm_tool(
                 name=llm_name,
                 description=description or f"MCP tool '{tool_name}' from server '{server_name}'.",
@@ -1567,13 +1573,13 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             self.ctx.logger.warning(
                 f"Failed to inject MCP tool '{tool_id}' into chat context: {exc}"
             )
-            return False
+            return "failed"
         self._pending_chat_tools[tool_id] = {
             "llm_name": llm_name,
             "server_name": server_name,
             "tool_name": tool_name,
         }
-        return True
+        return "registered"
 
     async def _remote_unregister_llm_tool(self, llm_name: str) -> str:
         """Synchronously call main_server directly to unregister an LLM tool.
@@ -2033,6 +2039,16 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     def _coerce_bool(self, value: object, default: bool) -> bool:
         if isinstance(value, bool):
             return value
+        if value is None:
+            return False
+        if isinstance(value, int):
+            if value in (0, 1):
+                return bool(value)
+            return default
+        if isinstance(value, float):
+            if value in (0.0, 1.0):
+                return bool(int(value))
+            return default
         if isinstance(value, str):
             lowered = value.strip().lower()
             if lowered in {"1", "true", "yes", "on"}:
@@ -2693,13 +2709,15 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                         tool_id = f"mcp_{server_name}_{tool.name}"
                         if self._route_engine is None or self._route_engine.get_tool_server(tool_id) != server_name:
                             continue
-                        expected_tool_ids.add(tool_id)
                         if tool_id in self._chat_tools or tool_id in self._pending_chat_tools:
+                            expected_tool_ids.add(tool_id)
                             continue
-                        await self._register_chat_tool_local_locked(
+                        outcome = await self._register_chat_tool_local_locked(
                             tool_id=tool_id, server_name=server_name, tool_name=tool.name,
                             description=tool.description or f"MCP tool from {server_name}", schema=tool.input_schema,
                         )
+                        if outcome != "skipped_schema":
+                            expected_tool_ids.add(tool_id)
                 elif not inject_flag:
                     mapped_ids = [
                         tid for mapping in (self._chat_tools, self._pending_chat_tools)
@@ -2859,6 +2877,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             if transport in ("sse", "streamable-http") and not url:
                 return Err(SdkError("URL is required for sse/http transport"))
 
+            enabled_flag = self._coerce_bool(enabled, True)
+            auto_connect_flag = self._coerce_bool(auto_connect, True)
+
             # Build configuration.
             server_cfg = self._normalize_server_config_payload(
                 transport=transport,
@@ -2867,7 +2888,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 url=url,
                 env=env,
                 headers=headers,
-                enabled=enabled,
+                enabled=enabled_flag,
                 inject_to_chat=self._coerce_bool(inject_to_chat, False),
             )
 
@@ -2875,7 +2896,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             if existing_cfg is not None:
                 if self._is_same_server_config(existing_cfg, server_cfg):
                     self.ctx.logger.info(f"Server '{name}' already exists with identical config")
-                    if auto_connect and enabled and name not in self._clients:
+                    if auto_connect_flag and enabled_flag and name not in self._clients:
                         adapter_config = config.get("mcp_adapter", {})
                         timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
                         scheduled = self._schedule_connect_server(name, server_cfg, timeout_val)
@@ -2908,7 +2929,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             self.ctx.logger.info(f"Server '{name}' added to config")
         
             # If automatic connection is required.
-            if auto_connect and enabled:
+            if auto_connect_flag and enabled_flag:
                 adapter_config = config.get("mcp_adapter", {})
                 timeout_val = self._coerce_timeout(adapter_config.get("connect_timeout", 30), 30.0)
                 self._schedule_connect_server(name, server_cfg, timeout_val)

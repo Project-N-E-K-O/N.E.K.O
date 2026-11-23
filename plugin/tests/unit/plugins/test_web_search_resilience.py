@@ -817,13 +817,45 @@ async def test_total_timeout_includes_coordinator_wait(
     fetch_called = False
     coordinator = resilience.SearchCoordinator(
         min_interval_seconds=1.0,
-        queue_wait_seconds=1.0,
+        queue_wait_seconds=5.0,
     )
     coordinator._loop = asyncio.get_running_loop()
     coordinator._backends["duckduckgo"] = resilience._BackendState(
         asyncio.Lock(),
-        next_allowed=resilience.time.monotonic() + 60.0,
+        next_allowed=resilience.time.monotonic() + 1.5,
     )
+
+    async def html(*_args: object, **_kwargs: object) -> resilience.SearchResults:
+        nonlocal fetch_called
+        fetch_called = True
+        return []
+
+    plugin = _PluginStub(total_timeout=1.0)
+    plugin._coordinator = coordinator
+    monkeypatch.setattr(web_search, "_search_ddg_html", html)
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(resilience.SearchBusyError):
+        await web_search.WebSearchPlugin._do_text_search(plugin, "neko", 3, 15.0)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.5
+    assert fetch_called is False
+
+
+@pytest.mark.asyncio
+async def test_total_timeout_bounds_held_backend_lock_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_called = False
+    coordinator = resilience.SearchCoordinator(
+        min_interval_seconds=0.0,
+        queue_wait_seconds=5.0,
+    )
+    coordinator._loop = asyncio.get_running_loop()
+    state = resilience._BackendState(asyncio.Lock())
+    await state.lock.acquire()
+    coordinator._backends["duckduckgo"] = state
 
     async def html(*_args: object, **_kwargs: object) -> resilience.SearchResults:
         nonlocal fetch_called
@@ -834,9 +866,15 @@ async def test_total_timeout_includes_coordinator_wait(
     plugin._coordinator = coordinator
     monkeypatch.setattr(web_search, "_search_ddg_html", html)
 
-    with pytest.raises(TimeoutError):
-        await web_search.WebSearchPlugin._do_text_search(plugin, "neko", 3, 15.0)
+    started = asyncio.get_running_loop().time()
+    try:
+        with pytest.raises((TimeoutError, resilience.SearchBusyError)):
+            await web_search.WebSearchPlugin._do_text_search(plugin, "neko", 3, 15.0)
+        elapsed = asyncio.get_running_loop().time() - started
+    finally:
+        state.lock.release()
 
+    assert elapsed < 0.5
     assert fetch_called is False
 
 
@@ -869,3 +907,273 @@ def test_search_entries_allow_internal_timeout_to_finish() -> None:
     summary_meta = web_search.WebSearchPlugin.search_summary.__neko_event_meta__
     assert search_meta.timeout == 30.0
     assert summary_meta.timeout == 30.0
+
+
+@pytest.mark.asyncio
+async def test_coordinator_allows_throttle_wait_beyond_three_seconds_within_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B32A-006: coordinator wait > 3.0s paces and succeeds if within total_timeout."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=5.0, queue_wait_seconds=1.0)
+    coordinator._loop = asyncio.get_running_loop()
+    coordinator._backends["duckduckgo"] = resilience._BackendState(
+        asyncio.Lock(),
+        next_allowed=resilience.time.monotonic() + 3.5,
+    )
+
+    slept: list[float] = []
+
+    async def _fast_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(resilience.asyncio, "sleep", _fast_sleep)
+
+    async def fetch() -> resilience.SearchResults:
+        return [{"title": "ok", "url": "https://example.com", "snippet": ""}]
+
+    results = await coordinator.run(
+        ("duckduckgo", "q", 3),
+        fetch,
+        max_wait_seconds=10.0,
+    )
+    assert slept and slept[0] > 3.0
+    assert results[0]["title"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_fails_fast_when_throttle_wait_exceeds_budget() -> None:
+    """Throttle wait that exceeds remaining budget raises SearchBusyError immediately."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=15.0, queue_wait_seconds=1.0)
+    coordinator._loop = asyncio.get_running_loop()
+    coordinator._backends["baidu"] = resilience._BackendState(
+        asyncio.Lock(),
+        next_allowed=resilience.time.monotonic() + 15.0,
+    )
+    fetch_called = False
+
+    async def fetch() -> resilience.SearchResults:
+        nonlocal fetch_called
+        fetch_called = True
+        return [{"title": "ok", "url": "https://example.com", "snippet": ""}]
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(resilience.SearchBusyError):
+        await coordinator.run(("baidu", "q", 3), fetch, max_wait_seconds=1.0)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.5
+    assert fetch_called is False
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_falls_back_immediately_when_primary_throttle_exceeds_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto mode fails fast on throttled Baidu when wait exceeds budget and falls back to DDG."""
+    baidu_called = False
+    ddg_called = False
+
+    plugin = _PluginStub(total_timeout=25.0)
+    plugin._configured_backend = "auto"
+    plugin._backend = "baidu"
+    plugin._country = "CN"
+
+    baidu_coord = resilience.SearchCoordinator(min_interval_seconds=15.0, queue_wait_seconds=2.0)
+    baidu_coord._loop = asyncio.get_running_loop()
+    baidu_coord._backends["baidu"] = resilience._BackendState(
+        asyncio.Lock(),
+        next_allowed=resilience.time.monotonic() + 15.0,
+    )
+    ddg_coord = resilience.SearchCoordinator(min_interval_seconds=0.0, queue_wait_seconds=2.0)
+    plugin._coordinators = {
+        "baidu": baidu_coord,
+        "duckduckgo": ddg_coord,
+    }
+
+    async def fake_baidu(*_args: object, **_kwargs: object) -> resilience.SearchResults:
+        nonlocal baidu_called
+        baidu_called = True
+        return [{"title": "baidu", "url": "https://baidu.com", "snippet": ""}]
+
+    async def fake_ddg(*_args: object, **_kwargs: object) -> resilience.SearchResults:
+        nonlocal ddg_called
+        ddg_called = True
+        return [{"title": "ddg", "url": "https://duckduckgo.com", "snippet": ""}]
+
+    monkeypatch.setattr(web_search, "_search_baidu", fake_baidu)
+    monkeypatch.setattr(web_search, "_search_ddg_html", fake_ddg)
+
+    started = asyncio.get_running_loop().time()
+    results = await web_search.WebSearchPlugin._do_text_search(plugin, "neko", 3, 15.0)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.5
+    assert baidu_called is False
+    assert ddg_called is True
+    assert results == [{"title": "ddg", "url": "https://duckduckgo.com", "snippet": ""}]
+
+
+@pytest.mark.asyncio
+async def test_coalesced_longer_budget_waiter_survives_short_budget_initiator() -> None:
+    """Short-budget initiator timing out on busy lock must not fail a longer coalesced waiter."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=0.0, queue_wait_seconds=2.0)
+    coordinator._loop = asyncio.get_running_loop()
+    state = resilience._BackendState(asyncio.Lock())
+    await state.lock.acquire()
+    coordinator._backends["duckduckgo"] = state
+
+    fetch_calls = 0
+
+    async def fetch() -> resilience.SearchResults:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return [{"title": "coalesced", "url": "https://example.com", "snippet": ""}]
+
+    try:
+        short_task = asyncio.create_task(
+            coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=0.08)
+        )
+        await asyncio.sleep(0.02)
+        long_task = asyncio.create_task(
+            coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=2.0)
+        )
+        with pytest.raises(resilience.SearchBusyError):
+            await asyncio.wait_for(short_task, timeout=0.4)
+        assert not long_task.done()
+    finally:
+        state.lock.release()
+
+    assert (await asyncio.wait_for(long_task, timeout=1.0))[0]["title"] == "coalesced"
+    assert fetch_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_coalesced_unbounded_waiter_survives_short_budget_initiator() -> None:
+    """Unbounded coalesced waiter completes even if short-budget initiator expires."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=0.0, queue_wait_seconds=2.0)
+    coordinator._loop = asyncio.get_running_loop()
+    state = resilience._BackendState(asyncio.Lock())
+    await state.lock.acquire()
+    coordinator._backends["duckduckgo"] = state
+
+    fetch_calls = 0
+
+    async def fetch() -> resilience.SearchResults:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return [{"title": "unbounded", "url": "https://example.com", "snippet": ""}]
+
+    try:
+        short_task = asyncio.create_task(
+            coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=0.05)
+        )
+        await asyncio.sleep(0.01)
+        unbounded_task = asyncio.create_task(
+            coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=None)
+        )
+        with pytest.raises(resilience.SearchBusyError):
+            await asyncio.wait_for(short_task, timeout=0.4)
+        assert not unbounded_task.done()
+    finally:
+        state.lock.release()
+
+    assert (await asyncio.wait_for(unbounded_task, timeout=1.0))[0]["title"] == "unbounded"
+    assert fetch_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_coalesced_short_waiter_fails_fast_during_throttle_sleep_without_breaking_long_waiter() -> None:
+    """A short-budget waiter joining a throttled sleep fails fast without aborting the long waiter."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=0.0, queue_wait_seconds=2.0)
+    coordinator._loop = asyncio.get_running_loop()
+    coordinator._backends["duckduckgo"] = resilience._BackendState(
+        asyncio.Lock(),
+        next_allowed=resilience.time.monotonic() + 0.25,
+    )
+
+    fetch_calls = 0
+
+    async def fetch() -> resilience.SearchResults:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return [{"title": "throttled-ok", "url": "https://example.com", "snippet": ""}]
+
+    long_task = asyncio.create_task(
+        coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=2.0)
+    )
+    await asyncio.sleep(0.02)
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(resilience.SearchBusyError):
+        await coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=0.05)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.1
+    assert (await asyncio.wait_for(long_task, timeout=1.0))[0]["title"] == "throttled-ok"
+    assert fetch_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_lock_release_handoff_does_not_bypass_queue_wait_seconds() -> None:
+    """Caller arriving during lock release handoff must respect queue_wait_seconds."""
+    coordinator = resilience.SearchCoordinator(
+        min_interval_seconds=0.0,
+        queue_wait_seconds=0.1,
+    )
+    fetch0_entered = asyncio.Event()
+    release_fetch0 = asyncio.Event()
+    fetch1_entered = asyncio.Event()
+    release_fetch1 = asyncio.Event()
+    fetch2_calls = 0
+
+    async def fetch0() -> resilience.SearchResults:
+        fetch0_entered.set()
+        await release_fetch0.wait()
+        await asyncio.sleep(0)
+        return [{"title": "q0", "url": "https://example.com/0", "snippet": ""}]
+
+    async def fetch1() -> resilience.SearchResults:
+        fetch1_entered.set()
+        await release_fetch1.wait()
+        return [{"title": "q1", "url": "https://example.com/1", "snippet": ""}]
+
+    async def fetch2() -> resilience.SearchResults:
+        nonlocal fetch2_calls
+        fetch2_calls += 1
+        return [{"title": "q2", "url": "https://example.com/2", "snippet": ""}]
+
+    task0 = asyncio.create_task(
+        coordinator.run(("duckduckgo", "q0", 3), fetch0, max_wait_seconds=None)
+    )
+    await fetch0_entered.wait()
+
+    task1 = asyncio.create_task(
+        coordinator.run(("duckduckgo", "q1", 3), fetch1, max_wait_seconds=None)
+    )
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    state = coordinator._backends["duckduckgo"]
+    assert state.lock.locked()
+    assert state.lock_waiters == 1
+
+    # Synchronously release fetch0 and launch task2 so fetch2 reaches
+    # _acquire_backend_lock right after state.lock.release() wakes task1, while
+    # state.lock.locked() is False and task1 has not yet resumed.
+    release_fetch0.set()
+    task2 = asyncio.create_task(
+        coordinator.run(("duckduckgo", "q2", 3), fetch2, max_wait_seconds=None)
+    )
+
+    try:
+        with pytest.raises(resilience.SearchBusyError):
+            await asyncio.wait_for(task2, timeout=1.0)
+        await asyncio.wait_for(fetch1_entered.wait(), timeout=0.5)
+        assert fetch2_calls == 0
+    finally:
+        release_fetch1.set()
+
+    assert (await asyncio.wait_for(task0, timeout=1.0))[0]["title"] == "q0"
+    assert (await asyncio.wait_for(task1, timeout=1.0))[0]["title"] == "q1"
+    assert fetch2_calls == 0
+    assert state.lock_waiters == 0

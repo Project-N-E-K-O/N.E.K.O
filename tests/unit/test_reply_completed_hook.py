@@ -26,6 +26,22 @@ async def drain_hooks(registry):
     assert not registry._hook_tasks
 
 
+def registered_entries(plugin_id, *entry_ids):
+    """Host registry fields the reply-completed route consults."""
+    from plugin._types.events import EventHandler, EventMeta
+
+    return {
+        "acquire_event_handlers_read_lock": nullcontext,
+        "event_handlers": {
+            f"{plugin_id}:plugin_entry:{entry_id}": EventHandler(
+                meta=EventMeta(event_type="plugin_entry", id=entry_id, name=entry_id),
+                handler=lambda *args, **kwargs: None,
+            )
+            for entry_id in entry_ids
+        },
+    }
+
+
 def prepare(chain, dispatch, *, role=None, timeout=15.0, entry="choose_image"):
     assert chain.registry.subscribe("stickers", entry, dispatch, role=role, timeout=timeout)["ok"]
     chain.registry.prepare_reply(chain.manager, chain.owner, user_text="hello")
@@ -446,6 +462,7 @@ async def test_sdk_subscription_callback_and_tail_registration_use_real_http_rou
     monkeypatch.setattr(callback_module, "state", SimpleNamespace(
         acquire_plugin_hosts_read_lock=nullcontext,
         plugin_hosts={"stickers": SimpleNamespace(trigger=trigger, is_alive=lambda: True)},
+        **registered_entries("stickers", "choose"),
     ))
     async with client_type(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as host_http:
         monkeypatch.setattr(tool_router, "_get_http_client", lambda: host_http)
@@ -475,6 +492,7 @@ async def test_callback_liveness_controls_automatic_unsubscription(chain, monkey
         plugin_hosts={} if condition == "absent" else {
             "stickers": SimpleNamespace(trigger=trigger, is_alive=alive),
         },
+        **registered_entries("stickers", "choose"),
     ))
     monkeypatch.setattr(tool_router, "reply_tail_registry", chain.registry)
     async with httpx.AsyncClient(
@@ -509,7 +527,8 @@ async def test_callback_liveness_controls_automatic_unsubscription(chain, monkey
 
 
 @pytest.mark.parametrize("body", [
-    {"detail": "Not Found"}, {"detail": {"code": "OTHER_ERROR"}}, [], "not json",
+    {"detail": "Not Found"}, {"detail": {"code": "OTHER_ERROR"}},
+    {"detail": {"code": "ENTRY_NOT_REGISTERED"}}, [], "not json",
 ])
 async def test_unrelated_404_does_not_unsubscribe(chain, monkeypatch, body):
     def respond(request):

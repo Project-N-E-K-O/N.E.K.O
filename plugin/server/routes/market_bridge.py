@@ -332,13 +332,20 @@ def _consume_one_time_code(code: str) -> bool:
     return False
 
 
+def _is_task_running(task_id: str, task: Mapping[str, Any]) -> bool:
+    worker = _task_workers.get(task_id)
+    if worker is not None and callable(getattr(worker, "done", None)):
+        return not worker.done()
+    return task.get("completed_at") is None
+
+
 def _cleanup_tasks() -> None:
     now = time.time()
     expired = [
         task_id
         for task_id, task in _tasks.items()
-        if task.get("completed_at") is not None
-        and now - float(task.get("completed_at") or 0) > _TASK_TTL_SECONDS
+        if not _is_task_running(task_id, task)
+        and now - float(task.get("completed_at") or task.get("created_at") or 0) > _TASK_TTL_SECONDS
     ]
     for task_id in expired:
         _tasks.pop(task_id, None)
@@ -347,9 +354,13 @@ def _cleanup_tasks() -> None:
     if len(_tasks) <= _TASK_MAX_ENTRIES:
         return
     overflow = len(_tasks) - _TASK_MAX_ENTRIES
+    terminal = [
+        item for item in _tasks.items()
+        if not _is_task_running(item[0], item[1])
+    ]
     ordered = sorted(
-        _tasks.items(),
-        key=lambda item: float(item[1].get("created_at") or 0),
+        terminal,
+        key=lambda item: (float(item[1].get("completed_at") or item[1].get("created_at") or 0), item[0]),
     )
     for task_id, _task in ordered[:overflow]:
         _tasks.pop(task_id, None)
