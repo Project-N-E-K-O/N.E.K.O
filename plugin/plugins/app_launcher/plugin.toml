@@ -35,4 +35,4 @@ locales = ["zh-CN", "zh-TW", "en", "ja", "ko", "ru", "pt", "es"]
 
 # Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
 [permissions.require."system.process:spawn"]
-reason = { zh-CN = "打开你添加到启动器里的软件和程序。", zh-TW = "開啟你加入啟動器的軟體和程式。", en = "Open the apps and programs you add to the launcher.", ja = "ランチャーに登録したアプリやプログラムを起動します。", ko = "런처에 추가한 앱과 프로그램을 실행합니다.", ru = "Запускать приложения и программы, которые вы добавили в лаунчер.", es = "Abrir las aplicaciones y programas que añadas al lanzador.", pt = "Abrir os aplicativos e programas que você adicionar ao inicializador." }
+reason = { zh-CN = "打开你添加到启动器里的软件和程序。", zh-TW = "開啟你加入啟動器的軟體和程式。", en = "Open the apps and programs you add to the launcher.", ja = "ランチャーに登録したアプリやプログラムを起動します。", ko = "런처에 추가한 앱과 프로그램을 실행합니다.", ru = "Запускать приложения и программы, которые вы добавили в лаунчер.", es = "Abrir las aplicaciones y programas que añadas al lanzador.", pt = "Abrir os aplicativos e programas que você adicionar ao lançador." }
