@@ -1300,29 +1300,25 @@ async def update_catgirl_lighting(name: str, request: Request):
 
             _, cancelled = await await_completion_with_cancel(_config_manager.asave_characters(characters))
 
-        if apply_runtime:
-            # Fast path: refresh only the edited character's session_manager (lighting), without iterating over the other N-1 entries.
-            if await _finish_catgirl_runtime_refresh(
-                name,
-                apply_runtime=True,
-                cancelled=cancelled,
-            ):
-                logger.info(f"已应用到运行时（角色 {name} 的打光配置）")
-        else:
-            if cancelled:
-                raise asyncio.CancelledError
-            logger.debug("跳过运行时刷新（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
-
-        if apply_runtime:
+        # Fast path: refresh only the edited character's session_manager (lighting), without iterating over the other N-1 entries.
+        applied_runtime = await _finish_catgirl_runtime_refresh(
+            name,
+            apply_runtime=apply_runtime,
+            cancelled=cancelled,
+        )
+        if applied_runtime:
+            logger.info(f"已应用到运行时（角色 {name} 的打光配置）")
             message = f'已保存角色 {name} 的打光配置并已应用到运行时'
         else:
+            if not apply_runtime:
+                logger.debug("跳过运行时刷新（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
             message = f'已保存角色 {name} 的打光配置到磁盘（需要刷新页面或调用重载才能生效）'
 
         return JSONResponse(content={
             'success': True,
             'message': message,
-            'applied_runtime': apply_runtime,
-            'needs_reload': not apply_runtime
+            'applied_runtime': applied_runtime,
+            'needs_reload': not applied_runtime
         })
 
     except MaintenanceModeError:
