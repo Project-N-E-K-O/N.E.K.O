@@ -175,30 +175,41 @@ sudo chown -R root:root "$ACTIVE_VENV"
 sudo chmod -R a+rX,go-w "$ACTIVE_VENV"
 sudo chown -R nobody:$RUN_GROUP "$INSTALL_DIR/data"
 
-# 启动 / 重启服务后再清理旧版本环境
+# 启动/重启（确保更新代码和 env 后加载新进程与新 ADMIN_TOKEN）
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
 sudo systemctl restart "$SERVICE_NAME"
 
-for legacy_venv in "$INSTALL_DIR"/venv.legacy.*; do
-    [ -e "$legacy_venv" ] || continue
-    sudo rm -rf "$legacy_venv"
-done
-ACTIVE_VENV_NAME="$(basename "$ACTIVE_VENV")"
-LIVE_VENV_TARGET="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || printf '%s' "$ACTIVE_VENV")"
-for old_venv in "$INSTALL_DIR/venvs"/venv-*; do
-    [ -e "$old_venv" ] || continue
-    old_venv_real="$(readlink -f "$old_venv" 2>/dev/null || printf '%s' "$old_venv")"
-    if [ "$(basename "$old_venv")" != "$ACTIVE_VENV_NAME" ] && [ "$old_venv_real" != "$LIVE_VENV_TARGET" ]; then
-        sudo rm -rf "$old_venv"
-    fi
-done
+# 服务重启后再清理旧版本环境
+if [ -n "${INSTALL_DIR:-}" ] && [ -n "${ACTIVE_VENV:-}" ]; then
+    for legacy_venv in "$INSTALL_DIR"/venv.legacy.*; do
+        [ -e "$legacy_venv" ] || continue
+        sudo rm -rf "$legacy_venv"
+    done
+    ACTIVE_VENV_NAME="$(basename "$ACTIVE_VENV")"
+    LIVE_VENV_TARGET="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || printf '%s' "$ACTIVE_VENV")"
+    for old_venv in "$INSTALL_DIR/venvs"/venv-*; do
+        [ -e "$old_venv" ] || continue
+        old_venv_real="$(readlink -f "$old_venv" 2>/dev/null || printf '%s' "$old_venv")"
+        if [ "$(basename "$old_venv")" != "$ACTIVE_VENV_NAME" ] && [ "$old_venv_real" != "$LIVE_VENV_TARGET" ]; then
+            sudo rm -rf "$old_venv"
+        fi
+    done
+fi
 
 echo ""
-sleep 1
 
 # 验证
-if curl -sf http://localhost:$PORT/health > /dev/null 2>&1; then
+HEALTH_OK=0
+for _ in $(seq 1 10); do
+    if sudo systemctl is-active --quiet "$SERVICE_NAME" && curl -sf "http://localhost:$PORT/health" > /dev/null 2>&1; then
+        HEALTH_OK=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [ "$HEALTH_OK" -eq 1 ]; then
     echo "✅ Server is running on port $PORT"
 else
     echo "⚠  Server may still be starting, check: systemctl status $SERVICE_NAME"

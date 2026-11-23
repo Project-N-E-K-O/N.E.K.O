@@ -136,11 +136,15 @@ For checkboxes:
       "page_number": 1,
       "image_width": (first page image width in pixels),
       "image_height": (first page image height in pixels),
+      "pdf_width": (optional, first page PDF width in points),
+      "pdf_height": (optional, first page PDF height in points),
     },
     {
       "page_number": 2,
       "image_width": (second page image width in pixels),
       "image_height": (second page image height in pixels),
+      "pdf_width": (optional, second page PDF width in points),
+      "pdf_height": (optional, second page PDF height in points),
     }
     // additional pages
   ],
@@ -149,13 +153,13 @@ For checkboxes:
     {
       "page_number": 1,
       "description": "The user's last name should be entered here",
-      // Bounding boxes are [left, top, right, bottom]. The bounding boxes for the label and text entry should not overlap.
+      // Bounding boxes are [left, top, right, bottom] in PNG image pixels. The bounding boxes for the label and text entry should not overlap.
       "field_label": "Last name",
       "label_bounding_box": [30, 125, 95, 142],
       "entry_bounding_box": [100, 125, 280, 142],
       "entry_text": {
         "text": "Johnson", // This text will be added as an annotation at the entry_bounding_box location
-        "font_size": 14, // optional, defaults to 14
+        "font_size": 14, // optional, in PDF points, defaults to 14
         "font_color": "000000", // optional, RRGGBB format, defaults to 000000 (black)
       }
     },
@@ -183,8 +187,8 @@ The validation images will have red rectangles where text should be entered, and
 
 ### Step 3: Validate Bounding Boxes (REQUIRED)
 #### Automated intersection check
-- Verify that none of bounding boxes intersect and that the entry bounding boxes are tall enough by checking the fields.json file with the `check_bounding_boxes.py` script (run from this file's directory):
-`python scripts/check_bounding_boxes.py <JSON file>`
+- Verify that none of bounding boxes intersect and that the entry bounding boxes are tall enough by checking the fields.json file with the `check_bounding_boxes.py` script (run from this file's directory; pass `<input_pdf_path>` or include `pdf_width`/`pdf_height` in `pages` so PNG pixel heights are scaled against PDF point `font_size`):
+`python scripts/check_bounding_boxes.py <JSON file> [input_pdf_path]`
 
 If there are errors, reanalyze the relevant fields, adjust the bounding boxes, and iterate until there are no remaining errors. Remember: label (blue) bounding boxes should contain text labels, entry (red) boxes should not.
 
