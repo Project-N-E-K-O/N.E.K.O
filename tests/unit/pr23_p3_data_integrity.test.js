@@ -1278,3 +1278,54 @@ test('PR3976 4661901453: tutorial restart before the interrupted restore finishe
         assert.equal(persisted.agentFlags.browser_use_enabled, true, 'the user\'s current settings must be what gets restored');
     }
 });
+
+test('PR3976 4662148284: newer user choices made during the restore backoff win over the old snapshot on tutorial restart', async () => {
+    const oldFlags = { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false };
+
+    // Case A: restore never touched master; user turns master + browser ON during backoff.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({ version: 1, token: 91, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: oldFlags }));
+        const server = makeAgentServer();
+        let gets = 0;
+        const handler = async (url, init, body) => {
+            if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET' && ++gets === 1) {
+                return { ok: false, status: 502, json: async () => ({}) };
+            }
+            return await server.handler(url, init, body);
+        };
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+        await flushMicrotasks();
+        server.master = true;
+        server.child.browser_use_enabled = true;
+        rt.win.NekoHomeTutorialFeatureController.begin('tutorial-restart');
+        await flushMicrotasks();
+        const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
+        assert.equal(persisted.agentFlags.browser_use_enabled, true, 'user\'s newer choice must be the restore target');
+        assert.equal(persisted.agentFlags.computer_use_enabled, false);
+    }
+
+    // Case B: restore already turned master ON (masterApplied) and nothing beyond the snapshot is ON -> still unfinished recovery.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 92, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: oldFlags, masterApplied: true,
+        }));
+        const server = makeAgentServer();
+        server.master = true;
+        server.child.user_plugin_enabled = true; // side effect of master-on
+        let gets = 0;
+        const handler = async (url, init, body) => {
+            if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET' && ++gets === 1) {
+                return { ok: false, status: 502, json: async () => ({}) };
+            }
+            return await server.handler(url, init, body);
+        };
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+        await flushMicrotasks();
+        rt.win.NekoHomeTutorialFeatureController.begin('tutorial-restart');
+        await flushMicrotasks();
+        const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
+        assert.deepEqual(persisted.agentFlags, oldFlags, 'partial recovery keeps the old restore target');
+    }
+});

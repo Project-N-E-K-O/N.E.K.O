@@ -301,6 +301,20 @@
         }
     }
 
+    // 此刻的开关是否仍是「上一轮恢复没做完」的样子：全关（上一轮教程关掉的状态），
+    // 或者恢复流程已开过总开关、开着的开关没超出旧快照。否则就是用户自己改过，以此刻为准。
+    function isUnfinishedRecoveryState(currentFlags, payload) {
+        if (!hasAnyEnabledAgentFlag(currentFlags)) {
+            return true;
+        }
+        const expectedFlags = payload.agentFlags;
+        const masterTouchedByRestore = payload.masterApplied === true || payload.masterAttempted === true;
+        return masterTouchedByRestore
+            && expectedFlags.agent_enabled === true
+            && currentFlags.agent_enabled === true
+            && !hasUnexpectedChildFlagEnabled(currentFlags, expectedFlags, { allowMasterPluginSideEffect: true });
+    }
+
     // 教程开始时决定这一轮要恢复成什么。上一轮被打断的恢复可能还没做完（启动时要等存储就绪、
     // 冷启动还会退避重试），此刻读到的开关是上一轮关掉的「全关」，不能拿它覆盖旧快照。
     // 旧快照属于别的角色、此刻又是全关时，原样留着它，这一轮不写快照；
@@ -314,6 +328,7 @@
             (inspected.status === 'valid' || inspected.status === 'owner_pending')
             && inspected.payload
             && hasAnyEnabledAgentFlag(inspected.payload.agentFlags)
+            && isUnfinishedRecoveryState(currentFlags, inspected.payload)
         ) {
             return {
                 flags: Object.assign({}, inspected.payload.agentFlags),
