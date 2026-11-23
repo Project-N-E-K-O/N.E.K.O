@@ -200,7 +200,7 @@ async def prepare_workshop_upload(request: Request):
         model_type = data.get('modelType', 'live2d')  # Added: model type live2d/vrm/mmd.
         chara_file_name = data.get('fileName', 'character.chara.json')
         character_card_name = data.get('character_card_name')  # Added: character-card name.
-        
+
         if not isinstance(chara_data, dict) or not chara_data or not model_name:
             return JSONResponse({
                 "success": False,
@@ -532,6 +532,7 @@ async def publish_to_workshop(request: Request):
         tags = data.get('tags', [])
         change_note = data.get('change_note', '初始发布')
         character_card_name = data.get('character_card_name')  # Added: character-card name.
+        consumed_staged_preview = ""
         
         workshop_base = await get_workshop_path_async()
         # Improved path normalization handles paths correctly in all cases.
@@ -638,24 +639,13 @@ async def publish_to_workshop(request: Request):
                     "message": "预览图片路径不在允许的范围内"
                 }, status_code=403)
 
-            # Verify preview-image existence.
+            # Verify preview-image existence; do not silently fall back when an explicit preview expired or vanished.
             if not os.path.exists(preview_image):
-                logger.warning(f'指定的预览图片不存在，尝试在内容文件夹中查找: {preview_image}')
-                auto_preview = find_preview_image_in_folder(content_folder)
-                if auto_preview:
-                    try:
-                        auto_preview = _assert_workshop_path(auto_preview, content_folder)
-                    except PermissionError:
-                        return JSONResponse(content={
-                            "success": False,
-                            "error": "权限错误",
-                            "message": "预览图片路径不在允许的范围内"
-                        }, status_code=403)
-                    logger.info(f'找到自动预览图片: {auto_preview}')
-                    preview_image = auto_preview
-                else:
-                    logger.warning('无法找到预览图片')
-                    preview_image = ''
+                return JSONResponse(content={
+                    "success": False,
+                    "error": "预览图片不存在",
+                    "message": "指定的预览图片已过期或不存在，请重新上传"
+                }, status_code=400)
 
             if preview_image and not os.path.isfile(preview_image):
                 return JSONResponse(content={
@@ -707,10 +697,7 @@ async def publish_to_workshop(request: Request):
                             "error": "预览图片处理失败",
                             "message": "无法复制预览图片到内容文件夹"
                         }, status_code=500)
-                    try:
-                        await asyncio.to_thread(_cleanup_consumed_preview_staging, source_preview, workshop_base)
-                    except Exception:
-                        pass
+                    consumed_staged_preview = source_preview
         else:
             # If no preview is specified, try automatic discovery.
             auto_preview = find_preview_image_in_folder(content_folder)
@@ -810,6 +797,12 @@ async def publish_to_workshop(request: Request):
             }, status_code=409)
         
         logger.info(f"成功发布创意工坊物品，ID: {published_file_id}")
+
+        if consumed_staged_preview:
+            try:
+                await asyncio.to_thread(_cleanup_consumed_preview_staging, consumed_staged_preview, workshop_base)
+            except Exception:
+                pass
         
         # After successful upload, update .workshop_meta.json and save a snapshot.
         if character_card_name and published_file_id:

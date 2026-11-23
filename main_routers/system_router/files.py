@@ -92,8 +92,14 @@ async def check_file_exists(path: str = None):
             logger.warning("Rejected path traversal attempt in file-exists")
             return JSONResponse(content={"exists": False}, status_code=400)
 
-        if _is_unsafe_windows_unc_or_device_path(decoded_path):
-            logger.warning("Rejected UNC/device path probe in file-exists")
+        if _is_unsafe_windows_unc_or_device_path(decoded_path, allow_unc=True):
+            logger.warning("Rejected device path probe in file-exists")
+            return JSONResponse(content={"exists": False}, status_code=403)
+
+        allowed_dirs = await _get_file_exists_allowed_dirs()
+        allow_unc = any(d.replace("/", "\\").startswith("\\\\") for d in allowed_dirs)
+        if _is_unsafe_windows_unc_or_device_path(decoded_path, allow_unc=allow_unc):
+            logger.warning("Rejected UNC path probe in file-exists")
             return JSONResponse(content={"exists": False}, status_code=403)
 
         if os.name == 'nt':
@@ -105,7 +111,6 @@ async def check_file_exists(path: str = None):
             return JSONResponse(content={"exists": False}, status_code=400)
 
         real_path = os.path.realpath(normalized)
-        allowed_dirs = await _get_file_exists_allowed_dirs()
         if not any(_is_path_within_base(allowed_dir, real_path) for allowed_dir in allowed_dirs):
             logger.warning("Rejected out-of-scope path probe in file-exists")
             return JSONResponse(content={"exists": False}, status_code=403)

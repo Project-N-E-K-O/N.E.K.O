@@ -436,7 +436,7 @@ def test_file_exists_enforces_trusted_roots_and_blocks_traversal(tmp_path, monke
         r"\??\C:\Windows\win.ini",
     ],
 )
-def test_file_exists_rejects_unc_and_device_paths_before_realpath(monkeypatch, unc_or_device_path):
+def test_file_exists_rejects_unc_and_device_paths_before_realpath(tmp_path, monkeypatch, unc_or_device_path):
     from main_routers import system_router
     from main_routers.system_router import files as files_mod
 
@@ -447,6 +447,7 @@ def test_file_exists_rejects_unc_and_device_paths_before_realpath(monkeypatch, u
         realpath_calls.append(str(p))
         return real_realpath(p)
 
+    monkeypatch.setattr(files_mod, "_get_file_exists_allowed_dirs", AsyncMock(return_value=[str(tmp_path)]))
     monkeypatch.setattr(files_mod.os.path, "realpath", _spy_realpath)
     app = FastAPI()
     app.include_router(system_router.router)
@@ -455,6 +456,42 @@ def test_file_exists_rejects_unc_and_device_paths_before_realpath(monkeypatch, u
     assert resp.status_code == 403
     assert resp.json() == {"exists": False}
     assert realpath_calls == []
+
+
+@pytest.mark.parametrize(
+    "device_path",
+    [
+        r"\\?\C:\Windows\win.ini",
+        r"\\.\PhysicalDrive0",
+        r"\??\C:\Windows\win.ini",
+    ],
+)
+def test_file_exists_allows_unc_when_allowed_dir_is_unc_but_still_blocks_device_paths(monkeypatch, device_path):
+    from main_routers import system_router
+    from main_routers.system_router import files as files_mod
+
+    unc_root = r"\\fileserver\share\docs"
+    realpath_calls: list[str] = []
+    real_realpath = os.path.realpath
+
+    def _spy_realpath(p):
+        realpath_calls.append(str(p))
+        return real_realpath(p)
+
+    monkeypatch.setattr(files_mod, "_get_file_exists_allowed_dirs", AsyncMock(return_value=[unc_root]))
+    monkeypatch.setattr(files_mod.os.path, "realpath", _spy_realpath)
+    app = FastAPI()
+    app.include_router(system_router.router)
+    with TestClient(app) as client:
+        r_device = client.get("/api/file-exists", params={"path": device_path})
+        assert r_device.status_code == 403
+        assert realpath_calls == []
+
+        r_unc = client.get("/api/file-exists", params={"path": r"\\fileserver\share\docs\ok.txt"})
+        assert realpath_calls and "fileserver" in realpath_calls[0], (
+            "UNC path under an allowed UNC root should not be blocked before realpath"
+        )
+        assert r_unc.status_code in (200, 403)
 
 
 # ---------------------------------------------------------------------------

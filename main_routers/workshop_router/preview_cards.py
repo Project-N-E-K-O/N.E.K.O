@@ -68,13 +68,19 @@ async def _read_upload_bytes_bounded(
 def _assert_workshop_path(path: str, base: str) -> str:
     """Resolve ``path`` and verify containment inside ``base`` (case- and cross-drive-safe)."""
     unified_path = path.replace("/", "\\")
-    unified_base = base.replace("/", "\\")
-    if (unified_path.startswith("\\\\") or unified_path.startswith("\\??\\")) and not unified_base.startswith("\\\\"):
+    if unified_path.startswith("\\??\\"):
         raise PermissionError("path not allowed")
     try:
+        resolved_base = os.path.realpath(os.path.normpath(base))
+        unified_base = base.replace("/", "\\")
+        unified_resolved_base = resolved_base.replace("/", "\\")
+        if unified_path.startswith("\\\\") and not (
+            unified_base.startswith("\\\\") or unified_resolved_base.startswith("\\\\")
+        ):
+            raise PermissionError("path not allowed")
         resolved = os.path.realpath(os.path.normpath(path))
         norm_full = os.path.normcase(resolved)
-        norm_base = os.path.normcase(os.path.realpath(os.path.normpath(base)))
+        norm_base = os.path.normcase(resolved_base)
         if os.path.commonpath([norm_full, norm_base]) != norm_base:
             raise PermissionError("path not allowed")
         return resolved

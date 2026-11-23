@@ -344,7 +344,7 @@ async def proxy_image(image_path: str):
         if decoded_path.startswith(('http://', 'https://')):
             return JSONResponse(content={"success": False, "error": "暂不支持远程图片URL"}, status_code=400)
 
-        if _is_unsafe_windows_unc_or_device_path(decoded_path):
+        if _is_unsafe_windows_unc_or_device_path(decoded_path, allow_unc=True):
             return JSONResponse(content={"success": False, "error": "文件不存在或无访问权限"}, status_code=404)
 
         base_dir = _get_app_root()
@@ -378,6 +378,10 @@ async def proxy_image(image_path: str):
                             allowed_dirs.append(real_ws_root)
         except Exception as e:
             logger.warning(f"无法添加额外创意工坊库目录: {str(e)}")
+
+        allow_unc = any(d.replace("/", "\\").startswith("\\\\") for d in allowed_dirs)
+        if _is_unsafe_windows_unc_or_device_path(decoded_path, allow_unc=allow_unc):
+            return JSONResponse(content={"success": False, "error": "文件不存在或无访问权限"}, status_code=404)
 
         final_path: str | None = None
 

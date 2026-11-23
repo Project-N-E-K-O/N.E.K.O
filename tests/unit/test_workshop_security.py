@@ -231,7 +231,22 @@ async def test_publish_rejects_outside_preview_image_and_non_images(tmp_path, mo
         assert resp.status_code == 400
         assert not (content_folder / "preview.png").exists()
 
-    # Valid staged preview inside workshop passes containment & validation and cleans up its consumed staging subdir.
+    # Staged preview must not be prematurely removed if Steam publish fails (e.g. 503).
+    resp_fail = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Test",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": str(valid_staged),
+        })
+    )
+    assert resp_fail.status_code == 503
+    assert (content_folder / "preview.png").is_file()
+    assert staging_folder.exists()
+
+    # Once Steam publish succeeds, consumed staging directory is cleaned up.
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", lambda *_a, **_kw: "123456")
     resp_ok = await wr_publish.publish_to_workshop(
         _StubJsonRequest({
             "title": "Test",
@@ -240,7 +255,7 @@ async def test_publish_rejects_outside_preview_image_and_non_images(tmp_path, mo
             "preview_image": str(valid_staged),
         })
     )
-    assert resp_ok.status_code != 403
+    assert resp_ok.status_code == 200
     assert (content_folder / "preview.png").is_file()
     assert not staging_folder.exists()
 
@@ -471,3 +486,56 @@ def test_preview_validation_does_not_mutate_pil_max_image_pixels(tmp_path):
 
     with pytest.raises(ValueError):
         preview_cards._check_preview_image_dimensions(SimpleNamespace(size=(20_000, 20_000)))
+
+
+@pytest.mark.asyncio
+async def test_publish_returns_400_when_explicit_staged_preview_missing(tmp_path, monkeypatch):
+    from main_routers.workshop_router import publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_expired"
+    content_folder.mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+    (content_folder / "thumbnail.png").write_bytes(_png_bytes())
+    missing_staged = workshop / "WorkshopExport" / "_preview_staging" / "expired-id" / "preview.png"
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+
+    resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Test",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": str(missing_staged),
+        })
+    )
+    assert resp.status_code == 400
+    assert json.loads(resp.body)["success"] is False
+
+
+def test_assert_workshop_path_allows_unc_when_resolved_base_is_unc(monkeypatch):
+    import ntpath
+
+    from main_routers.workshop_router import preview_cards
+
+    mapped_base = r"Z:\workshop"
+    unc_base = r"\\fileserver\share\workshop"
+    unc_file = r"\\fileserver\share\workshop\WorkshopExport\_preview_staging\abc\preview.png"
+    foreign_unc = r"\\attacker\share\evil.png"
+    nt_device = r"\??\C:\Windows\win.ini"
+
+    monkeypatch.setattr(preview_cards.os.path, "normpath", lambda p: p.replace("/", "\\"))
+    monkeypatch.setattr(
+        preview_cards.os.path,
+        "realpath",
+        lambda p: unc_base if p == mapped_base else p,
+    )
+    monkeypatch.setattr(preview_cards.os.path, "normcase", lambda p: p.lower())
+    monkeypatch.setattr(preview_cards.os.path, "commonpath", ntpath.commonpath)
+
+    assert preview_cards._assert_workshop_path(unc_file, mapped_base) == unc_file
+    with pytest.raises(PermissionError):
+        preview_cards._assert_workshop_path(foreign_unc, mapped_base)
+    with pytest.raises(PermissionError):
+        preview_cards._assert_workshop_path(nt_device, mapped_base)

@@ -231,10 +231,14 @@ def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
         return False
 
 
-def _is_unsafe_windows_unc_or_device_path(raw_path: str) -> bool:
-    """Reject Windows UNC network paths and device/NT-object paths without touching the filesystem."""
+def _is_unsafe_windows_unc_or_device_path(raw_path: str, *, allow_unc: bool = False) -> bool:
+    """Reject Windows device/NT-object paths and (unless allowed) UNC network paths without touching the filesystem."""
     unified = raw_path.replace("/", "\\")
-    return unified.startswith("\\\\") or unified.startswith("\\??\\")
+    if unified.startswith(("\\??\\", "\\\\.\\", "\\\\?\\")):
+        return True
+    if not allow_unc and unified.startswith("\\\\"):
+        return True
+    return False
 
 
 def _get_app_root():
