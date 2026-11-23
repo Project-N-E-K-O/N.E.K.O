@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from config import get_character_nickname
 from utils.tokenize import truncate_to_tokens
 
 
@@ -170,10 +171,12 @@ def _load_player_address(
     master = characters.get("主人") if isinstance(characters, dict) else None
     if not isinstance(master, dict):
         return ""
-    for field in ("昵称", "档案名"):
-        value = str(master.get(field) or "").strip()
-        if value:
-            return value
+    nickname = get_character_nickname(master)
+    if nickname:
+        return nickname
+    profile_name = str(master.get("档案名") or "").strip()
+    if profile_name:
+        return profile_name
     return ""
 
 

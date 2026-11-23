@@ -20,7 +20,32 @@ pressure-cap copy, and their per-locale variants and getters for the soccer
 minigame.
 """
 
+import re
+
 from config.prompts.prompts_minigame_common import _localized_template, _normalize_prompt_lang
+
+
+SOCCER_OPENING_LINE_MAX_CHARS_CJK = 15
+SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK = 50
+_SOCCER_CJK_LOCALES = frozenset({"zh", "zh-TW", "ja", "ko"})
+_CJK_CHAR_RE = re.compile(
+    r"[\u1100-\u11ff\u3040-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]"
+)
+
+
+def get_soccer_opening_line_max_chars(
+    opening_line: str = "",
+    *,
+    locale: str | None = None,
+) -> int:
+    """Return the openingLine character budget for CJK vs non-CJK scripts."""
+    if locale is not None and str(locale).strip():
+        if _normalize_prompt_lang(locale) in _SOCCER_CJK_LOCALES:
+            return SOCCER_OPENING_LINE_MAX_CHARS_CJK
+        return SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK
+    if opening_line and _CJK_CHAR_RE.search(opening_line):
+        return SOCCER_OPENING_LINE_MAX_CHARS_CJK
+    return SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK
 
 
 SOCCER_SYSTEM_PROMPT = """\
@@ -748,7 +773,8 @@ Constraints:
 - initialDifficulty must be one of max, lv2, lv3, lv4.
 - emotionIntensity is 0.0 to 1.0.
 - emotionInertia must be one of low, medium, high, very_high.
-- openingLine is one short line NEKO says after entering the minigame; it may be empty.
+- openingLine is one short line NEKO says after entering the minigame (within 50 characters); it may be empty.
+- If you cannot think of a natural opening line within 50 characters, leave openingLine empty instead of writing a long sentence.
 
 Decision rules:
 - With insufficient evidence, gameStance must be neutral_play.
@@ -797,7 +823,8 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_JA = """\
 - initialDifficulty は max, lv2, lv3, lv4 のみ。
 - emotionIntensity は 0.0 から 1.0。
 - emotionInertia は low, medium, high, very_high のみ。
-- openingLine は入場後に NEKO が本当に言う短い一言。空でもよい。
+- openingLine は入場後に NEKO が本当に言う短い一言で、15文字以内。空でもよい。
+- 15文字以内で自然な一言が思いつかない場合は、長文にせず openingLine を空にしてください。
 
 判断ルール：
 - 証拠不足なら gameStance は必ず neutral_play。
@@ -845,7 +872,8 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_KO = """\
 - initialDifficulty 는 max, lv2, lv3, lv4 중 하나.
 - emotionIntensity 는 0.0 에서 1.0.
 - emotionInertia 는 low, medium, high, very_high 중 하나.
-- openingLine 은 미니게임 진입 후 NEKO 가 실제로 하는 짧은 한마디이며 비워둘 수 있습니다.
+- openingLine 은 미니게임 진입 후 NEKO 가 실제로 하는 짧은 한마디이며 15자 이내여야 합니다. 비워둘 수 있습니다.
+- 15자 이내로 자연스러운 한마디가 떠오르지 않으면 긴 문장을 쓰지 말고 openingLine 을 비워 두세요.
 
 판단 규칙:
 - 증거가 부족하면 gameStance 는 반드시 neutral_play.
@@ -893,7 +921,8 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_RU = """\
 - initialDifficulty только max, lv2, lv3, lv4.
 - emotionIntensity от 0.0 до 1.0.
 - emotionInertia только low, medium, high, very_high.
-- openingLine — короткая реплика NEKO после входа в мини-игру; может быть пустой.
+- openingLine — короткая реплика NEKO после входа в мини-игру (не более 50 символов); может быть пустой.
+- Если не получается придумать естественную реплику до 50 символов, оставь openingLine пустой, не пиши длинную фразу.
 
 Правила решений:
 - Если доказательств недостаточно, gameStance обязан быть neutral_play.
@@ -941,7 +970,8 @@ Restricciones:
 - initialDifficulty debe ser uno de max, lv2, lv3, lv4.
 - emotionIntensity va de 0.0 a 1.0.
 - emotionInertia debe ser uno de low, medium, high, very_high.
-- openingLine es una línea corta que NEKO dice al entrar al minijuego; puede estar vacía.
+- openingLine es una línea corta que NEKO dice al entrar al minijuego (máximo 50 caracteres); puede estar vacía.
+- Si no se te ocurre una línea natural de hasta 50 caracteres, deja openingLine vacía en lugar de escribir una frase larga.
 
 Reglas:
 - Si la evidencia es insuficiente, gameStance debe ser neutral_play.
@@ -990,7 +1020,8 @@ Restrições:
 - initialDifficulty deve ser um de max, lv2, lv3, lv4.
 - emotionIntensity vai de 0.0 a 1.0.
 - emotionInertia deve ser um de low, medium, high, very_high.
-- openingLine é uma fala curta que NEKO diz ao entrar no minijogo; pode ficar vazia.
+- openingLine é uma fala curta que NEKO diz ao entrar no minijogo (no máximo 50 caracteres); pode ficar vazia.
+- Se não pensar em uma fala natural de até 50 caracteres, deixe openingLine vazia em vez de escrever uma frase longa.
 
 Regras:
 - Com evidência insuficiente, gameStance deve ser neutral_play.
