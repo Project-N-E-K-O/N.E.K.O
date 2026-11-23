@@ -1455,3 +1455,37 @@ test('PR3976 4662251051: the backend-replay wait outlasts the backend CU/BU prob
     assert.ok(waitedMs > 32000, `waited ${waitedMs}ms before writing, must exceed the ~32s probe budget`);
     assert.equal(server.master, true, 'still restores after the bounded wait');
 });
+
+test('PR3976 4662499204: plugin turned OFF during the restore backoff stays OFF when a tutorial restart reuses the pending snapshot', async () => {
+    const storage = createStorage();
+    const oldFlags = { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: true };
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+        version: 1, token: 1401, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: oldFlags, masterApplied: true,
+    }));
+    const server = makeAgentServer();
+    server.master = true;               // restored by the interrupted attempt
+    server.child.user_plugin_enabled = false; // user switched plugins OFF during the backoff
+    server.onCommand = async (body) => {
+        if (body.enabled) server.child.user_plugin_enabled = true; // master-on side effect
+    };
+    let gets = 0;
+    const handler = async (url, init, body) => {
+        if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET' && ++gets === 1) {
+            return { ok: false, status: 502, json: async () => ({}) };
+        }
+        return await server.handler(url, init, body);
+    };
+    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+    await flushMicrotasks();
+    rt.win.NekoHomeTutorialFeatureController.begin('tutorial-restart');
+    await flushMicrotasks();
+    const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
+    assert.equal(persisted.agentFlags.user_plugin_enabled, false, 'observed plugin OFF must be kept in the reused target');
+    assert.equal(persisted.agentFlags.computer_use_enabled, true);
+
+    rt.win.NekoHomeTutorialFeatureController.end('tutorial-ended');
+    await flushMicrotasks();
+    assert.equal(server.master, true);
+    assert.equal(server.child.computer_use_enabled, true);
+    assert.equal(server.child.user_plugin_enabled, false, 'tutorial end must not turn plugins back ON');
+});

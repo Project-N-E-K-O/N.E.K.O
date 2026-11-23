@@ -334,8 +334,14 @@
             && hasAnyEnabledAgentFlag(inspected.payload.agentFlags)
             && isUnfinishedRecoveryState(currentFlags, inspected.payload)
         ) {
+            const flags = Object.assign({}, inspected.payload.agentFlags);
+            // 恢复已开总开关、插件却是关的：教程结束时总开关会重开、插件会被顺带打开，
+            // 这里没法「不动插件」，只能写回此刻的关，免得把用户关掉的插件又打开。
+            if (isPluginOffAfterMasterOn(currentFlags, inspected.payload.agentFlags)) {
+                flags.user_plugin_enabled = false;
+            }
             return {
-                flags: Object.assign({}, inspected.payload.agentFlags),
+                flags: flags,
                 owner: inspected.payload.lanlanName,
                 persist: true,
             };
