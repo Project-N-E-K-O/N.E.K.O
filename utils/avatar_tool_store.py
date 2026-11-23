@@ -1147,6 +1147,13 @@ class AvatarToolStore:
                     complete = False
                     continue
                 else:
+                    # A readable final may still be awaiting its post-publish sync.
+                    try:
+                        _fsync_directory(self.root, strict=True)
+                    except OSError as exc:
+                        defer(exc)
+                        complete = False
+                        continue
                     remove_owned_directory(updating)
                     remove_owned_directory(backup)
                     continue
@@ -2918,8 +2925,13 @@ class AvatarToolStore:
     ) -> None:
         directory.mkdir(mode=0o700)
         for filename, data in resources.items():
-            (directory / filename).write_bytes(data)
+            resource_path = directory / filename
+            with resource_path.open("wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
         atomic_write_json(directory / "record.json", record, ensure_ascii=False, indent=2)
+        _fsync_directory(directory, strict=True)
         self._read_record_from_directory(
             record["id"],
             directory,
@@ -2962,6 +2974,7 @@ class AvatarToolStore:
                         "Local avatar tool ID already belongs to a different creation",
                         status_code=409,
                     )
+                _fsync_directory(self.root, strict=True)
                 self._release_quarantine(tool_id)
                 return self._public_item(current)
             if final_kind != "absent":
@@ -2992,6 +3005,7 @@ class AvatarToolStore:
                         status_code=409,
                     )
                 os.replace(temporary, final)
+                _fsync_directory(self.root, strict=True)
             except BaseException:
                 self._cleanup_failed_staging(temporary)
                 raise
@@ -3182,6 +3196,7 @@ class AvatarToolStore:
                     status_code=409,
                 )
             os.replace(updating, final)
+            _fsync_directory(self.root, strict=True)
         except BaseException:
             self._cleanup_failed_staging(updating)
             if published_backup:
