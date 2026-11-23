@@ -363,3 +363,33 @@ def test_enforcing_follows_a_refusal_once_refusals_are_carried_out(
     monkeypatch.setattr(capability_gate, "REFUSES_CALLS", True)
     monkeypatch.setattr(settings, "PLUGIN_PERMISSION_CHECKS_DISABLED", checks_disabled)
     assert _verdict("demo", capability)["enforcing"] is expected
+
+
+def test_the_dialog_shows_when_an_imported_approval_was_decided(env):
+    _legacy(
+        env.manager,
+        {"demo": {"decision": "approved", "approved_capabilities": ["memory.read"],
+                  "decided_at": "2026-01-02T03:04:05+00:00"}},
+    )
+    env.store.sync_source("demo", FIRST)  # a later write does not move it
+    assert consent_service.consent_details("demo")["decided_at"] == "2026-01-02T03:04:05+00:00"
+
+
+def test_dropping_grants_saves_a_first_use_import_or_reports_failure(env, monkeypatch):
+    _legacy(env.manager, {"demo": {"decision": "approved", "approved_capabilities": ["memory.read"]}})
+    real_save = env.manager.save_json_config
+
+    def cannot_save(_name, _data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(env.manager, "save_json_config", cannot_save)
+    assert env.store.read("demo")["permissions"]  # import held in memory only
+    assert permission_service.forget_plugin_grants(("demo",)) is False
+    assert env.store.read("demo")["permissions"]
+
+    monkeypatch.setattr(env.manager, "save_json_config", real_save)
+    assert permission_service.forget_plugin_grants(("demo",)) is True
+    on_disk = json.loads(
+        env.manager.get_runtime_config_path(plugin_permissions.FILENAME).read_text(encoding="utf-8")
+    )
+    assert "demo" not in on_disk["plugins"]

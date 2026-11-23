@@ -300,7 +300,20 @@ def consent_decision(record: dict | None) -> dict:
         decision, approved = "approved", granted
     else:
         return {}
-    decided_at = record.get("updated_at")
+    # When the dialog's decision was made: the newest granted entry of an
+    # approval; otherwise (a denial, or an approval without permissions) the
+    # record's last change, the closest stored time.
+    times = [
+        entry.get("decided_at")
+        for permission_id, entry in permissions.items()
+        if decision == "approved"
+        and isinstance(entry, dict)
+        and entry.get("state") == STATE_GRANTED
+        and isinstance(entry.get("decided_at"), str)
+        and (spec := PERMISSIONS.get(permission_id)) is not None
+        and spec.legacy_name is not None
+    ]
+    decided_at = max(times) if times else record.get("updated_at")
     return {
         "decision": decision,
         "approved_capabilities": approved,
