@@ -989,5 +989,12 @@ describe('the colony on the home page', () => {
     state.props = { entries: some(7), current: null, nameOf }
     await flush()
     expect(top).toBe(1000)
+    // A moment is replayed, which leaves the list somewhere in the middle; back to now, it is at its end.
+    state.props = { entries: some(7), current: 2, nameOf }
+    await flush()
+    top = 120
+    state.props = { entries: some(7), current: null, nameOf }
+    await flush()
+    expect(top).toBe(1000)
   })
 })

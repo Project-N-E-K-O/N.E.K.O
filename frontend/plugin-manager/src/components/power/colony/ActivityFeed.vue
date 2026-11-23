@@ -73,17 +73,18 @@ async function showEarlier() {
 
 // What is new comes at the bottom and is scrolled to, unless the user went up to read what came
 // before: then the list stays where it is read. While a moment is replayed, that moment is
-// scrolled to.
+// scrolled to; back from a moment to now, the list is at its end again, wherever the moment was.
 const NEAR_END_PX = 40
-watch(() => [props.entries.length, props.current], async () => {
+watch(() => [props.entries.length, props.current] as const, async ([, current], before) => {
   // Looked at before the new lines are drawn: where the list stood as the user left it.
   const was = list.value
   const atEnd = !was || was.scrollHeight - was.scrollTop - was.clientHeight <= NEAR_END_PX
+  const backToNow = current === null && before !== undefined && before[1] !== null
   await nextTick()
   const box = list.value
   if (!box) return
-  if (props.current !== null) box.querySelector('.row.now')?.scrollIntoView?.({ block: 'nearest' })
-  else if (atEnd) box.scrollTop = box.scrollHeight
+  if (current !== null) box.querySelector('.row.now')?.scrollIntoView?.({ block: 'nearest' })
+  else if (atEnd || backToNow) box.scrollTop = box.scrollHeight
 }, { immediate: true })
 </script>
 
