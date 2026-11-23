@@ -29,7 +29,9 @@ from plugin.sdk.shared.core.entry_runtime import (
     resolve_entry_timeout,
 )
 from plugin.core.responses import is_envelope
-from plugin.sdk.shared.constants import EVENT_META_ATTR
+from plugin.sdk.plugin.llm_tool import LLM_TOOL_META_ATTR
+from plugin.sdk.plugin.ui import UI_CONTEXT_META_ATTR
+from plugin.sdk.shared.constants import EVENT_META_ATTR, HOOK_META_ATTR
 from plugin.sdk.shared.core.output_contract import (
     OutputCheck,
     build_output_check,
@@ -75,13 +77,29 @@ def _event_type_of(meta: Any) -> str:
     return str(getattr(meta, "event_type", None) or "plugin_entry")
 
 
-def _member_event_meta(member: Any) -> Any:
-    meta = getattr(member, EVENT_META_ATTR, None)
-    if meta is None:
-        wrapped = getattr(member, "__wrapped__", None)
-        if wrapped is not None:
-            meta = getattr(wrapped, EVENT_META_ATTR, None)
-    return meta
+# What the SDK's decorators attach to a member: events (any type), entry
+# hooks, LLM tools, UI context providers. A member carrying one is reached
+# only under the id it was registered with, never by its method name.
+# (UI actions only annotate an entry and are not listed.)
+_SDK_DECLARATION_ATTRS = (
+    EVENT_META_ATTR,
+    HOOK_META_ATTR,
+    LLM_TOOL_META_ATTR,
+    UI_CONTEXT_META_ATTR,
+)
+
+
+def _has_sdk_declaration(member: Any) -> bool:
+    """Whether ``member`` (or a function it wraps) carries an SDK declaration."""
+    current = member
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        # A bound method reads its function's attributes.
+        if any(getattr(current, attr, None) is not None for attr in _SDK_DECLARATION_ATTRS):
+            return True
+        current = getattr(current, "__wrapped__", None)
+    return False
 
 
 class EntryExecutor:
@@ -318,16 +336,15 @@ class EntryExecutor:
 
         Reached for entries only the manifest declares (plain methods) and,
         during the deprecation grace, for public methods nothing declares.
-        Never resolves private names, SDK base-class methods, or handlers of
-        another event type.
+        Never resolves private names, SDK base-class methods, or members an
+        SDK decorator declared (those are reached by their registered id).
         """
         if event_id.startswith("_") or _defined_by_sdk(self._instance, event_id):
             return None
         method = getattr(self._instance, event_id, None)
         if not method or not callable(method):
             return None
-        meta = _member_event_meta(method)
-        if meta is not None and _event_type_of(meta) != "plugin_entry":
+        if _has_sdk_declaration(method):
             return None
         if event_id in self._manifest_entry_ids:
             return method

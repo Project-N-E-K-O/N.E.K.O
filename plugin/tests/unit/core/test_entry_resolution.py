@@ -21,7 +21,19 @@ from plugin._types.exceptions import PluginEntryNotFoundError, PluginOutputSchem
 from plugin.core import entry_executor as entry_executor_module
 from plugin.core.entry_executor import EntryExecutor
 from plugin.core.host import PluginHost, _initial_entry_tables
-from plugin.sdk.plugin import NekoPluginBase, neko_plugin, on_event, plugin_entry, timer_interval
+from plugin.sdk.plugin import (
+    NekoPluginBase,
+    after_entry,
+    around_entry,
+    before_entry,
+    llm_tool,
+    neko_plugin,
+    on_event,
+    plugin_entry,
+    replace_entry,
+    timer_interval,
+    ui,
+)
 from plugin.sdk.shared.core.router import PluginRouter
 
 pytestmark = pytest.mark.plugin_unit
@@ -34,10 +46,17 @@ class _Logger:
     def warning(self, message: str, *args: object, **_kwargs: object) -> None:
         self.warnings.append(message.format(*args) if args else message)
 
-    def error(self, *_args: object, **_kwargs: object) -> None: ...
-    def info(self, *_args: object, **_kwargs: object) -> None: ...
-    def debug(self, *_args: object, **_kwargs: object) -> None: ...
-    def exception(self, *_args: object, **_kwargs: object) -> None: ...
+    def error(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def info(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def debug(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def exception(self, *_args: object, **_kwargs: object) -> None:
+        return None
 
 
 @neko_plugin
@@ -243,6 +262,66 @@ def test_a_wrapped_handler_of_another_event_type_is_not_a_plugin_entry(tmp_path)
 
     executor, _instance, _logger = _runtime(tmp_path, instance=Wrapped(_ctx(tmp_path)), manifest=["guarded"])
     assert _resolve(executor, "guarded") is None
+
+
+class _AddParams(BaseModel):
+    n: int
+
+
+@neko_plugin
+class _Declared(NekoPluginBase):
+    @plugin_entry(id="add_one", params=_AddParams)
+    async def do_add(self, params: _AddParams, **_: Any) -> int:
+        return params.n + 1
+
+    @llm_tool(name="lookup", description="look something up")
+    async def lookup_tool(self, **_: Any) -> str:
+        return "tool"
+
+    @before_entry(target="add_one")
+    async def before_hook(self, **_: Any) -> None:
+        return None
+
+    @after_entry(target="add_one")
+    async def after_hook(self, **_: Any) -> None:
+        return None
+
+    @around_entry(target="add_one")
+    async def around_hook(self, **_: Any) -> None:
+        return None
+
+    @replace_entry(target="nothing")
+    async def replace_hook(self, **_: Any) -> None:
+        return None
+
+    @ui.context(id="main")
+    async def panel_state(self, **_: Any) -> dict:
+        return {}
+
+
+async def test_an_entry_is_reached_by_its_id_not_its_method_name(tmp_path):
+    executor, _instance, logger = _runtime(tmp_path, instance=_Declared(_ctx(tmp_path)), manifest=["do_add"])
+    assert await executor.invoke("plugin_entry", "add_one", {"n": 1}) == 2
+    assert _resolve(executor, "do_add") is None
+    assert logger.warnings == []
+
+
+def test_an_llm_tool_method_is_not_resolved_by_its_name(tmp_path):
+    executor, _instance, logger = _runtime(tmp_path, instance=_Declared(_ctx(tmp_path)), manifest=["lookup_tool"])
+    assert _resolve(executor, "lookup_tool") is None
+    assert logger.warnings == []
+
+
+@pytest.mark.parametrize("name", ["before_hook", "after_hook", "around_hook", "replace_hook"])
+def test_an_entry_hook_is_not_resolved_by_its_name(tmp_path, name):
+    executor, _instance, logger = _runtime(tmp_path, instance=_Declared(_ctx(tmp_path)), manifest=[name])
+    assert _resolve(executor, name) is None
+    assert logger.warnings == []
+
+
+def test_a_ui_context_provider_is_not_resolved_by_its_name(tmp_path):
+    executor, _instance, _logger = _runtime(tmp_path, instance=_Declared(_ctx(tmp_path)))
+    assert _resolve(executor, "panel_state") is None
 
 
 def test_a_non_callable_attribute_is_not_resolved(tmp_path):
