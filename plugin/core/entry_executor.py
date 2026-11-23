@@ -372,7 +372,11 @@ class EntryExecutor:
             return None
         if is_computed_attribute(self._instance, event_id):
             return None
-        method = getattr(self._instance, event_id, None)
+        try:
+            method = getattr(self._instance, event_id, None)
+        except Exception:
+            # A descriptor or __getattr__ failing on this name: an unknown id.
+            return None
         if not method or not callable(method):
             return None
         if _has_sdk_declaration(method):

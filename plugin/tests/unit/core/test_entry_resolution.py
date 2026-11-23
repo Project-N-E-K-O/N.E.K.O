@@ -423,6 +423,44 @@ def test_the_narrowing_state_check_does_not_evaluate_a_property(tmp_path):
     assert evaluated == []
 
 
+def test_a_narrowing_hook_does_not_evaluate_a_property(tmp_path):
+    evaluated: list[str] = []
+
+    async def target(**_: Any) -> str:
+        return "ran"
+
+    @neko_plugin
+    class Hooked(NekoPluginBase):
+        # A narrowing hook for every target: the state check resolves each id.
+        @before_entry(target="*", permissions=["system.env:read"])
+        async def guard(self, **_: Any) -> None:
+            return None
+
+        @property
+        def exposed(self):
+            evaluated.append("exposed")
+            return target
+
+    instance = Hooked(_ctx(tmp_path))
+    executor, _instance, _logger = _runtime(tmp_path, instance=instance, manifest=["exposed"])
+    evaluated.clear()
+    instance._entry_state("exposed")
+    assert _resolve(executor, "exposed") is None
+    assert evaluated == []
+
+
+def test_a_failing_attribute_lookup_is_an_unknown_id(tmp_path):
+    @neko_plugin
+    class Failing(NekoPluginBase):
+        def __getattr__(self, name: str):
+            if name == "broken":
+                raise ValueError("lookup failed")
+            raise AttributeError(name)
+
+    executor, _instance, _logger = _runtime(tmp_path, instance=Failing(_ctx(tmp_path)), manifest=["broken"])
+    assert _resolve(executor, "broken") is None
+
+
 def test_partialmethods_and_getattr_names_still_resolve(tmp_path):
     async def _impl(self, value: str, **_: Any) -> str:
         return value

@@ -255,7 +255,10 @@ class NekoPluginBase:
             return "unchecked"
         # Logged once, and only for an id that names something callable: a
         # "*" hook would otherwise log every unknown id a caller tries.
-        has_target = callable(getattr(self, entry_id, None)) or callable(getattr(self, f"entry_{entry_id}", None))
+        has_target = any(
+            not is_computed_attribute(self, name) and callable(getattr(self, name, None))
+            for name in (entry_id, f"entry_{entry_id}")
+        )
         reported: set[object] = self.__dict__.setdefault("_narrowing_reported", set())
         if has_target and (PLUGIN_ENTRY, entry_id, "unlisted") not in reported:
             reported.add((PLUGIN_ENTRY, entry_id, "unlisted"))
