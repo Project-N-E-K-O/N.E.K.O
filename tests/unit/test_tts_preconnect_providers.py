@@ -773,7 +773,7 @@ def test_quiet_window_outlasts_qwens_gaps_between_sentences():
     assert qwen_mod.FINISHED_ROUND_QUIET_SECONDS == _preconnect.FINISHED_ROUND_QUIET_SECONDS
 
 
-@pytest.mark.parametrize("sentence_done_before_commit", [False, True])
+@pytest.mark.parametrize("sentence_done_before_commit", [None, "response.done", "response.audio.done"])
 def test_qwen_late_text_after_a_retire_is_not_taken_for_a_finished_round(
     monkeypatch, sentence_done_before_commit,
 ):
@@ -790,7 +790,7 @@ def test_qwen_late_text_after_a_retire_is_not_taken_for_a_finished_round(
     if sentence_done_before_commit:
         # server_commit mode synthesizes ahead of the commit: a sentence-level
         # done on the new connection says nothing about the committed round.
-        replies["input_text_buffer.append"] = [{"type": "response.done"}]
+        replies["input_text_buffer.append"] = [{"type": sentence_done_before_commit}]
     late = _Sock("late", _type_kind, replies=replies)
     connects = _Connects(monkeypatch, [_qwen_socket("warmup"), first, late])
     responses = queue.Queue()
