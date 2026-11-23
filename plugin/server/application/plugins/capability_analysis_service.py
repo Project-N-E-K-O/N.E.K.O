@@ -10,6 +10,7 @@ import threading
 import tomllib
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -80,6 +81,10 @@ def is_fresh(report: dict | None, revision: dict | None) -> bool:
         and report.get("_analyzer_version") == ANALYZER_VERSION
         and report.get("_source") == revision
     )
+
+
+class _Superseded(Exception):
+    """The job was superseded or forgotten while it waited for the lock."""
 
 
 def _report(status: str, **fields) -> dict:
@@ -179,13 +184,32 @@ class CapabilityAnalysisService:
             return report
         return None
 
+    @contextmanager
+    def _source_lock(self, plugin_id, token):
+        """Hold the operation file lock for a read of the plugin tree.
+
+        The job is re-checked once the lock is held: an uninstall that ran
+        forget() and removed the directory while this job waited must not
+        be followed by a read of the removed tree.
+        """
+        with hold_plugin_operation_file_lock(self._stop):
+            with self._lock:
+                if not self._current(plugin_id, token):
+                    raise _Superseded
+            yield
+
     def _run(self, plugin_id, root, version, token, force):
         with self._lock:
             if not self._current(plugin_id, token):
                 return
         revision = None
         try:
-            revision = source_revision(root, version, stop=self._stop)
+            # The revision walks the plugin tree (os.walk/stat). Like the
+            # source read below it must share the operation file lock with
+            # update/uninstall, which rename plugin directories: on Windows an
+            # open directory handle makes that rename fail with WinError 5.
+            with self._source_lock(plugin_id, token):
+                revision = source_revision(root, version, stop=self._stop)
             saved = None if force else self._read_cached_report(plugin_id)
             if saved is not None and is_fresh(saved, revision):
                 with self._lock:
@@ -199,7 +223,7 @@ class CapabilityAnalysisService:
                 self._reports[plugin_id] = _report(
                     "running", version=version, _source_root=str(root)
                 )
-            with hold_plugin_operation_file_lock(self._stop):
+            with self._source_lock(plugin_id, token):
                 sources = read_capability_sources(root, stop=self._stop)
             report = analyze_capabilities(root, stop=self._stop, sources=sources)
             report.update(
@@ -208,7 +232,9 @@ class CapabilityAnalysisService:
                 _source=revision,
                 _source_root=str(root),
             )
-            if source_revision(root, version, stop=self._stop) != revision:
+            with self._source_lock(plugin_id, token):
+                current = source_revision(root, version, stop=self._stop)
+            if current != revision:
                 with self._lock:
                     if self._current(plugin_id, token):
                         self._reports[plugin_id] = _report(
@@ -216,6 +242,8 @@ class CapabilityAnalysisService:
                         )
                 return
             self._publish(plugin_id, token, report)
+        except _Superseded:
+            return
         except Exception as exc:
             if self._stop.is_set():
                 return

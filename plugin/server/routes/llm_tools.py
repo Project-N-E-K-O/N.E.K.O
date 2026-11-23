@@ -30,6 +30,7 @@ that boundary were ever loosened we would need to.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from fastapi import APIRouter, Body, HTTPException
@@ -60,6 +61,29 @@ def _entry_id_for_tool(tool_name: str) -> str:
     return f"__llm_tool__{tool_name}"
 
 
+# Same character set main_server accepts for a reply-tail subscription's
+# ``entry_id`` (``ReplyHookSubscription`` in ``main_routers/tool_router.py``).
+_REPLY_HOOK_ENTRY_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+
+def _is_reply_hook_entry(plugin_id: str, entry_id: str) -> bool:
+    """Whether ``entry_id`` names a public ``plugin_entry`` the host has
+    registered for ``plugin_id``.
+
+    Reply-tail subscriptions can only target plugin entries, so a callback
+    is dispatched only to entries present in the host registry under the
+    ``plugin_entry`` event type. Private names (including the reserved
+    ``__llm_tool__`` namespace) and handlers of other event types such as
+    lifecycle are never subscription targets.
+    """
+    if not _REPLY_HOOK_ENTRY_ID.fullmatch(entry_id) or entry_id.startswith("_"):
+        return False
+    with state.acquire_event_handlers_read_lock():
+        handler = state.event_handlers.get(f"{plugin_id}:plugin_entry:{entry_id}")
+    meta = getattr(handler, "meta", None)
+    return handler is not None and (getattr(meta, "event_type", None) or "plugin_entry") == "plugin_entry"
+
+
 @router.post("/reply-completed/{plugin_id}/{entry_id}")
 async def reply_completed_callback(
     plugin_id: str, entry_id: str, body: Dict[str, Any] = Body(...),
@@ -79,6 +103,9 @@ async def reply_completed_callback(
         host = state.plugin_hosts.get(plugin_id)
     if host is None or not host.is_alive():
         raise HTTPException(status_code=404, detail={"code": "PLUGIN_NOT_RUNNING"})
+    # Dispatch only to a reply-tail target the plugin registered with the host.
+    if not _is_reply_hook_entry(plugin_id, entry_id):
+        raise HTTPException(status_code=404, detail={"code": "ENTRY_NOT_REGISTERED"})
     # Callback return values are deliberately not fed into the conversation.
     # Images go through reply_tail.register with the host-issued context.
     try:

@@ -68,6 +68,7 @@ timeout = await self.config.get_int("my_settings.timeout", default=30)
 `await self.ctx.reply_tail.subscribe("after_reply")` 可以订阅普通文字回复的完成通知。
 `after_reply` 是插件自行声明的 `@plugin_entry(id="after_reply", kind="hook")` 入口，
 收到 `text`、`user_text`、`has_attachments` 和 `_ctx.host_reply`。
+订阅的入口必须是宿主为该插件登记过的入口，且入口 id 不以 `_` 开头。符合条件的有：插件类上的 `@plugin_entry` 方法、列在 `__routers__` 里的 router 的入口（router 类不要配 `prefix`；router 实例的入口 id 已含实例上设好的前缀）、`plugin.toml` 里指向插件类方法的 `[[plugin.entries]]` 条目、用 `register_dynamic_entry()` 添加的入口。只传给 `include_router()` 的 router，以及列在 `__routers__` 里、又带 `prefix` 引入的 router 类，它们的入口不符合条件（见 [PluginRouter](./router)）。宿主只把完成通知分派给符合条件的入口；`subscribe` 不检查这一点，订阅其他入口也会被接受（仍要通过常规的 id 和容量检查），但每次回调都返回 HTTP 404（`detail.code="ENTRY_NOT_REGISTERED"`），不调用插件。
 插件可以按规则、检索或辅助模型自行决定是否配图，无需主聊天模型调用发图工具。
 选好图片后，在入口返回前调用 `self.ctx.reply_tail.register(...)`，由宿主排在原回复末尾。
 

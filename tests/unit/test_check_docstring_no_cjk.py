@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import subprocess
 import sys
 import textwrap
@@ -184,3 +185,153 @@ def test_cli_missing_base_ref_skips_with_warning():
     )
     assert result.returncode == 0
     assert "skipping" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# F0325: git rename handling
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo(repo: Path, monkeypatch) -> None:
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def test_pure_rename_with_preexisting_cjk_docstring_passes(tmp_path: Path, monkeypatch):
+    """F0325: renaming a file without editing its CJK docstring must exit 0."""
+    _init_git_repo(tmp_path, monkeypatch)
+    old_file = tmp_path / "pkg" / "old_mod.py"
+    old_file.parent.mkdir(parents=True)
+    old_file.write_text(
+        'def helper():\n    """旧中文说明。"""\n    return 1\n',
+        encoding="utf-8",
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    _git(tmp_path, "checkout", "-q", "-b", "feat")
+
+    new_file = tmp_path / "pkg" / "new_mod.py"
+    old_file.rename(new_file)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "rename")
+
+    monkeypatch.setattr(MOD, "REPO_ROOT", tmp_path)
+    assert MOD.main(["--base", "main"]) == 0
+
+
+def test_rename_with_edit_flags_only_newly_modified_cjk_docstring(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """F0325: rename + edit only flags touched docstrings, not untouched moved ones."""
+    _init_git_repo(tmp_path, monkeypatch)
+    old_file = tmp_path / "pkg" / "mod_a.py"
+    old_file.parent.mkdir(parents=True)
+    old_file.write_text(
+        "def untouched():\n"
+        '    """保留的旧中文文档。"""\n'
+        "    return 1\n\n"
+        "def touched():\n"
+        '    """Original English docstring."""\n'
+        "    return 2\n",
+        encoding="utf-8",
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    _git(tmp_path, "checkout", "-q", "-b", "feat")
+
+    new_file = tmp_path / "pkg" / "mod_b.py"
+    old_file.unlink()
+    new_file.write_text(
+        "def untouched():\n"
+        '    """保留的旧中文文档。"""\n'
+        "    return 1\n\n"
+        "def touched():\n"
+        '    """新改出来的中文文档。"""\n'
+        "    return 2\n",
+        encoding="utf-8",
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "rename and edit")
+
+    monkeypatch.setattr(MOD, "REPO_ROOT", tmp_path)
+    assert MOD.main(["--base", "main"]) == 1
+    out = capsys.readouterr().out
+    assert "docstring of touched" in out
+    assert "docstring of untouched" not in out
+
+
+def test_rename_with_recreated_old_path_and_spaces_uses_blob_diff(
+    tmp_path: Path, monkeypatch
+):
+    """F0325: blob-to-blob diff handles recreated old paths and filenames with spaces."""
+    _init_git_repo(tmp_path, monkeypatch)
+    old_file = tmp_path / "pkg" / "my file.py"
+    old_file.parent.mkdir(parents=True)
+    body_lines = [f"def fn_{i}():\n    return {i}\n" for i in range(20)]
+    old_file.write_text(
+        "".join(body_lines) + 'def moved():\n    """旧中文。"""\n    return 1\n',
+        encoding="utf-8",
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    _git(tmp_path, "checkout", "-q", "-b", "feat")
+
+    new_file = tmp_path / "pkg" / "new name.py"
+    old_file.rename(new_file)
+    old_file.write_text('def replacement():\n    """English."""\n    return 2\n', encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "rename and recreate")
+
+    monkeypatch.setattr(MOD, "REPO_ROOT", tmp_path)
+    assert MOD.main(["--base", "main"]) == 0
+
+
+def test_move_from_excluded_dir_into_enforced_dir_still_flags_cjk(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """F0325: moving a file out of an excluded dir (plugin/) must not bypass docstring checks."""
+    _init_git_repo(tmp_path, monkeypatch)
+    old_file = tmp_path / "plugin" / "helper.py"
+    old_file.parent.mkdir(parents=True)
+    old_file.write_text(
+        'def p():\n    """插件里的中文。"""\n    return 1\n',
+        encoding="utf-8",
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    _git(tmp_path, "checkout", "-q", "-b", "feat")
+
+    new_file = tmp_path / "utils" / "helper.py"
+    new_file.parent.mkdir(parents=True)
+    old_file.rename(new_file)
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "promote to utils")
+
+    monkeypatch.setattr(MOD, "REPO_ROOT", tmp_path)
+    assert MOD.main(["--base", "main"]) == 1
+    out = capsys.readouterr().out
+    assert "docstring of p" in out
+
+
+def test_report_escapes_surrogate_paths_for_strict_stdout(monkeypatch):
+    """_report must format surrogate-escaped path bytes without raising UnicodeEncodeError."""
+    buf = io.BytesIO()
+    strict_stdout = io.TextIOWrapper(buf, encoding="utf-8", errors="strict")
+    monkeypatch.setattr(sys, "stdout", strict_stdout)
+
+    surrogate_path = MOD.REPO_ROOT / "pkg" / "bad\udcff.py"
+    utf8_path = MOD.REPO_ROOT / "pkg" / "中文.py"
+    assert MOD._report(surrogate_path, [(3, 5, "msg")]) == 1
+    assert MOD._report(utf8_path, [(4, 1, "msg2")]) == 1
+    strict_stdout.flush()
+
+    rendered = buf.getvalue().decode("utf-8")
+    assert "pkg/bad\\xff.py:3:5  DOCSTRING_CJK  msg" in rendered
+    assert "pkg/中文.py:4:1  DOCSTRING_CJK  msg2" in rendered
