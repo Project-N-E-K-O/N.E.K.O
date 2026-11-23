@@ -24,6 +24,7 @@ import json
 import re
 from copy import deepcopy
 
+from config import get_character_nickname
 from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 from utils.voice_config import read_legacy_voice_id
@@ -55,7 +56,7 @@ def _is_default_yui_character(character_name: str, character_data: dict) -> bool
         return False
 
     name = str(character_name or "").strip().upper()
-    nickname = str(character_data.get("昵称") or "").strip().upper()
+    nickname = get_character_nickname(character_data).upper()
     if name != "YUI" and nickname != "YUI":
         return False
 

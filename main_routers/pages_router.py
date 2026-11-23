@@ -588,6 +588,16 @@ async def get_card_maker_page(request: Request):
     })
 
 
+@router.get("/emote_maker", response_class=HTMLResponse)
+async def get_emote_maker_page(request: Request):
+    """Preset-based emote maker page."""
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/emote_maker.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 @router.get("/jukebox", response_class=HTMLResponse)
 async def get_jukebox_page(request: Request):
     """Standalone jukebox window page (loaded by Electron)."""

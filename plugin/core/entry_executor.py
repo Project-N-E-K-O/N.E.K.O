@@ -45,6 +45,10 @@ _WARN_KEYS_MAX = 1024
 _ENVELOPE_KEYS = frozenset({"success", "code", "data", "message", "error", "time", "trace_id"})
 
 
+# Default of EntryExecutor(maps_generation=...): the maps reflect the instance's current generation.
+_CURRENT = object()
+
+
 class EntryExecutor:
     """Own entry preparation and execution, without knowing about sockets or replies."""
 
@@ -62,10 +66,17 @@ class EntryExecutor:
         should_persist: Callable[[Any], bool],
         persist: Callable[[str], Awaitable[None]],
         logger: Any,
+        maps_generation: Any = _CURRENT,
     ):
         self.plugin_id = plugin_id
         self._context, self._instance = context, instance
         self._entries, self._metadata, self._events = entries, metadata, events
+        # Components generation the maps reflect (see _resolve). The host
+        # passes the one read when it built the maps: changes made between
+        # then and now (in on_startup) still trigger a rebuild. Left out, the
+        # maps are taken to be current.
+        seen = getattr(instance, "_components_generation", None) if maps_generation is _CURRENT else maps_generation
+        self._seen_generation = seen if isinstance(seen, int) else None
         self._default_timeout = default_timeout
         self._refresh, self._should_persist, self._persist = (
             refresh,
@@ -183,16 +194,50 @@ class EntryExecutor:
             )
 
     def _resolve(self, event_type: str, event_id: str, *, registered_only: bool):
+        generation = getattr(self._instance, "_components_generation", None)
+        if isinstance(generation, int) and generation != self._seen_generation:
+            # Components changed since the maps were built (a router included
+            # or excluded, a runtime entry added or removed): rebuild them once,
+            # for every event type, so a stale handler is not served.
+            self._seen_generation = generation
+            try:
+                self._refresh()
+            except Exception:
+                # The plugin's own collection is failing: keep serving from
+                # the existing maps (as before), but entries go through the
+                # state check below instead of the fast path, and the next
+                # call tries the rebuild again.
+                self._seen_generation = None
         # Custom-event calls (including cross-plugin ones) reach only handlers
         # registered for that event type; the attribute fallback would expose
         # any public or private instance method by name.
         if registered_only or event_type != "plugin_entry":
             return self._events.get(event_type, {}).get(event_id)
-        method = (
-            self._entries.get(event_id)
-            or getattr(self._instance, event_id, None)
-            or getattr(self._instance, f"entry_{event_id}", None)
-        )
+        # Permission narrowing: an id the check closed (a refused component,
+        # or an entry hook listing an undeclared permission, including for an
+        # entry only the manifest declares) is not run, whether it sits in the
+        # map (the loader's fallback scan maps plain methods) or would come
+        # from the attribute fallback. An id registered again with a valid
+        # narrowing is "registered" and is picked up by a refresh.
+        method = self._entries.get(event_id)
+        if method is not None and event_id in self._metadata and self._seen_generation == generation:
+            # Mapped from collect_entries() (it carries metadata), which
+            # already ran the check: no per-call cost for registered entries.
+            return method
+        state_of = getattr(self._instance, "_entry_state", None)
+        try:
+            state = state_of(event_id) if callable(state_of) else None
+        except Exception:
+            # The check must not make an entry unreachable by failing itself;
+            # collect_entries() raises the same error on the next refresh.
+            state = None
+        if state == "closed":
+            return None
+        if method is None and state == "registered":
+            self._refresh()
+            method = self._entries.get(event_id)
+        if method is None:
+            method = getattr(self._instance, event_id, None) or getattr(self._instance, f"entry_{event_id}", None)
         if method is None:
             self._refresh()
             method = self._entries.get(event_id)

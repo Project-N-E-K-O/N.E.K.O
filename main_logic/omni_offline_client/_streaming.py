@@ -854,6 +854,7 @@ class _StreamingMixin:
         # does not clear via _notify_reasoning_done — core's inline finally clears
         # unconditionally — so it only needs the bump, not an owner token.
         self._begin_reasoning_stream()
+        self._notify_response_start()
         discard_callback = response_discarded_callback or self.on_response_discarded
 
         # Check if we need to switch to vision model. A staged proactive-vision

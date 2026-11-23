@@ -647,22 +647,41 @@ def _avatar_tool_multipart_preflight(scope):
     return _validate_local_mutation_request(request)
 
 
+def _emote_template_multipart_preflight(scope):
+    if scope.get("path", "").rstrip("/") == "/api/emote-maker/export/file":
+        from main_routers.emote_template_router import _reject_unscoped_export
+
+        return _reject_unscoped_export(Request(scope))
+    return None
+
+
 # Global nonmultipart requests retain 16 MiB Content-Length guards. Custom-prop
 # POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
 # multipart parsing; receive-byte counting covers missing/untrusted Content-Length.
 # External memory import preview/commit upload the archive as base64 inside JSON: those two
 # exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom; every
 # other route stays at 16 MiB.
+from main_routers.emote_template_router import MAX_MULTIPART_BODY_BYTES as EMOTE_MAX_MULTIPART_BODY_BYTES
+
+_non_multipart_body_limits = {
+    "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+    "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+}
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
-    json_path_limits={
-        "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
-        "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
-    },
+    json_path_limits=_non_multipart_body_limits,
     multipart_path_prefix="/api/avatar-tools",
     multipart_methods=("POST", "PUT"),
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,
     multipart_preflight=_avatar_tool_multipart_preflight,
+)
+app.add_middleware(
+    InboundBodySizeLimitMiddleware,
+    json_path_limits=_non_multipart_body_limits,
+    multipart_path_prefix="/api/emote-maker",
+    multipart_methods=("POST",),
+    max_multipart_body_bytes=EMOTE_MAX_MULTIPART_BODY_BYTES,
+    multipart_preflight=_emote_template_multipart_preflight,
 )
 # Registered after the body guard so it is the outermost ASGI middleware and
 # rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.

@@ -18,6 +18,7 @@
 import asyncio
 import difflib
 import hashlib
+import math
 import re
 import time
 import unicodedata
@@ -414,6 +415,7 @@ _PROACTIVE_CHAT_TOTALS_FILENAME = "proactive_chat_totals.json"
 
 
 _PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION = 2
+_MAX_PROACTIVE_CHAT_TOTAL = (1 << 63) - 1
 
 
 _proactive_chat_totals: dict[str, int] = {}
@@ -427,6 +429,9 @@ _proactive_chat_totals_lock = asyncio.Lock()
 
 _proactive_chat_totals_loaded = False
 _proactive_chat_totals_loaded_path: Path | None = None
+_proactive_chat_totals_authoritative = True
+_proactive_chat_totals_read_failures = 0
+_proactive_chat_totals_skipped_records = 0
 
 
 _RECENT_CHAT_MAX_AGE_SECONDS = 3600  # Proactive records within one hour.
@@ -687,62 +692,94 @@ def _proactive_chat_totals_path(*, memory_dir: str | Path | None = None) -> Path
 
 async def _ensure_proactive_chat_totals_loaded(
     *, memory_dir: str | Path | None = None
-) -> None:
-    """Lazy-load the persisted cumulative counters + ever_delivered. Idempotent. File reads go to the thread pool.
+) -> bool:
+    """Lazy-load the persisted cumulative counters + ever_delivered. Idempotent.
 
-    schema: {"version": 2,
-             "totals": {<lanlan_name>: <int>, ...},
-             "ever_delivered": {<lanlan_name>: true, ...}}
-
-    A missing file / corrupted JSON is not fatal — start from empty, and the next
-    increment writes a fresh file. The old schema v1 has no ever_delivered field,
-    so it loads as an empty dict — after upgrading, the first proactive chat will
-    "force-first re-deliver once" for existing users (at most once, because
-    ever_delivered is set True and persisted immediately after delivery); this is
-    a one-off v1→v2 migration cost and needs no dedicated migration script."""
+    Returns whether the in-memory totals are authoritative for *memory_dir*.
+    A false return means a transient read error occurred and disk must not be overwritten.
+    """
     global _proactive_chat_totals_loaded, _proactive_chat_totals_loaded_path
+    global _proactive_chat_totals_authoritative, _proactive_chat_totals_read_failures
     path = _proactive_chat_totals_path(memory_dir=memory_dir)
     if _proactive_chat_totals_loaded and _proactive_chat_totals_loaded_path == path:
-        return
+        _proactive_chat_totals_authoritative = True
+        return True
     async with _proactive_chat_totals_lock:
         if _proactive_chat_totals_loaded and _proactive_chat_totals_loaded_path == path:
-            return
-        _proactive_chat_totals.clear()
-        _invite_ever_delivered.clear()
+            _proactive_chat_totals_authoritative = True
+            return True
+        loaded_totals: dict[str, int] = {}
+        loaded_ever: dict[str, bool] = {}
         try:
             data = await asyncio.to_thread(read_json, path)
-            totals = data.get("totals") if isinstance(data, dict) else None
-            if isinstance(totals, dict):
-                for k, v in totals.items():
-                    if isinstance(k, str) and isinstance(v, (int, float)):
-                        _proactive_chat_totals[k] = int(v)
-            ever = data.get("ever_delivered") if isinstance(data, dict) else None
-            if isinstance(ever, dict):
-                for k, v in ever.items():
-                    if isinstance(k, str) and bool(v):
-                        _invite_ever_delivered[k] = True
         except FileNotFoundError:
-            # No file on first startup / after cleanup: start entirely empty; the next increment creates it.
-            # This is normal; do not warn.
-            pass
+            data = None
+        except (ValueError, TypeError, RecursionError) as exc:
+            logger.warning(
+                "%s 内容损坏，按空计数起步并等待覆盖重建: %s: %s",
+                _PROACTIVE_CHAT_TOTALS_FILENAME,
+                type(exc).__name__,
+                exc,
+            )
+            data = None
         except Exception as exc:
-            logger.warning("proactive_chat_totals load failed: %s", exc)
+            _proactive_chat_totals_read_failures += 1
+            if _should_log_repeated_failure(_proactive_chat_totals_read_failures):
+                logger.warning(
+                    "proactive_chat_totals load failed (not marking loaded, will retry): %s: %s (failures=%d)",
+                    type(exc).__name__,
+                    exc,
+                    _proactive_chat_totals_read_failures,
+                )
+            _proactive_chat_totals_authoritative = False
+            return False
+
+        totals = data.get("totals") if isinstance(data, dict) else None
+        if isinstance(totals, dict):
+            for k, v in totals.items():
+                if not isinstance(k, str) or isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                if isinstance(v, int):
+                    if 0 <= v <= _MAX_PROACTIVE_CHAT_TOTAL:
+                        loaded_totals[k] = v
+                    continue
+                if not math.isfinite(v) or v < 0 or v > _MAX_PROACTIVE_CHAT_TOTAL:
+                    continue
+                loaded_totals[k] = int(v)
+        ever = data.get("ever_delivered") if isinstance(data, dict) else None
+        if isinstance(ever, dict):
+            for k, v in ever.items():
+                if isinstance(k, str) and bool(v):
+                    loaded_ever[k] = True
+
+        _proactive_chat_totals.clear()
+        _proactive_chat_totals.update(loaded_totals)
+        _invite_ever_delivered.clear()
+        _invite_ever_delivered.update(loaded_ever)
         _proactive_chat_totals_loaded = True
         _proactive_chat_totals_loaded_path = path
+        _proactive_chat_totals_read_failures = 0
+        _proactive_chat_totals_authoritative = True
+        return True
 
 
-def _get_proactive_chat_total(lanlan_name: str) -> int:
-    """Synchronous read of cached counter. 0 if loaded-but-unset or not loaded yet.
+def _cached_totals_available(memory_dir: str | Path | None) -> bool:
+    return _proactive_chat_totals_authoritative and (
+        memory_dir is None or _proactive_chat_totals_loaded_path == _proactive_chat_totals_path(memory_dir=memory_dir)
+    )
 
-    `_maybe_deliver_mini_game_invite` calls this after the caller has already
-    awaited `_ensure_proactive_chat_totals_loaded()`, so there is no await here."""
+
+def _get_proactive_chat_total(lanlan_name: str, *, memory_dir: str | Path | None = None) -> int:
+    """Synchronous read of cached counter. 0 if loaded-but-unset or non-authoritative."""
+    if not _cached_totals_available(memory_dir):
+        return 0
     return int(_proactive_chat_totals.get(lanlan_name, 0))
 
 
-def _was_invite_ever_delivered(lanlan_name: str) -> bool:
-    """Synchronous read of ever-delivered flag.
-
-    The caller must await ``_ensure_proactive_chat_totals_loaded()`` first."""
+def _was_invite_ever_delivered(lanlan_name: str, *, memory_dir: str | Path | None = None) -> bool:
+    """Synchronous read of ever-delivered flag."""
+    if not _cached_totals_available(memory_dir):
+        return False
     return bool(_invite_ever_delivered.get(lanlan_name, False))
 
 
@@ -766,63 +803,112 @@ async def _persist_totals_unlocked(*, memory_dir: str | Path | None = None) -> N
         )
 
 
+async def _shield_persist_totals_unlocked(*, memory_dir: str | Path | None = None) -> None:
+    """Shield disk persistence under _proactive_chat_totals_lock against task cancellation."""
+    writer = asyncio.ensure_future(_persist_totals_unlocked(memory_dir=memory_dir))
+    try:
+        await asyncio.shield(writer)
+    except asyncio.CancelledError:
+        while not writer.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({writer})
+        raise
+
+
 async def _increment_proactive_chat_total(
     lanlan_name: str, *, memory_dir: str | Path | None = None
 ) -> int:
-    """+1 cached counter and persist atomically. Returns new value.
-
-    Serialization is guaranteed by ``_proactive_chat_totals_lock``: concurrent
-    proactive_chat calls each await a serial update, so no increment is lost.
-    Persistence failures are not raised to the caller — the counter is
-    best-effort; losing one +1 is not fatal, but the log line is kept."""
-    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
+    """+1 cached counter and persist atomically. Returns new value."""
+    global _proactive_chat_totals_skipped_records
+    if not await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir):
+        _proactive_chat_totals_skipped_records += 1
+        if _should_log_repeated_failure(_proactive_chat_totals_skipped_records):
+            logger.warning(
+                "%s 未能加载，跳过本次 total 增量以免覆盖写截断盘上数据 (skipped=%d)",
+                _PROACTIVE_CHAT_TOTALS_FILENAME,
+                _proactive_chat_totals_skipped_records,
+            )
+        return 0
+    _proactive_chat_totals_skipped_records = 0
     async with _proactive_chat_totals_lock:
+        if not (
+            _proactive_chat_totals_loaded
+            and _proactive_chat_totals_loaded_path
+            == _proactive_chat_totals_path(memory_dir=memory_dir)
+        ):
+            logger.warning(
+                "%s 在加载与写入之间被换成了别的根，跳过本次 total 写入",
+                _PROACTIVE_CHAT_TOTALS_FILENAME,
+            )
+            return 0
         new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
         _proactive_chat_totals[lanlan_name] = new_value
-        await _persist_totals_unlocked(memory_dir=memory_dir)
+        await _shield_persist_totals_unlocked(memory_dir=memory_dir)
     return new_value
 
 
 async def _mark_invite_ever_delivered(
     lanlan_name: str, *, memory_dir: str | Path | None = None
 ) -> None:
-    """One-shot set-True + persist. Skips the disk write when already True to save IO.
-
-    Shares ``_proactive_chat_totals_lock`` with ``_increment_proactive_chat_total``
-    so concurrent updates write totals + ever_delivered together atomically.
-
-    ⚠️ The invite delivery path must not call ``_increment_proactive_chat_total +
-    _mark_invite_ever_delivered`` separately — the lock is released between the
-    two awaits, and a process dying in between leaves a ``totals: N+1,
-    ever_delivered: stale`` half-state on disk, making force-first fire once more
-    after restart. Use ``_record_invite_delivery_persistent`` for one atomic
-    write under a single lock."""
-    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
+    """One-shot set-True + persist. Skips the disk write when already True to save IO."""
+    global _proactive_chat_totals_skipped_records
+    if not await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir):
+        _proactive_chat_totals_skipped_records += 1
+        if _should_log_repeated_failure(_proactive_chat_totals_skipped_records):
+            logger.warning(
+                "%s 未能加载，跳过本次 ever_delivered 标记以免覆盖写截断盘上数据 (skipped=%d)",
+                _PROACTIVE_CHAT_TOTALS_FILENAME,
+                _proactive_chat_totals_skipped_records,
+            )
+        return
+    _proactive_chat_totals_skipped_records = 0
     async with _proactive_chat_totals_lock:
+        if not (
+            _proactive_chat_totals_loaded
+            and _proactive_chat_totals_loaded_path
+            == _proactive_chat_totals_path(memory_dir=memory_dir)
+        ):
+            logger.warning(
+                "%s 在加载与写入之间被换成了别的根，跳过本次 ever_delivered 写入",
+                _PROACTIVE_CHAT_TOTALS_FILENAME,
+            )
+            return
         if _invite_ever_delivered.get(lanlan_name):
             return
         _invite_ever_delivered[lanlan_name] = True
-        await _persist_totals_unlocked(memory_dir=memory_dir)
+        await _shield_persist_totals_unlocked(memory_dir=memory_dir)
 
 
 async def _record_invite_delivery_persistent(
     lanlan_name: str, *, memory_dir: str | Path | None = None
 ) -> int:
-    """Atomic persistent record of one successfully delivered mini-game invite:
-    counter +1 + ever_delivered=True written to disk once under one lock.
-    Returns the new total.
-
-    Reason to exist: doing +1 then mark as two separate awaits releases the lock
-    in between; a process crash / coroutine cancel can leave a ``totals: N+1,
-    ever_delivered: stale`` half-state on disk — after restart
-    ``_was_invite_ever_delivered`` sees the stale false and force-first fires
-    again. Pointed out by CodeRabbit Major review."""
-    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
+    """Atomic persistent record of one successfully delivered mini-game invite."""
+    global _proactive_chat_totals_skipped_records
+    if not await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir):
+        _proactive_chat_totals_skipped_records += 1
+        if _should_log_repeated_failure(_proactive_chat_totals_skipped_records):
+            logger.warning(
+                "%s 未能加载，跳过本次 invite 记录以免覆盖写截断盘上数据 (skipped=%d)",
+                _PROACTIVE_CHAT_TOTALS_FILENAME,
+                _proactive_chat_totals_skipped_records,
+            )
+        return 0
+    _proactive_chat_totals_skipped_records = 0
     async with _proactive_chat_totals_lock:
+        if not (
+            _proactive_chat_totals_loaded
+            and _proactive_chat_totals_loaded_path
+            == _proactive_chat_totals_path(memory_dir=memory_dir)
+        ):
+            logger.warning(
+                "%s 在加载与写入之间被换成了别的根，跳过本次 invite 写入",
+                _PROACTIVE_CHAT_TOTALS_FILENAME,
+            )
+            return 0
         new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
         _proactive_chat_totals[lanlan_name] = new_value
         _invite_ever_delivered[lanlan_name] = True
-        await _persist_totals_unlocked(memory_dir=memory_dir)
+        await _shield_persist_totals_unlocked(memory_dir=memory_dir)
     return new_value
 
 

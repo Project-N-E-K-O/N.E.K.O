@@ -630,3 +630,113 @@ async def test_status_preferences_diagnostic_cannot_outlive_final_identity_check
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         await env.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_b25_002_v2_sync_once_drains_settings_journal_when_offline_unactivated_and_paused(
+    env, monkeypatch,
+):
+    import sqlite3
+    from utils import preferences
+    from services.proactive_feedback.runtime import drain_settings
+
+    try:
+        journal = [
+            {
+                "id": "offline-setting-1",
+                "owner": env.owner,
+                "context": {},
+                "payload": {
+                    "revision": 1,
+                    "origin": "user",
+                    "occurred_at": 100,
+                    "previous": {},
+                    "settings": {"proactiveMusicEnabled": True},
+                },
+            },
+            {
+                "id": "unactivated-setting-2",
+                "owner": env.owner,
+                "context": {},
+                "payload": {
+                    "revision": 2,
+                    "origin": "user",
+                    "occurred_at": 101,
+                    "previous": {},
+                    "settings": {"proactiveMusicEnabled": False},
+                },
+            },
+            {
+                "id": "paused-setting-3",
+                "owner": env.owner,
+                "context": {},
+                "payload": {
+                    "revision": 3,
+                    "origin": "user",
+                    "occurred_at": 102,
+                    "previous": {},
+                    "settings": {"proactiveMusicEnabled": True},
+                },
+            },
+        ]
+
+        def pending(limit=100):
+            return copy.deepcopy(journal[:limit])
+
+        def acknowledge(ids):
+            id_set = set(ids)
+            journal[:] = [item for item in journal if item["id"] not in id_set]
+
+        monkeypatch.setattr(preferences, "pending_settings_changes", pending)
+        monkeypatch.setattr(preferences, "acknowledge_settings_changes", acknowledge)
+        env.runtime.settings_drain = drain_settings
+
+        # 1. Offline / unauthenticated (401 -> retry_wait): journal still drains to SQLite spool
+        env.options["unauthorized"] = True
+        pending_only = [journal.pop(0)]
+        active_slice = pending_only
+
+        def pending_sliced(limit=100):
+            return copy.deepcopy(active_slice[:limit])
+
+        def ack_sliced(ids):
+            id_set = set(ids)
+            active_slice[:] = [item for item in active_slice if item["id"] not in id_set]
+
+        monkeypatch.setattr(preferences, "pending_settings_changes", pending_sliced)
+        monkeypatch.setattr(preferences, "acknowledge_settings_changes", ack_sliced)
+
+        res1 = await env.runtime.sync_once()
+        assert res1["state"] == "retry_wait"
+        assert active_slice == []
+
+        # 2. Device unactivated (device_activation_required): journal still drains
+        env.options["unauthorized"] = False
+        saved_regs = dict(env.state["registrations"])
+        env.state["registrations"].clear()
+        active_slice = [journal.pop(0)]
+        res2 = await env.runtime.sync_once()
+        assert res2["state"] == "device_activation_required"
+        assert active_slice == []
+
+        # 3. Upload paused (upload_paused): journal still drains and nothing is uploaded
+        env.state["registrations"].update(saved_regs)
+        env.runtime.upload_paused = True
+        active_slice = [journal.pop(0)]
+        res3 = await env.runtime.sync_once()
+        assert res3 == {"state": "paused", "error_code": "upload_paused"}
+        assert active_slice == []
+        assert env.uploads == []
+
+        with sqlite3.connect(env.store.path) as db:
+            rows = db.execute(
+                "SELECT event_id FROM feedback_v2_spool ORDER BY seq"
+            ).fetchall()
+        assert [row[0] for row in rows] == [
+            "offline-setting-1",
+            "unactivated-setting-2",
+            "paused-setting-3",
+        ]
+    finally:
+        await env.client.aclose()
+

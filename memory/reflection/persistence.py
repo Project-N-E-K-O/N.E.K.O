@@ -28,6 +28,7 @@ from datetime import datetime
 
 
 
+from utils.asyncio_retirement import await_retirement
 from utils.cloudsave_runtime import assert_cloudsave_writable
 
 
@@ -328,8 +329,9 @@ class PersistenceMixin:
 
     async def aload_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
         from memory.long_term_sync import require_consistent_views, consistent_view_read
-        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
-        path = self._reflections_path(name)
+        directory = os.path.join(self._config_manager.memory_dir, name)
+        require_consistent_views(directory)
+        path = os.path.join(directory, "reflections.json")
         if not await asyncio.to_thread(os.path.exists, path):
             return []
         try:
@@ -598,7 +600,9 @@ class PersistenceMixin:
                 )
                 merged = merged + to_archive
 
-        await atomic_write_json_async(path, merged, indent=2, ensure_ascii=False)
+        await await_retirement(
+            atomic_write_json_async(path, merged, indent=2, ensure_ascii=False)
+        )
 
     def load_surfaced(self, name: str) -> list[dict]:
         """Load the list of reflections that were surfaced in proactive chat."""

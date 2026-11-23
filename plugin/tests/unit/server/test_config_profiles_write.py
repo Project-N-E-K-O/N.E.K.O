@@ -124,3 +124,33 @@ def test_delete_profile_config_removes_active_key_in_payload(tmp_path: Path, mon
     persisted_cfg = captured_payloads[-1]["config_profiles"]
     assert isinstance(persisted_cfg, dict)
     assert "active" not in persisted_cfg
+
+
+@pytest.mark.plugin_unit
+def test_upsert_profile_config_drops_reserved_permissions_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "storage"))
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+
+    written: dict[str, dict[str, object]] = {}
+
+    def _fake_atomic_dump_toml(*, target_path: Path, payload: dict[str, object], prefix: str) -> None:
+        written[target_path.name] = payload
+
+    monkeypatch.setattr(module, "tomli_w", object())
+    monkeypatch.setattr(module, "get_plugin_config_path", lambda plugin_id: config_path)
+    monkeypatch.setattr(module, "_atomic_dump_toml", _fake_atomic_dump_toml)
+    monkeypatch.setattr(module, "get_profile_config", lambda **kwargs: {})
+
+    module.upsert_profile_config(
+        plugin_id="demo",
+        profile_name="dev",
+        config={"runtime": {"level": 1}, "permissions": {"ask": {}}},
+        make_active=None,
+    )
+
+    assert written["dev.toml"] == {"runtime": {"level": 1}}

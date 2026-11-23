@@ -190,6 +190,75 @@ def test_session_ended_by_server_stops_assistant_text_output():
     )
 
 
+def test_new_socket_open_clears_session_end_suppression():
+    """A fresh socket must not inherit the ended session's suppression latch.
+
+    The backend can serve a new socket from a text session it reuses without
+    sending session_started (greeting on an existing OmniOfflineClient after a
+    reconnect or character switch), so session_started cannot be the only
+    place the latch is cleared. The clear sits behind onopen's stale-socket
+    guard so a replaced socket opening late cannot lift it.
+    """
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    onopen_block = source.split("S.socket.onopen = function () {", 1)[1].split(
+        "// ---- onmessage ----",
+        1,
+    )[0]
+    stale_guard = "if (S.socket !== _thisSocket) return;"
+    reset = "S.suppressAssistantStreamUntilNextSession = false;"
+    assert stale_guard in onopen_block
+    assert reset in onopen_block
+    assert onopen_block.index(stale_guard) < onopen_block.index(reset)
+
+    # The old socket's late frames are still dropped by onmessage's own guard.
+    onmessage_head = source.split("S.socket.onmessage = function (event) {", 1)[1].split(
+        "stale onmessage skipped",
+        1,
+    )[0]
+    assert "if (S.socket !== _thisSocket) {" in onmessage_head
+
+
+def test_character_switch_opens_a_new_socket_for_the_latch_reset():
+    """The runtime test replays handleCatgirlSwitch's socket steps by hand.
+
+    Pin that the real switch still closes the old socket and reconnects, so the
+    new socket's onopen (which clears the session-end latch) runs. If the switch
+    ever reused an open socket instead, this fails rather than the replay
+    staying green.
+    """
+    character = (APP_WEBSOCKET_PATH.parent / "app-character.js").read_text(encoding="utf-8")
+    switch_block = character.split("if (S.socket) S.socket.close();", 1)
+    assert len(switch_block) == 2, "handleCatgirlSwitch no longer closes the old socket"
+    tail = switch_block[1]
+    assert "window.lanlan_config.lanlan_name = newCatgirl;" in tail
+    flag = "S._pendingGreetingSwitch = true;"
+    assert flag in tail
+    assert tail.index("window.lanlan_config.lanlan_name = newCatgirl;") < tail.index(flag)
+    assert tail.index(flag) < tail.index("connectWebSocket();")
+
+def test_session_end_suppression_reset_runtime():
+    """Drive the real app-websocket.js in a node vm (see the .cjs file)."""
+    import shutil
+
+    from tests.node_harness import run_node_script
+
+    node_path = shutil.which("node")
+    if not node_path:
+        pytest.skip("node not found")
+
+    root = Path(__file__).resolve().parents[3]
+    test_path = root / "tests" / "frontend" / "session_end_suppression_reset.test.cjs"
+    result = run_node_script(
+        node_path,
+        test_path.read_text(encoding="utf-8"),
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_only_server_identified_visit_homecoming_messages_bypass_session_end_suppression():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 

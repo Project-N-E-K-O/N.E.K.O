@@ -28,16 +28,20 @@ import websockets
 import io
 import wave
 import asyncio
+import time
 import queue as queue_module
 from collections import deque
+from urllib.parse import urlparse
 
 from utils.config_manager import get_config_manager
 from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE, get_stepfun_tts_default_voice, normalize_stepfun_tts_voice
 
 from .._infra import (
     AudioDoneEmitter,
+    TTS_PRECONNECT_SENTINEL,
     TTS_SHUTDOWN_SENTINEL,
     _resample_audio,
+    _ws_is_open,
     make_audio_jitter_buffer,
     _enqueue_error,
 )
@@ -48,7 +52,39 @@ logger = get_module_logger(__name__, "Main")
 
 _FINISH_RETRY_SENTINEL = "__step_finish_retry__"
 # Request-queue ids that are control messages, not speech rounds.
-_NON_SPEECH_REQUEST_IDS = frozenset({TTS_SHUTDOWN_SENTINEL, "__interrupt__", _FINISH_RETRY_SENTINEL})
+_NON_SPEECH_REQUEST_IDS = frozenset({
+    TTS_SHUTDOWN_SENTINEL,
+    "__interrupt__",
+    _FINISH_RETRY_SENTINEL,
+    TTS_PRECONNECT_SENTINEL,
+})
+
+# A preconnected socket waits at most this long for a speech to adopt it.
+# It covers the LLM's time to first text (a few seconds, longer with tool
+# rounds or a vision request); after that the reply most likely failed, and the
+# free service bills connection time, so the socket is closed.
+_PRECONNECT_IDLE_SECONDS = 15.0
+# Handshake bound for the preconnected socket. It runs while the LLM is still
+# thinking, so it can afford to wait out a slow ``tts.connection.done`` that
+# the 1s bound on the speech path would give up on and reconnect.
+_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS = 3.0
+# How long a speech waits for ``tts.connection.done`` once its socket is
+# connected, or for a preconnected socket still mid-handshake when it adopts it.
+_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS = 1.0
+
+
+def _ws_may_hold_connection(ws_conn) -> bool:
+    """Whether the server may still count this socket against the per-IP limit.
+
+    True while it is open or still closing; ``_ws_is_open`` alone turns False
+    as soon as the close starts.
+    """
+    if ws_conn is None:
+        return False
+    state = getattr(ws_conn, "state", None)
+    if state is None:
+        return _ws_is_open(ws_conn)
+    return getattr(state, "name", "") != "CLOSED"
 
 # Lanlan free servers finish the WebSocket handshake first and only then apply
 # their limits, so a rejection arrives as a close frame, never as an HTTP
@@ -194,7 +230,17 @@ def run_step_protocol_tts_worker(
         else:
             tts_url = "wss://api.stepfun.com/v1/realtime/audio?model=step-tts-2"
         is_lanlan_app = 'lanlan.app' in tts_url
+        tts_host = urlparse(tts_url).hostname or tts_url
         ws = None
+        # Socket opened ahead of the next speech on core's preconnect request.
+        # spare_task resolves to (ws, session_id) or None; it is bound to no
+        # speech until a new speech adopts it (see _take_spare_socket).
+        spare_task = None
+        spare_expiry_task = None
+        # The spare's connect progress, read by a speech that adopts it mid-handshake.
+        spare_progress = None
+        # Retired spares still closing their socket; referenced until done.
+        spare_cleanup_tasks = set()
         current_speech_id = None
         receive_task = None
         session_id = None
@@ -364,6 +410,13 @@ def run_step_protocol_tts_worker(
                 except Exception as close_exc:
                     logger.debug("关闭失效 TTS WebSocket 失败: %s", close_exc)
 
+            if not await _await_spare_cleanup():
+                # A queued interrupt/shutdown owns this boundary; leave the
+                # retained text to it rather than reconnecting.
+                ws = None
+                session_id = None
+                session_created = False
+                return False
             try:
                 ws = await websockets.connect(tts_url, additional_headers=headers)
                 session_id = None
@@ -535,6 +588,237 @@ def run_step_protocol_tts_worker(
             except Exception as close_exc:
                 logger.debug("%s: %s", context, close_exc)
 
+        async def _open_spare_socket(progress):
+            """Connect and wait for ``tts.connection.done`` off the speech path.
+
+            Sets ``progress["connected"]`` (and ``connected_at``, loop time)
+            once the socket is connected, so a speech adopting it mid-handshake
+            can time the confirmation from there, as for a fresh socket.
+            Returns (ws, session_id), or None on any failure. A failure is not
+            reported, a server rejection included: the next speech connects
+            the normal way and reports whatever the server says then.
+            """
+            spare_ws = None
+            spare_session_id = None
+            try:
+                # close_timeout as for the warmup socket: every later connect
+                # waits for a retired spare's close (_await_spare_cleanup), so
+                # a peer ignoring the close handshake must not cost 10s.
+                spare_ws = await websockets.connect(
+                    tts_url, additional_headers=headers, close_timeout=2.0,
+                )
+                progress["connected_at"] = asyncio.get_running_loop().time()
+                progress["connected"].set()
+
+                async def wait_spare_conn():
+                    nonlocal spare_session_id
+                    async for message in spare_ws:
+                        event = json.loads(message)
+                        if event.get("type") == "tts.connection.done":
+                            spare_session_id = event.get("data", {}).get("session_id")
+                            break
+
+                await asyncio.wait_for(
+                    wait_spare_conn(), timeout=_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                _close_spare_ws_tracked(spare_ws)
+                raise
+            except Exception as e:
+                logger.debug("提前建立 TTS 连接失败: %s", e)
+            if spare_session_id:
+                return spare_ws, spare_session_id
+            # Not awaited here: cancelling this task must only ever cut the
+            # connect or confirm phase, never a close already under way.
+            _close_spare_ws_tracked(spare_ws)
+            return None
+
+        async def _expire_spare_socket(owned_task) -> None:
+            await asyncio.sleep(_PRECONNECT_IDLE_SECONDS)
+            if spare_task is owned_task:
+                logger.debug("预建 TTS 连接 %.0fs 内未被使用，关闭", _PRECONNECT_IDLE_SECONDS)
+                _discard_spare_socket(from_expiry=True)
+
+        async def _await_spare_cleanup() -> bool:
+            """Let retired spares finish closing before the speech connects.
+
+            The speech path has always closed its old socket before opening
+            the next one, so the free server, which limits connections per IP,
+            never sees two. A retired spare closes in the background so the
+            cut-off itself returns at once; this is where the speech waits for
+            it. A close can take websockets' whole close_timeout, and an
+            interrupt or shutdown must not wait on it: returns False, with the
+            control message moved to the front, when one is queued meanwhile,
+            and the caller drops this connect.
+            """
+            while spare_cleanup_tasks:
+                await asyncio.wait(set(spare_cleanup_tasks), timeout=0.05)
+                if _defer_queued_work_until_control():
+                    return False
+            return True
+
+        def _keep_until_done(task) -> None:
+            spare_cleanup_tasks.add(task)
+            task.add_done_callback(spare_cleanup_tasks.discard)
+
+        async def _drain_spare_cleanup(limit_seconds: float) -> None:
+            """Give retired spares' closes a bounded wait at worker exit.
+
+            Bounded like the warmup close: a peer that never answers the close
+            handshake must not hold up exit. Looped because a cancelled spare
+            hands its socket to a new close task as the cancellation lands.
+            Kept out of the worker's ``finally`` (no loop there, see
+            tests/unit/test_no_return_through_looping_finally.py).
+            """
+            deadline = asyncio.get_running_loop().time() + limit_seconds
+            while spare_cleanup_tasks:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return
+                await asyncio.wait(set(spare_cleanup_tasks), timeout=remaining)
+
+        def _close_spare_ws_tracked(spare_ws) -> None:
+            """Close a spare socket in its own tracked task.
+
+            The close is never awaited by the spare task, so cancelling that
+            task cannot abandon a close half way (websockets does not abort the
+            transport when the wait for the close is cancelled) and drop it
+            from the tracking that keeps the next connect from overlapping it.
+            A socket that is already closed has nothing left to wait for.
+            """
+            if not _ws_may_hold_connection(spare_ws):
+                return
+            _keep_until_done(asyncio.create_task(
+                _close_candidate_best_effort(spare_ws, "关闭未用上的预建 TTS socket 失败")
+            ))
+
+        def _retire_spare_task(task) -> None:
+            """Get rid of a spare without waiting on its socket's close.
+
+            Closing waits for the close handshake (websockets' default
+            close_timeout is 10s); neither a speech nor a queued interrupt may
+            wait on that. The close runs in its own tracked task, and shutdown
+            gives what is left a bounded wait.
+            """
+            if not task.done():
+                # Cuts only its connect or confirm phase: its cancellation
+                # path hands any socket to _close_spare_ws_tracked.
+                task.cancel()
+                _keep_until_done(task)
+                return
+            result = task.result()
+            if result is not None:
+                _close_spare_ws_tracked(result[0])
+
+        def _start_spare_socket() -> None:
+            nonlocal spare_task, spare_expiry_task, spare_progress
+            if spare_task is not None:
+                result = spare_task.result() if spare_task.done() else None
+                if not spare_task.done() or (result is not None and _ws_is_open(result[0])):
+                    # Still connecting, or usable: one spare at a time. A new
+                    # reply just started, so its idle window restarts from
+                    # now rather than expiring under this reply.
+                    if spare_expiry_task is not None and not spare_expiry_task.done():
+                        spare_expiry_task.cancel()
+                    spare_expiry_task = asyncio.create_task(_expire_spare_socket(spare_task))
+                    return
+                # It failed, or the server dropped it while it idled: replace
+                # it instead of ignoring preconnects until it expires. If its
+                # socket is still closing, the cleanup check below defers the
+                # replacement to the next preconnect (the speech then
+                # connects normally), keeping one connection per IP.
+                _discard_spare_socket()
+            if _ws_may_hold_connection(ws):
+                # The previous round's socket is still open (its audio is still
+                # streaming, or the upstream keeps a finished round's socket
+                # until the next speech) or still closing. A spare now would be
+                # a second concurrent connection, which the free server limits
+                # per IP.
+                return
+            if warmup_close_task is not None and not warmup_close_task.done():
+                # Same for the warmup socket, closed in the background.
+                return
+            if spare_cleanup_tasks:
+                # Same for a retired spare still closing in the background.
+                return
+            spare_progress = {"connected": asyncio.Event(), "connected_at": None}
+            spare_task = asyncio.create_task(_open_spare_socket(spare_progress))
+            spare_expiry_task = asyncio.create_task(_expire_spare_socket(spare_task))
+
+        def _discard_spare_socket(*, from_expiry: bool = False) -> None:
+            nonlocal spare_task, spare_expiry_task, spare_progress
+            task = spare_task
+            expiry = spare_expiry_task
+            spare_task = None
+            spare_expiry_task = None
+            spare_progress = None
+            if expiry is not None and not from_expiry and not expiry.done():
+                expiry.cancel()
+            if task is not None:
+                _retire_spare_task(task)
+
+        async def _take_spare_socket():
+            """Hand the spare to a new speech, waiting for it if still connecting.
+
+            A spare still in progress is held to the same bounds as a fresh
+            socket, phase by phase. While it is still connecting the speech
+            waits for the connect, unbounded here exactly like a fresh
+            ``websockets.connect`` (the library's own open timeout applies).
+            Once connected, it gets the fresh socket's confirmation window
+            (_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS) counted from when it
+            connected. Since it started earlier, neither phase ends later than
+            it would on a fresh socket. Its own longer handshake bound only
+            applies while nothing waits on it. Returns (ws, session_id) or
+            None; raises asyncio.TimeoutError, with the spare cancelled, when
+            the window passes, so the caller treats it exactly like a fresh
+            socket's confirmation timeout.
+            """
+            nonlocal spare_task, spare_expiry_task, spare_progress
+            task = spare_task
+            if task is None:
+                return None
+            expiry = spare_expiry_task
+            progress = spare_progress
+            spare_task = None
+            spare_expiry_task = None
+            spare_progress = None
+            if expiry is not None and not expiry.done():
+                expiry.cancel()
+            if not task.done():
+                try:
+                    connected_wait = asyncio.ensure_future(progress["connected"].wait())
+                    try:
+                        await asyncio.wait(
+                            {task, connected_wait}, return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        connected_wait.cancel()
+                    if not task.done():
+                        confirm_elapsed = (
+                            asyncio.get_running_loop().time() - progress["connected_at"]
+                        )
+                        await asyncio.wait(
+                            {task},
+                            timeout=max(0.0, _NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS - confirm_elapsed),
+                        )
+                except asyncio.CancelledError:
+                    # Nothing references the spare any more; do not leave its
+                    # socket open behind a cancelled worker.
+                    task.cancel()
+                    raise
+                if not task.done():
+                    _retire_spare_task(task)
+                    raise asyncio.TimeoutError
+            result = task.result()
+            if result is None:
+                return None
+            spare_ws, spare_session_id = result
+            if not _ws_is_open(spare_ws):
+                # The server dropped it while it idled; connect normally.
+                _retire_spare_task(task)
+                return None
+            return spare_ws, spare_session_id
+
         async def _flush_deferred_create(
             force: bool = False,
             *,
@@ -700,7 +984,7 @@ def run_step_protocol_tts_worker(
                 logger.warning("会话创建超时")
 
             # Send ready to tell the main process TTS is usable.
-            logger.info("%s TTS 已就绪，发送就绪信号", provider_label)
+            logger.info("%s TTS 已就绪 (节点 %s)，发送就绪信号", provider_label, tts_host)
             response_queue.put(("__ready__", True))
 
             # Warmup connections verify connectivity only and are never reused; the first real speech_id
@@ -763,6 +1047,12 @@ def run_step_protocol_tts_worker(
                     _signal_permanent_rejection_exit(sid)
                     break
 
+                if sid == TTS_PRECONNECT_SENTINEL:
+                    # A reply's LLM request just started; have its socket ready
+                    # before the first text. Touches no speech state.
+                    _start_spare_socket()
+                    continue
+
                 if sid == _FINISH_RETRY_SENTINEL:
                     finish_speech_id = tts_text
                     if (
@@ -777,6 +1067,10 @@ def run_step_protocol_tts_worker(
 
                 if sid == "__interrupt__":
                     # Interruption: close immediately without tts.text.done or waiting for server confirmation.
+                    # A preconnected spare is bound to no speech and is kept on
+                    # purpose: an interrupt is usually followed by the user's
+                    # next reply, which adopts it. If none comes, its idle
+                    # expiry (_PRECONNECT_IDLE_SECONDS) closes it.
                     audio_jitter.begin_interrupt()
                     audio_done.begin_interrupt()  # Interrupted rounds send no audio_done; they use the independent cancellation channel.
                     try:
@@ -888,38 +1182,57 @@ def run_step_protocol_tts_worker(
                     if is_new_speech:
                         audio_done.reset()  # Reset audio_done deduplication for the new round.
 
-                    # Establish a new connection.
+                    # Establish a new connection, adopting the preconnected
+                    # socket when there is one.
                     candidate_ws = None
+                    connect_started = time.perf_counter()
                     try:
-                        candidate_ws = await websockets.connect(
-                            tts_url,
-                            additional_headers=headers,
-                        )
-
-                        # Wait for successful connection.
                         candidate_session_id = None
                         candidate_rejected = False
-
-                        async def wait_conn():
-                            nonlocal candidate_session_id, candidate_rejected
-                            try:
-                                async for message in candidate_ws:
-                                    event = json.loads(message)
-                                    if event.get("type") == "tts.connection.done":
-                                        candidate_session_id = event.get("data", {}).get("session_id")
-                                        break
-                            except Exception as e:
-                                # The timeout/session_id checks below own the
-                                # reconnect decision; retain the exception only
-                                # as diagnostic context. An explicit server
-                                # rejection is the one exception that is
-                                # reported and ends this speech's retries.
-                                candidate_rejected = _report_server_close(e, current_speech_id)
-                                logger.debug("等待新 TTS 连接确认失败: %s", e)
-
+                        handshake_timed_out = False
                         try:
-                            await asyncio.wait_for(wait_conn(), timeout=1.0)
+                            spare = await _take_spare_socket()
                         except asyncio.TimeoutError:
+                            # Already cancelled and closed by the take; same
+                            # path as a fresh socket that missed the window.
+                            spare = None
+                            handshake_timed_out = True
+                        if spare is not None:
+                            candidate_ws, candidate_session_id = spare
+                        elif not handshake_timed_out:
+                            if not await _await_spare_cleanup():
+                                # A queued interrupt/shutdown owns this boundary.
+                                continue
+                            candidate_ws = await websockets.connect(
+                                tts_url,
+                                additional_headers=headers,
+                            )
+
+                            async def wait_conn():
+                                nonlocal candidate_session_id, candidate_rejected
+                                try:
+                                    async for message in candidate_ws:
+                                        event = json.loads(message)
+                                        if event.get("type") == "tts.connection.done":
+                                            candidate_session_id = event.get("data", {}).get("session_id")
+                                            break
+                                except Exception as e:
+                                    # The timeout/session_id checks below own the
+                                    # reconnect decision; retain the exception only
+                                    # as diagnostic context. An explicit server
+                                    # rejection is the one exception that is
+                                    # reported and ends this speech's retries.
+                                    candidate_rejected = _report_server_close(e, current_speech_id)
+                                    logger.debug("等待新 TTS 连接确认失败: %s", e)
+
+                            try:
+                                await asyncio.wait_for(
+                                    wait_conn(), timeout=_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS,
+                                )
+                            except asyncio.TimeoutError:
+                                handshake_timed_out = True
+
+                        if handshake_timed_out:
                             logger.warning("新连接超时")
                             control_preempted = _defer_queued_work_until_control()
                             retired_candidate_ws = candidate_ws
@@ -980,6 +1293,13 @@ def run_step_protocol_tts_worker(
                         candidate_ws = None
                         session_id = candidate_session_id
                         session_ready.set()
+                        logger.info(
+                            "[voice-chain] stage=tts_socket speech_id=%s host=%s preconnected=%s wait_ms=%d",
+                            current_speech_id,
+                            tts_host,
+                            spare is not None,
+                            int((time.perf_counter() - connect_started) * 1000),
+                        )
 
                         # Defer tts.create until the first text arrives, then send through _flush_deferred_create
                         # with language hints. Start only the receiver task here to consume server events.
@@ -1139,6 +1459,11 @@ def run_step_protocol_tts_worker(
             response_queue.put(("__ready__", False))
         finally:
             # Clean up resources.
+            try:
+                _discard_spare_socket()
+                await _drain_spare_cleanup(2.5)
+            except Exception as e:
+                logger.debug("关闭预建 TTS socket 失败: %s", e)
             if warmup_close_task is not None and not warmup_close_task.done():
                 # Background closure bounded by close_timeout; give it one final chance before worker exit.
                 try:

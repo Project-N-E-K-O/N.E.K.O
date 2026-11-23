@@ -44,7 +44,7 @@ from main_logic.proactive_delivery import (
     resolve_callback_delivery_ack,
 )
 from utils.gptsovits_config import is_gsv_disabled_voice_id
-from config.prompts.prompts_sys import get_context_summary_ready
+from config.prompts.prompts_sys import get_context_summary_ready, normalize_sys_prompt_locale
 from utils.config_manager import _as_bool, ensure_default_yui_voice_for_free_api
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.game_route_state import get_active_game_route_generation_identity
@@ -1709,6 +1709,8 @@ class LifecycleMixin:
         session.on_response_displaced = self._close_displaced_offline_turn
         session.on_idle = self._on_offline_session_idle
         session.on_thinking_active = self._make_thinking_active_callback(session)
+        # Open the TTS socket while the model is still producing its first text.
+        session.on_response_start = self.request_tts_preconnect
         # Match both realtime construction sites: bind the handle to this client itself, rather than
         # construction-time self.session. Before promotion, a handoff candidate is neither
         # self.session nor pending_session and _sync_tools_to_active_session
@@ -2306,7 +2308,7 @@ class LifecycleMixin:
         # loser A returns and releases its guard in finally; third contender C snapshots B,
         # then passes reflexive B==B CAS and overwrites B, creating another orphan.
         guard_max_length = self._get_text_guard_max_length()
-        _lang = normalize_language_code(self.user_language, format='short')
+        _lang = normalize_sys_prompt_locale(self.user_language)
         initial_prompt = await self._build_initial_prompt()
         self._check_start_operation()
         next_session_context_messages = self._snapshot_next_session_context_messages()
@@ -3397,7 +3399,7 @@ class LifecycleMixin:
             )
             # If extra hints need injection, instruct the model to ignore the previous message and include all hints in the next response to the user.
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
-                _lang = normalize_language_code(self.user_language, format='short')
+                _lang = normalize_sys_prompt_locale(self.user_language)
                 from config import AGENT_CALLBACK_TOTAL_MAX_TOKENS
                 # Budget-aware selection (mirror of the text-mode drain): render
                 # only what fits, keep the rest for the next hot-swap rather than
@@ -3489,7 +3491,7 @@ class LifecycleMixin:
                 # without restoration code. Over-budget _deferred waits for next pass.
                 _prime_selected_extras = _selected
             else:
-                _lang = normalize_language_code(self.user_language, format='short')
+                _lang = normalize_sys_prompt_locale(self.user_language)
                 # Match main-session construction: hot swap also runs in text mode,
                 # as the self.input_mode == 'text' pending branch below shows.
                 final_prime_text += get_context_summary_ready(
