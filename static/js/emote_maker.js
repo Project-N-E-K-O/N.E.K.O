@@ -5595,6 +5595,8 @@
 
     function beginPackDrag(payload, event, sourceElement) {
         const holdModule = window.NekoEmoteDragHold;
+        const pointerId = event.pointerId;
+        const ownsPointer = (other) => pointerId == null || other.pointerId == null || other.pointerId === pointerId;
         // 拖出来的东西长得像它来自的那张选项卡（缩略图 + 名字）。
         // 一行文字的 ghost 会让人以为自己在拖空气。
         const ghost = holdModule
@@ -5627,6 +5629,7 @@
             lastTarget = target;
         };
         const move = (moveEvent) => {
+            if (!ownsPointer(moveEvent)) return;
             place(moveEvent.clientX, moveEvent.clientY);
             const target = packDropTargetAt(moveEvent.clientX, moveEvent.clientY);
             if (!target) {
@@ -5640,6 +5643,7 @@
             highlight(target);
         };
         const stop = (upEvent) => {
+            if (!ownsPointer(upEvent)) return;
             window.removeEventListener('pointermove', move, true);
             window.removeEventListener('pointerup', stop, true);
             window.removeEventListener('pointercancel', cancel, true);
@@ -5683,7 +5687,7 @@
             // 落在别处＝没对着任何一格：什么都不改
         };
 
-        const cancel = () => stop({ type: 'pointercancel', clientX: 0, clientY: 0 });
+        const cancel = (cancelEvent) => stop(cancelEvent);
 
         place(event.clientX, event.clientY);
         window.addEventListener('pointermove', move, true);
@@ -5696,17 +5700,18 @@
     function armDragSource(card, payload, event) {
         const holdModule = window.NekoEmoteDragHold;
         if (!holdModule) {
-            beginPackDrag(payload, { clientX: event.clientX, clientY: event.clientY }, card);
+            beginPackDrag(payload, event, card);
             return;
         }
         holdModule.armHold(event, {
-            onComplete: (point) => beginPackDrag(payload, point, card),
+            onComplete: (point) => beginPackDrag(payload, { ...point, pointerId: event.pointerId }, card),
         });
     }
 
     function attachDragSource(card, payload) {
         card.addEventListener('pointerdown', (event) => {
             if (card.disabled) return;
+            suppressClickUntil = 0;
             armDragSource(card, payload, event);
         });
     }

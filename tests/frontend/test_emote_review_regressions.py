@@ -69,6 +69,49 @@ def _import(page, data, name="character.zip"):
     assert imported, page.evaluate('window.reviewImportFailure') or '; '.join(page._review_errors)
 
 
+def test_a_fresh_animation_press_is_not_suppressed_by_the_previous_drag(editor):
+    _import(editor, spine_zip(animations=3))
+    cards = editor.locator('.animation-card')
+    first, second = cards.nth(0), cards.nth(1)
+    editor.clock.install()
+    first.hover()
+    editor.mouse.down()
+    editor.clock.run_for(800)
+    assert editor.locator('.pack-drag-ghost').count() == 1
+    editor.mouse.up()
+    assert editor.locator('.pack-drag-ghost').count() == 0
+    before = editor.evaluate('reviewEditor.state.animationId')
+    second.click()
+    assert editor.evaluate('reviewEditor.state.animationId') == second.get_attribute('data-animation-id')
+    assert editor.evaluate('reviewEditor.state.animationId') != before
+
+
+@pytest.mark.parametrize('with_hold', [False, True])
+@pytest.mark.parametrize('foreign_event', ['pointermove', 'pointerup', 'pointercancel'])
+def test_animation_drag_ignores_a_second_pointer(editor, with_hold, foreign_event):
+    _import(editor, spine_zip(animations=3))
+    editor.clock.install()
+    editor.evaluate("""hold => {
+        if (!hold) window.NekoEmoteDragHold = null;
+        const card = document.querySelector('.animation-card');
+        card.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true,pointerId:71,
+            pointerType:'touch',button:0,clientX:200,clientY:300}));
+    }""", with_hold)
+    editor.clock.run_for(800)
+    assert editor.locator('.pack-drag-ghost').count() == 1
+    before = editor.locator('.pack-drag-ghost').evaluate('node => [node.style.left,node.style.top]')
+    editor.evaluate("""type => window.dispatchEvent(new PointerEvent(type,
+        {pointerId:72,pointerType:'touch',clientX:400,clientY:400}))""", foreign_event)
+    editor.clock.run_for(32)
+    assert editor.locator('.pack-drag-ghost').count() == 1
+    assert editor.locator('.pack-drag-ghost').evaluate('node => [node.style.left,node.style.top]') == before
+    editor.evaluate("window.dispatchEvent(new PointerEvent('pointermove',{pointerId:71,clientX:350,clientY:350}))")
+    editor.clock.run_for(32)
+    assert editor.locator('.pack-drag-ghost').evaluate('node => [node.style.left,node.style.top]') != before
+    editor.evaluate("window.dispatchEvent(new PointerEvent('pointercancel',{pointerId:71}))")
+    assert editor.locator('.pack-drag-ghost').count() == 0
+
+
 def _two_skins():
     result = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(spine_zip())) as source, zipfile.ZipFile(result, "w") as target:

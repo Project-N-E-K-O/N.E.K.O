@@ -683,6 +683,8 @@ function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source) {
 function createSettingsMenuButton(manager, prefix, config) {
     const btn = document.createElement('div');
     btn.className = `${prefix}-settings-menu-item`;
+    btn.tabIndex = 0;
+    btn.setAttribute('role', 'button');
     markAvatarPopupActionElement(btn, 'settings-menu');
     setAvatarPopupActionDebugMetadata(btn, config, 'settings-button');
     var btnAnchorId = createMenuAnchorId(prefix, config && config.id);

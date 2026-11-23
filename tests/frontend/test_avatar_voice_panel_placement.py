@@ -611,15 +611,18 @@ def test_adaptive_exit_motion_tracks_placement(page: Page):
     })""")
     assert result == ['translateY(6px)', 'translateY(-6px)', 'none', 'translateX(6px)']
 
+@pytest.mark.frontend
 @pytest.mark.parametrize('key', ['Enter', 'Space', 'ArrowRight', 'mouse'])
 def test_character_side_panel_supports_keyboard_navigation_and_emote_entry(page: Page, key):
     _install_toolbar(page, open_voice=False)
     page.evaluate("""() => {
         const manager = live2dManager;
-        const parent = manager._createMenuItem({id:'keyboard-character', label:'Character'});
+        const parent = manager._createSettingsMenuButton({id:'character', label:'Character'});
         parent.id = 'keyboard-character-anchor';
         parent.style.cssText += ';position:fixed;left:40px;top:300px;pointer-events:auto';
-        document.body.append(parent);
+        const before = document.createElement('button');
+        before.id = 'before-character'; before.textContent = 'Before';
+        document.body.append(before, parent);
         const panel = manager._createCharacterSettingsSidePanel();
         panel._anchorElement = parent;
         manager._attachSidePanelHover(parent, panel);
@@ -633,7 +636,9 @@ def test_character_side_panel_supports_keyboard_navigation_and_emote_entry(page:
         page.locator('#live2d-sidepanel-emote-maker').click()
         assert page.evaluate('window.__keyboardOpened') == [{'url':'/emote_maker', 'name':'neko_emote_maker'}]
         return
-    parent.focus()
+    page.locator('#before-character').focus()
+    page.keyboard.press('Tab')
+    assert parent.evaluate('node => node === document.activeElement')
     parent.press(key)
     page.wait_for_function("document.activeElement?.id === 'live2d-sidepanel-general'")
     # Focus must keep the panel open after the hover-collapse interval.
@@ -650,6 +655,7 @@ def test_character_side_panel_supports_keyboard_navigation_and_emote_entry(page:
     page.wait_for_function("getComputedStyle(window.__keyboardPanel).display === 'none'")
 
 
+@pytest.mark.frontend
 @pytest.mark.parametrize('toggle_id', ['proactive-chat', 'proactive-vision', 'visit-enabled'])
 @pytest.mark.parametrize('key', ['Enter', 'Space', 'ArrowRight'])
 def test_side_panel_switch_keeps_its_activation_keys(page: Page, toggle_id, key):
@@ -691,6 +697,7 @@ def test_side_panel_switch_keeps_its_activation_keys(page: Page, toggle_id, key)
         assert after['focused'] == 'review-side-switch' and after['panel'] == 'none', after
 
 
+@pytest.mark.frontend
 @pytest.mark.parametrize('clicked', ['anchor', 'panel'])
 def test_mouse_focus_does_not_keep_a_side_panel_open_after_pointer_leaves(page: Page, clicked):
     _install_toolbar(page, open_voice=False)

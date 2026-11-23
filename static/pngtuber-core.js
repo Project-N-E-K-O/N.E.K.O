@@ -3638,7 +3638,7 @@
             this.clickTimer = setTimeout(() => {
                 this.clickTimer = null;
                 if (layeredDuration === null) {
-                    if (!this._dragState) this.setState(this.state || 'idle');
+                    if (!this._dragState && !this._touchZoomState) this.setState(this.state || 'idle');
                 } else if (this.clearLayeredTransientSlot('click')) {
                     this.applyTransform();
                     this.updateLockIconPosition();
@@ -4357,6 +4357,7 @@
             if (!this.isLayeredActive()) return false;
             const stateIndex = this.layeredEmotionTarget(emotionName);
             if (stateIndex === null) return false;
+            this.clearPendingEmotion();
             if (this.emotionTimer) {
                 clearTimeout(this.emotionTimer);
                 this.emotionTimer = null;
@@ -4398,6 +4399,7 @@
             if (this.isLayeredActive()) return this.setLayeredEmotion(emotionName, options);
             const nextImage = this.emotionImageFor(emotionName);
             if (!nextImage) return false;
+            this.clearPendingEmotion();
 
             if (this.emotionTimer) {
                 clearTimeout(this.emotionTimer);

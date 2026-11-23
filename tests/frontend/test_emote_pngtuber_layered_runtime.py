@@ -1047,6 +1047,64 @@ def test_unsupported_emotion_preserves_the_valid_pending_emotion(page, slot_runt
 
 
 @pytest.mark.parametrize("flat", [False, True])
+def test_new_immediate_emotion_supersedes_an_older_same_named_pending_request(page, slot_runtime, flat):
+    slot_runtime("review-same-emotion-" + str(flat))
+    if flat:
+        page.evaluate("""async () => {
+            const idle = reviewSlotManager.config.idle_image;
+            await reviewSlotManager.load({idle_image:idle, talking_image:idle+'?talk',
+                happy_image:idle+'?happy', state_priority:'talking'});
+        }""")
+    page.clock.install()
+    assert page.evaluate("""() => {
+        const m = reviewSlotManager;
+        m.startSpeakingMouthAnimation();
+        const queued = m.setEmotion('happy', {durationMs:100});
+        m.setSpeaking(false);
+        return queued && m.setEmotion('happy', {durationMs:0});
+    }""")
+    page.clock.run_for(450)
+    assert page.evaluate('reviewSlotManager.currentEmotion') == 'happy'
+    assert page.evaluate('reviewSlotManager.emotionTimer') is None
+    assert page.evaluate('reviewSlotManager.pendingEmotion') is None
+    if not flat:
+        assert page.evaluate('reviewSlotManager.layeredStateIndex') == 4
+
+
+@pytest.mark.parametrize("flat", [False, True])
+def test_click_fallback_does_not_end_a_later_two_finger_drag(page, slot_runtime, flat):
+    slot_runtime("review-click-touch", [state for state in SLOT_STATES if state['key'] != 'click_image'])
+    if flat:
+        page.evaluate("""async () => {
+            const idle = reviewSlotManager.config.idle_image;
+            await reviewSlotManager.load({idle_image:idle, drag_image:idle+'?drag'});
+        }""")
+        page.wait_for_function('reviewSlotManager.image.complete && reviewSlotManager.image.naturalWidth > 0')
+    page.clock.install()
+    page.evaluate("""() => {
+        const image = reviewSlotManager.image;
+        image.dispatchEvent(new MouseEvent('click', {bubbles:true,cancelable:true}));
+        const fire = (type, delta) => {
+            const touches = [0,1].map(i => new Touch({identifier:i,target:image,
+                clientX:200+i*60+delta,clientY:200+delta}));
+            image.dispatchEvent(new TouchEvent(type, {bubbles:true,cancelable:true,touches,
+                targetTouches:touches,changedTouches:touches}));
+        };
+        fire('touchstart',0); fire('touchmove',20);
+    }""")
+    assert page.evaluate('Boolean(reviewSlotManager._touchZoomState?.changed)')
+    assert page.evaluate('reviewSlotManager.clickTimer !== null')
+    page.clock.run_for(700)
+    if flat:
+        assert page.evaluate("reviewSlotManager.image.src.endsWith('?drag')")
+    else:
+        assert page.evaluate('reviewSlotManager.layeredStateIndex') == 2
+    page.evaluate("reviewSlotManager.image.dispatchEvent(new TouchEvent('touchend',{bubbles:true,touches:[]}))")
+    assert not page.evaluate('Boolean(reviewSlotManager._touchZoomState)')
+    assert page.evaluate('reviewSlotManager.layeredStateIndex') == 0
+
+
+@pytest.mark.parametrize("flat", [False, True])
 def test_click_fallback_does_not_end_a_later_pointer_drag(page, slot_runtime, flat):
     slot_runtime("review-click-drag", [state for state in SLOT_STATES if state['key'] != 'click_image'])
     if flat:
