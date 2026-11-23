@@ -353,8 +353,19 @@ async def test_genai_records_token_tracker_usage_for_stream_trailing_chunk_final
         _current_call_type.reset(token)
 
 
+@pytest.fixture
+def tracking_call_type():
+    token = _current_call_type.set('unknown')
+    try:
+        yield
+    finally:
+        _current_call_type.reset(token)
+
+
 @pytest.mark.asyncio
-async def test_genai_preserves_known_usage_on_midstream_errors_and_defers_leading_empty_usage(monkeypatch):
+async def test_genai_preserves_known_usage_on_midstream_errors_and_defers_leading_empty_usage(
+    monkeypatch, tracking_call_type,
+):
     recorded: list[dict] = []
 
     class _StubTracker:

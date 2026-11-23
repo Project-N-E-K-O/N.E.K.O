@@ -23,6 +23,7 @@ function isAvatarFramedSettingsWindowUrl(finalUrl) {
             || finalUrl.startsWith('/api_key')
             || finalUrl.startsWith('/voice_identity')
             || finalUrl.startsWith('/memory_browser')
+            || finalUrl.startsWith('/emote_maker')
         );
 }
 
@@ -682,6 +683,8 @@ function dispatchAvatarPopupNavigateEvent(item, finalUrl, windowName, source) {
 function createSettingsMenuButton(manager, prefix, config) {
     const btn = document.createElement('div');
     btn.className = `${prefix}-settings-menu-item`;
+    btn.tabIndex = 0;
+    btn.setAttribute('role', 'button');
     markAvatarPopupActionElement(btn, 'settings-menu');
     setAvatarPopupActionDebugMetadata(btn, config, 'settings-button');
     var btnAnchorId = createMenuAnchorId(prefix, config && config.id);
@@ -1061,6 +1064,14 @@ function createCharacterSettingsSidePanel(manager, prefix) {
 function createSidePanelMenuItem(manager, prefix, item) {
     const menuItem = document.createElement('div');
     menuItem.id = `${prefix}-sidepanel-${item.id}`;
+    menuItem.setAttribute('role', 'button');
+    menuItem.tabIndex = 0;
+    menuItem.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        menuItem.click();
+    });
     markAvatarPopupActionElement(menuItem, 'sidepanel-menu');
     setAvatarPopupActionDebugMetadata(menuItem, item, 'sidepanel-menu');
     Object.assign(menuItem.style, {
@@ -1179,6 +1190,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                         windowName = 'neko_voice_identity';
                     } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                         windowName = 'neko_memory_browser';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/emote_maker')) {
+                        windowName = 'neko_emote_maker';
                     }
                     features = getAvatarNavigationWindowFeatures(finalUrl);
                 }
@@ -2201,7 +2214,8 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     sidePanel._stopHoverPointerTracking = stopPointerTracking;
 
     const isHoveringAnchorOrPanel = () => {
-        return anchorEl.matches(':hover') || sidePanel.matches(':hover');
+        return anchorEl.matches(':hover, :focus-visible') || sidePanel.matches(':hover, :focus-visible')
+            || Boolean(sidePanel.querySelector(':focus-visible'));
     };
 
     const isPointerInTransferBridge = () => {
@@ -2283,6 +2297,27 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     };
 
     anchorEl.addEventListener('mouseenter', expandPanel);
+    const focusPanel = () => {
+        expandPanel();
+        if (isTutorialHoverDisabled()) return;
+        sidePanel.querySelector('button, input, select, a[href], [tabindex="0"]')?.focus();
+    };
+    anchorEl.addEventListener('keydown', (event) => {
+        if (event.target !== anchorEl || !['Enter', ' ', 'ArrowRight'].includes(event.key)) return;
+        if (event.key !== 'ArrowRight' && anchorEl.getAttribute('role') === 'switch') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        focusPanel();
+    }, true);
+    sidePanel.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        sidePanel._collapse();
+        anchorEl.focus();
+    });
+    anchorEl.addEventListener('focusout', collapsePanel);
+    sidePanel.addEventListener('focusout', collapsePanel);
     anchorEl.addEventListener('mousemove', rememberPointerPosition);
     anchorEl.addEventListener('mouseleave', collapsePanel);
     sidePanel.addEventListener('mouseenter', () => {
@@ -3383,6 +3418,8 @@ const AvatarPopupMixin = {
                                 windowName = 'neko_voice_identity';
                             } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
                                 windowName = 'neko_memory_browser';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/emote_maker')) {
+                                windowName = 'neko_emote_maker';
                             }
                             features = getAvatarNavigationWindowFeatures(finalUrl);
                         }
