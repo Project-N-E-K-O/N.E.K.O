@@ -1,0 +1,60 @@
+<template>
+  <section class="panel" data-testid="activity-pane">
+    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" />
+    <p class="muted">{{ t('power.activity.hint') }}</p>
+    <ActivityFeed :entries="entries" :current="null" :name-of="nameOf" :loading="loading" @pick="() => {}" />
+    <el-button v-if="!whole && entries.length" size="small" class="earlier" data-testid="activity-whole" @click="fromBeginning">
+      {{ t('power.colony.fromBeginning') }}
+    </el-button>
+  </section>
+</template>
+
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { getProjectBoard } from '@/api/console'
+import type { BoardCard } from '@/api/console'
+import ActivityFeed from '../colony/ActivityFeed.vue'
+import { ghostsOf } from '../colony/activity'
+import { useTimeline } from '../colony/useTimeline'
+import { describeConsoleError, familiarName } from '../powerFormat'
+
+/** What happened among the familiars of one project, or with `project` null among all of them. */
+const props = defineProps<{ project: string | null }>()
+const { t, te } = useI18n()
+const { entries, loading, error, whole, fromBeginning } = useTimeline(
+  () => props.project, failure => describeConsoleError(failure, t, te),
+)
+const cards = ref<BoardCard[]>([])
+let turn = 0
+
+const names = computed(() => {
+  const made = new Map(cards.value.map(card => [card.id, familiarName(card, t, te)]))
+  // Whoever took part and is not on the board any more is named as the entries name it.
+  for (const ghost of ghostsOf(entries.value, new Set(made.keys()))) if (ghost.name) made.set(ghost.id, ghost.name)
+  return made
+})
+const nameOf = (sessionId: string | null | undefined) => names.value.get(sessionId ?? '') || t('power.activity.someone')
+
+/** The names are read with the board, again whenever something new happened: a familiar may have joined. */
+async function readNames() {
+  const mine = ++turn
+  try {
+    const board = await getProjectBoard(props.project)
+    if (mine !== turn) return
+    cards.value = props.project === null
+      ? [...(board.projects ?? []).flatMap(project => project.members), ...(board.loose ?? [])]
+      : (board.projects ?? []).find(project => project.name === props.project)?.members ?? []
+  } catch {
+    // Named as the entries name them.
+  }
+}
+watch(() => [props.project, entries.value.length], () => void readNames(), { immediate: true })
+</script>
+
+<style scoped>
+.panel { background: var(--el-bg-color); border: 1px solid var(--surface-border, var(--el-border-color-lighter)); border-radius: var(--radius-card, 10px); padding: 18px 20px; }
+.muted { margin: 0 0 8px; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; }
+.block { margin-bottom: 12px; }
+.earlier { margin-top: 10px; }
+</style>

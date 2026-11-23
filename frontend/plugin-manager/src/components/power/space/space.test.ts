@@ -319,7 +319,9 @@ describe('the familiar space page', () => {
     expect(byTest('space-project')).toBeNull()
     expect(api.readRules).toHaveBeenCalledWith({})
     const tabs = [...container.querySelectorAll('.el-tabs__item')].map(tab => tab.textContent?.trim())
-    expect(tabs).toEqual([words.space.familiars.tab, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.preferences])
+    expect(tabs).toEqual([
+      words.space.familiars.tab, words.space.tabs.activity, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.preferences,
+    ])
     // Opened on the rules: the familiars are read when their tab is.
     expect(container.querySelector('.el-tabs__item.is-active')?.textContent?.trim()).toBe(words.space.tabs.rules)
     expect(api.getProjectBoard).not.toHaveBeenCalled()
@@ -332,7 +334,9 @@ describe('the familiar space page', () => {
     expect(byTest('space-project')?.textContent).toContain('D:/code/ledger-tool')
     expect(api.readRules).toHaveBeenLastCalledWith({ project: 'Ledger tool' })
     const tabs = [...container.querySelectorAll('.el-tabs__item')].map(tab => tab.textContent?.trim())
-    expect(tabs).toEqual([words.space.familiars.tab, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.reviews])
+    expect(tabs).toEqual([
+      words.space.familiars.tab, words.space.tabs.activity, words.space.tabs.rules, words.space.tabs.notes, words.space.tabs.reviews,
+    ])
   })
 
   it('names an archived project by its directory and year, and shows it read-only', async () => {

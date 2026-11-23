@@ -26,12 +26,36 @@
 
       <dl class="facts">
         <div v-if="selected.runtime"><dt>{{ t('power.space.familiars.runtime') }}</dt><dd>{{ selected.runtime === 'builtin' ? t('power.space.familiars.builtinRuntime') : selected.runtime }}</dd></div>
-        <div v-if="selected.model"><dt>{{ t('power.space.familiars.model') }}</dt><dd>{{ selected.model }}</dd></div>
+        <div v-if="selected.model">
+          <dt>{{ t('power.space.familiars.model') }}</dt>
+          <dd>
+            {{ selected.model }}
+            <el-tooltip v-if="selected.model_fallback" :content="fallbackReason" placement="top">
+              <span class="fell-back" tabindex="0" data-testid="familiar-fallback">{{ t('power.roles.fellBack') }}</span>
+            </el-tooltip>
+          </dd>
+        </div>
         <div v-if="selected.context_tokens">
           <dt>{{ t('power.space.familiars.context') }}</dt><dd>{{ selected.context_tokens.toLocaleString() }}</dd>
         </div>
       </dl>
 
+      <div class="views" role="tablist">
+        <button
+          v-for="name in VIEWS"
+          :key="name"
+          type="button"
+          role="tab"
+          class="view"
+          :class="{ on: view === name }"
+          :aria-selected="view === name"
+          :data-view="name"
+          @click="view = name"
+        >{{ t(`power.space.familiars.views.${name}`) }}</button>
+      </div>
+      <TranscriptPane v-if="view === 'talk'" :session-id="selected.id" />
+      <UsagePane v-else-if="view === 'usage'" :session-id="selected.id" :refresh="selected.commission?.id + ':' + selected.state" />
+      <template v-else>
       <h4>{{ t('power.space.familiars.summary') }}</h4>
       <p class="text" data-testid="familiar-summary">{{ selected.summary || t('power.space.familiars.noSummary') }}</p>
 
@@ -43,28 +67,7 @@
           <template v-if="selected.doing"><br>{{ selected.doing }}</template>
         </p>
 
-        <div v-if="ask" class="ask" data-testid="familiar-ask">
-          <strong>{{ t('power.space.familiars.asks') }}</strong>
-          <p v-for="(line, index) in askLines" :key="index" class="text" data-testid="familiar-asked">{{ line }}</p>
-          <div v-if="ask.options?.length" class="choices">
-            <el-button
-              v-for="option in ask.options"
-              :key="option"
-              :type="option === 'deny' ? 'danger' : 'primary'"
-              plain
-              :loading="busy === `choice:${option}`"
-              :disabled="busy !== ''"
-              :data-choice="option"
-              @click="answer({ choice: option })"
-            >{{ choiceLabel(option) }}</el-button>
-          </div>
-          <div v-else class="say">
-            <el-input v-model="reply" :placeholder="t('power.space.familiars.answerPlaceholder')" data-testid="familiar-reply" @keyup.enter="answer({ text: reply })" />
-            <el-button type="primary" :loading="busy === 'answer'" :disabled="!reply.trim() || busy !== ''" data-testid="familiar-answer" @click="answer({ text: reply })">
-              {{ t('power.space.familiars.answer') }}
-            </el-button>
-          </div>
-        </div>
+        <AskBox v-if="ask" :ask="ask" :busy="busy" @answer="answer" />
 
         <div v-if="selected.state === 'working'" class="say">
           <el-input v-model="sentence" :placeholder="t('power.space.familiars.say')" data-testid="familiar-say" @keyup.enter="tell" />
@@ -79,6 +82,7 @@
             {{ t('power.space.familiars.stop') }}
           </el-button>
         </div>
+      </template>
       </template>
     </article>
 
@@ -115,8 +119,11 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { answerCommission, getProjectBoard, stopCommission, tellCommission, writeCard } from '@/api/console'
 import type { Board, BoardCard } from '@/api/console'
+import AskBox from '../AskBox.vue'
 import FamiliarCard from '../home/FamiliarCard.vue'
 import { describeConsoleError } from '../powerFormat'
+import TranscriptPane from './TranscriptPane.vue'
+import UsagePane from './UsagePane.vue'
 
 /** The familiars of a project, or with `project` null those that belong to none; and the one chosen, up close. */
 const props = defineProps<{ project: string | null; selectedId: string }>()
@@ -130,7 +137,9 @@ const cardError = ref('')
 const note = ref('')
 const busy = ref('')
 const sentence = ref('')
-const reply = ref('')
+// Which of the three views of the chosen familiar is open: what it has in hand, what was said in it, what it used.
+const VIEWS = ['doing', 'talk', 'usage'] as const
+const view = ref<(typeof VIEWS)[number]>('doing')
 const editing = ref(false)
 const stopping = ref(false)
 const draft = reactive({ title: '', duty: '', summary: '' })
@@ -158,32 +167,12 @@ const shownTitle = computed(() => {
   const key = `power.home.presets.${card.preset}`
   return card.title || (te(key) ? t(key) : card.label || card.preset)
 })
-/** One of the questions of an `ask_user_question` call as a line: what it asks, then what it offers. */
-function questionLine(item: unknown): string {
-  if (!item || typeof item !== 'object') return String(item ?? '').trim()
-  const { question, options } = item as { question?: unknown; options?: unknown }
-  const labels = (Array.isArray(options) ? options : [])
-    .map(option => String((option && typeof option === 'object' ? (option as { label?: unknown }).label : option) ?? '').trim())
-    .filter(Boolean)
-  const text = String(question ?? '').trim()
-  return text && labels.length ? `${text} (${labels.join(' / ')})` : text
-}
-
-/** What it asks, as words: the question or questions it put, or what it wants to be allowed to do. */
-const askLines = computed<string[]>(() => {
-  const now = ask.value
-  if (!now) return []
-  if (now.question) return [now.question]
-  const lines = (Array.isArray(now.questions) ? now.questions : []).map(questionLine).filter(Boolean)
-  if (lines.length) return lines.length > 1 ? lines.map((line, index) => `${index + 1}. ${line}`) : lines
-  const detail = now.detail ?? {}
-  return [[now.category, detail.tool, detail.command, detail.path].filter(Boolean).join(' · ')]
+/** Why the model set for its kind could not be used, in words; the code itself where the page has none for it. */
+const fallbackReason = computed(() => {
+  const code = selected.value?.model_fallback ?? ''
+  const key = `power.roles.fallbacks.${code}`
+  return te(key) ? t(key) : code
 })
-
-function choiceLabel(option: string): string {
-  const key = `power.space.familiars.choices.${option}`
-  return te(key) ? t(key) : option
-}
 
 async function load() {
   const mine = ++turn
@@ -239,7 +228,7 @@ async function answer(given: { text?: string; choice?: string }) {
   if (!commission || (!given.choice && !given.text?.trim())) return
   const name = given.choice ? `choice:${given.choice}` : 'answer'
   const sent = { ...given, text: given.text?.trim(), question_id: ask.value?.id }
-  if (await act(name, () => answerCommission(commission.id, sent))) reply.value = ''
+  await act(name, () => answerCommission(commission.id, sent))
 }
 
 async function stop() {
@@ -290,7 +279,7 @@ watch(() => props.selectedId, () => {
   editing.value = false
   note.value = ''
   sentence.value = ''
-  reply.value = ''
+  view.value = 'doing'
 })
 document.addEventListener('visibilitychange', onVisibility)
 onBeforeUnmount(() => {
@@ -314,9 +303,10 @@ onBeforeUnmount(() => {
 .facts dt { color: var(--el-text-color-secondary); }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 .text { margin: 0; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
-.ask { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--el-color-warning); border-radius: 10px; background: var(--el-color-warning-light-9); display: flex; flex-direction: column; gap: 8px; }
-.choices { display: flex; flex-wrap: wrap; gap: 8px; }
-.choices .el-button + .el-button { margin-left: 0; }
+.views { display: flex; gap: 4px; margin: 14px 0 4px; border-bottom: 1px solid var(--el-border-color-lighter); }
+.view { font: inherit; font-size: 13px; color: var(--el-text-color-secondary); background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 12px; cursor: pointer; }
+.view.on { color: var(--el-color-primary); border-bottom-color: var(--el-color-primary); font-weight: 600; }
+.fell-back { margin-left: 6px; padding: 0 6px; font-size: 12px; border-radius: 8px; color: var(--el-color-warning); background: var(--el-color-warning-light-9); cursor: help; }
 .say { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .grow { flex: 1; }
 .block { margin-bottom: 12px; }

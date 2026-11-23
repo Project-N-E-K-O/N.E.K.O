@@ -52,7 +52,27 @@ def test_a_page_is_the_last_entries_in_the_order_they_were_said_and_says_where_t
     assert [entry["text"] for entry in first["entries"]] == ["turn 0"]
     # At the beginning of the record there is no page before.
     assert first["before"] is None
+    # A message says when it was said in milliseconds: told in seconds.
     assert last["entries"][0]["time"] == 1_700_000_000.004
+
+
+def test_an_entry_is_timed_by_when_it_was_written_which_the_record_gives_in_seconds(tmp_path):
+    path = tmp_path / "transcript.jsonl"
+    _write(
+        path,
+        [
+            # As the runtime writes them: the entry in seconds, the message inside it in milliseconds.
+            {**_message("user", "first", timestamp=1_795_443_848_162), "timestamp": 1_795_443_848.16},
+            {"type": "custom_message", "custom_type": "notice:usage", "content": "half used", "timestamp": 1_795_443_850.5},
+            {"type": "compaction", "summary": "It began.", "timestamp": 1_795_443_851},
+            _message("user", "no time at all"),
+            {**_message("user", "no time that is one"), "timestamp": "soon"},
+            {**_message("user", "nor a yes"), "timestamp": True},
+        ],
+    )
+    assert [entry["time"] for entry in _page(path)["entries"]] == [
+        1_795_443_848.16, 1_795_443_850.5, 1_795_443_851.0, None, None, None,
+    ]
 
 
 def test_an_entry_says_who_spoke_what_was_called_and_what_a_tool_gave_back(tmp_path):

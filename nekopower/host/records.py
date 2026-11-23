@@ -338,9 +338,9 @@ def _page_entry(entry: dict[str, Any], max_tokens: int) -> dict[str, Any] | None
             if not _plain(content):
                 content = str(message.get("summary") or "")
     elif kind == "custom_message":
-        role, tool, content, stamp = "notice", _key(entry, "custom_type"), entry.get("content"), entry.get("timestamp")
+        role, tool, content = "notice", _key(entry, "custom_type"), entry.get("content")
     elif kind == "compaction":
-        role, content, stamp = "summary", str(entry.get("summary") or ""), entry.get("timestamp")
+        role, content = "summary", str(entry.get("summary") or "")
     if role is None:
         return None
     blocks = content if isinstance(content, list) else []
@@ -354,7 +354,6 @@ def _page_entry(entry: dict[str, Any], max_tokens: int) -> dict[str, Any] | None
     pictures = sum(1 for block in blocks if isinstance(block, dict) and block.get("type") == "image")
     if not text and not calls and not pictures:
         return None
-    timed = isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and stamp > 0
     return {
         "role": role,
         "text": text,
@@ -363,9 +362,26 @@ def _page_entry(entry: dict[str, Any], max_tokens: int) -> dict[str, Any] | None
         "tool": str(tool) if tool else None,
         "failed": failed,
         "pictures": pictures,
-        # Milliseconds in the record; anything else is no time.
-        "time": stamp / 1000 if timed else None,
+        "time": _said_at(entry, stamp),
     }
+
+
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+
+def _said_at(entry: dict[str, Any], of_message: Any) -> float | None:
+    """Return when an entry was written, in seconds; None where the record does not say.
+
+    Every entry carries the time it was written, in seconds. A message
+    carries a time of its own as well, in milliseconds, which is used for
+    an entry that has none.
+    """
+    written = _number(entry.get("timestamp"))
+    if written is not None:
+        return written
+    of_message = _number(of_message)
+    return of_message / 1000 if of_message is not None else None
 
 
 def _whole_end(handle: Any, size: int) -> int:
