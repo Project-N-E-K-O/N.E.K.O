@@ -130,7 +130,7 @@ async def _close_best_effort(ws_conn) -> None:
     try:
         await ws_conn.close()
     except Exception as close_exc:
-        logger.debug("关闭未用上的预建 TTS socket 失败: %s", close_exc)
+        logger.debug("后台关闭 TTS socket 失败: %s", close_exc)
 
 
 class SpareSocket:

@@ -578,7 +578,9 @@ def test_spare_socket_uses_a_short_close_timeout(provider, monkeypatch):
         queue.Queue(),
     )
 
-    assert 0 < spare.connect_kwargs.get("close_timeout", 10.0) <= 2.0
+    # Qwen's peer answers a close only after ~2s; its spare must not wait that out.
+    limit = 0.5 if provider.name == "qwen" else 2.0
+    assert 0 < spare.connect_kwargs.get("close_timeout", 10.0) <= limit
 
 
 # ────────────────── retired socket still closing ──────────────────

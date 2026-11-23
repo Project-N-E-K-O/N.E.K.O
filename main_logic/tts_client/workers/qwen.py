@@ -315,8 +315,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             spare.close_tracked(old_ws)
 
         async def _connect_spare_socket():
-            # Short close_timeout: the next connect waits for a retired
-            # spare's close.
+            # _QWEN_CLOSE_TIMEOUT_SECONDS: the next connect waits for a
+            # retired spare's close.
             return await websockets.connect(
                 tts_url, additional_headers=headers, close_timeout=_QWEN_CLOSE_TIMEOUT_SECONDS,
             )
@@ -666,8 +666,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             if not await spare.await_cleanup():
                                 # A queued interrupt/shutdown owns this boundary.
                                 continue
-                            # Short close_timeout like the spare's: this socket's close is
-                            # tracked too, and the next connect waits for it.
+                            # _QWEN_CLOSE_TIMEOUT_SECONDS: this socket's close is tracked
+                            # too, and the next connect waits for it.
                             ws = await websockets.connect(
                                 tts_url,
                                 additional_headers=headers,
