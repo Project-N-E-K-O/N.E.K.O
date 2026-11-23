@@ -1,4 +1,18 @@
 {
+    "wardrobe": {
+        "title": "Wardrobe",
+        "hat": "Hat",
+        "color": "Hoodie color",
+        "print": "Print",
+        "plain": "Plain",
+        "dots": "Dots",
+        "stars": "Stars",
+        "save": "Save",
+        "clear": "Clear outfit",
+        "saved": "Saved",
+        "loadError": "Could not load outfit",
+        "saveError": "Could not save outfit"
+    },
     "chatAvatar": {
         "custom": {
             "upload": "Upload image",

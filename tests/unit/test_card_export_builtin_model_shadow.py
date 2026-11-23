@@ -145,6 +145,9 @@ async def test_imported_card_binds_its_live2d_model_to_the_user_directory(tmp_pa
 
     model_dir = _model_dir(tmp_path)
     export_config = _config(tmp_path, "local_imported", _RELATIVE_PATH)
+    # The receiving installation does not have this wardrobe catalog.
+    outfit = {"wardrobe": "uninstalled-collection", "version": 1, "print": "flowers", "color": "#aa44bb", "hat": True}
+    export_config.aload_characters.return_value["猫娘"]["Exported"]["_reserved"]["avatar"]["live2d"]["outfit"] = outfit
     export_config.aload_characters.return_value["猫娘"]["Exported"]["_reserved"]["avatar"]["asset_source_id"] = "123"
     with patch.object(cards, "get_config_manager", return_value=export_config), \
             patch.object(cards, "find_model_directory", return_value=(str(model_dir), "/user_live2d")), \
@@ -178,5 +181,6 @@ async def test_imported_card_binds_its_live2d_model_to_the_user_directory(tmp_pa
     avatar = next(iter(saved.values()))["_reserved"]["avatar"]
     assert (import_live2d_dir / "yui-sister" / "yui-sister.model3.json").is_file()
     assert avatar["live2d"]["model_path"] == _RELATIVE_PATH
+    assert avatar["live2d"]["outfit"] == outfit
     assert avatar["asset_source"] == "local_imported"
     assert avatar["asset_source_id"] == ""

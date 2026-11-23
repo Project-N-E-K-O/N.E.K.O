@@ -1,4 +1,18 @@
 {
+    "wardrobe": {
+        "title": "衣柜",
+        "hat": "帽子",
+        "color": "卫衣颜色",
+        "print": "印花",
+        "plain": "纯色",
+        "dots": "圆点",
+        "stars": "星星",
+        "save": "保存",
+        "clear": "清除穿搭",
+        "saved": "已保存",
+        "loadError": "穿搭加载失败",
+        "saveError": "穿搭保存失败"
+    },
     "chatAvatar": {
         "custom": {
             "upload": "上传图片",

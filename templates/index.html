@@ -93,6 +93,21 @@
 
     <!-- Status 气泡框 -->
     <div id="status-toast"></div>
+    <details id="live2d-wardrobe" data-neko-sidepanel hidden>
+        <summary data-i18n="wardrobe.title"></summary>
+        <fieldset>
+            <label><input type="checkbox" name="hat"><span data-i18n="wardrobe.hat"></span></label>
+            <label><span data-i18n="wardrobe.color"></span><input type="color" name="color" value="#ffffff"></label>
+            <label><span data-i18n="wardrobe.print"></span><select name="print">
+                <option value="plain" data-i18n="wardrobe.plain"></option>
+                <option value="dots" data-i18n="wardrobe.dots"></option>
+                <option value="stars" data-i18n="wardrobe.stars"></option>
+            </select></label>
+            <div><button type="button" name="save" data-i18n="wardrobe.save"></button>
+                <button type="button" name="clear" data-i18n="wardrobe.clear"></button></div>
+            <output aria-live="polite"></output>
+        </fieldset>
+    </details>
     <div id="chat-container">
         <div id="chat-header">
             <img src="/static/icons/chat_icon.png" data-i18n-alt="chat.title" alt="对话" style="width: 28px; height: 28px; object-fit: contain; margin-right: 6px; vertical-align: middle; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges;">
@@ -351,6 +366,8 @@
     <script src="/static/live2d/live2d-core.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d/live2d-emotion.js?v={{ static_asset_version }}"></script>
     <script src="/static/live2d/live2d-model.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/live2d-wardrobe.css?v={{ static_asset_version }}">
+    <script src="/static/live2d/live2d-wardrobe.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-multiscreen-drag-hint.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-touch-gestures.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-click-shake.js?v={{ static_asset_version }}"></script>

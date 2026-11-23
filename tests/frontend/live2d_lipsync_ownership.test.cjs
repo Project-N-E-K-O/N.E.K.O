@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -69,7 +70,7 @@ function fixture(ids = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamA']) {
         target.core.update();
         return target.rendered.at(-1);
     };
-    return { manager, window, mounted, makeModel, frame };
+    return { manager, window, mounted, makeModel, frame, sandbox };
 }
 
 test('audio controls opening through silence while expressions retain mouth form', () => {
@@ -135,6 +136,102 @@ test('saved appearance cannot freeze mouth form or opening after responsibility 
     const rendered = f.frame();
     assert.equal(rendered.ParamMouthForm, -0.2);
     assert.equal(rendered.ParamMouthOpenY, 0.7);
+});
+
+test('outfit overrides win at geometry update, leaving motion, speech and the next model independent', async () => {
+    const f = fixture(['ParamMouthOpenY', 'ParamOutfit', 'ParamMouthForm']);
+    const { core, model, motion, rendered } = f.mounted;
+    const events = new EventEmitter();
+    model.once = events.once.bind(events);
+    model.off = events.off.bind(events);
+    model.removeAllListeners = events.removeAllListeners.bind(events);
+    const partOpacities = [];
+    let partOpacity = 0.65;
+    Object.assign(core, {
+        getDrawableParentPartIndex: () => 0,
+        getPartIndex: id => id === 'PartCoat' ? 0 : 1,
+        getPartCount: () => 1,
+        getPartOpacityByIndex: () => partOpacity,
+        setPartOpacityByIndex: (index, value) => { partOpacity = value; },
+    });
+    const recordFrame = f.manager._origCoreModelUpdate;
+    f.manager._origCoreModelUpdate = () => {
+        partOpacities.push(partOpacity);
+        recordFrame();
+    };
+    f.manager.persistentExpressionParamsByName = { outfitConflict: [{ Id: 'ParamOutfit', Value: 0.2 }] };
+    f.manager.installMouthOverride();
+    const owner = {};
+    f.manager.beginLipSync(owner);
+    f.manager.setMouth(0.6, owner);
+    const outfit = { parameters: { ParamOutfit: 1 }, partOpacity: { PartCoat: 0 } };
+    assert.equal(f.manager.setOutfitOverrides(model, outfit), true);
+    assert.throws(() => f.manager.setOutfitOverrides(model, {
+        partOpacity: { MissingPart: 0 },
+    }), { name: 'RangeError' });
+
+    motion.update();
+    core.update();
+    assert.equal(rendered.at(-1).ParamOutfit, 1);
+    assert.equal(rendered.at(-1).ParamMouthOpenY, 0.6);
+    assert.equal(partOpacities.at(-1), 0);
+    assert.equal(core.getParameterValueByIndex(1), 1, 'Cubism owns parameter restoration on the next loadParameters');
+    assert.equal(partOpacity, 0.65);
+    assert.equal(f.manager._isRuntimeManagedSavedParameter(core, ['ParamOutfit']), true);
+    assert.throws(() => f.manager.setOutfitOverrides(model, {parameters: {ParamMouthOpenY: 0}}), {name: 'RangeError'});
+    const poseCalls = [];
+    f.manager._applyTemporaryPoseOverride = target => {
+        poseCalls.push(target.getParameterValueByIndex(1));
+        target.setParameterValueByIndex(1, 0.4);
+    };
+    assert.equal(f.frame().ParamOutfit, 0.4);
+    assert.deepEqual(poseCalls, [1, 0.4]);
+    delete f.manager._applyTemporaryPoseOverride;
+
+    assert.equal(f.manager.clearOutfit(model), true);
+    assert.equal(f.frame().ParamOutfit, 0.2);
+    assert.equal(partOpacities.at(-1), 0.65);
+    f.manager.setOutfitOverrides(model, outfit);
+    await f.manager.removeModel({ skipCloseWindows: true });
+    assert.equal(events.listenerCount('destroy'), 0);
+    const next = f.makeModel(['ParamOutfit', 'ParamMouthOpenY', 'ParamMouthForm']);
+    f.manager.currentModel = next.model;
+    f.manager.installMouthOverride();
+    assert.equal(f.manager.setOutfitOverrides(model, outfit), false);
+    assert.equal(f.frame(next).ParamOutfit, 0.2);
+});
+
+test('wardrobe releases each custom atlas once on swap, clear and removal', async () => {
+    const f = fixture();
+    const destroyed = [];
+    f.sandbox.HTMLCanvasElement = class {};
+    f.sandbox.PIXI.BaseTexture = class {};
+    f.sandbox.PIXI.Texture = class {
+        destroy(base) { assert.equal(base, true); destroyed.push(this); }
+    };
+    const canvas = Object.assign(new f.sandbox.HTMLCanvasElement(), {width: 32, height: 32});
+    const original = {valid: true, baseTexture: {realWidth: 32, realHeight: 32},
+        destroy() { assert.fail('source atlas was released by the wardrobe'); }};
+    const model = f.mounted.model;
+    const events = new EventEmitter();
+    model.once = events.once.bind(events);
+    model.off = events.off.bind(events);
+    model.textures = [original];
+    const replace = () => {
+        assert.equal(f.manager.setOutfitTexture(model, 0, canvas), true);
+        return model.textures[0];
+    };
+    const first = replace(), second = replace();
+    assert.deepEqual(destroyed, [first]);
+    f.manager.clearOutfit(model);
+    f.manager.clearOutfit(model);
+    assert.equal(model.textures[0], original);
+    assert.deepEqual(destroyed, [first, second]);
+    const third = replace();
+    await f.manager.removeModel({skipCloseWindows: true});
+    assert.deepEqual(destroyed, [first, second, third]);
+    assert.equal(model.textures[0], original);
+    assert.equal(f.manager.setOutfitTexture(model, 0, canvas), false);
 });
 
 test('teardown rejects late callbacks and releases both wrappers and index caches', async () => {

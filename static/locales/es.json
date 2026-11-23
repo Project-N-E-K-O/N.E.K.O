@@ -1,4 +1,18 @@
 {
+    "wardrobe": {
+        "title": "Armario",
+        "hat": "Sombrero",
+        "color": "Color de la sudadera",
+        "print": "Estampado",
+        "plain": "Liso",
+        "dots": "Lunares",
+        "stars": "Estrellas",
+        "save": "Guardar",
+        "clear": "Quitar atuendo",
+        "saved": "Guardado",
+        "loadError": "No se pudo cargar el atuendo",
+        "saveError": "No se pudo guardar el atuendo"
+    },
     "chatAvatar": {
         "custom": {
             "upload": "Subir imagen",

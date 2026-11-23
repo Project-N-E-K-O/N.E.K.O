@@ -2643,6 +2643,10 @@ def test_local_cloudsave_snapshot_roundtrip_supports_embedded_dot_character_name
     from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
 
     _write_runtime_state(source_cm, character_name="N.E.K.O")
+    characters = source_cm.load_characters()
+    outfit = {"wardrobe": "unknown-on-target", "version": 1, "print": "stars"}
+    characters["猫娘"]["N.E.K.O"].setdefault("_reserved", {}).setdefault("avatar", {}).setdefault("live2d", {})["outfit"] = outfit
+    source_cm.save_characters(characters)
 
     export_local_cloudsave_snapshot(source_cm)
 
@@ -2655,6 +2659,7 @@ def test_local_cloudsave_snapshot_roundtrip_supports_embedded_dot_character_name
 
     imported_characters = target_cm.load_characters()
     assert "N.E.K.O" in (imported_characters.get("猫娘") or {})
+    assert imported_characters["猫娘"]["N.E.K.O"]["_reserved"]["avatar"]["live2d"]["outfit"] == outfit
     assert (Path(target_cm.memory_dir) / "N.E.K.O" / "recent.json").is_file()
 
 
