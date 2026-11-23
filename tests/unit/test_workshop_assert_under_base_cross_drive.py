@@ -175,7 +175,7 @@ async def _publish(content_folder: str):
 
 @pytest.mark.asyncio
 async def test_publish_rejects_cross_drive_content_folder_with_403(workshop, cross_drive, monkeypatch):
-    monkeypatch.setattr(publish, 'get_steamworks', lambda: object())
+    monkeypatch.setattr(publish, 'get_steamworks', object)
 
     escape = await _publish(str(workshop / 'outside'))
     other = await _publish(str(workshop / _OTHER_DRIVE))
