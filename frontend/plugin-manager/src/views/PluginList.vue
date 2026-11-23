@@ -548,6 +548,7 @@ import type {
 import { getMarketUrl } from '@/api/market'
 import { deletePlugin } from '@/api/plugins'
 import { collectBatchPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
+import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
@@ -1336,6 +1337,9 @@ async function handleBatchDelete() {
     try {
       const result = await deletePlugin(p.id)
       ok++
+      // Same as the context-menu delete: drop the deleted plugin's cached
+      // permission details, so a restored built-in under this id does not show them.
+      usePluginConsentState().forget(p.id)
       deleted.push({ result, plugin: p.name, pluginId: p.id })
     } catch { fail++ }
   }

@@ -1498,10 +1498,15 @@ async def test_uninstall_past_unusable_store_drops_remembered_grants(
         permission_service, "permission_store", PluginPermissionStore(_MovedManager())
     )
     monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+    # A failed read while the plugin still runs counts toward its log throttle.
+    assert permission_service.permission_snapshot("demo").get("read_failed") is True
+    assert permission_service._read_failures.get("demo") == 1
 
     result = await uninstall_plugin("demo")
 
     assert result.permission_warning is not None
+    # The next plugin under this id starts a fresh failure count.
+    assert "demo" not in permission_service._read_failures
     after = permission_service.permission_snapshot("demo")
     assert after.get("read_failed") is True
     assert after["states"][granted]["status"] != "granted"

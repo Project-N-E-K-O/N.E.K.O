@@ -477,9 +477,12 @@ def forget_remembered_permissions(plugin_id: str) -> None:
     For an uninstall that could not clear an unusable store: nothing is
     written, so no change notification drops the copy, and a later read
     failure would otherwise hand the removed plugin's grants to whatever
-    runs under the same id in this process.
+    runs under the same id in this process. The read-failure count goes
+    too, so the next plugin under this id logs its first failure.
     """
     _invalidate_last_records(frozenset({plugin_id}))
+    with _snapshot_lock:
+        _read_failures.pop(plugin_id, None)
 
 
 def _on_store_change(plugin_ids: frozenset[str] | None) -> None:
