@@ -38,11 +38,16 @@ class _FakeProcessHost:
         self.started = False
         self.stopped = False
         self.initial_permissions: dict | None = None
+        self.manifest_entry_ids: list[str] | None = None
         self.permission_pushes: list[dict] = []
 
     def set_initial_permissions(self, snapshot: dict) -> None:
         assert not self.started, "the launch snapshot must be set before the process starts"
         self.initial_permissions = snapshot
+
+    def set_manifest_entry_ids(self, entry_ids: list[str]) -> None:
+        assert not self.started, "the manifest entry ids must be set before the process starts"
+        self.manifest_entry_ids = list(entry_ids)
 
     async def push_permissions(self, snapshot: dict) -> None:
         self.permission_pushes.append(snapshot)
@@ -1300,6 +1305,75 @@ async def test_start_plugin_checks_python_requirements_against_vendor_paths(
         assert response["success"] is True
         assert seen["requirements"] == ["demo-lib>=2"]
         assert seen["search_paths"] == [vendor_dir]
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_start_plugin_hands_the_effective_manifest_entry_ids_to_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "manifest_entries" / "plugin.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'manifest_entries'",
+                "name = 'Manifest Entries'",
+                "entry = 'tests.fake:Plugin'",
+                "[[plugin.entries]]",
+                "id = 'from_manifest'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def _effective(*_args, **kwargs):
+        # A configuration overlay replacing the manifest's entries table.
+        effective = copy.deepcopy(kwargs["base_config"])
+        effective["plugin"]["entries"] = [{"id": "from_overlay"}]
+        return {"effective_config": effective, "warnings": []}
+
+    created: list[_FakeProcessHost] = []
+
+    def _host_factory(*args, **kwargs):
+        kwargs.pop("source_only", None)
+        host = _FakeProcessHost(*args, **kwargs)
+        created.append(host)
+        return host
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", lambda _plugin_id: {"success": True})
+    monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: config_path)
+    monkeypatch.setattr(module, "resolve_plugin_config_from_path", _effective)
+    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(module, "create_plugin_host", _host_factory)
+    monkeypatch.setattr(module, "scan_plugin_metadata_isolated", _metadata_scan_for(type("Plugin", (), {})))
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        response = await module.PluginLifecycleService().start_plugin("manifest_entries", refresh_registry=False)
+
+        assert response["success"] is True
+        assert [host.manifest_entry_ids for host in created] == [["from_overlay"]]
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()

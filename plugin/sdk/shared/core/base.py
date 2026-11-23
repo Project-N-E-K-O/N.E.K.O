@@ -209,8 +209,8 @@ class NekoPluginBase:
             return "closed"
         # The executor's attribute fallback resolves a method by its name,
         # which need not be its entry id: a refused component stays refused
-        # under its method name too. Same selection as the executor
-        # (``getattr(id) or getattr(entry_<id>)``): the first truthy one.
+        # under its method name too. The executor resolves ``getattr(id)``
+        # only; ``entry_<id>`` stays checked as before (the first truthy one).
         for name in (entry_id, f"entry_{entry_id}"):
             candidate = getattr(self, name, None)
             if not candidate:
