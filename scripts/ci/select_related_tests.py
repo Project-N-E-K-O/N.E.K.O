@@ -266,14 +266,19 @@ def _scan_imports(rel: str, tree: ast.Module | None, text: str) -> _Imports:
         return out
     aliases: dict[str, str] = {}
     chains: list[list[str]] = []
+    inner: set[int] = set()  # attribute nodes that are a prefix of a longer chain
     in_test_tree = rel.startswith("tests/")
     # One walk: chains are resolved after it, because a function-local import
     # can come after the attribute access it explains.
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
-            chain = _chain(node)
-            if chain:
-                chains.append(chain)
+            if isinstance(node.value, ast.Attribute):
+                inner.add(id(node.value))
+            # ast.walk is breadth-first, so an outer chain is seen before its prefixes.
+            if id(node) not in inner:
+                chain = _chain(node)
+                if chain:
+                    chains.append(chain)
         elif in_test_tree and isinstance(node, ast.Constant):
             if isinstance(node.value, str) and _DOTTED_RE.match(node.value):
                 out.loose.add(node.value)
@@ -439,8 +444,11 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
         if tree is None or not rel.startswith(TEST_ROOT + "/") or not is_test_module(rel):
             continue
         mod = module_name(rel)
-        deps[mod] |= _expand(_visible_fixtures(conftests, rel), _used_fixture_names(tree), "deps") - {mod}
-    conftest_autouse = _autouse_closures(conftests, modules, deps)
+        visible = _visible_fixtures(conftests, rel)
+        used = _used_fixture_names(tree)
+        deps[mod] |= _expand(visible, used, "deps") - {mod}
+        weak_deps[mod] |= _expand(visible, used, "weak") - deps[mod] - {mod}
+    conftest_autouse = _autouse_closures(conftests, known, deps)
 
     test_tree_text = {rel: text for rel, text in texts.items() if rel.startswith("tests/")}
     tests: dict[str, TestFile] = {}
@@ -483,20 +491,28 @@ def _fixture_decorator(dec: ast.expr) -> tuple[bool, bool, str | None]:
     return True, autouse, alias
 
 
-def _resolve_nodes(resolver: _Resolver, rel: str, nodes: list[ast.stmt], imports_only: bool = False) -> set[str]:
+def _resolve_nodes(
+    resolver: _Resolver, rel: str, nodes: list[ast.stmt], imports_only: bool = False
+) -> tuple[set[str], set[str]]:
+    """(strong, weak) dependencies of some statements, as for a whole module."""
     scanned = _scan_imports(rel, ast.Module(body=list(nodes), type_ignores=[]), "")
-    out: set[str] = set()
+    strong: set[str] = set()
+    weak: set[str] = set()
     groups = ((scanned.exact, False),) if imports_only else ((scanned.exact, False), (scanned.loose, True))
     for names, loose in groups:
         for name in names:
-            out |= resolver.resolve(name, loose)[0]
-    return out
+            s_hit, w_hit = resolver.resolve(name, loose)
+            strong |= s_hit
+            weak |= w_hit
+    return strong, weak - strong
 
 
 @dataclass
 class _Fixture:
     deps: set[str]  # modules it imports or names (dotted literals, attribute chains)
-    imports: set[str]  # modules it imports
+    weak: set[str]  # package __init__ files those imports merely execute
+    imports: set[str]  # modules it imports (import statements only)
+    import_weak: set[str]  # package __init__ files those import statements execute
     params: set[str]  # fixtures it requests
     autouse: bool
 
@@ -506,6 +522,7 @@ class _Conftest:
     directory: str  # "tests/unit/" for tests/unit/conftest.py
     fixtures: dict[str, _Fixture]
     imports: set[str]  # module-level imports
+    import_weak: set[str]
 
 
 def _conftest_fixtures(
@@ -527,69 +544,86 @@ def _conftest_fixtures(
             for dec in node.decorator_list:
                 is_fixture, is_autouse, alias = _fixture_decorator(dec)
                 if is_fixture:
+                    deps, weak = _resolve_nodes(resolver, rel, [node])
+                    # Import statements only: `sys.modules.get("pkg.mod")` in a
+                    # reset fixture touches a module some test already loaded.
+                    imports, import_weak = _resolve_nodes(resolver, rel, [node], imports_only=True)
                     fixtures[alias or node.name] = _Fixture(
-                        deps=_resolve_nodes(resolver, rel, [node]),
-                        # Import statements only: `sys.modules.get("pkg.mod")` in a
-                        # reset fixture touches a module some test already loaded.
-                        imports=_resolve_nodes(resolver, rel, [node], imports_only=True),
+                        deps=deps,
+                        weak=weak,
+                        imports=imports,
+                        import_weak=import_weak,
                         params={a.arg for a in node.args.args + node.args.kwonlyargs},
                         autouse=is_autouse,
                     )
                     break
+        imports, import_weak = _resolve_nodes(resolver, rel, top_level, imports_only=True)
         out[rel] = _Conftest(
-            directory=rel.rsplit("/", 1)[0] + "/",
-            fixtures=fixtures,
-            imports=_resolve_nodes(resolver, rel, top_level, imports_only=True),
+            directory=rel.rsplit("/", 1)[0] + "/", fixtures=fixtures, imports=imports, import_weak=import_weak
         )
     return out
 
 
-def _visible_fixtures(conftests: dict[str, _Conftest], rel: str) -> dict[str, _Fixture]:
-    """Fixtures a file under ``rel``'s directory can request; a nearer conftest overrides a farther one."""
-    visible: dict[str, _Fixture] = {}
+def _visible_fixtures(conftests: dict[str, _Conftest], rel: str) -> dict[str, list[_Fixture]]:
+    """Fixtures a file under ``rel``'s directory can request, farthest definition first.
+
+    The last definition of a name is the one a request gets; a fixture that
+    requests its own name gets the definition before it (pytest's override
+    pattern ``def service(service)``).
+    """
+    visible: dict[str, list[_Fixture]] = {}
     for conftest in sorted(conftests.values(), key=lambda c: len(c.directory)):
         if rel.startswith(conftest.directory):
-            visible.update(conftest.fixtures)
+            for name, fixture in conftest.fixtures.items():
+                visible.setdefault(name, []).append(fixture)
     return visible
 
 
-def _expand(visible: dict[str, _Fixture], names: set[str], attr: str) -> set[str]:
+def _expand(visible: dict[str, list[_Fixture]], names: set[str], *attrs: str) -> set[str]:
     """Modules reached by requesting ``names``, following fixtures that request fixtures."""
     out: set[str] = set()
-    seen: set[str] = set()
-    stack = [n for n in names if n in visible]
+    seen: set[tuple[str, int]] = set()
+    stack = [(n, len(visible[n]) - 1) for n in names if n in visible]
     while stack:
-        name = stack.pop()
-        if name in seen:
+        name, level = stack.pop()
+        if (name, level) in seen:
             continue
-        seen.add(name)
-        fixture = visible[name]
-        out |= getattr(fixture, attr)
-        stack.extend(p for p in fixture.params if p in visible and p not in seen)
+        seen.add((name, level))
+        fixture = visible[name][level]
+        for attr in attrs:
+            out |= getattr(fixture, attr)
+        for requested in fixture.params:
+            if requested == name:
+                if level > 0:
+                    stack.append((name, level - 1))
+            elif requested in visible:
+                stack.append((requested, len(visible[requested]) - 1))
     return out
 
 
 def _autouse_closures(
-    conftests: dict[str, _Conftest], modules: dict[str, str], deps: dict[str, set[str]]
+    conftests: dict[str, _Conftest], known: dict[str, str], deps: dict[str, set[str]]
 ) -> dict[str, set[str]]:
     """Per conftest: application modules that run for every test in its directory.
 
-    That is what the conftest imports at module level or through its autouse
-    fixtures (and the fixtures those request), plus everything those modules
-    import in turn. Test-tree helpers are left out here: the conftest rule
-    already scopes them, and the application code a helper merely imports
-    runs once at import time, which the tests that use that code catch.
-    Following helpers as well put 34 of the last 150 PRs on the full suite
-    instead of 18.
+    That is what the conftest imports at module level, plus what every autouse
+    fixture visible there (its own and inherited ones, resolved as a test in
+    that directory would resolve them) imports, through the fixtures those
+    request, and everything those modules import in turn. Test-tree helpers
+    are left out here: the conftest rule already scopes them, and the
+    application code a helper merely imports runs once at import time, which
+    the tests that use that code catch. Following helpers as well put 34 of
+    the last 150 PRs on the full suite instead of 18.
     """
 
     def outside_tests(mod: str) -> bool:
-        return not modules.get(mod, "tests/").startswith("tests/")
+        # `known` still has the path of a module the change deletes.
+        return not known.get(mod, "tests/").startswith("tests/")
 
     out: dict[str, set[str]] = {}
     for rel, conftest in conftests.items():
         visible = _visible_fixtures(conftests, rel)
-        autouse = {name for name, f in conftest.fixtures.items() if f.autouse}
+        autouse = {name for name, defs in visible.items() if any(d.autouse for d in defs)}
         roots = {m for m in conftest.imports | _expand(visible, autouse, "imports") if outside_tests(m)}
         seen = set(roots)
         stack = list(roots)
@@ -598,6 +632,9 @@ def _autouse_closures(
                 if dep not in seen and outside_tests(dep):
                     seen.add(dep)
                     stack.append(dep)
+        # Package __init__ files on the way to those imports run too, without
+        # making everything else they import count.
+        seen |= {m for m in conftest.import_weak | _expand(visible, autouse, "import_weak") if outside_tests(m)}
         out[rel] = seen
     return out
 

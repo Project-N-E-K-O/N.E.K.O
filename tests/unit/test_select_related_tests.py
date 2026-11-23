@@ -69,11 +69,19 @@ FILES = {
     "app/reset_impl.py": "def do_reset():\n    pass\n",
     "app/base_service.py": "VALUE = 7\n",
     "app/sub_service.py": "VALUE = 8\n",
+    "app/engine.py": "VALUE = 9\n",
+    "app/sub_backend.py": "VALUE = 10\n",
+    "app/pkgx/__init__.py": "from . import other\n",
+    "app/pkgx/other.py": "VALUE = 12\n",
+    "app/pkgx/backend.py": "VALUE = 11\n",
     "app/sub_state.py": "def reset():\n    pass\n",
     "tests/__init__.py": "",
     "tests/conftest.py": (
         "import pytest\nfrom tests.root_helper import guard\nfrom tests.gone_helper import gone\n\n"
-        "@pytest.fixture\ndef base_service():\n    from app import base_service\n    return base_service\n"
+        "@pytest.fixture\ndef base_service():\n    from app import base_service\n    return base_service\n\n"
+        "@pytest.fixture\ndef service():\n    import app.engine\n    return app.engine\n\n"
+        "@pytest.fixture\ndef boot_dep():\n    return None\n\n"
+        "@pytest.fixture(autouse=True)\ndef bootstrap(boot_dep):\n    return boot_dep\n"
     ),
     "tests/root_helper.py": "def guard():\n    return None\n",
     "tests/unit/__init__.py": "",
@@ -84,7 +92,9 @@ FILES = {
         "    sys.modules.get('app.heavy')\n\n"
         "@pytest.fixture\ndef server():\n    from app import server_mod\n    return server_mod\n\n"
         "@pytest.fixture\ndef wrapped_server(server):\n    return server\n\n"
-        "@pytest.fixture\ndef wrapped(base_service):\n    return base_service\n"
+        "@pytest.fixture\ndef wrapped(base_service):\n    return base_service\n\n"
+        "@pytest.fixture\ndef service(service):\n    return service\n\n"
+        "@pytest.fixture\ndef pkg_backend():\n    import app.pkgx.backend\n    return app.pkgx.backend\n"
     ),
     "tests/unit/fakes_helper.py": "from app.other import VALUE\n\ndef make():\n    return VALUE\n",
     "tests/unit/sibling_helper.py": "import app.heavy\n",
@@ -129,12 +139,15 @@ FILES = {
     "tests/unit/sub/__init__.py": "",
     "tests/unit/sub/conftest.py": (
         "import pytest\nimport tests.unit.pkgb\nfrom tests.unit.sub.sub_helper import fixture_value\n\n"
-        "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n\n"
+        "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n    import app.gone_backend\n\n"
+        "@pytest.fixture\ndef boot_dep():\n    import app.sub_backend\n    return app.sub_backend\n\n"
         "@pytest.fixture\ndef sub_service():\n    from app import sub_service\n    return sub_service\n\n"
         "@pytest.fixture(autouse=True)\ndef _sub_bootstrap(sub_service):\n    return sub_service\n"
     ),
     "tests/unit/test_uses_fixture.py": "def test_server(server):\n    assert server\n",
     "tests/unit/test_wrapped_chain.py": "def test_wrapped(wrapped):\n    assert wrapped\n",
+    "tests/unit/test_service.py": "def test_service(service):\n    assert service\n",
+    "tests/unit/test_uses_pkg.py": "def test_pkg(pkg_backend):\n    assert pkg_backend\n",
     "tests/unit/pkgb/__init__.py": "",
     "tests/unit/pkgb/test_c.py": "def test_c():\n    assert True\n",
     "tests/unit/test_uses_fixture_indirectly.py": (
@@ -286,6 +299,8 @@ def test_fixture_requested_by_an_autouse_fixture_runs_for_its_directory(index):
 
 def test_what_a_root_autouse_import_imports_selects_everything(index):
     assert sel.select(index, ["app/reset_impl.py"]).mode == "full"
+    # `from app.state_reset import reset` in that fixture runs app/__init__.py first.
+    assert sel.select(index, ["app/__init__.py"]).mode == "full"
 
 
 def test_deleted_helper_of_a_root_conftest_selects_everything(repo):
@@ -301,6 +316,29 @@ def test_package_init_keeps_the_scope_of_the_conftest_importing_it(index):
         "tests/unit/sub/test_a.py",
         "tests/unit/sub/test_b.py",
     ]
+
+
+def test_fixture_overriding_itself_still_runs_the_parent(index):
+    # tests/unit/conftest.py: service(service) wraps tests/conftest.py's service, which imports app.engine.
+    assert _selected(index, "app/engine.py") == ["tests/unit/test_service.py"]
+
+
+def test_package_init_executed_by_a_fixture_selects_its_users(index):
+    # pkg_backend imports app.pkgx.backend, which runs app/pkgx/__init__.py first.
+    assert _selected(index, "app/pkgx/__init__.py") == ["tests/unit/test_uses_pkg.py"]
+    assert _selected(index, "app/pkgx/backend.py") == ["tests/unit/test_uses_pkg.py"]
+    # `app.pkgx.backend` names the module, not the package: what else the package imports does not count.
+    assert _selected(index, "app/pkgx/other.py") == []
+
+
+def test_inherited_autouse_fixture_resolves_its_requests_in_the_child_directory(index):
+    # The root autouse bootstrap(boot_dep) gets sub/conftest.py's boot_dep under sub/.
+    assert _selected(index, "app/sub_backend.py") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
+
+
+def test_deleted_module_imported_by_an_autouse_fixture_still_counts(repo):
+    index = sel.build_index(repo, extra_modules={"app.gone_backend": "app/gone_backend.py"})
+    assert _selected(index, "app/gone_backend.py") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
 
 
 def test_shard_marked_files_are_left_to_the_shards(index):

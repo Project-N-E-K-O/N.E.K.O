@@ -358,16 +358,48 @@ def test_failure_whose_own_report_was_dropped_is_reported_by_a_later_event():
     gh = FakeGitHub(current, [newest, *_history(current)])
     mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
     body = next(w[2]["body"] for w in gh.writes if w[1] == f"/repos/{REPO}/issues")
-    assert mr.run_marker(9) in body and "`cccccccc`" in body
+    assert mr.run_marker(newest) in body and "`cccccccc`" in body
 
 
 def test_a_run_is_reported_once():
     current = _failure()
     issue = {"number": 8, "body": mr.issue_marker("Unit Tests"), "labels": [], "html_url": "u"}
     gh = FakeGitHub(current, _history(current), issues=[issue])
-    gh.issue_comments = [{"body": "older"}, {"body": "x\n" + mr.run_marker(5)}]
+    gh.issue_comments = [{"body": "older"}, {"body": "x\n" + mr.run_marker(current)}]
     actions = mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
     assert actions[-1].startswith("noop") and gh.writes == []
+
+
+def test_a_re_run_attempt_is_reported_again():
+    current = {**_failure(), "run_attempt": 2}
+    issue = {"number": 8, "body": mr.issue_marker("Unit Tests"), "labels": [], "html_url": "u"}
+    gh = FakeGitHub(current, _history(current), issues=[issue])
+    gh.issue_comments = [{"body": mr.run_marker({**current, "run_attempt": 1})}]
+    mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
+    comment = next(w[2]["body"] for w in gh.writes if w[1].endswith("/comments"))
+    assert mr.run_marker(current) in comment
+
+
+def test_labels_are_settled_before_the_comment_that_marks_the_run_done():
+    current = _failure()
+    issue = {"number": 8, "body": mr.issue_marker("Unit Tests"), "labels": [{"name": "flaky"}], "html_url": "u"}
+    gh = FakeGitHub(current, _history(current), issues=[issue], log=LOG.replace("=passed", "=failed"))
+    calls = []
+    original = gh.call
+
+    def flaky_delete(method, path, body=None, ok=(200, 201)):
+        calls.append(method)
+        if method == "DELETE" and len(calls) == 1:
+            raise RuntimeError("label API hiccup")
+        return original(method, path, body, ok)
+
+    gh.call = flaky_delete
+    with pytest.raises(RuntimeError):
+        mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
+    # Nothing marked the run as reported, so the retry does the whole job.
+    assert not [w for w in gh.writes if w[1].endswith("/comments")]
+    mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
+    assert [w[0] for w in gh.writes] == ["DELETE", "POST"]
 
 
 def test_commit_titles_never_ping():

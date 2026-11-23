@@ -81,13 +81,14 @@ def issue_marker(workflow_name: str) -> str:
     return f"<!-- main-red:workflow={workflow_name} -->"
 
 
-def run_marker(run_id: int) -> str:
-    return f"<!-- main-red:run={run_id} -->"
+def run_marker(run: dict) -> str:
+    # A re-run keeps the run id and bumps run_attempt; each attempt is its own report.
+    return f"<!-- main-red:run={run['id']}.{run.get('run_attempt', 1)} -->"
 
 
 def already_reported(gh, issue: dict, run: dict) -> bool:
     """Whether the issue body or one of its comments already reports this run."""
-    marker = run_marker(run["id"])
+    marker = run_marker(run)
     if marker in (issue.get("body") or ""):
         return True
     for page in range(1, MAX_PAGES + 1):
@@ -171,7 +172,7 @@ def render_failure(report: FailureReport, *, for_comment: bool) -> str:
     run = report.run
     sha = run["head_sha"][:8]
     lines: list[str] = []
-    lines.append(run_marker(run["id"]))
+    lines.append(run_marker(run))
     if not for_comment:
         lines += [issue_marker(report.workflow), ""]
         lines.append(f"**{report.workflow}** 在 main 上失败了。这个 issue 由 main-red-reporter 自动维护：")
@@ -462,7 +463,8 @@ def run_reporter(
         actions.append(body)
         has_flaky = any(lbl.get("name") == FLAKY_LABEL for lbl in issue.get("labels", []))
         if not dry_run:
-            gh.call("POST", f"/repos/{repo}/issues/{issue['number']}/comments", {"body": body})
+            # Labels first: the comment carries the run marker that makes a
+            # retry skip this run, so it must be the last write.
             if report.flaky and not has_flaky:
                 _ensure_label(gh, FLAKY_LABEL)
                 gh.call("POST", f"/repos/{repo}/issues/{issue['number']}/labels", {"labels": [FLAKY_LABEL]})
@@ -472,6 +474,7 @@ def run_reporter(
                     f"/repos/{repo}/issues/{issue['number']}/labels/{FLAKY_LABEL}",
                     ok=(200, 404),
                 )
+            gh.call("POST", f"/repos/{repo}/issues/{issue['number']}/comments", {"body": body})
     if not dry_run and discord_url and issue is not None:
         flaky = "（疑似偶发）" if report.flaky else ""
         _post_discord(discord_url, f"🔴 main 红了{flaky}：{name}（{run['head_sha'][:8]}） {issue['html_url']}")
