@@ -809,8 +809,10 @@ class PluginCliService:
                     )
             if not requested_source_attempted:
                 return source_restored
+            if install_source_manager is None:
+                # Without a manager nothing was recorded.
+                return source_restored
             try:
-                assert install_source_manager is not None
                 if previous_lock_row is not None:
                     await asyncio.to_thread(
                         install_source_manager.restore_entry_for_rollback,

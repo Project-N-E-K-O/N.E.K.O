@@ -900,6 +900,74 @@ async def test_failed_market_replacement_restarts_the_previous_plugin_under_its_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("market_detail", ["complete", "incomplete"])
+async def test_market_replacement_rolls_back_when_its_source_cannot_be_recorded(
+    environment, monkeypatch, market_detail,
+):
+    """A Market package whose source (Market, or the imported fallback)
+    cannot be recorded fails the replacement: the new code never starts
+    with the previous package's grants."""
+    from plugin.server.application.install_source import manager as manager_module
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.routes import market_bridge
+
+    env = environment
+    permission, package, _plan = await _installed_with_grant(env)
+    first_source = permission_service.current_source(PLUGIN_ID)
+    entry = env.manager.find_active_user_entry(PLUGIN_ID)
+    started_versions: list[str] = []
+
+    async def running(_plugin_id):
+        return True
+
+    async def stop(_plugin_id):
+        return None
+
+    async def start(plugin_id):
+        permission_service.reconcile_permission_source(plugin_id)
+        started_versions.append((env.user / PLUGIN_ID / "plugin.toml").read_text(encoding="utf-8"))
+
+    def cannot_write(_lock_path, _payload):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(replace, "_plugin_is_running", running)
+    monkeypatch.setattr(replace, "_stop_plugin", stop)
+    monkeypatch.setattr(replace, "_start_plugin", start)
+    detail = {"plugin_market_id": "market-demo", "expected_plugin_toml_id": PLUGIN_ID}
+    if market_detail == "complete":
+        detail.update(version="2.0.0", package_url="https://example.invalid/demo.neko-plugin")
+
+    async def install_new():
+        monkeypatch.setattr(manager_module, "_atomic_write", cannot_write)
+        return await env.service.upload_and_install(
+            filename=package.name, package_path=str(package), on_conflict="fail",
+            install_source_override={
+                "channel": "market", "mode": "upgrade", "directory_name": PLUGIN_ID,
+                "market_detail": detail,
+            },
+            _analyze_after_commit=False,
+        )
+
+    async def rollback_install_source():
+        return True
+
+    with pytest.raises(replace.ReplacePluginError) as captured:
+        await market_bridge._replace_market_plugin_transaction(
+            manager=env.manager, expected_plugin_id=PLUGIN_ID, original_entry=entry,
+            original_entry_fingerprint=market_bridge._market_entry_fingerprint(entry),
+            installed_package_id=PLUGIN_ID, plugin_dir=env.user / PLUGIN_ID,
+            layout=env.layout(PLUGIN_ID, env.user / PLUGIN_ID), install_new=install_new,
+            rollback_install_source=rollback_install_source,
+        )
+
+    assert captured.value.stage == "install"
+    assert len(started_versions) == 1 and 'version="1.0.0"' in started_versions[0]
+    assert permission_service.current_source(PLUGIN_ID) == first_source
+    record = permission_service.permission_record(PLUGIN_ID)
+    assert record["permissions"][permission]["state"] == "granted"
+
+
+@pytest.mark.asyncio
 async def test_local_upgrade_rolls_back_when_it_can_neither_record_nor_drop(
     environment, monkeypatch,
 ):
