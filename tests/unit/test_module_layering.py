@@ -569,3 +569,7 @@ def test_symlinked_repo_path_resolves_package_forbidden_edges_and_format(
     assert script_module.main([str(sym_repo / "main_logic")]) == 1
     out_forbidden = capsys.readouterr().out
     assert "main_logic/bad_knowledge.py:1:1  FORBIDDEN_EDGE" in out_forbidden
+
+    assert script_module.package_of_file(real_repo / ".." / ".." / "sym_repo" / "utils" / "bad.py") == "utils"
+    assert script_module.main(["../../sym_repo/utils"]) == 1
+    assert "utils/bad.py:1:1  LAYER_INVERSION" in capsys.readouterr().out

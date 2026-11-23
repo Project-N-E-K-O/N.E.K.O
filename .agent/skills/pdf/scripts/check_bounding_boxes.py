@@ -24,10 +24,15 @@ def _read_pdf_dimensions(pdf_path: str) -> dict[int, tuple[float, float]]:
     from pypdf import PdfReader
 
     reader = PdfReader(pdf_path)
-    return {
-        i + 1: (float(page.mediabox.width), float(page.mediabox.height))
-        for i, page in enumerate(reader.pages)
-    }
+    dims: dict[int, tuple[float, float]] = {}
+    for i, page in enumerate(reader.pages):
+        box = page.cropbox
+        width, height = float(box.width), float(box.height)
+        rotation = int(getattr(page, "rotation", 0) or 0) % 360
+        if rotation in (90, 270):
+            width, height = height, width
+        dims[i + 1] = (width, height)
+    return dims
 
 
 def _compute_page_scales(

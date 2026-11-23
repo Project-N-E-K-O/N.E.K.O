@@ -73,6 +73,39 @@ def test_external_path_under_build_ancestor_flags_tkinter(tmp_path: Path):
 
 
 @pytest.mark.unit
+def test_dotdot_paths_and_cyclic_symlink_do_not_bypass_or_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    """Relative '..' paths through build/ still scan and cyclic symlinks do not abort."""
+    fake_root = tmp_path / "NEKO"
+    build_dir = fake_root / "build"
+    build_dir.mkdir(parents=True)
+    utils_dir = fake_root / "utils"
+    utils_dir.mkdir(parents=True)
+    (utils_dir / "bad.py").write_text("import tkinter\n", encoding="utf-8")
+
+    ext_dir = tmp_path / "build" / "ext"
+    ext_dir.mkdir(parents=True)
+    (ext_dir / "bad.py").write_text("from tkinter import Tk\n", encoding="utf-8")
+
+    monkeypatch.setattr(MOD, "REPO_ROOT", fake_root)
+    assert MOD.main(["../build/ext/bad.py"]) == 1
+    assert MOD.main(["build/../utils"]) == 1
+
+    loop_dir = tmp_path / "loop_dir"
+    loop_dir.mkdir()
+    loop_file = loop_dir / "a.py"
+    try:
+        loop_file.symlink_to(loop_file)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+    (loop_dir / "z.py").write_text("import tkinter\n", encoding="utf-8")
+    capsys.readouterr()
+    assert MOD.main([str(loop_dir)]) == 1
+    assert "z.py" in capsys.readouterr().out
+
+
+@pytest.mark.unit
 def test_live_repo_passes_check_no_tkinter():
     files = list(MOD._iter_python_files([MOD.REPO_ROOT]))
     assert len(files) > 50

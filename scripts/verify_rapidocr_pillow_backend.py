@@ -301,7 +301,7 @@ def _resolve_manifest_path(raw_path: str, manifest_dir: Path) -> Path:
     path = Path(raw_path)
     if path.is_absolute():
         return path
-    return Path(os.path.normpath(manifest_dir / path))
+    return manifest_dir / path
 
 
 def build_real_corpus_manifest(corpus_root: Path) -> list[dict[str, str]]:
@@ -360,14 +360,18 @@ def load_real_corpus_manifest(manifest_path: Path) -> list[CorpusItem]:
 
 
 def _ocr_key_candidates(item: CorpusItem) -> set[str]:
-    resolved = item.path.resolve()
-    return {
+    candidates = {
         item.raw_path.replace("\\", "/"),
         item.path.as_posix(),
         _repo_relative(item.path),
-        resolved.as_posix(),
-        _repo_relative(resolved),
     }
+    try:
+        resolved = item.path.resolve()
+    except (OSError, RuntimeError):
+        return candidates
+    candidates.add(resolved.as_posix())
+    candidates.add(_repo_relative(resolved))
+    return candidates
 
 
 def check_real_corpus_manifest(
@@ -444,15 +448,18 @@ def check_real_corpus_manifest(
         for raw_key in ocr_keys:
             key_path = Path(raw_key)
             for candidate in (key_path, ROOT / key_path):
-                if candidate.exists():
-                    resolved_ocr_paths.add(candidate.resolve())
+                try:
+                    if candidate.exists():
+                        resolved_ocr_paths.add(candidate.resolve())
+                except (OSError, RuntimeError):
+                    continue
 
         def _item_covered(item: CorpusItem) -> bool:
             if _ocr_key_candidates(item) & ocr_keys:
                 return True
             try:
                 return item.path.resolve() in resolved_ocr_paths
-            except OSError:
+            except (OSError, RuntimeError):
                 return False
 
         missing_json_items = [item for item in items if not _item_covered(item)]

@@ -318,6 +318,40 @@ class TestGetBoundingBoxMessages(unittest.TestCase):
         }
         messages = get_bounding_box_messages(self.create_json_stream(payload))
         self.assertTrue(any("SUCCESS" in msg for msg in messages), messages)
+
+    def test_entry_height_accounts_for_page_rotation_and_cropbox(self):
+        """Rotated / cropbox pages must swap/use rendered dimensions so short entry boxes are caught."""
+        import tempfile
+        from pathlib import Path
+        from pypdf import PdfWriter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_file = Path(tmpdir) / "rotated.pdf"
+            writer = PdfWriter()
+            page = writer.add_blank_page(width=612, height=792)
+            page.rotate(90)
+            with pdf_file.open("wb") as fh:
+                writer.write(fh)
+
+            # After 90-deg rotation, rendered page height is 612pt -> 1000/612 = 1.634 px/pt.
+            # 14pt needs 22.88px, so 20px must fail (whereas unrotated 1000/792 would allow >=17.68px).
+            payload = {
+                "pages": [{"page_number": 1, "image_width": 1294, "image_height": 1000}],
+                "form_fields": [
+                    {
+                        "description": "RotatedTooShort",
+                        "page_number": 1,
+                        "label_bounding_box": [10, 10, 50, 30],
+                        "entry_bounding_box": [60, 10, 150, 30],
+                        "entry_text": {"font_size": 14},
+                    }
+                ],
+            }
+            messages = get_bounding_box_messages(
+                self.create_json_stream(payload),
+                pdf_path=str(pdf_file),
+            )
+            self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in messages), messages)
     
 
 if __name__ == '__main__':

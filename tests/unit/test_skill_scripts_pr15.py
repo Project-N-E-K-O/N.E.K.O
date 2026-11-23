@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from mcp.types import EmbeddedResource, ImageContent, ResourceLink, TextContent, TextResourceContents
+from pydantic import BaseModel
 from pypdf import PdfWriter
 
 
@@ -24,10 +24,12 @@ def _load_evaluation_module():
     fake_connections = types.ModuleType("connections")
     fake_connections.create_connection = lambda *args, **kwargs: None  # type: ignore[attr-defined]
     sys.modules["connections"] = fake_connections
-    if importlib.util.find_spec("anthropic") is None:
+    inserted_fake_anthropic = False
+    if "anthropic" not in sys.modules and importlib.util.find_spec("anthropic") is None:
         fake_anthropic = types.ModuleType("anthropic")
         fake_anthropic.Anthropic = object  # type: ignore[attr-defined]
         sys.modules["anthropic"] = fake_anthropic
+        inserted_fake_anthropic = True
     try:
         spec = importlib.util.spec_from_file_location("mcp_eval_under_test", EVALUATION_PATH)
         assert spec and spec.loader
@@ -39,7 +41,7 @@ def _load_evaluation_module():
             sys.modules.pop("connections", None)
         else:
             sys.modules["connections"] = saved_connections
-        if importlib.util.find_spec("anthropic") is None:
+        if inserted_fake_anthropic:
             if saved_anthropic is None:
                 sys.modules.pop("anthropic", None)
             else:
@@ -58,15 +60,16 @@ def _load_bbox_module():
 @pytest.mark.asyncio
 async def test_mcp_evaluation_serializes_pydantic_content_blocks():
     """F0571: call_tool returning Pydantic content models must serialize to JSON, not fail as tool error."""
+    mcp_types = pytest.importorskip("mcp.types")
     eval_mod = _load_evaluation_module()
 
     tool_blocks = [
-        TextContent(type="text", text="42"),
-        ImageContent(type="image", data="YWJj", mimeType="image/png"),
-        ResourceLink(type="resource_link", uri="https://example.com/item", name="item"),
-        EmbeddedResource(
+        mcp_types.TextContent(type="text", text="42"),
+        mcp_types.ImageContent(type="image", data="YWJj", mimeType="image/png"),
+        mcp_types.ResourceLink(type="resource_link", uri="https://example.com/item", name="item"),
+        mcp_types.EmbeddedResource(
             type="resource",
-            resource=TextResourceContents(uri="file:///tmp/a.txt", text="hello", mimeType="text/plain"),
+            resource=mcp_types.TextResourceContents(uri="file:///tmp/a.txt", text="hello", mimeType="text/plain"),
         ),
     ]
 
@@ -104,7 +107,7 @@ async def test_mcp_evaluation_serializes_pydantic_content_blocks():
     assert not tool_msg.startswith("Error executing tool")
     decoded = json.loads(tool_msg)
     assert decoded[0]["text"] == "42"
-    assert decoded[1]["mime_type"] == "image/png"
+    assert decoded[1].get("mime_type", decoded[1].get("mimeType")) == "image/png"
     assert decoded[2]["uri"] == "https://example.com/item"
     assert decoded[3]["resource"]["text"] == "hello"
 
@@ -115,9 +118,13 @@ async def test_mcp_evaluation_serializes_nested_and_tuple_pydantic_blocks():
     """F0571: nested dict/tuple containers of Pydantic models serialize cleanly to JSON."""
     eval_mod = _load_evaluation_module()
 
+    class _TextBlock(BaseModel):
+        type: str
+        text: str
+
     nested_result = (
-        TextContent(type="text", text="alpha"),
-        {"embedded": TextContent(type="text", text="beta")},
+        _TextBlock(type="text", text="alpha"),
+        {"embedded": _TextBlock(type="text", text="beta")},
     )
 
     class _NestedConnection:
@@ -203,6 +210,24 @@ async def test_mcp_evaluation_reports_real_call_tool_exception_and_propagates_ba
         await eval_mod.agent_loop(
             SimpleNamespace(messages=_FakeMessages()), "claude-test", "q", [], _OkConnection()
         )
+
+
+@pytest.mark.unit
+def test_load_evaluation_module_restores_absent_anthropic_without_find_spec_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Test helper must clean up its synthetic anthropic stub when anthropic is uninstalled."""
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.delitem(sys.modules, "anthropic", raising=False)
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, package=None: None if name == "anthropic" else real_find_spec(name, package),
+    )
+
+    mod = _load_evaluation_module()
+    assert hasattr(mod, "agent_loop")
+    assert "anthropic" not in sys.modules
 
 
 @pytest.mark.unit

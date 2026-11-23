@@ -54,6 +54,20 @@ None. Three legitimate exceptions live in ``utils/llm_client.py`` itself
 (the parameter declaration, the assignment, and the ``temperature=temperature``
 forwarding inside the factory). The script excludes that file by path.
 
+Known static-analysis boundaries
+--------------------------------
+The unpacked-dict tracker is intentionally lightweight and best-effort. It
+tracks local and module-level dict bindings, literals, ``dict(...)``,
+``.copy()``, ``.update()``, ``.setdefault()``, ``.clear()``,
+``.pop('temperature', ...)``, ``del d['temperature']``, static default
+parameter dicts, walrus assignments, and structured control-flow merges.
+It intentionally does NOT perform points-to alias analysis (e.g.
+``alias = opts; alias['temperature'] = 0.2``), attribute-target tracking
+(``self.opts[...]``), ``copy.copy`` / ``copy.deepcopy``, forward-declared
+module dicts defined after a referencing function, mid-``try`` exception
+states before a later ``.clear()``, ``continue`` before an unreachable
+``.clear()``, or conditionally-bound class-body fallback to globals.
+
 Output
 ------
 Every violation prints as ``path:line:col  NO_TEMPERATURE  message``. Exit
@@ -99,9 +113,6 @@ EXCLUDE_DIRS = {
 EXCLUDE_FILES = {
     "scripts/check_no_temperature.py",
     "utils/llm_client.py",
-    "utils/llm_client/factory.py",
-    "utils/llm_client/openai_client.py",
-    "utils/llm_client/anthropic_client.py",
 }
 
 CODE = "NO_TEMPERATURE"
@@ -245,10 +256,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         if isinstance(expr, ast.BoolOp):
             return any(self._expr_contains_temperature(v) for v in expr.values)
         if isinstance(expr, ast.NamedExpr):
-            val = self._expr_contains_temperature(expr.value)
-            if isinstance(expr.target, ast.Name):
-                self._set_local(expr.target.id, val)
-            return val
+            return self._expr_contains_temperature(expr.value)
         if isinstance(expr, ast.Call):
             if _is_dict_ctor(expr.func):
                 for kw in expr.keywords:
@@ -287,15 +295,38 @@ class TemperatureKwargChecker(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._visit_function(node)
 
+    def _initial_param_states(self, args: ast.arguments) -> dict[str, bool]:
+        params = {name: False for name in _arg_names(args)}
+        positional = list(args.posonlyargs) + list(args.args)
+        if args.defaults:
+            offset = len(positional) - len(args.defaults)
+            for arg, default in zip(positional[offset:], args.defaults):
+                params[arg.arg] = self._expr_contains_temperature(default)
+        for arg, kw_default in zip(args.kwonlyargs, args.kw_defaults):
+            if kw_default is not None:
+                params[arg.arg] = self._expr_contains_temperature(kw_default)
+        return params
+
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         for dec in node.decorator_list:
             self.visit(dec)
+        for arg in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *([node.args.vararg] if node.args.vararg is not None else ()),
+            *node.args.kwonlyargs,
+            *([node.args.kwarg] if node.args.kwarg is not None else ()),
+        ):
+            if arg.annotation is not None:
+                self.visit(arg.annotation)
+        if node.returns is not None:
+            self.visit(node.returns)
         for default in node.args.defaults:
             self.visit(default)
         for kw_default in node.args.kw_defaults:
             if kw_default is not None:
                 self.visit(kw_default)
-        params = {name: False for name in _arg_names(node.args)}
+        params = self._initial_param_states(node.args)
         self._push_scope(params, is_class=False)
         try:
             self._visit_stmt_list(node.body)
@@ -308,7 +339,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         for kw_default in node.args.kw_defaults:
             if kw_default is not None:
                 self.visit(kw_default)
-        params = {name: False for name in _arg_names(node.args)}
+        params = self._initial_param_states(node.args)
         self._push_scope(params, is_class=False)
         try:
             self.visit(node.body)
@@ -340,6 +371,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             for idx, comp in enumerate(generators):
                 if idx > 0:
                     self.visit(comp.iter)
+                self.visit(comp.target)
                 for name in _extract_target_names(comp.target):
                     self._set_local(name, False)
                 for if_expr in comp.ifs:
@@ -361,32 +393,38 @@ class TemperatureKwargChecker(ast.NodeVisitor):
     def visit_DictComp(self, node: ast.DictComp) -> None:
         self._visit_comprehension(node.generators, node.key, node.value)
 
+    def _apply_assign_target(self, target: ast.AST, val: bool) -> None:
+        if isinstance(target, ast.Name):
+            self._set_local(target.id, val)
+        elif isinstance(target, ast.Subscript):
+            self.visit(target.value)
+            self.visit(target.slice)
+            if (
+                isinstance(target.value, ast.Name)
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "temperature"
+            ):
+                self._set_local(target.value.id, True)
+        else:
+            self.visit(target)
+
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
         val = self._expr_contains_temperature(node.value)
         for target in node.targets:
-            if isinstance(target, ast.Name):
-                self._set_local(target.id, val)
-            elif isinstance(target, ast.Subscript):
-                self.visit(target.value)
-                self.visit(target.slice)
-                if (
-                    isinstance(target.value, ast.Name)
-                    and isinstance(target.slice, ast.Constant)
-                    and target.slice.value == "temperature"
-                ):
-                    self._set_local(target.value.id, True)
-            else:
-                self.visit(target)
+            self._apply_assign_target(target, val)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.annotation)
         if node.value is not None:
             self.visit(node.value)
             val = self._expr_contains_temperature(node.value)
-            if isinstance(node.target, ast.Name):
-                self._set_local(node.target.id, val)
+            self._apply_assign_target(node.target, val)
+        elif not isinstance(node.target, ast.Name):
+            self.visit(node.target)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.visit(node.target)
         self.visit(node.value)
         if (
             isinstance(node.op, ast.BitOr)
@@ -395,34 +433,57 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         ):
             self._set_local(node.target.id, True)
 
-    def visit_Expr(self, node: ast.Expr) -> None:
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         self.visit(node.value)
-        call = node.value
-        if (
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Attribute)
+        if isinstance(node.target, ast.Name):
+            self._set_local(node.target.id, self._expr_contains_temperature(node.value))
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            if isinstance(target, ast.Subscript):
+                self.visit(target.value)
+                self.visit(target.slice)
+                if (
+                    isinstance(target.value, ast.Name)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "temperature"
+                ):
+                    self._set_local(target.value.id, False)
+            elif isinstance(target, ast.Name):
+                self._set_local(target.id, False)
+            else:
+                self.visit(target)
+
+    def _apply_dict_method_mutation(self, call: ast.Call) -> None:
+        if not (
+            isinstance(call.func, ast.Attribute)
             and isinstance(call.func.value, ast.Name)
         ):
-            target_name = call.func.value.id
-            method = call.func.attr
-            if method == "setdefault" and call.args:
+            return
+        target_name = call.func.value.id
+        method = call.func.attr
+        if method == "setdefault" and call.args:
+            arg0 = call.args[0]
+            if isinstance(arg0, ast.Constant) and arg0.value == "temperature":
+                self._set_local(target_name, True)
+        elif method == "update":
+            has_temp = any(
+                kw.arg == "temperature"
+                or (kw.arg is None and self._expr_contains_temperature(kw.value))
+                for kw in call.keywords
+            )
+            if not has_temp and call.args:
                 arg0 = call.args[0]
-                if isinstance(arg0, ast.Constant) and arg0.value == "temperature":
-                    self._set_local(target_name, True)
-            elif method == "update":
-                has_temp = any(
-                    kw.arg == "temperature"
-                    or (kw.arg is None and self._expr_contains_temperature(kw.value))
-                    for kw in call.keywords
-                )
-                if not has_temp and call.args:
-                    arg0 = call.args[0]
-                    has_temp = self._expr_contains_temperature(
-                        arg0
-                    ) or self._pairs_contain_temperature(arg0)
-                if has_temp:
-                    self._set_local(target_name, True)
-            elif method == "clear":
+                has_temp = self._expr_contains_temperature(
+                    arg0
+                ) or self._pairs_contain_temperature(arg0)
+            if has_temp:
+                self._set_local(target_name, True)
+        elif method == "clear" and not call.args and not call.keywords:
+            self._set_local(target_name, False)
+        elif method == "pop" and call.args and not call.keywords:
+            arg0 = call.args[0]
+            if isinstance(arg0, ast.Constant) and arg0.value == "temperature":
                 self._set_local(target_name, False)
 
     @staticmethod
@@ -449,15 +510,21 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         before = dict(self.scopes[-1])
         self._visit_stmt_list(node.body)
         after_body = dict(self.scopes[-1])
-        snapshots = [after_body]
+        snapshots: list[dict[str, bool]] = []
         for handler in node.handlers:
             self.scopes[-1] = self._merge_scopes([before, after_body])
+            if handler.type is not None:
+                self.visit(handler.type)
+            if handler.name:
+                self._set_local(handler.name, False)
             self._visit_stmt_list(handler.body)
             snapshots.append(dict(self.scopes[-1]))
         if node.orelse:
             self.scopes[-1] = dict(after_body)
             self._visit_stmt_list(node.orelse)
             snapshots.append(dict(self.scopes[-1]))
+        else:
+            snapshots.append(after_body)
         self.scopes[-1] = self._merge_scopes(snapshots)
         self._visit_stmt_list(node.finalbody)
 
@@ -483,6 +550,8 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         while True:
             iters += 1
             self.scopes[-1] = dict(state)
+            if target is not None:
+                self.visit(target)
             for name in target_names:
                 self._set_local(name, False)
             if test is not None:
@@ -510,12 +579,16 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         self._visit_loop(node.body, node.orelse, test=node.test)
 
     def visit_Call(self, node: ast.Call) -> None:
+        self.visit(node.func)
+        for arg in node.args:
+            self.visit(arg)
         for kw in node.keywords:
+            self.visit(kw.value)
             if kw.arg == "temperature":
                 self._add_violation(kw.value, node, _VIOLATION_MSG)
             elif kw.arg is None and self._expr_contains_temperature(kw.value):
                 self._add_violation(kw.value, node, _UNPACK_VIOLATION_MSG)
-        self.generic_visit(node)
+        self._apply_dict_method_mutation(node)
 
 
 def _relative_to_root(path: Path, scan_root: Path | None) -> Path | None:
@@ -524,13 +597,14 @@ def _relative_to_root(path: Path, scan_root: Path | None) -> Path | None:
             continue
         try:
             rel = path.relative_to(root)
-            return Path(path.name) if root == scan_root and rel == Path(".") else rel
+            if ".." not in rel.parts:
+                return Path(path.name) if root == scan_root and rel == Path(".") else rel
         except ValueError:
             pass
         try:
             rel = path.resolve().relative_to(root.resolve())
             return Path(path.name) if root == scan_root and rel == Path(".") else rel
-        except ValueError:
+        except (ValueError, OSError, RuntimeError):
             pass
     return None
 

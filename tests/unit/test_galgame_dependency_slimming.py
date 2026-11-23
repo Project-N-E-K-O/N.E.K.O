@@ -656,6 +656,80 @@ def test_real_corpus_manifest_matches_symlinked_and_relative_ocr_keys(tmp_path):
     assert coverage[0].status == "PASS", coverage[0].detail
 
 
+def test_real_corpus_manifest_preserves_symlink_parent_traversal(tmp_path):
+    """Relative '..' after a symlinked manifest dir must follow the symlink target, not lexical normpath."""
+    verifier = _load_verifier()
+    data_root = tmp_path / "data"
+    sub_dir = data_root / "sub"
+    zh_dir = data_root / "zh"
+    sub_dir.mkdir(parents=True)
+    zh_dir.mkdir(parents=True)
+    target_img = zh_dir / "sample.png"
+    target_img.write_bytes(b"real-target")
+
+    # Place a decoy file at the lexical parent location to prove normpath is NOT used.
+    lexical_decoy_dir = tmp_path / "zh"
+    lexical_decoy_dir.mkdir(parents=True)
+    decoy_img = lexical_decoy_dir / "sample.png"
+    decoy_img.write_bytes(b"decoy")
+
+    link_dir = tmp_path / "corpus_link"
+    try:
+        link_dir.symlink_to(sub_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    manifest_path = link_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps([{"path": "../zh/sample.png", "category": "zh"}]),
+        encoding="utf-8",
+    )
+
+    resolved = verifier._resolve_manifest_path("../zh/sample.png", link_dir)
+    assert resolved.resolve() == target_img.resolve()
+    assert resolved.resolve() != decoy_img.resolve()
+
+    ocr_json = tmp_path / "ocr.json"
+    ocr_json.write_text(json.dumps({str(target_img.resolve()): "hello"}), encoding="utf-8")
+
+    results = []
+    verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json])
+    files_check = [r for r in results if r.name == "real_corpus_manifest_files"]
+    coverage = [r for r in results if r.name == "real_corpus_json_coverage_ocr"]
+    assert len(files_check) == 1 and files_check[0].status == "PASS", files_check
+    assert len(coverage) == 1 and coverage[0].status == "PASS", coverage
+
+
+def test_real_corpus_manifest_handles_cyclic_symlink_without_crashing(tmp_path):
+    """Cyclic symlink entries must record FAIL for missing files without raising RuntimeError."""
+    verifier = _load_verifier()
+    loop_path = tmp_path / "loop.png"
+    try:
+        loop_path.symlink_to(loop_path)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps([{"path": str(loop_path), "category": "zh"}]),
+        encoding="utf-8",
+    )
+
+    ocr_json_matched = tmp_path / "ocr_matched.json"
+    ocr_json_matched.write_text(json.dumps({str(loop_path): "text"}), encoding="utf-8")
+    ocr_json_missing = tmp_path / "ocr_missing.json"
+    ocr_json_missing.write_text(json.dumps({}), encoding="utf-8")
+
+    results = []
+    verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json_matched, ocr_json_missing])
+    files_check = [r for r in results if r.name == "real_corpus_manifest_files"]
+    matched_cov = [r for r in results if r.name == "real_corpus_json_coverage_ocr_matched"]
+    missing_cov = [r for r in results if r.name == "real_corpus_json_coverage_ocr_missing"]
+    assert len(files_check) == 1 and files_check[0].status == "FAIL"
+    assert len(matched_cov) == 1 and matched_cov[0].status == "PASS"
+    assert len(missing_cov) == 1 and missing_cov[0].status == "FAIL"
+
+
 def test_fork_isolation_restores_sys_path_and_installed_modules(tmp_path, monkeypatch):
     """F0339: check_helper_parity and run_ocr('fork') must not leak FORK_ROOT or fork modules."""
     import importlib

@@ -6,6 +6,9 @@ from steamworks.enums 		import *
 from steamworks.structs 	import *
 from steamworks.exceptions 	import *
 
+WORKSHOP_TITLE_MAX_BYTES = 128
+WORKSHOP_DESCRIPTION_MAX_BYTES = 8000
+
 
 class SteamWorkshop(object):
     _CreateItemResult_t 		= CFUNCTYPE(None, CreateItemResult_t)
@@ -171,8 +174,8 @@ class SteamWorkshop(object):
         :return: bool
         """
         title_bytes = title.encode("utf-8")
-        if len(title_bytes) > 128:
-            raise AttributeError('title exceeds 128 UTF-8 bytes')
+        if len(title_bytes) > WORKSHOP_TITLE_MAX_BYTES:
+            raise AttributeError(f'title exceeds {WORKSHOP_TITLE_MAX_BYTES} UTF-8 bytes')
 
         return self.steam.Workshop_SetItemTitle(update_handle, title_bytes)
 
@@ -185,8 +188,8 @@ class SteamWorkshop(object):
         :return: bool
         """
         description_bytes = description.encode("utf-8")
-        if len(description_bytes) > 8000:
-            raise AttributeError('description exceeds 8000 UTF-8 bytes')
+        if len(description_bytes) > WORKSHOP_DESCRIPTION_MAX_BYTES:
+            raise AttributeError(f'description exceeds {WORKSHOP_DESCRIPTION_MAX_BYTES} UTF-8 bytes')
 
         return self.steam.Workshop_SetItemDescription(update_handle, description_bytes)
 

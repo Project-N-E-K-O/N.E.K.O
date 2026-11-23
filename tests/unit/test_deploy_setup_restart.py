@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,10 @@ def _extract_service_start_block(script_path: Path) -> str:
 
 
 @pytest.mark.unit
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="setup.sh targets Linux/systemd; Windows 'bash' is usually the WSL launcher",
+)
 @pytest.mark.parametrize(
     ("script_path", "service_name"),
     [

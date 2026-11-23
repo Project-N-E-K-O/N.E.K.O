@@ -3260,6 +3260,7 @@ async def test_reconcile_persists_updated_counts_after_chunking_change(tmp_path,
     persisted = load_registry(tmp_path)
     assert persisted.packs["chunk-pack"].entries == orig_record.entries
     assert persisted.packs["chunk-pack"].chunks == orig_record.chunks
+    assert persisted.packs["chunk-pack"].updated_at == orig_record.updated_at
 
     # Second restart: zero rebuilds.
     rebuilds.clear()

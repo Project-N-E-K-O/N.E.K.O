@@ -58,6 +58,16 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "class C:\n    opts = {'temperature': 0.2}\n    client = create_chat_llm(**opts)\n",
         "def f(**kwargs):\n    kwargs['temperature'] = 0.2\n    return create_chat_llm(**kwargs)\n",
         "MOD_KW = {'temperature': 0.2}\ndef f():\n    return create_chat_llm(**MOD_KW)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    opts.pop('other', None)\n    return create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    del opts['other']\n    return create_chat_llm(**opts)\n",
+        "def make(opts={'temperature': 0.2}):\n    return create_chat_llm(**opts)\n",
+        "def make(*, opts={'temperature': 0.2}):\n    return create_chat_llm(**opts)\n",
+        "fn = lambda opts={'temperature': 0.2}: create_chat_llm(**opts)\n",
+        "def f(client: type(create_chat_llm(temperature=0.2))):\n    return client\n",
+        "def f() -> type(create_chat_llm(temperature=0.2)):\n    pass\n",
+        "def f():\n    opts = {}\n    opts['temperature']: float = 0.2\n    return create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    (opts := {'temperature': 0.2})\n    return create_chat_llm(**opts)\n",
+        "opts = {}\ncreate_chat_llm(**{'max_tokens': (opts := {'temperature': 0.2}) and 100}, **opts)\n",
     ],
 )
 def test_flags_direct_and_unpacked_temperature_kwargs(snippet: str):
@@ -95,6 +105,14 @@ def test_flags_unpacked_dict_kwarg_call():
         "def f():\n    kw = {'temperature': 0.2}\n    kw = {}\n    return create_chat_llm(**kw)\n",
         "def f():\n    kw = {'temperature': 0.2}\n    kw.clear()\n    return create_chat_llm(**kw)\n",
         "def f():\n    d = {'temperature': 0.2}\n    d2 = d.copy()\n    d2.clear()\n    return create_chat_llm(**d2)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    opts.pop('temperature')\n    return create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    opts.pop('temperature', None)\n    return create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    t = opts.pop('temperature', None)\n    return create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    del opts['temperature']\n    return create_chat_llm(**opts)\n",
+        "def make(opts=None):\n    return create_chat_llm(**(opts or {}))\n",
+        "def make(opts={}):\n    return create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    opts['temperature']: float\n    return create_chat_llm(**opts)\n",
+        "def f():\n    try:\n        opts = {'temperature': 0.2}\n    except Exception:\n        opts = {}\n    else:\n        opts.clear()\n    return create_chat_llm(**opts)\n",
     ],
 )
 def test_allows_legitimate_forwarding_and_cleared_dicts(snippet: str):
@@ -103,18 +121,30 @@ def test_allows_legitimate_forwarding_and_cleared_dicts(snippet: str):
 
 
 @pytest.mark.unit
-def test_split_llm_client_package_files_are_excluded_and_ancestor_build_dir_not_excluded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_exclude_files_behavior_and_ancestor_build_dir_not_excluded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ):
-    """B33-004 + _is_excluded: split llm_client files stay excluded; ancestor /build/ does not disable scan."""
-    for rel in (
+    """B33-004 + _is_excluded: retained EXCLUDE_FILES skip via _iter_python_files; ancestor /build/ and '..' paths still scan."""
+    for rel in ("scripts/check_no_temperature.py", "utils/llm_client.py"):
+        assert rel in MOD.EXCLUDE_FILES
+    for removed in (
         "utils/llm_client/factory.py",
         "utils/llm_client/openai_client.py",
         "utils/llm_client/anthropic_client.py",
     ):
-        assert rel in MOD.EXCLUDE_FILES
+        assert removed not in MOD.EXCLUDE_FILES
 
     fake_root = tmp_path / "build" / "NEKO"
+    (fake_root / "build").mkdir(parents=True)
+    for rel in (
+        "utils/llm_client.py",
+        "scripts/check_no_temperature.py",
+        "utils/other.py",
+    ):
+        target = fake_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("f(temperature=0.2)\n", encoding="utf-8")
+
     bad = fake_root / "memory" / "bad.py"
     bad.parent.mkdir(parents=True)
     bad.write_text("create_chat_llm(**{'temperature': 0.2})\n", encoding="utf-8")
@@ -123,9 +153,27 @@ def test_split_llm_client_package_files_are_excluded_and_ancestor_build_dir_not_
     ignored.write_text("create_chat_llm(temperature=0.2)\n", encoding="utf-8")
 
     monkeypatch.setattr(MOD, "REPO_ROOT", fake_root)
+    iterated = list(
+        MOD._iter_python_files([fake_root / "utils", fake_root / "scripts"])
+    )
+    assert iterated == [fake_root / "utils" / "other.py"]
+
     assert MOD._is_excluded(bad) is False
     assert MOD._is_excluded(ignored) is True
     assert MOD.main(["memory"]) == 1
+    assert MOD.main(["build/../memory"]) == 1
+
+    loop_dir = tmp_path / "loop_dir"
+    loop_dir.mkdir()
+    loop_file = loop_dir / "a.py"
+    try:
+        loop_file.symlink_to(loop_file)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+    (loop_dir / "z.py").write_text("create_chat_llm(temperature=0.2)\n", encoding="utf-8")
+    capsys.readouterr()
+    assert MOD.main([str(loop_dir)]) == 1
+    assert "z.py" in capsys.readouterr().out
 
 
 @pytest.mark.unit

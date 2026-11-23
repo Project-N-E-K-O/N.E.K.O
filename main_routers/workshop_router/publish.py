@@ -486,7 +486,41 @@ async def publish_to_workshop(request: Request):
         tags = data.get('tags', [])
         change_note = data.get('change_note', '初始发布')
         character_card_name = data.get('character_card_name')  # Added: character-card name.
-        
+
+        # Validate Steam UTF-8 byte limits before touching the content folder or calling CreateItem.
+        from steamworks.interfaces.workshop import (
+            WORKSHOP_DESCRIPTION_MAX_BYTES,
+            WORKSHOP_TITLE_MAX_BYTES,
+        )
+        if isinstance(title, str):
+            title_byte_len = len(title.encode('utf-8'))
+            if title_byte_len > WORKSHOP_TITLE_MAX_BYTES:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error": "标题过长",
+                        "message": (
+                            f"创意工坊标题不能超过 {WORKSHOP_TITLE_MAX_BYTES} 字节"
+                            f"（约 42 个汉字），当前为 {title_byte_len} 字节"
+                        ),
+                    },
+                    status_code=400,
+                )
+        if isinstance(description, str):
+            desc_byte_len = len(description.encode('utf-8'))
+            if desc_byte_len > WORKSHOP_DESCRIPTION_MAX_BYTES:
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "error": "简介过长",
+                        "message": (
+                            f"创意工坊简介不能超过 {WORKSHOP_DESCRIPTION_MAX_BYTES} 字节"
+                            f"（约 2666 个汉字），当前为 {desc_byte_len} 字节"
+                        ),
+                    },
+                    status_code=400,
+                )
+
         # Improved path normalization handles paths correctly in all cases.
         content_folder = unquote(content_folder)
         # Security: verify content_folder is in the allowed area.
@@ -802,7 +836,17 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
         try:
             # Import inside the function so enums are available in its scope.
             from steamworks.enums import EWorkshopFileType, ERemoteStoragePublishedFileVisibility, EItemUpdateStatus
-    
+            from steamworks.interfaces.workshop import (
+                WORKSHOP_DESCRIPTION_MAX_BYTES,
+                WORKSHOP_TITLE_MAX_BYTES,
+            )
+
+            # Guard direct non-HTTP callers as well so CreateItem is never invoked for oversized metadata.
+            if isinstance(title, str) and len(title.encode('utf-8')) > WORKSHOP_TITLE_MAX_BYTES:
+                raise AttributeError(f'title exceeds {WORKSHOP_TITLE_MAX_BYTES} UTF-8 bytes')
+            if isinstance(description, str) and description and len(description.encode('utf-8')) > WORKSHOP_DESCRIPTION_MAX_BYTES:
+                raise AttributeError(f'description exceeds {WORKSHOP_DESCRIPTION_MAX_BYTES} UTF-8 bytes')
+
             # Prefer the item ID from .workshop_meta.json.
             item_id = None
             if character_card_name:

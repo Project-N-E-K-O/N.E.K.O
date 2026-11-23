@@ -102,6 +102,47 @@ def test_external_path_under_build_ancestor_still_scans(tmp_path: Path):
 
 
 @pytest.mark.unit
+def test_parent_dotdot_build_path_and_cyclic_symlink_do_not_bypass_or_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+):
+    """Lexical '..' through /build/ must still scan, and cyclic symlinks must not abort the scan."""
+    fake_root = tmp_path / "NEKO"
+    fake_root.mkdir(parents=True)
+    ext_dir = tmp_path / "build" / "ext"
+    ext_dir.mkdir(parents=True)
+    ext_file = ext_dir / "bad.py"
+    ext_file.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/api')\n"
+        "@router.get('/oops/')\n"
+        "def oops(): pass\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(MOD, "REPO_ROOT", fake_root)
+    assert MOD.main(["../build/ext/bad.py"]) == 1
+
+    loop_dir = tmp_path / "loop_dir"
+    loop_dir.mkdir()
+    loop_file = loop_dir / "a.py"
+    try:
+        loop_file.symlink_to(loop_file)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+    z_file = loop_dir / "z.py"
+    z_file.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/api')\n"
+        "@router.get('/late/')\n"
+        "def late(): pass\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+    assert MOD.main([str(loop_dir)]) == 1
+    assert "/late/" in capsys.readouterr().out
+
+
+@pytest.mark.unit
 def test_live_repo_passes_check_api_trailing_slash():
     targets = [MOD.REPO_ROOT / p for p in MOD.DEFAULT_PATHS]
     files = list(MOD._iter_python_files(targets))

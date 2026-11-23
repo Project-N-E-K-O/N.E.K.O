@@ -123,3 +123,85 @@ def test_set_item_description_enforces_utf8_byte_limit():
     assert len(cjk_over.encode("utf-8")) == 8001
     with pytest.raises(AttributeError, match="8000 UTF-8 bytes"):
         ws.SetItemDescription(11, cjk_over)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publish_to_workshop_rejects_oversized_utf8_before_create_item(
+    tmp_path, monkeypatch
+):
+    """Over-limit CJK title/description must return HTTP 400 before CreateItem allocates a remote item."""
+    import json
+    from main_routers.workshop_router import publish as wr_publish
+
+    content_dir = tmp_path / "card_pkg"
+    content_dir.mkdir()
+    (content_dir / "card.json").write_text("{}", encoding="utf-8")
+
+    create_calls: list[tuple[object, ...]] = []
+
+    class _FailIfCreateWorkshop:
+        def SetItemCreatedCallback(self, _cb):
+            create_calls.append(("SetItemCreatedCallback",))
+
+        def CreateItem(self, *args):
+            create_calls.append(("CreateItem", *args))
+
+    class _FakeSteamworks:
+        app_id = 480
+        Workshop = _FailIfCreateWorkshop()
+
+        @staticmethod
+        def IsSteamRunning() -> bool:
+            return True
+
+    async def _fake_workshop_path() -> str:
+        return str(tmp_path)
+
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: _FakeSteamworks())
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", _fake_workshop_path)
+
+    class _Req:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        async def json(self) -> dict[str, object]:
+            return self._payload
+
+    title_resp = await wr_publish.publish_to_workshop(
+        _Req(
+            {
+                "title": "猫" * 43,  # 129 UTF-8 bytes > 128
+                "description": "正常简介",
+                "content_folder": str(content_dir),
+                "visibility": 0,
+            }
+        )
+    )
+    assert title_resp.status_code == 400
+    assert json.loads(title_resp.body)["success"] is False
+    assert create_calls == []
+
+    desc_resp = await wr_publish.publish_to_workshop(
+        _Req(
+            {
+                "title": "正常标题",
+                "description": "文" * 2667,  # 8001 UTF-8 bytes > 8000
+                "content_folder": str(content_dir),
+                "visibility": 0,
+            }
+        )
+    )
+    assert desc_resp.status_code == 400
+    assert json.loads(desc_resp.body)["success"] is False
+    assert create_calls == []
+
+    with pytest.raises(AttributeError, match="128 UTF-8 bytes"):
+        wr_publish._publish_workshop_item(
+            _FakeSteamworks(), "猫" * 43, "ok", str(content_dir), "", 0, [], "note"
+        )
+    with pytest.raises(AttributeError, match="8000 UTF-8 bytes"):
+        wr_publish._publish_workshop_item(
+            _FakeSteamworks(), "ok", "文" * 2667, str(content_dir), "", 0, [], "note"
+        )
+    assert create_calls == []

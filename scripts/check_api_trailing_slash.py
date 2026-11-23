@@ -388,13 +388,14 @@ def _relative_to_root(path: Path, scan_root: Path | None) -> Path | None:
             continue
         try:
             rel = path.relative_to(root)
-            return Path(path.name) if root == scan_root and rel == Path(".") else rel
+            if ".." not in rel.parts:
+                return Path(path.name) if root == scan_root and rel == Path(".") else rel
         except ValueError:
             pass
         try:
             rel = path.resolve().relative_to(root.resolve())
             return Path(path.name) if root == scan_root and rel == Path(".") else rel
-        except ValueError:
+        except (ValueError, OSError, RuntimeError):
             pass
     return None
 

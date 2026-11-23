@@ -478,7 +478,6 @@ class KnowledgeService:
                         record,
                         entries=actual_entries,
                         chunks=actual_chunks,
-                        updated_at=utc_now(),
                     )
                 )
                 registry_changed = True
