@@ -40,7 +40,12 @@ def test_unset_variable_gets_the_single_thread_default() -> None:
 
 
 def test_openblas_reads_these_variables_in_this_order() -> None:
-    assert THREAD_COUNT_ENVS == (OPENBLAS_THREADS_ENV, "GOTO_NUM_THREADS", "OMP_NUM_THREADS")
+    assert THREAD_COUNT_ENVS == (
+        OPENBLAS_THREADS_ENV,
+        "OPENBLAS_DEFAULT_NUM_THREADS",
+        "GOTO_NUM_THREADS",
+        "OMP_NUM_THREADS",
+    )
 
 
 @pytest.mark.parametrize("value", ["4", " 2 ", "+3", "8 threads"])
@@ -58,7 +63,10 @@ def test_value_openblas_would_ignore_counts_as_unset(value: str) -> None:
     assert env == {OPENBLAS_THREADS_ENV: "1"}
 
 
-@pytest.mark.parametrize("name", ["GOTO_NUM_THREADS", "OMP_NUM_THREADS"])
+_FALLBACK_ENVS = ["OPENBLAS_DEFAULT_NUM_THREADS", "GOTO_NUM_THREADS", "OMP_NUM_THREADS"]
+
+
+@pytest.mark.parametrize("name", _FALLBACK_ENVS)
 def test_thread_count_from_a_fallback_variable_is_not_overridden(name: str) -> None:
     # OpenBLAS honours these when its own variable is unset; injecting "1"
     # there would outrank them.
@@ -71,7 +79,7 @@ def test_thread_count_from_a_fallback_variable_is_not_overridden(name: str) -> N
     assert env == {OPENBLAS_THREADS_ENV: "0", name: "8"}
 
 
-@pytest.mark.parametrize("name", ["GOTO_NUM_THREADS", "OMP_NUM_THREADS"])
+@pytest.mark.parametrize("name", _FALLBACK_ENVS)
 def test_ignored_fallback_variable_does_not_block_the_default(name: str) -> None:
     env = {name: "0"}
     apply_native_runtime_defaults(env)
@@ -103,8 +111,9 @@ print(json.dumps({
         ({OPENBLAS_THREADS_ENV: "0"}, "1"),
         ({OPENBLAS_THREADS_ENV: "4"}, "4"),
         ({"OMP_NUM_THREADS": "8"}, None),
+        ({"OPENBLAS_DEFAULT_NUM_THREADS": "8"}, None),
     ],
-    ids=["unset", "empty", "blank", "zero", "explicit", "omp-only"],
+    ids=["unset", "empty", "blank", "zero", "explicit", "omp-only", "default-only"],
 )
 def test_importing_config_in_a_fresh_interpreter(inherited: dict[str, str], expected: str | None) -> None:
     # The test process imported ``config`` during collection, so its own

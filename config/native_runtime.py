@@ -39,8 +39,14 @@ OPENBLAS_THREADS_ENV = "OPENBLAS_NUM_THREADS"
 DEFAULT_OPENBLAS_THREADS = "1"
 
 # OpenBLAS takes its thread count from the first of these that holds a positive
-# number, in this order.
-THREAD_COUNT_ENVS = (OPENBLAS_THREADS_ENV, "GOTO_NUM_THREADS", "OMP_NUM_THREADS")
+# number, in this order (measured against the OpenBLAS 0.3.23 bundled with
+# numpy 1.26: the default variable outranks the GotoBLAS and OpenMP ones).
+THREAD_COUNT_ENVS = (
+    OPENBLAS_THREADS_ENV,
+    "OPENBLAS_DEFAULT_NUM_THREADS",
+    "GOTO_NUM_THREADS",
+    "OMP_NUM_THREADS",
+)
 
 _ASCII_DIGITS = "0123456789"
 
