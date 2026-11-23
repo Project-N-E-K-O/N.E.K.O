@@ -20,6 +20,7 @@ import time
 import re
 import uuid
 import os
+import shutil
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -41,6 +42,10 @@ _DEFAULT_PORT = 48920
 _DEFAULT_COOLDOWN = 60
 _SIGNIFICANT_TOOLS = {"Edit", "Write", "MultiEdit", "Bash", "PowerShell", "NotebookEdit"}
 _TASK_COMPLETE_TOOLS = {"TaskUpdate"}
+_INBOX_FILE_NAME = "inbox.json"
+# Older versions kept the inbox next to the plugin code. That directory is part
+# of the packaged source fingerprint and may be read-only once installed.
+_LEGACY_INBOX_PATH = Path(__file__).parent / _INBOX_FILE_NAME
 
 # Activity-type keyword mapping
 _ACTIVITY_KEYWORDS = {
@@ -187,6 +192,53 @@ class InboxQueue:
                    datetime.fromisoformat(m["timestamp"]).timestamp() > cutoff
             ]
             self._save()
+
+
+def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> None:
+    """Move an inbox left in the install directory into the plugin data directory.
+
+    Runs only when the legacy file exists and the target does not. A plain move
+    is tried first; if that fails (read-only install directory, another drive)
+    the file is copied instead and the legacy copy removed when possible.
+    Never raises: a failed migration only costs the old pending messages.
+    Log lines carry the error type only, never paths or the file content.
+    """
+    try:
+        if target_path.exists() or not legacy_path.is_file():
+            return
+    except OSError as e:
+        logger.warning("Skipping legacy inbox migration, cannot inspect paths: {}", type(e).__name__)
+        return
+    try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning("Legacy inbox migration failed, cannot create data directory: {}", type(e).__name__)
+        return
+    try:
+        os.replace(legacy_path, target_path)
+        logger.info("Moved legacy inbox into the plugin data directory")
+        return
+    except OSError:
+        pass
+    tmp_path = target_path.with_name(target_path.name + ".migrating")
+    try:
+        shutil.copyfile(legacy_path, tmp_path)
+        os.replace(tmp_path, target_path)
+    except OSError as e:
+        logger.warning("Legacy inbox migration failed, starting with an empty inbox: {}", type(e).__name__)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    try:
+        legacy_path.unlink()
+        logger.info("Copied legacy inbox into the plugin data directory")
+    except OSError as e:
+        logger.info(
+            "Copied legacy inbox into the plugin data directory; the old file could not be removed: {}",
+            type(e).__name__,
+        )
 
 
 # ── Activity summary generator ─────────────────────────────────────────────
@@ -618,6 +670,20 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         self._max_log_size = 200
         self._inbox: Optional[InboxQueue] = None
 
+    def _init_inbox(self) -> None:
+        """Open the inbox in the plugin data directory, migrating a legacy file first."""
+        try:
+            inbox_path = self.data_path(_INBOX_FILE_NAME)
+            _migrate_legacy_inbox(_LEGACY_INBOX_PATH, inbox_path, self.logger)
+            self._inbox = InboxQueue(str(inbox_path))
+            self._inbox.cleanup()
+            pending_count = len(self._inbox.pending())
+            if pending_count:
+                self.logger.info("Inbox initialized with {} pending messages", pending_count)
+        except Exception as e:
+            self.logger.warning("Failed to initialize inbox: {}", e)
+            self._inbox = None
+
     @lifecycle(id="startup")
     async def startup(self, **_):
         try:
@@ -652,16 +718,7 @@ class ClaudeCompanionPlugin(NekoPluginBase):
             self._user_name = "你"
 
         # Initialize inbox
-        try:
-            inbox_path = str(Path(__file__).parent / "inbox.json")
-            self._inbox = InboxQueue(inbox_path)
-            self._inbox.cleanup()
-            pending_count = len(self._inbox.pending())
-            if pending_count:
-                self.logger.info("Inbox initialized with {} pending messages", pending_count)
-        except Exception as e:
-            self.logger.warning("Failed to initialize inbox: {}", e)
-            self._inbox = None
+        self._init_inbox()
 
         # Start HTTP server
         try:
