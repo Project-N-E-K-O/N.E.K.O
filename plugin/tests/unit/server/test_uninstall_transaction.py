@@ -1470,6 +1470,29 @@ async def test_uninstall_proceeds_when_permission_store_is_unusable(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_uninstall_rollback_leaves_unusable_permission_store_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Nothing was cleared from an unusable store, so a later failure has
+    nothing to restore and must not report an incomplete permission rollback."""
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.stop_error = RuntimeError("stop failed")
+    harness.install(monkeypatch)
+    path = _write_permission_file(tmp_path, "{not json")
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.stage == "stop"
+    assert "permission_rollback" not in _details_of(captured.value)
+    assert harness.plugin_dir.is_dir()
+    assert path.read_text(encoding="utf-8") == "{not json"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_delete_plugin_response_carries_permission_warning(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
