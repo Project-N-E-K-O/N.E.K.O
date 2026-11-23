@@ -194,6 +194,8 @@ def _bases(report: dict) -> dict[str, str]:
         ("from urllib.request import urlopen\nurlopen('https://a')", "system.network:connect"),
         ("import httpx as h\nasync def f():\n    async with h.AsyncClient() as c:\n        pass", "system.network:connect"),
         ("import requests\nrequests.Session().get('x')", "system.network:connect"),
+        ("from websockets.asyncio.client import connect\nasync def f():\n    await connect('ws://a')", "system.network:connect"),
+        ("from websockets.sync.client import connect\nconnect('ws://a')", "system.network:connect"),
         ("import subprocess\nsubprocess.run(['ls'])", "system.process:spawn"),
         ("import os\nos.system('ls')", "system.process:spawn"),
         ("import asyncio\nasyncio.create_subprocess_exec('ls')", "system.process:spawn"),
@@ -207,6 +209,202 @@ def _bases(report: dict) -> dict[str, str]:
 def test_resolved_origins_are_direct_evidence(tmp_path, source, permission):
     report = _scan(tmp_path, source)
     assert report["permissions"][permission]["basis"] in capability_analysis.DIRECT_BASES
+
+
+LISTEN = "system.network:listen"
+CONNECT = "system.network:connect"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\nsocket.create_server(('', 1))",
+        "from socket import create_server\ncreate_server(('', 1))",
+        "import socket\nsocket.socket().bind(('', 1))\nsocket.socket().listen()",
+        "import socket\ns = socket.socket(socket.AF_INET)\ns.listen()",
+        "import socket\ns = socket.socket()\nconn, addr = s.accept()",
+        "from socket import socket as sock\nserver = sock()\nserver.bind(('', 1))\nserver.listen()",
+        "import asyncio\nasync def f(cb):\n    await asyncio.start_server(cb, '', 1)",
+        "import asyncio\nasync def f(p):\n    await asyncio.get_running_loop().create_server(p, '', 1)",
+        "import asyncio\nloop = asyncio.get_event_loop()\nloop.create_server(object, '', 1)",
+        "import asyncio\nasyncio.new_event_loop().create_server(object, '', 1)",
+        "from http.server import HTTPServer\nHTTPServer(('127.0.0.1', 1), object)",
+        "import http.server\nhttp.server.ThreadingHTTPServer(('', 1), object)",
+        "import socketserver\nsocketserver.TCPServer(('', 1), object)",
+        "import socketserver\nsocketserver.UDPServer(('', 1), object)",
+        "import socketserver as ss\nss.ThreadingTCPServer(('', 1), object)",
+        "from socketserver import ThreadingUDPServer\nThreadingUDPServer(('', 1), object)",
+        "import socketserver\nsocketserver.ForkingTCPServer(('', 1), object)",
+        "import socketserver\nsocketserver.ForkingUDPServer(('', 1), object)",
+        "from wsgiref.simple_server import make_server\nmake_server('', 1, object)",
+        "from wsgiref import simple_server\nsimple_server.WSGIServer(('', 1), object)",
+        "from xmlrpc.server import SimpleXMLRPCServer\nSimpleXMLRPCServer(('', 1))",
+        "import xmlrpc.server\nxmlrpc.server.DocXMLRPCServer(('', 1))",
+        "import websockets\nasync def f(h):\n    await websockets.serve(h, '', 1)",
+        "from websockets.server import serve\nserve(object, '', 1)",
+        "from websockets.asyncio.server import serve\nasync def f(h):\n    await serve(h, '', 1)",
+        "from websockets.sync.server import serve\nserve(object, '', 1)",
+        "from websockets.asyncio.server import Server\nServer(object)",
+        "from aiohttp import web\nweb.SockSite(object, object)",
+        "from hypercorn.asyncio import serve\nasync def f(app, config):\n    await serve(app, config)",
+        "import hypercorn.trio\nhypercorn.trio.serve(object, object)",
+        "from aiohttp import web\nweb.run_app(web.Application())",
+        "import aiohttp.web\naiohttp.web.TCPSite(object, '', 1)",
+        "import uvicorn\nuvicorn.run(object)",
+        "import uvicorn\nuvicorn.Server(object)",
+        "from flask import Flask\napp = Flask(__name__)\napp.run(port=1)",
+    ],
+)
+def test_servers_are_direct_evidence_of_listen(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    plain_socket = source.startswith(("import socket\n", "from socket import socket")) and "create_server" not in source
+    if not plain_socket:
+        # Starting a server is not connecting out. (A plain socket's own
+        # construction stays connect evidence; see the next test.)
+        connect = report["permissions"].get(CONNECT, {"basis": None})
+        assert connect["basis"] not in capability_analysis.DIRECT_BASES
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A client choosing its local address before connecting.
+        "import socket\ns = socket.socket()\ns.bind(('127.0.0.1', 0))\ns.connect(('a', 1))\n",
+        # A UDP server: bind without listen.
+        "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\ns.bind(('', 1))\ns.recvfrom(1024)\n",
+    ],
+)
+def test_bind_alone_is_only_possible_listen_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_name"
+    manifest = '[plugin]\nid = "x"\n[permissions.ask]\n"system.network:connect" = { reason = "x" }\n'
+    issues = compare_declarations(_scan(tmp_path, source, manifest=manifest))
+    assert [(issue.severity, issue.code) for issue in issues if issue.params["permission"] == LISTEN] == [
+        ("warning", "used_undeclared_possible")
+    ]
+
+
+def test_a_socket_that_binds_reports_listen_there_and_connect_only_where_it_is_made(tmp_path):
+    report = _scan(
+        tmp_path,
+        "import socket\n"
+        "s = socket.socket()\n"
+        "s.bind(('', 1))\n"
+        "s.listen()\n"
+        "c = socket.socket()\n"
+        "c.connect(('a', 1))\n",
+    )
+    lines = lambda permission: [row["line"] for row in report["permissions"][permission]["findings"]]
+    assert lines(LISTEN) == [3, 4]
+    assert lines(CONNECT) == [2, 5, 6]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Plugin-defined names of the same spelling.
+        "class HTTPServer:\n    pass\nHTTPServer()",
+        "def create_server():\n    pass\ncreate_server()",
+        # Clients and unrelated socket use.
+        "import socket\nsocket.create_connection(('a', 1))",
+        "import asyncio\nasync def f():\n    await asyncio.open_connection('a', 1)",
+        "import socket\nsocket.socket().connect(('a', 1))",
+        "import socket\nsocket.socket.bind.__name__",
+        # An unresolved receiver: not followed (no suffix guess on .bind / .listen).
+        "def f(s):\n    s.bind(('', 1))\n    s.listen()",
+    ],
+)
+def test_listen_is_not_reported_for_lookalikes_and_clients(tmp_path, source):
+    assert LISTEN not in _scan(tmp_path, source)["permissions"]
+
+
+def test_server_subclass_and_import_are_weak_listen_evidence(tmp_path):
+    named = _scan(tmp_path, "import socketserver\nclass S(socketserver.ThreadingMixIn, socketserver.TCPServer):\n    pass\n")
+    assert named["permissions"][LISTEN]["basis"] == "resolved_name"
+    for statement in (
+        "import http.server",
+        "import socketserver",
+        "import wsgiref.simple_server",
+        "import xmlrpc.server",
+        # The imported name is the submodule.
+        "from http import server",
+        "from wsgiref import simple_server",
+        "from xmlrpc import server",
+    ):
+        imported = _scan(tmp_path, f"{statement}\n")
+        assert imported["permissions"][LISTEN]["basis"] == "import_only", statement
+        assert CONNECT not in imported["permissions"], statement
+
+
+def test_submodule_import_hints_apply_to_connect_too(tmp_path):
+    for statement in ("from http import client", "from urllib import request"):
+        assert _scan(tmp_path, f"{statement}\n")["permissions"][CONNECT]["basis"] == "import_only", statement
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from aiohttp import web\nweb.run_app(web.Application())",
+        "import aiohttp.web\naiohttp.web.run_app(object)",
+        "import websockets\nasync def f(h):\n    await websockets.serve(h, '', 1)",
+        "from websockets.asyncio.server import serve\nserve(object, '', 1)",
+        "import socket\nsocket.create_server(('', 1))",
+    ],
+)
+def test_a_server_only_import_gives_no_connect_hint(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    assert CONNECT not in report["permissions"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Also imported for something else: the hint stays.
+        "import aiohttp\nfrom aiohttp import web\nimport requests\nweb.run_app(object)",
+        # Only weak listen evidence does not explain the import.
+        "import socket\nstart = socket.create_server",
+        # A listen call on a different module than the one imported.
+        "import aiohttp\nimport uvicorn\nuvicorn.run(object)",
+    ],
+)
+def test_connect_hint_stays_unless_every_hinted_module_is_explained(tmp_path, source):
+    assert CONNECT in _scan(tmp_path, source)["permissions"]
+
+
+def test_check_applies_the_same_rules_to_listen(tmp_path):
+    server = "from http.server import HTTPServer\nHTTPServer(('127.0.0.1', 1), object)\n"
+
+    def issues(manifest: str, source: str = server):
+        return {
+            issue.params["permission"]: (issue.severity, issue.code)
+            for issue in compare_declarations(_scan(tmp_path, source, manifest=manifest))
+        }
+
+    assert issues('[plugin]\nid = "x"\n[permissions.ask]\n"system.env:read" = { reason = "x" }\n')[LISTEN] == (
+        "error",
+        "used_undeclared",
+    )
+    # Transition: no [permissions] table yet.
+    assert issues('[plugin]\nid = "x"\n')[LISTEN] == ("warning", "used_undeclared_no_table")
+    assert issues('[plugin]\nid = "x"\n[permissions.require]\n"system.network:listen" = { reason = "x" }\n') == {}
+    assert issues(
+        '[plugin]\nid = "x"\n[permissions.ask]\n"system.network:listen" = { reason = "x" }\n', "x = 1\n"
+    ) == {LISTEN: ("warning", "declared_unused")}
+    weak = issues(
+        '[plugin]\nid = "x"\n[permissions]\n',
+        "import socketserver\nclass S(socketserver.TCPServer):\n    pass\n",
+    )
+    assert weak[LISTEN] == ("warning", "used_undeclared_possible")
+
+
+def test_listen_declaration_parses_and_hosts_do_not_apply(tmp_path):
+    declarations, issues = _parse('[permissions.require]\n"system.network:listen" = { reason = "Hook port" }\n')
+    assert declarations.level(LISTEN) == "require" and issues == []
+    _, issues = _parse('[permissions.ask]\n"system.network:listen" = { reason = "x", hosts = ["a.com"] }\n')
+    assert _codes(issues) == [("warning", "hosts_unused")]
+    assert narrowing_issues([LISTEN], frozenset({LISTEN}), "@plugin_entry") == []
 
 
 def test_sdk_suffix_matches_are_weak_evidence_and_legacy_capabilities_are_unchanged(tmp_path):
@@ -396,7 +594,8 @@ def test_report_carries_declarations_from_plugin_toml(tmp_path):
 
 
 def test_analyzer_version_was_bumped_for_the_new_report_fields():
-    assert capability_analysis.ANALYZER_VERSION >= 6
+    # 7: servers moved from system.network:connect to system.network:listen.
+    assert capability_analysis.ANALYZER_VERSION >= 7
 
 
 def test_function_attribution_follows_classes_and_nested_functions(tmp_path):
@@ -539,6 +738,21 @@ def test_cli_reports_undeclared_use_as_an_error_in_every_locale(tmp_path):
     [error] = [message for message in errors if "system.env:read" in message]
     assert error.startswith("the code uses system.env:read (worker.py:2)")
     _assert_all_locales(error)
+
+
+def test_cli_reports_an_undeclared_server_as_listen(tmp_path):
+    source = "from http.server import HTTPServer\nserver = HTTPServer(('127.0.0.1', 0), object)\n"
+    errors = _issues(_plugin(tmp_path, source, "[permissions]\n"), "error")
+    [error] = [message for message in errors if "system.network:listen" in message]
+    assert error.startswith("the code uses system.network:listen (worker.py:2)")
+    _assert_all_locales(error)
+    assert not [message for message in errors if "system.network:connect" in message]
+    declared = _plugin(
+        tmp_path / "declared",
+        source,
+        '[permissions.require]\n"system.network:listen" = { reason = "Receive hook calls" }\n',
+    )
+    assert not _issues(declared, "error")
 
 
 def test_cli_accepts_a_matching_declaration(tmp_path):
@@ -688,7 +902,7 @@ def test_every_issue_code_has_a_message_in_all_locales():
 
 def test_permission_ids_cover_the_legacy_capabilities():
     assert set(capability_analysis.LEGACY_CAPABILITY_PERMISSIONS.values()) <= set(PERMISSION_IDS)
-    assert len(PERMISSION_IDS) == len(set(PERMISSION_IDS)) == 9
+    assert len(PERMISSION_IDS) == len(set(PERMISSION_IDS)) == 10
 
 
 # --- consent comparison across names ----------------------------------------------

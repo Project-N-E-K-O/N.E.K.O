@@ -27,7 +27,8 @@ CAPABILITIES = tuple(sorted(spec.legacy_name for spec in PERMISSIONS.values() if
 # Bump when a change to analysis makes persisted reports stale.
 # 5: permission ids, declarations, blind spots; legacy capabilities unchanged.
 # 6: run_in_executor(None, ...) is no longer a context_loss blind spot.
-ANALYZER_VERSION = 6
+# 7: system.network:listen (servers moved out of system.network:connect).
+ANALYZER_VERSION = 7
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -684,10 +685,18 @@ BLIND_SPOT_TYPES = (
 
 _MODELS = "plugin_sdk.models:invoke"
 _NETWORK = "system.network:connect"
+_LISTEN = "system.network:listen"
 _PROCESS = "system.process:spawn"
 _ENV = "system.env:read"
 _FS_READ = "system.fs:read"
 _FS_WRITE = "system.fs:write"
+
+# Methods that make a plain socket accept connections. They continue the
+# "socket.socket" network pattern, so _NOT_UNDER keeps them out of it.
+_SOCKET_LISTEN_METHODS = ("bind", "listen", "accept")
+# Only a hint: a client may bind a local address before connecting (a UDP
+# server binds without listen, so it is not dropped either).
+_HINT_ONLY = ("socket.socket().bind",)
 
 # Standard-library and well-known third-party origins. A reference matches a
 # pattern when it equals it or continues it with "." or "()".
@@ -697,14 +706,12 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "socket.socket",
             "socket.create_connection",
-            "socket.create_server",
             "urllib.request.urlopen",
             "urllib.request.build_opener",
             "urllib.request.urlretrieve",
             "http.client.HTTPConnection",
             "http.client.HTTPSConnection",
             "asyncio.open_connection",
-            "asyncio.start_server",
             "ftplib.FTP",
             "ftplib.FTP_TLS",
             "smtplib.SMTP",
@@ -727,10 +734,50 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "aiohttp.request",
             "websockets.connect",
             "websockets.client.connect",
+            "websockets.asyncio.client.connect",
+            "websockets.sync.client.connect",
             "websocket.create_connection",
             "websocket.WebSocketApp",
             "urllib3.PoolManager",
             "urllib3.request",
+        ),
+    ),
+    (
+        _LISTEN,
+        (
+            "socket.create_server",
+            # A socket stored in a name resolves through it (s = socket.socket();
+            # s.bind(...)); a with-target or a parameter does not.
+            *(f"socket.socket().{method}" for method in _SOCKET_LISTEN_METHODS),
+            "asyncio.start_server",
+            *(
+                f"asyncio.{loop}().create_server"
+                for loop in ("get_event_loop", "get_running_loop", "new_event_loop")
+            ),
+            "http.server.HTTPServer",
+            "http.server.ThreadingHTTPServer",
+            *(
+                f"socketserver.{kind}{protocol}Server"
+                for kind in ("", "Threading", "Forking")
+                for protocol in ("TCP", "UDP")
+            ),
+            "wsgiref.simple_server.make_server",
+            "wsgiref.simple_server.WSGIServer",
+            "xmlrpc.server.SimpleXMLRPCServer",
+            "xmlrpc.server.DocXMLRPCServer",
+            "websockets.serve",
+            "websockets.server.serve",
+            "websockets.asyncio.server.serve",
+            "websockets.sync.server.serve",
+            "websockets.asyncio.server.Server",
+            "aiohttp.web.run_app",
+            "aiohttp.web.TCPSite",
+            "aiohttp.web.SockSite",
+            "hypercorn.asyncio.serve",
+            "hypercorn.trio.serve",
+            "uvicorn.run",
+            "uvicorn.Server",
+            "flask.Flask().run",
         ),
     ),
     (
@@ -817,6 +864,11 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+# Patterns a permission's own patterns would also match but which belong to
+# another permission only (a socket that binds listens, it does not connect).
+_NOT_UNDER: dict[str, tuple[str, ...]] = {
+    _NETWORK: tuple(f"socket.socket().{method}" for method in _SOCKET_LISTEN_METHODS),
+}
 # Data attributes whose mere read is the use (no call needed).
 _DATA_READS = ("os.environ", "os.environb")
 # Methods on those that change the mapping rather than read it.
@@ -844,6 +896,10 @@ _IMPORT_HINTS = {
     "urllib3": _NETWORK,
     "urllib.request": _NETWORK,
     "http.client": _NETWORK,
+    "http.server": _LISTEN,
+    "socketserver": _LISTEN,
+    "wsgiref.simple_server": _LISTEN,
+    "xmlrpc.server": _LISTEN,
     "ftplib": _NETWORK,
     "smtplib": _NETWORK,
     "subprocess": _PROCESS,
@@ -997,7 +1053,7 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
         results.extend((permission, direct, {"mode": mode}) for permission in permissions)
         return results
     for permission, patterns in _EXTERNAL_RULES:
-        if _matches(name, patterns):
+        if _matches(name, patterns) and not _matches(name, _NOT_UNDER.get(permission, ())):
             basis = direct
             if _matches(name, _DATA_READS):
                 # A mutating method, called or only taken (set_env = os.environ.update).
@@ -1007,21 +1063,43 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
                     basis = named
                 elif not reference.is_call:
                     basis = named if reference.rebound else BASIS_RESOLVED_REFERENCE
+            elif _matches(name, _HINT_ONLY):
+                basis = named
             results.append((permission, basis, {}))
     return results
 
 
-def _import_hints(node: ast.Import | ast.ImportFrom) -> set[str]:
+def _import_hints(node: ast.Import | ast.ImportFrom) -> dict[str, set[str]]:
+    """Permission -> the _IMPORT_HINTS prefixes the import matched."""
     if isinstance(node, ast.ImportFrom):
-        modules = [node.module] if node.module and not node.level else []
+        # The imported name may be a submodule (from http import server).
+        modules = (
+            [node.module, *(f"{node.module}.{item.name}" for item in node.names)]
+            if node.module and not node.level
+            else []
+        )
     else:
         modules = [item.name for item in node.names]
-    hints = set()
+    hints: dict[str, set[str]] = {}
     for module in modules:
         for prefix, permission in _IMPORT_HINTS.items():
             if module == prefix or module.startswith(prefix + "."):
-                hints.add(permission)
+                hints.setdefault(permission, set()).add(prefix)
     return hints
+
+
+def _explained_by_listen(prefixes: set[str], listen_rows) -> bool:
+    """Every hinted module already has direct listen evidence (a server-only
+    use of aiohttp or websockets), so the import says nothing about connecting.
+
+    Judged per _IMPORT_HINTS prefix (the top-level package), not per call: a
+    plugin that also uses that package as a client in a way the scan cannot
+    resolve loses the import-only connect hint too.
+    """
+    direct = [row["method"] for row in listen_rows if row["basis"] in DIRECT_BASES]
+    return bool(prefixes) and all(
+        any(method.startswith((prefix + ".", prefix + "(")) for method in direct) for prefix in prefixes
+    )
 
 
 def _reference_blind_spot(reference: _Reference) -> str | None:
@@ -1228,6 +1306,7 @@ class _PermissionCollector:
         # permission -> (file, line) -> evidence row
         self.findings: dict[str, dict[tuple[str, int], dict]] = {}
         self.import_hints: dict[str, dict] = {}
+        self.import_hint_prefixes: dict[str, set[str]] = {}
         self.blind_spots: dict[tuple[str, str | None, int | None], dict] = {}
 
     def add_finding(self, permission: str, basis: str, row: dict) -> None:
@@ -1257,7 +1336,8 @@ class _PermissionCollector:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             if isinstance(node, ast.ImportFrom) and any(item.name == "*" for item in node.names):
                 self.add_blind_spot("dynamic_import", relative, node.lineno, method="import *")
-            for permission in _import_hints(node):
+            for permission, prefixes in _import_hints(node).items():
+                self.import_hint_prefixes.setdefault(permission, set()).update(prefixes)
                 self.import_hints.setdefault(
                     permission,
                     {
@@ -1289,8 +1369,13 @@ class _PermissionCollector:
         for item in skipped:
             self.add_blind_spot("not_analyzed", item.get("file"), None, reason=item["reason"])
         for permission, row in self.import_hints.items():
-            if permission not in self.findings:
-                self.findings[permission] = {(row["file"], row["line"]): row}
+            if permission in self.findings:
+                continue
+            if permission == _NETWORK and _explained_by_listen(
+                self.import_hint_prefixes[permission], self.findings.get(_LISTEN, {}).values()
+            ):
+                continue
+            self.findings[permission] = {(row["file"], row["line"]): row}
         permissions: dict[str, dict] = {}
         for permission in sorted(set(self.findings) | declarations.ids()):
             rows = sorted(
