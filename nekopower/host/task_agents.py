@@ -2039,9 +2039,8 @@ class TaskAgentManager:
             if await self._ledger.session_alive(member):
                 moved = await self._ledger.update(commission.id, session_id=member.id)
                 return moved or commission, member
-        return await self._ledger.give_session(
-            commission.id, kind="line", name=project, preset=WORKING_PRESET, duty=about
-        )
+        name = await self._ledger.member_name(commission.lanlan_name, project, project)
+        return await self._ledger.give_session(commission.id, kind="line", name=name, preset=WORKING_PRESET, duty=about)
 
     async def _note_writer(self, session_id: str | None) -> None:
         """Note whether a session writes files in a project, for one such to work there at a time (``_session_free_for``).
@@ -7366,11 +7365,21 @@ class TaskAgentManager:
         made = False
         if isinstance(named, str) and named.strip():
             wanted = named.strip()
-            target = next((member for member in members if wanted in (member.name, member.id)), None)
-            if target is None:
+            # By its id, else by its name. Members made here have names of their own
+            # (``Ledger.member_name``); of those that were sessions of their own before and
+            # share one, the one last in use that still takes work.
+            found = [member for member in members if member.id == wanted] or [
+                member for member in members if member.name == wanted
+            ]
+            if not found:
                 names = ", ".join(member.name for member in members) or "none"
                 raise RuntimeError(texts.HAND_OVER_NO_MEMBER.format(name=wanted, names=names))
-            if not await self._ledger.session_alive(target):
+            target = None
+            for member in found:
+                if await self._ledger.session_alive(member):
+                    target = member
+                    break
+            if target is None:
                 raise RuntimeError(texts.HAND_OVER_MEMBER_OVER.format(name=wanted))
         else:
             preset = await self._preset_wanted(commission, payload.get("preset")) or "worker"
@@ -7397,7 +7406,9 @@ class TaskAgentManager:
                 if live.handing_over is not None:
                     raise RuntimeError(texts.HAND_OVER_TWICE)
             target = await self._ledger.create_session(
-                name=f"{leader.project}/{model_name(preset)}",
+                name=await self._ledger.member_name(
+                    leader.lanlan_name, leader.project, f"{leader.project}/{model_name(preset)}"
+                ),
                 lanlan_name=leader.lanlan_name,
                 kind="line",
                 project=leader.project,

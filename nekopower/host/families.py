@@ -133,6 +133,8 @@ class Families:
         now = self._clock()
         # Asked on their own: a leader that was not in use for long is not among the sessions looked at.
         leaders = await self._ledger.leaders(commission.lanlan_name)
+        # Likewise how often each one's matter came up: only its latest few commissions are read below.
+        came_up = await self._ledger.came_up([row.session.id for row in rows], skip=commission.id)
         agents: list[Agent] = []
         for row in rows:
             session = row.session
@@ -160,6 +162,7 @@ class Families:
                     duty=session.duty,
                     summary=session.summary,
                     idle_seconds=0.0 if under_way else max(0.0, now - session.last_active_at),
+                    came_up=came_up.get(session.id, 0),
                     done=tuple(
                         Done(
                             title=item.title,
@@ -360,7 +363,7 @@ class Families:
                 commission, session = await self._ledger.give_session(
                     commission.id,
                     kind="line",
-                    name=project,
+                    name=await self._ledger.member_name(commission.lanlan_name, project, project),
                     preset=orch.WORKING_PRESET,
                     duty=await self._about(project) or commission.title,
                 )

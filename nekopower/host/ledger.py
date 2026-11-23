@@ -2012,6 +2012,48 @@ class Ledger:
             ]
         )
 
+    async def member_name(self, lanlan_name: str, project: str, wanted: str) -> str:
+        """Return a name for a new member of a project that none of its members has: ``wanted``, or that with a number.
+
+        A leader names the member it hands a commission to, and reads the
+        names in what it is told of the project: two of one name could
+        not be told apart there. (Members that were sessions of their
+        own before keep the names they had.)
+        """
+        taken = {member.name for member in await self.members(lanlan_name, project)}
+        name, number = wanted, 1
+        while name in taken:
+            number += 1
+            name = f"{wanted} {number}"
+        return name
+
+    async def came_up(self, session_ids: Iterable[str], *, skip: str = "") -> dict[str, int]:
+        """Return how often the matter of each of these sessions came up: by session, those with none left out.
+
+        The commissions of hers that are over in it and were filed as new
+        or as the same job once more (``relation``; one filed before
+        there was such a thing counts as new), whatever came between:
+        counted over all of them, not over the few latest that are read
+        for what a session is about. ``skip`` is a commission left out
+        (the one being placed).
+        """
+        wanted = [str(item) for item in session_ids]
+        if not wanted:
+            return {}
+
+        def work(conn: sqlite3.Connection) -> dict[str, int]:
+            marks = ",".join("?" for _ in wanted)
+            rows = conn.execute(
+                "SELECT session_id, COUNT(*) AS times FROM commissions "
+                f"WHERE session_id IN ({marks}) AND parent_id IS NULL AND id != ? "
+                "AND status IN ('done', 'blocked', 'failed') "
+                "AND (relation IS NULL OR relation IN ('', 'new', 'recurrence')) GROUP BY session_id",
+                (*wanted, skip),
+            ).fetchall()
+            return {str(row["session_id"]): int(row["times"]) for row in rows}
+
+        return await self.run(work)
+
     async def adopt(self, session_ids: Iterable[str], project: str) -> list[Session]:
         """Make sessions of one commission (kind ``single``) members of a project; returns those that were.
 

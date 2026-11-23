@@ -1938,3 +1938,75 @@ async def test_a_project_in_a_git_repository_has_no_leader_as_shipped(hosts, tmp
     assert await _events(host, first.id, "leader_derived") == []
     # The user asking for one still makes one.
     assert (await host.derive_leader("Shop site", "Lan"))["made"] is True
+
+
+async def test_new_members_of_a_project_have_names_of_their_own_and_are_handed_work_by_them(hosts, tmp_path):
+    leader_llm = ScriptedLLM([*_hand_over(), *_hand_over(), *_hand_over(to="Shop site/worker 2")])
+    members = {
+        "the header": ScriptedLLM([_report("header fixed")]),
+        "the footer": ScriptedLLM([_report("footer fixed")]),
+        "the menu": ScriptedLLM([_report("menu folded")]),
+    }
+    host = _host(hosts, tmp_path, _by_role(leader_llm, members))
+    workdir = await _project(host, "Shop site", tmp_path)
+    _in_git(host, workdir)
+    await _allow_members(host)
+
+    done = []
+    for text in ("fix the header of the shop site", "fix the footer of the shop site", "fold the menu of the shop site"):
+        done.append(await wait_status(host, (await _dispatch(host, text)).commission_id, "done"))
+        await _let_go(host)
+
+    # Two workers opened one after the other are told apart by name, and the one named gets the third.
+    first, second = [await host.ledger.get_session(item.session_id) for item in done[:2]]
+    assert (first.name, second.name) == ("Shop site/worker", "Shop site/worker 2") and first.id != second.id
+    assert (done[2].session_id, done[2].result_summary) == (second.id, "menu folded")
+    names = [member.name for member in await host.ledger.members("Lan", "Shop site")]
+    assert sorted(names) == ["Shop site/worker", "Shop site/worker 2"]
+    # A name is taken within a project, for one character.
+    assert await host.ledger.member_name("Lan", "Shop site", "Shop site/worker") == "Shop site/worker 3"
+    assert await host.ledger.member_name("Lan", "Shop site", "Shop site") == "Shop site"
+    assert await host.ledger.member_name("Mio", "Shop site", "Shop site/worker") == "Shop site/worker"
+    # And only there: another project has it free.
+    assert await host.ledger.member_name("Lan", "Garden", "Shop site/worker") == "Shop site/worker"
+
+
+async def test_how_often_a_matter_came_up_is_counted_over_all_a_task_agent_did(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    session = await host.ledger.create_session(lanlan_name="Lan", name="weekly report", kind="single", duty="weekly report")
+
+    async def filed(title: str, relation: str | None, status: str = "done", **values: Any) -> Any:
+        commission, _made = await host.ledger.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent",
+            session_id=session.id, **({"relation": relation} if relation else {}), **values,
+        )
+        if status != "queued":
+            await host.ledger.transition(commission.id, "working", reason="t")
+            await host.ledger.transition(commission.id, status, reason="t", result_summary="ok")
+        return commission
+
+    # Written twice, each time followed by three changes: the latest three on record are all changes.
+    await filed("write the weekly report", None)
+    for index in range(3):
+        await filed(f"change line {index} of the weekly report", orch.FOLLOW_UP)
+    await filed("write the weekly report again", orch.RECURRENCE)
+    for index in range(3):
+        await filed(f"change line {index} of the second weekly report", orch.FOLLOW_UP)
+    # Neither one under way, nor one a task agent started, nor the one being placed is counted.
+    await filed("write the weekly report a third time", orch.RECURRENCE, status="queued")
+    now = await filed("write this week's weekly report", None, status="queued")
+
+    standing = await host.task_agents.families.standing(now)
+    agent = standing.agent(session.id)
+
+    # (Of the latest three read, two are not over.)
+    assert [item.filed for item in agent.done] == [orch.FOLLOW_UP] and agent.came_up == 2
+    assert await host.ledger.came_up([session.id, "no-such-session"], skip=now.id) == {session.id: 2}
+    assert await host.ledger.came_up([]) == {}
+    verdict = orch.settle(orch.AGENT_KEY + session.id, orch.RECURRENCE, standing, orch.Bars())
+    assert (verdict.action, verdict.members) == (orch.FORM_FAMILY, (session.id,))
+    # Where only what it did lately is told (the scenarios), that is what is counted.
+    from dataclasses import replace
+
+    lately = orch.Standing(projects=standing.projects, agents=tuple(replace(item, came_up=None) for item in standing.agents))
+    assert orch.settle(orch.AGENT_KEY + session.id, orch.RECURRENCE, lately, orch.Bars()).action == orch.CONTINUE

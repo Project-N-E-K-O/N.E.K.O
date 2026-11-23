@@ -205,7 +205,18 @@ class Template:
 
     @property
     def writes_files(self) -> bool:
-        """Whether its sessions have a tool that writes or edits a file."""
+        """Whether its sessions have a tool that writes or edits a file.
+
+        By ``write`` and ``edit`` alone, on purpose: a preset that keeps
+        the shell and has neither (the built-in inspector) is there to
+        look at work and run its checks, and does not count as one that
+        writes, though a command can leave files behind. So such a
+        session does not wait its turn at writing in a project, the user
+        is not asked before a leader opens one, and a leader may start
+        one itself. A template of the user's that is to change files
+        through the shell alone is not held to those rules either: one
+        that changes files keeps ``write`` or ``edit``.
+        """
         return not {"write", "edit"} <= self.withheld()
 
     def under(self, starter: Template) -> Template:

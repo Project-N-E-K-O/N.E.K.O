@@ -109,6 +109,8 @@ class Agent:
     # How long ago its last commission ended; 0 while one is under way.
     idle_seconds: float = 0.0
     done: tuple[Done, ...] = ()
+    # How often its matter came up over all it did (``Ledger.came_up``); None where only ``done`` tells.
+    came_up: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,7 +504,10 @@ def _takes_work(agent: Agent, bars: Bars) -> bool:
 
 def _occurrences(agents: Sequence[Agent]) -> int:
     """How often the matter of these task agents came up so far: what was filed as new or as the same job once more."""
-    return sum(1 for agent in agents for item in agent.done if item.filed in (NEW, RECURRENCE))
+    return sum(
+        agent.came_up if agent.came_up is not None else sum(1 for item in agent.done if item.filed in (NEW, RECURRENCE))
+        for agent in agents
+    )
 
 
 def settle(
