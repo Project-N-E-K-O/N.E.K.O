@@ -666,7 +666,17 @@ for the user before its next request; allowed, it gets as much again from
 there, and is asked again when that is used; refused, the task agent is told
 to hand over what it has. A conversation at the length it is summed up from
 (``TASK_AGENT_COMPACT_AT_TOKENS``) gets here in about 29 requests. 0 sets no
-limit. Not applied in dsh, which makes its requests by itself."""
+limit. Not applied in dsh, which makes its requests by itself. The default:
+the user can set another number on the page about the runtime
+(``nekopower/host/usage_limit.py``), within the two bounds below."""
+
+TASK_AGENT_USAGE_LIMIT_MIN_TOKENS = 500_000
+"""The least the user can set the limit above to: less, and a commission of
+any length would stop to ask after a handful of requests."""
+
+TASK_AGENT_USAGE_LIMIT_MAX_TOKENS = 50_000_000
+"""The most the user can set the limit above to. There is no setting for no
+limit at all on the page: a commission that runs away is stopped by this."""
 
 TASK_AGENT_USAGE_WIND_UP_REQUESTS = 4
 """How many model requests a task agent gets to hand over what it has once
@@ -924,6 +934,59 @@ WAITS_MAX_ROWS = 500
 """Most waits ``NekoPowerHost.waits`` gives at once, the longest waiting
 first. The task agents at work at one time, with their children, questions
 and queues, come to far fewer."""
+
+# -- what a page of the console reads of a session and of the commissions ----
+
+CONSOLE_TRANSCRIPT_PAGE_ENTRIES = 50
+"""Entries of a session's record in one page shown to the user
+(``NekoPowerHost.transcript``) when the page does not say how many."""
+
+CONSOLE_TRANSCRIPT_PAGE_MAX_ENTRIES = 200
+"""Most entries of a record in one page; a page that asks for more gets this
+many."""
+
+CONSOLE_TRANSCRIPT_ENTRY_MAX_TOKENS = 1_200
+"""Cap on the text of one entry in a page of a record, and on the arguments
+of each tool call in it: enough to read what was said, while the result of a
+tool that read a large file does not make the page megabytes long. The page
+asks for one entry whole when the user opens it."""
+
+CONSOLE_TRANSCRIPT_WHOLE_ENTRY_MAX_TOKENS = 40_000
+"""Cap on one entry of a record when the user opens it whole."""
+
+CONSOLE_TRANSCRIPT_WHOLE_ENTRY_MAX_BYTES = 16 * 1024 * 1024
+"""The longest line of a record that is read to show one entry whole: a
+longer one (pictures, mostly) is said to be too large."""
+
+CONSOLE_TRANSCRIPT_SCAN_MAX_BYTES = 32 * 1024 * 1024
+"""How much of a record is read for one page at most. A page that reaches
+this ends there and says where to go on."""
+
+CONSOLE_TIMELINE_RECENT_EVENT_ROWS = 20_000
+"""How far back a page that opens begins reading the timeline, in rows of the
+events (``NekoPowerHost.timeline_start``). Most rows are steps of a task
+agent, which the timeline leaves out: so many rows come to a few hundred
+entries or a couple of thousand, read in a few pages."""
+
+CONSOLE_TIMELINE_RECENT_MESSAGE_ROWS = 2_000
+"""The same for the messages sessions wrote one another."""
+
+CONSOLE_COMMISSIONS_ROWS = 200
+"""Commissions in one listing for the page that shows them
+(``NekoPowerHost.commissions``) when the page does not say how many."""
+
+CONSOLE_COMMISSIONS_MAX_ROWS = 1000
+"""Most commissions in one listing."""
+
+CONSOLE_COMMISSIONS_SCAN_ROWS = 20_000
+"""How many commissions, the newest first, are looked through for a listing
+that keeps to one project: the ledger cannot keep to that by itself, so
+they are read and looked at. A listing that reaches this says that there
+may be more."""
+
+CONSOLE_COMMISSIONS_DAYS = 7
+"""How far back the listing of commissions goes when the page does not say:
+those that changed within so many days. Those under way are always listed."""
 
 SESSION_WAKE_BATCH_ROWS = 10
 """How many waiting things (notes, times that came) are handed to a session

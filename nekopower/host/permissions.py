@@ -420,6 +420,64 @@ class PermissionStore:
                     if configured == "auto":
                         self._revisions[(name, server)] = self._version
 
+    async def clear_mcp_server(self, key: str, *, expected_version: int | None = None) -> bool:
+        """Take away the setting one MCP server has of its own, and write the file.
+
+        The server goes by the setting all servers share from then on, as
+        one that was never set does. (A server set to ``auto`` is not
+        that: it is held to the automatic rule whatever the shared setting
+        allows.) One that has none of its own is left as it is. Refused as
+        ``set_mode`` refuses: False when the settings changed since
+        ``expected_version`` was read, ``PermissionFileError`` while an
+        existing file cannot be read.
+
+        What was approved for the servers that go by the shared setting
+        counts no more afterwards, for this one and for the others: they
+        are asked once more.
+
+        The file is written first, and the setting is taken away here
+        only once it is: a write that fails (the error is raised) leaves
+        the setting as it was in both places, to be taken away again.
+        """
+        from utils.asyncio_executor import to_thread_through_cancellation
+
+        await self._ensure_loaded()
+        name, slot = _slot(MCP_SERVER_CATEGORY, key)
+        async with self._lock:
+            if not self._loaded:
+                raise PermissionFileError("the permissions file cannot be read; repair or remove it first")
+            if expected_version is not None and expected_version != self._version:
+                return False
+            if slot not in self._mcp_servers:
+                return True
+            categories = dict(self._categories)
+            remaining = {server: mode for server, mode in self._mcp_servers.items() if server != slot}
+            written = False
+
+            def write() -> None:
+                nonlocal written
+                self._write(categories, remaining)
+                written = True
+
+            try:
+                # A cancelled caller still waits for the write, under the lock.
+                await to_thread_through_cancellation(write)
+            finally:
+                # What is on the disk holds here too, the caller cancelled or not. Not written:
+                # nothing is changed, and asking again writes again.
+                if written:
+                    del self._mcp_servers[slot]
+                    self._version += 1
+                    # From here on it has the generation the servers share, and nothing tells
+                    # what was approved for it from what was approved for them. That generation
+                    # moves on, whatever the two rules are: an approval given before the server
+                    # had a setting of its own carries the generation they shared then, and
+                    # would count again though the user took it back since by forbidding the
+                    # server. It ends the approvals of the others that go by the shared
+                    # setting as well.
+                    self._revisions[(name, None)] = self._version
+        return True
+
     async def snapshot(self) -> dict[str, Any]:
         """Return every category with its current mode, for the console."""
         await self._ensure_loaded()
