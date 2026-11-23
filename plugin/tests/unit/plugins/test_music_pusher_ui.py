@@ -242,7 +242,19 @@ async function run() {{
   assert.strictEqual(firstCard.children[0].textContent, 'Song One (Edited)');
   assert.strictEqual(secondAudio.loadCalls, 2, 'changed URL track reloads its source');
 
-  // 2) Deleting the playing track pauses/unloads it and clears activeElement
+  // 2) Duplicate itemKey node carrying active audio releases preview audio before removal
+  const dupCard = makeNode('div');
+  dupCard.dataset.itemKey = musicList.children[0].dataset.itemKey;
+  const dupAudio = makeNode('audio');
+  await dupAudio.play();
+  dupCard.appendChild(dupAudio);
+  musicList.appendChild(dupCard);
+  await intervalFn();
+  assert.strictEqual(dupAudio.pauseCalls, 1);
+  assert.strictEqual(dupAudio.paused, true);
+  assert.strictEqual(dupCard.parentNode, null);
+
+  // 3) Deleting the playing track pauses/unloads it and clears activeElement
   currentItems = [
     {{ item_id: 'track-2', title: 'Song Two', artist: 'B', duration_sec: 150, url: 'https://example.com/two-v2.mp3' }},
   ];

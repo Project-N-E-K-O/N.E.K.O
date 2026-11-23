@@ -834,9 +834,44 @@ async def test_total_timeout_includes_coordinator_wait(
     plugin._coordinator = coordinator
     monkeypatch.setattr(web_search, "_search_ddg_html", html)
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(resilience.SearchBusyError):
         await web_search.WebSearchPlugin._do_text_search(plugin, "neko", 3, 15.0)
 
+    assert fetch_called is False
+
+
+@pytest.mark.asyncio
+async def test_total_timeout_bounds_held_backend_lock_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_called = False
+    coordinator = resilience.SearchCoordinator(
+        min_interval_seconds=0.0,
+        queue_wait_seconds=5.0,
+    )
+    coordinator._loop = asyncio.get_running_loop()
+    state = resilience._BackendState(asyncio.Lock())
+    await state.lock.acquire()
+    coordinator._backends["duckduckgo"] = state
+
+    async def html(*_args: object, **_kwargs: object) -> resilience.SearchResults:
+        nonlocal fetch_called
+        fetch_called = True
+        return []
+
+    plugin = _PluginStub(total_timeout=0.01)
+    plugin._coordinator = coordinator
+    monkeypatch.setattr(web_search, "_search_ddg_html", html)
+
+    started = asyncio.get_running_loop().time()
+    try:
+        with pytest.raises((TimeoutError, resilience.SearchBusyError)):
+            await web_search.WebSearchPlugin._do_text_search(plugin, "neko", 3, 15.0)
+        elapsed = asyncio.get_running_loop().time() - started
+    finally:
+        state.lock.release()
+
+    assert elapsed < 0.5
     assert fetch_called is False
 
 
@@ -893,6 +928,83 @@ async def test_coordinator_allows_throttle_wait_beyond_three_seconds_within_time
     async def fetch() -> resilience.SearchResults:
         return [{"title": "ok", "url": "https://example.com", "snippet": ""}]
 
-    results = await coordinator.run(("duckduckgo", "q", 3), fetch)
+    results = await coordinator.run(
+        ("duckduckgo", "q", 3),
+        fetch,
+        max_wait_seconds=10.0,
+    )
     assert slept and slept[0] > 3.0
     assert results[0]["title"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_coordinator_fails_fast_when_throttle_wait_exceeds_budget() -> None:
+    """Throttle wait that exceeds remaining budget raises SearchBusyError immediately."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=15.0, queue_wait_seconds=1.0)
+    coordinator._loop = asyncio.get_running_loop()
+    coordinator._backends["baidu"] = resilience._BackendState(
+        asyncio.Lock(),
+        next_allowed=resilience.time.monotonic() + 15.0,
+    )
+    fetch_called = False
+
+    async def fetch() -> resilience.SearchResults:
+        nonlocal fetch_called
+        fetch_called = True
+        return [{"title": "ok", "url": "https://example.com", "snippet": ""}]
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(resilience.SearchBusyError):
+        await coordinator.run(("baidu", "q", 3), fetch, max_wait_seconds=1.0)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.2
+    assert fetch_called is False
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_falls_back_immediately_when_primary_throttle_exceeds_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto mode fails fast on throttled Baidu when wait exceeds budget and falls back to DDG."""
+    baidu_called = False
+    ddg_called = False
+
+    plugin = _PluginStub(total_timeout=25.0)
+    plugin._configured_backend = "auto"
+    plugin._backend = "baidu"
+    plugin._country = "CN"
+
+    baidu_coord = resilience.SearchCoordinator(min_interval_seconds=15.0, queue_wait_seconds=2.0)
+    baidu_coord._loop = asyncio.get_running_loop()
+    baidu_coord._backends["baidu"] = resilience._BackendState(
+        asyncio.Lock(),
+        next_allowed=resilience.time.monotonic() + 15.0,
+    )
+    ddg_coord = resilience.SearchCoordinator(min_interval_seconds=0.0, queue_wait_seconds=2.0)
+    plugin._coordinators = {
+        "baidu": baidu_coord,
+        "duckduckgo": ddg_coord,
+    }
+
+    async def fake_baidu(*_args: object, **_kwargs: object) -> resilience.SearchResults:
+        nonlocal baidu_called
+        baidu_called = True
+        return [{"title": "baidu", "url": "https://baidu.com", "snippet": ""}]
+
+    async def fake_ddg(*_args: object, **_kwargs: object) -> resilience.SearchResults:
+        nonlocal ddg_called
+        ddg_called = True
+        return [{"title": "ddg", "url": "https://duckduckgo.com", "snippet": ""}]
+
+    monkeypatch.setattr(web_search, "_search_baidu", fake_baidu)
+    monkeypatch.setattr(web_search, "_search_ddg_html", fake_ddg)
+
+    started = asyncio.get_running_loop().time()
+    results = await web_search.WebSearchPlugin._do_text_search(plugin, "neko", 3, 15.0)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.5
+    assert baidu_called is False
+    assert ddg_called is True
+    assert results == [{"title": "ddg", "url": "https://duckduckgo.com", "snippet": ""}]

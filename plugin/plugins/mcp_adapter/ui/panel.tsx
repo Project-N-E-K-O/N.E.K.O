@@ -168,11 +168,16 @@ auto_connect = true`
 
   const parseArgs = (value) => String(value || "").split(",").map((item) => item.trim()).filter(Boolean)
 
-  // Accept only boolean or strict boolean strings; ignore any other type so it
-  // falls back to the backend default. A string "false" must NOT be coerced to
-  // true by !! (would silently enable/auto-connect disabled servers on JSON import).
+  // Accept booleans, strict boolean strings, numeric 0/1, and null (false);
+  // ignore any other type so it falls back to the backend default.
   const resolveBooleanValue = (raw: unknown): boolean | undefined => {
     if (typeof raw === "boolean") return raw
+    if (raw === null) return false
+    if (typeof raw === "number") {
+      if (raw === 1) return true
+      if (raw === 0) return false
+      return undefined
+    }
     if (typeof raw === "string") {
       const normalized = raw.trim().toLowerCase()
       if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") return true

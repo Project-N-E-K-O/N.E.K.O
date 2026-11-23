@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import UserDict
+from types import MappingProxyType
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -64,3 +66,30 @@ async def test_cancel_rpc_request_ignores_invalid_run_id() -> None:
         }
     )
     send_mock.assert_awaited_once_with({"type": "CANCEL_RUN", "run_id": "trigger:req-7"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("args_wrapper", "ctx_wrapper"),
+    [
+        (UserDict, UserDict),
+        (MappingProxyType, MappingProxyType),
+    ],
+)
+async def test_cancel_rpc_request_matches_host_mapping_run_id(args_wrapper, ctx_wrapper) -> None:
+    mgr = PluginCommunicationResourceManager.__new__(PluginCommunicationResourceManager)
+    send_mock = AsyncMock()
+    mgr.transport = type("T", (), {"send_command": send_mock})()
+
+    args = args_wrapper({"_ctx": ctx_wrapper({"run_id": "  run-mapping-1  "})})
+    expected_key = _resolve_trigger_task_key({"type": "TRIGGER", "req_id": "req-8", "args": args})
+    assert expected_key == "run-mapping-1"
+
+    await mgr._cancel_rpc_request(
+        {
+            "type": "TRIGGER",
+            "request_id": "req-8",
+            "args": args,
+        }
+    )
+    send_mock.assert_awaited_once_with({"type": "CANCEL_RUN", "run_id": expected_key})

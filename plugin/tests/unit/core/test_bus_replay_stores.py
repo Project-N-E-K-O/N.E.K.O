@@ -349,3 +349,49 @@ def test_sync_lazy_bus_list_consumed_in_asyncio_run_raises_without_leaks(store: 
         if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)
     ]
     assert leaked == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("store", ["messages", "events", "lifecycle"])
+def test_non_replayable_async_bus_list_chained_outside_event_loop_stays_eager(store: str) -> None:
+    """Results from where()/sort(key=callable) stay locally materialized when chained outside the loop."""
+    ctx, client, id_field = _bus_client(store)
+
+    async def _produce():
+        snapshot = await client.get(max_count=10)
+        return (
+            snapshot.where(lambda r: r.type == "a"),
+            snapshot.sort(key=lambda r: float(r.timestamp or 0.0), reverse=True),
+        )
+
+    where_list, key_sorted_list = asyncio.run(_produce())
+
+    def _fail_sync_rpc(**_kw):  # pragma: no cover - must not be called
+        raise AssertionError("non-replayable BusList must not replay on chained local ops")
+
+    ctx._mp_rpc_client.request = _fail_sync_rpc
+
+    w_lim = where_list.limit(1)
+    w_filt = where_list.filter(source="s1")
+    s_lim = key_sorted_list.limit(1)
+
+    assert w_lim._cache_valid is True
+    assert w_filt._cache_valid is True
+    assert s_lim._cache_valid is True
+
+    assert len(w_lim) == 1
+    assert [getattr(r, id_field) for r in w_lim] == ["r1"]
+    assert [getattr(r, id_field) for r in w_filt.dump_records()] == ["r1", "r3"]
+    assert [getattr(r, id_field) for r in s_lim] == ["r2"]
+
+    with pytest.raises(NonReplayableTraceError):
+        w_lim.reload(ctx)
+    with pytest.raises(NonReplayableTraceError):
+        s_lim.reload(ctx)
+
+    # Structured sync chains still remain lazy and replay when materialized.
+    replay_ctx, sync_client, _ = _bus_client(store)
+    lazy_structured = sync_client.get(max_count=10).filter(type="a").limit(1)
+    assert lazy_structured._cache_valid is False
+    assert len(lazy_structured) == 1
+    assert [getattr(r, id_field) for r in lazy_structured.reload(replay_ctx)] == ["r1"]

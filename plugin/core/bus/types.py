@@ -314,10 +314,30 @@ class BusList(BusListCore, Generic[TRecord]):
         except RuntimeError:
             return False
 
+    @staticmethod
+    def _is_plan_replayable(plan: Optional[TraceNode]) -> bool:
+        node = plan
+        while node is not None:
+            if isinstance(node, GetNode):
+                return True
+            if isinstance(node, UnaryNode):
+                if node.op == "where":
+                    return False
+                if node.op == "sort" and node.params.get("key") is not None:
+                    return False
+                if node.op not in ("filter", "limit", "sort"):
+                    return False
+                node = node.child
+                continue
+            return False
+        return False
+
     def _is_lazy_mode(self) -> bool:
         if self._snapshot_chain:
             return False
         if self._ctx is None or self._plan is None:
+            return False
+        if not self._is_plan_replayable(self._plan):
             return False
         return not self._in_running_event_loop()
 
@@ -786,6 +806,12 @@ class BusList(BusListCore, Generic[TRecord]):
                 raise NonReplayableTraceError(f"Unknown bus for reload: {bus!r}")
 
             if isinstance(node, UnaryNode):
+                if node.op == "where":
+                    raise NonReplayableTraceError("reload cannot replay where(predicate); use filter(...) instead")
+                if node.op == "sort" and node.params.get("key") is not None:
+                    raise NonReplayableTraceError("reload cannot replay sort(key=callable); use sort(by=...) only")
+                if node.op not in ("filter", "limit", "sort"):
+                    raise NonReplayableTraceError(f"Unknown unary op for reload: {node.op!r}")
                 base = _as_eager(_replay(node.child))
                 if node.op == "filter":
                     p = dict(node.params)
@@ -793,17 +819,11 @@ class BusList(BusListCore, Generic[TRecord]):
                     return base.filter(strict=strict, **p)
                 if node.op == "limit":
                     return base.limit(int(node.params.get("n", 0)))
-                if node.op == "sort":
-                    if node.params.get("key") is not None:
-                        raise NonReplayableTraceError("reload cannot replay sort(key=callable); use sort(by=...) only")
-                    return base.sort(
-                        by=node.params.get("by"),
-                        cast=node.params.get("cast"),
-                        reverse=bool(node.params.get("reverse", False)),
-                    )
-                if node.op == "where":
-                    raise NonReplayableTraceError("reload cannot replay where(predicate); use filter(...) instead")
-                raise NonReplayableTraceError(f"Unknown unary op for reload: {node.op!r}")
+                return base.sort(
+                    by=node.params.get("by"),
+                    cast=node.params.get("cast"),
+                    reverse=bool(node.params.get("reverse", False)),
+                )
 
             raise NonReplayableTraceError(f"Unknown plan node type: {type(node).__name__}")
         return _replay(plan)

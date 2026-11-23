@@ -1686,6 +1686,13 @@
       }
     }
 
+    function releaseCardAudio(node) {
+      if (!node) return;
+      const audio = (node._refs && node._refs.audio)
+        || (typeof node.querySelector === "function" ? node.querySelector("audio") : null);
+      if (audio) releasePreviewAudio(audio);
+    }
+
     function renderMusicList() {
       const existingByKey = new Map();
       const nonCardChildren = [];
@@ -1699,15 +1706,16 @@
       });
 
       if (!state.musicItems.length) {
-        existingByKey.forEach((card) => {
-          const audio = (card._refs && card._refs.audio) || card.querySelector("audio");
-          releasePreviewAudio(audio);
-        });
+        existingByKey.forEach((card) => releaseCardAudio(card));
+        nonCardChildren.forEach((node) => releaseCardAudio(node));
         dom.musicList.innerHTML = '<div class="hint">暂无素材，请先上传或添加链接。</div>';
         return;
       }
 
-      nonCardChildren.forEach((node) => node.remove());
+      nonCardChildren.forEach((node) => {
+        releaseCardAudio(node);
+        node.remove();
+      });
 
       state.musicItems.forEach((item, idx) => {
         const key = musicItemKey(item, idx);
@@ -1724,8 +1732,7 @@
       });
 
       existingByKey.forEach((card) => {
-        const audio = (card._refs && card._refs.audio) || card.querySelector("audio");
-        releasePreviewAudio(audio);
+        releaseCardAudio(card);
         card.remove();
       });
     }

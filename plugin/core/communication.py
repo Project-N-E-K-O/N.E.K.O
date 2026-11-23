@@ -7,6 +7,7 @@ media uplink so large payloads cannot block results, status, or stop commands.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -325,8 +326,8 @@ class PluginCommunicationResourceManager:
         if prefix is None:
             return
         args = request.get("args", {})
-        context = args.get("_ctx", {}) if isinstance(args, dict) else {}
-        raw_run_id = context.get("run_id") if operation == "TRIGGER" and isinstance(context, dict) else None
+        context = args.get("_ctx", {}) if isinstance(args, Mapping) else {}
+        raw_run_id = context.get("run_id") if operation == "TRIGGER" and isinstance(context, Mapping) else None
         run_id = raw_run_id.strip() if isinstance(raw_run_id, str) and raw_run_id.strip() else None
         await self.transport.send_command({"type": "CANCEL_RUN", "run_id": run_id or f"{prefix}:{request['request_id']}"})
 

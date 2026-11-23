@@ -1242,12 +1242,12 @@ async def test_set_chat_injection_all_incompatible_tools_succeeds_with_zero_appl
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("raw_enabled", ["false", "0", "off", "no", False])
+@pytest.mark.parametrize("raw_enabled", ["false", "0", "off", "no", False, 0, 0.0, None])
 async def test_add_server_and_startup_coerce_disabled_string_booleans(
     monkeypatch,
     raw_enabled: object,
 ) -> None:
-    """F0285: string 'false'/'0'/'off'/'no' for enabled is coerced to False and never auto-connects."""
+    """F0285: string 'false'/'0'/'off'/'no', 0, and None for enabled coerce to False and never auto-connect."""
     plugin = MCPAdapterPlugin(_Ctx())
     scheduled: list[str] = []
     monkeypatch.setattr(
@@ -1272,3 +1272,133 @@ async def test_add_server_and_startup_coerce_disabled_string_booleans(
     plugin.ctx._effective_config["mcp_servers"]["disabled_srv"]["enabled"] = raw_enabled
     await plugin.on_startup()
     assert "disabled_srv" not in plugin._pending_auto_connect
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_truthy", [1, 1.0])
+async def test_add_server_and_startup_coerce_numeric_truthy_booleans(
+    monkeypatch,
+    raw_truthy: object,
+) -> None:
+    plugin = MCPAdapterPlugin(_Ctx())
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        plugin,
+        "_schedule_connect_server",
+        lambda name, _cfg, _timeout: scheduled.append(name) or True,
+    )
+
+    result = await plugin.add_server(
+        name="enabled_srv",
+        transport="stdio",
+        command="echo",
+        enabled=raw_truthy,  # type: ignore[arg-type]
+        inject_to_chat=raw_truthy,  # type: ignore[arg-type]
+        auto_connect=0,  # type: ignore[arg-type]
+    )
+    assert isinstance(result, Ok)
+    assert scheduled == []
+    assert plugin._servers_config["enabled_srv"]["enabled"] is True
+    assert plugin._servers_config["enabled_srv"]["inject_to_chat"] is True
+
+    plugin._pending_auto_connect.clear()
+    plugin.ctx._effective_config["mcp_servers"]["enabled_srv"]["enabled"] = raw_truthy
+    await plugin.on_startup()
+    assert "enabled_srv" in plugin._pending_auto_connect
+
+
+@pytest.mark.asyncio
+async def test_set_chat_injection_fails_and_rolls_back_when_register_llm_tool_raises(monkeypatch) -> None:
+    """SDK registration errors must stay expected and roll back partial enable state to Err."""
+    from types import SimpleNamespace
+
+    plugin = MCPAdapterPlugin(_Ctx())
+    cfg = {"example": {"transport": "stdio", "command": "demo", "inject_to_chat": False}}
+    plugin.ctx._effective_config["mcp_servers"] = cfg
+    plugin._servers_config = cfg
+    plugin._clients["example"] = SimpleNamespace(
+        tools=[
+            SimpleNamespace(
+                name="good_tool",
+                description="good",
+                input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+            ),
+            SimpleNamespace(
+                name="boom_tool",
+                description="boom",
+                input_schema={"type": "object", "properties": {"x": {"type": "string"}}},
+            ),
+        ]
+    )
+    plugin._route_engine = SimpleNamespace(get_tool_server=lambda _tid: "example")
+
+    def fake_register(**kwargs):
+        if "boom_tool" in kwargs["name"]:
+            raise RuntimeError("host rpc down")
+
+    unregistered: list[str] = []
+
+    async def no_foreign():
+        return set()
+
+    async def fake_confirm(server_name):
+        moved = 0
+        for tid, info in list(plugin._pending_chat_tools.items()):
+            if info.get("server_name") == server_name:
+                plugin._chat_tools[tid] = plugin._pending_chat_tools.pop(tid)
+                moved += 1
+        return moved
+
+    async def fake_remote_unregister(llm_name):
+        unregistered.append(llm_name)
+        return "removed"
+
+    monkeypatch.setattr(plugin, "register_llm_tool", fake_register)
+    monkeypatch.setattr(plugin, "unregister_llm_tool", lambda _name: None)
+    monkeypatch.setattr(plugin, "_fetch_foreign_llm_tool_names", no_foreign)
+    monkeypatch.setattr(plugin, "_confirm_pending_chat_tools_locked", fake_confirm)
+    monkeypatch.setattr(plugin, "_remote_unregister_llm_tool", fake_remote_unregister)
+
+    result = await plugin.set_chat_injection("example", True)
+    assert isinstance(result, Err)
+    assert plugin.ctx._effective_config["mcp_servers"]["example"]["inject_to_chat"] is False
+    assert plugin._chat_tools == {}
+    assert plugin._pending_chat_tools == {}
+    assert unregistered
+
+
+@pytest.mark.asyncio
+async def test_set_chat_injection_fails_and_rolls_back_when_no_free_llm_tool_name(monkeypatch) -> None:
+    """Name-allocation exhaustion must stay expected and return Err instead of silent Ok."""
+    from types import SimpleNamespace
+
+    plugin = MCPAdapterPlugin(_Ctx())
+    cfg = {"example": {"transport": "stdio", "command": "demo", "inject_to_chat": False}}
+    plugin.ctx._effective_config["mcp_servers"] = cfg
+    plugin._servers_config = cfg
+    plugin._clients["example"] = SimpleNamespace(
+        tools=[
+            SimpleNamespace(
+                name="good_tool",
+                description="good",
+                input_schema={"type": "object", "properties": {"q": {"type": "string"}}},
+            ),
+        ]
+    )
+    plugin._route_engine = SimpleNamespace(get_tool_server=lambda _tid: "example")
+
+    async def no_foreign():
+        return set()
+
+    async def fake_confirm(_server_name):
+        return 0
+
+    monkeypatch.setattr(plugin, "_fetch_foreign_llm_tool_names", no_foreign)
+    monkeypatch.setattr(plugin, "_alloc_llm_tool_name", lambda *_args, **_kw: None)
+    monkeypatch.setattr(plugin, "_confirm_pending_chat_tools_locked", fake_confirm)
+
+    result = await plugin.set_chat_injection("example", True)
+    assert isinstance(result, Err)
+    assert plugin.ctx._effective_config["mcp_servers"]["example"]["inject_to_chat"] is False
+    assert plugin._chat_tools == {}
+    assert plugin._pending_chat_tools == {}

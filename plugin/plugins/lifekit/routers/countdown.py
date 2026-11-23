@@ -47,6 +47,15 @@ def _parse_numeric_date_info(
     return None, False
 
 
+def _safe_date(year: int, month: int, day: int) -> Optional[date]:
+    if not (date.min.year <= year <= date.max.year):
+        return None
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
 def _parse_numeric_date(
     text: str,
     *,
@@ -177,6 +186,15 @@ class CountdownRouter(PluginRouter):
         country_hint: str = "",
         **_,
     ):
+        """Calculate the day span between two dates or yearless MM-DD endpoints.
+
+        Empty endpoints default to today. Directional anchoring for yearless MM-DD
+        inputs is intentional: an empty start_date with a past MM-DD end_date rolls
+        end_date forward to next year (upcoming interval), an empty end_date with a
+        yearless start_date keeps start_date in the current year (same-year/elapsed
+        span), and an explicit-year end_date with a later MM-DD start_date rolls
+        start_date back to the prior year so start <= end.
+        """
         if params is not None:
             start_date = params.start_date
             end_date = params.end_date
@@ -235,15 +253,25 @@ class CountdownRouter(PluginRouter):
             return Err(SdkError(i18n.t("date.invalid_end", value=end_date)))
 
         if not start_has_year and end_has_year:
-            d1 = date(d2.year, d1.month, d1.day)
+            d1 = _safe_date(d2.year, d1.month, d1.day)
+            if d1 is None:
+                return Err(SdkError(i18n.t("date.invalid_start", value=start_date)))
             if d1 > d2 and end_stripped and start_holiday.target is None:
-                d1 = date(d1.year - 1, d1.month, d1.day)
+                d1 = _safe_date(d1.year - 1, d1.month, d1.day)
+                if d1 is None:
+                    return Err(SdkError(i18n.t("date.invalid_start", value=start_date)))
         elif not end_has_year and start_has_year:
-            d2 = date(d1.year, d2.month, d2.day)
+            d2 = _safe_date(d1.year, d2.month, d2.day)
+            if d2 is None:
+                return Err(SdkError(i18n.t("date.invalid_end", value=end_date)))
             if d2 < d1:
-                d2 = date(d2.year + 1, d2.month, d2.day)
+                d2 = _safe_date(d2.year + 1, d2.month, d2.day)
+                if d2 is None:
+                    return Err(SdkError(i18n.t("date.invalid_end", value=end_date)))
         elif not start_has_year and not end_has_year and d2 < d1:
-            d2 = date(d2.year + 1, d2.month, d2.day)
+            d2 = _safe_date(d2.year + 1, d2.month, d2.day)
+            if d2 is None:
+                return Err(SdkError(i18n.t("date.invalid_end", value=end_date)))
 
         delta = abs((d2 - d1).days)
         years = delta // 365

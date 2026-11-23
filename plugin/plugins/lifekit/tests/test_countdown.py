@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from plugin.plugins.lifekit._i18n import I18n
 from plugin.plugins.lifekit.routers.countdown import CountdownRouter
-from plugin.sdk.plugin import Ok
+from plugin.sdk.plugin import Err, Ok
 
 
 class _Plugin:
@@ -190,3 +190,30 @@ async def test_days_between_mm_dd_uses_shared_reference_year_across_today(
     assert explicit_start.value["detail"]["start"] == "2027-12-20"
     assert explicit_start.value["detail"]["end"] == "2028-01-05"
     assert explicit_start.value["detail"]["days"] == 16
+
+
+@pytest.mark.asyncio
+async def test_days_between_returns_structured_error_when_year_roll_exceeds_date_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Year advancement/rollback past Python date bounds (1..9999) returns Err cleanly."""
+    import plugin.plugins.lifekit.routers.countdown as countdown_mod
+
+    class _FixedDate(date):
+        @classmethod
+        def today(cls) -> _FixedDate:
+            return cls(2026, 6, 15)
+
+    monkeypatch.setattr(countdown_mod, "date", _FixedDate)
+    router = CountdownRouter()
+    router._bind(_Plugin("en"))
+
+    upper_overflow = await router.days_between(start_date="9999-12-20", end_date="01-05")
+    assert isinstance(upper_overflow, Err)
+
+    lower_underflow = await router.days_between(start_date="12-20", end_date="0001-01-05")
+    assert isinstance(lower_underflow, Err)
+
+    normal = await router.days_between(start_date="12-20", end_date="2027-01-05")
+    assert isinstance(normal, Ok)
+    assert normal.value["detail"]["days"] == 16

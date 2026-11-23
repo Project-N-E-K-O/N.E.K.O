@@ -748,6 +748,10 @@
         let refreshTimer = null;
         let nameDirty = false;
         let cooldownDirty = false;
+        let nameEditSeq = 0;
+        let cooldownEditSeq = 0;
+        let lastSyncedName = '';
+        let lastSyncedCooldown = '';
         let translations = {};
         let localeLoaded = false;
 
@@ -995,13 +999,17 @@
             document.getElementById('user-name').textContent = result.user_name || '-';
             document.getElementById('port-num').textContent = result.port || '-';
             document.getElementById('cooldown-val').textContent = result.cooldown || '-';
+            var serverName = result.user_name || '';
+            var serverCooldown = String(result.cooldown || 60);
+            lastSyncedName = serverName;
+            lastSyncedCooldown = serverCooldown;
             var nameInput = document.getElementById('input-name');
             if (nameInput && !nameDirty && document.activeElement !== nameInput) {
-                nameInput.value = result.user_name || '';
+                nameInput.value = serverName;
             }
             var cooldownInput = document.getElementById('input-cooldown');
             if (cooldownInput && !cooldownDirty && document.activeElement !== cooldownInput) {
-                cooldownInput.value = result.cooldown || 60;
+                cooldownInput.value = serverCooldown;
             }
         }
 
@@ -1067,11 +1075,13 @@
         async function saveUserName() {
             var nameInput = document.getElementById('input-name');
             var submitted = nameInput ? nameInput.value : '';
+            var nameSeq = nameEditSeq;
             var name = submitted.trim();
             if (!name) { showToast(t('ui.toast_username_empty', '请输入用户名')); return; }
             var r = await callPlugin('set_user_name', { name: name });
             if (r && r.user_name) {
-                if (!nameInput || nameInput.value === submitted) {
+                if (nameSeq === nameEditSeq && (!nameInput || nameInput.value === submitted)) {
+                    lastSyncedName = String(r.user_name);
                     nameDirty = false;
                 }
                 var nameMsg = t('ui.toast_username_updated', '用户名已更新为: ');
@@ -1085,11 +1095,13 @@
         async function saveCooldown() {
             var cooldownInput = document.getElementById('input-cooldown');
             var submitted = cooldownInput ? cooldownInput.value : '';
+            var cooldownSeq = cooldownEditSeq;
             var sec = parseInt(submitted);
             if (isNaN(sec) || sec < 10) { showToast(t('ui.toast_cooldown_invalid', '冷却时间至少 10 秒')); return; }
             var r = await callPlugin('set_cooldown', { seconds: sec });
             if (r && r.cooldown_seconds) {
-                if (!cooldownInput || cooldownInput.value === submitted) {
+                if (cooldownSeq === cooldownEditSeq && (!cooldownInput || cooldownInput.value === submitted)) {
+                    lastSyncedCooldown = String(r.cooldown_seconds);
                     cooldownDirty = false;
                 }
                 var cdMsg = t('ui.toast_cooldown_updated', '冷却时间已设为 ');
@@ -1126,11 +1138,17 @@
         document.addEventListener('DOMContentLoaded', async function() {
             var nameInput = document.getElementById('input-name');
             if (nameInput) {
-                nameInput.addEventListener('input', function() { nameDirty = true; });
+                nameInput.addEventListener('input', function() {
+                    nameEditSeq++;
+                    nameDirty = nameInput.value !== lastSyncedName;
+                });
             }
             var cooldownInput = document.getElementById('input-cooldown');
             if (cooldownInput) {
-                cooldownInput.addEventListener('input', function() { cooldownDirty = true; });
+                cooldownInput.addEventListener('input', function() {
+                    cooldownEditSeq++;
+                    cooldownDirty = cooldownInput.value !== lastSyncedCooldown;
+                });
             }
             await loadLocale();
             loadStatus();

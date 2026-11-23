@@ -330,12 +330,10 @@ def _consume_one_time_code(code: str) -> bool:
 
 
 def _is_task_running(task_id: str, task: Mapping[str, Any]) -> bool:
-    if task.get("completed_at") is None:
-        return True
     worker = _task_workers.get(task_id)
     if worker is not None and callable(getattr(worker, "done", None)):
         return not worker.done()
-    return False
+    return task.get("completed_at") is None
 
 
 def _cleanup_tasks() -> None:
@@ -344,7 +342,7 @@ def _cleanup_tasks() -> None:
         task_id
         for task_id, task in _tasks.items()
         if not _is_task_running(task_id, task)
-        and now - float(task.get("completed_at") or 0) > _TASK_TTL_SECONDS
+        and now - float(task.get("completed_at") or task.get("created_at") or 0) > _TASK_TTL_SECONDS
     ]
     for task_id in expired:
         _tasks.pop(task_id, None)

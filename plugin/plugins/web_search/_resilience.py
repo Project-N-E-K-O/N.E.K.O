@@ -194,10 +194,15 @@ class SearchCoordinator:
         self,
         backend: Hashable,
         fetch: Callable[[], Awaitable[SearchResults]],
+        *,
+        wait_deadline: Optional[float] = None,
     ) -> SearchResults:
         state = self._backends.setdefault(backend, _BackendState(asyncio.Lock()))
+        lock_timeout = self.queue_wait_seconds
+        if wait_deadline is not None:
+            lock_timeout = min(lock_timeout, max(0.0, wait_deadline - time.monotonic()))
         try:
-            async with asyncio.timeout(self.queue_wait_seconds):
+            async with asyncio.timeout(lock_timeout):
                 await state.lock.acquire()
         except TimeoutError as error:
             raise SearchBusyError("search backend is busy; retry shortly") from error
@@ -210,6 +215,12 @@ class SearchCoordinator:
                 )
             wait_seconds = state.next_allowed - now
             if wait_seconds > 0:
+                if wait_deadline is not None:
+                    remaining_wait = wait_deadline - now
+                    if remaining_wait <= 0 or wait_seconds >= remaining_wait:
+                        raise SearchBusyError(
+                            "search backend rate-limited; retry shortly"
+                        )
                 await asyncio.sleep(wait_seconds)
             try:
                 results = await fetch()
@@ -264,10 +275,18 @@ class SearchCoordinator:
         self,
         key: Hashable,
         fetch: Callable[[], Awaitable[SearchResults]],
+        *,
+        max_wait_seconds: Optional[float] = None,
     ) -> SearchResults:
         cached = self._entry(key, fresh=True)
         if cached is not None:
             return cached
+
+        wait_deadline: Optional[float] = None
+        if max_wait_seconds is not None:
+            wait_budget = float(max_wait_seconds)
+            if math.isfinite(wait_budget):
+                wait_deadline = time.monotonic() + max(0.0, wait_budget)
 
         loop = asyncio.get_running_loop()
         if self._loop is not loop:
@@ -283,7 +302,11 @@ class SearchCoordinator:
             backend = key[0] if isinstance(key, tuple) and key else key
 
             async def fetch_and_cache() -> SearchResults:
-                results = await self._guarded_fetch(backend, fetch)
+                results = await self._guarded_fetch(
+                    backend,
+                    fetch,
+                    wait_deadline=wait_deadline,
+                )
                 if results:
                     self._store(key, results)
                 else:

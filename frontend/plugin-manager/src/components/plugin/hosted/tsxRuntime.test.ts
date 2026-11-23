@@ -747,8 +747,11 @@ import ghost from "./missing"
     textarea.value = JSON.stringify({
       mcpServers: {
         disabled_false: { command: 'uvx', args: ['mcp-a'], enabled: 'false', inject_to_chat: 'false' },
-        disabled_zero: { command: 'uvx', args: ['mcp-b'], enabled: '0' },
+        disabled_zero_str: { command: 'uvx', args: ['mcp-b'], enabled: '0' },
         disabled_off: { command: 'uvx', args: ['mcp-c'], enabled: 'off' },
+        disabled_zero_num: { command: 'uvx', args: ['mcp-d'], enabled: 0, inject_to_chat: 0 },
+        disabled_null: { command: 'uvx', args: ['mcp-e'], enabled: null, inject_to_chat: null },
+        enabled_one_num: { command: 'uvx', args: ['mcp-f'], enabled: 1, inject_to_chat: 1 },
       },
     })
     fireEvent.input(textarea)
@@ -765,9 +768,12 @@ import ghost from "./missing"
     const addCalls = messages.filter(
       (message) => message.method === 'call' && message.payload?.actionId === 'add_server',
     )
-    expect(addCalls).toHaveLength(3)
-    expect(addCalls.map((call) => call.payload.args.enabled)).toEqual([false, false, false])
+    expect(addCalls).toHaveLength(6)
+    expect(addCalls.map((call) => call.payload.args.enabled)).toEqual([false, false, false, false, false, true])
     expect(addCalls[0].payload.args.inject_to_chat).toBe(false)
+    expect(addCalls[3].payload.args.inject_to_chat).toBe(false)
+    expect(addCalls[4].payload.args.inject_to_chat).toBe(false)
+    expect(addCalls[5].payload.args.inject_to_chat).toBe(true)
   })
 
   it('uses ConfirmDialog instead of blocked window.confirm for single-server removal', async () => {
