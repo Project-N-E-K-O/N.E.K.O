@@ -914,7 +914,7 @@ function makeAgentServer() {
         child: { computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false },
         hangChildPost: false,
         onCommand: null,
-        intentRestoreFinished: false,
+        intentRestoreFinished: true,
     };
     server.handler = async (url, init, body) => {
         if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET') {
@@ -1016,6 +1016,7 @@ test('PR3976 master-on persisted: child flags still restore on next load after o
             version: 1, token: 603, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: snapshotFlags, masterApplied: true,
         }));
         const server = makeAgentServer();
+        server.intentRestoreFinished = false;
         const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
         await flushMicrotasks();
         assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0, 'must not re-enable a master switch found OFF');
@@ -1037,6 +1038,7 @@ test('PR3976 4662066742: backend cold start after master-on keeps the snapshot a
     }));
     // Fresh backend: everything OFF until greeting_check replays the persisted intent.
     const server = makeAgentServer();
+    server.intentRestoreFinished = false;
     const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
     await flushMicrotasks();
     assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0);
@@ -1045,6 +1047,7 @@ test('PR3976 4662066742: backend cold start after master-on keeps the snapshot a
     // Backend replays master ON (children still at the suppressed OFF intent).
     server.master = true;
     server.child.user_plugin_enabled = true;
+    server.intentRestoreFinished = true;
     const retry = rt.scheduledTimeouts.find(t => !t.cleared);
     assert.ok(retry);
     retry.fn();
@@ -1175,6 +1178,7 @@ test('PR3976 4662066742 (backend still replaying): unknown OFF keeps the snapsho
         masterApplied: true,
     }));
     const server = makeAgentServer();
+    server.intentRestoreFinished = false;
     const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
     await flushMicrotasks();
     for (let i = 0; i < 8; i += 1) {
@@ -1328,4 +1332,72 @@ test('PR3976 4662148284: newer user choices made during the restore backoff win 
         const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
         assert.deepEqual(persisted.agentFlags, oldFlags, 'partial recovery keeps the old restore target');
     }
+});
+
+test('PR3976 4662172068: first restore waits while the backend is still replaying saved switches, bounded by the retry budget', async () => {
+    const flags = { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false };
+
+    // Case A: replay finishes during the backoff -> restore runs after it.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({ version: 1, token: 1001, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: flags }));
+        const server = makeAgentServer();
+        server.intentRestoreFinished = false;
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0, 'no writes while the backend replay is running');
+        assert.notEqual(storage.getItem(HOME_TUTORIAL_KEY), null);
+
+        server.intentRestoreFinished = true;
+        const retry = rt.scheduledTimeouts.find(t => !t.cleared);
+        assert.ok(retry);
+        retry.fn();
+        await flushMicrotasks();
+        assert.equal(server.master, true);
+        assert.equal(server.child.computer_use_enabled, true);
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
+
+    // Case B: replay never reports finished -> after the retry budget the restore still runs.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({ version: 1, token: 1002, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: flags }));
+        const server = makeAgentServer();
+        server.intentRestoreFinished = false;
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        for (let i = 0; i < 10; i += 1) {
+            const retry = rt.scheduledTimeouts.find(t => !t.cleared && !t.fired);
+            if (!retry) break;
+            retry.fired = true;
+            retry.fn();
+            await flushMicrotasks();
+        }
+        assert.equal(server.master, true, 'falls back to restoring once the wait budget is used up');
+        assert.equal(server.child.computer_use_enabled, true);
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
+});
+
+test('PR3976 4662172063: a reused pending snapshot keeps its owner; tutorial end under another character does not restore it', async () => {
+    const storage = createStorage();
+    const oldFlags = { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false };
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({ version: 1, token: 1101, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: oldFlags }));
+    const server = makeAgentServer();
+    // Character name not resolved yet -> snapshot is owner_pending; restore keeps backing off.
+    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: '', fetchHandler: server.handler });
+    await flushMicrotasks();
+    rt.win.NekoHomeTutorialFeatureController.begin('tutorial-restart');
+    await flushMicrotasks();
+    const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
+    assert.equal(persisted.lanlanName, 'CatA');
+    assert.deepEqual(persisted.agentFlags, oldFlags);
+
+    rt.win.lanlan_config.lanlan_name = 'CatB';
+    const postsBefore = rt.fetchCalls.filter(c => c.method === 'POST').length;
+    rt.win.NekoHomeTutorialFeatureController.end('tutorial-ended');
+    await flushMicrotasks();
+    assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, postsBefore, 'CatA settings must not be written under CatB');
+    assert.equal(server.child.computer_use_enabled, false);
+    assert.notEqual(storage.getItem(HOME_TUTORIAL_KEY), null, 'CatA snapshot stays for CatA');
 });

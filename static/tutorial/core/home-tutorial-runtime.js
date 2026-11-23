@@ -122,6 +122,8 @@
             flags: flags,
             // 后端启动后按记录的意图放回开关这一步是否已做完；没有这个字段时当作还没做完。
             intentRestoreFinished: payload.intent_restore_finished === true,
+            // 后端明确说还没放回完（字段缺失时不算）。
+            intentRestorePending: payload.intent_restore_finished === false,
         };
     }
 
@@ -501,6 +503,7 @@
             if (state.featureSuppression.snapshot) {
                 state.featureSuppression.snapshot.agentFlags = flags;
                 state.featureSuppression.snapshot.agentRestoreToken = token;
+                state.featureSuppression.snapshot.agentOwner = target.owner;
             }
             if (target.persist) {
                 persistAgentRestoreSnapshot(flags, token, 'tutorial-suppression', target.owner);
@@ -512,7 +515,7 @@
                     return;
                 }
                 try {
-                    const restored = await restoreAgentSnapshot(flags, restoreToken, createAgentRestoreAttemptState(token));
+                    const restored = await restoreAgentSnapshot(flags, restoreToken, createAgentRestoreAttemptState(token), target.owner);
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
                         clearPersistedAgentRestoreSnapshot(token);
                         syncAgentFlagsUi();
@@ -529,7 +532,7 @@
                     return;
                 }
                 try {
-                    const restored = await restoreAgentSnapshot(flags, restoreToken, createAgentRestoreAttemptState(token));
+                    const restored = await restoreAgentSnapshot(flags, restoreToken, createAgentRestoreAttemptState(token), target.owner);
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
                         clearPersistedAgentRestoreSnapshot(token);
                         syncAgentFlagsUi();
@@ -667,7 +670,8 @@
             void restoreAgentSnapshot(
                 snapshot.agentFlags,
                 restoreToken,
-                createAgentRestoreAttemptState(snapshot.agentRestoreToken)
+                createAgentRestoreAttemptState(snapshot.agentRestoreToken),
+                snapshot.agentOwner
             )
                 .then(function (restored) {
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
@@ -758,6 +762,12 @@
                     || postFetchInspected.payload.token !== persisted.token
                 ) {
                     return false;
+                }
+                // 后端刚启动、还在按记录的意图放回开关时先不写：它的后台任务会晚于我们写入，
+                // 把刚恢复的值盖掉，而快照那时已删。最多等完重试窗口，之后仍按原来的方式恢复，
+                // 免得 greeting_check 迟迟不来时一直恢复不了。
+                if (currentState.intentRestorePending && retryIndex < HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS.length) {
+                    throw new Error('agent_restore_backend_replay_pending');
                 }
                 const expectsMasterOn = persisted.agentFlags.agent_enabled === true;
 

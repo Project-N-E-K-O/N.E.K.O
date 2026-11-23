@@ -1170,6 +1170,37 @@ async def test_restore_finished_flag_only_after_replay_completes(
 
 
 @pytest.mark.asyncio
+async def test_restore_finished_flag_waits_for_background_replay_tasks(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The CU/BU probe and user-plugin replay run as background tasks that can
+    still write flags after ``_do_restore_agent_intent`` returns; the flag must
+    stay False until they end (even when one of them raises)."""
+    from app.agent_server import api_routes as srv_mod
+    srv_mod._reset_intent_restore_for_testing()
+
+    release = asyncio.Event()
+
+    async def _slow_replay_write():
+        await release.wait()
+        raise RuntimeError("probe failed")
+
+    async def _fake_do_restore():
+        srv_mod._intent_restore_background_tasks.append(asyncio.create_task(_slow_replay_write()))
+
+    monkeypatch.setattr(srv_mod, "_do_restore_agent_intent", _fake_do_restore)
+
+    await srv_mod._maybe_restore_agent_intent()
+    await asyncio.sleep(0)
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is False
+
+    release.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is True
+
+
+@pytest.mark.asyncio
 async def test_restore_llm_dependent_all_retries_fail_clears_intent(
     agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
 ):
