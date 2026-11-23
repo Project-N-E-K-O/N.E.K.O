@@ -17,21 +17,40 @@ Registered from ``tests/conftest.py`` (``pytest_configure``).
 from __future__ import annotations
 
 import faulthandler
+import os
 from typing import Any
 
 import pytest
 
 
 def timeout_seconds(item: pytest.Item) -> float:
-    """Return pytest-timeout's limit for this test, 0 when there is none."""
-    marker = item.get_closest_marker("timeout")
-    if marker is not None:
-        value: Any = marker.args[0] if marker.args else marker.kwargs.get("timeout", 0)
-    else:
+    """Return pytest-timeout's limit for this test, 0 when there is none.
+
+    The same precedence as pytest-timeout: the ``timeout`` marker, then
+    ``--timeout``, then ``PYTEST_TIMEOUT``, then the ini setting. Its own
+    resolution is used where it is there, so a shortened, lengthened or
+    disabled timeout holds for the watchdog as well.
+    """
+    try:
+        from pytest_timeout import _get_item_settings
+    except ImportError:
+        _get_item_settings = None
+    if _get_item_settings is not None:
         try:
-            value = item.config.getini("timeout")
+            return float(_get_item_settings(item).timeout or 0)
+        except Exception:  # noqa: BLE001 - its internals moved; resolve it here instead
+            pass
+    marker = item.get_closest_marker("timeout")
+    value: Any = None
+    if marker is not None:
+        value = marker.args[0] if marker.args else marker.kwargs.get("timeout")
+    if value is None:
+        try:
+            value = item.config.getoption("timeout")
         except ValueError:  # pytest-timeout is not installed
             return 0.0
+    if value is None:
+        value = os.environ.get("PYTEST_TIMEOUT") or item.config.getini("timeout")
     try:
         return float(value or 0)
     except (TypeError, ValueError):
