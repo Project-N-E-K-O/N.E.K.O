@@ -78,6 +78,7 @@ class _BackendState:
     next_allowed: float = 0.0
     cooldown_until: float = 0.0
     block_count: int = 0
+    lock_waiters: int = 0
 
 
 async def request_with_retry(
@@ -223,12 +224,13 @@ class SearchCoordinator:
         flight: Optional[_InflightFlight],
         wait_deadline: Optional[float],
     ) -> None:
-        if not state.lock.locked():
+        if not state.lock.locked() and state.lock_waiters == 0:
             await state.lock.acquire()
             return
         start = time.monotonic()
         queue_deadline = start + self.queue_wait_seconds
         acquire_task = asyncio.create_task(state.lock.acquire())
+        state.lock_waiters += 1
         try:
             while not acquire_task.done():
                 deadline_event = flight._deadline_event if flight is not None else None
@@ -284,6 +286,8 @@ class SearchCoordinator:
                 if acquired:
                     state.lock.release()
             raise
+        finally:
+            state.lock_waiters -= 1
 
     async def _guarded_fetch(
         self,

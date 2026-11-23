@@ -1111,3 +1111,69 @@ async def test_coalesced_short_waiter_fails_fast_during_throttle_sleep_without_b
     assert elapsed < 0.1
     assert (await asyncio.wait_for(long_task, timeout=1.0))[0]["title"] == "throttled-ok"
     assert fetch_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_lock_release_handoff_does_not_bypass_queue_wait_seconds() -> None:
+    """Caller arriving during lock release handoff must respect queue_wait_seconds."""
+    coordinator = resilience.SearchCoordinator(
+        min_interval_seconds=0.0,
+        queue_wait_seconds=0.1,
+    )
+    fetch0_entered = asyncio.Event()
+    release_fetch0 = asyncio.Event()
+    fetch1_entered = asyncio.Event()
+    release_fetch1 = asyncio.Event()
+    fetch2_calls = 0
+
+    async def fetch0() -> resilience.SearchResults:
+        fetch0_entered.set()
+        await release_fetch0.wait()
+        await asyncio.sleep(0)
+        return [{"title": "q0", "url": "https://example.com/0", "snippet": ""}]
+
+    async def fetch1() -> resilience.SearchResults:
+        fetch1_entered.set()
+        await release_fetch1.wait()
+        return [{"title": "q1", "url": "https://example.com/1", "snippet": ""}]
+
+    async def fetch2() -> resilience.SearchResults:
+        nonlocal fetch2_calls
+        fetch2_calls += 1
+        return [{"title": "q2", "url": "https://example.com/2", "snippet": ""}]
+
+    task0 = asyncio.create_task(
+        coordinator.run(("duckduckgo", "q0", 3), fetch0, max_wait_seconds=None)
+    )
+    await fetch0_entered.wait()
+
+    task1 = asyncio.create_task(
+        coordinator.run(("duckduckgo", "q1", 3), fetch1, max_wait_seconds=None)
+    )
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    state = coordinator._backends["duckduckgo"]
+    assert state.lock.locked()
+    assert state.lock_waiters == 1
+
+    # Synchronously release fetch0 and launch task2 so fetch2 reaches
+    # _acquire_backend_lock right after state.lock.release() wakes task1, while
+    # state.lock.locked() is False and task1 has not yet resumed.
+    release_fetch0.set()
+    task2 = asyncio.create_task(
+        coordinator.run(("duckduckgo", "q2", 3), fetch2, max_wait_seconds=None)
+    )
+
+    try:
+        with pytest.raises(resilience.SearchBusyError):
+            await asyncio.wait_for(task2, timeout=1.0)
+        await asyncio.wait_for(fetch1_entered.wait(), timeout=0.5)
+        assert fetch2_calls == 0
+    finally:
+        release_fetch1.set()
+
+    assert (await asyncio.wait_for(task0, timeout=1.0))[0]["title"] == "q0"
+    assert (await asyncio.wait_for(task1, timeout=1.0))[0]["title"] == "q1"
+    assert fetch2_calls == 0
+    assert state.lock_waiters == 0
