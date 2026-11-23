@@ -24,6 +24,7 @@ from plugin.server.application.plugins.consent_service import forget_plugin
 from plugin.server.application.plugins.permission_service import (
     UNUSABLE_STORE_CODES,
     forget_permissions,
+    forget_remembered_permissions,
     restore_permissions,
 )
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
@@ -818,6 +819,9 @@ async def _forget_permissions_precommit(
                 plugin_id,
                 exc.code,
             )
+            # Nothing was written, so no store notification drops the
+            # in-process copy of the old grants; drop it here.
+            forget_remembered_permissions(plugin_id)
             return None, {
                 "code": exc.code,
                 "message": (

@@ -470,6 +470,18 @@ def _invalidate_last_records(plugin_ids: frozenset[str] | None) -> None:
             _removals[plugin_id] = _removals.get(plugin_id, 0) + 1
 
 
+def forget_remembered_permissions(plugin_id: str) -> None:
+    """Drop the in-process copy of the plugin's last read grants without
+    touching the store.
+
+    For an uninstall that could not clear an unusable store: nothing is
+    written, so no change notification drops the copy, and a later read
+    failure would otherwise hand the removed plugin's grants to whatever
+    runs under the same id in this process.
+    """
+    _invalidate_last_records(frozenset({plugin_id}))
+
+
 def _on_store_change(plugin_ids: frozenset[str] | None) -> None:
     """Store change listener: drop remembered records the write made stale,
     so a later read failure never reports a removed or replaced grant."""

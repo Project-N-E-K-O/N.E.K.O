@@ -40,11 +40,25 @@ describe('collectBatchPluginDeleteWarnings', () => {
       permission_warning: { code: 'PLUGIN_PERMISSIONS_CORRUPT', message: 'x' },
     }
     expect(collectBatchPluginDeleteWarnings([
-      { result: unusable, plugin: 'A' },
-      { result: { restored_builtin_restart_error: null, permission_warning: null }, plugin: 'B' },
-      { result: unusable, plugin: 'C' },
+      { result: unusable, plugin: 'A', pluginId: 'a' },
+      { result: { restored_builtin_restart_error: null, permission_warning: null }, plugin: 'B', pluginId: 'b' },
+      { result: unusable, plugin: 'C', pluginId: 'c' },
+      { result: unusable, plugin: 'C', pluginId: 'c' },
     ], t)).toEqual([
-      'messages.pluginDeletedPermissionsNotCleared:{"plugin":"A, C"}',
+      'messages.pluginsDeletedPermissionsNotCleared:{"plugins":"A, C"}',
+    ])
+  })
+
+  it('tells plugins with the same name apart by id', () => {
+    const unusable = {
+      restored_builtin_restart_error: null,
+      permission_warning: { code: 'PLUGIN_PERMISSIONS_CORRUPT', message: 'x' },
+    }
+    expect(collectBatchPluginDeleteWarnings([
+      { result: unusable, plugin: 'Demo', pluginId: 'demo' },
+      { result: unusable, plugin: 'Demo', pluginId: 'demo_copy' },
+    ], t)).toEqual([
+      'messages.pluginsDeletedPermissionsNotCleared:{"plugins":"Demo, Demo"}',
     ])
   })
 
@@ -56,8 +70,9 @@ describe('collectBatchPluginDeleteWarnings', () => {
           permission_warning: { code: 'PLUGIN_PERMISSIONS_CORRUPT', message: 'x' },
         },
         plugin: 'A',
+        pluginId: 'a',
       },
-      { result: { restored_builtin_restart_error: null }, plugin: 'B' },
+      { result: { restored_builtin_restart_error: null }, plugin: 'B', pluginId: 'b' },
     ], t)).toEqual([
       'messages.pluginDeletedBuiltinRestartFailed:{"plugin":"A","error":"boom"}',
       'messages.pluginDeletedPermissionsNotCleared:{"plugin":"A"}',

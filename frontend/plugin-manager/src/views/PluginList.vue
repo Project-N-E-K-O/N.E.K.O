@@ -1327,12 +1327,16 @@ async function handleBatchDelete() {
 
   batchBusy.value = true
   let ok = 0; let fail = 0
-  const deleted: Array<{ result: Awaited<ReturnType<typeof deletePlugin>>; plugin: string }> = []
+  const deleted: Array<{
+    result: Awaited<ReturnType<typeof deletePlugin>>
+    plugin: string
+    pluginId: string
+  }> = []
   for (const p of plugins) {
     try {
       const result = await deletePlugin(p.id)
       ok++
-      deleted.push({ result, plugin: p.name })
+      deleted.push({ result, plugin: p.name, pluginId: p.id })
     } catch { fail++ }
   }
   batchBusy.value = false

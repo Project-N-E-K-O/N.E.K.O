@@ -1470,6 +1470,45 @@ async def test_uninstall_proceeds_when_permission_store_is_unusable(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_uninstall_past_unusable_store_drops_remembered_grants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The store was readable earlier in the session, so the process holds the
+    plugin's last read grants; after the store turns unusable and the uninstall
+    goes on, a read failure must not hand them to the next plugin with that id."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    granted = "plugin_sdk.main_agent.memory:read"
+    harness = _Harness(tmp_path)
+    harness.install(monkeypatch)
+    _grant_demo()
+    before = permission_service.permission_snapshot("demo")
+    assert before["states"][granted]["status"] == "granted"
+
+    class _MovedManager:
+        # The runtime config path now points at an unusable file.
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "moved" / name
+
+    moved = tmp_path / "moved" / "plugin_permissions.json"
+    moved.parent.mkdir()
+    moved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_MovedManager())
+    )
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+
+    result = await uninstall_plugin("demo")
+
+    assert result.permission_warning is not None
+    after = permission_service.permission_snapshot("demo")
+    assert after.get("read_failed") is True
+    assert after["states"][granted]["status"] != "granted"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_uninstall_rollback_leaves_unusable_permission_store_untouched(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
