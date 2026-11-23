@@ -176,6 +176,13 @@ export async function stubCorePluginManagerApis(page: Page) {
   await page.route('**/console/board*', (route) =>
     route.fulfill({ json: { success: true, revision: 'e2e', projects: [], loose: [] } })
   )
+  // What happened among them: nothing yet.
+  await page.route('**/console/timeline*', (route) =>
+    route.fulfill({ json: { success: true, entries: [], next: 'e0.m0', more: false, latest: 'e0.m0' } })
+  )
+  await page.route('**/console/timeline/start', (route) =>
+    route.fulfill({ json: { success: true, after: '', latest: 'e0.m0' } })
+  )
   await page.route('**/plugins?*', (route) => route.fulfill({ json: { plugins: [], message: '' } }))
   await page.route('**/plugin/status', (route) => route.fulfill({ json: { plugins: {} } }))
   await page.route('**/server/info', (route) =>
