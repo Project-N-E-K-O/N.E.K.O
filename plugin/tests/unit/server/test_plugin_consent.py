@@ -687,8 +687,10 @@ async def test_source_revision_walks_wait_for_plugin_directory_mutation(
     monkeypatch, tmp_path, reports
 ):
     # The revision check walks and stats the plugin tree before and after the
-    # scan. Unlocked, a walk still in progress keeps directory handles open
-    # while an update renames the plugin directory (Windows: WinError 5).
+    # scan, and the scan reads the sources in between. Unlocked, a read still
+    # in progress keeps handles open while an update renames the plugin
+    # directory (Windows: WinError 5). Each read is recorded separately: the
+    # first lock wait alone cannot tell whether the later reads are locked.
     from plugin.server.application.plugins.operation_lock import plugin_operation_lock
 
     root = tmp_path / "demo"
@@ -696,9 +698,10 @@ async def test_source_revision_walks_wait_for_plugin_directory_mutation(
     (root / "main.py").write_text("self.ctx.push_message()", encoding="utf-8")
     held = threading.local()
     pending = threading.Event()
-    walks: list[bool] = []
+    walks: list[tuple[str, bool]] = []
     original_lock = analysis.hold_plugin_operation_file_lock
     original_revision = analysis.source_revision
+    original_read = analysis.read_capability_sources
 
     @contextlib.contextmanager
     def tracked_lock(stop):
@@ -711,11 +714,16 @@ async def test_source_revision_walks_wait_for_plugin_directory_mutation(
                 held.depth -= 1
 
     def tracked_revision(*args, **kwargs):
-        walks.append(getattr(held, "depth", 0) > 0)
+        walks.append(("revision", getattr(held, "depth", 0) > 0))
         return original_revision(*args, **kwargs)
+
+    def tracked_read(*args, **kwargs):
+        walks.append(("sources", getattr(held, "depth", 0) > 0))
+        return original_read(*args, **kwargs)
 
     monkeypatch.setattr(analysis, "hold_plugin_operation_file_lock", tracked_lock)
     monkeypatch.setattr(analysis, "source_revision", tracked_revision)
+    monkeypatch.setattr(analysis, "read_capability_sources", tracked_read)
     runner = analysis.CapabilityAnalysisService(reports)
     try:
         async with plugin_operation_lock.hold():
@@ -729,8 +737,8 @@ async def test_source_revision_walks_wait_for_plugin_directory_mutation(
             job = runner._jobs.get("demo", (None, None))[1]
         if job is not None:
             await asyncio.wrap_future(job)
-        # Both revision walks (before and after the scan) ran under the lock.
-        assert walks == [True, True]
+        # Both revision walks and the source read in between ran under the lock.
+        assert walks == [("revision", True), ("sources", True), ("revision", True)]
         assert reports.read("demo")["capabilities"] == ["messages.push"]
     finally:
         await runner.close()
