@@ -194,6 +194,7 @@ async function load() {
     items.value = answer.commissions
     more.value = answer.more
     error.value = ''
+    if (usageFailed) void readUsage()
   } catch (failure) {
     if (mine !== turn) return
     error.value = describeConsoleError(failure, t, te)
@@ -219,19 +220,26 @@ async function toggle(item: CommissionRow) {
 // used more or stands otherwise (it went on, it ended). Of several reads the one asked for last
 // holds, whichever answers first: an older answer would put back what it had used before.
 let usageTurn = 0
-watch(() => {
-  const item = items.value.find(some => some.id === opened.value)
-  return item ? `${item.id}:${item.status}:${item.usage.requests}:${item.usage.tokens}` : ''
-}, async key => {
+// Whether the read asked for last failed: it is asked for again when the list is read next.
+let usageFailed = false
+async function readUsage() {
   const id = opened.value
   const mine = ++usageTurn
-  if (!key || !id) return
+  usageFailed = false
+  if (!id) return
   try {
     const answer = await getCommissionUsage(id)
     if (mine === usageTurn) usage.value = answer
   } catch {
-    // Shown without what it used.
+    // Shown without what it used, until it can be read.
+    if (mine === usageTurn) usageFailed = true
   }
+}
+watch(() => {
+  const item = items.value.find(some => some.id === opened.value)
+  return item ? `${item.id}:${item.status}:${item.usage.requests}:${item.usage.tokens}` : ''
+}, key => {
+  if (key) void readUsage()
 })
 
 async function act(name: string, work: () => Promise<unknown>, done = '') {

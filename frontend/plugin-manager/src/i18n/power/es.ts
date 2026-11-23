@@ -391,6 +391,7 @@ const messages: PowerMessages = {
     loading: 'Leyendo…',
     nothing: 'Aún no ha pasado nada.',
     earlierLeftOut: 'Entradas anteriores sin mostrar: {count}.',
+    onlyLatest: 'Aquí solo se conservan los últimos {count}; los anteriores no se muestran.',
     showMoment: 'Ver cómo estaba la colonia entonces',
     you: 'ti',
     someone: 'un familiar',

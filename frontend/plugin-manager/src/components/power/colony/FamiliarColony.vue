@@ -57,10 +57,12 @@
         >
         <span class="muted moment" data-testid="replay-moment">{{ momentLabel }}</span>
         <el-button v-if="position !== null" size="small" data-testid="replay-now" @click="toNow">{{ t('power.colony.now') }}</el-button>
-        <el-button v-else-if="!whole && entries.length" size="small" data-testid="replay-whole" @click="fromBeginning">
+        <el-button v-else-if="!whole && !dropped && entries.length" size="small" data-testid="replay-whole" @click="fromBeginning">
           {{ t('power.colony.fromBeginning') }}
         </el-button>
       </div>
+      <!-- More happened than is held: reading from the beginning would end with the same latest ones, so it is said and not offered. -->
+      <p v-if="dropped" class="muted" data-testid="timeline-capped">{{ t('power.activity.onlyLatest', { count: KEPT_ENTRIES }) }}</p>
       <p v-if="gone && position !== null" class="muted" role="status" data-testid="replay-gone">{{ t('power.colony.momentGone') }}</p>
 
       <h2 class="feed-title">{{ t('power.activity.title') }}</h2>
@@ -89,7 +91,7 @@ import { SAID_SECONDS, clockTime, firstSeen, ghostsOf, sceneAt } from './activit
 import ColonyTerritory from './ColonyTerritory.vue'
 import type { ColonyMember, Territory } from './ColonyTerritory.vue'
 import { useBoard } from './useBoard'
-import { useTimeline } from './useTimeline'
+import { KEPT_ENTRIES, useTimeline } from './useTimeline'
 
 const ColonyDialogs = defineAsyncComponent(() => import('./ColonyDialogs.vue'))
 

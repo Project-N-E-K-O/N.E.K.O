@@ -398,6 +398,7 @@ const messages = {
     loading: 'Reading…',
     nothing: 'Nothing has happened yet.',
     earlierLeftOut: '{count} earlier entries are not shown.',
+    onlyLatest: 'Only the latest {count} are kept here; earlier ones are not shown.',
     showMoment: 'Show the colony as it was then',
     you: 'you',
     someone: 'a familiar',

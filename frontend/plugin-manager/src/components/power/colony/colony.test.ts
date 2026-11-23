@@ -947,5 +947,47 @@ describe('the colony on the home page', () => {
     // All of it is held now: there is nothing more to offer.
     expect(document.querySelectorAll('.row').length).toBe(story.length)
     expect(byTest('replay-whole')).toBeNull()
+    expect(byTest('timeline-capped')).toBeNull()
+  })
+
+  it('says that only the latest are kept, and offers no reading from the beginning, when more happened than is held', async () => {
+    const step = (n: number) => entry('reported', { at: n, cursor: `e${n}.m0`, text: `step ${n}` })
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9' })
+    await mount(FamiliarColony)
+    expect(byTest('replay-whole')).toBeTruthy()
+    // From the beginning there is more than is held: what is left is the latest again.
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e9.m0', more: false, latest: 'e9.m0' })
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 1000 }, (_, n) => step(n)), next: 'e1.m0', more: true, latest: 'e9.m0' })
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 1000 }, (_, n) => step(1000 + n)), next: 'e2.m0', more: true, latest: 'e9.m0' })
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 1000 }, (_, n) => step(2000 + n)), next: 'e3.m0', more: true, latest: 'e9.m0' })
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 500 }, (_, n) => step(3000 + n)), next: 'e9.m0', more: false, latest: 'e9.m0' })
+    byTest('replay-whole')!.click()
+    await flush()
+    await flush()
+    expect(api.getTimeline).toHaveBeenCalledTimes(4)
+    // Pressing it again would end the same: it is not offered, and why is said.
+    expect(byTest('replay-whole')).toBeNull()
+    expect(byTest('timeline-capped')?.textContent).toBe(words.activity.onlyLatest.replace('{count}', '3000'))
+  })
+
+  it('leaves the list of what happened where the user reads it, and follows what is new only from its end', async () => {
+    const some = (count: number) => Array.from({ length: count }, (_, n) => entry('reported', { at: n, cursor: `e${n}.m0`, text: `step ${n}` }))
+    const { state } = await mount(ActivityFeed, { entries: some(5), current: null, nameOf })
+    const box = document.querySelector('.rows') as HTMLElement
+    let top = 0
+    Object.defineProperty(box, 'scrollHeight', { configurable: true, get: () => 1000 })
+    Object.defineProperty(box, 'clientHeight', { configurable: true, get: () => 200 })
+    Object.defineProperty(box, 'scrollTop', { configurable: true, get: () => top, set: (value: number) => { top = value } })
+    // Gone up to read what came before: what is new does not pull the list down.
+    top = 300
+    state.props = { entries: some(6), current: null, nameOf }
+    await flush()
+    expect(top).toBe(300)
+    // At its end (or all but): it follows.
+    top = 770
+    state.props = { entries: some(7), current: null, nameOf }
+    await flush()
+    expect(top).toBe(1000)
   })
 })

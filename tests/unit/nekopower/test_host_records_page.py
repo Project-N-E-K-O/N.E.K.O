@@ -245,6 +245,22 @@ def test_a_record_that_is_there_and_cannot_be_opened_is_not_one_nothing_was_said
         records.read_whole_entry(held, 0, entry_tokens=100, max_bytes=10_000)
 
 
+def test_a_record_that_fails_while_it_is_read_is_not_one_nothing_was_said_in(tmp_path, monkeypatch):
+    path = tmp_path / "record.jsonl"
+    path.write_text('{"type": "message", "message": {"role": "user", "content": "hello"}}\n', encoding="utf-8")
+
+    def fails(*args, **kwargs):
+        raise OSError("the disk went away")
+
+    # Opened, and then it cannot be read on (a share that dropped, a disk that fails).
+    monkeypatch.setattr(records, "_whole_end", fails)
+    with pytest.raises(records.RecordUnreadable):
+        records.read_page(path, None, 5, entry_tokens=100, scan_bytes=10_000)
+    monkeypatch.setattr(records, "_at_line_start", fails)
+    with pytest.raises(records.RecordUnreadable):
+        records.read_whole_entry(path, 0, entry_tokens=100, max_bytes=10_000)
+
+
 def test_the_lines_before_a_place_are_the_same_whatever_the_size_of_the_blocks_they_are_read_in(tmp_path, monkeypatch):
     # Empty lines, short ones, and ones that reach over many blocks, as a picture kept in a record does.
     lines = [b"", b"a", b"x" * 37, b"", b"hello world", b"y" * 5, b"z" * 64, b"last"]

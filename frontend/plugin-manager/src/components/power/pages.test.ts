@@ -775,10 +775,11 @@ describe('the commissions', () => {
     })
     document.dispatchEvent(new Event('visibilitychange'))
     await flush()
-    expect(byTest('commission-usage')?.textContent).toContain('31')
+    expect(byTest('commission-usage')?.textContent).toContain('900k')
     early(used(9, 314_000))
     await flush()
-    expect(byTest('commission-usage')?.textContent).toContain('31')
+    expect(byTest('commission-usage')?.textContent).toContain('900k')
+    expect(byTest('commission-usage')?.textContent).not.toContain('314k')
     // Closed while a read is out: what comes back is not shown for the one opened next.
     let late: (answer: unknown) => void = () => {}
     api.getCommissionUsage.mockReturnValueOnce(new Promise(resolve => { late = resolve }))
@@ -789,6 +790,27 @@ describe('the commissions', () => {
     late(used(77, 7_000_000))
     await flush()
     expect(byTest('commission-usage')?.textContent).not.toContain('77')
+  })
+
+  it('asks again for what the open one used, when the list is read next, after that could not be read', async () => {
+    api.getCommissionUsage.mockReset()
+    api.getCommissionUsage.mockRejectedValueOnce(new Error('Network Error'))
+    api.getCommissionUsage.mockResolvedValue({
+      commission: { requests: 9, input: 13_000, output: 4_000, cache_read: 297_000, cache_write: 0, tokens: 314_000 },
+      used: 314_000, limit: 5_000_000, session: null, window: null,
+    })
+    await mount(Commissions)
+    await click(document.querySelector('[data-commission="c1"]'))
+    expect(byTest('commission-usage')).toBeNull()
+    // The list is read again with nothing new about it: what could not be read is asked for again.
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(api.getCommissionUsage).toHaveBeenCalledTimes(2)
+    expect(byTest('commission-usage')?.textContent).toContain('310k')
+    // Read by now: the next reading of the list asks for nothing.
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flush()
+    expect(api.getCommissionUsage).toHaveBeenCalledTimes(2)
   })
 
   it('says why one that is stuck stopped, and still offers to call it off', async () => {
@@ -899,11 +921,17 @@ describe('what happened in a project', () => {
     // As many as are kept, then one more: the oldest is let go and their number stays.
     api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 3000 }, (_, n) => step(n)), next: 'e9.m0', more: false, latest: 'e9.m0' })
     await mount(ActivityPane, { project: 'Blog' })
+    // All of it is held, from its beginning: nothing more to read, nothing to say.
+    expect(byTest('activity-whole')).toBeNull()
+    expect(byTest('activity-capped')).toBeNull()
     const read = api.getProjectBoard.mock.calls.length
     api.getTimeline.mockResolvedValueOnce({ entries: [step(3000)], next: 'e9.m0', more: false, latest: 'e9.m0' })
     await vi.advanceTimersByTimeAsync(2100)
     await flush()
     expect(api.getProjectBoard.mock.calls.length).toBe(read + 1)
+    // The oldest was let go: reading from the beginning would end here again, so it is said and not offered.
+    expect(byTest('activity-whole')).toBeNull()
+    expect(byTest('activity-capped')?.textContent).toBe(words.activity.onlyLatest.replace('{count}', '3000'))
     // Nothing new: not read again.
     await vi.advanceTimersByTimeAsync(2100)
     await flush()

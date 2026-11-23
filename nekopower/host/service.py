@@ -812,16 +812,22 @@ class NekoPowerHost:
         if kept is None:
             return None
 
-        def place() -> tuple[Path, bool, bool]:
+        def place() -> tuple[Path, bool, bool, bool]:
             session_dir = Path(self.task_agents.session_dir_of(kept))
             path = session_dir / TRANSCRIPT_NAME
+            held = False
             try:
                 written = path.stat().st_size > 0
-            except OSError:
+            except FileNotFoundError:
                 written = False
-            return path, written, (session_dir / DSH_SESSION_NAME).is_file()
+            except OSError:
+                # There, and not to be looked at now: not the same as nothing said.
+                written, held = False, True
+            return path, written, (session_dir / DSH_SESSION_NAME).is_file(), held
 
-        path, in_builtin, in_dsh = await asyncio.to_thread(place)
+        path, in_builtin, in_dsh, held = await asyncio.to_thread(place)
+        if held:
+            raise ValueError("record_unreadable")
         if not in_builtin:
             return {"readable": False, "reason": "dsh" if in_dsh else "empty", "entries": [], "before": None}
         try:
@@ -931,9 +937,10 @@ class NekoPowerHost:
         over), and those that last changed within ``days`` days
         (``CONSOLE_COMMISSIONS_DAYS`` when not given; 0 or less: however
         long ago). ``statuses`` keeps to those in one of them; ``project``
-        to those of one project (``""`` for those of none). ``limit`` at
-        most (``CONSOLE_COMMISSIONS_ROWS`` when not given, never more than
-        ``CONSOLE_COMMISSIONS_MAX_ROWS``); ``more`` says some were left
+        to those of one project (``""`` for those of none). ``limit`` of
+        those that are over at most (``CONSOLE_COMMISSIONS_ROWS`` when not
+        given, never more than ``CONSOLE_COMMISSIONS_MAX_ROWS``), besides
+        those under way, which are all listed; ``more`` says some were left
         out, or that so many were looked through for a project that the
         look stopped (``CONSOLE_COMMISSIONS_SCAN_ROWS``). A status
         is the one a commission is shown with: one that rests is among
@@ -988,11 +995,15 @@ class NekoPowerHost:
         # Read a moment apart: of one that is in both, what the later read says holds, so one
         # that was answered or ended between the two is not listed as it stood before.
         latest = {item.id: item for item in [*under_way, *read]}
-        listed = sorted((item for item in latest.values() if kept(item)), key=lambda item: item.created_at, reverse=True)
-        # One more than asked for was read: what is left over says there is more. So does a
-        # look that went as far as it may: what lies beyond it was not looked at.
-        more = len(listed) > rows or (looked_at_here and len(read) >= reach)
-        listed = listed[:rows]
+        ordered = sorted((item for item in latest.values() if kept(item)), key=lambda item: item.created_at, reverse=True)
+        # Those under way are all listed, however many and however old: one that waits for the
+        # user is answered from this list. The limit is for those that are over. One more of
+        # them than asked for was read: what is left over says there is more. So does a look
+        # that went as far as it may: what lies beyond it was not looked at.
+        over = [item for item in ordered if item.status not in UNDER_WAY_STATUSES]
+        more = len(over) > rows or (looked_at_here and len(read) >= reach)
+        left_out = {item.id for item in over[rows:]}
+        listed = [item for item in ordered if item.id not in left_out]
 
         sessions: dict[str, Any] = {}
         for item in listed:

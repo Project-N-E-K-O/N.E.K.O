@@ -391,6 +391,7 @@ const messages: PowerMessages = {
     loading: '正在读…',
     nothing: '还没有发生什么。',
     earlierLeftOut: '更早的 {count} 条没有显示。',
+    onlyLatest: '这里只留着最近 {count} 条，更早的不显示。',
     showMoment: '看看群落当时的样子',
     you: '你',
     someone: '一只使魔',

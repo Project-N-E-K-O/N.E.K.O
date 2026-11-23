@@ -492,7 +492,7 @@ def read_page(
                     if len(found) >= limit:
                         break
     except OSError as exc:
-        raise RecordError(f"the record of this session cannot be read ({type(exc).__name__})") from exc
+        raise RecordUnreadable(f"the record of this session cannot be read now ({type(exc).__name__})") from exc
     found.reverse()
     return {"entries": found, "before": reached if reached > 0 else None}
 
@@ -517,7 +517,7 @@ def read_whole_entry(path: Path, at: int, *, entry_tokens: int, max_bytes: int) 
             handle.seek(at)
             raw = handle.readline(max_bytes + 1)
     except OSError as exc:
-        raise RecordError(f"the record of this session cannot be read ({type(exc).__name__})") from exc
+        raise RecordUnreadable(f"the record of this session cannot be read now ({type(exc).__name__})") from exc
     if len(raw) > max_bytes:
         raise EntryTooLarge("this entry is too large to show")
     if not raw.endswith(b"\n"):

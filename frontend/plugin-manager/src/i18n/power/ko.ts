@@ -391,6 +391,7 @@ const messages: PowerMessages = {
     loading: '읽는 중…',
     nothing: '아직 아무 일도 없었어요.',
     earlierLeftOut: '이전 {count}건은 표시하지 않았어요.',
+    onlyLatest: '여기에는 최근 {count}개만 보관합니다. 그 이전 것은 표시되지 않습니다.',
     showMoment: '그때의 무리 모습 보기',
     you: '당신',
     someone: '사역마 한 마리',

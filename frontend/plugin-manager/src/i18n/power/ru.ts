@@ -391,6 +391,7 @@ const messages: PowerMessages = {
     loading: 'Читаем…',
     nothing: 'Пока ничего не происходило.',
     earlierLeftOut: 'Более ранние записи не показаны: {count}.',
+    onlyLatest: 'Здесь хранятся только последние {count}; более ранние не показываются.',
     showMoment: 'Показать колонию в тот момент',
     you: 'вы',
     someone: 'фамильяр',

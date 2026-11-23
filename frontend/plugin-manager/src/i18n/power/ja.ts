@@ -391,6 +391,7 @@ const messages: PowerMessages = {
     loading: '読み込み中…',
     nothing: 'まだ何も起きていません。',
     earlierLeftOut: 'これより前の {count} 件は表示していません。',
+    onlyLatest: 'ここには最新の {count} 件だけを保持しています。それより前のものは表示されません。',
     showMoment: 'そのときのコロニーの様子を見る',
     you: 'あなた',
     someone: 'ある使い魔',

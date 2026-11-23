@@ -391,6 +391,7 @@ const messages: PowerMessages = {
     loading: '正在讀取…',
     nothing: '還沒有發生什麼。',
     earlierLeftOut: '更早的 {count} 筆沒有顯示。',
+    onlyLatest: '這裡只留著最近 {count} 條，更早的不顯示。',
     showMoment: '看看群落當時的樣子',
     you: '你',
     someone: '一隻使魔',

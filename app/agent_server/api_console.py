@@ -918,8 +918,9 @@ def build_console_router(
         """Return the commissions, the newest first: those under way and those that changed lately.
 
         ``status`` is one status or several with commas between them;
-        ``project`` keeps to one project, ``loose`` (any value) to those of
-        no project; ``days`` how far back (0: however long ago).
+        ``project`` keeps to one project, ``loose`` (``1`` or ``true``) to
+        those of no project, and the two are not asked for together;
+        ``days`` how far back (0: however long ago).
         """
         from nekopower.host.ledger import STATUSES
 
@@ -929,7 +930,13 @@ def build_console_router(
             if not wanted or any(part not in (*STATUSES, "resting") for part in wanted):
                 raise _refuse(400, "bad_status")
         project, _ = scope(project)
-        if loose:
+        loosely = (loose or "").strip().lower()
+        if loosely not in ("", "0", "false", "1", "true"):
+            raise _refuse(400, "bad_name")
+        if loosely in ("1", "true"):
+            if project is not None:
+                # Of one project and of none at once: no commission is both.
+                raise _refuse(400, "bad_name")
             project = ""
         span = whole_number(days, "bad_days")
         rows = whole_number(limit, "bad_limit", least=1)

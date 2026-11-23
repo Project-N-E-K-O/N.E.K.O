@@ -371,6 +371,22 @@ async def test_a_record_that_cannot_be_opened_now_is_said_and_not_shown_as_nothi
     page = (await console.get(f"/familiars/{done.session_id}/transcript")).json()
     assert (page["readable"], page["reason"]) == (False, "empty")
 
+    # It cannot even be looked at whether it is there (not permitted): said as that as well.
+    from pathlib import Path
+
+    from nekopower.host.paths import TRANSCRIPT_NAME
+
+    stat = Path.stat
+
+    def not_permitted(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if self.name == TRANSCRIPT_NAME:
+            raise PermissionError("not permitted")
+        return stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", not_permitted)
+    assert _code(await console.get(f"/familiars/{done.session_id}/transcript")) == (409, "record_unreadable")
+    monkeypatch.setattr(Path, "stat", stat)
+
 
 async def test_an_entry_too_large_to_show_whole_is_said_to_be(consoles, tmp_path, monkeypatch):
     console = consoles(tmp_path, ScriptedLLM([_report("ready", "sorted")]))
@@ -469,8 +485,14 @@ async def test_the_commissions_are_listed_newest_first_with_what_each_asks_and_k
     assert await ids(project="Garden") == [second.id]
     assert await ids(loose="1") == [first.id]
     assert await ids(project="Nowhere") == []
+    # The limit is for those that are over: the one under way is listed besides them.
     one = (await console.get("/commissions", limit=1)).json()
-    assert ([item["id"] for item in one["commissions"]], one["more"]) == ([second.id], True)
+    assert ([item["id"] for item in one["commissions"]], one["more"]) == ([second.id, first.id], False)
+    # Of one project and of none are not asked for together; what is no yes or no is refused.
+    assert await ids(project="Garden", loose="0") == [second.id]
+    assert await ids(loose="true") == [first.id]
+    assert _code(await console.get("/commissions", project="Garden", loose="1")) == (400, "bad_name")
+    assert _code(await console.get("/commissions", loose="maybe")) == (400, "bad_name")
 
     # One that ended long ago is left out of what changed lately, and listed when asked however long ago.
     def long_ago(conn: Any) -> None:
@@ -534,7 +556,17 @@ async def test_what_is_kept_to_is_looked_for_before_the_listing_is_cut(consoles,
         assert (await ledger.transition(commission.id, outcome)).applied
         return commission.id
 
-    # Two of one project, then many of another filed after them.
+    # One that still waits for the user, older than all the rest; two of one project that are
+    # over, then many of another filed after them.
+    asking = await _file(ledger, await _session(ledger, "an old one that asks", project="Garden", kind="single"), "an old one that asks")
+    assert (await ledger.transition(asking.id, "working")).applied
+    assert (await ledger.transition(asking.id, "waiting_user")).applied
+
+    def long_before(conn: Any) -> None:
+        conn.execute("UPDATE commissions SET created_at = created_at - 1000 WHERE id = ?", (asking.id,))
+
+    await ledger.run(long_before)
+    waiting = asking.id
     old = [await ended("Garden", f"garden {n}") for n in range(2)]
     failed = await ended(None, "a loose one that failed", "failed")
     newer = [await ended("Blog", f"blog {n}") for n in range(8)]
@@ -544,10 +576,12 @@ async def test_what_is_kept_to_is_looked_for_before_the_listing_is_cut(consoles,
         answer = (await console.get("/commissions", **params)).json()
         return [item["id"] for item in answer["commissions"]], answer["more"]
 
-    # Everything: the three newest, and more are left out.
-    assert await listing() == (newer[:-4:-1], True)
-    # Kept to the project whose commissions are the oldest: both are found, and that is all of them.
-    assert await listing(project="Garden") == (old[::-1], False)
+    # Everything: the three newest of those that are over, and more of them are left out. The one
+    # that waits is listed however many came after it: it is answered from this list.
+    assert await listing() == ([*newer[:-4:-1], waiting], True)
+    assert await listing(status="waiting_user") == ([waiting], False)
+    # Kept to the project whose commissions are the oldest: all are found, and that is all of them.
+    assert await listing(project="Garden") == ([*old[::-1], waiting], False)
     assert await listing(loose="1") == ([failed], False)
     assert await listing(status="failed") == ([failed], False)
     # Kept to the one with many: the newest of it, and more of it are left out.
@@ -557,7 +591,7 @@ async def test_what_is_kept_to_is_looked_for_before_the_listing_is_cut(consoles,
     assert await listing(status="working,resting") == ([], False)
     # A look that goes as far as it may says that there may be more beyond it.
     monkeypatch.setattr(settings, "CONSOLE_COMMISSIONS_SCAN_ROWS", 4)
-    assert await listing(project="Garden") == ([], True)
+    assert await listing(project="Garden") == ([waiting], True)
 
 
 async def test_one_that_rests_is_not_listed_as_at_work_and_one_stuck_long_ago_is_not_listed_as_under_way(consoles, tmp_path):
