@@ -815,6 +815,17 @@ def _contains_direct_continue(node: ast.AST) -> bool:
 
 _SAFE_DICT_READ_METHODS = frozenset({"get", "keys", "values", "items", "copy", "setdefault"})
 _SAFE_READONLY_BUILTINS = frozenset({"dict", "len", "bool", "repr", "str", "isinstance", "type"})
+_SAFE_LOGGER_RECEIVERS = frozenset({"logger", "log", "logging", "_logger"})
+_SAFE_LOGGER_METHODS = frozenset({"debug", "info", "warning", "warn", "error", "exception", "critical", "log"})
+
+
+def _is_safe_logger_call(node: ast.Call) -> bool:
+    if not (isinstance(node.func, ast.Attribute) and node.func.attr in _SAFE_LOGGER_METHODS):
+        return False
+    recv = node.func.value
+    return (isinstance(recv, ast.Name) and recv.id in _SAFE_LOGGER_RECEIVERS) or (
+        isinstance(recv, ast.Attribute) and recv.attr in _SAFE_LOGGER_RECEIVERS
+    )
 
 
 def _arg_exposes_var(expr: ast.AST, var_name: str) -> bool:
@@ -838,11 +849,16 @@ def _arg_exposes_var(expr: ast.AST, var_name: str) -> bool:
     return False
 
 
-def _target_invalidates_binding(target: ast.AST | None, var_name: str) -> bool:
+def _target_invalidates_binding(
+    target: ast.AST | None,
+    var_name: str,
+    *,
+    include_name_rebind: bool = True,
+) -> bool:
     if target is None:
         return False
     if isinstance(target, ast.Name):
-        return target.id == var_name
+        return include_name_rebind and target.id == var_name
     if (
         isinstance(target, ast.Subscript)
         and isinstance(target.value, ast.Name)
@@ -854,9 +870,132 @@ def _target_invalidates_binding(target: ast.AST | None, var_name: str) -> bool:
             and target.slice.value != "event_hooks"
         )
     if isinstance(target, (ast.Tuple, ast.List)):
-        return any(_target_invalidates_binding(el, var_name) for el in target.elts)
+        return any(
+            _target_invalidates_binding(el, var_name, include_name_rebind=include_name_rebind)
+            for el in target.elts
+        )
     if isinstance(target, ast.Starred):
-        return _target_invalidates_binding(target.value, var_name)
+        return _target_invalidates_binding(target.value, var_name, include_name_rebind=include_name_rebind)
+    return False
+
+
+def _target_binds_name(target: ast.AST | None, var_name: str) -> bool:
+    if target is None:
+        return False
+    if isinstance(target, ast.Name):
+        return target.id == var_name
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_target_binds_name(el, var_name) for el in target.elts)
+    if isinstance(target, ast.Starred):
+        return _target_binds_name(target.value, var_name)
+    return False
+
+
+def _lambda_param_names(args: ast.arguments) -> set[str]:
+    names = {arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+    if args.vararg is not None:
+        names.add(args.vararg.arg)
+    if args.kwarg is not None:
+        names.add(args.kwarg.arg)
+    return names
+
+
+def _collect_target_names(target: ast.AST | None, out: set[str]) -> None:
+    if target is None:
+        return
+    if isinstance(target, ast.Name):
+        out.add(target.id)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for el in target.elts:
+            _collect_target_names(el, out)
+    elif isinstance(target, ast.Starred):
+        _collect_target_names(target.value, out)
+
+
+def _collect_walrus_names(node: ast.AST, out: set[str]) -> None:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+        out.add(node.target.id)
+    for child in ast.iter_child_nodes(node):
+        _collect_walrus_names(child, out)
+
+
+def _collect_bound_names_in_stmts(stmts: list[ast.stmt], out: set[str]) -> None:
+    for stmt in stmts:
+        _collect_walrus_names(stmt, out)
+        if isinstance(stmt, ast.Assign):
+            for tgt in stmt.targets:
+                _collect_target_names(tgt, out)
+        elif isinstance(stmt, ast.AnnAssign):
+            _collect_target_names(stmt.target, out)
+        elif isinstance(stmt, ast.AugAssign):
+            _collect_target_names(stmt.target, out)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+            _collect_target_names(stmt.target, out)
+            _collect_bound_names_in_stmts(stmt.body, out)
+            _collect_bound_names_in_stmts(stmt.orelse, out)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                _collect_target_names(item.optional_vars, out)
+            _collect_bound_names_in_stmts(stmt.body, out)
+        elif isinstance(stmt, (ast.If, ast.While)):
+            _collect_bound_names_in_stmts(stmt.body, out)
+            _collect_bound_names_in_stmts(stmt.orelse, out)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(stmt.name)
+        elif isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                out.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(stmt, ast.ImportFrom):
+            for alias in stmt.names:
+                if alias.name == "*":
+                    out.update(_SAFE_READONLY_BUILTINS)
+                else:
+                    out.add(alias.asname or alias.name)
+        else:
+            body_stmts = getattr(stmt, "body", None)
+            if isinstance(body_stmts, list):
+                _collect_bound_names_in_stmts(body_stmts, out)
+            for handler in getattr(stmt, "handlers", []):
+                if getattr(handler, "name", None):
+                    out.add(handler.name)
+                _collect_bound_names_in_stmts(handler.body, out)
+            orelse_stmts = getattr(stmt, "orelse", None)
+            if isinstance(orelse_stmts, list):
+                _collect_bound_names_in_stmts(orelse_stmts, out)
+            final_stmts = getattr(stmt, "finalbody", None)
+            if isinstance(final_stmts, list):
+                _collect_bound_names_in_stmts(final_stmts, out)
+            for case in getattr(stmt, "cases", []):
+                for sub in ast.walk(case.pattern):
+                    name = getattr(sub, "name", None)
+                    if isinstance(name, str):
+                        out.add(name)
+                    rest = getattr(sub, "rest", None)
+                    if isinstance(rest, str):
+                        out.add(rest)
+                _collect_bound_names_in_stmts(case.body, out)
+
+
+def _collect_shadowed_builtins(tree: ast.Module, owners: list[ast.AST]) -> frozenset[str]:
+    bound_names: set[str] = set()
+    _collect_bound_names_in_stmts(tree.body, bound_names)
+    for owner in owners:
+        if isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound_names.add(owner.name)
+            bound_names.update(_lambda_param_names(owner.args))
+            _collect_bound_names_in_stmts(owner.body, bound_names)
+        elif isinstance(owner, ast.ClassDef):
+            bound_names.add(owner.name)
+            _collect_bound_names_in_stmts(owner.body, bound_names)
+    return frozenset(bound_names & _SAFE_READONLY_BUILTINS)
+
+
+def _target_is_inside_lambda_body(root: ast.AST, target: ast.AST) -> bool:
+    for node in ast.walk(root):
+        if isinstance(node, ast.Lambda) and (node.body is target or _stmt_contains_node(node.body, target)):
+            return True
     return False
 
 
@@ -870,6 +1009,7 @@ def _apply_comprehension_mutations(
     sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
+    shadowed_builtins: frozenset[str] = frozenset(),
 ) -> bool:
     cur = (
         _apply_expr_mutations(
@@ -881,14 +1021,16 @@ def _apply_comprehension_mutations(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         if node.generators
         else bound
     )
     result = cur
     after = cur
+    shadowed = False
     for idx, comp in enumerate(node.generators):
-        if idx > 0:
+        if idx > 0 and not shadowed:
             after = _apply_expr_mutations(
                 comp.iter,
                 var_name,
@@ -898,13 +1040,33 @@ def _apply_comprehension_mutations(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
             result = result and after
-        if _target_invalidates_binding(comp.target, var_name):
-            after = False
-        for cond in comp.ifs:
+        if not shadowed:
+            if _target_invalidates_binding(comp.target, var_name, include_name_rebind=False):
+                after = False
+                result = False
+            if _target_binds_name(comp.target, var_name):
+                shadowed = True
+        if not shadowed:
+            for cond in comp.ifs:
+                after = _apply_expr_mutations(
+                    cond,
+                    var_name,
+                    after,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
+                )
+                result = result and after
+    if not shadowed:
+        if isinstance(node, ast.DictComp):
             after = _apply_expr_mutations(
-                cond,
+                node.key,
                 var_name,
                 after,
                 hook_helpers,
@@ -912,40 +1074,31 @@ def _apply_comprehension_mutations(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
-            result = result and after
-    if isinstance(node, ast.DictComp):
-        after = _apply_expr_mutations(
-            node.key,
-            var_name,
-            after,
-            hook_helpers,
-            httpx_mod_aliases,
-            async_client_aliases,
-            sync_client_aliases,
-            expected_sync=expected_sync,
-        )
-        after = _apply_expr_mutations(
-            node.value,
-            var_name,
-            after,
-            hook_helpers,
-            httpx_mod_aliases,
-            async_client_aliases,
-            sync_client_aliases,
-            expected_sync=expected_sync,
-        )
-    else:
-        after = _apply_expr_mutations(
-            node.elt,
-            var_name,
-            after,
-            hook_helpers,
-            httpx_mod_aliases,
-            async_client_aliases,
-            sync_client_aliases,
-            expected_sync=expected_sync,
-        )
+            after = _apply_expr_mutations(
+                node.value,
+                var_name,
+                after,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
+            )
+        else:
+            after = _apply_expr_mutations(
+                node.elt,
+                var_name,
+                after,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
+            )
     return result and after
 
 
@@ -959,6 +1112,7 @@ def _apply_expr_mutations(
     sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
+    shadowed_builtins: frozenset[str] = frozenset(),
 ) -> bool:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
         return bound
@@ -972,6 +1126,7 @@ def _apply_expr_mutations(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         for val in node.values[1:]:
             after = _apply_expr_mutations(
@@ -983,8 +1138,47 @@ def _apply_expr_mutations(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
             cur = cur and after
+        return cur
+    if isinstance(node, ast.Compare):
+        cur = _apply_expr_mutations(
+            node.left,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
+        )
+        if node.comparators:
+            cur = _apply_expr_mutations(
+                node.comparators[0],
+                var_name,
+                cur,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
+            )
+            for comp_expr in node.comparators[1:]:
+                after = _apply_expr_mutations(
+                    comp_expr,
+                    var_name,
+                    cur,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
+                )
+                cur = cur and after
         return cur
     if isinstance(node, ast.IfExp):
         after_test = _apply_expr_mutations(
@@ -996,6 +1190,7 @@ def _apply_expr_mutations(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         after_body = _apply_expr_mutations(
             node.body,
@@ -1006,6 +1201,7 @@ def _apply_expr_mutations(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         after_else = _apply_expr_mutations(
             node.orelse,
@@ -1016,6 +1212,7 @@ def _apply_expr_mutations(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         return after_body and after_else
     if isinstance(node, ast.Dict):
@@ -1031,6 +1228,7 @@ def _apply_expr_mutations(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
             cur = _apply_expr_mutations(
                 v,
@@ -1041,6 +1239,7 @@ def _apply_expr_mutations(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
         return cur
     if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
@@ -1053,6 +1252,7 @@ def _apply_expr_mutations(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
 
     for child in ast.iter_child_nodes(node):
@@ -1065,6 +1265,7 @@ def _apply_expr_mutations(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
 
     if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name) and node.target.id == var_name:
@@ -1114,10 +1315,16 @@ def _apply_expr_mutations(
             ):
                 return False
             return bound
-        if isinstance(node.func, ast.Name) and node.func.id in _SAFE_READONLY_BUILTINS:
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in _SAFE_READONLY_BUILTINS
+            and node.func.id not in shadowed_builtins
+        ):
+            return bound
+        if _is_safe_logger_call(node):
             return bound
         if any(_arg_exposes_var(arg, var_name) for arg in node.args) or any(
-            _arg_exposes_var(kw.value, var_name) for kw in node.keywords
+            kw.arg is not None and _arg_exposes_var(kw.value, var_name) for kw in node.keywords
         ):
             return False
     return bound
@@ -1133,6 +1340,7 @@ def _update_event_hooks_binding_state(
     sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
+    shadowed_builtins: frozenset[str] = frozenset(),
 ) -> bool:
     if isinstance(stmt, ast.Assign):
         bound = _apply_expr_mutations(
@@ -1144,6 +1352,7 @@ def _update_event_hooks_binding_state(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         for tgt in stmt.targets:
             if (
@@ -1173,6 +1382,7 @@ def _update_event_hooks_binding_state(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
         tgt = stmt.target
         if (
@@ -1211,6 +1421,7 @@ def _update_event_hooks_binding_state(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         if isinstance(stmt.target, ast.Name) and stmt.target.id == var_name:
             if isinstance(stmt.op, ast.BitOr) and isinstance(stmt.value, ast.Dict):
@@ -1227,6 +1438,7 @@ def _update_event_hooks_binding_state(
         async_client_aliases,
         sync_client_aliases,
         expected_sync=expected_sync,
+        shadowed_builtins=shadowed_builtins,
     )
 
 
@@ -1241,11 +1453,57 @@ def _eval_state_before_target(
     sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
+    shadowed_builtins: frozenset[str] = frozenset(),
 ) -> tuple[bool, bool]:
     if node is target:
         return True, bound
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return False, bound
+    if isinstance(node, ast.Lambda):
+        cur = bound
+        for default in (*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)):
+            if default is target or _stmt_contains_node(default, target):
+                return _eval_state_before_target(
+                    default,
+                    target,
+                    var_name,
+                    cur,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
+                )
+            cur = _apply_expr_mutations(
+                default,
+                var_name,
+                cur,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
+            )
+        param_names = _lambda_param_names(node.args)
+        if var_name in param_names:
+            return True, False
+        lambda_shadowed = shadowed_builtins | (param_names & _SAFE_READONLY_BUILTINS)
+        if node.body is target or _stmt_contains_node(node.body, target):
+            return _eval_state_before_target(
+                node.body,
+                target,
+                var_name,
+                cur,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+                shadowed_builtins=lambda_shadowed,
+            )
+        return False, cur
     if not _stmt_contains_node(node, target):
         return False, _apply_expr_mutations(
             node,
@@ -1256,6 +1514,7 @@ def _eval_state_before_target(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
 
     if isinstance(node, ast.IfExp):
@@ -1270,6 +1529,7 @@ def _eval_state_before_target(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
         after_test = _apply_expr_mutations(
             node.test,
@@ -1280,6 +1540,7 @@ def _eval_state_before_target(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         branch = node.body if _stmt_contains_node(node.body, target) else node.orelse
         return _eval_state_before_target(
@@ -1292,6 +1553,7 @@ def _eval_state_before_target(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
 
     if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
@@ -1308,6 +1570,7 @@ def _eval_state_before_target(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
         cur = _apply_comprehension_mutations(
             node,
@@ -1318,6 +1581,7 @@ def _eval_state_before_target(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
         for idx, comp in enumerate(node.generators):
             if idx > 0:
@@ -1332,6 +1596,7 @@ def _eval_state_before_target(
                         async_client_aliases,
                         sync_client_aliases,
                         expected_sync=expected_sync,
+                        shadowed_builtins=shadowed_builtins,
                     )
                 cur = _apply_expr_mutations(
                     comp.iter,
@@ -1342,6 +1607,7 @@ def _eval_state_before_target(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
             if _stmt_contains_node(comp.target, target):
                 return True, False
@@ -1359,6 +1625,7 @@ def _eval_state_before_target(
                         async_client_aliases,
                         sync_client_aliases,
                         expected_sync=expected_sync,
+                        shadowed_builtins=shadowed_builtins,
                     )
                 cur = _apply_expr_mutations(
                     cond,
@@ -1369,6 +1636,7 @@ def _eval_state_before_target(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
         elt_nodes = (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
         for sub in elt_nodes:
@@ -1383,6 +1651,7 @@ def _eval_state_before_target(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
             cur = _apply_expr_mutations(
                 sub,
@@ -1393,6 +1662,7 @@ def _eval_state_before_target(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
         return False, cur
 
@@ -1436,6 +1706,7 @@ def _eval_state_before_target(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
         cur = _apply_expr_mutations(
             child,
@@ -1446,6 +1717,7 @@ def _eval_state_before_target(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
     return False, cur
 
@@ -1461,6 +1733,7 @@ def _loop_backedge_preserves_binding(
     *,
     expected_sync: bool = False,
     while_test: ast.expr | None = None,
+    shadowed_builtins: frozenset[str] = frozenset(),
 ) -> bool:
     if not initial_bound:
         return False
@@ -1479,6 +1752,7 @@ def _loop_backedge_preserves_binding(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
                 if while_test is not None
                 else cur
@@ -1507,6 +1781,7 @@ def _loop_backedge_preserves_binding(
                         async_client_aliases,
                         sync_client_aliases,
                         expected_sync=expected_sync,
+                        shadowed_builtins=shadowed_builtins,
                     )
                     if while_test is not None
                     else cur
@@ -1522,6 +1797,7 @@ def _loop_backedge_preserves_binding(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
     if while_test is not None:
         cur = _apply_expr_mutations(
@@ -1533,6 +1809,7 @@ def _loop_backedge_preserves_binding(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
     return cur and cont_ok
 
@@ -1548,10 +1825,11 @@ def _track_binding_in_block(
     sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
+    shadowed_builtins: frozenset[str] = frozenset(),
 ) -> tuple[bool, bool]:
     control_flow_nodes = _control_flow_node_types()
 
-    for stmt in stmts:
+    for stmt_idx, stmt in enumerate(stmts):
         if _stmt_contains_node(stmt, target_node):
             child_blocks: list[tuple[list[ast.stmt], bool]] = []
             expr_root: ast.AST | None = None
@@ -1566,6 +1844,7 @@ def _track_binding_in_block(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
                 child_blocks.extend([(stmt.body, after_test), (stmt.orelse, after_test)])
                 expr_root = stmt.test
@@ -1580,6 +1859,7 @@ def _track_binding_in_block(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
                 target_clobbers = _target_invalidates_binding(stmt.target, var_name)
                 if not target_clobbers:
@@ -1592,6 +1872,7 @@ def _track_binding_in_block(
                         async_client_aliases,
                         sync_client_aliases,
                         expected_sync=expected_sync,
+                        shadowed_builtins=shadowed_builtins,
                     )
                 entry_body_bound = False if target_clobbers else iter_bound
                 loop_bound = entry_body_bound and _loop_backedge_preserves_binding(
@@ -1603,6 +1884,7 @@ def _track_binding_in_block(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
                 child_blocks.extend([(stmt.body, loop_bound), (stmt.orelse, loop_bound)])
                 if _stmt_contains_node(stmt.iter, target_node):
@@ -1618,6 +1900,7 @@ def _track_binding_in_block(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
                 body_backedge_ok = _loop_backedge_preserves_binding(
                     stmt.body,
@@ -1629,6 +1912,7 @@ def _track_binding_in_block(
                     sync_client_aliases,
                     expected_sync=expected_sync,
                     while_test=stmt.test,
+                    shadowed_builtins=shadowed_builtins,
                 )
                 loop_bound = entry_after_test and body_backedge_ok
                 test_entry_bound = bound and _loop_backedge_preserves_binding(
@@ -1640,6 +1924,7 @@ def _track_binding_in_block(
                     async_client_aliases,
                     sync_client_aliases,
                     expected_sync=expected_sync,
+                    shadowed_builtins=shadowed_builtins,
                 )
                 child_blocks.extend([(stmt.body, loop_bound), (stmt.orelse, loop_bound)])
                 expr_root = stmt.test
@@ -1660,6 +1945,7 @@ def _track_binding_in_block(
                         async_client_aliases,
                         sync_client_aliases,
                         expected_sync=expected_sync,
+                        shadowed_builtins=shadowed_builtins,
                     )
                     if item.optional_vars is not None and _stmt_contains_node(item.optional_vars, target_node):
                         break
@@ -1700,6 +1986,7 @@ def _track_binding_in_block(
                         async_client_aliases,
                         sync_client_aliases,
                         expected_sync=expected_sync,
+                        shadowed_builtins=shadowed_builtins,
                     )
             if expr_root is None:
                 return True, False
@@ -1713,8 +2000,33 @@ def _track_binding_in_block(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
-            return True, (found_target and state_at_target)
+            if not (found_target and state_at_target):
+                return True, False
+            if _target_is_inside_lambda_body(expr_root, target_node):
+                post_bound = True
+                for tail_stmt in stmts[stmt_idx + 1 :]:
+                    if isinstance(tail_stmt, control_flow_nodes):
+                        if _stmt_mentions_name(
+                            tail_stmt, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases
+                        ):
+                            return True, False
+                        continue
+                    post_bound = _update_event_hooks_binding_state(
+                        tail_stmt,
+                        var_name,
+                        post_bound,
+                        hook_helpers,
+                        httpx_mod_aliases,
+                        async_client_aliases,
+                        sync_client_aliases,
+                        expected_sync=expected_sync,
+                        shadowed_builtins=shadowed_builtins,
+                    )
+                    if not post_bound:
+                        return True, False
+            return True, True
 
         if isinstance(stmt, control_flow_nodes):
             if _stmt_mentions_name(stmt, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases):
@@ -1730,6 +2042,7 @@ def _track_binding_in_block(
             async_client_aliases,
             sync_client_aliases,
             expected_sync=expected_sync,
+            shadowed_builtins=shadowed_builtins,
         )
 
     return False, bound
@@ -1744,6 +2057,7 @@ def _kw_splat_sets_event_hooks(
     sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
+    shadowed_builtins: frozenset[str] = frozenset(),
 ) -> bool:
     for kw in call.keywords:
         if kw.arg is not None:
@@ -1761,6 +2075,7 @@ def _kw_splat_sets_event_hooks(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
             if found and bound:
                 return True
@@ -1813,6 +2128,7 @@ def _scan_source_for_internal_httpx_clients(
             for kw in call.keywords
         )
         if not has_hook:
+            shadowed_builtins = _collect_shadowed_builtins(tree, owners)
             has_hook = _kw_splat_sets_event_hooks(
                 call,
                 func_node,
@@ -1821,6 +2137,7 @@ def _scan_source_for_internal_httpx_clients(
                 async_client_aliases,
                 sync_client_aliases,
                 expected_sync=expected_sync,
+                shadowed_builtins=shadowed_builtins,
             )
 
         site_key = (relpath, qualname)
@@ -2579,6 +2896,176 @@ def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
     )
     assert signed == 1
     assert unhooked == []
+
+    comp_local_target_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(items, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _a = [None for kwargs in [{}]]\n"
+        "    _b = [kwargs for kwargs in items]\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        comp_local_target_pos_src, "synthetic/comp_local_target_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    comp_inner_target_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    return [httpx.AsyncClient(**kwargs) for kwargs in [{}]]\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        comp_inner_target_neg_src, "synthetic/comp_inner_target_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/comp_inner_target_neg.py:6 (make)"]
+
+    comp_subscript_target_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _ = [None for kwargs['event_hooks'] in [None]]\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        comp_subscript_target_neg_src, "synthetic/comp_subscript_target_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/comp_subscript_target_neg.py:7 (make)"]
+
+    compare_short_circuit_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs = {}\n"
+        "    _ = 0 > 1 < (kwargs.update(event_hooks=internal_service_event_hooks()) or 2)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        compare_short_circuit_neg_src, "synthetic/compare_short_circuit_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/compare_short_circuit_neg.py:7 (make)"]
+
+    compare_first_cmp_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs = {}\n"
+        "    _ = 0 < (kwargs.update(event_hooks=internal_service_event_hooks()) or 1)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        compare_first_cmp_pos_src, "synthetic/compare_first_cmp_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    shadowed_param_builtin_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(len, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _ = len(kwargs)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        shadowed_param_builtin_neg_src, "synthetic/shadowed_param_builtin_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/shadowed_param_builtin_neg.py:7 (make)"]
+
+    shadowed_local_builtin_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(reset, **kwargs):\n"
+        "    len = reset\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _ = len(kwargs)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        shadowed_local_builtin_neg_src, "synthetic/shadowed_local_builtin_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/shadowed_local_builtin_neg.py:8 (make)"]
+
+    logger_and_kw_unpack_pos_src = (
+        "import httpx, logging\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "logger = logging.getLogger(__name__)\n"
+        "def log_call(*_a, **_kw): pass\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    logger.debug('opts %s', kwargs)\n"
+        "    log_call('x', **kwargs)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        logger_and_kw_unpack_pos_src, "synthetic/logger_and_kw_unpack_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    lambda_capture_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    factory = lambda: httpx.AsyncClient(**kwargs)\n"
+        "    return factory()\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        lambda_capture_pos_src, "synthetic/lambda_capture_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    lambda_shadowed_param_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    factory = lambda kwargs={}: httpx.AsyncClient(**kwargs)\n"
+        "    return factory()\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        lambda_shadowed_param_neg_src, "synthetic/lambda_shadowed_param_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/lambda_shadowed_param_neg.py:6 (make)"]
+
+    lambda_post_mutation_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    factory = lambda: httpx.AsyncClient(**kwargs)\n"
+        "    kwargs.clear()\n"
+        "    return factory()\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        lambda_post_mutation_neg_src, "synthetic/lambda_post_mutation_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/lambda_post_mutation_neg.py:6 (make)"]
 
 
 def test_internal_httpx_scan_path_filter_uses_repo_relative_components(tmp_path: Path):

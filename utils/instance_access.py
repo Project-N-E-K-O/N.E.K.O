@@ -41,6 +41,20 @@ INSECURE_COOKIE = COOKIE + "_http"
 INSECURE_CHALLENGE_COOKIE = CHALLENGE_COOKIE + "_http"
 SESSION_TTL = 30 * 24 * 3600
 LOGIN_PATH = "/instance-access/login"
+_INTERNAL_SCOPE_KEY_SALT = secrets.token_bytes(32)
+
+
+def _internal_service_key_digest(key: str) -> bytes:
+    """Compute a process-local one-way HMAC digest of the instance key for ASGI scope checks."""
+    return hmac.new(_INTERNAL_SCOPE_KEY_SALT, key.encode("utf-8"), hashlib.sha256).digest()
+
+
+def verify_admitted_internal_service_key(scope: dict, signing_key: str) -> bool:
+    """Confirm that an admitted internal-service request matches the current signing key."""
+    admitted = scope.get("neko.internal_service_key_digest")
+    if not isinstance(admitted, bytes) or not isinstance(signing_key, str) or not signing_key:
+        return False
+    return hmac.compare_digest(admitted, _internal_service_key_digest(signing_key))
 
 
 def _key_path() -> Path:
@@ -544,13 +558,11 @@ class InstanceAccessMiddleware:
                             and not request.headers.get("origin"))
         if not internal_identity and not oauth_callback and not entry_navigation and not _same_origin(request):
             return await self._deny(scope, receive, send, "origin_not_allowed", 403)
-        scope.pop("neko.internal_service_key_valid", None)
+        scope.pop("neko.internal_service_key_digest", None)
         scope["neko.instance_identity"] = identity
         if not market_identity and service_identity == "internal":
-            # Record an admission-time key matcher without placing the raw secret in scope.
-            scope["neko.internal_service_key_valid"] = (
-                lambda candidate, expected=key: isinstance(candidate, str) and _equal(candidate, expected)
-            )
+            # Store only a process-salted one-way digest (never the raw key or a closure holding it).
+            scope["neko.internal_service_key_digest"] = _internal_service_key_digest(key)
         if market_identity:
             scope["neko.market_public_origin"] = request.headers.get("x-neko-market-public-origin", "")
             # The signed purpose includes remote; changing the network hop to

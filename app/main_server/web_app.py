@@ -739,6 +739,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         market_internal_proof,
         remote_instance_identity,
         request_public_origin,
+        verify_admitted_internal_service_key,
     )
     from utils.deployment import has_forwarding_metadata
     from filelock import Timeout as FileLockTimeout
@@ -762,9 +763,8 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
             signing_key = await asyncio.to_thread(instance_key)
         except (OSError, ValueError, FileLockTimeout):
             return JSONResponse(status_code=503, content={"detail": "instance_access_unavailable"})
-        internal_key_valid = request.scope.get("neko.internal_service_key_valid")
-        if scope_identity == "internal" and callable(internal_key_valid):
-            if not internal_key_valid(signing_key):
+        if scope_identity == "internal" and "neko.internal_service_key_digest" in request.scope:
+            if not verify_admitted_internal_service_key(request.scope, signing_key):
                 return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
             upstream_url = httpx.URL(target)
             upstream_raw_path = upstream_url.raw_path.split(b"?", 1)[0].decode("latin-1")

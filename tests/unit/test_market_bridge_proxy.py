@@ -512,6 +512,7 @@ async def test_market_proxy_preserves_internal_service_installer_auth_and_blocks
 async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revokes_on_key_rotation(monkeypatch):
     """Slow internal uploads must survive 60s inbound proof expiry while key rotation or missing admission grant fails closed."""
     import time
+    from starlette.requests import ClientDisconnect
     import config as cfg
     import utils.instance_access as access
     from tests.fake_clock import patch_module_clock
@@ -522,12 +523,13 @@ async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revok
     key2 = "market-slow-upload-key-two-" + "b" * 40
     current_key = [key1]
     now = [time.time()]
+    mono = [1000.0]
 
     for env_name in ("NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE", "NEKO_INSTANCE_ACCESS_KEY"):
         monkeypatch.delenv(env_name, raising=False)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     monkeypatch.setattr(access, "instance_key", lambda: current_key[0])
-    patch_module_clock(monkeypatch, access, time=lambda: now[0])
+    patch_module_clock(monkeypatch, access, time=lambda: now[0], monotonic=lambda: mono[0])
 
     main_port = int(cfg.MAIN_SERVER_PORT)
     plugin_port = int(cfg.USER_PLUGIN_SERVER_PORT)
@@ -561,15 +563,24 @@ async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revok
     monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: f"http://127.0.0.1:{plugin_port}")
     monkeypatch.setattr(web_app.httpx, "AsyncClient", upstream_client)
 
+    observed_digests: list[object] = []
     main = FastAPI()
+
+    @main.middleware("http")
+    async def capture_digest(request: Request, call_next):
+        if "neko.internal_service_key_digest" in request.scope:
+            observed_digests.append(request.scope["neko.internal_service_key_digest"])
+        return await call_next(request)
+
     main.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
     main.add_middleware(InstanceAccessMiddleware)
     main_hop = ProxyHeadersMiddleware(main, trusted_hosts="127.0.0.1,::1")
 
-    # 1. Slow upload exceeding 60s inbound proof TTL still succeeds with freshly signed second-hop proof.
+    # 1. Slow upload exceeding 60s inbound proof TTL and 1s monotonic recheck interval still succeeds.
     async def slow_upload():
         yield b'{"plugin_id":'
         now[0] += 120.0
+        mono[0] += 120.0
         yield b'"demo"}'
 
     async with real_client(
@@ -590,11 +601,15 @@ async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revok
         "body_size": len(b'{"plugin_id":"demo"}'),
     }
     assert plugin_hits == ["/market/install"]
+    assert len(observed_digests) == 1
+    assert isinstance(observed_digests[0], bytes)
+    assert len(observed_digests[0]) == 32
+    assert key1.encode("utf-8") not in observed_digests[0]
 
-    # 2. Rotating the instance key during upload revokes admission and rejects with 401 before calling upstream.
+    # 2a. Rotating the instance key before the monotonic recheck deadline fails at proxy digest check with 401.
     plugin_hits.clear()
 
-    async def rotated_key_upload():
+    async def pre_deadline_rotated_upload():
         yield b'{"plugin_id":'
         current_key[0] = key2
         yield b'"demo"}'
@@ -606,29 +621,55 @@ async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revok
     ) as installer_client:
         rotated_resp = await installer_client.post(
             f"http://127.0.0.1:{main_port}/market/install",
-            content=rotated_key_upload(),
+            content=pre_deadline_rotated_upload(),
             headers={"content-type": "application/json"},
         )
     assert rotated_resp.status_code == 401
     assert rotated_resp.json() == {"detail": "instance_authorization_required"}
     assert plugin_hits == []
 
-    # 3. Spoofed scope identity without middleware's neko.internal_service_key_valid callable fails closed.
+    # 2b. Rotating the instance key after the monotonic recheck deadline aborts body read via http.disconnect.
     plugin_hits.clear()
     current_key[0] = key1
-    spoofed_app = FastAPI()
 
-    @spoofed_app.middleware("http")
-    async def inject_only_identity(request, call_next):
-        request.scope["neko.instance_identity"] = "internal"
-        return await call_next(request)
+    async def post_deadline_rotated_upload():
+        yield b'{"plugin_id":'
+        current_key[0] = key2
+        mono[0] += 2.0
+        yield b'"demo"}'
 
-    spoofed_app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
     async with real_client(
-        transport=httpx.ASGITransport(app=spoofed_app, client=("127.0.0.1", 50003)),
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50003)),
         base_url=f"http://127.0.0.1:{main_port}",
-    ) as spoofed_client:
-        spoofed_resp = await spoofed_client.post("/market/install", json={"plugin_id": "demo"})
-    assert spoofed_resp.status_code == 401
-    assert spoofed_resp.json() == {"detail": "instance_authorization_required"}
+        event_hooks=internal_service_event_hooks(),
+    ) as installer_client:
+        with pytest.raises(ClientDisconnect):
+            await installer_client.post(
+                f"http://127.0.0.1:{main_port}/market/install",
+                content=post_deadline_rotated_upload(),
+                headers={"content-type": "application/json"},
+            )
     assert plugin_hits == []
+
+    # 3. Spoofed scope identity without a matching middleware digest fails closed.
+    plugin_hits.clear()
+    current_key[0] = key1
+    for extra_digest in (None, b"wrong-digest", "wrong-type"):
+        spoofed_app = FastAPI()
+
+        @spoofed_app.middleware("http")
+        async def inject_only_identity(request, call_next, digest=extra_digest):
+            request.scope["neko.instance_identity"] = "internal"
+            if digest is not None:
+                request.scope["neko.internal_service_key_digest"] = digest
+            return await call_next(request)
+
+        spoofed_app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
+        async with real_client(
+            transport=httpx.ASGITransport(app=spoofed_app, client=("127.0.0.1", 50004)),
+            base_url=f"http://127.0.0.1:{main_port}",
+        ) as spoofed_client:
+            spoofed_resp = await spoofed_client.post("/market/install", json={"plugin_id": "demo"})
+        assert spoofed_resp.status_code == 401
+        assert spoofed_resp.json() == {"detail": "instance_authorization_required"}
+        assert plugin_hits == []
