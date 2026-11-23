@@ -460,9 +460,10 @@ def test_safe_rotating_file_handler_supports_rollover(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_open_log_file_nofollow_rejects_fifo_and_root_directory_replacement(tmp_path):
-    """Readerless FIFOs must fail immediately without blocking, and replaced allowed_root must be rejected."""
+def test_open_log_file_nofollow_rejects_fifo_and_validates_root_directory(tmp_path, monkeypatch):
+    """Readerless FIFOs fail fast; invalid init roots fail closed; symlinked roots fail even with st_ino=0; recreated real dirs recover."""
     import os
+    from utils import logger_config
     from utils.logger_config import _SafeRotatingFileHandler, _open_log_file_nofollow
 
     logs_dir = tmp_path / "logs"
@@ -473,28 +474,85 @@ def test_open_log_file_nofollow_rejects_fifo_and_root_directory_replacement(tmp_
         with pytest.raises(OSError):
             _open_log_file_nofollow(fifo_path, "a", "utf-8", None, logs_dir)
 
-    swap_root = tmp_path / "swap_logs"
-    swap_root.mkdir()
-    replacement_root = tmp_path / "replacement_logs"
-    replacement_root.mkdir()
-    log_path = swap_root / "app.log"
+    # 1. Fail closed at handler init when allowed_root is missing, a regular file, or a symlink.
+    missing_root = tmp_path / "missing_root"
+    with pytest.raises(OSError):
+        _SafeRotatingFileHandler(missing_root / "app.log", allowed_root=missing_root, delay=True)
+
+    file_root = tmp_path / "file_root"
+    file_root.write_text("not a dir", encoding="utf-8")
+    with pytest.raises(OSError):
+        _SafeRotatingFileHandler(file_root / "app.log", allowed_root=file_root, delay=True)
+
+    real_target = tmp_path / "real_target"
+    real_target.mkdir()
+    sym_root = tmp_path / "sym_root"
+    try:
+        sym_root.symlink_to(real_target, target_is_directory=True)
+    except OSError:
+        sym_root = None
+    if sym_root is not None:
+        with pytest.raises(OSError):
+            _SafeRotatingFileHandler(sym_root / "app.log", allowed_root=sym_root, delay=True)
+
+    # 2. Legitimate delete + recreate of non-symlink allowed_root at same canonical path refreshes identity and recovers.
+    recreate_root = tmp_path / "recreate_logs"
+    recreate_root.mkdir()
+    log_path = recreate_root / "app.log"
     handler = _SafeRotatingFileHandler(
         log_path,
-        allowed_root=swap_root,
+        allowed_root=recreate_root,
         maxBytes=128,
         backupCount=1,
         encoding="utf-8",
         delay=True,
     )
     try:
-        swap_root.rename(tmp_path / "swap_logs_old")
-        replacement_root.rename(swap_root)
-        with pytest.raises(OSError, match="identity changed"):
-            handler._open()
-        with pytest.raises(OSError, match="identity changed"):
-            handler.doRollover()
+        recreate_root.rmdir()
+        recreate_root.mkdir()
+        with handler._open() as stream:
+            stream.write("recovered\n")
+        assert (recreate_root / "app.log").read_text(encoding="utf-8") == "recovered\n"
     finally:
         handler.close()
+
+    # 3. Replacing allowed_root or an ancestor with a symlink to outside raises OSError even when st_ino == 0.
+    parent_dir = tmp_path / "parent_base"
+    nested_root = parent_dir / "nested_logs"
+    nested_root.mkdir(parents=True)
+    outside_parent = tmp_path / "outside_parent"
+    (outside_parent / "nested_logs").mkdir(parents=True)
+    nested_log = nested_root / "app.log"
+    nested_log.write_text("initial\n", encoding="utf-8")
+
+    orig_lstat = os.lstat
+
+    def _zero_ino_lstat(p):
+        st = orig_lstat(p)
+        return os.stat_result((st.st_mode, 0, st.st_dev, st.st_nlink, st.st_uid, st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+
+    monkeypatch.setattr(logger_config.os, "lstat", _zero_ino_lstat)
+    zero_ino_handler = _SafeRotatingFileHandler(
+        nested_log,
+        allowed_root=nested_root,
+        maxBytes=128,
+        backupCount=1,
+        encoding="utf-8",
+        delay=True,
+    )
+    try:
+        if sym_root is not None:
+            # Swap ancestor parent_dir with symlink -> outside_parent
+            (nested_root / "app.log").unlink()
+            nested_root.rmdir()
+            parent_dir.rmdir()
+            parent_dir.symlink_to(outside_parent, target_is_directory=True)
+            with pytest.raises(OSError):
+                zero_ino_handler._open()
+            with pytest.raises(OSError):
+                zero_ino_handler.doRollover()
+    finally:
+        zero_ino_handler.close()
 
 
 @pytest.mark.unit

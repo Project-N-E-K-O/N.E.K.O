@@ -54,6 +54,14 @@ async def test_upload_file_rejects_disallowed_or_private_upload_url_before_netwo
             await client.upload_file(io.BytesIO(b"RIFFdemo"), "sample.wav")
         assert called is False
 
+    non_allowlisted_domain = "https://internal.example.org/api/upload"
+    domain_client = QwenVoiceCloneClient("api-key", non_allowlisted_domain)
+    with pytest.raises(QwenVoiceCloneError):
+        domain_client._validate_tflink_url(non_allowlisted_domain, require_allowlist=True)
+    with pytest.raises(QwenVoiceCloneError):
+        await domain_client.upload_file(io.BytesIO(b"RIFFdemo"), "sample.wav")
+    assert called is False
+
 
 @pytest.mark.parametrize(
     "bad_download_link",

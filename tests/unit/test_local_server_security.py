@@ -310,6 +310,7 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     assert "$INSTALL_DIR/venv/bin/pip" not in setup_sh
     assert 'LOCK_FILE="/run/${SERVICE_NAME}-setup.lock"' in setup_sh
     assert 'readlink -f "$INSTALL_DIR/venv"' in setup_sh
+    assert '"$INSTALL_DIR"/venv.legacy.*' in setup_sh
     assert 'STAGING_VENV="$INSTALL_DIR/venvs/venv-' in setup_sh
     assert "trap cleanup_staging_venv EXIT" in setup_sh
     lock_pos = setup_sh.find('flock -x "$LOCK_FILE"')
@@ -322,7 +323,7 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     install_files_pos = setup_sh.find("install -o root -g root")
     switch_link_pos = setup_sh.find('mv -Tf "$TMP_LINK" "$INSTALL_DIR/venv"')
     restart_pos = setup_sh.find('systemctl restart "$SERVICE_NAME"')
-    cleanup_old_pos = setup_sh.find('rm -rf "$OLD_LEGACY_VENV"')
+    cleanup_old_pos = setup_sh.find('rm -rf "$legacy_venv"')
     assert 0 <= lock_pos < chown_root_pos < create_staging_pos < pip_staging_pos < chown_staging_pos < install_files_pos < switch_link_pos < restart_pos < cleanup_old_pos
     assert 0 <= chmod_root_pos < create_staging_pos
     assert 0 <= pip_staging_pos < chmod_staging_pos < install_files_pos

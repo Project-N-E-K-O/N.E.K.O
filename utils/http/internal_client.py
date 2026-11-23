@@ -123,7 +123,13 @@ def _httpx_signing_port(request: httpx.Request) -> int | None:
 
 
 def _trusted_internal_service_ports() -> set[int]:
-    """Return the loopback ports belonging to N.E.K.O internal services."""
+    """Return configured and launcher-allocated loopback ports for N.E.K.O internal services.
+
+    Note: only ports visible via shared config constants, NEKO_USER_PLUGIN_SERVER_PORT,
+    or USER_PLUGIN_BASE are trusted here; a standalone service re-binding to an ad-hoc
+    fallback port inside its own process only updates that process and cannot be observed
+    by peer processes without launcher coordination.
+    """
     from urllib.parse import urlsplit
     import config
 

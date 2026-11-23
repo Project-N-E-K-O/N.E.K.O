@@ -580,7 +580,7 @@ class QwenVoiceCloneClient:
         if file_size > 100 * 1024 * 1024:  # 100MB
             raise QwenVoiceCloneError('文件大小超过100MB，超过tfLink的限制')
 
-        upload_url = self._validate_tflink_url(self.tflink_upload_url, require_allowlist=False)
+        upload_url = self._validate_tflink_url(self.tflink_upload_url, require_allowlist=True)
 
         audio_buffer.seek(0)
         files = {'file': (filename, audio_buffer, mime_type)}

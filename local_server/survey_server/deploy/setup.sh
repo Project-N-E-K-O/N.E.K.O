@@ -166,9 +166,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
 sudo systemctl restart "$SERVICE_NAME"
 
-if [ -n "$OLD_LEGACY_VENV" ] && [ -e "$OLD_LEGACY_VENV" ]; then
-    sudo rm -rf "$OLD_LEGACY_VENV"
-fi
+for legacy_venv in "$INSTALL_DIR"/venv.legacy.*; do
+    [ -e "$legacy_venv" ] || continue
+    sudo rm -rf "$legacy_venv"
+done
 ACTIVE_VENV_NAME="$(basename "$ACTIVE_VENV")"
 LIVE_VENV_TARGET="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || printf '%s' "$ACTIVE_VENV")"
 for old_venv in "$INSTALL_DIR/venvs"/venv-*; do

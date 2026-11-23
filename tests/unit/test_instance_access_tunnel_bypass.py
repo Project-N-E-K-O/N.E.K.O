@@ -706,3 +706,45 @@ async def test_signing_failure_raises_request_error_and_agent_router_rolls_back_
         await timeout_client.aclose()
     assert timeout_answer.status_code == 502
     assert manager_timeout.agent_flags == {"agent_enabled": True, "user_plugin_enabled": True}
+
+
+@pytest.mark.parametrize("bad_server", [None, ("127.0.0.1", None), ("127.0.0.1", True)])
+async def test_internal_service_proof_fails_closed_when_asgi_server_port_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    bad_server,
+):
+    """_request_signing_port must fail closed when ASGI scope['server'] lacks an int port, never falling back to Host header."""
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+
+    app = _build_guarded_app()
+    valid_proof = internal_service_proof(KEY, "GET", "/private", port=MAIN_SERVER_PORT)
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/private",
+        "raw_path": b"/private",
+        "query_string": b"",
+        "headers": [
+            (b"host", f"127.0.0.1:{MAIN_SERVER_PORT}".encode()),
+            (INTERNAL_SERVICE_HEADER.lower().encode(), valid_proof.encode()),
+        ],
+        "client": ("127.0.0.1", 50000),
+    }
+    if bad_server is not None:
+        scope["server"] = bad_server
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    messages: list[dict] = []
+
+    async def send(msg: dict):
+        messages.append(msg)
+
+    await app(scope, receive, send)
+    start_msg = next(m for m in messages if m["type"] == "http.response.start")
+    assert start_msg["status"] == 401

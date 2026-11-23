@@ -49,7 +49,7 @@ import sys
 import logging
 import threading
 from collections.abc import Mapping
-from logging.handlers import RotatingFileHandler
+from logging.handlers import RotatingFileHandler as _StdlibRotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -109,17 +109,6 @@ def _is_symlink_or_reparse_point(path: str | os.PathLike[str]) -> bool:
     return False
 
 
-def _dir_identity(path: Path) -> tuple[int, int] | None:
-    """Return a stable (st_dev, st_ino) identity for an existing directory when supported."""
-    try:
-        st = os.stat(os.fspath(path))
-    except OSError:
-        return None
-    if getattr(st, "st_ino", 0):
-        return (int(st.st_dev), int(st.st_ino))
-    return None
-
-
 def _assert_safe_log_file_target(path: str | os.PathLike[str], allowed_root: Path) -> Path:
     """Validate that a log target is not a symlink/reparse point and stays within allowed_root."""
     target = Path(path)
@@ -174,13 +163,13 @@ def _open_log_file_nofollow(
         raise
 
 
-class _SafeRotatingFileHandler(RotatingFileHandler):
+class _SafeRotatingFileHandler(_StdlibRotatingFileHandler):
     """RotatingFileHandler that rejects symlinks/reparse points and root escapes on open."""
 
     def __init__(
         self,
         filename,
-        allowed_root: Path,
+        allowed_root: Path | None = None,
         mode: str = "a",
         maxBytes: int = 0,
         backupCount: int = 0,
@@ -188,9 +177,9 @@ class _SafeRotatingFileHandler(RotatingFileHandler):
         delay: bool = False,
         errors: str | None = None,
     ):
-        """Initialize the handler after validating the initial target path."""
-        self._allowed_root = Path(allowed_root)
-        self._allowed_root_identity = _dir_identity(self._allowed_root)
+        """Initialize the handler after validating the initial target path and allowed root."""
+        root = Path(allowed_root) if allowed_root is not None else Path(filename).parent
+        self._bind_allowed_root(root)
         _assert_safe_log_file_target(filename, self._allowed_root)
         super().__init__(
             filename,
@@ -202,13 +191,35 @@ class _SafeRotatingFileHandler(RotatingFileHandler):
             errors=errors,
         )
 
+    def _bind_allowed_root(self, allowed_root: Path) -> None:
+        """Bind and fail-closed verify allowed_root directory before opening or rotating logs."""
+        root = Path(allowed_root)
+        if _is_symlink_or_reparse_point(root):
+            raise OSError(f"Refusing symlink/reparse allowed log root: {root}")
+        st = os.lstat(os.fspath(root))
+        if not stat.S_ISDIR(st.st_mode):
+            raise OSError(f"Allowed log root is not a directory: {root}")
+        self._allowed_root = root
+        self._allowed_root_real = os.path.normcase(os.path.realpath(os.fspath(root)))
+        self._allowed_root_identity = (
+            (int(st.st_dev), int(st.st_ino)) if getattr(st, "st_ino", 0) else None
+        )
+
     def _assert_allowed_root_unchanged(self) -> None:
-        """Ensure allowed_root still refers to the same directory observed at handler initialization."""
-        if self._allowed_root_identity is None:
-            return
-        current = _dir_identity(self._allowed_root)
-        if current != self._allowed_root_identity:
-            raise OSError(f"Allowed log root directory identity changed: {self._allowed_root}")
+        """Ensure allowed_root remains a real directory at the same canonical path."""
+        if _is_symlink_or_reparse_point(self._allowed_root):
+            raise OSError(f"Refusing symlink/reparse allowed log root: {self._allowed_root}")
+        st = os.lstat(os.fspath(self._allowed_root))
+        if not stat.S_ISDIR(st.st_mode):
+            raise OSError(f"Allowed log root is not a directory: {self._allowed_root}")
+        current_real = os.path.normcase(os.path.realpath(os.fspath(self._allowed_root)))
+        if current_real != self._allowed_root_real:
+            raise OSError(f"Allowed log root resolved path changed: {self._allowed_root}")
+        current_identity = (
+            (int(st.st_dev), int(st.st_ino)) if getattr(st, "st_ino", 0) else None
+        )
+        if current_identity != self._allowed_root_identity:
+            self._allowed_root_identity = current_identity
 
     def _open(self):
         """Open the active log file without following symlinks."""
@@ -229,6 +240,43 @@ class _SafeRotatingFileHandler(RotatingFileHandler):
             rotated = self.rotation_filename(f"{self.baseFilename}.{idx}")
             _assert_safe_log_file_target(rotated, self._allowed_root)
         return super().doRollover()
+
+
+# Keep module-level RotatingFileHandler exported for tests that monkeypatch it
+# (e.g. plugin/tests/integration/test_logging_compatibility.py).
+RotatingFileHandler = _SafeRotatingFileHandler
+
+
+def _create_rotating_file_handler(
+    filename,
+    *,
+    allowed_root: Path,
+    maxBytes: int,
+    backupCount: int,
+    encoding: str,
+    delay: bool,
+):
+    """Instantiate a rotating file handler via RotatingFileHandler with safe containment checks."""
+    _assert_safe_log_file_target(filename, allowed_root)
+    if RotatingFileHandler is _SafeRotatingFileHandler:
+        return RotatingFileHandler(
+            filename,
+            allowed_root=allowed_root,
+            maxBytes=maxBytes,
+            backupCount=backupCount,
+            encoding=encoding,
+            delay=delay,
+        )
+    handler = RotatingFileHandler(
+        filename,
+        maxBytes=maxBytes,
+        backupCount=backupCount,
+        encoding=encoding,
+        delay=delay,
+    )
+    if isinstance(handler, _SafeRotatingFileHandler):
+        handler._bind_allowed_root(allowed_root)
+    return handler
 
 
 def format_log_message(message, args):
@@ -551,7 +599,7 @@ class RobustLoggerConfig:
                     self.log_file, "a", encoding="utf-8", errors=None, allowed_root=self._log_root
                 ):
                     pass
-            file_handler = _SafeRotatingFileHandler(
+            file_handler = _create_rotating_file_handler(
                 self.log_file,
                 allowed_root=self._log_root,
                 maxBytes=self.max_bytes,
@@ -577,7 +625,7 @@ class RobustLoggerConfig:
                 dev_debug_dir = _get_development_log_directory()
                 dev_debug_dir.mkdir(parents=True, exist_ok=True)
                 debug_filename = log_filename(self.service_name, app_name=self.app_name, kind="debug")
-                debug_handler = _SafeRotatingFileHandler(
+                debug_handler = _create_rotating_file_handler(
                     dev_debug_dir / debug_filename,
                     allowed_root=dev_debug_dir,
                     maxBytes=self.max_bytes,
@@ -602,7 +650,7 @@ class RobustLoggerConfig:
                     error_log_file, "a", encoding="utf-8", errors=None, allowed_root=self._log_root
                 ):
                     pass
-            error_handler = _SafeRotatingFileHandler(
+            error_handler = _create_rotating_file_handler(
                 error_log_file,
                 allowed_root=self._log_root,
                 maxBytes=self.max_bytes,

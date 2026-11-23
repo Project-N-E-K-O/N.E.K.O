@@ -418,7 +418,7 @@ def _request_signing_path(request: Request) -> str:
 
 
 def _request_signing_port(request: Request) -> int | None:
-    """Return the target service port from ASGI server scope or the request URL."""
+    """Return the target service port from ASGI server scope; fail closed if unavailable."""
     server = request.scope.get("server")
     if (
         isinstance(server, (tuple, list))
@@ -428,13 +428,6 @@ def _request_signing_port(request: Request) -> int | None:
         and 0 < server[1] <= 65535
     ):
         return server[1]
-    if request.url.port is not None:
-        return int(request.url.port)
-    scheme = (request.url.scheme or "").lower()
-    if scheme in {"https", "wss"}:
-        return 443
-    if scheme in {"http", "ws"}:
-        return 80
     return None
 
 
