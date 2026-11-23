@@ -13,7 +13,28 @@
       />
     </div>
 
-    <p v-if="members.length && !selected" class="muted">{{ t('power.space.familiars.pick') }}</p>
+    <p v-if="members.length && !selected && !selectedId" class="muted">{{ t('power.space.familiars.pick') }}</p>
+
+    <!-- One the address names that is not on the board (not in use for days, its work long over):
+         what was said in it and what it used are kept, and are read by its session all the same. -->
+    <article v-if="loaded && selectedId && !selected" class="detail" :data-detail="selectedId" data-testid="familiar-past">
+      <p class="muted">{{ t('power.space.familiars.notOnBoard') }}</p>
+      <div class="views" role="tablist">
+        <button
+          v-for="name in PAST_VIEWS"
+          :key="name"
+          type="button"
+          role="tab"
+          class="view"
+          :class="{ on: pastView === name }"
+          :aria-selected="pastView === name"
+          :data-view="name"
+          @click="pastView = name"
+        >{{ t(`power.space.familiars.views.${name}`) }}</button>
+      </div>
+      <TranscriptPane v-if="pastView === 'talk'" :session-id="selectedId" />
+      <UsagePane v-else :session-id="selectedId" />
+    </article>
 
     <article v-if="selected" class="detail" :data-detail="selected.id">
       <header>
@@ -144,6 +165,9 @@ const sentence = ref('')
 // Which of the three views of the chosen familiar is open: what it has in hand, what was said in it, what it used.
 const VIEWS = ['doing', 'talk', 'usage'] as const
 const view = ref<(typeof VIEWS)[number]>('doing')
+// Of one that is not on the board there is no card to show what it is doing.
+const PAST_VIEWS = ['talk', 'usage'] as const
+const pastView = ref<(typeof PAST_VIEWS)[number]>('talk')
 const editing = ref(false)
 const stopping = ref(false)
 const draft = reactive({ title: '', duty: '', summary: '' })

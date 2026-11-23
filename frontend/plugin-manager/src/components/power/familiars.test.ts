@@ -302,6 +302,34 @@ describe('a familiar up close', () => {
     expect(api.getSessionUsage).toHaveBeenCalledTimes(2)
   })
 
+  it('shows what was said in one that is not on the board any more, and what it used, by its session', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [
+      { at: 0, role: 'user', text: 'sort the photos', cut: false, calls: [], tool: null, failed: false, pictures: 0, time: null },
+    ] })
+    api.getSessionUsage.mockResolvedValue({
+      session: { requests: 3, input: 100, output: 20, cache_read: 0, cache_write: 0, tokens: 120, context_tokens: 900 },
+      window: null, commission: null,
+    })
+    // The address names a session whose work was over days ago: the board has no card of it.
+    await show([card()], 'long-ago')
+    expect(byTest('familiar-past')?.textContent).toContain(words.space.familiars.notOnBoard)
+    expect(api.getTranscript).toHaveBeenCalledWith('long-ago', { before: null })
+    expect(byTest('transcript-pane')?.textContent).toContain('sort the photos')
+    // Nobody is asked to pick one: one was picked, by the address.
+    expect(document.body.textContent).not.toContain(words.space.familiars.pick)
+    await click(document.querySelector('[data-testid="familiar-past"] [data-view="usage"]'))
+    expect(api.getSessionUsage).toHaveBeenCalledWith('long-ago')
+    expect(byTest('usage-pane')).toBeTruthy()
+    cleanup?.()
+    // None named, or one that is on the board: nothing of the kind.
+    await show([card()], '')
+    expect(byTest('familiar-past')).toBeNull()
+    expect(document.body.textContent).toContain(words.space.familiars.pick)
+    cleanup?.()
+    await show([card()])
+    expect(byTest('familiar-past')).toBeNull()
+  })
+
   it('shows the whole command it asks about, and says when its model is not the one that was set', async () => {
     const long = `npm run build ${'--flag '.repeat(200)}&& echo done`
     const asking = card({

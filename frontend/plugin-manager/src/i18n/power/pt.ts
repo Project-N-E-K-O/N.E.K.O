@@ -284,6 +284,7 @@ const messages: PowerMessages = {
       views: { doing: 'Em mãos', talk: 'Conversa', usage: 'Uso' },
       empty: 'Nenhum familiar trabalhou aqui ainda.',
       pick: 'Clique em um familiar acima para ver o que ele está fazendo.',
+      notOnBoard: 'Este familiar não teve atividade recentemente e não está mais no quadro. A conversa e o consumo dele continuam guardados e podem ser vistos aqui.',
       doing: 'Fazendo agora',
       nothing: 'Não tem nada em mãos.',
       task: 'Tarefa atual',

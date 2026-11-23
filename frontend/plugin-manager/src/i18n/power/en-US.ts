@@ -291,6 +291,7 @@ const messages = {
       views: { doing: 'In hand', talk: 'Conversation', usage: 'Usage' },
       empty: 'No familiar has worked here yet.',
       pick: 'Choose a familiar above to see what it is doing.',
+      notOnBoard: 'This familiar has not been active lately and is no longer on the board. What was said in it and what it used are still kept, and can be read here.',
       doing: 'Doing now',
       nothing: 'Nothing in hand.',
       task: 'Task',

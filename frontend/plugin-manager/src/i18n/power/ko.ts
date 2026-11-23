@@ -284,6 +284,7 @@ const messages: PowerMessages = {
       views: { doing: '하는 일', talk: '대화', usage: '사용량' },
       empty: '아직 여기서 일한 사역마가 없어요.',
       pick: '위에서 사역마를 누르면 무엇을 하고 있는지 볼 수 있어요.',
+      notOnBoard: '이 사역마는 최근 활동이 없어 더 이상 보드에 없습니다. 대화와 사용량은 남아 있어 여기서 볼 수 있어요.',
       doing: '지금 하는 일',
       nothing: '맡은 일이 없어요.',
       task: '맡은 일',

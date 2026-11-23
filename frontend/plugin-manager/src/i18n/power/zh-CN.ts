@@ -284,6 +284,7 @@ const messages: PowerMessages = {
       views: { doing: '手上的事', talk: '对话', usage: '用量' },
       empty: '这里还没有使魔干过活。',
       pick: '在上面点一只使魔，看它在做什么。',
+      notOnBoard: '这只使魔最近没有活动，已经不在看板上了。它说过的话和用量还留着，可以在这里看。',
       doing: '正在做',
       nothing: '手上没有事。',
       task: '手上的事',
