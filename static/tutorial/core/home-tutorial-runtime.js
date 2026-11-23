@@ -208,13 +208,23 @@
     }
 
     // 后端打开总开关时会顺带打开插件开关。总开关已由恢复流程打开后，
-    // 如果快照要的是插件开、此刻插件却是关的，只能是用户自己关的：
-    // 再走一遍恢复会把它重新打开，所以和「用户关了总开关」一样放弃恢复。
-    function userTurnedOffMasterPluginSideEffect(currentFlags, expectedFlags) {
+    // 如果快照要的是插件开、此刻插件却是关的，可能是用户自己关的，
+    // 也可能是插件启动失败，前端分不清。两种情况都不该由恢复流程改它：
+    // 重发总开关会把插件重新打开，写回插件开关会替用户记下一个意图。
+    function isPluginOffAfterMasterOn(currentFlags, expectedFlags) {
         return !!(currentFlags && expectedFlags)
+            && currentFlags.agent_enabled === true
             && expectedFlags.agent_enabled === true
             && expectedFlags.user_plugin_enabled === true
             && currentFlags.user_plugin_enabled === false;
+    }
+
+    // 总开关已开、插件状态交给后端现状时，只补其余子开关。
+    function buildRestoreFlagsKeepingPluginState(expectedFlags) {
+        const flags = Object.assign({}, expectedFlags);
+        delete flags.agent_enabled;
+        delete flags.user_plugin_enabled;
+        return flags;
     }
 
     function inspectPersistedAgentRestoreSnapshot() {
@@ -710,17 +720,9 @@
                         clearPersistedAgentRestoreSnapshot(persisted.token);
                         return false;
                     }
-                    if (userTurnedOffMasterPluginSideEffect(currentFlags, persisted.agentFlags)) {
-                        clearPersistedAgentRestoreSnapshot(persisted.token);
-                        return false;
-                    }
                 } else {
                     if (currentFlags.agent_enabled === true) {
                         if (hasUnexpectedChildFlagEnabled(currentFlags, persisted.agentFlags, { allowMasterPluginSideEffect: expectsMasterOn })) {
-                            clearPersistedAgentRestoreSnapshot(persisted.token);
-                            return false;
-                        }
-                        if (userTurnedOffMasterPluginSideEffect(currentFlags, persisted.agentFlags)) {
                             clearPersistedAgentRestoreSnapshot(persisted.token);
                             return false;
                         }
@@ -731,8 +733,11 @@
                     }
                 }
 
+                const flagsToRestore = attemptState.masterApplied && isPluginOffAfterMasterOn(currentFlags, persisted.agentFlags)
+                    ? buildRestoreFlagsKeepingPluginState(persisted.agentFlags)
+                    : persisted.agentFlags;
                 const restored = await restoreAgentSnapshot(
-                    persisted.agentFlags,
+                    flagsToRestore,
                     restoreToken,
                     attemptState,
                     expectedOwner

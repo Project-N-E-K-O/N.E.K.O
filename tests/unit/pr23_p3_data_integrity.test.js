@@ -1016,7 +1016,7 @@ test('PR3976 master-on persisted: child flags still restore on next load after o
     }
 });
 
-test('PR3976 4661699788: plugin switch the user turned off after master-on is not re-enabled by the restore', async () => {
+test('PR3976 4661699788 / 4661805757: plugin switch found OFF after master-on is left alone, other child flags still restore', async () => {
     const snapshotFlags = {
         agent_enabled: true,
         computer_use_enabled: true,
@@ -1053,7 +1053,10 @@ test('PR3976 4661699788: plugin switch the user turned off after master-on is no
         retry.fn();
         await flushMicrotasks();
         assert.equal(rt.fetchCalls.filter(c => c.url === '/api/agent/command').length, 1, 'must not re-send master-on (it re-enables plugins)');
-        assert.equal(server.child.user_plugin_enabled, false, 'user plugin OFF must be kept');
+        assert.equal(server.child.user_plugin_enabled, false, 'plugin OFF (user or failed startup) must be kept');
+        assert.equal(server.child.computer_use_enabled, true, 'unrelated child flags must still be restored');
+        const lastFlagsPost = rt.fetchCalls.filter(c => c.url === '/api/agent/flags' && c.method === 'POST').pop();
+        assert.equal(Object.prototype.hasOwnProperty.call(lastFlagsPost.body.flags, 'user_plugin_enabled'), false, 'restore must not write the plugin intent');
         assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
     }
 
@@ -1067,8 +1070,12 @@ test('PR3976 4661699788: plugin switch the user turned off after master-on is no
         server.master = true;
         const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
         await flushMicrotasks();
-        assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0);
+        assert.equal(rt.fetchCalls.filter(c => c.url === '/api/agent/command').length, 0, 'must not re-send master-on');
+        const flagsPosts = rt.fetchCalls.filter(c => c.url === '/api/agent/flags' && c.method === 'POST');
+        assert.equal(flagsPosts.length, 1);
+        assert.equal(Object.prototype.hasOwnProperty.call(flagsPosts[0].body.flags, 'user_plugin_enabled'), false);
         assert.equal(server.child.user_plugin_enabled, false);
+        assert.equal(server.child.computer_use_enabled, true, 'unrelated child flags must still be restored');
         assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
     }
 
