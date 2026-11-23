@@ -10,10 +10,8 @@ DELETE_MARKER = "__DELETE__"
 RESERVED_TOP_LEVEL_SECTIONS: frozenset[str] = frozenset({"permissions"})
 
 
-def strip_reserved_sections(config: dict[str, object]) -> dict[str, object]:
-    """Return ``config`` without the reserved top-level tables."""
-    if not any(key in config for key in RESERVED_TOP_LEVEL_SECTIONS):
-        return config
+def strip_reserved_sections(config: Mapping[str, object]) -> dict[str, object]:
+    """Return a shallow copy of ``config`` without the reserved top-level tables."""
     return {
         key: value
         for key, value in config.items()
