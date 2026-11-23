@@ -86,7 +86,10 @@
 
         <el-tabs v-model="tab">
           <el-tab-pane v-if="!isArchived" :label="t('power.space.familiars.tab')" name="familiars" lazy>
-            <FamiliarsPane :project="selected ? selected.name : null" :selected-id="familiarId" @select="chooseFamiliar" />
+            <FamiliarsPane
+              :project="selected ? selected.name : null" :selected-id="familiarId" :settled="projectSettled"
+              @select="chooseFamiliar"
+            />
           </el-tab-pane>
           <el-tab-pane v-if="!isArchived" :label="t('power.space.tabs.activity')" name="activity" lazy>
             <ActivityPane :project="selected ? selected.name : null" />
@@ -148,6 +151,10 @@ const selected = computed<SpaceProject | null>(() => {
     : !project.archive_year && project.name === name)) ?? null
 })
 const isArchived = computed(() => !!selected.value?.archive_year)
+// Whether the project the address names is the one shown: not while the projects are still read,
+// nor when it is not among them (renamed, put away, or they could not be read). An address
+// that names none means the familiars of no project.
+const projectSettled = computed(() => !(typeof route.query.project === 'string' && route.query.project) || selected.value !== null)
 const scope = computed<SpaceScope>(() => {
   const project = selected.value
   if (!project) return {}

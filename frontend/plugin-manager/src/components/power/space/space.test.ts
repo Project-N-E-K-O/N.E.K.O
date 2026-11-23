@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   listReviews: vi.fn(), readReview: vi.fn(), deleteReview: vi.fn(),
   listPreferences: vi.fn(), editPreference: vi.fn(), removePreference: vi.fn(),
   getProjectBoard: vi.fn(), writeCard: vi.fn(), tellCommission: vi.fn(), answerCommission: vi.fn(), stopCommission: vi.fn(),
+  getTranscript: vi.fn(), getSessionUsage: vi.fn(),
   consoleErrorCode: (error: unknown) => (error as { code?: string })?.code ?? null,
 }))
 vi.mock('@/api/console', () => api)
@@ -396,6 +397,35 @@ describe('the familiar space page', () => {
     await click(rules)
     expect(route.query.tab).toBe('rules')
     expect(active()).toBe(words.space.tabs.rules)
+  })
+
+  it('says that the familiar an address names is off the board only once it knows which project is meant', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [] })
+    // The projects are still being read: the board that is read meanwhile is that of no project.
+    let known: (answer: unknown) => void = () => {}
+    api.listProjects.mockReturnValue(new Promise(resolve => { known = resolve }))
+    route.query = { project: 'Ledger tool', familiar: 's1' }
+    await mount(FamiliarSpace)
+    expect(api.getProjectBoard).toHaveBeenCalled()
+    expect(byTest('familiar-past')).toBeNull()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    // Known now, and the board of that project has no such familiar: said.
+    known({ projects: [project()] })
+    await flush()
+    expect(byTest('familiar-past')).toBeTruthy()
+    cleanup?.()
+    // A project that is not among them (renamed, put away): nothing is concluded.
+    api.getTranscript.mockClear()
+    api.listProjects.mockResolvedValue({ projects: [project()] })
+    route.query = { project: 'Renamed since', familiar: 's1' }
+    await mount(FamiliarSpace)
+    expect(byTest('familiar-past')).toBeNull()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    cleanup?.()
+    // No project named: the familiars of none are the ones meant.
+    route.query = { familiar: 's9' }
+    await mount(FamiliarSpace)
+    expect(byTest('familiar-past')).toBeTruthy()
   })
 
   it('asks for the reviews of an archived project by its year', async () => {

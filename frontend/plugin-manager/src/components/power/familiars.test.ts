@@ -330,6 +330,43 @@ describe('a familiar up close', () => {
     expect(byTest('familiar-past')).toBeNull()
   })
 
+  it('does not say that a familiar is off the board when the board was not read, or is not the one that is meant', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [] })
+    // The board could not be read: nobody is on it, and nothing follows from that.
+    api.getProjectBoard.mockRejectedValue(refusal('agent_unreachable', {}, 503))
+    await mount(FamiliarsPane, { project: 'Ledger tool', selectedId: 's1', onSelect: selected })
+    expect(byTest('familiars-error')).toBeTruthy()
+    expect(byTest('familiar-past')).toBeNull()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    cleanup?.()
+    // Whoever shows it does not know yet which project is meant: the board read meanwhile is
+    // another's. Known, and the familiar is not on that one either: then it is said.
+    api.getProjectBoard.mockResolvedValue(boardOf([]))
+    const { state } = await mount(FamiliarsPane, { project: null, selectedId: 's1', settled: false, onSelect: selected })
+    expect(byTest('familiar-past')).toBeNull()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+    // Nor that nobody ever worked here, of a place that is not the one meant, with one named.
+    expect(document.querySelector('.el-empty')).toBeNull()
+    state.props = { project: 'Ledger tool', selectedId: 's1', settled: true, onSelect: selected }
+    await flush()
+    expect(byTest('familiar-past')).toBeTruthy()
+    expect(api.getTranscript).toHaveBeenCalledWith('s1', { before: null })
+  })
+
+  it('opens another one that is off the board on what was said in it, whatever was looked at of the one before', async () => {
+    api.getTranscript.mockResolvedValue({ readable: true, before: null, entries: [] })
+    api.getSessionUsage.mockResolvedValue({
+      session: { requests: 3, input: 100, output: 20, cache_read: 0, cache_write: 0, tokens: 120, context_tokens: 900 }, window: null, commission: null,
+    })
+    const { state } = await show([card()], 'long-ago')
+    await click(document.querySelector('[data-testid="familiar-past"] [data-view="usage"]'))
+    expect(byTest('usage-pane')).toBeTruthy()
+    state.props = { ...state.props, selectedId: 'longer-ago' }
+    await flush()
+    expect(byTest('transcript-pane')).toBeTruthy()
+    expect(byTest('usage-pane')).toBeNull()
+  })
+
   it('shows the whole command it asks about, and says when its model is not the one that was set', async () => {
     const long = `npm run build ${'--flag '.repeat(200)}&& echo done`
     const asking = card({

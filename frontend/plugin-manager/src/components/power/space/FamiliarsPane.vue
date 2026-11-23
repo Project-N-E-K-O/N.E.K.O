@@ -1,7 +1,7 @@
 <template>
   <section class="panel" data-testid="familiars-pane">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon class="block" data-testid="familiars-error" />
-    <el-empty v-if="loaded && !members.length" :description="t('power.space.familiars.empty')" />
+    <el-empty v-if="loaded && !members.length && !selectedId" :description="t('power.space.familiars.empty')" />
 
     <div v-if="members.length" class="members">
       <FamiliarCard
@@ -16,8 +16,9 @@
     <p v-if="members.length && !selected && !selectedId" class="muted">{{ t('power.space.familiars.pick') }}</p>
 
     <!-- One the address names that is not on the board (not in use for days, its work long over):
-         what was said in it and what it used are kept, and are read by its session all the same. -->
-    <article v-if="loaded && selectedId && !selected" class="detail" :data-detail="selectedId" data-testid="familiar-past">
+         what was said in it and what it used are kept, and are read by its session all the same.
+         Said only of a board that was read, and that is the one the address means. -->
+    <article v-if="offBoard" class="detail" :data-detail="selectedId" data-testid="familiar-past">
       <p class="muted">{{ t('power.space.familiars.notOnBoard') }}</p>
       <div class="views" role="tablist">
         <button
@@ -151,7 +152,16 @@ import TranscriptPane from './TranscriptPane.vue'
 import UsagePane from './UsagePane.vue'
 
 /** The familiars of a project, or with `project` null those that belong to none; and the one chosen, up close. */
-const props = defineProps<{ project: string | null; selectedId: string }>()
+const props = withDefaults(defineProps<{
+  project: string | null
+  selectedId: string
+  /**
+   * False while whoever shows this does not know yet which project the address means (`project`
+   * is not that one then): nothing is concluded from a familiar being missing among those shown.
+   * True when it is not said (a switch that is left out would read as false).
+   */
+  settled?: boolean
+}>(), { settled: true })
 const emit = defineEmits<{ select: [id: string] }>()
 const { t, te } = useI18n()
 const board = ref<Board | null>(null)
@@ -188,6 +198,11 @@ const members = computed<BoardCard[]>(() => {
 })
 const hasLeader = computed(() => members.value.some(card => card.leader))
 const selected = computed(() => members.value.find(card => card.id === props.selectedId) ?? null)
+// The one the address names is not on the board. Known only once the board was read, of the
+// project the address means: a board that could not be read, or another project's, holds nobody.
+const offBoard = computed(() => Boolean(
+  loaded.value && board.value && !error.value && props.settled && props.selectedId && !selected.value,
+))
 const ask = computed(() => (selected.value?.state === 'waiting_user' ? selected.value.commission?.ask ?? null : null))
 const shownTitle = computed(() => {
   const card = selected.value
@@ -308,6 +323,7 @@ watch(() => props.selectedId, () => {
   note.value = ''
   sentence.value = ''
   view.value = 'doing'
+  pastView.value = 'talk'
 })
 document.addEventListener('visibilitychange', onVisibility)
 onBeforeUnmount(() => {
