@@ -1114,3 +1114,91 @@ def test_write_preview_image_writes_marker_first_and_rolls_back_on_failure(tmp_p
     assert written_basenames == [preview_cards._PREVIEW_STAGING_MARKER_FILE, "preview.png"]
     assert not staging_dir.exists()
 
+
+@pytest.mark.asyncio
+async def test_publish_rejects_content_folder_enclosing_preview_staging(tmp_path, monkeypatch):
+    """Publishing WorkshopExport or workshop root must be rejected with 403 before preflight."""
+    from main_routers.workshop_router import publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    export_dir = workshop / "WorkshopExport"
+    staged_file = export_dir / "_preview_staging" / "stage1" / "preview.png"
+    staged_file.parent.mkdir(parents=True)
+    staged_file.write_bytes(_png_bytes())
+    (export_dir / "item_1").mkdir()
+    (export_dir / "item_1" / "card.json").write_text("{}", encoding="utf-8")
+
+    published_calls: list[tuple] = []
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+    monkeypatch.setattr(
+        wr_publish,
+        "_preflight_and_publish",
+        lambda *args: published_calls.append(args) or "9990",
+    )
+
+    for forbidden_folder in (str(export_dir), str(workshop)):
+        resp = await wr_publish.publish_to_workshop(
+            _StubJsonRequest({
+                "title": "Enclosing Staging Folder",
+                "content_folder": forbidden_folder,
+                "visibility": 0,
+            })
+        )
+        assert resp.status_code == 403
+        assert json.loads(resp.body)["success"] is False
+    assert published_calls == []
+    assert staged_file.is_file()
+
+
+@pytest.mark.asyncio
+async def test_publish_writes_workshop_meta_before_cleaning_staged_preview(tmp_path, monkeypatch):
+    """Published metadata snapshot must be written before cleaning consumed preview staging."""
+    from main_routers.workshop_router import preview_cards, publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_card"
+    content_folder.mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+
+    staged_dir = workshop / "WorkshopExport" / "_preview_staging" / "st_order"
+    staged_dir.mkdir(parents=True)
+    staged_preview = staged_dir / "preview.png"
+    staged_preview.write_bytes(_png_bytes())
+    (staged_dir / preview_cards._PREVIEW_STAGING_MARKER_FILE).write_bytes(b"preview.png")
+
+    events: list[str] = []
+    real_cleanup = wr_publish._cleanup_consumed_preview_staging
+
+    def _recording_write_meta(*_args, **_kwargs):
+        assert staged_dir.exists()
+        events.append("write_workshop_meta")
+
+    def _recording_cleanup(*args, **kwargs):
+        events.append("cleanup_staged_preview")
+        return real_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", lambda *_args: "12345")
+    monkeypatch.setattr(wr_publish, "calculate_content_hash", lambda _folder: "deadbeef")
+    monkeypatch.setattr(wr_publish, "read_workshop_meta", lambda _name: None)
+    monkeypatch.setattr(wr_publish, "write_workshop_meta", _recording_write_meta)
+    monkeypatch.setattr(wr_publish, "_cleanup_consumed_preview_staging", _recording_cleanup)
+
+    resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Meta Before Cleanup",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": str(staged_preview),
+            "character_card_name": "item_card",
+        })
+    )
+    assert resp.status_code == 200
+    assert events == ["write_workshop_meta", "cleanup_staged_preview"]
+    assert not staged_dir.exists()
+
+

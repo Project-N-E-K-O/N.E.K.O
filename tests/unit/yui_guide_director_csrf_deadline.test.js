@@ -174,3 +174,47 @@ test('PR3981 #72: 403 csrf_validation_failed retry within deadline refreshes tok
     assert.equal(cmdPosts[0].headers['X-CSRF-Token'], 'tok-1');
     assert.equal(cmdPosts[1].headers['X-CSRF-Token'], 'tok-2');
 });
+
+test('PR3981 #76: stalled 403 response body aborts underlying request signal on deadline', async () => {
+    const cmdPosts = [];
+    let capturedSignal = null;
+    let postAborted = false;
+
+    const { director } = loadDirectorPageFlows({
+        fetchImpl: async (url, init = {}) => {
+            const target = String(url);
+            if (target === '/api/config/page_config') {
+                return {
+                    ok: true,
+                    json: async () => ({ autostart_csrf_token: 'tok-403-hang' }),
+                };
+            }
+            if (target === '/api/agent/command') {
+                cmdPosts.push({ headers: { ...(init.headers || {}) } });
+                capturedSignal = init.signal || null;
+                assert.ok(capturedSignal, 'expected /api/agent/command POST to carry AbortSignal');
+                assert.equal(capturedSignal.aborted, false);
+                capturedSignal.addEventListener('abort', () => {
+                    postAborted = true;
+                }, { once: true });
+                return {
+                    ok: false,
+                    status: 403,
+                    clone() {
+                        return {
+                            json: () => new Promise(() => {}),
+                        };
+                    },
+                };
+            }
+            throw new Error(`unexpected fetch: ${target}`);
+        },
+    });
+
+    const ok = await director.setAgentMasterEnabled(true);
+    assert.equal(ok, false);
+    assert.equal(cmdPosts.length, 1);
+    assert.equal(postAborted, true, 'expected 403 stalled body timeout to abort underlying POST signal');
+    assert.equal(capturedSignal?.aborted, true);
+});
+

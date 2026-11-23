@@ -72,19 +72,6 @@
         });
     }
 
-    function fetchWithDeadline(url, init, deadlineMs, code) {
-        const remainingMs = deadlineMs - Date.now();
-        if (!(remainingMs > 0)) {
-            return Promise.reject(createDirectorTimeoutError(code));
-        }
-        const controller = typeof AbortController === 'function' ? new AbortController() : null;
-        const fetchInit = controller
-            ? Object.assign({}, init || {}, { signal: controller.signal })
-            : Object.assign({}, init || {});
-        const onTimeout = controller ? () => controller.abort() : null;
-        return awaitWithDeadline(fetch(url, fetchInit), deadlineMs, code, onTimeout);
-    }
-
     let _directorPageFlowCsrfToken = '';
     async function getDirectorMutationHeaders(forceRefresh, deadlineMs) {
         const effectiveDeadlineMs = Number.isFinite(deadlineMs) ? deadlineMs : (Date.now() + 2000);
@@ -158,21 +145,35 @@
             if (deadlineMs - Date.now() <= 0) {
                 throw createDirectorTimeoutError('director_command_timeout');
             }
-            return fetchWithDeadline('/api/agent/command', {
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            const fetchInit = {
                 method: 'POST',
                 headers: Object.assign({
                     'Content-Type': 'application/json'
                 }, csrfHeaders),
                 body: bodyJson
-            }, deadlineMs, 'director_command_timeout');
+            };
+            if (controller) {
+                fetchInit.signal = controller.signal;
+            }
+            const onTimeout = controller ? () => controller.abort() : null;
+            const response = await awaitWithDeadline(
+                fetch('/api/agent/command', fetchInit),
+                deadlineMs,
+                'director_command_timeout',
+                onTimeout
+            );
+            return { response, onTimeout };
         }
-        const response = await sendOnce(false);
+        const firstAttempt = await sendOnce(false);
+        const response = firstAttempt.response;
         if (response.status !== 403 || typeof response.clone !== 'function') return response;
         try {
             const payload = await awaitWithDeadline(
                 response.clone().json(),
                 deadlineMs,
-                'director_command_timeout'
+                'director_command_timeout',
+                firstAttempt.onTimeout
             );
             if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
         } catch (err) {
@@ -181,7 +182,7 @@
             }
             return response;
         }
-        return sendOnce(true);
+        return (await sendOnce(true)).response;
     }
 
     namespace.extendDirector({

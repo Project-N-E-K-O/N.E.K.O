@@ -897,17 +897,6 @@ async def publish_to_workshop(request: Request):
             }, status_code=409)
         
         logger.info(f"成功发布创意工坊物品，ID: {published_file_id}")
-
-        if consumed_staged_preview:
-            try:
-                await asyncio.to_thread(
-                    _cleanup_consumed_preview_staging,
-                    consumed_staged_preview,
-                    workshop_base,
-                    content_folder=content_folder,
-                )
-            except Exception:
-                pass
         
         # After successful upload, update .workshop_meta.json and save a snapshot.
         if character_card_name and published_file_id:
@@ -959,6 +948,17 @@ async def publish_to_workshop(request: Request):
             except Exception as e:
                 logger.error(f"更新 .workshop_meta.json 失败: {e}")
                 # Log errors without blocking the successful response.
+
+        if consumed_staged_preview:
+            try:
+                await asyncio.to_thread(
+                    _cleanup_consumed_preview_staging,
+                    consumed_staged_preview,
+                    workshop_base,
+                    content_folder=content_folder,
+                )
+            except Exception:
+                pass
         
         return JSONResponse(content={
             "success": True,

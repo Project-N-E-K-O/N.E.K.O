@@ -654,15 +654,17 @@ def _resolve_preview_staging_root(workshop_base: str) -> str | None:
 
 
 def _is_path_inside_preview_staging(path: str, workshop_base: str) -> bool:
-    """Return True when ``path`` resolves inside ``WorkshopExport/_preview_staging``."""
-    staging_root = _resolve_preview_staging_root(workshop_base)
-    if not staging_root or not path:
+    """Return True when ``path`` resolves inside or encloses ``WorkshopExport/_preview_staging``."""
+    if not path or not workshop_base:
         return False
+    staging_root = _resolve_preview_staging_root(workshop_base)
+    if not staging_root:
+        staging_root = os.path.join(os.path.realpath(workshop_base), "WorkshopExport", "_preview_staging")
     try:
         resolved_path = os.path.realpath(path)
         norm_path = os.path.normcase(resolved_path)
         norm_root = os.path.normcase(staging_root)
-        return os.path.commonpath([norm_path, norm_root]) == norm_root
+        return os.path.commonpath([norm_path, norm_root]) in {norm_path, norm_root}
     except ValueError:
         return False
 
