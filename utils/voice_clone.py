@@ -26,7 +26,7 @@ MiniMax voice cloning (CN + international):
 
 Qwen/CosyVoice voice cloning:
   3-step flow: upload to tfLink → get direct link → DashScope registration
-  Called via the Alibaba Cloud DashScope SDK
+  Uses the regional DashScope enrollment HTTP API
 """
 
 import asyncio
@@ -38,7 +38,7 @@ from typing import Optional
 
 import httpx
 
-from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.dashscope_region import DASHSCOPE_DEFAULT_HTTP_API_URL, dashscope_http_url_from_base
 from utils.tts.providers.minimax import (
     MINIMAX_DOMESTIC_BASE_URL,
     MINIMAX_INTL_BASE_URL,
@@ -471,11 +471,11 @@ def qwen_language_hints(ref_language: str) -> list[str]:
 
 
 class QwenVoiceCloneClient:
-    """Qwen/CosyVoice voice cloning client (based on the Alibaba Cloud DashScope SDK).
+    """Qwen/CosyVoice voice cloning client for the regional DashScope enrollment API.
 
     3-step flow:
       Step 1 - upload the audio to tfLink to get a public direct link
-      Step 2 - register the voice via DashScope VoiceEnrollmentService
+      Step 2 - register the voice via the DashScope enrollment HTTP API
       (Steps 1+2 combine into the clone_voice convenience method, with retries)
     """
 
@@ -666,6 +666,54 @@ class QwenVoiceCloneClient:
     # ------------------------------------------------------------------
     # Step 2 - Register the voice through DashScope
     # ------------------------------------------------------------------
+    def _enrollment_request(self, action: str, **fields) -> tuple[dict, str | None]:
+        """Issue one enrollment POST with request-local credentials and region."""
+        base = dashscope_http_url_from_base(self.dashscope_base_url, DASHSCOPE_DEFAULT_HTTP_API_URL)
+        endpoint = base.replace("http://", "https://", 1) + "/services/audio/tts/customization"
+        try:
+            response = httpx.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={"model": "voice-enrollment", "input": {"action": action, **fields}},
+                timeout=60,
+            )
+            if response.status_code == 408 or response.status_code >= 500:
+                detail = f"HTTP {response.status_code}"
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = None
+                if isinstance(payload, dict):
+                    code = str(payload.get("code") or "").strip()
+                    message = str(payload.get("message") or "").strip()
+                    if code or message:
+                        detail = f"{detail} {code}: {message}".strip()
+                raise QwenVoiceCloneError(
+                    f"音色注册超时，远端状态未知 (ResponseTimeout: {detail})"
+                )
+            if response.status_code == 415:
+                raise QwenVoiceCloneError("无法下载音频文件 (Download audio failed: HTTP 415)")
+            result = response.json()
+            if response.status_code != 200 or result.get("code"):
+                detail = f"{response.status_code} {result.get('code', '')}: {result.get('message', '')}"
+                lower = detail.lower()
+                if any(kw in lower for kw in ("responsetimeout", "response timeout", "timeout")):
+                    raise QwenVoiceCloneError(f"音色注册超时 ({detail})")
+                if "download audio failed" in lower:
+                    raise QwenVoiceCloneError(f"无法下载音频文件 ({detail})")
+                raise QwenVoiceCloneError(detail)
+            output = result["output"]
+            if not isinstance(output, dict):
+                raise TypeError("invalid enrollment output")
+            return output, result.get("request_id")
+        except httpx.TransportError as exc:
+            # A lost response can follow a committed mutation.
+            raise QwenVoiceCloneError(
+                "音色注册超时，远端状态未知 (ResponseTimeout: enrollment outcome unknown)"
+            ) from exc
+        except (KeyError, TypeError, AttributeError, ValueError) as exc:
+            raise QwenVoiceCloneError("Invalid DashScope enrollment response") from exc
+
     def create_voice(
         self,
         prefix: str,
@@ -673,7 +721,7 @@ class QwenVoiceCloneClient:
         language_hints: list[str],
         target_model: str | None = None,
     ) -> tuple[str, str | None]:
-        """Register the voice via DashScope VoiceEnrollmentService (sync call).
+        """Register the voice via one synchronous enrollment request.
 
         Returns:
             (voice_id, request_id) tuple
@@ -681,8 +729,6 @@ class QwenVoiceCloneClient:
         Raises:
             QwenVoiceCloneError
         """
-        import dashscope
-        from dashscope.audio.tts_v2 import VoiceEnrollmentService
         from utils.api_config_loader import (
             cosyvoice_model_supports_language_hints,
             get_cosyvoice_clone_model,
@@ -699,24 +745,39 @@ class QwenVoiceCloneClient:
         if language_hints and cosyvoice_model_supports_language_hints(target_model):
             kwargs["language_hints"] = language_hints
 
-        # Hold DASHSCOPE_GLOBAL_LOCK across module-global updates, service construction, and service.create_voice:
-        # clone_voice runs in an asyncio.to_thread worker, so concurrent cloning requests in one process can
-        # overwrite each other's key/region between setting globals and calling the SDK,
-        # sending requests with someone else's credentials (Codex P1 #3258691457).
-        # TTS workers and previews share this lock too.
-        try:
-            with DASHSCOPE_GLOBAL_LOCK:
-                dashscope.api_key = self.api_key
-                configure_dashscope_sdk_urls(
-                    dashscope, self.dashscope_base_url, websocket_path="inference"
-                )
-                service = VoiceEnrollmentService()
-                voice_id = service.create_voice(**kwargs)
-                request_id = service.get_last_request_id()
-            logger.info("CosyVoice 音色注册成功: voice_id=%s", voice_id)
-            return voice_id, request_id
-        except Exception as e:
-            raise QwenVoiceCloneError(str(e)) from e
+        output, request_id = self._enrollment_request("create_voice", **kwargs)
+        voice_id = output.get("voice_id")
+        if not isinstance(voice_id, str) or not voice_id:
+            raise QwenVoiceCloneError("Missing voice_id in enrollment response")
+        return voice_id, request_id
+
+    def _list_voices_by_prefix(self, prefix: str) -> list[dict]:
+        rows: list[dict] = []
+        for page_index in range(10):
+            output, _ = self._enrollment_request(
+                "list_voice", prefix=prefix, page_index=page_index, page_size=100,
+            )
+            page = output.get("voice_list")
+            if not isinstance(page, list) or not all(isinstance(row, dict) for row in page):
+                raise QwenVoiceCloneError("Invalid enrollment list")
+            rows.extend(page)
+            if len(page) < 100:
+                return rows
+        raise QwenVoiceCloneError("Incomplete enrollment list")
+
+    def _reconcile_voice(self, prefix: str, baseline: set[str], model: str, url: str) -> str | None:
+        matches = set()
+        for row in self._list_voices_by_prefix(prefix):
+            voice_id = row.get("voice_id")
+            if not isinstance(voice_id, str) or not voice_id or voice_id in baseline:
+                continue
+            if row.get("status") not in {"OK", "DEPLOYING"}:
+                continue
+            details, _ = self._enrollment_request("query_voice", voice_id=voice_id)
+            if (details.get("resource_link") == url and details.get("target_model") == model
+                    and details.get("status") in {"OK", "DEPLOYING"}):
+                matches.add(voice_id)
+        return matches.pop() if len(matches) == 1 else None
 
     # ------------------------------------------------------------------
     # Combined convenience method: upload + create, with retries
@@ -737,6 +798,21 @@ class QwenVoiceCloneClient:
         """
         tmp_url = await self.upload_file(audio_buffer, filename, mime_type)
 
+        if target_model is None:
+            from utils.api_config_loader import get_cosyvoice_clone_model
+            target_model = get_cosyvoice_clone_model(self.dashscope_base_url)
+
+        baseline_voice_ids: set[str] | None = None
+        try:
+            baseline_rows = await asyncio.to_thread(self._list_voices_by_prefix, prefix)
+            baseline_voice_ids = {
+                str(row["voice_id"])
+                for row in baseline_rows
+                if isinstance(row, dict) and row.get("voice_id")
+            }
+        except Exception as e:
+            logger.warning("音色注册前查询基线列表失败，超时后将禁止盲目重试: %s", e)
+
         last_error: Exception | None = None
         for attempt in range(self.MAX_RETRIES):
             try:
@@ -756,25 +832,45 @@ class QwenVoiceCloneClient:
                 error_detail = str(e)
                 is_timeout = any(kw in error_detail.lower() for kw in
                                  ["responsetimeout", "response timeout", "timeout"])
-                is_download_failed = ("download audio failed" in error_detail.lower() or "415" in error_detail)
+                is_download_failed = "download audio failed" in error_detail.lower()
 
-                if (is_timeout or is_download_failed) and attempt < self.MAX_RETRIES - 1:
-                    label = '超时' if is_timeout else '文件下载失败'
-                    logger.warning("检测到%s错误，等待 %d 秒后重试...", label, self.RETRY_DELAY)
+                if is_timeout:
+                    if baseline_voice_ids is None:
+                        raise QwenVoiceCloneError(
+                            '音色注册超时，无法确认远端是否已创建音色，已停止重试'
+                        ) from e
+
+                    await asyncio.sleep(self.RETRY_DELAY)
+                    try:
+                        adopted_voice_id = await asyncio.to_thread(
+                            self._reconcile_voice, prefix, baseline_voice_ids, target_model, tmp_url,
+                        )
+                    except Exception as list_err:
+                        raise QwenVoiceCloneError(
+                            '音色注册超时，且查询远端音色状态失败，已停止重试以避免重复创建'
+                        ) from list_err
+
+                    if adopted_voice_id:
+                        logger.info(
+                            "音色注册超时后在远端发现已创建音色，直接采用: voice_id=%s",
+                            adopted_voice_id,
+                        )
+                        return adopted_voice_id, tmp_url, None
+
+                    raise QwenVoiceCloneError(
+                        '音色注册超时，无法确认远端是否已创建本次音色，已停止重试'
+                    ) from e
+
+                if is_download_failed and attempt < self.MAX_RETRIES - 1:
+                    logger.warning("检测到文件下载失败错误，等待 %d 秒后重试...", self.RETRY_DELAY)
                     await asyncio.sleep(self.RETRY_DELAY)
                     continue
 
-                # Final attempt or non-retryable error
-                if is_timeout:
-                    raise QwenVoiceCloneError(
-                        f'音色注册超时，已尝试{self.MAX_RETRIES}次'
-                    ) from e
-                elif is_download_failed:
+                if is_download_failed:
                     raise QwenVoiceCloneError(
                         f'音色注册失败: 无法下载音频文件，已尝试{self.MAX_RETRIES}次'
                     ) from e
-                else:
-                    raise
+                raise
 
         # Unreachable in theory, but guard defensively
         raise last_error or QwenVoiceCloneError("音色注册失败: 未知错误")  # type: ignore[misc]

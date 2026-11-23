@@ -2,12 +2,16 @@
 import asyncio
 import base64
 import json
+import io
+import socket
 
 import httpx
 import pytest
+from PIL import Image
 
-from utils.image_generation import ImageGenerationError, ImageRequest, generate_image
+from utils.image_generation import GeneratedImage, ImageGenerationError, ImageRequest, generate_image
 from utils.image_generation.config import resolve_image_config
+from utils.image_generation.transport import read_generated_image
 from utils.config_manager.core_config import CoreConfigMixin
 
 
@@ -24,6 +28,32 @@ def manager(provider="openai", **extra):
     return Manager({"imageModelProvider": provider, "assistApiKeyOpenai": "openai-key",
                     "assistApiKeyQwen": "beijing-key", "assistApiKeyQwenIntl": "singapore-key",
                     "imageModelApiKey": "custom-key", **extra})
+
+
+@pytest.mark.asyncio
+async def test_wan_reference_is_opaque_and_padded_after_all_crop_transforms():
+    reference = io.BytesIO()
+    Image.new('RGBA', (192, 48), (80, 120, 200, 128)).save(reference, 'PNG')
+    calls = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        content = body['input']['messages'][0]['content']
+        raw = base64.b64decode(content[0]['image'].split(',')[1])
+        with Image.open(io.BytesIO(raw)) as image:
+            assert image.mode == 'RGB'
+            assert image.size == (240, 240)
+            assert image.getpixel((0, 0)) == (255, 255, 255)
+            assert image.getpixel((120, 120)) == (167, 187, 227)
+        calls.append(request.url.path)
+        return httpx.Response(200, json={'output': {'choices': [{'message': {'content': [
+            {'image': 'https://images.example/result.png'}]}}]}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await generate_image(ImageRequest('garment', reference_images=(reference.getvalue(),)),
+            config_manager=manager('qwen', imageModelId='wan2.6-image'), client=client)
+    assert result.image.url == 'https://images.example/result.png'
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("provider,key", [("openai", "openai-key"), ("qwen", "beijing-key"), ("qwen_intl", "singapore-key")])
@@ -71,6 +101,107 @@ async def test_openai_wire_contract(model, legacy):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider,model", [("openai", "gpt-image-2"), ("qwen", "qwen-image-2.0-pro")])
+async def test_image_edit_passes_both_references_to_the_configured_provider(provider, model):
+    inputs = (b"\x89PNG\r\n\x1a\ncharacter", b"\x89PNG\r\n\x1a\npart")
+    url = "https://images.example/edited.png"
+    calls = []
+
+    def handle(request):
+        calls.append(request.url.path)
+        if provider == "openai":
+            assert request.url.path == "/v1/images/edits"
+            assert request.headers["authorization"] == "Bearer openai-key"
+            assert request.content.count(b'name="image[]"') == 2
+            assert all(image in request.content for image in inputs)
+            return httpx.Response(200, json={"data": [{"url": url}]})
+        assert request.url.path.endswith("/multimodal-generation/generation")
+        assert request.headers["authorization"] == "Bearer beijing-key"
+        body = json.loads(request.content)
+        assert body["model"] == model
+        assert body["parameters"]["size"] == "1024*1024"
+        content = body["input"]["messages"][0]["content"]
+        assert [base64.b64decode(item["image"].split(",")[1]) for item in content[:-1]] == list(inputs)
+        assert content[-1] == {"text": "blue hair"}
+        return httpx.Response(200, json={"output": {"choices": [{"message": {"content": [{"image": url}]}}]}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await generate_image(
+            ImageRequest("blue hair", reference_images=inputs),
+            config_manager=manager(provider, imageModelId=model), client=client,
+        )
+    assert result.image.url == url
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["qwen-image-2.0-pro", "qwen-image-2.1-pro", "qwen-image-3.0-pro"])
+async def test_qwen_multimodal_endpoint_can_generate_from_text_only(model):
+    url = "https://images.example/redrawn.png"
+
+    def handle(request):
+        assert request.url.path.endswith("/multimodal-generation/generation")
+        assert request.headers["authorization"] == "Bearer beijing-key"
+        body = json.loads(request.content)
+        assert body["model"] == model
+        assert body["input"]["messages"] == [{"role": "user", "content": [{"text": "golden hair clip"}]}]
+        assert body["parameters"]["n"] == 1
+        return httpx.Response(200, json={"output": {"choices": [{"message": {"content": [{"image": url}]}}]}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await generate_image(ImageRequest("golden hair clip"),
+                                      config_manager=manager("qwen", imageModelId=model), client=client)
+    assert result.image.url == url
+
+
+@pytest.mark.asyncio
+async def test_wan_26_image_text_redraw_requests_one_image_from_async_endpoint():
+    url = "https://images.example/redrawn.png"
+    paths = []
+
+    def handle(request):
+        paths.append(request.url.path)
+        if request.method == "POST":
+            assert request.url.path.endswith("/aigc/image-generation/generation")
+            assert request.headers["x-dashscope-async"] == "enable"
+            body = json.loads(request.content)
+            assert body["model"] == "wan2.6-image"
+            assert body["input"]["messages"][0]["content"] == [{"text": "golden hair clip"}]
+            assert body["parameters"]["enable_interleave"] is True
+            assert body["parameters"]["max_images"] == 1
+            return httpx.Response(200, json={"output": {"task_id": "fixture-task", "task_status": "PENDING"}})
+        assert request.url.path.endswith("/tasks/fixture-task")
+        return httpx.Response(200, json={"output": {
+            "task_status": "SUCCEEDED",
+            "choices": [{"message": {"content": [{"text": "Here is the image."}, {"image": url}]}}],
+        }})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        result = await generate_image(ImageRequest("golden hair clip"),
+                                      config_manager=manager("qwen", imageModelId="wan2.6-image"), client=client)
+    assert result.image.url == url
+    assert len(paths) == 2
+
+
+@pytest.mark.asyncio
+async def test_text_only_model_rejects_reference_without_provider_request():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: pytest.fail("unexpected request"))) as client:
+        with pytest.raises(ImageGenerationError, match="image_edit_unsupported"):
+            await generate_image(ImageRequest("hair", reference_images=(b"\x89PNG\r\n\x1a\npart",)),
+                                 config_manager=manager("qwen"), client=client)
+
+
+@pytest.mark.asyncio
+async def test_wardrobe_cannot_download_image_from_private_dns_result(monkeypatch):
+    async def private_lookup(*args, **kwargs):
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:100.64.0.1", 443, 0, 0))]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", private_lookup)
+    with pytest.raises(ImageGenerationError, match="invalid_image_url"):
+        await read_generated_image(GeneratedImage(url="https://images.example/private"), limit=1024)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider,host,key", [
     ("qwen", "dashscope.aliyuncs.com", "beijing-key"),
     ("qwen_intl", "dashscope-intl.aliyuncs.com", "singapore-key"),
@@ -95,7 +226,15 @@ async def test_dashscope_create_poll_and_result(provider, host, key):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,payload,code", [
-    (401, {"error": "secret private prompt"}, "provider_http_error"),
+    (401, {"error": "secret private prompt"}, "provider_access_denied"),
+    (402, {}, "provider_quota_exceeded"),
+    (403, {"code": "Arrearage", "message": "private provider body"}, "provider_quota_exceeded"),
+    (429, {"message": "secret provider body"}, "provider_rate_limited"),
+    (429, {"code": "Throttling.AllocationQuota", "message": "Allocated quota exceeded"}, "provider_rate_limited"),
+    (429, {"error": {"code": "insufficient_quota", "message": "Your token-plan quota has been exhausted."}},
+     "provider_quota_exceeded"),
+    (503, {}, "provider_unavailable"),
+    (504, {}, "provider_timeout"),
     (302, {}, "provider_http_error"),
     (200, {"data": [{"url": "http://127.0.0.1/private"}]}, "invalid_image_url"),
     (200, {"data": [{"b64_json": "%%%"}]}, "invalid_image_data"),
@@ -105,11 +244,12 @@ async def test_errors_are_sanitized_and_not_retried(status, payload, code):
     calls = []
     def handle(request):
         calls.append(request)
-        return httpx.Response(status, json=payload, headers={"Location": "https://other.example/"})
+        return httpx.Response(status, json=payload, headers={"Location": "https://other.example/", "Retry-After": "3"})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle), follow_redirects=True) as client:
         with pytest.raises(ImageGenerationError, match=code) as caught:
             await generate_image(ImageRequest("private prompt"), config_manager=manager(), client=client)
     assert str(caught.value) == code
+    assert caught.value.retry_after == (3 if code == "provider_rate_limited" else None)
     assert len(calls) == 1
 
 

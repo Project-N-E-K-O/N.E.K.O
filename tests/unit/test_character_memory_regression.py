@@ -6744,6 +6744,17 @@ async def test_the_rollback_actually_re_retires_the_absent_name(tmp_path):
         assert all("Back" not in store._retired for store in stores)
 
 
+def _seed_source_character_registry(cm, name: str = "Source") -> None:
+    cm.save_characters(
+        {
+            "当前猫娘": name,
+            "猫娘": {name: {"_reserved": {"character_id": "character_" + "1" * 32}}},
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+
 @pytest.mark.unit
 def test_a_failed_rename_restores_the_cache_lifecycle(tmp_path):
     """A raise partway through must not strand either name.
@@ -6758,6 +6769,7 @@ def test_a_failed_rename_restores_the_cache_lifecycle(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     with _isolated_sidecar_stores(tmp_path) as stores:
         # The target name was deleted earlier, so it is retired.
         character_memory.retire_character_runtime_caches("Target")
@@ -6947,6 +6959,7 @@ def test_a_rename_fences_the_target_against_its_deleted_identity(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     def detected(path):
@@ -7080,6 +7093,7 @@ def test_the_rename_fence_covers_the_whole_merge(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     def detected(path):
@@ -7184,6 +7198,7 @@ def test_a_failed_rename_releases_the_write_fence(tmp_path):
     from utils.character_memory import is_character_write_fenced
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
@@ -7245,6 +7260,7 @@ def test_a_late_source_write_does_not_leave_the_old_directory_behind(tmp_path):
     import utils.character_memory as character_memory
 
     cm = _make_config_manager(tmp_path)
+    _seed_source_character_registry(cm)
     memory_root = Path(cm.memory_dir)
 
     with _isolated_sidecar_stores(memory_root) as (store, corpus, greeting):
@@ -7619,3 +7635,566 @@ def test_characters_cache_sees_rewrite_that_keeps_the_same_mtime(tmp_path):
     assert os.path.getmtime(config_path) == before.st_mtime
 
     assert set(cm.load_characters()["猫娘"]) == {"A", "Bee"}
+
+
+@pytest.mark.unit
+def test_f0064_samefile_case_only_rename_and_collision_guards(tmp_path, monkeypatch):
+    """F0064: case-only rename uses two-step rename, rewrites pending, and guards co-owned deletes/renames."""
+    import utils.character_memory as character_memory
+    import utils.recent_file as recent_file
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "neko",
+            "猫娘": {
+                "neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_dir = memory_root / "neko"
+    neko_dir.mkdir(parents=True)
+    (neko_dir / "facts.json").write_text('["fact"]', encoding="utf-8")
+    recent_path = neko_dir / "recent.json"
+    recent_path.write_text(
+        json.dumps([{"type": "human", "data": {"content": "neko说：hi", "speaker": "neko"}}]),
+        encoding="utf-8",
+    )
+
+    # 1. find_character_name_collision detects casefold & Unicode equivalents, respecting exclude_names.
+    assert character_memory.find_character_name_collision(cm, "Neko") == "neko"
+    assert character_memory.find_character_name_collision(cm, "Neko", exclude_names=("neko",)) is None
+    assert (
+        character_memory.find_character_name_collision(
+            None, "Cafe\u0301", existing_names=["Caf\u00e9"]
+        )
+        == "Caf\u00e9"
+    )
+
+    # 2. Same-path _merge_directories(d, d) is an idempotent no-op.
+    assert character_memory._merge_directories(neko_dir, neko_dir) is False
+    assert (neko_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+
+    # 3. Cross-character collision: renaming "other" -> "Neko" when "neko" owns memory/neko must raise.
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other"]', encoding="utf-8")
+    if os.path.exists(memory_root / "Neko") and os.path.samefile(neko_dir, memory_root / "Neko"):
+        with pytest.raises(FileExistsError, match="collides with existing character"):
+            character_memory.rename_character_memory_storage(cm, "other", "Neko")
+        assert (neko_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+    else:
+        # On case-sensitive Linux, simulate samefile collision explicitly.
+        real_samefile = os.path.samefile
+
+        def fake_samefile(a, b):
+            if {Path(a).name, Path(b).name} == {"neko", "Neko"}:
+                return True
+            return real_samefile(a, b)
+
+        with patch.object(character_memory.os.path, "samefile", fake_samefile):
+            with pytest.raises(FileExistsError, match="collides with existing character"):
+                character_memory.rename_character_memory_storage(cm, "other", "Neko")
+
+    # 4. Same-character case-only rename "neko" -> "Neko" succeeds and rewrites pending speaker names.
+    recent_file.set_recent_pending_unlocked(
+        recent_path,
+        [{"type": "human", "data": {"speaker": "neko", "content": "neko说：pending"}}],
+    )
+    result = character_memory.rename_character_memory_storage(cm, "neko", "Neko")
+    target_dir = result["runtime_dir"]
+    assert target_dir.name == "Neko"
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+    target_recent = target_dir / "recent.json"
+    rewritten_disk = json.loads(target_recent.read_text(encoding="utf-8"))
+    assert rewritten_disk[0]["data"]["speaker"] == "Neko"
+    assert rewritten_disk[0]["data"]["content"] == "Neko说：hi"
+    rewritten_pending = recent_file.get_recent_pending_unlocked(target_recent)
+    assert rewritten_pending == [
+        {"type": "human", "data": {"speaker": "Neko", "content": "Neko说：pending"}}
+    ]
+    recent_file.set_recent_pending_unlocked(target_recent, [])
+
+    # 5. Mocked os.path.samefile two-step rename verification (covers case-sensitive Linux CI as well).
+    two_step_src = tmp_path / "case_mock" / "alpha"
+    two_step_dst = tmp_path / "case_mock" / "Alpha"
+    two_step_src.mkdir(parents=True)
+    (two_step_src / "data.txt").write_text("ok", encoding="utf-8")
+    real_samefile = os.path.samefile
+
+    def mock_samefile_for_alpha(a, b):
+        if {Path(a), Path(b)} == {two_step_src, two_step_dst}:
+            return True
+        return real_samefile(a, b)
+
+    with patch.object(character_memory.os.path, "samefile", mock_samefile_for_alpha):
+        assert character_memory._merge_directories(two_step_src, two_step_dst) is True
+    assert two_step_dst.exists()
+    assert (two_step_dst / "data.txt").read_text(encoding="utf-8") == "ok"
+
+    # 6. delete_character_memory_storage must NOT delete directory co-owned by another live character.
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "3" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+    alias = memory_root / "neko"
+    if not alias.exists():
+        alias.symlink_to(target_dir, target_is_directory=True)
+    assert alias.samefile(target_dir)
+    assert alias in character_memory.list_character_memory_paths(cm, "neko")
+    assert character_memory.delete_character_memory_storage(cm, "neko") == []
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["fact"]'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("seed_in_project_dir", [False, True])
+def test_f0064_rename_rejects_casefold_collision_without_runtime_dir_on_disk(
+    tmp_path, seed_in_project_dir
+):
+    """F0064: renaming onto a registered character's case-folded name must raise even without memory_dir/<other>."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    project_root = Path(cm.project_memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "neko",
+            "猫娘": {
+                "neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    if seed_in_project_dir:
+        seed_dir = project_root / "neko"
+        seed_dir.mkdir(parents=True)
+        (seed_dir / "facts.json").write_text('["neko-seed"]', encoding="utf-8")
+
+    assert not (memory_root / "neko").exists()
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-data"]', encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="collides with existing character"):
+        character_memory.rename_character_memory_storage(cm, "other", "Neko")
+
+    assert (other_dir / "facts.json").read_text(encoding="utf-8") == '["other-data"]'
+    assert not (memory_root / "Neko").exists()
+    if seed_in_project_dir:
+        assert (project_root / "neko" / "facts.json").read_text(encoding="utf-8") == '["neko-seed"]'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("existing_name", "candidate_name"),
+    [
+        ("  neko", "Neko"),
+        ("  neko  ", "  Neko  "),
+        ("  neko  ", "Neko"),
+        ("neko ", "Neko"),
+        ("neko", "  Neko  "),
+    ],
+)
+@pytest.mark.parametrize("existing_on_disk", [False, True])
+def test_f0064_symmetric_whitespace_collision_detection_and_rename_guard(
+    tmp_path, existing_name, candidate_name, existing_on_disk
+):
+    """F0064: whitespace-padded existing and candidate names collide symmetrically."""
+    import utils.character_memory as character_memory
+
+    if existing_on_disk and os.name == "nt" and existing_name.endswith(" "):
+        pytest.skip("Win32 strips trailing spaces from directory names")
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": existing_name,
+            "猫娘": {
+                existing_name: {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    if existing_on_disk:
+        existing_dir = memory_root / existing_name
+        existing_dir.mkdir(parents=True)
+        (existing_dir / "facts.json").write_text('["existing-fact"]', encoding="utf-8")
+
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-data"]', encoding="utf-8")
+
+    assert (
+        character_memory.find_character_name_collision(
+            cm, candidate_name, exclude_names=("other",)
+        )
+        == existing_name
+    )
+    assert (
+        character_memory.find_character_name_collision(
+            None, candidate_name, exclude_names=("other",), existing_names=[existing_name, "other"]
+        )
+        == existing_name
+    )
+
+    with pytest.raises(FileExistsError, match="collides with existing character"):
+        character_memory.rename_character_memory_storage(cm, "other", candidate_name)
+
+    assert (other_dir / "facts.json").read_text(encoding="utf-8") == '["other-data"]'
+    if existing_on_disk:
+        assert (memory_root / existing_name / "facts.json").read_text(encoding="utf-8") == '["existing-fact"]'
+    else:
+        assert not (memory_root / candidate_name).exists()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("old_name", "new_name"),
+    [
+        ("  neko", "  Neko"),
+        ("  neko  ", "  Neko  "),
+    ],
+)
+def test_f0064_same_character_whitespace_padded_case_only_rename_succeeds(
+    tmp_path, old_name, new_name
+):
+    """F0064: renaming a whitespace-padded character onto its own case-variant succeeds."""
+    import utils.character_memory as character_memory
+
+    if os.name == "nt" and old_name.endswith(" "):
+        pytest.skip("Win32 strips trailing spaces from directory names")
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": old_name,
+            "猫娘": {
+                old_name: {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    old_dir = memory_root / old_name
+    old_dir.mkdir(parents=True)
+    (old_dir / "facts.json").write_text('["padded-fact"]', encoding="utf-8")
+
+    assert (
+        character_memory.find_character_name_collision(
+            cm, new_name, exclude_names=(old_name,)
+        )
+        is None
+    )
+
+    result = character_memory.rename_character_memory_storage(cm, old_name, new_name)
+    target_dir = result["runtime_dir"]
+    assert target_dir.name == new_name
+    assert (target_dir / "facts.json").read_text(encoding="utf-8") == '["padded-fact"]'
+
+
+@pytest.mark.unit
+def test_f0064_rename_refuses_shared_source_directory(tmp_path):
+    """Renaming a character whose source directory is co-owned by another character must fail."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "2" * 32}},
+                "other": {"_reserved": {"character_id": "character_" + "3" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True)
+    (neko_upper / "facts.json").write_text('["shared-fact"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        neko_lower.symlink_to(neko_upper, target_is_directory=True)
+    assert neko_lower.samefile(neko_upper)
+    assert character_memory.list_character_memory_paths(cm, "neko")
+
+    other_dir = memory_root / "other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "facts.json").write_text('["other-fact"]', encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="shared with existing character"):
+        character_memory.rename_character_memory_storage(cm, "neko", "NewNeko")
+
+    assert not (memory_root / "NewNeko").exists()
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+
+    # Unshared character in the same config still renames normally.
+    moved = character_memory.rename_character_memory_storage(cm, "other", "OtherNew")
+    assert moved["runtime_dir"] == memory_root / "OtherNew"
+    assert (memory_root / "OtherNew" / "facts.json").read_text(encoding="utf-8") == '["other-fact"]'
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "corrupt_json",
+        "unreadable",
+        "missing",
+        "missing_runtime_with_seed",
+        "missing_runtime_dirty_default_cache",
+    ],
+)
+def test_f0064_rename_and_delete_fail_closed_when_character_registry_unavailable(
+    tmp_path, monkeypatch, failure_mode
+):
+    """Both rename and delete refuse to proceed when authoritative character config cannot be read."""
+    import utils.character_memory as character_memory
+
+    cm = _make_config_manager(tmp_path)
+    memory_root = Path(cm.memory_dir)
+    cm.save_characters(
+        {
+            "当前猫娘": "Neko",
+            "猫娘": {
+                "Neko": {"_reserved": {"character_id": "character_" + "1" * 32}},
+                "neko": {"_reserved": {"character_id": "character_" + "2" * 32}},
+            },
+            "主人": {"昵称": "哥哥"},
+        },
+        bypass_write_fence=True,
+    )
+
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True)
+    (neko_upper / "facts.json").write_text('["shared-fact"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        neko_lower.symlink_to(neko_upper, target_is_directory=True)
+    assert neko_lower.samefile(neko_upper)
+
+    config_path = Path(cm.get_runtime_config_path("characters.json"))
+    with cm._characters_cache_lock:
+        cm._characters_cache = None
+        cm._characters_cache_path = None
+        cm._characters_cache_mtime = None
+        cm._characters_dirty = False
+
+    if failure_mode == "corrupt_json":
+        config_path.write_text("{corrupt", encoding="utf-8")
+    elif failure_mode == "missing":
+        config_path.unlink()
+    elif failure_mode == "missing_runtime_with_seed":
+        cm.project_config_dir = tmp_path / "project_seed_config"
+        seed_path = cm.project_config_dir / "characters.json"
+        seed_path.parent.mkdir(parents=True, exist_ok=True)
+        seed_path.write_text(
+            json.dumps(
+                {
+                    "当前猫娘": "SeedOnly",
+                    "猫娘": {
+                        "SeedOnly": {"_reserved": {"character_id": "character_" + "9" * 32}},
+                    },
+                    "主人": {"昵称": "哥哥"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        config_path.unlink()
+        assert Path(cm.get_config_path("characters.json")) == seed_path
+    elif failure_mode == "missing_runtime_dirty_default_cache":
+        config_path.unlink()
+        with patch.object(cm, "save_characters", side_effect=OSError("readonly")):
+            fallback = cm.load_characters()
+            assert "当前猫娘" in fallback
+        assert cm._characters_dirty is True
+        assert cm._characters_cache_mtime is None
+        assert not config_path.exists()
+    else:
+        def _deny_load(*_args, **_kwargs):
+            raise PermissionError("characters.json unreadable")
+
+        monkeypatch.setattr(cm, "load_characters", _deny_load)
+
+    expected_exc = (
+        FileNotFoundError
+        if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}
+        else (OSError, ValueError)
+    )
+    with pytest.raises(expected_exc):
+        character_memory.rename_character_memory_storage(cm, "neko", "NewNeko")
+    assert not (memory_root / "NewNeko").exists()
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+    if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}:
+        assert not config_path.exists()
+
+    with _isolated_sidecar_stores(memory_root) as stores:
+        with pytest.raises(expected_exc):
+            character_memory.delete_character_memory_storage(cm, "neko")
+        assert all("neko" in store._retired for store in stores)
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
+    if failure_mode in {"missing_runtime_with_seed", "missing_runtime_dirty_default_cache"}:
+        assert not config_path.exists()
+    if failure_mode == "missing_runtime_dirty_default_cache":
+        assert cm._characters_dirty is True
+    # Recent file locks must not be leaked on fail-closed refusal: acquiring again succeeds immediately.
+    acquired = threading.Event()
+
+    def _acquire():
+        with character_memory.recent_file_locks(
+            character_memory.list_character_recent_paths(cm, "neko"),
+        ):
+            acquired.set()
+
+    locker = threading.Thread(target=_acquire, daemon=True)
+    locker.start()
+    assert acquired.wait(1.0)
+    locker.join(1.0)
+
+
+@pytest.mark.unit
+def test_f0064_same_directory_entry_and_two_step_rename_guards(tmp_path):
+    """Distinct hard links and symlinks-to-target must never overwrite or leave temp files."""
+    import utils.character_memory as character_memory
+
+    hard_old = tmp_path / "Old.txt"
+    hard_new = tmp_path / "New.txt"
+    hard_old.write_bytes(b"hard-payload")
+    try:
+        os.link(hard_old, hard_new)
+    except OSError as exc:
+        pytest.skip(f"hard links unsupported on this platform: {exc}")
+
+    assert not character_memory._paths_refer_to_same_directory_entry(hard_old, hard_new)
+    with pytest.raises(FileExistsError):
+        character_memory._two_step_samefile_rename(hard_old, hard_new)
+    assert hard_old.read_bytes() == b"hard-payload"
+    assert hard_new.read_bytes() == b"hard-payload"
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(hard_old, hard_new)
+    assert not any(p.name.startswith(".neko_rename_") for p in tmp_path.iterdir())
+
+    case_only = tmp_path / "CaseOnly.txt"
+    case_only.write_bytes(b"case-payload")
+    case_alias = tmp_path / "caseonly.txt"
+    if case_alias.exists():
+        assert character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+    else:
+        os.link(case_only, case_alias)
+        assert not character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+
+    target = tmp_path / "Target.txt"
+    target.write_bytes(b"real-target")
+    link = tmp_path / "Link.txt"
+    mid = tmp_path / "Mid.txt"
+    other = tmp_path / "OtherLink.txt"
+    dangling = tmp_path / "Dangling.txt"
+    loop = tmp_path / "Loop.txt"
+    try:
+        link.symlink_to(target.name)
+        mid.symlink_to(link.name)
+        other.symlink_to(target.name)
+        dangling.symlink_to("Missing.txt")
+        loop.symlink_to(loop.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    assert not character_memory._paths_refer_to_same_directory_entry(link, target)
+    assert character_memory._symlink_chain_reaches_path(link, target)
+    assert character_memory._symlink_chain_reaches_path(mid, target)
+    assert not character_memory._symlink_chain_reaches_path(link, other)
+    assert not character_memory._symlink_chain_reaches_path(loop, target)
+
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(link, target)
+    assert link.is_symlink() and not target.is_symlink()
+    assert target.read_bytes() == b"real-target"
+
+    with pytest.raises(FileExistsError):
+        character_memory._move_path(dangling, tmp_path / "Missing.txt")
+
+    target_dir = tmp_path / "TargetDir"
+    target_dir.mkdir()
+    (target_dir / "file.txt").write_text("keep", encoding="utf-8")
+    link_dir = tmp_path / "LinkDir"
+    link_dir.symlink_to(target_dir.name, target_is_directory=True)
+    with pytest.raises(FileExistsError):
+        character_memory._merge_directories(link_dir, target_dir)
+    assert (target_dir / "file.txt").read_text(encoding="utf-8") == "keep"
+    assert not any(p.name.startswith(".neko_rename_") for p in tmp_path.iterdir())
+
+
+@pytest.mark.unit
+def test_f0064_same_directory_entry_ignores_zero_inode_scandir_cache(tmp_path, monkeypatch):
+    """Windows DirEntry.stat(follow_symlinks=False) can report st_ino=0/st_dev=0; lstat must still match."""
+    from types import SimpleNamespace
+    import utils.character_memory as character_memory
+
+    case_only = tmp_path / "CaseOnly.txt"
+    case_only.write_bytes(b"case-payload")
+    case_alias = tmp_path / "caseonly.txt"
+
+    real_scandir = os.scandir
+    real_lstat = os.lstat
+
+    def lstat_case_alias(path, *args, **kwargs):
+        if Path(path) == case_alias:
+            return real_lstat(case_only, *args, **kwargs)
+        return real_lstat(path, *args, **kwargs)
+
+    class _ZeroInodeEntry:
+        def __init__(self, inner):
+            self.name = inner.name
+            self.path = inner.path
+
+        def stat(self, *, follow_symlinks=True):
+            return SimpleNamespace(st_mode=0o100644, st_ino=0, st_dev=0)
+
+    class _ScandirCtx:
+        def __init__(self, path):
+            self._inner = real_scandir(path)
+
+        def __enter__(self):
+            entries = self._inner.__enter__()
+            return [_ZeroInodeEntry(entry) for entry in entries]
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+    monkeypatch.setattr(character_memory.os, "lstat", lstat_case_alias)
+    monkeypatch.setattr(character_memory.os, "scandir", _ScandirCtx)
+
+    assert character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+
+
+
+
+
+

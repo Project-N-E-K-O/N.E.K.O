@@ -19,6 +19,7 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 """
 
 from ._shared import (
+    CHARACTER_RESERVED_FIELD_SET,
     MAX_CARD_FACE_SIZE,
     MAX_UPLOAD_SIZE,
     _UploadTooLargeError,
@@ -292,6 +293,17 @@ async def _save_character_card_serialized(data: dict):
             if k != '档案名' and k != 'name':
                 if v:  # Save nonempty fields only
                     catgirl_data[k] = v
+
+        # Preserve all existing system/reserved fields when overwriting a same-named character.
+        if not is_new_character and isinstance(previous_catgirl_data, dict):
+            for k, v in previous_catgirl_data.items():
+                if k in CHARACTER_RESERVED_FIELD_SET:
+                    catgirl_data[k] = copy.deepcopy(v)
+            if (
+                isinstance(catgirl_data.get("_reserved"), dict)
+                and "field_order" in catgirl_data["_reserved"]
+            ):
+                _sync_catgirl_field_order(catgirl_data)
 
         # Preserve system identity when updating same-named cards; new cards cannot import packaged identities.
         previous_character_id = get_reserved(

@@ -29,9 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并 main（api.agentAdvanced* / api.gameRecognitionModelConfig）与 PR-03（chat.composerOverflowMenu、
-    // chat.exportActionFailed、memory.recentFile*、visit.socialHub.*）八语言 key 结构，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-23-frontend-i18n-after-agent-advanced-merge';
+    // 合并表情包制作和主线八语言资源后，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-23-emote-maker-frontend-sync';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

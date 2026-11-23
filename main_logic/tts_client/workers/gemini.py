@@ -26,6 +26,7 @@ from utils.tts.providers.gemini import (
     normalize_gemini_tts_voice,
 )
 
+from .._http_pool import make_tts_http_client
 from .._infra import _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
@@ -55,9 +56,8 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     MAX_RETRIES = 3
 
     async def setup(response_queue):
-        client = httpx.AsyncClient(
+        client = make_tts_http_client(
             timeout=httpx.Timeout(TTS_TIMEOUT + 2, connect=10),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
             headers=headers,
         )
 
