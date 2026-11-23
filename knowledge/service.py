@@ -381,6 +381,10 @@ class KnowledgeService:
         self.diagnostics = KnowledgeDiagnostics()
         self._store = KnowledgeStore(self.root / DATABASE_FILE)
         self._registry = Registry()
+        # Policy ordering is process-local, separate from content identity and
+        # wall-clock timestamps. A new instance cannot reuse an old sequence.
+        self._policy_epoch = uuid.uuid4().hex
+        self._registry_snapshot = (self._registry, 0)
         self._state = "starting"
         self._error_code = ""
         self._broken_packs: tuple[str, ...] = ()
@@ -542,7 +546,7 @@ class KnowledgeService:
             self._store.remove_files()
             self._store.initialize()
             broken, registry = self._reconcile_blocking(registry)
-        self._registry = registry
+        self._publish_registry(registry)
         self._broken_packs = tuple(broken)
         self._load_jobs_blocking()
         self._clean_files_blocking(registry)
@@ -753,6 +757,9 @@ class KnowledgeService:
 
     def _publish_registry(self, registry: Registry) -> None:
         self._registry = registry
+        # Publish the immutable registry and sequence as one reference so a
+        # listing cannot combine a worker's new policy with the old counter.
+        self._registry_snapshot = (registry, self._registry_snapshot[1] + 1)
 
     # ── guarded writes ──────────────────────────────────────────────
 
@@ -832,7 +839,7 @@ class KnowledgeService:
         self, pack_id: str, enabled: bool, *, expected_pack_sha256: str | None = None,
     ) -> dict[str, Any]:
         """Gate all retrieval while preserving the pack and its vector policy."""
-        async def run() -> PackRecord:
+        async def run() -> tuple[PackRecord, int]:
             record = self._registry.packs.get(pack_id)
             if record is None:
                 raise KnowledgeUnavailable("not_found")
@@ -842,12 +849,16 @@ class KnowledgeService:
             # always supply an expected hash validated by the HTTP route.
             if enabled and expected_pack_sha256 is not None and record.pack_sha256 != expected_pack_sha256:
                 raise KnowledgeUnavailable("pack_content_changed")
-            return await self._apply_record_update(pack_id, enabled=bool(enabled))
+            updated = await self._apply_record_update(pack_id, enabled=bool(enabled))
+            # Capture this publication before releasing the mutation lock;
+            # another window may publish newer policy before we send a reply.
+            return updated, self._registry_snapshot[1]
 
-        record = await self._locked(run)
+        record, counter = await self._locked(run)
         # The HTTP envelope reserves enabled for global availability; keep the
         # persisted pack policy distinct so the UI cannot read the other switch.
-        return {"pack_id": pack_id, "pack_enabled": record.enabled}
+        return {"pack_id": pack_id, "pack_enabled": record.enabled,
+                "policy_revision": {"epoch": self._policy_epoch, "counter": counter}}
 
     async def set_pack_local_embedding(self, pack_id: str, enabled: bool) -> dict[str, Any]:
         async def run() -> PackRecord:
@@ -3864,8 +3875,11 @@ class KnowledgeService:
             records = self._registry.packs
             return {key: record.pack_sha256 for key, record in records.items() if self._listed_sources_managed(key)}
         managed = await self._thread(source_capabilities)
+        # No await separates capturing this pair from projecting its active
+        # rows. Later publications cannot lend a newer counter to older policy.
+        registry, counter = self._registry_snapshot
         packs: list[dict[str, Any]] = []
-        for record in sorted(self._registry.packs.values(), key=lambda item: item.pack_id):
+        for record in sorted(registry.packs.values(), key=lambda item: item.pack_id):
             entries, disabled = counts.get(record.pack_id, (0, 0))
             chunk = stats.get(record.pack_id, {"total": 0, "ready": 0, "failed": 0})
             packs.append(
@@ -3873,6 +3887,7 @@ class KnowledgeService:
                     "pack_id": record.pack_id,
                     # Reuse the installed identity; listing never hashes files.
                     "pack_sha256": record.pack_sha256,
+                    "policy_revision": {"epoch": self._policy_epoch, "counter": counter},
                     "source": {
                         "name": record.source.name,
                         "homepage": record.source.homepage,
@@ -3898,7 +3913,7 @@ class KnowledgeService:
                                      and indexed_versions.get(record.pack_id) == record.pack_sha256
                                      and record.pack_id not in self._broken_packs),
                     "vector_state": self._vector_state(
-                        record, chunk, embedding_state, indexing=self._registry.enabled
+                        record, chunk, embedding_state, indexing=registry.enabled
                     ),
                     "broken": record.pack_id in self._broken_packs,
                     "subscription": record.subscription.to_json() if record.subscription else None,

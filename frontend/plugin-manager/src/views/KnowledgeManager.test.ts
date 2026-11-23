@@ -119,6 +119,7 @@ function job(state: KnowledgePackJob['state']): KnowledgePackJob {
 function pack(enabled = false, packId = 'imp.test', digest = 'a'.repeat(64)) {
   return {
     pack_id: packId, pack_sha256: digest, source: { name: 'My notes', homepage: '', license: '' },
+    policy_revision: { epoch: 'fixture-process', counter: 0 },
     origin: 'imported', enabled, auto_context: false, local_embedding: true,
     declared_material_type: 'knowledge', material_type_override: null, effective_material_type: 'knowledge',
     entries: 1, disabled_entries: 0, chunks_total: 1, chunks_ready: 0, chunks_failed: 0,
@@ -330,6 +331,27 @@ describe('KnowledgeManager overview', () => {
     expect(retry.disabled).toBe(false)
   })
 
+  it.each(['failed', 'cancelled'] as const)('keeps an unchanged %s retry visible and discardable', async state => {
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [job(state)] })
+    api.retryPackJob.mockResolvedValue({ ok: true, unchanged: true, pack_id: 'fixture-pack' })
+    api.discardPackJob.mockResolvedValue({ ok: true })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!.click()
+    await flush()
+    // No replacement job took ownership of this retained failure or its input.
+    const row = container.querySelector('[data-job-id="job-1"]')
+    expect(row).not.toBeNull()
+    expect(document.body.textContent).toContain(enUS.knowledge.importUnchanged.replace('{name}', 'fixture-pack'))
+    const discard = [...row!.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === enUS.knowledge.discardJob)!
+    expect(discard.disabled).toBe(false)
+    discard.click()
+    await flush()
+    expect(api.discardPackJob).toHaveBeenCalledExactlyOnceWith({ job_id: 'job-1' })
+    expect(container.querySelector('[data-job-id="job-1"]')).toBeNull()
+  })
+
   it('posts the global switch and reflects the saved value', async () => {
     const container = await mount()
     const toggle = container.querySelector<HTMLElement>('[data-testid="knowledge-global-switch"]')
@@ -365,7 +387,7 @@ describe('KnowledgeManager overview', () => {
     const confirm = vi.spyOn(ElMessageBox, 'confirm').mockReturnValue(new Promise(resolve => { acknowledge = resolve }))
     api.status.mockResolvedValue(readyStatus(globalEnabled))
     api.packs.mockResolvedValue({ ok: true, packs: [pack(!requested)] })
-    api.setPackEnabled.mockResolvedValue({ ok: true, pack_id: 'imp.test', enabled: globalEnabled, pack_enabled: saved })
+    api.setPackEnabled.mockResolvedValue({ ok: true, pack_id: 'imp.test', enabled: globalEnabled, pack_enabled: saved, policy_revision: { epoch: 'fixture-process', counter: 1 } })
     const container = await mount()
     await openTab('packs')
     expect(container.textContent).toContain('Imported documents')
@@ -415,7 +437,7 @@ describe('KnowledgeManager overview', () => {
     await flush()
     expect(document.querySelector('.pack-summary .el-tag')!.textContent).toBe(enUS.knowledge.entryEnabled)
     api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
-    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false })
+    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false, policy_revision: { epoch: 'fixture-process', counter: 1 } })
     await flush()
     expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe('false')
     expect(document.querySelector('.pack-summary .el-tag')!.textContent).toBe(enUS.knowledge.entryDisabled)
@@ -434,7 +456,7 @@ describe('KnowledgeManager overview', () => {
     await flush()
     expect(container.querySelector('[data-testid="pack-enabled-imp.test"]')).toBeNull()
     api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
-    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false })
+    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false, policy_revision: { epoch: 'fixture-process', counter: 1 } })
     await flush()
     expect(container.querySelector('[data-testid="pack-enabled-imp.test"]')).toBeNull()
     if (showOther) expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-other-pack"] input')!.getAttribute('aria-checked')).toBe('true')
@@ -449,7 +471,7 @@ describe('KnowledgeManager overview', () => {
     api.packs.mockResolvedValue({ ok: true, packs: [pack(false, 'imp.test', oldDigest)] })
     api.setPackEnabled.mockImplementation(async data => {
       if (data.expected_pack_sha256 !== newDigest) throw new KnowledgeApiError('pack_content_changed')
-      return { ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: true }
+      return { ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: true, policy_revision: { epoch: 'fixture-process', counter: 1 } }
     })
     const container = await mount()
     await openTab('packs')
@@ -491,7 +513,7 @@ describe('KnowledgeManager overview', () => {
     container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
     await flush()
     api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
-    finish({ ok: true, pack_id: 'imp.test', enabled: false, pack_enabled: true })
+    finish({ ok: true, pack_id: 'imp.test', enabled: false, pack_enabled: true, policy_revision: { epoch: 'fixture-process', counter: 1 } })
     await flush()
     expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe(String(sameBody))
   })
@@ -517,11 +539,47 @@ describe('KnowledgeManager overview', () => {
     manage.click()
     await flush()
     api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
-    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false })
+    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false, policy_revision: { epoch: 'fixture-process', counter: 1 } })
     await flush()
     expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe(String(!sameBody))
     expect(document.querySelector('.pack-summary .el-tag')!.textContent)
       .toBe(sameBody ? enUS.knowledge.entryDisabled : enUS.knowledge.entryEnabled)
+  })
+
+  it.each([
+    { requested: true, counter: 0, epoch: 'fixture-process' },
+    { requested: false, counter: 0, epoch: 'fixture-process' },
+    { requested: true, counter: 1, epoch: 'fixture-process' },
+    { requested: false, counter: 1, epoch: 'fixture-process' },
+    { requested: true, counter: 2, epoch: 'fixture-process' },
+    { requested: false, counter: 2, epoch: 'fixture-process' },
+    { requested: true, counter: 0, epoch: 'restarted-process' },
+    { requested: false, counter: 0, epoch: 'restarted-process' },
+  ])('keeps the newer observed policy for the same body (%s)', async ({ requested, counter, epoch }) => {
+    let finish!: (value: object) => void
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    api.setPackEnabled.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(!requested)] })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    // The same body can acquire a newer policy while the save response waits.
+    // Timestamps intentionally do not distinguish any of these snapshots.
+    api.packs.mockResolvedValue({ ok: true, packs: [{ ...pack(!requested), policy_revision: { epoch, counter } }] })
+    container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
+    await flush()
+    const manage = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === enUS.knowledge.managePack)!
+    manage.click()
+    await flush()
+    api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
+    finish({ ok: true, pack_id: 'imp.test', pack_enabled: requested, policy_revision: { epoch: 'fixture-process', counter: 1 } })
+    await flush()
+    const expected = epoch === 'fixture-process' && counter <= 1 ? requested : !requested
+    expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe(String(expected))
+    expect(document.querySelector('.pack-summary .el-tag')!.textContent)
+      .toBe(expected ? enUS.knowledge.entryEnabled : enUS.knowledge.entryDisabled)
   })
 
   it('reloads without enabling when a pack has no content identity', async () => {

@@ -197,10 +197,17 @@ export interface KnowledgeEntryDetail extends KnowledgeEntry {
   content: string
 }
 
+export interface KnowledgePolicyRevision {
+  epoch: string
+  counter: number
+}
+
 export interface KnowledgePack {
   pack_id: string
   /** Active content identity for enable consent; absent on retained source-only groups. */
   pack_sha256?: string
+  /** In-memory registry publication order; comparable only within the same service epoch. */
+  policy_revision?: KnowledgePolicyRevision
   source: KnowledgeSource
   declared_material_type: KnowledgeMaterialType
   material_type_override: KnowledgeMaterialType | null
@@ -547,7 +554,7 @@ export const knowledgeApi = {
     post<KnowledgeEnvelope & { enabled: boolean }>('settings', { enabled }),
   // The envelope's enabled describes global availability; pack_enabled is the saved pack policy.
   setPackEnabled: (data: { pack_id: string; enabled: boolean; expected_pack_sha256?: string }) =>
-    post<KnowledgeEnvelope & { pack_id: string; pack_enabled: boolean }>('packs/enabled', data),
+    post<KnowledgeEnvelope & { pack_id: string; pack_enabled: boolean; policy_revision: KnowledgePolicyRevision }>('packs/enabled', data),
   setEntryDisabled: (data: { pack_id: string; title: string; disabled: boolean }) =>
     post<KnowledgeEnvelope & { pack_id: string; disabled: boolean; disabled_entries: number }>(
       'entry/disabled',

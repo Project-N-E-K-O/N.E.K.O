@@ -1224,7 +1224,10 @@ async function retryJob(job: KnowledgePackJob) {
   try {
     // Only terminal tasks reach this action; busy work stays in its original queue.
     const response = await knowledgeApi.retryPackJob({ job_id: job.job_id })
-    retriedJobs.add(job.job_id)
+    // An unchanged retry has no replacement task; its retained input still
+    // belongs to this card, so keep retry/discard available.
+    if (response.job_id) retriedJobs.add(job.job_id)
+    else if (response.unchanged) ElMessage.info(t('knowledge.importUnchanged', { name: response.pack_id || job.pack_id }))
     jobsGate.invalidate()
     // Show the admitted retry immediately, before the follow-up list is available.
     if (response.job_id && !packJobs.value.some(item => item.job_id === response.job_id)) {
@@ -1279,10 +1282,16 @@ function setPackEnabled(row: KnowledgePack, enabled: boolean) {
       const response = await knowledgeApi.setPackEnabled({
         pack_id: packId, enabled, ...(enabled ? { expected_pack_sha256: confirmedDigest } : {}),
       })
-      // Polling can replace row during the save. Neither enable nor disable
-      // responses belong to a newer body, and removed rows stay removed.
+      // A newer observed policy wins even for the same body. Counters from
+      // different service lifetimes cannot be ordered; keep that refreshed row.
       const current = packs.value.find(pack => pack.pack_id === packId)
-      if (current && current.pack_sha256 === confirmedDigest) current.enabled = response.pack_enabled ?? enabled
+      const saved = response.policy_revision
+      const observed = current?.policy_revision
+      if (current && current.pack_sha256 === confirmedDigest && saved && observed
+          && saved.epoch === observed.epoch && observed.counter <= saved.counter) {
+        current.enabled = response.pack_enabled ?? enabled
+        current.policy_revision = saved
+      }
     } catch (error) {
       if (knowledgeFailureReason(error) === 'pack_content_changed') await loadPacks({ silent: true })
       throw error

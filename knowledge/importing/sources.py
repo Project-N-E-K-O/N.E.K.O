@@ -230,12 +230,14 @@ class SourceStore:
             if not retained:
                 return
             raise
-        except (OSError, ValueError):
+        except ValueError:
             # Hiding a removed pack must not depend on damaged unrelated
             # history metadata. Retaining editable history still fails closed.
             if not retained:
                 return
             raise
+        # A temporary I/O error does not prove that no visibility flag exists.
+        # Propagate it so removal cannot commit while retained=True survives.
         if not isinstance(value, dict):
             if not retained:
                 return
