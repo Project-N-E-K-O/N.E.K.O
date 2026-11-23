@@ -605,3 +605,23 @@ def test_registered_selector_handles_a_focus_request_once_across_both_channels(p
     })""")
     assert acks == 1
     assert page.evaluate('window.__restoreCalls') == 1
+
+
+@pytest.mark.frontend
+def test_market_back_handoff_pending_across_bfcache_restore_does_not_navigate_later(page, running_server):
+    """A handoff still waiting for the selector ack is dropped once the page comes back from bfcache."""
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    page.evaluate("""() => localStorage.setItem('neko:named-window:neko_theater',
+        JSON.stringify({url: location.origin + '/theater', timestamp: Date.now() + 60000}))""")
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    market_url = market.url
+    market.get_by_role('link', name='返回选择剧本').click()
+    # The handoff now waits for an ack that never comes; simulate a bfcache restore meanwhile.
+    market.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+    market.wait_for_timeout(2600)
+    assert market.url == market_url
+    expect(market.locator('#theater-market-back-link')).to_be_visible()

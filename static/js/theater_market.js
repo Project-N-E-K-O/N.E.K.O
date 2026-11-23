@@ -16,6 +16,8 @@
     var connecting = false;
     // Set once the user chose to go back; a late connection result must not navigate away.
     var returning = false;
+    // Bumped per back handoff and on bfcache restore so stale handoff callbacks become no-ops.
+    var handoffGeneration = 0;
     var channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('neko_page_channel') : null;
     function label(key) { return window.t ? window.t('theater.' + key) : key; }
     function post(data) {
@@ -157,9 +159,10 @@
             try { window.localStorage.setItem(NAMED_WINDOW_FOCUS_KEY_PREFIX + SELECTOR_WINDOW_NAME, JSON.stringify(message)); } catch (_) {}
         });
     }
-    function closeMarketWindow() {
+    function closeMarketWindow(generation) {
         // If the window refuses to close, still leave the user on a working selector.
         window.setTimeout(function () {
+            if (generation !== handoffGeneration) return;
             if (!window.closed) window.location.assign('/theater');
         }, 1500);
         var host = window.nekoHost;
@@ -175,24 +178,27 @@
         if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         if (returning) { event.preventDefault(); return; }
         returning = true;
+        var generation = ++handoffGeneration;
         // Only a standalone market window hands back to an existing selector; otherwise
         // the link navigates this window to /theater in place.
         if (window.name !== MARKET_WINDOW_NAME) return;
         if (focusExistingSelector()) {
             event.preventDefault();
-            closeMarketWindow();
+            closeMarketWindow(generation);
             return;
         }
         if (!isRegisteredSelectorFresh()) return;
         event.preventDefault();
         requestRegisteredSelectorFocus().then(function (acknowledged) {
-            if (acknowledged) closeMarketWindow();
+            if (generation !== handoffGeneration) return;
+            if (acknowledged) closeMarketWindow(generation);
             else window.location.assign('/theater');
         });
     }
     // A page restored from the back/forward cache keeps its old flags; unlock back and retry again.
     window.addEventListener('pageshow', function (event) {
         if (!event.persisted) return;
+        handoffGeneration += 1;
         returning = false;
         connecting = false;
         var retry = document.getElementById('theater-market-retry-btn');
