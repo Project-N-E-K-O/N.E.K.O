@@ -53,6 +53,7 @@ const en = {
     detected: 'Found in code',
     blindSpotsTitle: '{n} place(s) could not be confirmed by static analysis',
     blindSpotsDesc: 'These places load code dynamically, use reflection or run generated code, or were not analyzed. What they do cannot be determined without running the plugin.',
+    unlocated: 'Part of the plugin (no single file)',
   },
   errors: {
     sourceUnknown: 'The plugin\'s current install source could not be determined, so the replacement was stopped to protect the permissions you granted. The plugin was left unchanged. Uninstall the plugin and install it again to recover.',
@@ -132,6 +133,7 @@ const zhCN = {
     detected: '代码中发现',
     blindSpotsTitle: '有 {n} 处无法静态确认',
     blindSpotsDesc: '这些位置动态加载代码、使用反射或执行生成的代码，或者没有被分析。不实际运行插件，无法确定它们会做什么。',
+    unlocated: '插件的一部分（没有对应到具体文件）',
   },
   errors: {
     sourceUnknown: '无法确认这个插件当前的安装来源，为保护你已授予的权限，本次替换已停止，插件保持原样。卸载这个插件后重新安装即可恢复。',
@@ -210,6 +212,7 @@ const zhTW = {
     detected: '程式碼中發現',
     blindSpotsTitle: '有 {n} 處無法靜態確認',
     blindSpotsDesc: '這些位置動態載入程式碼、使用反射或執行產生的程式碼，或者沒有被分析。不實際執行外掛，無法確定它們會做什麼。',
+    unlocated: '外掛的一部分（沒有對應到具體檔案）',
   },
   errors: {
     sourceUnknown: '無法確認此外掛目前的安裝來源，為保護你已授予的權限，本次替換已停止，外掛保持原樣。解除安裝此外掛後重新安裝即可恢復。',
@@ -289,6 +292,7 @@ const ja = {
     detected: 'コード内で検出',
     blindSpotsTitle: '静的解析で確認できない箇所が {n} 件あります',
     blindSpotsDesc: 'これらの箇所はコードを動的に読み込む、リフレクションや生成したコードの実行を行う、または解析されていません。プラグインを実際に動かさない限り、何をするかは判断できません。',
+    unlocated: 'プラグインの一部（特定のファイルなし）',
   },
   errors: {
     sourceUnknown: 'このプラグインの現在のインストール元を確認できないため、付与済みの権限を守るために置き換えを中止しました。プラグインは変更されていません。プラグインをアンインストールして再インストールすると復旧できます。',
@@ -368,6 +372,7 @@ const ko = {
     detected: '코드에서 발견',
     blindSpotsTitle: '정적 분석으로 확인할 수 없는 곳이 {n}곳 있습니다',
     blindSpotsDesc: '이 위치들은 코드를 동적으로 불러오거나, 리플렉션 또는 생성된 코드 실행을 사용하거나, 분석되지 않았습니다. 플러그인을 실제로 실행하지 않으면 무엇을 하는지 알 수 없습니다.',
+    unlocated: '플러그인 일부(특정 파일 없음)',
   },
   errors: {
     sourceUnknown: '이 플러그인의 현재 설치 출처를 확인할 수 없어, 부여한 권한을 보호하기 위해 교체를 중단했습니다. 플러그인은 변경되지 않았습니다. 플러그인을 제거한 뒤 다시 설치하면 복구됩니다.',
@@ -447,6 +452,7 @@ const ru = {
     detected: 'Найдено в коде',
     blindSpotsTitle: 'Мест, которые не удалось проверить статическим анализом: {n}',
     blindSpotsDesc: 'В этих местах код загружается динамически, используется рефлексия или выполняется сгенерированный код, либо они не были проанализированы. Что они делают, нельзя определить без запуска плагина.',
+    unlocated: 'Часть плагина (без конкретного файла)',
   },
   errors: {
     sourceUnknown: 'Не удалось определить текущий источник установки плагина, поэтому замена остановлена, чтобы сохранить выданные вами разрешения. Плагин не изменён. Чтобы восстановить работу, удалите плагин и установите его снова.',
@@ -526,6 +532,7 @@ const es = {
     detected: 'Encontrado en el código',
     blindSpotsTitle: '{n} lugar(es) no se pudieron confirmar con el análisis estático',
     blindSpotsDesc: 'Estos lugares cargan código de forma dinámica, usan reflexión o ejecutan código generado, o no se analizaron. Lo que hacen no se puede saber sin ejecutar el plugin.',
+    unlocated: 'Parte del plugin (sin un archivo concreto)',
   },
   errors: {
     sourceUnknown: 'No se pudo determinar el origen de instalación actual del plugin, así que el reemplazo se detuvo para proteger los permisos que concediste. El plugin no se modificó. Desinstala el plugin y vuelve a instalarlo para recuperarlo.',
@@ -605,6 +612,7 @@ const pt = {
     detected: 'Encontrada no código',
     blindSpotsTitle: '{n} ponto(s) não puderam ser confirmados pela análise estática',
     blindSpotsDesc: 'Esses pontos carregam código dinamicamente, usam reflexão ou executam código gerado, ou não foram analisados. O que fazem não pode ser determinado sem executar o plugin.',
+    unlocated: 'Parte do plugin (sem um arquivo específico)',
   },
   errors: {
     sourceUnknown: 'Não foi possível determinar a origem de instalação atual do plugin, então a substituição foi interrompida para proteger as permissões que você concedeu. O plugin não foi alterado. Desinstale o plugin e instale-o novamente para recuperar.',

@@ -265,6 +265,7 @@ describe('PluginPermissions', () => {
           blind_spots: [
             { type: 'dynamic_import', file: 'main.py', line: 4 },
             { type: 'not_analyzed', file: 'vendor/big.py', line: null },
+            { type: 'not_analyzed', file: null, line: null },
           ],
         }),
       })
@@ -272,7 +273,7 @@ describe('PluginPermissions', () => {
       await flush()
       expect(root.textContent).not.toContain('pluginConsent.noneFound')
       expect(root.querySelector('.consent-banner')?.getAttribute('data-tone')).toBe('warning')
-      expect(root.textContent).toContain('pluginConsent.findings.blindSpotsTitle {"n":2}')
+      expect(root.textContent).toContain('pluginConsent.findings.blindSpotsTitle {"n":3}')
       const spots = root.querySelector('[data-testid="blind-spots"]')!
       expect(spots.querySelector('code')).toBeNull()
       const toggle = buttonsContaining(spots as HTMLElement, 'pluginConsent.evidenceToggle')[0]!
@@ -282,6 +283,8 @@ describe('PluginPermissions', () => {
         'main.py:4',
         'vendor/big.py',
       ])
+      expect(spots.textContent).toContain('pluginConsent.findings.unlocated')
+      expect(spots.textContent).not.toContain('not_analyzed')
     })
 
     it('reports nothing found only without permissions and blind spots', async () => {

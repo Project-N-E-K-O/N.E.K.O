@@ -71,8 +71,9 @@ export function blindSpots(analysis: CapabilityAnalysis | null | undefined): Ana
   return Array.isArray(analysis?.blind_spots) ? analysis.blind_spots : []
 }
 
-export function blindSpotLocation(spot: AnalysisBlindSpot): string {
-  if (!spot.file) return spot.type
+/** `file:line`, or null for a blind spot not tied to a file (e.g. a scan cut short). */
+export function blindSpotLocation(spot: AnalysisBlindSpot): string | null {
+  if (!spot.file) return null
   return spot.line != null ? `${spot.file}:${spot.line}` : spot.file
 }
 

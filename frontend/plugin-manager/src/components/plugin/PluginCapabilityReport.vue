@@ -101,7 +101,8 @@
         </button>
         <ul v-if="expanded.has('blind-spots')" class="evidence">
           <li v-for="(spot, index) in unconfirmed" :key="index">
-            <code>{{ blindSpotLocation(spot) }}</code>
+            <code v-if="blindSpotLocation(spot)">{{ blindSpotLocation(spot) }}</code>
+            <span v-else>{{ t('pluginConsent.findings.unlocated') }}</span>
           </li>
         </ul>
       </div>
