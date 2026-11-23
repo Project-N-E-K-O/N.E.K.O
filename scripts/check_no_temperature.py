@@ -60,13 +60,13 @@ The unpacked-dict tracker is intentionally lightweight and best-effort. It
 tracks local and module-level dict bindings, literals, ``dict(...)``,
 ``.copy()``, ``.update()``, ``.setdefault()``, ``.clear()``,
 ``.pop('temperature', ...)``, ``del d['temperature']``, static default
-parameter dicts, walrus assignments, and structured control-flow merges.
+parameter dicts, walrus assignments, destructuring assignments, ``with`` target
+bindings, and structured control-flow merges.
 It intentionally does NOT perform points-to alias analysis (e.g.
 ``alias = opts; alias['temperature'] = 0.2``), attribute-target tracking
 (``self.opts[...]``), ``copy.copy`` / ``copy.deepcopy``, forward-declared
 module dicts defined after a referencing function, mid-``try`` exception
-states before a later ``.clear()``, ``continue`` before an unreachable
-``.clear()``, conditionally-bound class-body fallback to globals,
+states before a later ``.clear()``, conditionally-bound class-body fallback to globals,
 short-circuit / conditional expression mutations (e.g.
 ``flag and opts.clear()``, ``opts.clear() if flag else None``), inline
 dict-literal side effects mutating a source dict while unpacking it
@@ -87,7 +87,7 @@ import argparse
 import ast
 import sys
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Any, Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -177,29 +177,29 @@ def _arg_names(args: ast.arguments) -> list[str]:
     return names
 
 
-def _extract_target_names(target: ast.AST) -> list[str]:
-    if isinstance(target, ast.Name):
-        return [target.id]
-    if isinstance(target, (ast.Tuple, ast.List)):
-        names: list[str] = []
-        for elt in target.elts:
-            names.extend(_extract_target_names(elt))
-        return names
-    if isinstance(target, ast.Starred):
-        return _extract_target_names(target.value)
-    return []
+class _LoopFrame:
+    __slots__ = ("breaks", "continues")
+
+    def __init__(self) -> None:
+        self.breaks: list[dict[str, bool]] = []
+        self.continues: list[dict[str, bool]] = []
 
 
-def _stmts_always_terminate(stmts: list[ast.stmt]) -> bool:
-    """True if ``stmts`` ends with a direct exit that cannot fall through."""
-    if not stmts:
-        return False
-    last = stmts[-1]
-    if isinstance(last, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
-        return True
-    if isinstance(last, ast.If) and last.orelse:
-        return _stmts_always_terminate(last.body) and _stmts_always_terminate(last.orelse)
-    return False
+class _TryBodyFrame:
+    __slots__ = ("raises",)
+
+    def __init__(self) -> None:
+        self.raises: list[dict[str, bool]] = []
+
+
+class _TryFinallyFrame:
+    __slots__ = ("breaks", "continues", "returns", "raises")
+
+    def __init__(self) -> None:
+        self.breaks: list[dict[str, bool]] = []
+        self.continues: list[dict[str, bool]] = []
+        self.returns: list[dict[str, bool]] = []
+        self.raises: list[dict[str, bool]] = []
 
 
 class TemperatureKwargChecker(ast.NodeVisitor):
@@ -208,6 +208,9 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         self.violations: set[tuple[int, int, str]] = set()
         self.scopes: list[dict[str, bool]] = [{}]
         self._scope_is_class: list[bool] = [False]
+        self._cf_stacks: list[
+            list[_LoopFrame | _TryBodyFrame | _TryFinallyFrame]
+        ] = [[]]
 
     def _push_scope(
         self,
@@ -217,10 +220,36 @@ class TemperatureKwargChecker(ast.NodeVisitor):
     ) -> None:
         self.scopes.append(dict(initial) if initial else {})
         self._scope_is_class.append(is_class)
+        self._cf_stacks.append([])
 
     def _pop_scope(self) -> None:
         self.scopes.pop()
         self._scope_is_class.pop()
+        self._cf_stacks.pop()
+
+    def _record_jump(self, kind: str, snapshot: dict[str, bool]) -> None:
+        for frame in reversed(self._cf_stacks[-1]):
+            if isinstance(frame, _TryBodyFrame):
+                if kind == "raise":
+                    frame.raises.append(snapshot)
+                continue
+            if isinstance(frame, _TryFinallyFrame):
+                if kind == "break":
+                    frame.breaks.append(snapshot)
+                elif kind == "continue":
+                    frame.continues.append(snapshot)
+                elif kind == "return":
+                    frame.returns.append(snapshot)
+                elif kind == "raise":
+                    frame.raises.append(snapshot)
+                return
+            if isinstance(frame, _LoopFrame):
+                if kind == "break":
+                    frame.breaks.append(snapshot)
+                    return
+                if kind == "continue":
+                    frame.continues.append(snapshot)
+                    return
 
     def _lookup(self, name: str) -> bool:
         top_idx = len(self.scopes) - 1
@@ -302,9 +331,59 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 return self._expr_contains_temperature(expr.func.value)
         return False
 
-    def _visit_stmt_list(self, stmts: list[ast.stmt]) -> None:
-        for stmt in stmts:
-            self.visit(stmt)
+    def _visit_stmt(self, stmt: ast.stmt) -> bool:
+        res = self.visit(stmt)
+        return True if res is None else bool(res)
+
+    def _visit_stmt_list(self, stmts: list[ast.stmt]) -> bool:
+        for idx, stmt in enumerate(stmts):
+            if not self._visit_stmt(stmt):
+                if idx + 1 < len(stmts):
+                    saved_scope = self.scopes[-1]
+                    self.scopes[-1] = dict(saved_scope)
+                    self._cf_stacks.append([])
+                    try:
+                        self._visit_stmt_list(stmts[idx + 1 :])
+                    finally:
+                        self._cf_stacks.pop()
+                        self.scopes[-1] = saved_scope
+                return False
+        return True
+
+    def visit_Return(self, node: ast.Return) -> bool:
+        if node.value is not None:
+            self.visit(node.value)
+        self._record_jump("return", dict(self.scopes[-1]))
+        return False
+
+    def visit_Raise(self, node: ast.Raise) -> bool:
+        if node.exc is not None:
+            self.visit(node.exc)
+        if node.cause is not None:
+            self.visit(node.cause)
+        self._record_jump("raise", dict(self.scopes[-1]))
+        return False
+
+    def visit_Break(self, node: ast.Break) -> bool:
+        self._record_jump("break", dict(self.scopes[-1]))
+        return False
+
+    def visit_Continue(self, node: ast.Continue) -> bool:
+        self._record_jump("continue", dict(self.scopes[-1]))
+        return False
+
+    def _visit_with_node(self, node: ast.With | ast.AsyncWith) -> bool:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._apply_assign_target(item.optional_vars, False)
+        return self._visit_stmt_list(node.body)
+
+    def visit_With(self, node: ast.With) -> bool:
+        return self._visit_with_node(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> bool:
+        return self._visit_with_node(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -388,9 +467,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             for idx, comp in enumerate(generators):
                 if idx > 0:
                     self.visit(comp.iter)
-                self.visit(comp.target)
-                for name in _extract_target_names(comp.target):
-                    self._set_local(name, False)
+                self._apply_assign_target(comp.target, False)
                 for if_expr in comp.ifs:
                     self.visit(if_expr)
             for expr in exprs:
@@ -410,9 +487,18 @@ class TemperatureKwargChecker(ast.NodeVisitor):
     def visit_DictComp(self, node: ast.DictComp) -> None:
         self._visit_comprehension(node.generators, node.key, node.value)
 
-    def _apply_assign_target(self, target: ast.AST, val: bool) -> None:
+    def _eval_rhs(self, expr: ast.AST) -> bool | tuple[Any, ...]:
+        if isinstance(expr, (ast.Tuple, ast.List)) and not any(
+            isinstance(elt, ast.Starred) for elt in expr.elts
+        ):
+            return tuple(self._eval_rhs(elt) for elt in expr.elts)
+        return self._expr_contains_temperature(expr)
+
+    def _apply_assign_target(
+        self, target: ast.AST, val: bool | tuple[Any, ...]
+    ) -> None:
         if isinstance(target, ast.Name):
-            self._set_local(target.id, val)
+            self._set_local(target.id, val if isinstance(val, bool) else False)
         elif isinstance(target, ast.Subscript):
             self.visit(target.value)
             self.visit(target.slice)
@@ -422,12 +508,47 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 and target.slice.value == "temperature"
             ):
                 self._set_local(target.value.id, True)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            star_indices = [
+                idx
+                for idx, elt in enumerate(target.elts)
+                if isinstance(elt, ast.Starred)
+            ]
+            if (
+                isinstance(val, tuple)
+                and not star_indices
+                and len(target.elts) == len(val)
+            ):
+                for sub_target, sub_val in zip(target.elts, val):
+                    self._apply_assign_target(sub_target, sub_val)
+            elif (
+                isinstance(val, tuple)
+                and len(star_indices) == 1
+                and len(val) >= len(target.elts) - 1
+            ):
+                star_idx = star_indices[0]
+                for sub_target, sub_val in zip(target.elts[:star_idx], val[:star_idx]):
+                    self._apply_assign_target(sub_target, sub_val)
+                star_node = target.elts[star_idx]
+                assert isinstance(star_node, ast.Starred)
+                self._apply_assign_target(star_node.value, False)
+                trailing = len(target.elts) - star_idx - 1
+                if trailing:
+                    for sub_target, sub_val in zip(
+                        target.elts[star_idx + 1 :], val[len(val) - trailing :]
+                    ):
+                        self._apply_assign_target(sub_target, sub_val)
+            else:
+                for sub_target in target.elts:
+                    self._apply_assign_target(sub_target, False)
+        elif isinstance(target, ast.Starred):
+            self._apply_assign_target(target.value, False)
         else:
             self.visit(target)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
-        val = self._expr_contains_temperature(node.value)
+        val = self._eval_rhs(node.value)
         for target in node.targets:
             self._apply_assign_target(target, val)
 
@@ -435,7 +556,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         self.visit(node.annotation)
         if node.value is not None:
             self.visit(node.value)
-            val = self._expr_contains_temperature(node.value)
+            val = self._eval_rhs(node.value)
             self._apply_assign_target(node.target, val)
         elif not isinstance(node.target, ast.Name):
             self.visit(node.target)
@@ -455,21 +576,27 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         if isinstance(node.target, ast.Name):
             self._set_local(node.target.id, self._expr_contains_temperature(node.value))
 
+    def _apply_delete_target(self, target: ast.AST) -> None:
+        if isinstance(target, ast.Subscript):
+            self.visit(target.value)
+            self.visit(target.slice)
+            if (
+                isinstance(target.value, ast.Name)
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "temperature"
+            ):
+                self._set_local(target.value.id, False)
+        elif isinstance(target, ast.Name):
+            self._set_local(target.id, False)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for sub_target in target.elts:
+                self._apply_delete_target(sub_target)
+        else:
+            self.visit(target)
+
     def visit_Delete(self, node: ast.Delete) -> None:
         for target in node.targets:
-            if isinstance(target, ast.Subscript):
-                self.visit(target.value)
-                self.visit(target.slice)
-                if (
-                    isinstance(target.value, ast.Name)
-                    and isinstance(target.slice, ast.Constant)
-                    and target.slice.value == "temperature"
-                ):
-                    self._set_local(target.value.id, False)
-            elif isinstance(target, ast.Name):
-                self._set_local(target.id, False)
-            else:
-                self.visit(target)
+            self._apply_delete_target(target)
 
     def _apply_dict_method_mutation(self, call: ast.Call) -> None:
         if not (
@@ -513,59 +640,151 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             merged[key] = any(snap.get(key, False) for snap in snapshots)
         return merged
 
-    def visit_If(self, node: ast.If) -> None:
+    def visit_If(self, node: ast.If) -> bool:
         self.visit(node.test)
         before = dict(self.scopes[-1])
-        self._visit_stmt_list(node.body)
+        body_falls = self._visit_stmt_list(node.body)
         after_body = dict(self.scopes[-1])
         self.scopes[-1] = dict(before)
-        self._visit_stmt_list(node.orelse)
+        else_falls = self._visit_stmt_list(node.orelse)
         after_else = dict(self.scopes[-1])
         fallthrough: list[dict[str, bool]] = []
-        if not _stmts_always_terminate(node.body):
+        if body_falls:
             fallthrough.append(after_body)
-        if not _stmts_always_terminate(node.orelse):
+        if else_falls:
             fallthrough.append(after_else)
-        self.scopes[-1] = self._merge_scopes(fallthrough or [after_body, after_else])
+        if fallthrough:
+            self.scopes[-1] = self._merge_scopes(fallthrough)
+            return True
+        self.scopes[-1] = self._merge_scopes([after_body, after_else])
+        return False
 
-    def _visit_try_node(self, node: ast.Try) -> None:
+    def _run_finalbody_silenced(
+        self,
+        finalbody: list[ast.stmt],
+        entry: dict[str, bool],
+        cache: dict[tuple[tuple[str, bool], ...], tuple[dict[str, bool], bool]],
+    ) -> tuple[dict[str, bool], bool]:
+        key = tuple(sorted(entry.items()))
+        if key in cache:
+            return cache[key]
+        saved_violations = self.violations
+        saved_scope = self.scopes[-1]
+        self.violations = set()
+        self.scopes[-1] = dict(entry)
+        self._cf_stacks.append([])
+        try:
+            falls = self._visit_stmt_list(finalbody)
+            after = dict(self.scopes[-1])
+        finally:
+            self._cf_stacks.pop()
+            self.scopes[-1] = saved_scope
+            self.violations = saved_violations
+        result = (after, falls)
+        cache[key] = result
+        return result
+
+    def _visit_try_node(self, node: ast.Try) -> bool:
         before = dict(self.scopes[-1])
-        self._visit_stmt_list(node.body)
-        after_body = dict(self.scopes[-1])
+        finally_frame = _TryFinallyFrame() if node.finalbody else None
+        if finally_frame is not None:
+            self._cf_stacks[-1].append(finally_frame)
         all_snapshots: list[dict[str, bool]] = []
         fallthrough: list[dict[str, bool]] = []
-        for handler in node.handlers:
-            self.scopes[-1] = self._merge_scopes([before, after_body])
-            if handler.type is not None:
-                self.visit(handler.type)
-            if handler.name:
-                self._set_local(handler.name, False)
-            self._visit_stmt_list(handler.body)
-            snap = dict(self.scopes[-1])
-            all_snapshots.append(snap)
-            if not _stmts_always_terminate(handler.body):
-                fallthrough.append(snap)
-        if node.orelse:
-            self.scopes[-1] = dict(after_body)
-            self._visit_stmt_list(node.orelse)
-            snap = dict(self.scopes[-1])
-            all_snapshots.append(snap)
-            if not _stmts_always_terminate(node.body) and not _stmts_always_terminate(node.orelse):
-                fallthrough.append(snap)
-        else:
-            all_snapshots.append(after_body)
-            if not _stmts_always_terminate(node.body):
-                fallthrough.append(after_body)
-        self.scopes[-1] = self._merge_scopes(fallthrough or all_snapshots)
-        self._visit_stmt_list(node.finalbody)
+        try:
+            body_frame = _TryBodyFrame() if node.handlers else None
+            if body_frame is not None:
+                self._cf_stacks[-1].append(body_frame)
+            try:
+                body_falls = self._visit_stmt_list(node.body)
+            finally:
+                if body_frame is not None:
+                    self._cf_stacks[-1].pop()
+            after_body = dict(self.scopes[-1])
+            handler_entry = self._merge_scopes(
+                [before, after_body, *(body_frame.raises if body_frame else ())]
+            )
+            for handler in node.handlers:
+                self.scopes[-1] = dict(handler_entry)
+                if handler.type is not None:
+                    self.visit(handler.type)
+                if handler.name:
+                    self._set_local(handler.name, False)
+                handler_falls = self._visit_stmt_list(handler.body)
+                snap = dict(self.scopes[-1])
+                all_snapshots.append(snap)
+                if handler_falls:
+                    fallthrough.append(snap)
+            if node.orelse:
+                self.scopes[-1] = dict(after_body)
+                orelse_falls = self._visit_stmt_list(node.orelse)
+                snap = dict(self.scopes[-1])
+                all_snapshots.append(snap)
+                if body_falls and orelse_falls:
+                    fallthrough.append(snap)
+            else:
+                all_snapshots.append(after_body)
+                if body_falls:
+                    fallthrough.append(after_body)
+        finally:
+            if finally_frame is not None:
+                self._cf_stacks[-1].pop()
 
-    def visit_Try(self, node: ast.Try) -> None:
-        self._visit_try_node(node)
+        normal_falls = bool(fallthrough)
+        after_try = self._merge_scopes(fallthrough or all_snapshots)
+        if not node.finalbody:
+            self.scopes[-1] = after_try
+            return normal_falls
+
+        assert finally_frame is not None
+        all_finally_entries: list[dict[str, bool]] = (
+            list(fallthrough) if fallthrough else list(all_snapshots)
+        )
+        all_finally_entries.extend(finally_frame.breaks)
+        all_finally_entries.extend(finally_frame.continues)
+        all_finally_entries.extend(finally_frame.returns)
+        all_finally_entries.extend(finally_frame.raises)
+        finally_check_entry = self._merge_scopes(all_finally_entries)
+
+        self.scopes[-1] = dict(finally_check_entry)
+        final_falls = self._visit_stmt_list(node.finalbody)
+        after_pass1 = dict(self.scopes[-1])
+        cache: dict[tuple[tuple[str, bool], ...], tuple[dict[str, bool], bool]] = {
+            tuple(sorted(finally_check_entry.items())): (after_pass1, final_falls)
+        }
+
+        if self._cf_stacks[-1]:
+            for kind, snaps in (
+                ("break", finally_frame.breaks),
+                ("continue", finally_frame.continues),
+                ("return", finally_frame.returns),
+                ("raise", finally_frame.raises),
+            ):
+                if snaps:
+                    kind_entry = self._merge_scopes(snaps)
+                    after_kind, kind_final_falls = self._run_finalbody_silenced(
+                        node.finalbody, kind_entry, cache
+                    )
+                    if kind_final_falls:
+                        self._record_jump(kind, after_kind)
+
+        if normal_falls:
+            after_normal, normal_final_falls = self._run_finalbody_silenced(
+                node.finalbody, after_try, cache
+            )
+            self.scopes[-1] = after_normal
+            return normal_final_falls
+
+        self.scopes[-1] = after_pass1
+        return False
+
+    def visit_Try(self, node: ast.Try) -> bool:
+        return self._visit_try_node(node)
 
     if hasattr(ast, "TryStar"):
 
-        def visit_TryStar(self, node: ast.TryStar) -> None:  # type: ignore[name-defined]
-            self._visit_try_node(node)  # type: ignore[arg-type]
+        def visit_TryStar(self, node: ast.TryStar) -> bool:  # type: ignore[name-defined]
+            return self._visit_try_node(node)  # type: ignore[arg-type]
 
     def _visit_loop(
         self,
@@ -573,41 +792,61 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         orelse: list[ast.stmt],
         test: ast.expr | None = None,
         target: ast.AST | None = None,
-    ) -> None:
+    ) -> bool:
         before = dict(self.scopes[-1])
-        target_names = _extract_target_names(target) if target is not None else []
         state = dict(before)
+        header_base = before
+        break_states: list[dict[str, bool]] = []
         iters = 0
         while True:
             iters += 1
             self.scopes[-1] = dict(state)
             if target is not None:
-                self.visit(target)
-            for name in target_names:
-                self._set_local(name, False)
+                self._apply_assign_target(target, False)
             if test is not None:
                 self.visit(test)
-            self._visit_stmt_list(body)
-            next_state = self._merge_scopes([before, dict(self.scopes[-1])])
+                if iters == 1:
+                    header_base = dict(self.scopes[-1])
+            loop_frame = _LoopFrame()
+            self._cf_stacks[-1].append(loop_frame)
+            try:
+                body_falls = self._visit_stmt_list(body)
+            finally:
+                self._cf_stacks[-1].pop()
+            break_states = loop_frame.breaks
+            next_candidates = [header_base]
+            if body_falls:
+                next_candidates.append(dict(self.scopes[-1]))
+            next_candidates.extend(loop_frame.continues)
+            next_state = self._merge_scopes(next_candidates)
             if next_state == state or iters >= max(len(next_state) + 64, 256):
                 self.scopes[-1] = next_state
                 break
             state = next_state
+        normal_exit = dict(self.scopes[-1])
         if orelse:
-            after_loop = dict(self.scopes[-1])
-            self._visit_stmt_list(orelse)
-            self.scopes[-1] = self._merge_scopes([after_loop, dict(self.scopes[-1])])
+            orelse_falls = self._visit_stmt_list(orelse)
+            exits = list(break_states)
+            if orelse_falls:
+                exits.append(dict(self.scopes[-1]))
+            if exits:
+                self.scopes[-1] = self._merge_scopes(exits)
+                return True
+            self.scopes[-1] = normal_exit
+            return False
+        self.scopes[-1] = self._merge_scopes([normal_exit, *break_states])
+        return True
 
-    def visit_For(self, node: ast.For) -> None:
+    def visit_For(self, node: ast.For) -> bool:
         self.visit(node.iter)
-        self._visit_loop(node.body, node.orelse, target=node.target)
+        return self._visit_loop(node.body, node.orelse, target=node.target)
 
-    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> bool:
         self.visit(node.iter)
-        self._visit_loop(node.body, node.orelse, target=node.target)
+        return self._visit_loop(node.body, node.orelse, target=node.target)
 
-    def visit_While(self, node: ast.While) -> None:
-        self._visit_loop(node.body, node.orelse, test=node.test)
+    def visit_While(self, node: ast.While) -> bool:
+        return self._visit_loop(node.body, node.orelse, test=node.test)
 
     def visit_Call(self, node: ast.Call) -> None:
         self.visit(node.func)

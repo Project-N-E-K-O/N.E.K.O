@@ -363,6 +363,7 @@ def load_real_corpus_manifest(manifest_path: Path) -> list[CorpusItem]:
 
 def _ocr_key_candidates(item: CorpusItem) -> set[str]:
     candidates = {
+        item.raw_path,
         item.raw_path.replace("\\", "/"),
         item.path.as_posix(),
         _repo_relative(item.path),
@@ -446,6 +447,7 @@ def check_real_corpus_manifest(
             continue
 
         ocr_keys = set(ocr_payload)
+        ocr_keys_normalized = ocr_keys | {key.replace("\\", "/") for key in ocr_keys}
         resolved_ocr_paths: set[Path] = set()
         for raw_key in ocr_keys:
             key_path = Path(raw_key)
@@ -457,7 +459,7 @@ def check_real_corpus_manifest(
                     continue
 
         def _item_covered(item: CorpusItem) -> bool:
-            if _ocr_key_candidates(item) & ocr_keys:
+            if _ocr_key_candidates(item) & ocr_keys_normalized:
                 return True
             try:
                 return item.path.resolve() in resolved_ocr_paths

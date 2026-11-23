@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import subprocess
 import sys
 import textwrap
@@ -317,3 +318,20 @@ def test_move_from_excluded_dir_into_enforced_dir_still_flags_cjk(
     assert MOD.main(["--base", "main"]) == 1
     out = capsys.readouterr().out
     assert "docstring of p" in out
+
+
+def test_report_escapes_surrogate_paths_for_strict_stdout(monkeypatch):
+    """_report must format surrogate-escaped path bytes without raising UnicodeEncodeError."""
+    buf = io.BytesIO()
+    strict_stdout = io.TextIOWrapper(buf, encoding="utf-8", errors="strict")
+    monkeypatch.setattr(sys, "stdout", strict_stdout)
+
+    surrogate_path = MOD.REPO_ROOT / "pkg" / "bad\udcff.py"
+    utf8_path = MOD.REPO_ROOT / "pkg" / "中文.py"
+    assert MOD._report(surrogate_path, [(3, 5, "msg")]) == 1
+    assert MOD._report(utf8_path, [(4, 1, "msg2")]) == 1
+    strict_stdout.flush()
+
+    rendered = buf.getvalue().decode("utf-8")
+    assert "pkg/bad\\xff.py:3:5  DOCSTRING_CJK  msg" in rendered
+    assert "pkg/中文.py:4:1  DOCSTRING_CJK  msg2" in rendered

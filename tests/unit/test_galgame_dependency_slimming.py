@@ -686,17 +686,54 @@ def test_real_corpus_manifest_preserves_symlink_parent_traversal(tmp_path):
     )
 
     resolved = verifier._resolve_manifest_path("../zh/sample.png", link_dir)
-    assert resolved.resolve() == target_img.resolve()
-    assert resolved.resolve() != decoy_img.resolve()
+    assert resolved == link_dir / "../zh/sample.png"
+    assert ".." in resolved.parts
+    if sys.platform != "win32":
+        # Windows GetFullPathNameW collapses ".." lexically before symlink resolution.
+        assert resolved.resolve() == target_img.resolve()
+        assert resolved.resolve() != decoy_img.resolve()
 
+        ocr_json = tmp_path / "ocr.json"
+        ocr_json.write_text(json.dumps({str(target_img.resolve()): "hello"}), encoding="utf-8")
+
+        results = []
+        verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json])
+        files_check = [r for r in results if r.name == "real_corpus_manifest_files"]
+        coverage = [r for r in results if r.name == "real_corpus_json_coverage_ocr"]
+        assert len(files_check) == 1 and files_check[0].status == "PASS", files_check
+        assert len(coverage) == 1 and coverage[0].status == "PASS", coverage
+
+
+def test_real_corpus_manifest_matches_backslash_and_posix_ocr_keys(tmp_path):
+    """Unresolvable manifest entries must still match backslash/POSIX OCR JSON keys across platforms."""
+    verifier = _load_verifier()
+    win_abs = r"D:\corpus\missing.png"
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            [
+                {"path": r"zh\rel_back.png", "category": "zh"},
+                {"path": "zh/rel_posix.png", "category": "zh"},
+                {"path": win_abs, "category": "zh"},
+            ]
+        ),
+        encoding="utf-8",
+    )
     ocr_json = tmp_path / "ocr.json"
-    ocr_json.write_text(json.dumps({str(target_img.resolve()): "hello"}), encoding="utf-8")
+    ocr_json.write_text(
+        json.dumps(
+            {
+                "zh/rel_back.png": "a",
+                r"zh\rel_posix.png": "b",
+                win_abs: "c",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     results = []
     verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json])
-    files_check = [r for r in results if r.name == "real_corpus_manifest_files"]
     coverage = [r for r in results if r.name == "real_corpus_json_coverage_ocr"]
-    assert len(files_check) == 1 and files_check[0].status == "PASS", files_check
     assert len(coverage) == 1 and coverage[0].status == "PASS", coverage
 
 

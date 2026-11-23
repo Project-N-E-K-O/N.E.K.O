@@ -287,16 +287,25 @@ def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
                     yield f
 
 
+def _safe_display_path(path: Path) -> str:
+    """Format raw surrogate-escaped paths safely for strict text streams."""
+    return (
+        path.as_posix()
+        .encode("utf-8", errors="surrogateescape")
+        .decode("utf-8", errors="backslashreplace")
+    )
+
+
 def _parse_file(path: Path) -> tuple[ast.Module | None, list[str]]:
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
-        print(f"{path}: skipped — {e}", file=sys.stderr)
+        print(f"{_safe_display_path(path)}: skipped — {e}", file=sys.stderr)
         return None, []
     try:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError as e:
-        print(f"{path}:{e.lineno}: syntax error — {e.msg}", file=sys.stderr)
+        print(f"{_safe_display_path(path)}:{e.lineno}: syntax error — {e.msg}", file=sys.stderr)
         return None, []
     return tree, source.splitlines()
 
@@ -306,8 +315,9 @@ def _report(path: Path, violations: list[tuple[int, int, str]]) -> int:
         rel = path.relative_to(REPO_ROOT)
     except ValueError:
         rel = path
+    safe_rel = _safe_display_path(rel)
     for lineno, col, msg in violations:
-        print(f"{rel.as_posix()}:{lineno}:{col}  {CODE}  {msg}")
+        print(f"{safe_rel}:{lineno}:{col}  {CODE}  {msg}")
     return len(violations)
 
 

@@ -2,6 +2,7 @@ import unittest
 import json
 import io
 from check_bounding_boxes import _read_pdf_dimensions, get_bounding_box_messages
+from fill_pdf_form_with_annotations import fill_pdf_form
 
 
 # Currently this is not run automatically in CI; it's just for documentation and manual checking.
@@ -371,26 +372,67 @@ class TestGetBoundingBoxMessages(unittest.TestCase):
             self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in msgs_short), msgs_short)
 
     def test_pdf_dimensions_match_fill_script_unswapped_mediabox_on_rotated_page(self):
-        """_read_pdf_dimensions must match fill_pdf_form_with_annotations.py's unswapped MediaBox sizes."""
+        """Checker verdict and _read_pdf_dimensions must match fill_pdf_form's actual annotation rect."""
         import tempfile
         from pathlib import Path
         from pypdf import PdfReader, PdfWriter
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            pdf_file = Path(tmpdir) / "rotated.pdf"
+            tmp = Path(tmpdir)
+            pdf_file = tmp / "rotated.pdf"
             writer = PdfWriter()
             page = writer.add_blank_page(width=612, height=792)
             page.rotate(90)
             with pdf_file.open("wb") as fh:
                 writer.write(fh)
 
-            reader = PdfReader(str(pdf_file))
-            fill_dims = {
-                i + 1: (float(p.mediabox.width), float(p.mediabox.height))
-                for i, p in enumerate(reader.pages)
+            fields_valid = {
+                "pages": [{"page_number": 1, "image_width": 773, "image_height": 1000}],
+                "form_fields": [
+                    {
+                        "description": "RotatedValid20px",
+                        "page_number": 1,
+                        "label_bounding_box": [10, 10, 50, 30],
+                        "entry_bounding_box": [60, 10, 150, 30],  # 20px -> 15.84pt >= 14pt
+                        "entry_text": {"text": "Hello", "font_size": 14},
+                    }
+                ],
             }
-            self.assertEqual(_read_pdf_dimensions(str(pdf_file)), fill_dims)
-            self.assertEqual(fill_dims, {1: (612.0, 792.0)})
+            fields_file = tmp / "fields.json"
+            fields_file.write_text(json.dumps(fields_valid), encoding="utf-8")
+            out_pdf = tmp / "filled.pdf"
+            fill_pdf_form(str(pdf_file), str(fields_file), str(out_pdf))
+
+            out_reader = PdfReader(str(out_pdf))
+            annots = out_reader.pages[0]["/Annots"]
+            rect = annots[0].get_object()["/Rect"]
+            written_height_pt = float(rect[3]) - float(rect[1])
+            self.assertAlmostEqual(written_height_pt, 15.84, places=2)
+            self.assertEqual(_read_pdf_dimensions(str(pdf_file)), {1: (612.0, 792.0)})
+
+            msgs_valid = get_bounding_box_messages(
+                self.create_json_stream(fields_valid),
+                pdf_path=str(pdf_file),
+            )
+            self.assertTrue(any("SUCCESS" in msg for msg in msgs_valid), msgs_valid)
+
+            fields_short = {
+                "pages": [{"page_number": 1, "image_width": 773, "image_height": 1000}],
+                "form_fields": [
+                    {
+                        "description": "RotatedTooShort16px",
+                        "page_number": 1,
+                        "label_bounding_box": [10, 10, 50, 26],
+                        "entry_bounding_box": [60, 10, 150, 26],  # 16px -> 12.67pt < 14pt
+                        "entry_text": {"text": "Hello", "font_size": 14},
+                    }
+                ],
+            }
+            msgs_short = get_bounding_box_messages(
+                self.create_json_stream(fields_short),
+                pdf_path=str(pdf_file),
+            )
+            self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in msgs_short), msgs_short)
     
 
 if __name__ == '__main__':
