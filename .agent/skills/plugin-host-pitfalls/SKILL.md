@@ -31,7 +31,7 @@ description: 改插件宿主和插件框架（`plugin/core`、`plugin/server`、
 
 7. **hosted surface 调插件入口只能走 `api.call` 桥，并且只能调标了 `@ui.action` 的入口。** surface 跑在没有同源权限的沙箱 iframe 里，直接 `fetch('/runs')` 在浏览器里会被 CORS 拦掉。详见 `references/hosted-ui-host-side.md`。
 
-8. **任务大脑（NekoClaw）挑插件时只看正在运行的插件。** 所以内置插件 `auto_start` 的默认值直接决定它会不会每次都进选择提示词。给一个带很多入口的内置插件开自启动之前，先算这笔开销。详见 `references/host-boundaries.md`。
+8. **任务大脑（NekoPower）挑插件时只看正在运行的插件。** 所以内置插件 `auto_start` 的默认值直接决定它会不会每次都进选择提示词。给一个带很多入口的内置插件开自启动之前，先算这笔开销。详见 `references/host-boundaries.md`。
 
 9. **新增的 SDK 语义一律做成 opt-in。** 不带新参数的既有调用方，行为要逐字节不变。判断「是不是回归」要去翻现有调用方的代码，不要只靠推理。详见 `references/host-boundaries.md`。
 

@@ -261,10 +261,16 @@
         // would otherwise be lost while querying Electron display metadata.
         var request;
         try {
-            request = navigator.mediaDevices.getDisplayMedia({
+            // Numbered by the mask module (#3474): this request replaces the
+            // source the desktop shell remembers for this window.
+            var captureMask = window.appCaptureMask;
+            var displayMediaOptions = {
                 video: { displaySurface: 'monitor', frameRate: { max: 1 } },
                 audio: false
-            });
+            };
+            request = captureMask && typeof captureMask.requestDisplayMedia === 'function'
+                ? captureMask.requestDisplayMedia(navigator.mediaDevices, displayMediaOptions)
+                : navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
         } catch (_) {
             _computerUseCaptureFailure = 'display_media_request_failed';
             return Promise.resolve(false);
@@ -3005,6 +3011,17 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             if (S.socket !== _thisSocket) return;
+            // session_ended_by_server latches suppressAssistantStreamUntilNextSession
+            // so late chunks of the ended session are dropped; only session_started
+            // used to clear it. A fresh socket (reconnect, or the character switch
+            // path that sets _pendingGreetingSwitch) can be served by a text session
+            // the backend reuses without sending session_started — e.g. the greeting
+            // on an existing OmniOfflineClient — so its replies would be dropped
+            // forever. Clear the latch here: the old socket's late frames are already
+            // rejected by the `S.socket !== _thisSocket` guard in onmessage, and on
+            // the same socket (no new onopen) the latch still holds until
+            // session_started.
+            S.suppressAssistantStreamUntilNextSession = false;
             if (window.nekoReplyTail) window.nekoReplyTail.reset();
             announceReplyTailCapability();
             if (window.appSettings) syncProactiveVisionConsent();
@@ -5166,7 +5183,7 @@
                 // -------- agent_builtin_activity --------
                 // 使魔开始 / 停止使用键鼠或浏览器。页面自己不画横幅：只把事件原样
                 // 交出去，桌面壳（N.E.K.O.-PC）据此盖横幅、接 Esc 叫停。
-                // 契约见 docs/design/nekoclaw-rewrite.md 11.8 节。
+                // 契约见 docs/design/nekopower-rewrite.md 11.8 节。
                 } else if (response.type === 'agent_builtin_activity') {
                     try {
                         var activity = response.activity || {};

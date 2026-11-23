@@ -574,6 +574,7 @@
         'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
+        'captureSelfUiMaskEnabled',
         'visitEnabled',
         'visitVoiceEnabled',
         'proactiveChatInterval',
@@ -619,6 +620,7 @@
             voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,
+            captureSelfUiMaskEnabled: true,
             visitEnabled: false,
             visitVoiceEnabled: true,
             proactiveChatInterval: Number.isFinite(C.DEFAULT_PROACTIVE_CHAT_INTERVAL)
@@ -686,6 +688,7 @@
             voiceInputResourceOptimizationEnabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
+            captureSelfUiMaskEnabled: S.captureSelfUiMaskEnabled,
             visitEnabled: S.visitEnabled,
             visitVoiceEnabled: S.visitVoiceEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
@@ -1924,6 +1927,9 @@
         const currentSlopFilter = typeof window.slopFilterEnabled !== 'undefined'
             ? window.slopFilterEnabled
             : S.slopFilterEnabled;
+        const currentCaptureSelfUiMask = typeof window.captureSelfUiMaskEnabled !== 'undefined'
+            ? window.captureSelfUiMaskEnabled
+            : S.captureSelfUiMaskEnabled;
         const currentVisitEnabled = typeof window.visitEnabled !== 'undefined'
             ? window.visitEnabled
             : S.visitEnabled;
@@ -1998,6 +2004,7 @@
             voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
+            captureSelfUiMaskEnabled: currentCaptureSelfUiMask,
             visitEnabled: currentVisitEnabled,
             visitVoiceEnabled: currentVisitVoiceEnabled,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -2048,6 +2055,7 @@
         S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
+        S.captureSelfUiMaskEnabled = currentCaptureSelfUiMask;
         S.visitEnabled = currentVisitEnabled;
         S.visitVoiceEnabled = currentVisitVoiceEnabled;
         S.proactiveChatInterval = currentProactiveChatInterval;
@@ -2241,6 +2249,7 @@
                     );
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
+                S.captureSelfUiMaskEnabled = settings.captureSelfUiMaskEnabled ?? true;
                 S.visitEnabled = settings.visitEnabled ?? false;
                 S.visitVoiceEnabled = settings.visitVoiceEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -2391,6 +2400,7 @@
         window.autoMemoryRecallEnabled = S.autoMemoryRecallEnabled;
         // 同理：自然表达开关也镜像到 window，避免设置弹窗在 reload 后误显示为开。
         window.slopFilterEnabled = S.slopFilterEnabled;
+        window.captureSelfUiMaskEnabled = S.captureSelfUiMaskEnabled;
         window.visitEnabled = S.visitEnabled;
         window.visitVoiceEnabled = S.visitVoiceEnabled;
 
@@ -2628,6 +2638,7 @@
                     window.autoMemoryRecallEnabled = S.autoMemoryRecallEnabled;
                     window.avatarReactionBubbleEnabled = S.avatarReactionBubbleEnabled;
                     window.slopFilterEnabled = S.slopFilterEnabled;
+                    window.captureSelfUiMaskEnabled = S.captureSelfUiMaskEnabled;
                     window.visitEnabled = S.visitEnabled;
                     window.visitVoiceEnabled = S.visitVoiceEnabled;
                     window.proactiveChatInterval = S.proactiveChatInterval;

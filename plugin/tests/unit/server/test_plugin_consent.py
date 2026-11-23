@@ -1175,6 +1175,7 @@ async def test_market_replacement_notifies_only_after_real_transaction_commit(
         channel="market",
         removed=False,
         root_id="user",
+        source_detail=None,
     )
     manager = SimpleNamespace(find_active_user_entry=lambda _: entry)
 

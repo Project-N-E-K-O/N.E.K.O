@@ -35,8 +35,10 @@ import os
 from collections import OrderedDict
 from datetime import datetime
 
+from fastapi import HTTPException
+
 from . import gates, runtime
-from ._shared import logger
+from ._shared import logger, validate_lanlan_name
 from .gates import (
     LONG_IDLE_REVIEW_BYPASS_SECONDS,
     MIN_NEW_MSGS_FOR_REVIEW,
@@ -78,6 +80,56 @@ _RELEASED_DERIVED_TASK_CLAIM_TOKEN_LIMIT = 4096
 def is_character_publication_held(lanlan_name: str) -> bool:
     """Return whether a lifecycle transaction has fenced the old identity."""
     return lanlan_name in _publication_held_derived_task_names
+
+
+def is_character_periodic_write_admitted(lanlan_name: str) -> bool:
+    """Return whether a periodic memory loop may work on this identity now.
+
+    A rename / delete retires the old name (and holds it until publication)
+    before its directory is moved or removed. A periodic loop that read the
+    roster before that point must skip the name, or its JSON writes recreate
+    the released directory. Every per-character unit of the periodic loops
+    checks this right before it starts; a skipped character's cursors are left
+    untouched, so nothing is advanced past work that never ran.
+
+    The release endpoint fences the normalized name while the loops iterate
+    raw ``characters.json`` keys, so both spellings are checked.
+    """
+    names = {lanlan_name}
+    try:
+        names.add(validate_lanlan_name(lanlan_name))
+    except HTTPException:
+        # Not a valid character name, so the release endpoint (which
+        # validates the same way) cannot have fenced a normalized spelling;
+        # checking the raw key alone is enough.
+        pass
+    return not any(
+        name in _retired_derived_task_names
+        or is_character_publication_held(name)
+        for name in names
+    )
+
+
+async def ais_character_periodic_write_admitted(lanlan_name: str) -> bool:
+    """``is_character_periodic_write_admitted`` plus a fresh roster check.
+
+    Serial loops reach a character long after reading the roster (earlier
+    characters wait on the model). A rename / delete that finished in between
+    has already lifted the old name's retirement, so ask the roster again, as
+    the introspection and pinned-review spawns do. An unreadable roster skips
+    the character for this round.
+    """
+    if not is_character_periodic_write_admitted(lanlan_name):
+        return False
+    try:
+        characters = await runtime._config_manager.aload_characters()
+    except Exception as e:
+        logger.debug(f"[PeriodicGate] {lanlan_name}: 重新加载角色列表失败，本轮跳过: {e}")
+        return False
+    if lanlan_name not in (characters.get('猫娘') or {}):
+        return False
+    # A hold may have landed while the roster was being read.
+    return is_character_periodic_write_admitted(lanlan_name)
 
 
 def is_character_derived_task_claim_active(

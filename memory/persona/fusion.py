@@ -352,7 +352,7 @@ class ExternalFusionMixin:
         # entity (after the first has been persisted), the endpoint would return generic 500 instead of external_import_partial,
         # losing the partial metadata needed by the frontend to retry (Codex P2).
         try:
-            api_config = await self._config_manager.aget_model_api_config("summary")
+            api_config = await self._config_manager.aget_model_api_config("memory")
         except Exception as exc:
             logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 构造失败: {exc}")
             return None

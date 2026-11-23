@@ -40,14 +40,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nekoclaw.builtin.browser.tools import BrowserTools
-from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER
-from tests.unit.nekoclaw.fake_cdp_browser import ORDER, THANKS, BrowserWorld, serve_shop
+from nekopower.builtin.browser.tools import BrowserTools
+from nekopower.host.capabilities import BUILTIN_GROUP_BROWSER
+from tests.unit.nekopower.fake_cdp_browser import ORDER, THANKS, BrowserWorld, serve_shop
 
 capabilities = importlib.import_module("app.agent_server.capabilities")
 api_routes = importlib.import_module("app.agent_server.api_routes")
 api_runtime = importlib.import_module("app.agent_server.api_runtime")
-nekoclaw_builtins = importlib.import_module("app.agent_server.nekoclaw_builtins")
+nekopower_builtins = importlib.import_module("app.agent_server.nekopower_builtins")
 
 pytestmark = pytest.mark.unit
 
@@ -82,7 +82,7 @@ def world(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> BrowserWorld:
 async def stage(monkeypatch: pytest.MonkeyPatch, world: BrowserWorld, tmp_path: Any) -> Any:
     """The switches on, a model that answers, and the process's provider driving the fake browser."""
     state = capabilities._shared.Modules
-    provider = nekoclaw_builtins.provider
+    provider = nekopower_builtins.provider
     monkeypatch.setattr(state, "analyzer_enabled", True)
     monkeypatch.setattr(
         state, "agent_flags", {"computer_use_enabled": False, "browser_use_enabled": True, "user_plugin_enabled": False}
@@ -102,7 +102,7 @@ async def stage(monkeypatch: pytest.MonkeyPatch, world: BrowserWorld, tmp_path: 
     monkeypatch.setattr(state, "state_revision", state.state_revision)
     monkeypatch.setattr(state, "_background_tasks", set())
     monkeypatch.setattr(capabilities, "_llm_check_lock", asyncio.Lock())
-    monkeypatch.setattr(nekoclaw_builtins, "_in_use", {})
+    monkeypatch.setattr(nekopower_builtins, "_in_use", {})
 
     async def ignore(*_args: Any, **_kwargs: Any) -> None:
         return None
@@ -121,10 +121,10 @@ async def stage(monkeypatch: pytest.MonkeyPatch, world: BrowserWorld, tmp_path: 
     monkeypatch.setattr(api_routes, "stop_everything", AsyncMock(return_value=0))
     # The search for a browser, and the settings it reads, are this test's own.
     monkeypatch.setattr(
-        "nekoclaw.builtin.browser.launcher.find_browsers",
+        "nekopower.builtin.browser.launcher.find_browsers",
         lambda *args, **kwargs: [SimpleNamespace(kind="chrome", name="Chrome", executable="/opt/chrome")],
     )
-    monkeypatch.setattr("nekoclaw.builtin.browser.settings._root", lambda: tmp_path / "settings" / "nekoclaw")
+    monkeypatch.setattr("nekopower.builtin.browser.settings._root", lambda: tmp_path / "settings" / "nekopower")
     monkeypatch.setattr(capabilities, "_browser_search", None)
 
     tools = BrowserTools(world.session(own_ports=lambda: OWN))
@@ -652,7 +652,7 @@ async def test_saving_the_browser_settings_as_they_were_leaves_the_browser_alone
 async def test_the_browser_settings_are_read_changed_and_saved_by_one_request_at_a_time(
     stage: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from nekoclaw.builtin.browser.settings import BrowserSettingsStore
+    from nekopower.builtin.browser.settings import BrowserSettingsStore
 
     held: list[bool] = []
     load, save = BrowserSettingsStore.load, BrowserSettingsStore.save
@@ -983,7 +983,7 @@ async def test_the_provider_ends_the_agreement_it_is_handed_back_and_no_other(st
 async def test_switching_the_master_switch_off_drops_what_was_kept_of_the_main_dialogue_for_task_agents(
     stage: Any, monkeypatch: pytest.MonkeyPatch, how: str
 ) -> None:
-    from nekoclaw.host import conversation
+    from nekopower.host import conversation
 
     kept = conversation.RecentConversation()
     monkeypatch.setattr(conversation, "_recent", kept)
@@ -999,12 +999,12 @@ async def test_switching_the_master_switch_off_drops_what_was_kept_of_the_main_d
 
 
 # ---------------------------------------------------------------------------
-# The last capability switch went off: NekoClaw is off as with the master switch off
+# The last capability switch went off: NekoPower is off as with the master switch off
 # ---------------------------------------------------------------------------
 
 
 def _kept_for_task_agents(monkeypatch: pytest.MonkeyPatch) -> Any:
-    from nekoclaw.host import conversation
+    from nekopower.host import conversation
 
     kept = conversation.RecentConversation()
     monkeypatch.setattr(conversation, "_recent", kept)
@@ -1018,7 +1018,7 @@ async def test_switching_the_last_capability_switch_off_drops_what_was_kept_of_t
 ) -> None:
     kept = _kept_for_task_agents(monkeypatch)
 
-    # Only the browser tools are on (the fixture): with them off NekoClaw is off, whatever the
+    # Only the browser tools are on (the fixture): with them off NekoPower is off, whatever the
     # master switch says.
     await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
     await stage.settled()
@@ -1038,7 +1038,7 @@ async def test_switching_one_of_two_capability_switches_off_keeps_what_was_kept_
     await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
     await stage.settled()
 
-    # NekoClaw is still on: the commission that is dispatched next is handed what was said.
+    # NekoPower is still on: the commission that is dispatched next is handed what was said.
     assert stage.state.agent_flags["browser_use_enabled"] is False
     assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
 
@@ -1360,13 +1360,13 @@ def test_a_switch_is_put_off_though_what_was_kept_could_not_be_dropped_and_that_
     def cannot() -> None:
         raise RuntimeError("what was kept cannot be got at")
 
-    monkeypatch.setattr(api_runtime, "forget_turns_if_nekoclaw_is_off", cannot)
+    monkeypatch.setattr(api_runtime, "forget_turns_if_nekopower_is_off", cannot)
     monkeypatch.setattr(shared.logger, "warning", lambda message, *args, **kwargs: said.append(str(message)))
 
     shared._put_switch_off("browser_use_enabled")
 
     # The switch is off all the same. And it does not go by unseen: what was said before the
-    # switch went off would be handed to a task agent once NekoClaw is on again.
+    # switch went off would be handed to a task agent once NekoPower is on again.
     assert stage.state.agent_flags["browser_use_enabled"] is False
     assert len(said) == 1 and "the messages kept for task agents are not dropped" in said[0]
 
@@ -1482,7 +1482,7 @@ def test_every_place_that_puts_the_master_switch_off_is_looked_at_by_itself() ->
     assert _master_switch_offs(function) == [True, False, False, False, False, True]
 
 
-def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekoclaw_is_off_now() -> None:
+def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekopower_is_off_now() -> None:
     from pathlib import Path
 
     capability: list[str] = []
@@ -1497,13 +1497,13 @@ def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekocla
                 # In one go: the switch, and what was kept, with nothing waited for in between.
                 assert isinstance(function, ast.FunctionDef), name
                 assert not any(isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)) for node in nodes), name
-                assert "forget_turns_if_nekoclaw_is_off" in {_called(node) for node in nodes}, name
+                assert "forget_turns_if_nekopower_is_off" in {_called(node) for node in nodes}, name
             if any(_puts_the_master_switch_off(node) for node in nodes):
                 # Each place by itself: one that drops what was kept does not stand for another,
                 # in the same function or in one of the same name elsewhere.
                 master.append((name, _master_switch_offs(function)))
 
-    # With the master switch off, or the last capability switch, NekoClaw is off, and what was kept
+    # With the master switch off, or the last capability switch, NekoPower is off, and what was kept
     # of the main dialogue for task agents goes with the switch. A capability switch goes off by
     # the user's hand and by itself, in a dozen places: all of them by the one function that
     # drops what was kept in the same breath.

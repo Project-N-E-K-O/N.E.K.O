@@ -14,14 +14,14 @@
 
 """The two task tools of the main dialogue model: dispatch and query.
 
-Their definitions are sent with every request of a session that has NekoClaw
+Their definitions are sent with every request of a session that has NekoPower
 switched on, so every word here is paid for on every turn. The opening
 sentence of such a session (``SESSION_INIT_PROMPT_AGENT``) plus these two
 definitions stay within a fixed budget in Chinese; the test
 ``tests/unit/test_task_tools_budget.py`` holds them to it.
 
 Both tools take one sentence and no identifier. Which task a sentence is about
-is worked out by the task brain (``nekoclaw/host/task_brain.py``), which keeps
+is worked out by the task brain (``nekopower/host/task_brain.py``), which keeps
 the record; the main dialogue's session is replaced every few turns and would
 lose any number it was given.
 """

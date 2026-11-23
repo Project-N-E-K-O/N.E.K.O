@@ -23,10 +23,11 @@ SECRET_MASK = "__NEKO_SECRET_MASKED__"
 # is the ``model_type`` passed to ``ConfigManager.get_model_api_config``;
 # adding a tier here (and to ``HostApi``) is all a new followable tier needs.
 HOST_API_MODEL_TYPES: dict[str, str] = {
+    "agent_advanced": "agent_advanced",
     "agent": "agent",
     "agent_small": "agent_small",
 }
-HostApi = Literal["agent", "agent_small"]
+HostApi = Literal["agent_advanced", "agent", "agent_small"]
 MAX_OUTPUT_TOKENS = 1_000_000
 SlotId = Annotated[StrictStr, Field(pattern=r"^slot_[0-9a-f]{32}$")]
 PluginId = Annotated[StrictStr, Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")]

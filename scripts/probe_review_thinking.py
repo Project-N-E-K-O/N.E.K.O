@@ -93,7 +93,7 @@ def _run(client: OpenAI, model: str, name: str, *, shallow: bool, extra_body: di
 
 
 def main() -> int:
-    cfg = get_config_manager().get_model_api_config("summary")
+    cfg = get_config_manager().get_model_api_config("memory")
     model = str(cfg.get("model") or "").strip()
     base_url = str(cfg.get("base_url") or "").strip()
     api_key = str(cfg.get("api_key") or "").strip()

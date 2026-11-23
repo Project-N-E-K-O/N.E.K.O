@@ -36,6 +36,7 @@ from plugin.core.communication import (
 )
 from plugin.core.context import PluginContext
 from plugin.sdk.shared.core.call_chain_view import call_chain_scope
+from plugin.sdk.shared.permissions.runtime import PERMISSIONS_UPDATE
 from plugin.core.entry_executor import EntryExecutor, execute_entry_command
 from plugin.core.entry_points import normalize_plugin_entry_point, plugin_package_matches_directory
 from plugin.core.model_gateway_access import model_gateway_access
@@ -1064,6 +1065,14 @@ def _plugin_process_runner(
         # The context owns this instance's credential from now on.
         if model_gateway_options is not None:
             model_gateway_options.clear()
+        initial_permissions = (startup_options or {}).get("permissions")
+        if initial_permissions is not None:
+            ctx.permissions.apply(initial_permissions)
+        else:
+            logger.warning(
+                "[Plugin Process] no permission snapshot at launch; ctx.permissions reports "
+                "enforced permissions as denied until the host sends one"
+            )
         # Cleared until the downlink loop starts reading. Uploads launched by
         # timer / custom-event handlers before that point would have no reader
         # for their reply, so they wait here instead of timing out (Codex).
@@ -1787,6 +1796,15 @@ def _plugin_process_runner(
                         logger.debug("Failed to dispatch bus change: {}", e)
                     continue
 
+                # ── PERMISSIONS_UPDATE ──
+                if msg_type == PERMISSIONS_UPDATE:
+                    try:
+                        with ctx._handler_scope("lifecycle.permissions_update"):
+                            ctx.permissions.apply(msg)
+                    except Exception:
+                        logger.exception("[Plugin Process] failed to apply permission update")
+                    continue
+
                 # ── CONFIG_UPDATE ──
                 if msg_type == "CONFIG_UPDATE":
                     # Preserve the image-upload gate during config changes.
@@ -2385,6 +2403,15 @@ class PluginHost:
 
     async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
         await self.comm_manager.push_bus_change(sub_id=sub_id, bus=bus, op=op, delta=delta)
+
+    def set_initial_permissions(self, snapshot: Dict[str, Any]) -> None:
+        """Permission snapshot handed to the child with its launch options,
+        so ``ctx.permissions`` is filled before plugin code runs."""
+        self._startup_options["permissions"] = snapshot
+
+    async def push_permissions(self, snapshot: Dict[str, Any]) -> None:
+        """Send a newer permission snapshot to the running child."""
+        await self.comm_manager.push_permissions(snapshot)
 
     async def send_config_update(
         self,

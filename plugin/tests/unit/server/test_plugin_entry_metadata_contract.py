@@ -94,7 +94,7 @@ def test_wire_payload_preserves_slotted_and_legacy_entry_contract(legacy):
 async def test_registered_entry_survives_ipc_http_listing_and_agent_projection(
     isolated_registry, monkeypatch, declared
 ):
-    from nekoclaw.host.selection import routable_plugins, visible_entries
+    from nekopower.host.selection import routable_plugins, visible_entries
     from utils.result_parser import parse_plugin_result
 
     config = {"entries": manifest_entries()} if declared else {}

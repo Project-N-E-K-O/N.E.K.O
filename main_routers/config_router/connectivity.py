@@ -819,8 +819,8 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
 
     if _as_bool(core_cfg.get("enableCustomApi", False)):
         model_types = [
-            "conversation", "summary", "gameMain", "gameSummary", "emotion",
-            "decision", "vision", "agent", "agentSmall", "omni", "tts",
+            "conversation", "memory", "gameMain", "gameSummary", "recognition",
+            "decision", "vision", "agent", "agentAdvanced", "agentSmall", "gameRecognition", "omni", "tts",
         ]
         def _add_model_target(model_type: str, provider: str, seen: set[str] | None = None) -> None:
             seen = seen or set()
@@ -837,8 +837,8 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
                 _add("assist", assist_provider)
             elif provider == "follow_conversation":
                 _add_model_target("conversation", str(core_cfg.get("conversationModelProvider") or "follow_assist"), seen)
-            elif provider == "follow_summary":
-                _add_model_target("summary", str(core_cfg.get("summaryModelProvider") or "follow_assist"), seen)
+            elif provider == "follow_memory":
+                _add_model_target("memory", str(core_cfg.get("memoryModelProvider") or "follow_assist"), seen)
             else:
                 _add("core" if model_type == "omni" else "assist", provider)
 
@@ -1076,7 +1076,7 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
                 else:
                     decision_fallback = "workspace_missing" if region_supported else "region_unsupported"
                     resolved_protocol = "chat_fallback"
-                    model = str(profile.get("emotion_model") or profile.get("summary_model") or "").strip()
+                    model = str(profile.get("recognition_model") or profile.get("memory_model") or "").strip()
                     _source_label = f"{profile.get('name', provider_key)}（决策模型·聊天回退）"
             if regional_url and not is_native_decision_protocol(resolved_protocol):
                 # Chat probes (no workspace, unsupported region, or a chat-model

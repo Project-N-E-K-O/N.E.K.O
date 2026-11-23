@@ -1,7 +1,7 @@
 """``output_schema`` / ``strict_output`` reach every place entry metadata travels.
 
 Normal, router and dynamic entries; the host's IPC registration; previews;
-packaged metadata; ``GET /plugins``; the ``/runs`` error code; NekoClaw
+packaged metadata; ``GET /plugins``; the ``/runs`` error code; NekoPower
 capabilities and gateway tool definitions; ``neko-plugin validate``.
 Entries that declare nothing keep their previous shape.
 """

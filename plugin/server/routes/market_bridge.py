@@ -74,6 +74,9 @@ from plugin.server.application.install_source import (
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.permission_service import (
+    bind_entry_permission_source,
+)
 from plugin.server.application.plugins.installation_transactions import (
     ReplacePluginError,
     ReplacePluginResult,
@@ -4651,6 +4654,21 @@ async def _replace_market_plugin_transaction(
 
     else:
         validate_manual_backup = None
+    # Before anything changes: a grant record without a source yet is bound
+    # to the source of the entry validated above (not looked up again), so
+    # the Market source recorded for the new package is a source change
+    # rather than a first binding. A failed save, or an incomplete entry with
+    # a source-less grant, stops the replacement here, unchanged.
+    try:
+        await asyncio.to_thread(
+            bind_entry_permission_source, active_entry.plugin_id, active_entry
+        )
+    except ServerDomainError as exc:
+        raise _TaskError(
+            code=exc.code.lower(),
+            message=exc.message,
+            http_status=exc.status_code,
+        ) from exc
     try:
         result = await replace_plugin(
             layout=layout,
@@ -4973,6 +4991,13 @@ async def _do_upgrade(
                     else f"升级失败且回滚未完整完成: {cause_message}"
                 ),
             ) from exc
+        except Exception:
+            # Anything else is raised before the transaction changes a file
+            # (plan changed, grants could not be bound, replacement
+            # pre-checks), or by the post-commit notification, which runs no
+            # rollback either: there is no rollback to report.
+            task["rollback"] = None
+            raise
 
         result = _with_market_operation_status(
             replacement.install_result,

@@ -69,10 +69,11 @@ and stores no `base_url`, `model` or `api_key`; those belong to the main app's
 `core_config.json`. The followable tiers are the table `HOST_API_MODEL_TYPES`
 in `plugin/server/domain/model_config.py`. Plugins and task agents are one
 thing in the main app, so plugins draw only on the familiar tiers: today
-`agent` (the familiar model that task agents, keyboard-and-mouse control and
-the browser use) and `agent_small` (the small familiar model, which is the
-main app's recognition (small) model unless the user configures it
-separately). A further tier is one more
+`agent_advanced` (the advanced familiar model, which is the general familiar
+model unless the user configures it separately), `agent` (the general
+familiar model that task agents, keyboard-and-mouse control and the browser
+use) and `agent_small` (the small familiar model, which is the main app's
+recognition (small) model unless the user configures it separately). A further tier is one more
 row there plus the `HostApi` literal, and on the panel side the
 `HostApiSource` type (`frontend/plugin-manager/src/types/model-api.ts`), the
 option in `ModelApi.vue` and the `hostApi` / `hostHint` strings in all eight
@@ -87,7 +88,7 @@ providers resolve to the `anthropic_messages` protocol automatically.
 A host-follow OpenAI-protocol request is shaped the way the main app sends
 the same task agent model (`adapt_host_follow_request` in
 `plugin/server/infrastructure/host_model_slots.py`, mirroring
-`nekoclaw/dsh/forward.py:prepare_request`): the output budget moves to the
+`nekopower/dsh/forward.py:prepare_request`): the output budget moves to the
 field the endpoint honours (`config.providers.get_token_limit_field`, e.g.
 `max_tokens` for DeepSeek and GLM, value unchanged); the task agent
 `extra_body` (`get_agent_extra_body` + `rewrite_router_reasoning`, e.g.

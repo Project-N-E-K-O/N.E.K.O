@@ -3,7 +3,7 @@
 The browser tools drive a browser the user already has installed. So no build
 may download or bundle a Chromium, the launcher must not look for one at start,
 and the runtime dependencies carry no browser-automation package. What every
-build must carry instead is the whole ``nekoclaw`` package, which holds the
+build must carry instead is the whole ``nekopower`` package, which holds the
 browser tools and the keyboard-and-mouse tool.
 """
 from __future__ import annotations
@@ -118,10 +118,10 @@ def test_nuitka_build_names_no_removed_package(workflow: str, step_name: str) ->
 def test_nuitka_build_compiles_the_package_of_the_builtin_tools(workflow: str, step_name: str) -> None:
     script = _nuitka_script(workflow, step_name)
     always = _nuitka_flags(script, unconditional_only=True)
-    # nekoclaw.runtime resolves its public names through importlib, and the
+    # nekopower.runtime resolves its public names through importlib, and the
     # built-in tools are only reached from there, so following imports from the
     # entry script is not enough: the package has to be named.
-    assert "--include-package=nekoclaw" in always
+    assert "--include-package=nekopower" in always
     assert "--include-package=websockets" in always
 
     excluded = {
@@ -160,22 +160,22 @@ def test_runtime_dependencies_carry_no_browser_automation_package() -> None:
 
 
 def test_html_converter_of_the_web_tools_is_declared_not_inherited() -> None:
-    # nekoclaw/runtime/tools/web.py falls back to plain text without it and the
+    # nekopower/runtime/tools/web.py falls back to plain text without it and the
     # MCP adapter plugin imports it at module load; no other dependency brings it.
     runtime = {_requirement_name(item) for item in _pyproject()["project"]["dependencies"]}
     assert "markdownify" in runtime
 
 
-def test_pyinstaller_spec_names_no_removed_package_and_collects_nekoclaw() -> None:
+def test_pyinstaller_spec_names_no_removed_package_and_collects_nekopower() -> None:
     spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
-    assert "collect_submodules('nekoclaw', on_error='raise')" in spec
+    assert "collect_submodules('nekopower', on_error='raise')" in spec
     for removed in ("'brain'", "'brain.computer_use'", "'browser_use'", "'playwright'", "browser_use_prompts"):
         assert removed not in spec
 
 
-def test_pyinstaller_finds_every_nekoclaw_module() -> None:
+def test_pyinstaller_finds_every_nekopower_module() -> None:
     _ensure_project_root_first()
-    collected = sorted(collect_submodules("nekoclaw", on_error="raise"))
-    assert collected == _module_names("nekoclaw")
-    assert "nekoclaw.builtin.browser.cdp" in collected
-    assert "nekoclaw.builtin.desktop" in collected
+    collected = sorted(collect_submodules("nekopower", on_error="raise"))
+    assert collected == _module_names("nekopower")
+    assert "nekopower.builtin.browser.cdp" in collected
+    assert "nekopower.builtin.desktop" in collected

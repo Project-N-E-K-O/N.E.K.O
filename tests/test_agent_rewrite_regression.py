@@ -130,7 +130,7 @@ def test_agent_server_legacy_endpoints_removed():
         "/plan",
         "/analyze_and_plan",
         # Gone with the per-turn analyzer and its channels: work now arrives
-        # through /nekoclaw/dispatch and is recorded in the host's ledger.
+        # through /nekopower/dispatch and is recorded in the host's ledger.
         "/plugin/execute",
         "/computer_use/run",
         "/browser_use/run",
@@ -355,9 +355,9 @@ def test_agent_server_expected_event_driven_endpoints_exist():
         "/api/agent/tasks/{task_id}/complete",
         "/computer_use/availability",
         "/browser_use/availability",
-        "/nekoclaw/dispatch",
-        "/nekoclaw/query",
-        "/nekoclaw/brief",
+        "/nekopower/dispatch",
+        "/nekopower/query",
+        "/nekopower/brief",
         "/builtin/activity",
         "/builtin/stop",
         "/builtin/browser/settings",
@@ -2431,7 +2431,7 @@ def test_agent_ui_v2_keeps_agent_status_short_during_tutorial():
 
     assert "options.stabilizeTutorialText === true" in status_block
     assert "isTutorialAgentStatusLocked()" in status_block
-    assert "shouldStabilizeTutorialText ? 'NekoClaw server ready' : (msg || '')" in status_block
+    assert "shouldStabilizeTutorialText ? 'NekoPower server ready' : (msg || '')" in status_block
     assert "s.textContent = text;" in status_block
 
 

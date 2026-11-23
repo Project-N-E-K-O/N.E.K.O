@@ -2098,7 +2098,7 @@ I.mod = window.appInterpage;
 
             // 隐藏所有悬浮按钮、锁图标和返回按钮（它们挂载在 document.body 上，不随容器隐藏）。
             // 记录隐藏前的 display，避免恢复时清空 display 导致容器短暂按默认 block 布局显示，
-            // 出现“语音控制/屏幕分享/猫爪/设置/请她离开”先挤在一起再分开的闪烁。
+            // 出现“语音控制/屏幕分享/喵能力/设置/请她离开”先挤在一起再分开的闪烁。
             document.querySelectorAll(
                 '#live2d-floating-buttons, #vrm-floating-buttons, #mmd-floating-buttons, #pngtuber-floating-buttons, ' +
                 '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, #pngtuber-lock-icon, ' +

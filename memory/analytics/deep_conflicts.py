@@ -16,7 +16,7 @@
 """Manual developer-mode semantic conflict and duplicate audit via summary tier.
 
 LLM discipline:
-- Uses ``summary`` tier from ``config_manager.aget_model_api_config('summary')``.
+- Uses the ``memory`` tier from ``config_manager.aget_model_api_config('memory')``.
 - Never passes ``temperature``.
 - Enforces both input token budget (``DEEP_CONFLICT_CHECK_INPUT_MAX_TOKENS``) and
   output budget + timeout (``DEEP_CONFLICT_CHECK_MAX_TOKENS``,
@@ -341,7 +341,7 @@ async def arun_deep_conflict_check(
         .replace("{PAIRS_BLOCK}", pairs_block)
     )
 
-    api_config = await cm.aget_model_api_config("summary")
+    api_config = await cm.aget_model_api_config("memory")
     set_call_type("memory_deep_conflict_check")
     llm = await create_chat_llm_async(
         api_config["model"],

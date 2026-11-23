@@ -536,7 +536,7 @@ async def icebreaker_free_text_interpret(request: Request):
     _absorb_request_language(data, lanlan_name)
 
     try:
-        api_config = await get_config_manager().aget_model_api_config("emotion")
+        api_config = await get_config_manager().aget_model_api_config("recognition")
     except Exception as exc:
         logger.warning("icebreaker free-text: failed to read emotion API config: %s", exc)
         return {"ok": False, "reason": "llm_api_not_configured", "error": str(exc)}

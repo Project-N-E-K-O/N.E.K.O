@@ -305,7 +305,7 @@ async def generate_galgame_options(request: Request):
         })
 
     # The user is waiting on these options, so they use the small (emotion) tier.
-    model_config = await config_manager.aget_model_api_config('emotion') or {}
+    model_config = await config_manager.aget_model_api_config('recognition') or {}
     api_key = (model_config.get('api_key') or '').strip()
     model = (model_config.get('model') or '').strip()
     base_url = (model_config.get('base_url') or '').strip()

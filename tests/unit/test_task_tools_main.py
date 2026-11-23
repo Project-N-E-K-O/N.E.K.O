@@ -1,4 +1,4 @@
-"""Main-service side of NekoClaw: the two task tools and the check of a turn.
+"""Main-service side of NekoPower: the two task tools and the check of a turn.
 
 The agent process is stood in for by an ``httpx.MockTransport`` (the task
 tools) and by a recorded call (the turn check). Nothing here calls a model:
@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from config import TOOL_SERVER_PORT
-from config.nekoclaw_settings import TASK_TOOL_TIMEOUT_SECONDS
+from config.nekopower_settings import TASK_TOOL_TIMEOUT_SECONDS
 from config.prompts.prompts_task_tools import (
     DISPATCH_TOOL_DESCRIPTION,
     DISPATCH_TOOL_NAME,
@@ -135,7 +135,7 @@ def agent_process(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Whether NekoClaw is on for a session
+# Whether NekoPower is on for a session
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +151,7 @@ def agent_process(monkeypatch):
         ({"agent_enabled": False, "user_plugin_enabled": True, "computer_use_enabled": True}, False),
     ],
 )
-def test_nekoclaw_is_on_with_the_master_switch_and_one_capability(flags, expected):
+def test_nekopower_is_on_with_the_master_switch_and_one_capability(flags, expected):
     assert _manager(**flags)._is_agent_enabled() is expected
 
 
@@ -160,7 +160,7 @@ def test_nekoclaw_is_on_with_the_master_switch_and_one_capability(flags, expecte
 # ---------------------------------------------------------------------------
 
 
-def test_both_tools_are_registered_in_the_session_language_while_nekoclaw_is_on():
+def test_both_tools_are_registered_in_the_session_language_while_nekopower_is_on():
     manager = _manager(lang="zh-TW")
 
     manager._register_builtin_tools()
@@ -173,7 +173,7 @@ def test_both_tools_are_registered_in_the_session_language_while_nekoclaw_is_on(
     assert manager.tool_registry.get("recall_memory") is not None
 
 
-def test_a_session_without_nekoclaw_does_not_carry_the_tools():
+def test_a_session_without_nekopower_does_not_carry_the_tools():
     manager = _manager(agent_enabled=False)
 
     manager._register_builtin_tools()
@@ -293,7 +293,7 @@ async def test_dispatching_is_one_request_and_returns_the_receipt(agent_process,
     assert receipt == "已受理：订闹钟。"
     assert process.requests == [
         {
-            "url": f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekoclaw/dispatch",
+            "url": f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekopower/dispatch",
             "body": {
                 "text": "订一个明早七点的闹钟",
                 "lanlan_name": "Lan",
@@ -390,7 +390,7 @@ async def test_a_dispatch_that_went_out_unanswered_is_told_as_not_known(agent_pr
 async def test_the_time_limit_is_on_the_whole_request_not_on_each_of_its_phases(monkeypatch):
     # The HTTP client times connecting, sending and reading each on their
     # own: a request slow in every phase would take several times the limit.
-    monkeypatch.setattr("config.nekoclaw_settings.TASK_TOOL_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr("config.nekopower_settings.TASK_TOOL_TIMEOUT_SECONDS", 0.1)
     given: list[float] = []
 
     class _SlowInEveryPhase:
@@ -436,7 +436,7 @@ async def test_querying_is_one_request_and_returns_the_answer(agent_process, log
     assert answer == "在办：订闹钟。"
     assert process.requests == [
         {
-            "url": f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekoclaw/query",
+            "url": f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekopower/query",
             "body": {"text": "闹钟订好了吗", "lanlan_name": "Lan", "language": "zh"},
         }
     ]
@@ -544,7 +544,7 @@ def test_a_task_tool_comes_back_once_another_sources_tool_gives_its_name_up(name
     assert manager.fired
 
 
-def test_removing_the_task_tools_themselves_or_with_nekoclaw_off_brings_nothing_back():
+def test_removing_the_task_tools_themselves_or_with_nekopower_off_brings_nothing_back():
     manager = _manager()
     manager._register_builtin_tools()
     assert manager.unregister_tool(DISPATCH_TOOL_NAME) is True

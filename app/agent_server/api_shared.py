@@ -106,19 +106,19 @@ from .results import (  # noqa: F401
     _emit_main_event,
     _send_main_event,
 )
-from .nekoclaw_builtins import provider as builtin_provider  # noqa: F401
-from .nekoclaw_mount import (  # noqa: F401
+from .nekopower_builtins import provider as builtin_provider  # noqa: F401
+from .nekopower_mount import (  # noqa: F401
     HUD_ACTIVE,
     hud,
     hud_task,
     ledger_exists,
-    mount_nekoclaw_host,
-    nekoclaw_on,
+    mount_nekopower_host,
+    nekopower_on,
     peek_host,
     ready_host,
     restore_hud,
     send_report,
-    shutdown_nekoclaw_host,
+    shutdown_nekopower_host,
     stop_everything,
 )
 

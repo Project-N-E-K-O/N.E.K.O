@@ -10,7 +10,7 @@ description: 主动搭话（/api/proactive_chat）及周边——门控链、防
 - 模块归属、依赖方向、对外协议、行为不变量：`docs/design/proactive-chat-domain-refactor-design.md`。
 - `reason_code` / `stage` 的用法：`docs/design/proactive-reason-code-guide.zh-CN.md`。常量现在的定义处是 `main_logic/proactive_chat/contracts.py`，`main_routers/system_router/proactive_parsing.py` 只是兼容 re-export。
 - 活动追踪器：`docs/design/user-activity-tracker.md`。凝神：`docs/design/focus-truename-mode.md`，旋钮和每个旋钮的理由在 `config/focus_settings.py` 的注释里。
-- 旁听检查（一轮结束后要不要替她办事）：`docs/design/nekoclaw-rewrite.md` 6.4 节。
+- 旁听检查（一轮结束后要不要替她办事）：`docs/design/nekopower-rewrite.md` 6.4 节。
 
 排查「这一轮为什么没说话」：先看 `/api/proactive_chat` 响应里的 `reason_code`，再看日志里的 `主动搭话本轮未发起`、`proactive ... blocked`、`proactive regen`。带原文的行只走 `print`，不进 `logger`。
 

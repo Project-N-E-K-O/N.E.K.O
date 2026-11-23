@@ -44,6 +44,8 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 
+from config import get_character_nickname
+
 # Nickname separators include ASCII/Chinese commas, enumeration commas, semicolons, and whitespace.
 _NICKNAME_SPLIT_RE = re.compile(r"[,，;；、\s]+")
 
@@ -93,11 +95,11 @@ def _assemble_stop_names(
     if target:
         names.append(str(target))
     if isinstance(master_basic, dict):
-        names.extend(split_nickname_aliases(master_basic.get('昵称', '')))
+        names.extend(split_nickname_aliases(get_character_nickname(master_basic)))
     if target and isinstance(catgirl_data, dict):
         char_cfg = catgirl_data.get(target)
         if isinstance(char_cfg, dict):
-            names.extend(split_nickname_aliases(char_cfg.get('昵称', '')))
+            names.extend(split_nickname_aliases(get_character_nickname(char_cfg)))
     seen: set[str] = set()
     unique: list[str] = []
     for n in names:

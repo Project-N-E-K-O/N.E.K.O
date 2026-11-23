@@ -118,7 +118,7 @@ The body may also carry `commission_id`, the task the stop is meant for; it is t
 
 | Setting | Meaning |
 |---|---|
-| `mode` | `own_profile` (default): the user's browser is started with a profile directory of its own under the data root (`nekoclaw/browser_profile`), so sites are logged into there once. `attach`: the browser the user is already using is driven; this needs Chrome 144 or later, the user switches remote debugging on at `chrome://inspect/#remote-debugging`, and the browser asks for approval at each connection |
+| `mode` | `own_profile` (default): the user's browser is started with a profile directory of its own under the data root (`nekopower/browser_profile`), so sites are logged into there once. `attach`: the browser the user is already using is driven; this needs Chrome 144 or later, the user switches remote debugging on at `chrome://inspect/#remote-debugging`, and the browser asks for approval at each connection |
 | `executable` | Path of a browser to use instead of the one found; `null` searches |
 | `headless` | Start the browser without a window; applies to `own_profile` only |
 
@@ -132,4 +132,4 @@ Body: any of `mode`, `executable`, and `headless`; a field that is left out keep
 |---|---|---|
 | `GET` | `/api/agent/user_plugin/dashboard` | Redirect to the local plugin dashboard; accepts validated `v` and loopback `yui_opener_origin` query values |
 
-The dashboard route is a browser helper, not a task API. There is no browser-facing route for submitting a task: the main dialogue model hands tasks over with its `dispatch_task` tool, which the main server forwards to the Agent Server's internal `/nekoclaw/dispatch` route. See [Agent Server API](/api/agent-server).
+The dashboard route is a browser helper, not a task API. There is no browser-facing route for submitting a task: the main dialogue model hands tasks over with its `dispatch_task` tool, which the main server forwards to the Agent Server's internal `/nekopower/dispatch` route. See [Agent Server API](/api/agent-server).

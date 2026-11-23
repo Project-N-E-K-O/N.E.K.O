@@ -104,7 +104,7 @@ def adapt_host_follow_request(slot: ModelSlot, request: dict[str, Any]) -> tuple
     The main app adapts every task agent call per provider/model; a slot that
     follows the same model must send the same request or plugin calls run with
     thinking on, ignore their output cap and miss the prompt cache. Mirrors
-    ``nekoclaw/dsh/forward.py:prepare_request`` (itself a mirror of
+    ``nekopower/dsh/forward.py:prepare_request`` (itself a mirror of
     ``utils.llm_client.ChatOpenAI``):
 
     - the output budget moves to the field the endpoint honours
