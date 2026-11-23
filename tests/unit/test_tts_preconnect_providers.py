@@ -209,7 +209,10 @@ class _Connects:
         self.sockets = []
         self.held_at_connect = []
 
+        self.connected_at = []
+
         async def connect(*_args, **kwargs):
+            self.connected_at.append(time.monotonic())
             self.held_at_connect.append(
                 [s.name for s in self.sockets if s.state is not State.CLOSED]
             )
@@ -546,7 +549,8 @@ def test_shutdown_closes_the_speech_socket(provider, monkeypatch):
 
 def test_every_qwen_socket_closes_within_the_short_timeout(monkeypatch):
     # Speech sockets are closed through the tracked close too, and the next
-    # connect waits for it: none may keep websockets' default 10s.
+    # connect waits for it: none may keep websockets' default 10s, nor wait
+    # out DashScope's ~2s answer to the close frame.
     monkeypatch.setattr(qwen_mod, "_resolve_qwen_realtime_tts_url", lambda: "wss://dashscope.test/realtime")
     monkeypatch.setattr(qwen_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
     warmup, first = _qwen_socket("warmup"), _qwen_socket("first")
@@ -561,7 +565,7 @@ def test_every_qwen_socket_closes_within_the_short_timeout(monkeypatch):
     )
 
     for socket in (warmup, first):
-        assert 0 < socket.connect_kwargs.get("close_timeout", 10.0) <= 2.0, socket.name
+        assert 0 < socket.connect_kwargs.get("close_timeout", 10.0) <= 0.5, socket.name
 
 
 def test_spare_socket_uses_a_short_close_timeout(provider, monkeypatch):
@@ -736,6 +740,203 @@ def test_qwen_socket_closing_after_session_expiry_holds_the_spare(monkeypatch):
 
     assert observations == {"connects_while_closing": 2}
     assert _PROVIDERS[0].spoken(spare) == [_OPENING]
+    connects.assert_one_connection_at_a_time()
+
+
+# ──────────── Qwen: DashScope's slow answer to a close frame ────────────
+
+# DashScope answers a close frame only after a fixed ~2.04s (measured idle,
+# finished and mid-audio). Waiting for it used to put ~2s between a speech
+# switch or an interrupt and the next speech's connect.
+_DASHSCOPE_CLOSE_ANSWER_SECONDS = 2.0
+# The next connect may still wait for the previous socket's close, bounded by
+# Qwen's close_timeout; well under the peer's answer.
+_CONNECT_WAIT_BOUND_SECONDS = 1.0
+
+
+class _LingeringPeerSock(_Sock):
+    """A Qwen socket whose peer answers the close frame only after a delay.
+
+    Like websockets, ``close`` stops waiting for that answer once the
+    socket's ``close_timeout`` passes and drops the connection.
+    """
+
+    def __init__(self, name):
+        super().__init__(
+            name,
+            _type_kind,
+            replies={
+                "session.update": [{"type": "session.updated"}],
+                "input_text_buffer.commit": [
+                    {"type": "response.audio.delta", "delta": _PCM_B64},
+                    {"type": "response.done"},
+                ],
+            },
+        )
+
+    async def close(self):
+        self.close_attempts += 1
+        if self.closed.is_set():
+            return
+        self.closing = True
+        bound = self.connect_kwargs.get("close_timeout", 10.0)
+        await asyncio.sleep(min(_DASHSCOPE_CLOSE_ANSWER_SECONDS, bound))
+        self.closed.set()
+
+
+def _qwen_worker(monkeypatch, sockets):
+    monkeypatch.setattr(qwen_mod, "_resolve_qwen_realtime_tts_url", lambda: "wss://dashscope.test/realtime")
+    monkeypatch.setattr(qwen_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    connects = _Connects(monkeypatch, sockets)
+
+    def run(requests, responses):
+        qwen_mod.qwen_realtime_tts_worker(requests, responses, "sk-test", "Momo")
+
+    return connects, run
+
+
+def _stamp(marks, key):
+    return lambda: marks.__setitem__(key, time.monotonic())
+
+
+def _assert_connect_not_held(connects, index, arrived_at):
+    waited = connects.connected_at[index] - arrived_at
+    assert waited < _CONNECT_WAIT_BOUND_SECONDS, (
+        f"{connects.names()[index]} connected {waited:.2f}s after its speech arrived"
+    )
+
+
+def test_qwen_speech_switch_is_not_held_by_the_slow_close_answer(monkeypatch):
+    # No preconnect: the next speech replaces a finished round's socket.
+    first, second = _LingeringPeerSock("first"), _LingeringPeerSock("second")
+    connects, run = _qwen_worker(monkeypatch, [_LingeringPeerSock("warmup"), first, second])
+    responses = queue.Queue()
+    marks = {}
+
+    run(
+        _Requests(
+            ("speech-1", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-1")),
+            _pause(0.5),  # the warmup's close is long over
+            _stamp(marks, "speech-2"),
+            ("speech-2", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-2")),
+        ),
+        responses,
+    )
+
+    assert connects.names() == ["warmup", "first", "second"]
+    _assert_connect_not_held(connects, 2, marks["speech-2"])
+    assert first.closed.is_set()
+    assert _PROVIDERS[0].spoken(second) == [_OPENING]
+    connects.assert_one_connection_at_a_time()
+
+
+def test_qwen_speech_right_after_an_interrupt_is_not_held_by_the_close(monkeypatch):
+    first, second = _LingeringPeerSock("first"), _LingeringPeerSock("second")
+    connects, run = _qwen_worker(monkeypatch, [_LingeringPeerSock("warmup"), first, second])
+    responses = queue.Queue()
+    marks = {}
+
+    run(
+        _Requests(
+            ("speech-1", _OPENING),
+            _wait(lambda: _PROVIDERS[0].spoken(first) == [_OPENING]),
+            ("__interrupt__", None),
+            _stamp(marks, "speech-2"),
+            ("speech-2", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-2")),
+        ),
+        responses,
+    )
+
+    assert connects.names() == ["warmup", "first", "second"]
+    _assert_connect_not_held(connects, 2, marks["speech-2"])
+    assert first.closed.is_set()
+    assert _PROVIDERS[0].spoken(second) == [_OPENING]
+    connects.assert_one_connection_at_a_time()
+
+
+def test_qwen_first_speech_is_not_held_by_the_warmup_close(monkeypatch):
+    warmup, first = _LingeringPeerSock("warmup"), _LingeringPeerSock("first")
+    connects, run = _qwen_worker(monkeypatch, [warmup, first])
+    responses = queue.Queue()
+    marks = {}
+
+    run(
+        _Requests(
+            _stamp(marks, "speech-1"),
+            ("speech-1", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-1")),
+        ),
+        responses,
+    )
+
+    _assert_connect_not_held(connects, 1, marks["speech-1"])
+    assert warmup.closed.is_set()
+    connects.assert_one_connection_at_a_time()
+
+
+def test_qwen_switch_before_the_receiver_started_still_closes_first(monkeypatch):
+    # speech-2 is already queued when speech-1 connects, and speech-1's text
+    # is below the language-detection threshold, so the worker switches
+    # before speech-1's receive task ever ran: the worker itself, not the
+    # receive task, has to close speech-1's socket before the next connect.
+    first, second = _LingeringPeerSock("first"), _LingeringPeerSock("second")
+    connects, run = _qwen_worker(monkeypatch, [_LingeringPeerSock("warmup"), first, second])
+    responses = queue.Queue()
+
+    run(
+        _Requests(
+            ("speech-1", "Hi"),
+            ("speech-2", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-2")),
+        ),
+        responses,
+    )
+
+    assert connects.names() == ["warmup", "first", "second"]
+    assert first.closed.is_set()
+    assert _PROVIDERS[0].spoken(first) == []
+    assert _PROVIDERS[0].spoken(second) == [_OPENING]
+    connects.assert_one_connection_at_a_time()
+
+
+class _SessionUpdateWriteFailsSock(_LingeringPeerSock):
+    """Stays open after its session.update write fails (a transient write error)."""
+
+    async def send(self, payload):
+        if json.loads(payload).get("type") == "session.update":
+            self.send_attempts += 1
+            raise RuntimeError(f"{self.name}: write failed")
+        await super().send(payload)
+
+
+def test_qwen_reconnect_after_a_failed_first_write_closes_the_old_socket_first(monkeypatch):
+    # The write fails before the new socket's receive task ever ran, so the
+    # worker itself has to close that socket before reconnecting.
+    first = _SessionUpdateWriteFailsSock("first")
+    second = _LingeringPeerSock("second")
+    connects, run = _qwen_worker(monkeypatch, [_LingeringPeerSock("warmup"), first, second])
+    responses = queue.Queue()
+
+    run(
+        _Requests(
+            ("speech-1", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-1")),
+        ),
+        responses,
+    )
+
+    assert connects.names() == ["warmup", "first", "second"]
+    assert first.closed.is_set()
+    assert _PROVIDERS[0].spoken(second) == [_OPENING]
     connects.assert_one_connection_at_a_time()
 
 

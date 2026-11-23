@@ -40,7 +40,6 @@ from .._infra import (
 )
 from .._preconnect import (
     FINISHED_ROUND_QUIET_SECONDS,
-    SPARE_CLOSE_TIMEOUT_SECONDS,
     SpareSocket,
     ws_may_hold_connection,
 )
@@ -57,6 +56,12 @@ _QWEN_MAX_RECONNECT_ATTEMPTS = 3
 # REALTIME_MODEL, or another provider's model when this worker is a fallback (tts-1,
 # cosyvoice-v3-plus); none can be sent to DashScope's realtime TTS endpoint.
 _QWEN_TTS_MODEL_PATTERN = re.compile(r"^qwen[0-9.]*-tts", re.IGNORECASE)
+# close_timeout for every Qwen socket. DashScope answers a close frame only
+# after a fixed ~2.04s, whether the socket was idle, finished or mid-audio, so
+# waiting for that answer only delays the next connect, which waits for the
+# previous socket's close (one connection at a time). The close frame still
+# goes out; websockets drops the TCP connection once this passes.
+_QWEN_CLOSE_TIMEOUT_SECONDS = 0.3
 
 
 def _resolve_qwen_realtime_tts_url() -> str:
@@ -201,10 +206,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     pass
                 receive_task = None
             if ws:
-                try:
-                    await ws.close()
-                except Exception as close_exc:
-                    logger.debug("%s WebSocket 关闭失败: %s", reason, close_exc)
+                # Background close, tracked: the reconnect waits for it.
+                logger.debug("%s WebSocket 关闭", reason)
+                spare.close_tracked(ws)
             ws = None
             session_ready.clear()
             session_configured = False
@@ -313,7 +317,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             # Short close_timeout: the next connect waits for a retired
             # spare's close.
             return await websockets.connect(
-                tts_url, additional_headers=headers, close_timeout=SPARE_CLOSE_TIMEOUT_SECONDS,
+                tts_url, additional_headers=headers, close_timeout=_QWEN_CLOSE_TIMEOUT_SECONDS,
             )
 
         def build_config_message(lang_hint=None):
@@ -395,9 +399,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             )
 
             ws = await websockets.connect(
-                tts_url, additional_headers=headers, close_timeout=SPARE_CLOSE_TIMEOUT_SECONDS,
+                tts_url, additional_headers=headers, close_timeout=_QWEN_CLOSE_TIMEOUT_SECONDS,
             )
-            
+
             # Await and handle initial messages
             async def wait_for_session_ready():
                 """Wait for session-creation confirmation"""
@@ -483,10 +487,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         qwen_audio_jitter.flush()
                     # Receive loop exited on timeout/disconnection; clear connection state for on-demand main-loop reconnection
                     if ws:
-                        try:
-                            await ws.close()
-                        except Exception:
-                            pass
+                        # Closed in the background, tracked so the next
+                        # connect still waits for it: the first speech or an
+                        # interrupt awaiting this task is not held up.
+                        spare.close_tracked(ws)
                         ws = None
                     session_ready.clear()
 
@@ -544,10 +548,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 logger.debug(f"Qwen TTS interrupted receive task cleanup failed: {e}")
                             receive_task = None
                         if ws:
-                            try:
-                                await ws.close()
-                            except Exception as e:
-                                logger.debug(f"Qwen TTS interrupted websocket close failed: {e}")
+                            # Off the interrupt path; the next connect waits
+                            # for this close (spare.await_cleanup).
+                            spare.close_tracked(ws)
                             ws = None
                     finally:
                         session_ready.clear()
@@ -634,14 +637,14 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             pass
                         receive_task = None
                     if ws:
-                        try:
-                            await ws.close()
-                        except Exception:
-                            pass
+                        # Closed in the background; the connect below waits
+                        # for it (spare.await_cleanup), and that wait yields
+                        # to a queued interrupt or shutdown.
+                        spare.close_tracked(ws)
                         ws = None
                     session_ready.clear()
-                    # Reset streaming state only after the old receive task fully stops: await ws.close() yields,
-                    # letting old receive_task write late audio.delta; early reset would contaminate the next turn.
+                    # Reset streaming state only after the old receive task fully stops; a task that
+                    # is still running could write late audio.delta and contaminate the next turn.
                     if is_new_speech:
                         resampler.clear()
                         qwen_audio_jitter.reset()
@@ -667,7 +670,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             ws = await websockets.connect(
                                 tts_url,
                                 additional_headers=headers,
-                                close_timeout=SPARE_CLOSE_TIMEOUT_SECONDS,
+                                close_timeout=_QWEN_CLOSE_TIMEOUT_SECONDS,
                             )
                         logger.info(
                             "[voice-chain] stage=tts_socket speech_id=%s host=%s preconnected=%s wait_ms=%d",
