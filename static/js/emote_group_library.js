@@ -278,7 +278,9 @@
         }
 
         async function aborted(done) {
-            const blob = await packStored();
+            const blob = canStore
+                ? await packStored()
+                : files.length ? await zip(files) : undefined;
             return {
                 aborted: true, files, failed, stored, blob,
                 savedToFolder: stored.length > 0 && typeof zipStored === 'function',

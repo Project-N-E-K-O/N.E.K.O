@@ -791,6 +791,50 @@ def test_nested_exports_keep_controls_locked_until_both_finish(editor, release_f
     assert result == {'locked':True, 'unchanged':True, 'unlocked':True}
 
 
+@pytest.mark.parametrize("stop_at", [1, 3])
+def test_stopped_download_batch_keeps_completed_pngs_in_the_downloaded_zip(editor, stop_at):
+    from PIL import Image
+
+    _import(editor, spine_zip(animations=3))
+    editor.evaluate("""stopAt => {
+        const q = reviewEditor;
+        Object.assign(q.state, {exportFormat:'png', exportResolution:32});
+        window.reviewBatchCaptures = 0;
+        window.reviewCaptureHook = () => {
+            window.reviewBatchCaptures += 1;
+            if (window.reviewBatchCaptures === stopAt) {
+                document.querySelector('#export-group-open-btn').click();
+            }
+        };
+    }""", stop_at)
+    try:
+        with editor.expect_download(timeout=15000) as download:
+            editor.evaluate("""() => {
+                const q = reviewEditor;
+                const group = {id:'review-partial-zip', name:'partial-download', readOnly:true,
+                    items:q.getImportedScenes().slice(0,3).map(scene=>({kind:'scene', ref:scene.id}))};
+                if (group.items.length !== 3) throw Error('expected-three-scenes');
+                window.reviewBatch = q.exportGroup(group, document.querySelector('#export-group-open-btn'),
+                    Promise.resolve(null));
+                reviewBatch.finally(() => { window.reviewBatchDone = true; });
+            }""")
+        editor.wait_for_function('window.reviewBatchDone === true')
+        result = download.value
+        assert result.suggested_filename == 'partial-download.zip'
+        with zipfile.ZipFile(result.path()) as archive:
+            assert len(archive.namelist()) == stop_at
+            for ordinal, name in enumerate(archive.namelist(), 1):
+                assert name.startswith(f'{ordinal:02d}_') and name.endswith('.png'), name
+                with Image.open(io.BytesIO(archive.read(name))) as image:
+                    assert max(image.size) == 32
+                    assert image.convert('RGBA').getbbox(), name
+        assert editor.evaluate('window.reviewBatchCaptures') == stop_at
+        assert editor.locator('#export-group-open-btn').is_enabled()
+        assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
+    finally:
+        editor.evaluate('delete window.reviewCaptureHook')
+
+
 def test_batch_stop_becomes_available_when_folder_preparation_overlaps_a_capture(editor):
     _import(editor, spine_zip())
     editor.evaluate("document.querySelector('#inspector-tab-export').click()")

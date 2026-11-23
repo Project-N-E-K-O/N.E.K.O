@@ -231,6 +231,7 @@ test('全部失败时不产 zip（免得下载一个空包）', async () => {
 test('中断时停下并回报已经做到第几张', async () => {
     let abort = false;
     const touched = [];
+    let zipped = [];
     const result = await groups.runGroupExport({
         plan: plan(Array.from({ length: 6 }, (u, i) => ({ kind: 'scene', name: `s${i}`, ext: 'png' }))),
         produce: async (item) => {
@@ -238,12 +239,14 @@ test('中断时停下并回报已经做到第几张', async () => {
             if (touched.length === 2) abort = true;
             return new Uint8Array([1]);
         },
-        zip: async () => 'should-not-run',
+        zip: async (files) => { zipped = files; return 'partial-zip'; },
         shouldAbort: () => abort,
     });
     assert.equal(result.aborted, true);
     assert.equal(touched.length, 2, '点了停止还继续烘下去是最糟的体验');
-    assert.equal(result.blob, undefined);
+    assert.equal(result.blob, 'partial-zip');
+    assert.deepEqual(zipped.map(file => file.path), touched);
+    assert.deepEqual(zipped.map(file => [...file.data]), [[1], [1]]);
     assert.equal(result.done, 2);
     assert.equal(result.total, 6);
 });
@@ -259,18 +262,36 @@ test('进度回调每项一次，带文件名（界面要说在导哪张）', as
     assert.deepEqual(marks, ['1/2:01_a.gif', '2/2:02_b.gif']);
 });
 
-test('stop during the final item prevents memory ZIP packaging', async () => {
+test('stop during the final item still packages completed downloads', async () => {
     let abort = false;
     let zipped = false;
     const result = await groups.runGroupExport({
         plan: plan([{kind:'scene',name:'last',ext:'png'}]),
         produce: async () => { abort = true; return new Uint8Array([1]); },
-        zip: async () => { zipped = true; return 'unexpected'; },
+        zip: async () => { zipped = true; return 'completed-zip'; },
         shouldAbort: () => abort,
     });
     assert.equal(result.aborted, true);
     assert.equal(result.done, 1);
-    assert.equal(zipped, false);
+    assert.equal(zipped, true);
+    assert.equal(result.blob, 'completed-zip');
+});
+
+test('stopping without successful files never creates an empty ZIP', async () => {
+    for (const stopBeforeStart of [true, false]) {
+        let abort = stopBeforeStart;
+        let calls = 0;
+        const result = await groups.runGroupExport({
+            plan: plan([{kind:'scene',name:'bad',ext:'png'}]),
+            produce: async () => { abort = true; throw new Error('render failed'); },
+            zip: async () => { calls += 1; return 'unexpected'; },
+            shouldAbort: () => abort,
+        });
+        assert.equal(result.aborted, true);
+        assert.equal(result.done, stopBeforeStart ? 0 : 1);
+        assert.equal(result.blob, undefined);
+        assert.equal(calls, 0);
+    }
 });
 
 test('缺少注入就立刻报错，不要跑到一半才崩', async () => {
