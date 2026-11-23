@@ -57,6 +57,40 @@ def load() -> tuple[dict[str, Standing], list[dict[str, Any]]]:
     return worlds, data["cases"]
 
 
+def follows_up(dispatch_text: str, standing: Standing) -> str | None:
+    """Return the key of the task agent whose late commission a sentence adds to, or None.
+
+    What the first round does before the orchestrator is asked
+    (``decision.read_follow_up``), told of a scenario's task agents: a
+    sentence with a cue of an addition goes on with the commission that
+    ended lately and shares most with it. Such a sentence never reaches
+    the orchestrator, so the scenarios are held against both.
+    """
+    from config.nekopower_settings import FOLLOW_UP_MIN_OVERLAP, FOLLOW_UP_RECENT_SECONDS
+    from nekopower.host.decision import has_cue, strip_cues
+    from nekopower.host.selection import token_set
+
+    if not has_cue("supplement", dispatch_text):
+        return None
+    said = strip_cues("vague", strip_cues("supplement", dispatch_text))
+    content = token_set(strip_cues("generic", said))
+    if not content:
+        return None
+    best: tuple[float, float, str] | None = None
+    for agent in standing.agents:
+        for item in agent.done:
+            if item.age_seconds > FOLLOW_UP_RECENT_SECONDS:
+                continue
+            known = token_set(f"{item.title} {item.result}")
+            share = len(content & known) / len(content)
+            if share < FOLLOW_UP_MIN_OVERLAP:
+                continue
+            rank = (share, -item.age_seconds, orchestrator.AGENT_KEY + agent.id)
+            if best is None or rank[:2] > best[:2]:
+                best = rank
+    return best[2] if best is not None else None
+
+
 def expected(case: dict[str, Any], family_min: int = 3) -> dict[str, Any]:
     """Return where a case goes when ``family_min`` occurrences make a family (3 as shipped, or 2)."""
     if family_min <= 2 and "expect_family_at_2" in case:

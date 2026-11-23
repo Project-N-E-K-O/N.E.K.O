@@ -23,7 +23,7 @@ def _local(case: dict[str, Any], bars: Bars) -> tuple[str, orch.Verdict | None]:
     verdict = orch.by_rules(case["dispatch"], case["user"], standing, bars)
     if verdict is not None:
         return "rules", verdict
-    key = orch.follows_up(case["dispatch"], standing, bars)
+    key = cases_of.follows_up(case["dispatch"], standing)
     if key is not None:
         return "rules", orch.settle(key, orch.FOLLOW_UP, standing, bars)
     verdict, _matches = orch.by_retrieval(case["dispatch"], case["user"], standing, bars)

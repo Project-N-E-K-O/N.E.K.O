@@ -1530,30 +1530,6 @@ def build_orchestrator_request(*, task: str, user_said: str, candidates: list[st
     return "\n".join(lines)
 
 
-# The same question, asked along with the fine selection when that one is
-# made anyway (there are plugins to choose from): added to the end of its
-# system text, with the candidates added to its user message.
-ORCHESTRATOR_SELECT_ADDENDUM = (
-    "\n\nALSO, when the user message gives CANDIDATES: say whether TASK belongs with one of them. Each is a "
-    "project (ongoing work under a name) or an agent that worked on its own, with what it did. TASK belongs "
-    "with a candidate when doing it well needs what that candidate made or learned: it changes, fixes, "
-    "extends or asks about what the candidate made (\"follow_up\"), or it is the next round of the same "
-    "recurring job, done the same way and kept in the same place, such as the report for the next week or "
-    "the changelog for the next version (\"recurrence\"). A separate errand that only looks alike (the same "
-    "kind of task about another thing, or a shared topic, tool or few words) does not belong; another "
-    "language than the candidate's notes does not matter. When unsure, answer 0. Add two keys to the JSON object: "
-    '"goes_to": <number of the candidate, or 0 for none>, "relation": "follow_up" | "recurrence" | "new". '
-    "This does not change how route is chosen."
-)
-
-
-def add_orchestrator_candidates(request: str, candidates: list[str]) -> str:
-    """Return the user message of the fine selection with the numbered candidates added."""
-    if not candidates:
-        return request
-    return "\n".join([request, "CANDIDATES:", *(f"{number}. {line}" for number, line in enumerate(candidates, 1))])
-
-
 # ---------------------------------------------------------------------------
 # Leaders and members of projects (``nekopower/host/families.py``)
 # ---------------------------------------------------------------------------

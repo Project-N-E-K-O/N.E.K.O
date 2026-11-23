@@ -1289,7 +1289,7 @@ async def test_a_project_s_directory_is_looked_at_with_git_itself_when_nothing_e
     repository, plain = tmp_path / "repository", tmp_path / "plain"
     (repository / "inside").mkdir(parents=True)
     plain.mkdir()
-    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    await asyncio.to_thread(subprocess.run, ["git", "init", "-q", str(repository)], check=True)
 
     assert await host.task_agents.families.in_git(str(repository / "inside"))
     assert not await host.task_agents.families.in_git(str(plain))

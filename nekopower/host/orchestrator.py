@@ -168,10 +168,6 @@ class Bars:
     name_min_chars: int = settings.SPACE_PROJECT_MATCH_MIN_CHARS
     # A task agent whose last commission ended longer ago takes no more work.
     retire_seconds: float = settings.SESSION_SINGLE_LIFETIME_DAYS * 24 * 3600.0
-    # A sentence that adds something goes on with a commission that ended
-    # within this time when it shares this much with it (the first round).
-    follow_up_seconds: float = settings.FOLLOW_UP_RECENT_SECONDS
-    follow_up_overlap: float = settings.FOLLOW_UP_MIN_OVERLAP
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,36 +295,6 @@ def named(sentence: str, standing: Standing, bars: Bars) -> str | None:
     if best is None or tied:
         return None
     return best[2]
-
-
-def follows_up(dispatch_text: str, standing: Standing, bars: Bars) -> str | None:
-    """Return the key of the task agent whose late commission a sentence adds to, or None.
-
-    What the first round reads already (``decision.read_follow_up``), told
-    of the task agents here: a sentence with a cue of an addition goes on
-    with the commission that ended lately and shares most with it.
-    """
-    from nekopower.host.decision import has_cue, strip_cues
-
-    if not has_cue("supplement", dispatch_text):
-        return None
-    said = strip_cues("vague", strip_cues("supplement", dispatch_text))
-    content = token_set(strip_cues("generic", said))
-    if not content:
-        return None
-    best: tuple[float, float, str] | None = None
-    for agent in standing.agents:
-        for item in agent.done:
-            if item.age_seconds > bars.follow_up_seconds:
-                continue
-            known = token_set(f"{item.title} {item.result}")
-            share = len(content & known) / len(content)
-            if share < bars.follow_up_overlap:
-                continue
-            rank = (share, -item.age_seconds, AGENT_KEY + agent.id)
-            if best is None or rank[:2] > best[:2]:
-                best = rank
-    return best[2] if best is not None else None
 
 
 def relation_by_words(sentence: str, *, names_agent: bool = False) -> str:
