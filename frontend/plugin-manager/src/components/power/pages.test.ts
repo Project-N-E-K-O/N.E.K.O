@@ -235,6 +235,11 @@ describe('what was said in a familiar', () => {
     expect(byTest('transcript-unreadable')).toBeNull()
     expect(byTest('transcript-error')?.textContent).toContain(words.errors.record_unreadable)
     expect(byTest('transcript-latest')).toBeTruthy()
+    // A third one, still being read: that the second could not be read is not said of it.
+    api.getTranscript.mockReturnValueOnce(new Promise(() => {}))
+    state.props = { sessionId: 's3' }
+    await flush()
+    expect(byTest('transcript-error')).toBeNull()
   })
 
   it('does not put an entry that was read whole into the conversation of another familiar opened meanwhile', async () => {
@@ -329,6 +334,19 @@ describe('what a familiar used', () => {
     await flush()
     expect(byTest('usage-tiles')).toBeNull()
     expect(byTest('usage-error')?.textContent).toContain(words.errors.no_familiar)
+    // A third one, still being read: that the second could not be read is not said of it.
+    api.getSessionUsage.mockReturnValueOnce(new Promise(() => {}))
+    state.props = { sessionId: 's3', refresh: 'b' }
+    await flush()
+    expect(byTest('usage-error')).toBeNull()
+    // The same one read again after a failure: why stays said until it is read.
+    cleanup?.()
+    api.getSessionUsage.mockRejectedValueOnce(refused('no_familiar', 404))
+    const next = await mount(UsagePane, { sessionId: 's4', refresh: 'a' })
+    api.getSessionUsage.mockReturnValueOnce(new Promise(() => {}))
+    next.state.props = { sessionId: 's4', refresh: 'b' }
+    await flush()
+    expect(byTest('usage-error')).toBeTruthy()
   })
 
   it('says so when no limit is set, and shows nothing in hand for one that never had a task', async () => {

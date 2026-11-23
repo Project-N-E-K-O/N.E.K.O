@@ -130,6 +130,7 @@ watch(() => props.sessionId, () => {
   loaded.value = false
   opening.value = null
   unreadable.value = ''
+  error.value = ''
   void latest()
 }, { immediate: true })
 </script>
