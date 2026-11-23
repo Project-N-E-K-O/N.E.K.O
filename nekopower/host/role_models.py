@@ -268,6 +268,12 @@ def _protocol_provider(protocol: Any) -> str:
     return "anthropic" if protocol == "anthropic_messages" else "openai_compatible"
 
 
+def _note_a_write_that_failed(writing: "asyncio.Future[None]") -> None:
+    """Log a write of the settings that failed, the caller having given up on it or not."""
+    if not writing.cancelled() and writing.exception() is not None:
+        logger.warning("writing a preset model setting failed: %s", type(writing.exception()).__name__)
+
+
 class RoleModelStore:
     """The setting of every preset, kept in a file next to the ledger: a slot's id or ``inherit`` by preset."""
 
@@ -297,6 +303,9 @@ class RoleModelStore:
             return {}
         roles = raw.get("roles") if isinstance(raw, dict) else None
         if not isinstance(roles, dict):
+            if strict:
+                # Not settings as this build writes them: not written over either.
+                raise OSError("the preset model settings are not as they are written; nothing is written")
             return {}
         return {
             str(name): value
@@ -327,7 +336,10 @@ class RoleModelStore:
         caller cancelled or not: the write in its thread cannot be stopped,
         and the next one must not begin before it is over.
         """
-        await asyncio.shield(asyncio.ensure_future(self._put(preset, value)))
+        writing = asyncio.ensure_future(self._put(preset, value))
+        # Told of where whoever asked gave up before it was over.
+        writing.add_done_callback(_note_a_write_that_failed)
+        await asyncio.shield(writing)
 
     async def _put(self, preset: str, value: str | None) -> None:
         async with self._lock:

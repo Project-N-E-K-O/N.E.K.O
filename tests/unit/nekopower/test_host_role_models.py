@@ -2077,3 +2077,33 @@ async def test_a_commission_whose_record_cannot_be_read_after_it_is_settled_is_q
     monkeypatch.setattr(host.ledger, "get", get)
     release_first.set()
     await wait_status(host, first, "done")
+
+
+async def test_settings_of_another_shape_are_not_written_over(tmp_path):
+    path = tmp_path / "role_models.json"
+    store = role_models.RoleModelStore(path)
+    path.write_text(json.dumps({"version": 1, "roles": ["boss"]}), encoding="utf-8")
+
+    with pytest.raises(OSError):
+        await store.put("scout", "inherit")
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"version": 1, "roles": ["boss"]}
+
+
+async def test_a_write_of_the_settings_that_fails_after_whoever_asked_gave_up_is_logged(tmp_path, caplog):
+    import asyncio
+
+    caplog.set_level(logging.WARNING, logger="nekopower.host.role_models")
+    path = tmp_path / "role_models.json"
+    path.write_text("{half written", encoding="utf-8")
+    store = role_models.RoleModelStore(path)
+    asking = asyncio.ensure_future(store.put("scout", "inherit"))
+    await asyncio.sleep(0)
+    asking.cancel()
+    await asyncio.gather(asking, return_exceptions=True)
+    for _ in range(50):
+        if "writing a preset model setting failed" in caplog.text:
+            break
+        await asyncio.sleep(0.02)
+
+    assert "writing a preset model setting failed: OSError" in caplog.text
