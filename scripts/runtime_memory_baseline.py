@@ -759,11 +759,11 @@ async def _ocr_scenario(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _browser_tools_session(*, headless: bool) -> Any:
-    """Return a session of the NekoClaw browser tools on a throwaway profile directory."""
+    """Return a session of the NekoPower browser tools on a throwaway profile directory."""
     import tempfile
 
-    from nekoclaw.builtin.browser.session import BrowserSession
-    from nekoclaw.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
+    from nekopower.builtin.browser.session import BrowserSession
+    from nekopower.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
 
     store = BrowserSettingsStore(Path(tempfile.mkdtemp(prefix="neko-browser-memory-")))
     store.save(BrowserSettings(headless=headless))

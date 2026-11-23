@@ -4191,6 +4191,8 @@
             "autoMemoryRecallTooltip": "When on, related past moments are recalled automatically before each reply in text chat (including transcribed voice); when off, memories are looked up only when needed.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
+            "captureSelfUiMask": "Hide Chat in Screenshots",
+            "captureSelfUiMaskTooltip": "When she looks at your screen, N.E.K.O's own chat history and option areas are blanked out before the image is sent to the model, as long as their position on screen can be determined. If it can't (for example, the browser isn't in front during a whole-screen share), the image is sent unmasked. The input box stays visible.",
             "catSettings": "Cat Settings",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",

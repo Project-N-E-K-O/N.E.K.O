@@ -2774,7 +2774,7 @@ export const I18N = {
           name: '名称',
           base_url: 'base_url',
           conversation_model: '对话模型',
-          summary_model: '摘要模型',
+          memory_model: '摘要模型',
           api_key: 'Key 状态',
         },
         free_tag: '免费',

@@ -590,6 +590,9 @@ class ServerLifecycleService:
         from plugin.core.capability_policy import startup_notices
         for notice in startup_notices():
             logger.warning("{}", notice)
+        # Keeps running plugins' ctx.permissions in step with the store.
+        from plugin.server.application.plugins.permission_push import permission_push_service
+        permission_push_service.start()
 
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
@@ -1004,6 +1007,11 @@ class ServerLifecycleService:
             await hosts_stopped.wait()
             await plugin_router.stop()
 
+        async def _stop_permission_push():
+            from plugin.server.application.plugins.permission_push import permission_push_service
+
+            await permission_push_service.stop()
+
         async def _stop_hosts():
             try:
                 return await self._shutdown_hosts()
@@ -1016,6 +1024,7 @@ class ServerLifecycleService:
             "hosts": asyncio.create_task(_stop_hosts()),
             "bus_subscriptions": asyncio.create_task(_stop_bus()),
             "router": asyncio.create_task(_stop_router()),
+            "permission_push": asyncio.create_task(_stop_permission_push()),
         }
 
         results = await asyncio.gather(*parallel_tasks.values(), return_exceptions=True)

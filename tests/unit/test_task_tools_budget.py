@@ -1,9 +1,9 @@
-"""What a session pays on every request for having NekoClaw switched on.
+"""What a session pays on every request for having NekoPower switched on.
 
 The opening sentence and the definitions of the two task tools ride on every
 request of the main dialogue model. These tests hold their size: the Chinese
 total to the limit the design set, the other languages to what they measure
-today, and the opening sentence of a session without NekoClaw to its own.
+today, and the opening sentence of a session without NekoPower to its own.
 A longer text has to raise a number here on purpose.
 """
 
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.unit
 
 LANGUAGES = ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"]
 
-# Opening sentence of a session with NekoClaw on, plus both tool definitions
+# Opening sentence of a session with NekoPower on, plus both tool definitions
 # as they go out (compact JSON). For Chinese: the design's 221, raised to
 # 236 when the dispatch description gained a clause ("looking something up or
 # checking a state counts; what you already know, answer yourself"; 17 tokens
@@ -41,7 +41,7 @@ LANGUAGES = ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"]
 # approved on 2026-11-14 after it was measured. The others are today's
 # measure with two tokens to spare.
 ON_LIMIT = {"zh": 236, "zh-TW": 259, "en": 236, "ja": 317, "ko": 273, "ru": 257, "es": 250, "pt": 250}
-# Opening sentence of a session without NekoClaw: it carries the one sentence
+# Opening sentence of a session without NekoPower: it carries the one sentence
 # about speaking before a tool call and nothing else of this.
 OFF_LIMIT = {"zh": 34, "zh-TW": 36, "en": 30, "ja": 52, "ko": 43, "ru": 40, "es": 36, "pt": 34}
 
@@ -75,7 +75,7 @@ def test_the_chinese_limit_is_the_one_the_design_set():
 
 
 @pytest.mark.parametrize("lang", LANGUAGES)
-def test_opening_sentence_without_nekoclaw_stays_within_its_limit(lang):
+def test_opening_sentence_without_nekopower_stays_within_its_limit(lang):
     assert count_tokens(SESSION_INIT_PROMPT[lang]) <= OFF_LIMIT[lang]
 
 

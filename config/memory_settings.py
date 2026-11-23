@@ -215,7 +215,7 @@ checks, but degrades such a decision instead of applying it (remove is
 dropped, replace / renew become add), so an older view never undoes a
 newer change."""
 
-PINNED_FACT_RESOLVE_MODEL_TIER = "summary"
+PINNED_FACT_RESOLVE_MODEL_TIER = "memory"
 """Model tier of the add / replace / renew / remove decision, the same tier and
 thinking mode as persona correction resolution. The same call may also retire
 entries that are over (fulfilled, no longer valid, or past their date)."""
@@ -225,7 +225,7 @@ PINNED_FACT_REVIEW_INTERVAL_HOURS = 24
 character, and only when the section is not empty and no model has looked at
 the whole section (an admission resolve or an earlier check) within it."""
 
-PINNED_FACT_REVIEW_MODEL_TIER = "summary"
+PINNED_FACT_REVIEW_MODEL_TIER = "memory"
 """Model tier of the idle-time check, called without thinking: it only answers
 retire or keep per entry, quoting the conversation as evidence."""
 
@@ -1323,11 +1323,11 @@ REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_COUNT = 10   # Reference the latest N abso
 REFLECTION_SYNTHESIS_CONTEXT_ABSORBED_DAYS = 14    # Within N days as well.
 
 # Gate 3: LLM tier selection (candidates in RFC §6.5 Gate 3 table).
-# "summary" = large model (memory upkeep); "emotion" = small, latency-sensitive model.
-EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "summary"       # Stage-1 fact extraction.
-EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "summary"      # Stage-2 signal mapping decisions.
-EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "emotion"     # Secondary keyword classification (latency-sensitive).
-EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "summary"     # Promote merge decisions (thinking on).
+# "memory" = large model (memory upkeep); "recognition" = small, latency-sensitive model.
+EVIDENCE_EXTRACT_FACTS_MODEL_TIER = "memory"       # Stage-1 fact extraction.
+EVIDENCE_DETECT_SIGNALS_MODEL_TIER = "memory"      # Stage-2 signal mapping decisions.
+EVIDENCE_NEGATIVE_TARGET_MODEL_TIER = "recognition"     # Secondary keyword classification (latency-sensitive).
+EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "memory"     # Promote merge decisions (thinking on).
 
 
 # memory-enhancements P2: vector hybrid retrieval (memory/embeddings.py).

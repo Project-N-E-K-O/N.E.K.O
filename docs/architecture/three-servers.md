@@ -64,7 +64,7 @@ See [Memory System](/architecture/memory-system) for the complete lifecycle and 
 
 ## Agent Server (`app/agent_server/`, ports 48915 and 48916)
 
-`app/agent_server/__main__.py` starts the package's Tool Server FastAPI app on `127.0.0.1:48915`. The implementation is split across `api_runtime.py`, `api_routes.py`, `capabilities.py`, `results.py`, `plugin_host.py`, `nekoclaw_mount.py`, and `nekoclaw_builtins.py`. The NekoPower host that keeps and carries out tasks lives in `nekoclaw/host/`.
+`app/agent_server/__main__.py` starts the package's Tool Server FastAPI app on `127.0.0.1:48915`. The implementation is split across `api_runtime.py`, `api_routes.py`, `capabilities.py`, `results.py`, `plugin_host.py`, `nekopower_mount.py`, and `nekopower_builtins.py`. The NekoPower host that keeps and carries out tasks lives in `nekopower/host/`.
 
 During Agent startup, the process initializes capability state, the Agent-side ZeroMQ bridge, and the agent-model connectivity check, and registers the NekoPower host. Registering builds nothing: the host's ledger, the agent runtime, and the capability gateway are created on first use. `plugin_host.py` starts the embedded user-plugin FastAPI listener on `127.0.0.1:48916` in an isolated thread. User-plugin execution remains gated by its feature flag and plugin lifecycle even though the listener is part of the same process.
 
@@ -87,10 +87,10 @@ The Agent connects its SUB/PULL/PUSH mirror sockets. The bridge uses background 
 
 ### Task execution path
 
-1. The main dialogue model calls its `dispatch_task` tool. `main_logic/core/tool_calling.py` posts the sentence to `/nekoclaw/dispatch` on `:48915` and returns the receipt to the model.
-2. The task brain (`nekoclaw/host/task_brain.py`) files a commission in its ledger. The first round is local and answered within about a second; the second round runs in the background.
+1. The main dialogue model calls its `dispatch_task` tool. `main_logic/core/tool_calling.py` posts the sentence to `/nekopower/dispatch` on `:48915` and returns the receipt to the model.
+2. The task brain (`nekopower/host/task_brain.py`) files a commission in its ledger. The first round is local and answered within about a second; the second round runs in the background.
 3. The decision model selects a plugin entry and calls it directly through the plugin service's `/runs` protocol. When no entry fits or the task needs several steps, the commission goes to a task agent (shown to the user as a familiar).
-4. A task agent runs in the agent runtime (`nekoclaw/runtime/`) and reaches plugin entries, MCP tools, keyboard-and-mouse, and the browser through the capability gateway.
+4. A task agent runs in the agent runtime (`nekopower/runtime/`) and reaches plugin entries, MCP tools, keyboard-and-mouse, and the browser through the capability gateway.
 5. Every status change is sent as `task_update`. Results, questions, and corrections are written to the outbox and sent over `:48962`; the Main bridge updates the browser and queues model-visible reports on the matching `LLMSessionManager`.
 6. When a turn the user started ends without a tool call that acts, `main_logic/cross_server.py` sends a `turn_check_request` over `:48963`; the Main bridge waits for an ACK and retries once on timeout.
 

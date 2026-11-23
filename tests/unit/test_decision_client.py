@@ -1068,7 +1068,7 @@ def test_config_manager_decision_slot_defaults_and_cross_provider(clean_user_dat
     # Gateway override must NOT pair another provider's fallback_model with the custom host
     assert gw_dec["fallback_model"] == ""
 
-    # Custom decision slot must keep fallback_model empty instead of borrowing assist's EMOTION_MODEL
+    # Custom decision slot must keep fallback_model empty instead of borrowing assist's RECOGNITION_MODEL
     _set_cfg({
         "coreApi": "qwen",
         "assistApi": "deepseek",
@@ -1382,7 +1382,7 @@ async def test_memory_recall_reranker_uses_emotion_tier_for_non_native_providers
                 "api_key": "free-access",
                 "decision_protocol": "chat_fallback",
             }
-        if tier == "emotion":
+        if tier == "recognition":
             return {
                 "model": "user-custom-emotion-model",
                 "base_url": "https://local-emotion.example/v1",

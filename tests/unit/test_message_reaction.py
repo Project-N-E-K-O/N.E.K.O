@@ -112,7 +112,7 @@ def analysis(emotion, monkeypatch):
 
     class Config:
         async def aget_model_api_config(self, tier):
-            assert tier == "emotion"
+            assert tier == "recognition"
             return {"api_key": "test", "model": "test", "base_url": "http://invalid"}
 
     class Client:

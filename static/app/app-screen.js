@@ -1126,6 +1126,18 @@
         return streamCaptureSourceIds.get(stream) || null;
     }
     mod.getStreamCaptureSourceId = getStreamCaptureSourceId;
+    // getDisplayMedia numbered by the mask module (#3474), so frames of an
+    // older stream are not masked at a newer request's source.
+    function requestDisplayMediaStream(constraints) {
+        var mask = window.appCaptureMask;
+        return mask && typeof mask.requestDisplayMedia === 'function'
+            ? mask.requestDisplayMedia(navigator.mediaDevices, constraints)
+            : navigator.mediaDevices.getDisplayMedia(constraints);
+    }
+    function recordStreamCaptureSource(stream, sourceId) {
+        if (stream && sourceId && streamCaptureSourceIds) streamCaptureSourceIds.set(stream, sourceId);
+        return stream;
+    }
 
     /**
      * 统一的流获取函数：优先缓存流 → Electron sourceId → getDisplayMedia → null
@@ -1267,7 +1279,7 @@
                                 }
                             }
                         });
-                        if (streamCaptureSourceIds) streamCaptureSourceIds.set(stream, captureSourceId);
+                        recordStreamCaptureSource(stream, captureSourceId);
                         // 超时后晚到的流需要立即释放，防止资源泄漏
                         if (timedOut) {
                             console.warn('[acquireStream] getUserMedia 在超时后返回，释放晚到的流');
@@ -1330,7 +1342,7 @@
                     readRememberedWindowTitle()
                 );
                 var pickerRememberedEnabled = isScreenSourceTitleMatchEnabled();
-                var displayStream = await navigator.mediaDevices.getDisplayMedia({
+                var displayStream = await requestDisplayMediaStream({
                     video: { cursor: 'always', frameRate: { max: 1 } },
                     audio: false,
                 });
@@ -1787,9 +1799,11 @@
                 // 下一拍在新连接上继续（原生路径则停止整段分享，见 startNativeScreenStreaming）。
                 var captureSocket = S.socket;
                 // 同一帧的源 ID 在抓帧时钉住；截图前后各取一次遮罩区域（#3474）。
-                // 流实际截的源优先：选中源失效、回退到第一个 screen: 源时选中状态已被清空。
-                var frameSourceId = getStreamCaptureSourceId(stream) || S.selectedScreenSourceId || null;
-                var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream' });
+                // Only the recorded source of this stream, never the selection cache;
+                // null lets the shell use its getDisplayMedia record (see
+                // streamCaptureSourceId in app-proactive.js).
+                var frameSourceId = getStreamCaptureSourceId(stream);
+                var maskSession = beginScreenFrameMaskSession(input_type, { sourceId: frameSourceId, via: 'stream', stream: stream });
                 var frame = captureCanvasFrame(video, 0.8);
                 if (frame && frame.dataUrl) {
                     var frameMessage = await buildMaskedStreamDataMessage(
@@ -2705,6 +2719,7 @@
                                     }
                                 }
                             }));
+                            recordStreamCaptureSource(captureStream, selectedSourceId);
                             if (discardSupersededManualCapture()) return;
                         } catch (captureErr) {
                             if (discardCancelledScreenSharingStart(attempt)) return;
@@ -2742,6 +2757,7 @@
                                                 }
                                             }
                                         }));
+                                        recordStreamCaptureSource(captureStream, fallbackSources[0].id);
                                         if (discardCancelledScreenSharingStart(attempt)) return;
                                         if (discardSupersededManualCapture()) return;
                                         S.selectedScreenSourceId = fallbackSources[0].id;
@@ -2766,7 +2782,7 @@
                                 if (!manualCaptureIdentityIsCurrent()) return;
                                 try {
                                     console.log('[屏幕源] chromeMediaSource 不可用，降级到 getDisplayMedia');
-                                    captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getDisplayMedia({
+                                    captureStream = rememberScreenSharingAttemptStream(attempt, await requestDisplayMediaStream({
                                         video: { cursor: 'always', frameRate: 1 },
                                         audio: false,
                                     }));
@@ -2823,7 +2839,7 @@
                         // 使用标准的getDisplayMedia（显示系统选择器）
                         var displayCaptureGeneration = screenSourceSelectionGeneration;
                         try {
-                            captureStream = rememberScreenSharingAttemptStream(attempt, await navigator.mediaDevices.getDisplayMedia({
+                            captureStream = rememberScreenSharingAttemptStream(attempt, await requestDisplayMediaStream({
                                 video: {
                                     cursor: 'always',
                                     frameRate: 1,

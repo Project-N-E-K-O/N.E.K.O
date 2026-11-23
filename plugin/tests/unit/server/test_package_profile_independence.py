@@ -19,6 +19,7 @@ from plugin.server.application.plugin_cli import service as cli
 from plugin.server.application.plugins.installation_transactions import replace, uninstall
 from plugin.server.infrastructure import autostart_approvals, config_paths, config_resolver
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.plugin_permissions import PluginSource
 from plugin.server.infrastructure import authoring_project_store
 
 pytestmark = pytest.mark.plugin_unit
@@ -501,3 +502,62 @@ async def test_local_upgrade_does_not_report_grants_of_an_unusable_store(
 
     assert result["install_source_warning"]
     assert "could not be cleared" not in result["install_source_warning"]
+
+
+@pytest.mark.asyncio
+async def test_local_upgrade_binds_from_the_lock_entry_while_the_registry_is_busy(
+    environment, monkeypatch,
+):
+    """The binding before a local upgrade reads the target directory's lock
+    entry, so a registry lookup that times out does not let the upgraded
+    package take over a source-less grant."""
+    from plugin.server.application.plugins import permission_service
+
+    env = environment
+    first_package = env.packages / "original.neko-plugin"
+    build_plugin(_source(env.root / "original"), first_package)
+    await env.service.install(package=str(first_package), install_source="imported")
+    previous = env.manager.entry_for_directory(env.user / PLUGIN_ID)
+    permission = "plugin_sdk.main_agent.memory:read"
+    permission_service.permission_store.decide(PLUGIN_ID, permission, "granted", source=None)
+    package = env.packages / "replacement.neko-plugin"
+    build_plugin(_source(env.root / "replacement", version="2.0.0"), package)
+    plan = await env.service.plan_install(package=str(package))
+
+    def busy(_plugin_id):
+        raise TimeoutError("registry read lock busy")
+
+    monkeypatch.setattr(config_paths, "_resolve_registered_plugin_config_path", busy)
+    assert permission_service.current_source(PLUGIN_ID) is None
+
+    result = await env.service.install(
+        package=str(package), install_source="imported", confirm_upgrade=True,
+        confirmation_token=plan["confirmation_token"],
+    )
+
+    assert not result.get("install_source_warning")
+    record = permission_service.permission_store.read(PLUGIN_ID)
+    assert record["source"] == {
+        "channel": "imported",
+        "fingerprint": previous.source_detail.package_sha256,
+    }
+    current = env.manager.entry_for_directory(env.user / PLUGIN_ID)
+    assert current.source_detail.package_sha256 != previous.source_detail.package_sha256
+    synced = permission_service.permission_store.sync_source(
+        PLUGIN_ID,
+        PluginSource("imported", current.source_detail.package_sha256),
+    )
+    assert permission not in synced.get("permissions", {})
+
+
+def test_lock_entry_lookup_does_not_trust_a_degraded_lock(environment, monkeypatch):
+    env = environment
+    target = env.user / PLUGIN_ID
+    entry = SimpleNamespace(plugin_id=PLUGIN_ID)
+    manager = SimpleNamespace(is_degraded=False, entry_for_directory=lambda _path: entry)
+
+    assert cli._lock_entry_for_plugin(manager, target, PLUGIN_ID) is entry
+    assert cli._lock_entry_for_plugin(manager, target, "another") is None
+    manager.is_degraded = True
+    assert cli._lock_entry_for_plugin(manager, target, PLUGIN_ID) is None
+    assert cli._lock_entry_for_plugin(None, target, PLUGIN_ID) is None

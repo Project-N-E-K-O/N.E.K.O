@@ -169,8 +169,8 @@ def test_provider_switch_key_reresolution(mock_page: Page, running_server: str):
     })""")
     assert game_defaults == {
         "gameMain": "follow_conversation",
-        "gameSummary": "follow_summary",
-        "agentSmall": "follow_emotion",
+        "gameSummary": "follow_memory",
+        "agentSmall": "follow_recognition",
     }
 
     game_fold_state = mock_page.evaluate("""() => {
@@ -350,10 +350,10 @@ def test_custom_api_summary_lights_navigate_to_model_config(mock_page: Page, run
     )""")
     assert target_ids == {
         "conversation": "conversation-model-content",
-        "summary": "summary-model-content",
+        "memory": "memory-model-content",
         "gameMain": "game-main-model-content",
         "gameSummary": "game-summary-model-content",
-        "emotion": "emotion-model-content",
+        "recognition": "recognition-model-content",
         "decision": "decision-model-content",
         "agent": "agent-model-content",
         "agentSmall": "agent-small-model-content",
@@ -501,24 +501,24 @@ def test_incomplete_small_familiar_custom_tests_the_recognition_connection(mock_
             el.value = value;
             el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
         };
-        set('emotionModelProvider', 'custom');
-        set('emotionModelUrl', 'https://emotion.test/v1');
-        set('emotionModelId', 'emotion-model');
-        set('emotionModelApiKey', 'sk-emotion-test');
+        set('recognitionModelProvider', 'custom');
+        set('recognitionModelUrl', 'https://emotion.test/v1');
+        set('recognitionModelId', 'emotion-model');
+        set('recognitionModelApiKey', 'sk-emotion-test');
         set('agentSmallModelProvider', 'custom');
         set('agentSmallModelUrl', 'https://emotion.test/v1');
         set('agentSmallModelId', '');
         set('agentSmallModelApiKey', '');
         const pick = r => ({ url: r.url, key: r.key, model: r.model, providerType: r.providerType });
-        const emotion = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }));
+        const recognition = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'recognition' }));
         const incomplete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'agentSmall' }));
         set('agentSmallModelId', 'own-model');
         const complete = pick(ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'agentSmall' }));
-        return { emotion, incomplete, complete };
+        return { recognition, incomplete, complete };
     }""")
 
-    assert state["incomplete"] == state["emotion"]
-    assert state["emotion"]["key"] == "sk-emotion-test"
+    assert state["incomplete"] == state["recognition"]
+    assert state["recognition"]["key"] == "sk-emotion-test"
     assert state["complete"]["model"] == "own-model"
     assert state["complete"]["url"] == "https://emotion.test/v1"
     assert state["complete"]["key"] == ""
@@ -526,7 +526,7 @@ def test_incomplete_small_familiar_custom_tests_the_recognition_connection(mock_
 
 @pytest.mark.frontend
 def test_follow_chain_keeps_the_source_cache_identity_under_mimo_token_plan(mock_page: Page, running_server: str):
-    """agentSmall=follow_emotion with emotion=follow_assist on MiMo Token Plan is one connection:
+    """agentSmall=follow_recognition with emotion=follow_assist on MiMo Token Plan is one connection:
     the follower must reuse the source cacheId, not re-derive it from its own dropdown value."""
     _goto_and_wait(mock_page, running_server)
     _wait_for_lights_settled(mock_page, timeout=15000)
@@ -548,15 +548,15 @@ def test_follow_chain_keeps_the_source_cache_identity_under_mimo_token_plan(mock
         toggle.checked = true;
         toggle.dispatchEvent(new Event('change', { bubbles: true }));
         set('mimoTokenPlanKeyInput', 'tp-mimo-test');
-        set('emotionModelProvider', 'follow_assist');
-        set('agentSmallModelProvider', 'follow_emotion');
+        set('recognitionModelProvider', 'follow_assist');
+        set('agentSmallModelProvider', 'follow_recognition');
         const resolve = mt => ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: mt });
-        return { emotion: resolve('emotion').cacheId, small: resolve('agentSmall').cacheId };
+        return { recognition: resolve('recognition').cacheId, small: resolve('agentSmall').cacheId };
     }""")
 
-    assert state["emotion"]
-    assert "mimo_token_plan" in state["emotion"]
-    assert state["small"] == state["emotion"]
+    assert state["recognition"]
+    assert "mimo_token_plan" in state["recognition"]
+    assert state["small"] == state["recognition"]
 
 
 @pytest.mark.frontend
@@ -576,24 +576,24 @@ def test_incomplete_small_familiar_custom_light_moves_with_the_recognition_slot(
             el.value = value;
             el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
         };
-        set('emotionModelProvider', 'custom');
-        set('emotionModelUrl', 'https://emotion-old.test/v1');
-        set('emotionModelId', 'emotion-model');
-        set('emotionModelApiKey', 'sk-emotion-test');
+        set('recognitionModelProvider', 'custom');
+        set('recognitionModelUrl', 'https://emotion-old.test/v1');
+        set('recognitionModelId', 'emotion-model');
+        set('recognitionModelApiKey', 'sk-emotion-test');
         set('agentSmallModelProvider', 'custom');
         set('agentSmallModelUrl', 'https://draft.test/v1');
         set('agentSmallModelId', '');
     }""")
     mock_page.wait_for_timeout(600)
     mock_page.evaluate("""() => {
-        const el = document.getElementById('emotionModelUrl');
+        const el = document.getElementById('recognitionModelUrl');
         el.value = 'https://emotion-new.test/v1';
         el.dispatchEvent(new Event('input', { bubbles: true }));
     }""")
     mock_page.wait_for_timeout(600)
 
     state = mock_page.evaluate("""() => {
-        const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }).cacheId;
+        const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'recognition' }).cacheId;
         const summary = document.querySelector('.connectivity-summary-light[data-model-type="agentSmall"]');
         return {
             hasSummary: !!summary,
@@ -610,13 +610,13 @@ def test_incomplete_small_familiar_custom_light_moves_with_the_recognition_slot(
 
     # Changing the recognition key moves it as well.
     mock_page.evaluate("""() => {
-        const el = document.getElementById('emotionModelApiKey');
+        const el = document.getElementById('recognitionModelApiKey');
         el.value = 'sk-emotion-new';
         el.dispatchEvent(new Event('input', { bubbles: true }));
     }""")
     mock_page.wait_for_timeout(600)
     assert mock_page.evaluate("""() => {
-        const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' }).cacheId;
+        const cacheId = ConnectivityManager.resolveEffectiveKey({ type: 'custom', modelType: 'recognition' }).cacheId;
         const summary = document.querySelector('.connectivity-summary-light[data-model-type="agentSmall"]');
         return (ConnectivityManager.keyLightsMap[cacheId] || []).includes(summary);
     }""")

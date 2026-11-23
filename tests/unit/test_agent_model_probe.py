@@ -313,7 +313,7 @@ def test_a_probe_that_cannot_be_rebuilt_leaves_the_one_there_is(setup, modules, 
 
 
 class Desktop:
-    """Stands in for ``nekoclaw.builtin.desktop.Desktop``; pyautogui is never imported."""
+    """Stands in for ``nekopower.builtin.desktop.Desktop``; pyautogui is never imported."""
 
     def __init__(self, ready: bool = True, reason: str = "") -> None:
         self.ready, self.reason = ready, reason
@@ -324,10 +324,10 @@ class Desktop:
 
 @pytest.fixture
 def desktop(monkeypatch: pytest.MonkeyPatch) -> Desktop:
-    from app.agent_server import nekoclaw_builtins
+    from app.agent_server import nekopower_builtins
 
     fake = Desktop()
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", fake)
+    monkeypatch.setattr(nekopower_builtins.provider, "_desktop", fake)
     return fake
 
 
@@ -341,7 +341,7 @@ def test_the_keyboard_and_mouse_are_available_when_the_model_answers_and_input_c
         "enabled": True,
         "ready": True,
         "reasons": [],
-        "provider": "nekoclaw",
+        "provider": "nekopower",
         "model": "test-model",
     }
 
@@ -443,7 +443,7 @@ async def test_availability_of_the_keyboard_and_mouse_with_everything_in_place(s
         "enabled": True,
         "ready": True,
         "reasons": [],
-        "provider": "nekoclaw",
+        "provider": "nekopower",
         "model": "test-model",
         # Nothing is known against the model: it is sent the screenshots the tool works from.
         "model_images": {"sees": True},
@@ -564,8 +564,8 @@ async def test_switching_the_keyboard_off_needs_no_check(setup, switch, desktop,
 
 
 async def test_availability_says_why_the_model_is_sent_no_pictures(setup, switch, monkeypatch, tmp_path):
-    from nekoclaw.host import mount
-    from nekoclaw.host.model_capabilities import ModelCapabilityStore
+    from nekopower.host import mount
+    from nekopower.host.model_capabilities import ModelCapabilityStore
 
     config = setup.probe.model_config()
     store = ModelCapabilityStore(tmp_path / "model_capabilities.json")

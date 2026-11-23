@@ -462,7 +462,7 @@ class NotifyMixin:
             )
 
     def _is_agent_enabled(self):
-        """Whether NekoClaw is on for this session: the master switch and at least one capability.
+        """Whether NekoPower is on for this session: the master switch and at least one capability.
 
         This decides the opening sentence, the two task tools and the list of
         tasks under way together, so a session never has one without the
@@ -495,7 +495,7 @@ class NotifyMixin:
 
             client = get_internal_http_client()
             resp = await client.get(
-                f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekoclaw/brief",
+                f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekopower/brief",
                 params={"lanlan_name": self.lanlan_name, "language": self.user_language or ""},
                 timeout=1.5,
             )

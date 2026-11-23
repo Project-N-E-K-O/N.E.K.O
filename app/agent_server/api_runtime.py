@@ -15,7 +15,7 @@
 
 """Lifecycle, session events, and task endpoints for the agent server.
 
-Tasks are commissions of the NekoClaw host (``nekoclaw/host``). This module
+Tasks are commissions of the NekoPower host (``nekopower/host``). This module
 connects the host to the rest of the process: the two requests the main
 dialogue's task tools make (dispatch, query), the list a new session is told,
 the check of a turn in which she called no task tool, and the task endpoints
@@ -59,13 +59,13 @@ from .api_shared import (  # noqa: F401
     hud,
     ledger_exists,
     logger,
-    mount_nekoclaw_host,
-    nekoclaw_on,
+    mount_nekopower_host,
+    nekopower_on,
     os,
     peek_host,
     ready_host,
     restore_hud,
-    shutdown_nekoclaw_host,
+    shutdown_nekopower_host,
     time,
     uuid,
 )
@@ -384,21 +384,21 @@ def _note_turn_for_task_agents(event: Dict[str, Any]) -> bool:
     """Keep one message of the main dialogue in memory for the excerpt a new task agent session is handed.
 
     A commission comes with one dispatched sentence and the user's last
-    words; what they refer to was said a few messages earlier. The NekoClaw
+    words; what they refer to was said a few messages earlier. The NekoPower
     host hands a commission that opens a new session the last few messages
     as background, and takes them from here: this process is told of every
     message anyway, so a dispatch asks the main server for nothing more.
 
-    Gated on NekoClaw being on, as the plugin stores are gated on user
+    Gated on NekoPower being on, as the plugin stores are gated on user
     plugins: with it off nothing is dispatched, and a resident copy of what
     was said would be retention that buys nothing. Memory only (a few
-    messages for each character, ``nekoclaw/host/conversation.py``); a
+    messages for each character, ``nekopower/host/conversation.py``); a
     synchronous append, like the hops above. Nothing said is logged.
     """
     try:
-        from nekoclaw.host.conversation import recent_conversation
+        from nekopower.host.conversation import recent_conversation
 
-        if not nekoclaw_on():
+        if not nekopower_on():
             # Nothing is kept while it is off, and what was kept before it
             # was switched off goes with the first message that comes by:
             # switched on again, a commission is handed nothing from then.
@@ -406,12 +406,12 @@ def _note_turn_for_task_agents(event: Dict[str, Any]) -> bool:
             return False
         return bool(recent_conversation().note_event(event))
     except Exception:
-        logger.debug("[NekoClaw] keeping a message for task agents failed")
+        logger.debug("[NekoPower] keeping a message for task agents failed")
         return False
 
 
 def forget_turns_for_task_agents() -> None:
-    """Drop what was kept of the main dialogue for task agents: called when NekoClaw is switched off.
+    """Drop what was kept of the main dialogue for task agents: called when NekoPower is switched off.
 
     Without this what was kept would stay until a message comes by
     while it is off (``_note_turn_for_task_agents``), and switched on
@@ -419,26 +419,26 @@ def forget_turns_for_task_agents() -> None:
     before it was switched off.
     """
     try:
-        from nekoclaw.host.conversation import recent_conversation
+        from nekopower.host.conversation import recent_conversation
 
         recent_conversation().forget()
     except Exception:
-        # Seen: with this failed, what was said before NekoClaw was
+        # Seen: with this failed, what was said before NekoPower was
         # switched off is handed to a task agent once it is on again.
-        logger.warning("[NekoClaw] dropping the messages kept for task agents failed", exc_info=True)
+        logger.warning("[NekoPower] dropping the messages kept for task agents failed", exc_info=True)
 
 
-def forget_turns_if_nekoclaw_is_off() -> None:
-    """Drop what was kept for task agents if NekoClaw is off now: called the moment a capability switch goes off.
+def forget_turns_if_nekopower_is_off() -> None:
+    """Drop what was kept for task agents if NekoPower is off now: called the moment a capability switch goes off.
 
-    NekoClaw is off with the master switch off, and as much so with
-    the last capability switch off (``nekoclaw_on``). A capability
+    NekoPower is off with the master switch off, and as much so with
+    the last capability switch off (``nekopower_on``). A capability
     switch goes off by the user's hand and by itself (a model that
     cannot be reached, a tool that is not there any more); every
     such place puts it off by ``_shared._put_switch_off``, which
     calls this before anything is waited for.
     """
-    if not nekoclaw_on():
+    if not nekopower_on():
         forget_turns_for_task_agents()
 
 
@@ -485,9 +485,9 @@ def _resolve_session_language(session_language: Optional[str]) -> str:
             from utils.language_utils import is_supported_language_code
             if is_supported_language_code(session_language):
                 return str(session_language)
-            logger.debug("[NekoClaw] ignoring unsupported session language: %r", session_language)
+            logger.debug("[NekoPower] ignoring unsupported session language: %r", session_language)
         except Exception:
-            logger.debug("[NekoClaw] session language check failed", exc_info=True)
+            logger.debug("[NekoPower] session language check failed", exc_info=True)
     from utils.result_parser import _get_lang
     return _get_lang(None)
 
@@ -513,7 +513,7 @@ async def _handle_turn_check_request(event: Dict[str, Any]) -> None:
         _turn_checks_seen[event_id] = None
         while len(_turn_checks_seen) > _TURN_CHECKS_REMEMBERED:
             _turn_checks_seen.popitem(last=False)
-    if not nekoclaw_on() or not lanlan_name:
+    if not nekopower_on() or not lanlan_name:
         return
     user_text = event.get("user_text")
     reply_text = event.get("reply_text")
@@ -661,10 +661,10 @@ async def startup():
     Modules._persistent_tasks.add(_llm_probe_task)
     _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
 
-    # NekoClaw host (task brain, task agents, capability gateway). This only tells
+    # NekoPower host (task brain, task agents, capability gateway). This only tells
     # it how to read this process's switches and what to call back; it is built
     # on the first dispatch. Must stay free of I/O: see the startup path rules.
-    mount_nekoclaw_host(_plugin_list_change_token)
+    mount_nekopower_host(_plugin_list_change_token)
 
     # Start ZeroMQ bridge for main_server events
     try:
@@ -707,7 +707,7 @@ async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     global _loop_stall_watchdog
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
-    from config.nekoclaw_settings import (
+    from config.nekopower_settings import (
         BROWSER_CLOSE_AT_SHUTDOWN_SECONDS,
         BROWSER_KILL_AT_SHUTDOWN_SECONDS,
         KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS,
@@ -766,7 +766,7 @@ async def shutdown():
     # The host first, while the plugin server it cancels runs on and the
     # bridge it reports through are still up. Bounded: see
     # HOST_SHUTDOWN_BUDGET_SECONDS. A no-op when nothing ever built the host.
-    await step(shutdown_nekoclaw_host, "Agent host cleanup")
+    await step(shutdown_nekopower_host, "Agent host cleanup")
     # Keys can only be held by calls the host has just stopped. Release them
     # now, local and quick, ahead of the steps that may spend the cancellation
     # budget; like ``aclose``, keys first and the browser afterwards.
@@ -913,7 +913,7 @@ async def health():
 
 
 def _disabled_receipt(lang: str) -> Dict[str, Any]:
-    from nekoclaw.host.task_brain import Receipt
+    from nekopower.host.task_brain import Receipt
 
     receipt = Receipt(kind="no_capability", reason="disabled")
     return {
@@ -926,8 +926,8 @@ def _disabled_receipt(lang: str) -> Dict[str, Any]:
     }
 
 
-@app.post("/nekoclaw/dispatch")
-async def nekoclaw_dispatch(payload: Dict[str, Any]):
+@app.post("/nekopower/dispatch")
+async def nekopower_dispatch(payload: Dict[str, Any]):
     """Hand one sentence of hers to the task brain and return the receipt of its first round."""
     text = (payload or {}).get("text")
     lanlan_name = (payload or {}).get("lanlan_name")
@@ -936,7 +936,7 @@ async def nekoclaw_dispatch(payload: Dict[str, Any]):
     if not isinstance(lanlan_name, str) or not lanlan_name:
         raise HTTPException(400, "lanlan_name required")
     lang = _resolve_session_language((payload or {}).get("language"))
-    if not nekoclaw_on():
+    if not nekopower_on():
         # Nothing is built for a switch that is off.
         return _disabled_receipt(lang)
     user_text = (payload or {}).get("user_text")
@@ -952,7 +952,7 @@ async def nekoclaw_dispatch(payload: Dict[str, Any]):
         source="dispatch",
     )
     logger.info(
-        "[NekoClaw] dispatch: lanlan=%s kind=%s reason=%s model_calls=%d",
+        "[NekoPower] dispatch: lanlan=%s kind=%s reason=%s model_calls=%d",
         lanlan_name, receipt.kind, receipt.reason or "-", receipt.model_calls,
     )
     return {
@@ -965,30 +965,30 @@ async def nekoclaw_dispatch(payload: Dict[str, Any]):
     }
 
 
-@app.post("/nekoclaw/query")
-async def nekoclaw_query(payload: Dict[str, Any]):
+@app.post("/nekopower/query")
+async def nekopower_query(payload: Dict[str, Any]):
     """Answer what is going on, or whether something can be done. No model is asked."""
     lanlan_name = (payload or {}).get("lanlan_name")
     if not isinstance(lanlan_name, str) or not lanlan_name:
         raise HTTPException(400, "lanlan_name required")
     text = (payload or {}).get("text")
     lang = _resolve_session_language((payload or {}).get("language"))
-    if not nekoclaw_on():
+    if not nekopower_on():
         return {"success": True, "text": _disabled_receipt(lang)["text"], "can_do": False}
     host = await ready_host()
     answer = await host.query(text if isinstance(text, str) else "", lanlan_name=lanlan_name, lang=lang)
     return {"success": True, "text": answer.text, "can_do": answer.can_do}
 
 
-@app.get("/nekoclaw/brief")
-async def nekoclaw_brief(lanlan_name: str, language: Optional[str] = None):
+@app.get("/nekopower/brief")
+async def nekopower_brief(lanlan_name: str, language: Optional[str] = None):
     """Return what is under way, one line each, for a new session's opening prompt.
 
     Called whenever a session starts, so it stays cheap: with the switch off,
     or with no ledger file and no host built yet, nothing is built and nothing
     is opened.
     """
-    if not nekoclaw_on() or not lanlan_name:
+    if not nekopower_on() or not lanlan_name:
         return {"success": True, "lines": []}
     if peek_host() is None and not await ledger_exists():
         return {"success": True, "lines": []}
@@ -1095,9 +1095,9 @@ async def builtin_activity():
     The same payloads the ``builtin_activity`` events carry, for a display
     that starts late and missed them.
     """
-    from nekoclaw.host.capabilities import BUILTIN_GROUPS
+    from nekopower.host.capabilities import BUILTIN_GROUPS
 
-    from .nekoclaw_builtins import activity_payload, occupant
+    from .nekopower_builtins import activity_payload, occupant
 
     items = []
     for group in BUILTIN_GROUPS:
@@ -1127,9 +1127,9 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     no ``not_stopped``. Anything else that is not a non-empty string is
     refused.
     """
-    from nekoclaw.host.capabilities import BUILTIN_GROUPS
+    from nekopower.host.capabilities import BUILTIN_GROUPS
 
-    from .nekoclaw_builtins import occupant
+    from .nekopower_builtins import occupant
 
     group = (payload or {}).get("group")
     if group is not None and group not in BUILTIN_GROUPS:
@@ -1168,8 +1168,8 @@ _browser_settings_lock = threading.Lock()
 
 def _browser_settings_view() -> Dict[str, Any]:
     """Return the browser settings with the browsers found on this computer. Blocking (file checks)."""
-    from nekoclaw.builtin.browser.launcher import find_browsers
-    from nekoclaw.builtin.browser.settings import MODES, BrowserSettingsStore
+    from nekopower.builtin.browser.launcher import find_browsers
+    from nekopower.builtin.browser.settings import MODES, BrowserSettingsStore
 
     store = BrowserSettingsStore()
     return {
@@ -1199,8 +1199,8 @@ async def set_browser_settings(payload: Dict[str, Any]):
     what is saved is what was there before, nothing changes for the browser
     that is open, and it is left alone.
     """
-    from nekoclaw.builtin.browser.launcher import is_browser_executable
-    from nekoclaw.builtin.browser.settings import MODES, BrowserSettings, BrowserSettingsStore
+    from nekopower.builtin.browser.launcher import is_browser_executable
+    from nekopower.builtin.browser.settings import MODES, BrowserSettings, BrowserSettingsStore
 
     payload = payload or {}
 
@@ -1293,7 +1293,7 @@ async def complete_deferred_task(task_id: str):
 
 def hud_status(status: str) -> str:
     """Return a commission's status in the words the task endpoints have always used."""
-    from .nekoclaw_mount import _HUD_STATUS
+    from .nekopower_mount import _HUD_STATUS
 
     return _HUD_STATUS.get(status, status)
 

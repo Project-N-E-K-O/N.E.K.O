@@ -24,7 +24,19 @@ from plugin._types.plugin_types import (
     format_removed_plugin_host,
 )
 from plugin.config.schema import PluginModelRequirementSchema, PluginModelUsageId
+from plugin.core.capability_analysis import (
+    analyze_capabilities,
+    read_capability_sources,
+    compare_declarations,
+    summarize_permissions,
+)
 from plugin.core.entry_points import plugin_package_matches_directory
+from plugin.core.permission_declarations import (
+    PermissionDeclarations,
+    PermissionIssue,
+    narrowing_issues,
+    parse_permission_declarations,
+)
 from plugin.core.ui_manifest import PERMISSIONS as UI_PERMISSIONS
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
@@ -40,6 +52,7 @@ from plugin.utils.source_paths import iter_plugin_python_files
 from ..core.build_rules import BuildRuleSet, load_build_rules, reraise_walk_error, should_skip_path
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
+from . import _permission_messages as permission_messages
 from .deps_cmd import _is_link
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
@@ -224,7 +237,13 @@ def validate_plugin_dir(
     _check_optional_file(plugin_dir / ".github" / "workflows" / "verify.yml", ".github/workflows/verify.yml", issues, strict=strict)
 
     _check_gitignore(plugin_dir / ".gitignore", issues, strict=strict)
-    _check_python_decorators(plugin_dir, issues)
+    declarations, _declaration_issues = parse_permission_declarations(source.plugin_toml)
+    _check_python_decorators(
+        plugin_dir,
+        issues,
+        declared=declarations.ids() if declarations.status != "invalid" else None,
+    )
+    _check_permission_usage(plugin_dir, declarations, issues, pyproject=source.pyproject_toml)
     _check_symlink_tree(
         plugin_dir,
         issues,
@@ -324,6 +343,7 @@ def _check_plugin_toml_schema(
     _check_ui_table(plugin_dir, plugin_table.get("ui"), issues)
     _check_runtime_table(config.get("plugin_runtime"), issues)
     _check_plugin_state_table(config.get("plugin_state"), issues)
+    _check_permissions_table(config, issues)
 
     adapter_table = config.get("adapter")
     if adapter_table is not None:
@@ -1216,7 +1236,304 @@ def _plugin_python_files(plugin_dir: Path) -> list[Path]:
     return sorted(iter_plugin_python_files(plugin_dir))
 
 
-def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+def _permission_issue(issue: PermissionIssue) -> tuple[str, str]:
+    return issue.severity, _format_multilingual(permission_messages.texts(issue.code, dict(issue.params)))
+
+
+def _check_permissions_table(config: dict[str, object], issues: list[tuple[str, str]]) -> None:
+    """Top-level [permissions.require] / [permissions.ask] declarations.
+
+    Not to be confused with the UI entry ``permissions`` list under
+    [[plugin.ui.panel]] / [[plugin.ui.guide]], which is checked elsewhere.
+    """
+    _declarations, found = parse_permission_declarations(config)
+    issues.extend(_permission_issue(issue) for issue in found)
+
+
+# Component decorators that may narrow the plugin's declared permissions.
+_PERMISSION_NARROWING_DECORATORS = frozenset(
+    {"plugin_entry", "llm_tool", "hook", "on_event", "custom_event", "timer_interval"}
+)
+
+
+def _check_permission_narrowing(
+    decorator: ast.expr,
+    label: str,
+    declared: frozenset[str] | None,
+    issues: list[tuple[str, str]],
+    *,
+    narrows: bool = True,
+) -> None:
+    """``narrows``: the decorator is a component that may narrow; others only
+    get the load-time error."""
+    if not isinstance(decorator, ast.Call):
+        return
+    for item in decorator.keywords:
+        if item.arg != "permissions":
+            continue
+        # No SDK decorator takes this yet (they are keyword-only), so the
+        # plugin would fail to load.
+        issues.append(
+            _permission_issue(PermissionIssue("error", "narrowing_runtime_unsupported", {"label": label}))
+        )
+        if declared is None or not narrows:
+            return
+        try:
+            value = ast.literal_eval(item.value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            issues.append(_permission_issue(PermissionIssue("info", "narrowing_unconfirmed", {"label": label})))
+            return
+        issues.extend(_permission_issue(issue) for issue in narrowing_issues(value, declared, label))
+
+
+def _check_permission_usage(
+    plugin_dir: Path,
+    declarations: PermissionDeclarations,
+    issues: list[tuple[str, str]],
+    *,
+    pyproject: dict[str, object] | None = None,
+) -> None:
+    """Compare plugin.toml declarations with what the code scan finds.
+
+    Only files the package build would include are compared: development
+    scripts left out of the package (build/, dist/, [tool.neko.build]
+    excludes) never run in the plugin.
+    """
+    rules = _build_rules_or_defaults(pyproject)
+    # "exclude" matches a path, not its subtree, so directories are judged
+    # without it (as in _check_symlink_tree); files still use every rule.
+    tree_rules = rules.model_copy(update={"exclude": []})
+
+    def include(relative: Path, is_dir: bool) -> bool:
+        return not should_skip_path(relative, is_dir=is_dir, rules=tree_rules if is_dir else rules)
+
+    # Filter before reading so excluded files do not use up the scan budget.
+    sources = read_capability_sources(
+        plugin_dir, include=include
+    )
+    report = analyze_capabilities(plugin_dir, declarations=declarations, sources=sources)
+    found = compare_declarations(report)
+    issues.extend(_permission_issue(issue) for issue in found)
+
+    by_type: dict[str, list[dict]] = {}
+    for spot in report.get("blind_spots") or []:
+        by_type.setdefault(spot["type"], []).append(spot)
+    for kind, spots in by_type.items():
+        shown = [
+            f"{spot['file']}:{spot['line']}" if spot.get("line") else (spot.get("file") or plugin_dir.name)
+            for spot in spots[:3]
+        ]
+        if len(spots) > len(shown):
+            shown.append(f"+{len(spots) - len(shown)}")
+        reasons = sorted({spot["reason"] for spot in spots if spot.get("reason")})
+        suffix = f"; {', '.join(reasons)}" if reasons else ""
+        texts = permission_messages.texts(
+            "blind_spot_context_loss" if kind == "context_loss" else "blind_spot",
+            {"location": ", ".join(shown)},
+            type=lambda locale, kind=kind: permission_messages.blind_spot_label(kind, locale) + suffix,
+        )
+        issues.append(("info", _format_multilingual(texts)))
+
+    summary = summarize_permissions(report)
+    if summary["rows"]:
+
+        def rows(locale: str) -> str:
+            parts = []
+            for row in summary["rows"]:
+                label = permission_messages.source_label(row["source"], locale)
+                if row["source"] == "unconfirmed":
+                    parts.append(f"[{label}] {permission_messages.blind_spot_label(row['type'], locale)}")
+                elif row["source"] == "declared":
+                    parts.append(f"[{label}] {row['permission']} ({row['level']})")
+                else:
+                    parts.append(f"[{label}] {row['permission']} ({row['file']}:{row['line']})")
+            return "; ".join(parts)
+
+        issues.append(("info", _format_multilingual(permission_messages.texts("summary", rows=rows))))
+
+    undeclared = any(issue.code.startswith("used_undeclared") for issue in found)
+    if summary["note"] == "no_extra_usage" and not undeclared and report.get("permissions"):
+        issues.append(("info", _format_multilingual(permission_messages.texts("scan_no_extra_usage"))))
+    elif summary["note"] == "blind_spots" and summary["blind_spot_types"]:
+        types = summary["blind_spot_types"]
+        issues.append(
+            (
+                "info",
+                _format_multilingual(
+                    permission_messages.texts(
+                        "scan_blind_spots",
+                        types=lambda locale: ", ".join(
+                            permission_messages.blind_spot_label(kind, locale) for kind in types
+                        ),
+                    )
+                ),
+            )
+        )
+
+
+def _is_sdk_module(module: str) -> bool:
+    return module == "plugin.sdk" or module.startswith("plugin.sdk.")
+
+
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _scope_nodes(body):
+    """Nodes evaluated in one scope; nested function / class bodies excluded."""
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, ast.If) and _is_type_checking(node.test):
+            # The body never runs; only the test and the else branch do.
+            stack.append(node.test)
+            stack.extend(node.orelse)
+        elif isinstance(node, _SCOPE_NODES):
+            # Decorators, defaults and bases are evaluated in this scope.
+            if not isinstance(node, ast.Lambda):
+                stack.extend(node.decorator_list)
+            if isinstance(node, ast.ClassDef):
+                stack.extend(node.bases)
+            else:
+                stack.extend(node.args.defaults)
+        else:
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _is_type_checking(test: ast.expr) -> bool:
+    return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+        isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+    )
+
+
+def _scope_bindings(body, parameters=()) -> list[tuple[tuple[int, int], str, str | None]]:
+    """Bindings in one scope in source order: (position, name, SDK symbol or None).
+
+    Parameters come first; imports from the SDK map to their qualified symbol,
+    every other binding (definitions, assignments, loop / with / except
+    targets, other imports) maps to None.
+    """
+    bindings: list[tuple[tuple[int, int], str, str | None]] = [((0, -1), name, None) for name in parameters]
+
+    def bind(node, name, value=None):
+        bindings.append(((node.lineno, node.col_offset), name, value))
+
+    def bind_targets(node, target):
+        # Only real targets bind; x[k] = v and x.attr = v do not rebind x.
+        if isinstance(target, ast.Name):
+            bind(node, target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for item in target.elts:
+                bind_targets(node, item)
+        elif isinstance(target, ast.Starred):
+            bind_targets(node, target.value)
+
+    for node in _scope_nodes(body):
+        if isinstance(node, ast.ImportFrom):
+            for item in node.names:
+                qualified = f"{node.module}.{item.name}" if node.module and not node.level else ""
+                bind(node, item.asname or item.name, qualified if _is_sdk_module(qualified) else None)
+        elif isinstance(node, ast.Import):
+            for item in node.names:
+                if item.asname:
+                    bind(node, item.asname, item.name if _is_sdk_module(item.name) else None)
+                else:
+                    # import plugin.x binds the top-level plugin package whatever
+                    # x is; the attribute path decides whether it is the SDK.
+                    root = item.name.split(".")[0]
+                    bind(node, root, "plugin" if root == "plugin" else None)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bind(node, node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                bind_targets(node, target)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            bind_targets(node, node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bind_targets(node, item.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bind(node, node.name)
+    bindings.sort(key=lambda item: item[0])
+    return bindings
+
+
+def _parameter_names(node) -> list[str]:
+    if isinstance(node, ast.ClassDef):
+        return []
+    args = node.args
+    names = [arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    names += [arg.arg for arg in (args.vararg, args.kwarg) if arg is not None]
+    return names
+
+
+def _sdk_decorators(tree: ast.Module) -> dict[int, str]:
+    """id(decorator) -> SDK symbol name, resolving each name where the decorator
+    is evaluated: bindings earlier in the same scope, then enclosing function
+    scopes and the module (their final bindings); class bodies are not visible
+    to nested functions."""
+    found: dict[int, str] = {}
+
+    def final(bindings) -> dict[str, str | None]:
+        return {name: value for _position, name, value in bindings}
+
+    def visit(body, chain, is_class, parameters=(), later_chain=None):
+        # chain: what this scope's own code sees while it runs. later_chain:
+        # for a class body, what its methods see when they run later.
+        local = _scope_bindings(body, parameters)
+        for node in _scope_nodes(body):
+            if not isinstance(node, _SCOPE_NODES) or isinstance(node, ast.Lambda):
+                continue
+            for decorator in node.decorator_list:
+                position = (decorator.lineno, decorator.col_offset)
+                names: dict[str, str | None] = {}
+                for scope in reversed(chain):
+                    names.update(scope)
+                names.update({name: value for at, name, value in local if at < position})
+                name = _sdk_decorator_name(decorator, {key: value for key, value in names.items() if value})
+                if name:
+                    found[id(decorator)] = name
+            # Class bodies are not visible to the functions inside them.
+            outer = later_chain if is_class else [final(local), *chain]
+            if isinstance(node, ast.ClassDef):
+                # A class body runs at definition time: it sees what is bound
+                # before the class statement, not later imports.
+                position = (node.lineno, node.col_offset)
+                # A class nested in a class body runs during that body.
+                snapshot = chain if is_class else [
+                    {name: value for at, name, value in local if at < position},
+                    *chain,
+                ]
+                visit(node.body, snapshot, True, (), later_chain=outer)
+            else:
+                visit(node.body, outer, False, _parameter_names(node))
+
+    visit(tree.body, [], False)
+    return found
+
+
+def _sdk_decorator_name(decorator: ast.expr, sdk_names: dict[str, str]) -> str | None:
+    """The SDK symbol name a decorator refers to, following import aliases."""
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    parts: list[str] = []
+    while isinstance(target, ast.Attribute):
+        parts.append(target.attr)
+        target = target.value
+    if not isinstance(target, ast.Name) or target.id not in sdk_names:
+        return None
+    qualified = ".".join([sdk_names[target.id], *reversed(parts)])
+    if not _is_sdk_module(qualified):
+        return None
+    return qualified.rsplit(".", 1)[-1]
+
+
+def _check_python_decorators(
+    plugin_dir: Path,
+    issues: list[tuple[str, str]],
+    *,
+    declared: frozenset[str] | None = None,
+) -> None:
     seen_ids: dict[str, str] = {}
     for path in _plugin_python_files(plugin_dir):
         relative = path.relative_to(plugin_dir)
@@ -1224,11 +1541,30 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
         if tree is None:
             continue
         _check_deprecated_push_message_calls(tree, relative, issues)
+        sdk_decorators = _sdk_decorators(tree)
         for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                # Class decorators (@neko_plugin) take no permissions= either.
+                for decorator in node.decorator_list:
+                    sdk_name = sdk_decorators.get(id(decorator))
+                    if sdk_name is not None:
+                        _check_permission_narrowing(
+                            decorator, f"@{sdk_name} in {relative}:{node.lineno}", declared, issues, narrows=False
+                        )
+                continue
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
                 name = _decorator_name(decorator)
+                sdk_name = sdk_decorators.get(id(decorator))
+                if sdk_name is not None:
+                    _check_permission_narrowing(
+                        decorator,
+                        f"@{sdk_name} in {relative}:{node.lineno}",
+                        declared,
+                        issues,
+                        narrows=sdk_name in _PERMISSION_NARROWING_DECORATORS,
+                    )
                 if name == "plugin_entry":
                     entry_id = _decorator_keyword_string(decorator, "id") or node.name
                     _check_identifier(entry_id, f"@plugin_entry id in {relative}:{node.lineno}", issues)
@@ -1807,7 +2143,7 @@ _HOST_INTERNAL_ROOTS = frozenset(
         "main_logic",
         "main_routers",
         "memory",
-        "nekoclaw",
+        "nekopower",
         "services",
         "steamworks",
         "utils",

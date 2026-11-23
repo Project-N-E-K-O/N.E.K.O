@@ -30,6 +30,10 @@ def build_request_handlers() -> dict[str, RequestHandler]:
     from plugin.server.messaging.handlers.run_update import handle_run_update
     from plugin.server.messaging.handlers.events import handle_event_get
     from plugin.server.messaging.handlers.lifecycle import handle_lifecycle_get
+    from plugin.server.messaging.handlers.llm_tools import (
+        handle_llm_tool_register,
+        handle_llm_tool_unregister,
+    )
     from plugin.server.messaging.handlers.bus_delete import (
         handle_event_del,
         handle_lifecycle_del,
@@ -71,6 +75,10 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "LIFECYCLE_DEL": handle_lifecycle_del,
         "BUS_SUBSCRIBE": handle_bus_subscribe,
         "BUS_UNSUBSCRIBE": handle_bus_unsubscribe,
+        # Request-response counterparts of the LLM_TOOL_REGISTER/UNREGISTER
+        # notifications; distinct names so the two delivery paths never mix.
+        "LLM_TOOL_REGISTER_REQUEST": handle_llm_tool_register,
+        "LLM_TOOL_UNREGISTER_REQUEST": handle_llm_tool_unregister,
     }
     # Every judged operation gets the same decision entry point (one table).
     for operation, capability in CAPABILITY_BY_OPERATION.items():
