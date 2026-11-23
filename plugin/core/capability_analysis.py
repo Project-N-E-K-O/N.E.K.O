@@ -1083,7 +1083,12 @@ def _import_hints(node: ast.Import | ast.ImportFrom) -> dict[str, set[str]]:
 
 def _explained_by_listen(prefixes: set[str], listen_rows) -> bool:
     """Every hinted module already has direct listen evidence (a server-only
-    use of aiohttp or websockets), so the import says nothing about connecting."""
+    use of aiohttp or websockets), so the import says nothing about connecting.
+
+    Judged per _IMPORT_HINTS prefix (the top-level package), not per call: a
+    plugin that also uses that package as a client in a way the scan cannot
+    resolve loses the import-only connect hint too.
+    """
     direct = [row["method"] for row in listen_rows if row["basis"] in DIRECT_BASES]
     return bool(prefixes) and all(
         any(method.startswith((prefix + ".", prefix + "(")) for method in direct) for prefix in prefixes
