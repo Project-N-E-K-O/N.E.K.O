@@ -1466,11 +1466,11 @@ REFERS_BACK_PATTERNS = (
 # Words by which the user asks for a new task agent rather than one that is there.
 FRESH_START_PATTERNS = (
     r"另开|另開|新开一|新開一|另起|单独开|單獨開|换一只|換一隻|不要接着|不要接著|重新开|重新開",
-    r"\b(?:start\s+a\s+new|a\s+fresh\s+one|from\s+scratch|a\s+separate\s+(?:one|agent|session)|do\s+not\s+continue|don['’]t\s+continue)\b",
-    r"新しく別の|別のを立ち上げ|最初からやり直",
-    r"새로\s*하나|따로\s*하나|처음부터\s*다시",
-    r"отдельн\w+\s+(?:агент\w*|сесси\w*)|с\s+нуля|заново",
-    r"\b(?:uno\s+nuevo|desde\s+cero|por\s+separado|um\s+novo|do\s+zero|em\s+separado)\b",
+    r"\b(?:start\s+a\s+new|a\s+fresh\s+one|a\s+separate\s+(?:one|agent|session)|do\s+not\s+continue|don['’]t\s+continue)\b",
+    r"新しく別の|別のを立ち上げ",
+    r"새로\s*하나|따로\s*하나",
+    r"отдельн\w+\s+(?:агент\w*|сесси\w*)",
+    r"\b(?:uno\s+nuevo|por\s+separado|um\s+novo|em\s+separado)\b",
 )
 
 # What the orchestrator leaves out when it compares a sentence with what is

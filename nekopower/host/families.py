@@ -101,6 +101,10 @@ class Families:
         self._worktrees: Any = None
         # By directory: when it was looked at, and whether it is in a git repository.
         self._git: dict[str, tuple[float, bool]] = {}
+        # Held while a commission is placed and while a leader is made: a
+        # project gets no leader between the look that finds it without
+        # one and the commission being given to a member.
+        self._placing = asyncio.Lock()
 
     def set_judge(self, judge: Judge | None) -> None:
         """Set what asks the small model; without one, what the layers before it leave open is a new loose commission."""
@@ -135,6 +139,8 @@ class Families:
         leaders = await self._ledger.leaders(commission.lanlan_name)
         # Likewise how often each one's matter came up: only its latest few commissions are read below.
         came_up = await self._ledger.came_up([row.session.id for row in rows], skip=commission.id)
+        # And whether anything is under way in it, which an early commission that still waits may be.
+        busy = await self._ledger.under_way_in([row.session.id for row in rows], skip=commission.id)
         agents: list[Agent] = []
         for row in rows:
             session = row.session
@@ -146,7 +152,7 @@ class Families:
                 # What was said in it was removed, being old: nothing to go on with.
                 continue
             theirs = [item for item in row.commissions if item.id != commission.id and item.parent_id is None]
-            under_way = any(item.status in UNDER_WAY_STATUSES for item in theirs)
+            under_way = session.id in busy or any(item.status in UNDER_WAY_STATUSES for item in theirs)
             agents.append(
                 Agent(
                     id=session.id,
@@ -168,7 +174,8 @@ class Families:
                             title=item.title,
                             result=item.result_summary or "",
                             age_seconds=max(0.0, now - (item.ended_at or item.updated_at)),
-                            filed=item.relation or orch.NEW,
+                            # (One filed before relations were kept: a follow-up if it followed another up.)
+                            filed=item.relation or (orch.FOLLOW_UP if item.continues else orch.NEW),
                         )
                         for item in theirs
                         if item.status in _OVER
@@ -298,6 +305,11 @@ class Families:
     # -- setting it up ----------------------------------------------------
 
     async def place(self, commission: Commission, verdict: Verdict) -> tuple[Commission, Session]:
+        """Give a commission the session a verdict sends it to (``_place``), one at a time and with no leader made meanwhile."""
+        async with self._placing:
+            return await self._place(commission, verdict)
+
+    async def _place(self, commission: Commission, verdict: Verdict) -> tuple[Commission, Session]:
         """Give a commission the session a verdict sends it to, making what that takes; returns both.
 
         What is made: a project and its members, for a family; a leader,
@@ -320,13 +332,15 @@ class Families:
         moved = False
 
         if action == orch.FORM_FAMILY:
-            made = await self._form_family(verdict.members)
-            if made is None:
+            formed = await self._form_family(verdict.members)
+            if formed is None:
                 action, moved = (orch.CONTINUE if agent else orch.SUMMON_STRAY), True
             else:
+                made, adopted = formed
                 project = made.name
                 known[project] = made
-                events.append(("family_formed", {"project": project, "members": list(verdict.members)}))
+                # Those that became its members: one that could not (it is another project's) is not among them.
+                events.append(("family_formed", {"project": project, "members": adopted}))
                 action = orch.CONTINUE if agent else orch.SUMMON_IN_PROJECT
 
         if action == orch.CONTINUE:
@@ -440,8 +454,8 @@ class Families:
 
     # -- families ---------------------------------------------------------
 
-    async def _form_family(self, member_ids: tuple[str, ...]) -> Any:
-        """Make a project of loose task agents that did the same job; returns the project, None when none was made.
+    async def _form_family(self, member_ids: tuple[str, ...]) -> tuple[Any, list[str]] | None:
+        """Make a project of loose task agents that did the same job; returns it and its members, None when none was made.
 
         A project with a directory of its own, where whoever is started in
         it works; its members stay where they worked. Named as a review
@@ -467,13 +481,13 @@ class Families:
             )
             if project is None:
                 return None
-            await self._ledger.adopt([item.id for item in members], project.name)
+            adopted = await self._ledger.adopt([item.id for item in members], project.name)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - no family: the commission goes on as a loose one
             logger.warning("making a project of loose task agents failed", exc_info=True)
             return None
-        return project
+        return project, [item.id for item in adopted]
 
     async def _family_name(self, members: list[Session]) -> tuple[str, str]:
         """Return the name and the description a family's project gets; a name no project has."""
@@ -519,9 +533,10 @@ class Families:
         if project not in known:
             raise LookupError(project)
         record = known[project]
-        return await self._ledger.project_session(
-            lanlan_name, project, workdir=record.workdir, duty=record.description or project
-        )
+        async with self._placing:
+            return await self._ledger.project_session(
+                lanlan_name, project, workdir=record.workdir, duty=record.description or project
+            )
 
     async def leader_notes(self, leader: Session, skip: str) -> tuple[str, list[str]]:
         """Return what a leader is told as a commission opens in it, and the commissions it is told the outcome of.

@@ -617,11 +617,14 @@ def by_retrieval(
 def shown_keys(matches: Sequence[Match], bars: Bars, sentence: str = "", standing: Standing | None = None) -> list[str]:
     """Return the matches the small model is shown: the few best that share anything with the sentence.
 
-    For a sentence in a script nothing there is written in (``unseen``),
-    which shares nothing with any of them: those that worked last.
+    For a sentence in a script nothing there is written in (``unseen``):
+    first those that share a word with it all the same (a name left in
+    its own script), the best first, then those that worked last.
     """
     if standing is not None and unseen(sentence, standing):
-        return sorted((match.key for match in matches), key=lambda key: _idle(key, standing))[: bars.shown]
+        shared = [match.key for match in matches if match.hits > 0]
+        others = sorted((match.key for match in matches if match.hits <= 0), key=lambda key: _idle(key, standing))
+        return [*shared, *others][: bars.shown]
     return [match.key for match in matches[: bars.shown] if match.hits > 0]
 
 

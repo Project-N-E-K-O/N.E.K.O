@@ -2032,7 +2032,8 @@ class Ledger:
 
         The commissions of hers that are over in it and were filed as new
         or as the same job once more (``relation``; one filed before
-        there was such a thing counts as new), whatever came between:
+        there was such a thing counts as new unless it followed another
+        up, ``continues``), whatever came between:
         counted over all of them, not over the few latest that are read
         for what a session is about. ``skip`` is a commission left out
         (the one being placed).
@@ -2047,10 +2048,35 @@ class Ledger:
                 "SELECT session_id, COUNT(*) AS times FROM commissions "
                 f"WHERE session_id IN ({marks}) AND parent_id IS NULL AND id != ? "
                 "AND status IN ('done', 'blocked', 'failed') "
-                "AND (relation IS NULL OR relation IN ('', 'new', 'recurrence')) GROUP BY session_id",
+                "AND (relation IN ('new', 'recurrence') OR ((relation IS NULL OR relation = '') "
+                "AND (continues IS NULL OR continues = ''))) GROUP BY session_id",
                 (*wanted, skip),
             ).fetchall()
             return {str(row["session_id"]): int(row["times"]) for row in rows}
+
+        return await self.run(work)
+
+    async def under_way_in(self, session_ids: Iterable[str], *, skip: str = "") -> set[str]:
+        """Return those of these sessions in which a commission of hers is under way, however long ago it was filed.
+
+        Asked of all their commissions, as ``session_alive`` asks: the
+        few latest that are read for what a session is about may all be
+        over while an earlier one still waits. ``skip`` is a commission
+        left out (the one being placed).
+        """
+        wanted = [str(item) for item in session_ids]
+        if not wanted:
+            return set()
+
+        def work(conn: sqlite3.Connection) -> set[str]:
+            marks = ",".join("?" for _ in wanted)
+            states = ",".join("?" for _ in UNDER_WAY_STATUSES)
+            rows = conn.execute(
+                "SELECT DISTINCT session_id FROM commissions "
+                f"WHERE session_id IN ({marks}) AND parent_id IS NULL AND id != ? AND status IN ({states})",
+                (*wanted, skip, *UNDER_WAY_STATUSES),
+            ).fetchall()
+            return {str(row["session_id"]) for row in rows}
 
         return await self.run(work)
 
@@ -2058,9 +2084,11 @@ class Ledger:
         """Make sessions of one commission (kind ``single``) members of a project; returns those that were.
 
         Where each works, what was said in it and its card stay as they
-        are: only whose it is changes. One that is a project's already,
-        or is no session of one commission, is left alone. One
-        transaction: all of them, or none.
+        are: only whose it is changes. Its commissions that belong to no
+        project are the project's with it, so that one of them taken up
+        again, or followed up, is told the project's rules. One that is a
+        project's already, or is no session of one commission, is left
+        alone. One transaction: all of them, or none.
         """
         from nekopower.host.paths import DEFAULT_PROJECT
 
@@ -2075,6 +2103,11 @@ class Ledger:
                     (project, session_id, DEFAULT_PROJECT),
                 )
                 if done.rowcount:
+                    conn.execute(
+                        "UPDATE commissions SET project = ? WHERE session_id = ? "
+                        "AND (project IS NULL OR project = '' OR project = ?)",
+                        (project, session_id, DEFAULT_PROJECT),
+                    )
                     found = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
                     if found is not None:
                         made.append(found)
@@ -2089,14 +2122,17 @@ class Ledger:
         them. One the leader was told of has a ``told_to_leader`` event: a
         name of its own, so that one a copy of the member's session then
         worked on, of which that session was told (``told_to_session``,
-        ``forked_work``), is still one the leader is to hear of.
+        ``forked_work``), is still one the leader is to hear of. Told of
+        how it ended: one that got stuck, was taken up again and ended
+        anew is told once more.
         """
 
         def work(conn: sqlite3.Connection) -> list[Commission]:
             rows = conn.execute(
                 "SELECT * FROM commissions WHERE handed_by = ? AND status IN ('done', 'blocked', 'failed', 'cancelled') "
                 "AND NOT EXISTS (SELECT 1 FROM events WHERE events.commission_id = commissions.id "
-                "AND events.type = 'told_to_leader') ORDER BY updated_at DESC LIMIT ?",
+                "AND events.type = 'told_to_leader' AND events.ts >= COALESCE(commissions.ended_at, 0)) "
+                "ORDER BY updated_at DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
             return [item for item in (_commission(row) for row in rows) if item is not None]

@@ -451,8 +451,11 @@ async def test_there_is_no_other_way_to_write_a_status():
     # rests, and a fifth takes that back; each names the two it writes. So
     # does the one that writes how much a commission may use, which names its
     # one. The seventh adds up what was used: its SET list is built from the
-    # columns that are counted, and from nothing else.
-    assert source.count("UPDATE commissions SET") == 7
+    # columns that are counted, and from nothing else. An eighth files the
+    # commissions of sessions that become a project's members under that
+    # project, and names its one column.
+    assert source.count("UPDATE commissions SET") == 8
+    assert source.count('"UPDATE commissions SET project = ? WHERE session_id = ? "') == 1
     assert source.count("UPDATE commissions SET session_id = ? WHERE id = ?") == 1
     assert source.count("UPDATE commissions SET resting_since = ?, updated_at = ? WHERE id = ?") == 1
     assert source.count("UPDATE commissions SET resting_since = NULL, updated_at = ? ") == 1

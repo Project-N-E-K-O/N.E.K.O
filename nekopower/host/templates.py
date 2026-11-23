@@ -209,15 +209,21 @@ class Template:
 
         By ``write`` and ``edit`` alone, on purpose: a preset that keeps
         the shell and has neither (the built-in inspector) is there to
-        look at work and run its checks, and does not count as one that
-        writes, though a command can leave files behind. So such a
-        session does not wait its turn at writing in a project, the user
-        is not asked before a leader opens one, and a leader may start
-        one itself. A template of the user's that is to change files
-        through the shell alone is not held to those rules either: one
-        that changes files keeps ``write`` or ``edit``.
+        look at work and run its checks. The user is not asked before a
+        leader opens one, and a leader may start one itself: each
+        command it runs is the user's to allow as ever. Whether it takes
+        its turn at changing files in a project goes by ``changes_files``.
         """
         return not {"write", "edit"} <= self.withheld()
+
+    @property
+    def changes_files(self) -> bool:
+        """Whether its sessions can change files at all: with a tool that writes or edits one, or through the shell.
+
+        What one task agent at a time does in a project: a command can
+        change the files another is working on as well as ``write`` can.
+        """
+        return not {"write", "edit", "bash", "pwsh"} <= self.withheld()
 
     def under(self, starter: Template) -> Template:
         """Return this preset as a task agent has it that a session of ``starter`` started.

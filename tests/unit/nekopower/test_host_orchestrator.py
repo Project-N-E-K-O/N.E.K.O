@@ -342,3 +342,41 @@ def test_a_verdict_is_kept_without_the_sentence() -> None:
     kept = json.loads(orch.to_json(found))
     assert kept["action"] == "continue" and kept["agent"] == "desks" and kept["layer"] == "model" and kept["model_calls"] == 1
     assert kept["candidates"][0][0] == "agent:desks" and "compare" not in orch.to_json(found)
+
+
+def test_doing_it_over_from_the_start_is_not_asking_for_another_task_agent():
+    standing = orch.Standing(projects=(), agents=(orch.Agent(id="writer", title="Report Writer"),))
+    bars = orch.Bars()
+
+    again = orch.by_rules("Ask Report Writer to rebuild the report from scratch", "", standing, bars)
+    assert again is not None and (again.action, again.agent) == (orch.CONTINUE, "writer")
+    for text in ("с нуля перепиши отчёт, Report Writer", "Report Writer: rehaz el informe desde cero"):
+        found = orch.by_rules(text, "", standing, bars)
+        assert found is not None and (found.action, found.agent) == (orch.CONTINUE, "writer")
+    # Asking for another one is still that, whoever is named.
+    other = orch.by_rules("start a new agent for what Report Writer did", "", standing, bars)
+    assert other is not None and (other.action, other.agent) == (orch.SUMMON_STRAY, None)
+
+
+def test_a_sentence_in_another_script_is_shown_what_shares_a_word_with_it_first():
+    agents = (
+        orch.Agent(id="old", title="Redis sentinel failover notes", idle_seconds=5000.0),
+        *(orch.Agent(id=f"new{index}", title=title, idle_seconds=float(index)) for index, title in enumerate(
+            ("Holiday photo album", "Tax return checklist", "Garden watering plan", "Birthday party invitations"), start=1
+        )),
+    )
+    standing = orch.Standing(projects=(), agents=agents)
+    bars = orch.Bars()
+    sentence = "레디스 sentinel 장애 조치 문서를 Redis 기준으로 다시 정리해 줘"
+    assert orch.unseen(sentence, standing)
+
+    shown = orch.shown_keys(orch.rank(sentence, standing), bars, sentence, standing)
+
+    # The one that shares its words is shown though four worked since, then those that worked last.
+    assert len(shown) == bars.shown and shown[0] == orch.AGENT_KEY + "old"
+    assert shown[1:] == [orch.AGENT_KEY + f"new{index}" for index in (1, 2, 3)]
+    # With nothing shared, those that worked last, as before.
+    nothing = "사진 앨범을 정리해 줘"
+    assert orch.shown_keys(orch.rank(nothing, standing), bars, nothing, standing) == [
+        orch.AGENT_KEY + f"new{index}" for index in (1, 2, 3, 4)
+    ]

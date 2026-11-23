@@ -362,10 +362,12 @@ async def test_the_same_job_a_third_time_makes_its_task_agent_a_project(hosts, t
 
     # The second time it goes on in the same one, and no project is made.
     again = await host.ledger.get(second.commission_id)
-    assert (again.session_id, again.project, again.relation) == (first.commission_id, None, orch.RECURRENCE)
+    assert (again.session_id, again.relation) == (first.commission_id, orch.RECURRENCE)
     assert await _events(host, second.commission_id, "family_formed") == []
 
     done = await host.ledger.get(third.commission_id)
+    # (What its task agent did before the project was made is the project's with it.)
+    assert done.project and again.project == done.project
     (formed,) = await _events(host, third.commission_id, "family_formed")
     assert formed["members"] == [first.commission_id]
     project = await host.space.get_project(formed["project"])
@@ -1236,8 +1238,11 @@ async def test_a_family_shows_on_the_timeline(hosts, tmp_path):
 
     (formed,) = [entry for entry in entries if entry["kind"] == "family_formed"]
     assert (formed["text"], formed["detail"]) == (project, {"project": project, "members": [first.commission_id]})
-    (decided,) = [entry for entry in entries if entry["kind"] == "orchestrated"]
-    assert decided["detail"]["action"] == "form_family" and decided["peer"]["session_id"] == first.commission_id
+    # (The two before it are the project's as well by now, and went on as loose ones then.)
+    decided = [entry for entry in entries if entry["kind"] == "orchestrated"]
+    assert [entry["detail"]["action"] for entry in decided].count("form_family") == 1
+    (formed_by,) = [entry for entry in decided if entry["detail"]["action"] == "form_family"]
+    assert formed_by["peer"]["session_id"] == first.commission_id
 
 
 async def test_what_a_template_of_the_leaders_name_withholds_its_members_are_without_as_well(hosts, tmp_path):
@@ -1435,8 +1440,17 @@ async def test_which_sessions_count_as_writing_in_a_project(hosts, tmp_path):
     await agents._note_writer(None)
     await agents._note_writer("no-such-session")
 
-    # The members that have a tool that writes or edits a file; one whose preset cannot be read is held to the rule.
-    assert agents._writes_in == {item.id: "Budget app" for item in (worker, general, broken)}
+    # The members that can change files, with a tool that writes or edits one or through the shell (the
+    # inspector); one whose preset cannot be read is held to the rule. And a task agent such a member
+    # started that can, noted with the member it works for.
+    assert agents._writes_in == {
+        **{item.id: ("Budget app", item.id) for item in (worker, general, broken, inspector)},
+        child.id: ("Budget app", worker.id),
+    }
+    # What a leader starts is not noted: it looks and checks.
+    looks = await made("looks", kind="child", project="Budget app", parent_id=leader.id, preset="inspector")
+    await agents._note_writer(looks.id)
+    assert looks.id not in agents._writes_in
     # One that is no member any more is no writer any more.
     await host.ledger.update_session(worker.id, project="_daily")
     await agents._note_writer(worker.id)
@@ -1680,6 +1694,7 @@ async def test_what_the_ledger_finds_for_a_family_and_for_a_leader(tmp_path):
         typo = await filed("fix a typo in the weekly report", session_id=reports.id)
         assert (await ledger.last_commission(reports.id)).id == typo.id
         assert await ledger.last_event_in(reports.id, "project_suggested") == {"name": "Weekly reports"}
+        assert await ledger.came_up([reports.id]) == {}
         await ledger.append_event(typo.id, "project_suggested", {"name": "Reports"})
         assert await ledger.last_event_in(reports.id, "project_suggested") == {"name": "Reports"}
         assert await ledger.last_event_in(other.id, "project_suggested") is None
@@ -1692,6 +1707,8 @@ async def test_what_the_ledger_finds_for_a_family_and_for_a_leader(tmp_path):
         assert [item.id for item in made] == [reports.id, daily.id]
         kept = await ledger.get_session(theirs.id)
         assert (kept.kind, kept.project) == ("single", "Alpha")
+        # What a member did before is the project's with it: taken up again, it is told the project's rules.
+        assert [(await ledger.get(item.id)).project for item in (weekly, typo)] == ["Beta", "Beta"]
 
         # What a leader handed over and the user stopped is among what it is told came of its work.
         leader, _made = await ledger.project_session("Lan", "Beta")
@@ -1704,6 +1721,17 @@ async def test_what_the_ledger_finds_for_a_family_and_for_a_leader(tmp_path):
         assert [item.id for item in await ledger.handed_work(leader.id, limit=5)] == [stopped.id]
         await ledger.append_event(stopped.id, "told_to_leader", {"commission_id": under_way.id})
         assert await ledger.handed_work(leader.id, limit=5) == []
+        # Told of how it ended: one that got stuck, was taken up again and ended anew is told once more.
+        await ledger.transition(under_way.id, "working", reason="t")
+        await ledger.transition(under_way.id, "blocked", reason="t", result_summary="which page?")
+        await ledger.append_event(under_way.id, "told_to_leader", {"commission_id": stopped.id})
+        assert await ledger.handed_work(leader.id, limit=5) == []
+        await asyncio.sleep(0.05)
+        await ledger.transition(under_way.id, "queued", reason="taken up again")
+        await ledger.transition(under_way.id, "working", reason="t")
+        assert await ledger.handed_work(leader.id, limit=5) == []
+        await ledger.transition(under_way.id, "done", reason="t", result_summary="help page written")
+        assert [item.result_summary for item in await ledger.handed_work(leader.id, limit=5)] == ["help page written"]
         assert under_way.status not in ("done", "blocked", "failed", "cancelled")
     finally:
         await ledger.close()
@@ -1789,10 +1817,14 @@ async def test_a_leader_that_cannot_be_closed_is_asked_again_and_given_up_on_aft
     done = await wait_status(host, receipt.commission_id, outcome)
 
     leader = await host.ledger.lead_session("Lan", "Shop site")
+    handed = await _events(host, receipt.commission_id, "handed_over")
     if outcome == "done":
         # Asked once more, it closed: handed over as if nothing had been the matter.
         assert len(failed) == 1 and (done.result_summary, done.handed_by) == ("header fixed", leader.id)
+        assert [(item["from"], item["to"], item["new"]) for item in handed] == [(leader.id, done.session_id, True)]
     else:
+        # Nothing says it was handed over: it was not.
+        assert handed == []
         # Asked as often as it is asked, in vain: the commission fails, and its place is let go.
         assert len(failed) == 3 and member_llm.requests == []
         assert "could not be closed to hand it over" in str(done.status_reason)
@@ -1829,10 +1861,9 @@ async def test_a_task_agent_a_member_started_ends_with_the_members_commission(ho
     done = await wait_status(host, first.commission_id, "done")
     (started,) = await host.ledger.select(parent_id=done.id)
 
-    # The member holds the project's turn at writing for its commission, the task agents it started
-    # included (they hold none of their own): as its run ends they are stopped, and only then is
-    # its session let go and the turn another's.
-    assert started.session_id not in host.task_agents._writes_in
+    # The member holds the project's turn at changing files for its commission, and the task agents it
+    # started are noted with it: as its run ends they are stopped, and then its session is let go.
+    assert host.task_agents._writes_in[started.session_id] == ("Budget app", done.session_id)
     await _let_go(host)
     assert (await host.ledger.get(started.id)).status == "cancelled" and len(child.requests) == 1
     second = await _dispatch(host, "draw a pie chart in the budget app", lanlan_name="Mio")
@@ -1989,7 +2020,9 @@ async def test_how_often_a_matter_came_up_is_counted_over_all_a_task_agent_did(h
     await filed("write the weekly report", None)
     for index in range(3):
         await filed(f"change line {index} of the weekly report", orch.FOLLOW_UP)
-    await filed("write the weekly report again", orch.RECURRENCE)
+    again = await filed("write the weekly report again", orch.RECURRENCE)
+    # One filed before relations were kept that followed another up is no time it came up.
+    await filed("one more change to the weekly report", None, continues=again.id)
     for index in range(3):
         await filed(f"change line {index} of the second weekly report", orch.FOLLOW_UP)
     # Neither one under way, nor one a task agent started, nor the one being placed is counted.
@@ -2010,3 +2043,216 @@ async def test_how_often_a_matter_came_up_is_counted_over_all_a_task_agent_did(h
 
     lately = orch.Standing(projects=standing.projects, agents=tuple(replace(item, came_up=None) for item in standing.agents))
     assert orch.settle(orch.AGENT_KEY + session.id, orch.RECURRENCE, lately, orch.Bars()).action == orch.CONTINUE
+
+
+async def test_a_task_agent_whose_stop_is_not_seen_through_keeps_the_projects_turn_until_it_is_gone(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekopower_settings.REST_LOOK_RETRY_DELAYS", (0.01, 0.01))
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    lead = ScriptedLLM(
+        [
+            [call("subagent", {"description": "write the export", "prompt": "Write the CSV export."}), finish("tool_calls")],
+            _report("export added"),
+        ]
+    )
+    child = ScriptedLLM([[wait, say("written"), finish()]])
+    other = ScriptedLLM([_report("chart added")])
+    seen: dict[str, ScriptedLLM] = {}
+
+    def pick(spec: Any) -> ScriptedLLM:
+        if not spec.top_level:
+            return child
+        return seen.setdefault(spec.session_id, other if seen else lead)
+
+    host = _host(hosts, tmp_path, pick)
+    await _project(host, "Budget app", tmp_path)
+    abort = host.task_agents.abort
+    refused: list[str] = []
+
+    async def failing(commission_id: str) -> None:
+        commission = await host.ledger.get(commission_id)
+        if commission is not None and commission.parent_id is not None:
+            refused.append(commission_id)
+            raise OSError("the runtime is busy")
+        await abort(commission_id)
+
+    monkeypatch.setattr(host.task_agents, "abort", failing)
+
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    done = await wait_status(host, first.commission_id, "done")
+    (started,) = await host.ledger.select(parent_id=done.id)
+    await wait_until(lambda: done.session_id not in host.task_agents._held_by, what="the member being let go")
+
+    # The member is over and let go; the task agent it started could not be stopped and is still at it.
+    assert refused and host.task_agents._held_by.get(started.session_id) == started.id
+    second = await _dispatch(host, "draw a pie chart in the budget app", lanlan_name="Mio")
+    await wait_until(lambda: host.task_agents.queued == [second.commission_id], what="the other member waiting for it")
+    assert other.requests == []
+    release.set()
+    assert (await wait_status(host, second.commission_id, "done")).result_summary == "chart added"
+    await _let_go(host)
+
+
+async def test_what_is_said_between_a_leader_letting_go_and_the_member_being_queued_reaches_the_member(
+    hosts, tmp_path, monkeypatch
+):
+    host, receipt, _session, leader_llm, member_llm, release = await _handing_over(hosts, tmp_path)
+    leader = await host.ledger.lead_session("Lan", "Shop site")
+    update = host.ledger.update_session
+    reached, go_on = asyncio.Event(), asyncio.Event()
+
+    async def slowly(session_id: str, **values: Any) -> Any:
+        if session_id == leader.id and values.get("status") == "closed" and not reached.is_set():
+            reached.set()
+            await go_on.wait()
+        return await update(session_id, **values)
+
+    monkeypatch.setattr(host.ledger, "update_session", slowly)
+    release.set()
+    await asyncio.wait_for(reached.wait(), 10)
+
+    # The leader's session is let go of, and the commission is not queued for the member yet.
+    assert receipt.commission_id not in host.task_agents._sessions
+    assert (await host.ledger.get(receipt.commission_id)).status == "working"
+    assert await host.tell(receipt.commission_id, "and the footer too")
+    go_on.set()
+    await wait_status(host, receipt.commission_id, "done")
+
+    assert "and the footer too" in "\n".join(_user_messages(member_llm.requests[0]))
+    assert "and the footer too" not in json.dumps(leader_llm.requests)
+    assert host.task_agents._said_while_handed == {}
+
+
+async def test_what_a_leader_had_not_taken_as_it_hands_its_commission_over_waits_for_it_again(hosts, tmp_path):
+    from nekopower.host.ledger import MessageLimits
+
+    host, receipt, session, _leader_llm, _member_llm, release = await _handing_over(hosts, tmp_path)
+    host.wakes._closed = True
+    leader = await host.ledger.lead_session("Lan", "Shop site")
+    other = await host.ledger.create_session(lanlan_name="Lan", name="other", kind="single")
+    sender, _made = await host.ledger.create(
+        lanlan_name="Lan", title="other", dispatch_text="other", source="dispatch", route="task_agent", session_id=other.id
+    )
+    # (Only a commission at work writes to another session.)
+    await host.ledger.transition(sender.id, "working", reason="t")
+    message, refusal, _wait = await host.ledger.message_add(
+        from_session=other.id,
+        from_commission=sender.id,
+        to_session=leader.id,
+        body="Mind the footer.",
+        depth=1,
+        notify_when_done=False,
+        notice_after=3600.0,
+        limits=MessageLimits(target_interval=0.0, per_hour=10, queue_max=5, dedup_seconds=600.0),
+    )
+    assert message is not None and refusal == "", refusal
+    [wake] = await host.ledger.wakes_pending(session_id=leader.id)
+    # Handed to the leader's session with a text it has not been seen to take.
+    await host.ledger.wakes_fire([wake.id], into=receipt.commission_id)
+    session.handed = {session.sent + 1: [wake.id]}
+    assert await host.ledger.wakes_pending(session_id=leader.id) == []
+
+    release.set()
+    await wait_status(host, receipt.commission_id, "done")
+
+    assert [item.id for item in await host.ledger.wakes_pending(session_id=leader.id)] == [wake.id]
+
+
+async def test_every_task_agent_that_becomes_a_member_takes_its_turn_and_only_those_are_named(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    one = await host.ledger.create_session(lanlan_name="Lan", name="one", kind="single", title="Weekly sales report")
+    two = await host.ledger.create_session(lanlan_name="Lan", name="two", kind="single", title="Sales report of the week")
+    theirs = await host.ledger.create_session(lanlan_name="Lan", name="alpha job", kind="single", project="Alpha")
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title="the weekly sales report", dispatch_text="the weekly sales report", source="dispatch",
+        route="task_agent",
+    )
+    verdict = orch.Verdict(
+        action=orch.FORM_FAMILY, agent=one.id, members=(one.id, two.id, theirs.id), relation=orch.RECURRENCE
+    )
+
+    async def decided(_commission: Any) -> Any:
+        return verdict
+
+    host.task_agents.families.decide = decided
+
+    placed = await host.task_agents._give_session(commission)
+
+    # Both that became members are noted as ones that change files there, not only the one that takes this commission.
+    assert placed.session_id == one.id and placed.project
+    assert host.task_agents._writes_in == {item.id: (placed.project, item.id) for item in (one, two)}
+    # The one that is another project's stays that, and is not said to be a member.
+    (formed,) = await _events(host, commission.id, "family_formed")
+    assert sorted(formed["members"]) == sorted([one.id, two.id])
+    kept = await host.ledger.get_session(theirs.id)
+    assert (kept.kind, kept.project) == ("single", "Alpha")
+
+
+async def test_no_leader_is_made_while_a_commission_is_being_placed(hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    member = await host.ledger.create_session(lanlan_name="Lan", name="Budget app", kind="line", project="Budget app")
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title="add a chart to the budget app", dispatch_text="add a chart to the budget app",
+        source="dispatch", route="task_agent",
+    )
+    families = host.task_agents.families
+    verdict = await families.decide(commission)
+    alive = host.ledger.session_alive
+    reached, go_on = asyncio.Event(), asyncio.Event()
+
+    async def slowly(session: Any, now: float | None = None) -> bool:
+        if not reached.is_set():
+            # After the look that found the project without a leader, before the commission is the member's.
+            reached.set()
+            await go_on.wait()
+        return await alive(session, now)
+
+    monkeypatch.setattr(host.ledger, "session_alive", slowly)
+    placing = asyncio.ensure_future(families.place(commission, verdict))
+    await asyncio.wait_for(reached.wait(), 10)
+    deriving = asyncio.ensure_future(host.derive_leader("Budget app", "Lan"))
+    await asyncio.sleep(0.05)
+
+    # It waits for the placing: the leader is made after the commission is the member's, not in between.
+    assert not deriving.done() and await host.ledger.lead_session("Lan", "Budget app") is None
+    go_on.set()
+    placed, session = await placing
+    made = await deriving
+    assert (placed.session_id, session.id, made["made"]) == (member.id, member.id, True)
+    (decided,) = await _events(host, commission.id, "orchestrated")
+    assert "placed" not in decided
+
+
+async def test_a_task_agent_with_an_early_commission_still_under_way_is_not_taken_for_one_that_is_over(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    session = await host.ledger.create_session(lanlan_name="Lan", name="photos", kind="single", duty="sorting photos")
+
+    async def filed(title: str, status: str | None) -> Any:
+        commission, _made = await host.ledger.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent", session_id=session.id
+        )
+        if status is not None:
+            await host.ledger.transition(commission.id, "working", reason="t")
+            if status != "working":
+                await host.ledger.transition(commission.id, status, reason="t", result_summary="ok")
+        return commission
+
+    # One that is still at work, and after it more than are read for what the session is about.
+    await filed("sort the photos of 2019", "working")
+    for year in (2020, 2021, 2022, 2023):
+        await filed(f"sort the photos of {year}", "done")
+    old = host.ledger._clock() - (settings.SESSION_SINGLE_LIFETIME_DAYS + 1) * 86400
+    await host.ledger.update_session(session.id, last_active_at=old)
+    now = await filed("sort the photos of 2024", None)
+
+    agent = (await host.task_agents.families.standing(now)).agent(session.id)
+
+    assert all(item.title != "sort the photos of 2019" for item in agent.done) and agent.idle_seconds == 0.0
+    assert await host.ledger.under_way_in([session.id, "no-such-session"], skip=now.id) == {session.id}
+    assert await host.ledger.under_way_in([]) == set()
