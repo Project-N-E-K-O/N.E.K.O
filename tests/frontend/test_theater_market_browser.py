@@ -572,10 +572,13 @@ def test_market_page_restored_from_bfcache_unlocks_back_and_retry(page, running_
     page.evaluate('window.nekoTheaterMarket.redirectSelector()')
     page.wait_for_timeout(100)
     assert len(calls) == 1
-    page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+    # The restored page reconnects like a fresh load, then retry works again.
+    with page.expect_request('**/api/theater-market/launch'):
+        page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+    expect(retry).to_be_enabled()
     with page.expect_request('**/api/theater-market/launch'):
         retry.click()
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 @pytest.mark.frontend
@@ -625,3 +628,31 @@ def test_market_back_handoff_pending_across_bfcache_restore_does_not_navigate_la
     market.wait_for_timeout(2600)
     assert market.url == market_url
     expect(market.locator('#theater-market-back-link')).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_market_connection_dropped_by_back_stays_quiet_and_recovers_from_bfcache(page, running_server):
+    pending = []
+    page.route('**/api/theater-market/launch', lambda route: pending.append(route))
+    page.goto(running_server + '/theater?market=browse')
+    retry = page.locator('#theater-market-retry-btn')
+    status = page.locator('#theater-selector-status')
+    for _ in range(100):
+        if pending:
+            break
+        page.wait_for_timeout(20)
+    assert len(pending) == 1
+    # Cancel the in-place navigation so the page stays after back was clicked.
+    page.evaluate("document.addEventListener('click', event => event.preventDefault())")
+    page.get_by_role('link', name='返回选择剧本').click()
+    pending[0].abort()  # a network failure rejects and reaches the catch branch
+    page.wait_for_timeout(200)
+    # A late failure after back must not flash an error with a retry button that does nothing.
+    expect(retry).to_be_hidden()
+    expect(status).to_have_attribute('data-i18n', 'theater.marketPreparing')
+    page.unroute('**/api/theater-market/launch')
+    page.route('**/api/theater-market/launch', lambda route: route.fulfill(status=502, json={'ok': False}))
+    page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+    expect(retry).to_be_visible()
+    expect(retry).to_be_enabled()
+    expect(status).to_have_attribute('data-i18n', 'theater.marketConnectError')

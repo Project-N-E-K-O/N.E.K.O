@@ -73,6 +73,8 @@
             navigated = true;
             window.location.replace(result.url);
         } catch (_) {
+            // The user already chose to go back; do not flash an error and a dead retry button.
+            if (returning) return;
             if (status) {
                 status.setAttribute('data-i18n', 'theater.marketConnectError');
                 status.textContent = label('marketConnectError');
@@ -205,6 +207,9 @@
         if (retry) retry.disabled = false;
         var connection = document.getElementById('theater-market-connection');
         if (connection) connection.setAttribute('aria-busy', 'false');
+        // A connection dropped by an earlier back click may have left the page on "connecting"
+        // with no retry; reconnect just like a fresh load does.
+        redirectSelector();
     });
     document.addEventListener('DOMContentLoaded', function () {
         var retry = document.getElementById('theater-market-retry-btn');
