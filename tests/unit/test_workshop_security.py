@@ -167,7 +167,7 @@ def test_check_upload_status_blocks_traversal_and_sibling_and_symlink(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_publish_rejects_outside_preview_image_and_non_images(tmp_path, monkeypatch):
-    from main_routers.workshop_router import publish as wr_publish
+    from main_routers.workshop_router import preview_cards, publish as wr_publish
 
     workshop = tmp_path / "workshop"
     content_folder = workshop / "WorkshopExport" / "item_1"
@@ -192,6 +192,7 @@ async def test_publish_rejects_outside_preview_image_and_non_images(tmp_path, mo
     corrupt_png.write_bytes(b"corrupt")
     valid_staged = staging_folder / "preview.png"
     valid_staged.write_bytes(_png_bytes())
+    (staging_folder / preview_cards._PREVIEW_STAGING_MARKER_FILE).write_text("preview.png", encoding="utf-8")
 
     steamworks = SimpleNamespace(
         UGC=SimpleNamespace(
@@ -431,13 +432,23 @@ async def test_upload_preview_image_prunes_stale_staging_dirs(tmp_path, monkeypa
     workshop = tmp_path / "workshop"
     staging_root = workshop / "WorkshopExport" / "_preview_staging"
     stale_dir = staging_root / "stale-id"
+    unowned_old_dir = staging_root / "item_in_staging"
+    extra_file_old_dir = staging_root / "stale-with-card"
     fresh_dir = staging_root / "fresh-id"
-    stale_dir.mkdir(parents=True)
-    fresh_dir.mkdir(parents=True)
+    for d in (stale_dir, unowned_old_dir, extra_file_old_dir, fresh_dir):
+        d.mkdir(parents=True)
     (stale_dir / "preview.png").write_bytes(_png_bytes())
+    (stale_dir / preview_cards._PREVIEW_STAGING_MARKER_FILE).write_text("preview.png", encoding="utf-8")
+    (unowned_old_dir / "card.json").write_text("{}", encoding="utf-8")
+    (unowned_old_dir / "preview.png").write_bytes(_png_bytes())
+    (extra_file_old_dir / "preview.png").write_bytes(_png_bytes())
+    (extra_file_old_dir / preview_cards._PREVIEW_STAGING_MARKER_FILE).write_text("preview.png", encoding="utf-8")
+    (extra_file_old_dir / "card.json").write_text("{}", encoding="utf-8")
     (fresh_dir / "preview.png").write_bytes(_png_bytes())
+    (fresh_dir / preview_cards._PREVIEW_STAGING_MARKER_FILE).write_text("preview.png", encoding="utf-8")
     old_ts = time.time() - (preview_cards._PREVIEW_STAGING_TTL_SECONDS + 3600)
-    os.utime(stale_dir, (old_ts, old_ts))
+    for d in (stale_dir, unowned_old_dir, extra_file_old_dir):
+        os.utime(d, (old_ts, old_ts))
 
     monkeypatch.setattr(preview_cards, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
     resp = await preview_cards.upload_preview_image(
@@ -445,8 +456,12 @@ async def test_upload_preview_image_prunes_stale_staging_dirs(tmp_path, monkeypa
     )
     assert resp.status_code == 200
     assert not stale_dir.exists()
+    assert unowned_old_dir.is_dir() and (unowned_old_dir / "card.json").is_file()
+    assert extra_file_old_dir.is_dir() and (extra_file_old_dir / "card.json").is_file()
     assert fresh_dir.is_dir()
-    assert Path(json.loads(resp.body)["file_path"]).is_file()
+    uploaded = Path(json.loads(resp.body)["file_path"])
+    assert uploaded.is_file()
+    assert (uploaded.parent / preview_cards._PREVIEW_STAGING_MARKER_FILE).is_file()
 
 
 @pytest.mark.asyncio
@@ -802,13 +817,6 @@ async def test_publish_skips_copy_when_canonical_preview_path_is_directory(tmp_p
     monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
     monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
 
-    captured = {}
-
-    def _fake_preflight(_sw, _title, _desc, _cf, preview_arg, *_rest):
-        captured["preview_image"] = preview_arg
-        return "9993"
-
-    monkeypatch.setattr(wr_publish, "_preflight_and_publish", _fake_preflight)
     resp = await wr_publish.publish_to_workshop(
         _StubJsonRequest({
             "title": "Dir Target Collision",
@@ -817,15 +825,15 @@ async def test_publish_skips_copy_when_canonical_preview_path_is_directory(tmp_p
             "preview_image": str(staged_preview),
         })
     )
-    assert resp.status_code == 200
-    assert captured["preview_image"] == str(staged_preview.resolve())
+    assert resp.status_code == 400
+    assert json.loads(resp.body)["success"] is False
     assert staging_folder.exists()
     assert not (content_folder / "preview.png" / "cover.png").exists()
 
 
 @pytest.mark.asyncio
 async def test_publish_does_not_delete_content_folder_inside_preview_staging(tmp_path, monkeypatch):
-    from main_routers.workshop_router import publish as wr_publish
+    from main_routers.workshop_router import preview_cards, publish as wr_publish
 
     workshop = tmp_path / "workshop"
     export_dir = workshop / "WorkshopExport"
@@ -840,6 +848,7 @@ async def test_publish_does_not_delete_content_folder_inside_preview_staging(tmp
     monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
     monkeypatch.setattr(wr_publish, "_preflight_and_publish", lambda *_a: "9994")
 
+    # 1) Reject publishing when content_folder itself is inside _preview_staging.
     resp = await wr_publish.publish_to_workshop(
         _StubJsonRequest({
             "title": "Content Under Staging",
@@ -848,17 +857,30 @@ async def test_publish_does_not_delete_content_folder_inside_preview_staging(tmp
             "preview_image": str(source_cover),
         })
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 403
     assert (content_inside_staging / "card.json").is_file()
 
-    # Separate staging dir is still cleaned up after successful publish into a normal folder.
+    # 2) Publishing normal_item using preview from unowned _preview_staging/item_in_staging preserves item_in_staging.
     normal_content = export_dir / "normal_item"
     normal_content.mkdir(parents=True)
     (normal_content / "card.json").write_text("{}", encoding="utf-8")
+    resp_unowned = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Normal Content With Unowned Staging Source",
+            "content_folder": str(normal_content),
+            "visibility": 0,
+            "preview_image": str(source_cover),
+        })
+    )
+    assert resp_unowned.status_code == 200
+    assert (content_inside_staging / "card.json").is_file()
+
+    # 3) Owned upload-created staging dir (marked + isolated) IS cleaned up after successful publish.
     separate_stage = export_dir / "_preview_staging" / "ephemeral_stage"
     separate_stage.mkdir(parents=True)
-    separate_cover = separate_stage / "cover.png"
+    separate_cover = separate_stage / "preview.png"
     separate_cover.write_bytes(_png_bytes())
+    (separate_stage / preview_cards._PREVIEW_STAGING_MARKER_FILE).write_text("preview.png", encoding="utf-8")
 
     resp2 = await wr_publish.publish_to_workshop(
         _StubJsonRequest({
@@ -899,3 +921,162 @@ async def test_publish_explicit_preview_rejects_mismatched_jpeg_named_png(tmp_pa
     )
     assert resp.status_code == 400
     assert json.loads(resp.body)["success"] is False
+
+
+def test_assert_workshop_path_resolves_symlink_before_dotdot(tmp_path):
+    from main_routers.workshop_router import preview_cards
+
+    workshop = tmp_path / "workshop"
+    item_sub = workshop / "item_a" / "sub"
+    item_sub.mkdir(parents=True)
+    real_cover = workshop / "item_a" / "cover.png"
+    real_cover.write_bytes(_png_bytes())
+    root_cover = workshop / "cover.png"
+    root_cover.write_bytes(_png_bytes())
+
+    alias = workshop / "alias"
+    outside = tmp_path / "outside"
+    outside_sub = outside / "sub"
+    outside_sub.mkdir(parents=True)
+    (outside / "secret.png").write_bytes(_png_bytes())
+    outside_alias = workshop / "outside_link"
+    try:
+        alias.symlink_to(item_sub, target_is_directory=True)
+        outside_alias.symlink_to(outside_sub, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlinks are not supported in this test environment: {exc}")
+
+    # POSIX symlink resolution precedes "..": alias/../cover.png resolves to item_a/cover.png, not workshop/cover.png.
+    assert preview_cards._assert_workshop_path(str(alias / ".." / "cover.png"), str(workshop)) == str(
+        real_cover.resolve()
+    )
+    with pytest.raises(PermissionError):
+        preview_cards._assert_workshop_path(str(outside_alias / ".." / "secret.png"), str(workshop))
+
+
+@pytest.mark.asyncio
+async def test_upload_preview_image_closes_form_on_early_return(tmp_path, monkeypatch):
+    from main_routers.workshop_router import preview_cards
+
+    workshop = tmp_path / "workshop"
+    workshop.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    closed_count = 0
+
+    class _ClosableForm(dict):
+        async def close(self):
+            nonlocal closed_count
+            closed_count += 1
+
+    class _ClosableFormRequest:
+        async def form(self):
+            return _ClosableForm({
+                "file": _StubUpload(_png_bytes()),
+                "content_folder": str(outside),
+            })
+
+    monkeypatch.setattr(preview_cards, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    resp = await preview_cards.upload_preview_image(_ClosableFormRequest())
+    assert resp.status_code == 403
+    assert closed_count == 1
+
+
+@pytest.mark.asyncio
+async def test_preview_target_rejects_in_folder_symlink_in_upload_and_publish(tmp_path, monkeypatch):
+    from main_routers.workshop_router import preview_cards, publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_sym_internal"
+    textures_dir = content_folder / "textures"
+    staging_folder = workshop / "WorkshopExport" / "_preview_staging" / "st"
+    for d in (textures_dir, staging_folder):
+        d.mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+    body_tex = textures_dir / "body.png"
+    original_bytes = b"ORIGINAL-BODY-TEXTURE"
+    body_tex.write_bytes(original_bytes)
+    staged_png = staging_folder / "preview.png"
+    staged_png.write_bytes(_png_bytes())
+
+    preview_link = content_folder / "preview.png"
+    try:
+        preview_link.symlink_to(body_tex)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlinks are not supported in this test environment: {exc}")
+
+    monkeypatch.setattr(preview_cards, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+
+    upload_resp = await preview_cards.upload_preview_image(
+        _StubFormRequest(_StubUpload(_png_bytes()), content_folder=str(content_folder))
+    )
+    assert upload_resp.status_code == 403
+    assert body_tex.read_bytes() == original_bytes
+
+    pub_resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Internal Symlink Preview Target",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": str(staged_png),
+        })
+    )
+    assert pub_resp.status_code == 403
+    assert body_tex.read_bytes() == original_bytes
+
+
+@pytest.mark.asyncio
+async def test_publish_auto_discovery_existing_target_is_validated_not_skipped(tmp_path, monkeypatch):
+    from main_routers.workshop_router import publish as wr_publish
+
+    jpeg_buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color=(10, 80, 160)).save(jpeg_buf, format="JPEG")
+    jpeg_bytes = jpeg_buf.getvalue()
+
+    workshop = tmp_path / "workshop"
+    folder_valid = workshop / "WorkshopExport" / "item_existing_valid_jpg"
+    folder_valid.mkdir(parents=True)
+    (folder_valid / "card.json").write_text("{}", encoding="utf-8")
+    (folder_valid / "thumbnail.png").write_bytes(jpeg_bytes)
+    existing_jpg = folder_valid / "preview.jpg"
+    existing_jpg.write_bytes(jpeg_bytes)
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+
+    captured = {}
+
+    def _fake_preflight(_sw, _title, _desc, _cf, preview_arg, *_rest):
+        captured["preview_image"] = preview_arg
+        return "9998"
+
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", _fake_preflight)
+    ok_resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Existing Valid Preview",
+            "content_folder": str(folder_valid),
+            "visibility": 0,
+        })
+    )
+    assert ok_resp.status_code == 200
+    assert captured["preview_image"] == str(existing_jpg.resolve())
+
+    # Corrupt existing canonical preview.jpg must be rejected cleanly with 400.
+    folder_corrupt = workshop / "WorkshopExport" / "item_existing_corrupt_jpg"
+    folder_corrupt.mkdir(parents=True)
+    (folder_corrupt / "card.json").write_text("{}", encoding="utf-8")
+    (folder_corrupt / "thumbnail.png").write_bytes(jpeg_bytes)
+    (folder_corrupt / "preview.jpg").write_bytes(b"corrupt")
+
+    bad_resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Existing Corrupt Preview",
+            "content_folder": str(folder_corrupt),
+            "visibility": 0,
+        })
+    )
+    assert bad_resp.status_code == 400
+    assert json.loads(bad_resp.body)["success"] is False

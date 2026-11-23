@@ -2193,6 +2193,8 @@ async function main() {
 
     // Synchronous page-exit: sendBeacon returns false, then dispose runs synchronously.
     const endPromise = unloadHost.end({ reason: 'pagehide' }, { useBeacon: true });
+    assert(unloadHost._pendingRequests.size === 1,
+      `expected /end request to be synchronously queued before dispose, pending=${unloadHost._pendingRequests.size}`);
     unloadHost.dispose({ preservePendingOperations: ['route_end'] });
     const endResult = await endPromise;
     assert(endResult.ok === true, `synchronous unload fallback failed after dispose: ${JSON.stringify(endResult)}`);
@@ -2633,6 +2635,111 @@ async function main() {
     assert(httpErrorLogResult?.ok === false && httpErrorLogResult.status === 500,
       'postLog did not surface non-2xx HTTP failure');
     f0433Host.dispose();
+  }
+
+  // Round 7 @wehos #1 & CodeRabbit Outside-Diff #2:
+  // 1) After 403 csrf_validation_failed marks the cached token stale, normal callers wait for
+  //    refresh instead of reusing the stale token (and do not reuse it if refresh fails),
+  //    while synchronous unload still retains the fallback token.
+  {
+    let pageConfigCalls = 0;
+    let releaseRefresh = null;
+    const refreshGate = new Promise((resolve) => { releaseRefresh = resolve; });
+    let returnEmptyRefresh = false;
+    const staleGuardHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'stale-csrf-flag-session',
+      fetchImpl: async (url) => {
+        const pathName = String(url);
+        if (pathName.startsWith('/api/config/page_config')) {
+          pageConfigCalls += 1;
+          if (pageConfigCalls === 1) {
+            return jsonResponse({ autostart_csrf_token: 'tok-initial' });
+          }
+          if (pageConfigCalls === 2) {
+            await refreshGate;
+            return jsonResponse(returnEmptyRefresh ? {} : { autostart_csrf_token: 'tok-refreshed' });
+          }
+          return jsonResponse({ autostart_csrf_token: 'tok-recovered' });
+        }
+        return jsonResponse({ ok: true });
+      },
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    staleGuardHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+    });
+    await staleGuardHost.getMutationHeaders();
+    returnEmptyRefresh = true;
+    const refreshPromise = staleGuardHost.refreshMutationHeaders();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(staleGuardHost._csrfTokenStale === true && staleGuardHost._cachedCsrfToken === 'tok-initial',
+      'expected forceRefresh to mark token stale while retaining fallback value');
+    // Concurrent normal caller during pending refresh joins refresh instead of reusing stale token or re-fetching.
+    const concurrentPromise = staleGuardHost.getMutationHeaders();
+    assert(pageConfigCalls === 2, `expected concurrent normal caller to await active refresh, saw ${pageConfigCalls} fetches`);
+    releaseRefresh();
+    const [refreshHeaders, concurrentHeaders] = await Promise.all([refreshPromise, concurrentPromise]);
+    assert(!refreshHeaders['X-CSRF-Token'] && !concurrentHeaders['X-CSRF-Token'],
+      'expected failed refresh not to hand stale token to normal callers');
+    // Subsequent normal caller after failed refresh fetches again instead of trusting stale cache.
+    const recoveredHeaders = await staleGuardHost.getMutationHeaders();
+    assert(recoveredHeaders['X-CSRF-Token'] === 'tok-recovered' && pageConfigCalls === 3,
+      `expected post-failure normal caller to re-fetch token, got ${JSON.stringify(recoveredHeaders)}, calls=${pageConfigCalls}`);
+    staleGuardHost.dispose();
+  }
+
+  // 2) route_end shares a single endTimeoutMs deadline across initial POST, CSRF refresh, and retry.
+  for (const useBeaconFlag of [false, true]) {
+    let endAttemptCount = 0;
+    let clockNow = 1000;
+    const realDateNow = Date.now;
+    let timedError = null;
+    try {
+      Date.now = () => clockNow;
+      const deadlineHost = createHost({
+        gameType: 'example-game',
+        sessionId: `route-end-deadline-${useBeaconFlag}`,
+        fetchImpl: async (url) => {
+          const pathName = String(url);
+          if (pathName.startsWith('/api/config/page_config')) {
+            if (endAttemptCount >= 1) {
+              // Simulate initial POST + slow CSRF refresh consuming entire 8000ms budget.
+              clockNow += 8500;
+              return jsonResponse({ autostart_csrf_token: 'tok-late' });
+            }
+            return jsonResponse({ autostart_csrf_token: 'tok-init' });
+          }
+          if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+            endAttemptCount += 1;
+            clockNow += 500;
+            return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+          }
+          return jsonResponse({ ok: true });
+        },
+        windowImpl: windowMock,
+        navigatorImpl: useBeaconFlag
+          ? { ...windowMock.navigator, sendBeacon: () => false }
+          : windowMock.navigator,
+      });
+      deadlineHost.connectGame({
+        protocolVersions: ['1'],
+        manifest: { id: 'example-game', version: '1.0.0', requiredCapabilities: ['runtime'], optionalCapabilities: [] },
+      });
+      await deadlineHost.getMutationHeaders();
+      try {
+        await deadlineHost.end({ reason: 'deadline_test' }, { useBeacon: useBeaconFlag, timeoutMs: 8000 });
+      } catch (err) {
+        timedError = err;
+      }
+      assert(timedError?.code === 'timeout' && endAttemptCount === 1,
+        `expected single shared route_end deadline timeout after 1 POST (useBeacon=${useBeaconFlag}), got code=${timedError?.code}, posts=${endAttemptCount}`);
+      deadlineHost.dispose();
+    } finally {
+      Date.now = realDateNow;
+    }
   }
 
   process.stdout.write('mini-game same-origin host runtime test passed\n');

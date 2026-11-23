@@ -74,7 +74,11 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.frontend_utils import find_model_directory, is_user_imported_model
+from utils.frontend_utils import (
+    find_model_directory,
+    is_user_imported_model,
+    is_valid_live2d_model_name as _is_valid_live2d_model_name,
+)
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.character_memory import (
     asave_characters_with_recent_activation,
@@ -83,18 +87,6 @@ from utils.character_memory import (
 from config import (
     BUILTIN_LIVE2D_MODEL_NAMES,
 )
-
-
-def _is_valid_live2d_model_name(model_name: str | None) -> bool:
-    """Return whether ``model_name`` is a single safe Live2D directory name."""
-    if not isinstance(model_name, str):
-        return False
-    stripped = model_name.strip()
-    if not stripped or stripped in {".", ".."} or stripped.strip(".") == "":
-        return False
-    if ".." in model_name or any(ch in model_name for ch in ("/", "\\", ":", "\x00")):
-        return False
-    return True
 
 
 def _is_live2d_search_root(model_dir: str | os.PathLike, config_mgr) -> bool:

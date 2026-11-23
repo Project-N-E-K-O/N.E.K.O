@@ -17,6 +17,7 @@
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -605,6 +606,56 @@ def _parse_beacon_origin_key(
     return scheme, parsed.hostname.lower(), effective_port, port
 
 
+_BEACON_SHUTDOWN_MAX_JSON_BYTES = 4096
+
+
+def _is_valid_beacon_csrf_token(token: str) -> bool:
+    return bool(
+        token
+        and AUTOSTART_CSRF_TOKEN
+        and token.isascii()
+        and AUTOSTART_CSRF_TOKEN.isascii()
+        and secrets.compare_digest(token, AUTOSTART_CSRF_TOKEN)
+    )
+
+
+async def _read_bounded_beacon_csrf_token(
+    request: Request,
+    max_bytes: int = _BEACON_SHUTDOWN_MAX_JSON_BYTES,
+) -> str:
+    """Read an optional small JSON body without unbounded buffering to extract _csrf_token."""
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        return ""
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length is not None:
+        try:
+            content_length = int(raw_content_length)
+        except ValueError:
+            return ""
+        if content_length < 0 or content_length > max_bytes:
+            return ""
+    buf = bytearray()
+    try:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            if len(buf) + len(chunk) > max_bytes:
+                return ""
+            buf.extend(chunk)
+    except Exception:
+        return ""
+    if not buf:
+        return ""
+    try:
+        body = json.loads(buf.decode("utf-8"))
+    except Exception:
+        return ""
+    if isinstance(body, dict) and isinstance(body.get("_csrf_token"), str):
+        return body["_csrf_token"]
+    return ""
+
+
 async def _validate_beacon_shutdown_origin(request: Request) -> None:
     """Enforce strict exact-same-origin / Fetch-Metadata / CSRF protection on /api/beacon/shutdown."""
     def _reject() -> None:
@@ -619,24 +670,6 @@ async def _validate_beacon_shutdown_origin(request: Request) -> None:
 
     if request.scope.get("neko.instance_identity") and not _same_origin(request):
         _reject()
-
-    csrf_token = request.headers.get("x-csrf-token", "")
-    if not csrf_token:
-        content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if content_type == "application/json":
-            try:
-                body = await request.json()
-                if isinstance(body, dict) and isinstance(body.get("_csrf_token"), str):
-                    csrf_token = body["_csrf_token"]
-            except Exception:
-                pass
-    has_valid_csrf = bool(
-        csrf_token
-        and AUTOSTART_CSRF_TOKEN
-        and csrf_token.isascii()
-        and AUTOSTART_CSRF_TOKEN.isascii()
-        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
-    )
 
     origin_headers = request.headers.getlist("origin")
     referer_headers = request.headers.getlist("referer")
@@ -668,24 +701,31 @@ async def _validate_beacon_shutdown_origin(request: Request) -> None:
     if (raw_origin is not None or raw_referer is not None) and origin_key is None:
         _reject()
 
-    # Reject cross-site Fetch Metadata unconditionally; reject non-same-origin unless valid CSRF + same-host mapping.
+    # Run all header/origin checks that do not require CSRF before reading any JSON body.
     if sec_fetch_site:
-        if sec_fetch_site == "cross-site":
+        if sec_fetch_site == "cross-site" or sec_fetch_site not in {"same-origin", "same-site"}:
             _reject()
-        if sec_fetch_site != "same-origin":
-            if not (
-                has_valid_csrf
-                and sec_fetch_site == "same-site"
-                and origin_key is not None
-                and any(entry[1] == origin_key[1] for entry in allowed_keys)
-            ):
-                _reject()
+        if sec_fetch_site == "same-site" and (
+            origin_key is None or not any(entry[1] == origin_key[1] for entry in allowed_keys)
+        ):
+            _reject()
+
+    has_valid_header_csrf = _is_valid_beacon_csrf_token(request.headers.get("x-csrf-token", ""))
+
+    async def _has_valid_csrf_with_body_fallback() -> bool:
+        if has_valid_header_csrf:
+            return True
+        body_token = await _read_bounded_beacon_csrf_token(request)
+        return _is_valid_beacon_csrf_token(body_token)
+
+    if sec_fetch_site == "same-site":
+        if await _has_valid_csrf_with_body_fallback():
+            return
+        _reject()
 
     # If Origin or Referer is present, require exact scheme+host+effective_port match (not arbitrary loopback port).
     if origin_key is not None:
         if any(entry[:3] == origin_key[:3] for entry in allowed_keys):
-            return
-        if has_valid_csrf and any(entry[1] == origin_key[1] for entry in allowed_keys):
             return
         if request.scope.get("neko.instance_identity"):
             if raw_origin is not None and _same_origin(request):
@@ -703,10 +743,12 @@ async def _validate_beacon_shutdown_origin(request: Request) -> None:
                     and origin_key[2] == (own_key[3] or 443)
                 ):
                     return
+        if any(entry[1] == origin_key[1] for entry in allowed_keys) and await _has_valid_csrf_with_body_fallback():
+            return
         _reject()
 
     # Headerless requests (no Origin/Referer): allow only with Sec-Fetch-Site: same-origin or valid CSRF token.
-    if sec_fetch_site == "same-origin" or has_valid_csrf:
+    if sec_fetch_site == "same-origin" or await _has_valid_csrf_with_body_fallback():
         return
 
     _reject()

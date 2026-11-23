@@ -398,3 +398,85 @@ def test_local_mutation_guard_treats_lone_surrogate_csrf_token_as_403():
     assert rejected is not None
     assert rejected.status_code == 403
     assert json.loads(rejected.body)["error_code"] == "csrf_validation_failed"
+
+
+def test_beacon_shutdown_rejects_oversized_json_body_without_buffering(beacon_client):
+    import json
+    from app.main_server import web_app
+
+    client, shutdown_mock = beacon_client
+    big_padding = "x" * (web_app._BEACON_SHUTDOWN_MAX_JSON_BYTES + 256)
+    oversized_payload = json.dumps({
+        "_csrf_token": _csrf_token(),
+        "padding": big_padding,
+    }).encode("utf-8")
+
+    # 1) Explicit Content-Length above cap on headerless CSRF-fallback request -> 403.
+    resp_cl = client.post(
+        "/api/beacon/shutdown",
+        content=oversized_payload,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp_cl.status_code == 403
+    assert resp_cl.json()["detail"]["error_code"] == "csrf_validation_failed"
+
+    # 2) Chunked stream without Content-Length exceeding cap -> 403.
+    def _chunk_stream():
+        for start in range(0, len(oversized_payload), 512):
+            yield oversized_payload[start : start + 512]
+
+    resp_stream = client.post(
+        "/api/beacon/shutdown",
+        content=_chunk_stream(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp_stream.status_code == 403
+    assert resp_stream.json()["detail"]["error_code"] == "csrf_validation_failed"
+    assert shutdown_mock.await_count == 0
+
+    # 3) Small valid JSON token & empty-body same-origin beacon still succeed.
+    resp_small = client.post(
+        "/api/beacon/shutdown",
+        json={"_csrf_token": _csrf_token()},
+    )
+    assert resp_small.status_code == 200
+    resp_empty = client.post(
+        "/api/beacon/shutdown",
+        headers={"Origin": "http://127.0.0.1:48911", "Sec-Fetch-Site": "same-origin"},
+    )
+    assert resp_empty.status_code == 200
+    assert shutdown_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_beacon_shutdown_header_rejections_do_not_read_body(monkeypatch):
+    from starlette.requests import Request
+    from fastapi import HTTPException
+    from app.main_server import web_app
+
+    body_read_called = False
+
+    async def _bomb_receive():
+        nonlocal body_read_called
+        body_read_called = True
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    for hdrs in (
+        [(b"origin", b"https://evil.example"), (b"content-type", b"application/json")],
+        [(b"sec-fetch-site", b"cross-site"), (b"content-type", b"application/json")],
+    ):
+        req = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/beacon/shutdown",
+                "scheme": "http",
+                "server": ("127.0.0.1", 48911),
+                "headers": hdrs,
+            },
+            receive=_bomb_receive,
+        )
+        with pytest.raises(HTTPException) as exc:
+            await web_app._validate_beacon_shutdown_origin(req)
+        assert exc.value.status_code == 403
+        assert body_read_called is False

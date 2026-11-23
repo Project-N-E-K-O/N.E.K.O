@@ -32,8 +32,10 @@ from .preview_cards import (
     _PREVIEW_EXTENSION_TO_FORMATS,
     _PREVIEW_FORMAT_TO_EXTENSION,
     WORKSHOP_STANDARD_PREVIEW_EXTENSIONS,
+    _assert_direct_preview_target,
     _assert_workshop_path,
     _cleanup_consumed_preview_staging,
+    _is_path_inside_preview_staging,
     _verify_preview_image_file,
     find_preview_image_in_folder,
 )
@@ -56,6 +58,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
 from utils.file_utils import atomic_write_json_async, read_json_async
+from utils.frontend_utils import (
+    _resolve_workshop_search_dirs,
+    is_valid_live2d_model_name as _is_valid_live2d_model_name,
+)
 from utils.workshop_utils import (
     get_workshop_path_async,
 )
@@ -297,14 +303,7 @@ async def prepare_workshop_upload(request: Request):
             chara_data.pop('mmd' if model_type == 'vrm' else 'vrm', None)
         else:
             # Live2D: reject dot/traversal model names and search-root escapes before copying.
-            if (
-                not isinstance(model_name, str)
-                or not model_name.strip()
-                or model_name.strip() in {".", ".."}
-                or model_name.strip().strip(".") == ""
-                or ".." in model_name
-                or any(ch in model_name for ch in ("/", "\\", ":", "\x00"))
-            ):
+            if not _is_valid_live2d_model_name(model_name):
                 await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
                 return JSONResponse({
                     "success": False,
@@ -324,6 +323,12 @@ async def prepare_workshop_upload(request: Request):
             model_roots: list[Path] = [Path("static"), Path("static") / "live2d"]
             if isinstance(base_workshop_path, (str, os.PathLike)):
                 model_roots.append(Path(base_workshop_path))
+            try:
+                for ws_dir in _resolve_workshop_search_dirs():
+                    if isinstance(ws_dir, (str, os.PathLike)):
+                        model_roots.append(Path(ws_dir))
+            except Exception:
+                pass
             try:
                 config_mgr = get_config_manager()
                 for attr in ("live2d_dir", "readable_live2d_dir"):
@@ -560,6 +565,13 @@ async def publish_to_workshop(request: Request):
                 "error": "权限错误",
                 "message": "指定的内容文件夹不在允许的范围内"
             }, status_code=403)
+
+        if _is_path_inside_preview_staging(content_folder, workshop_base):
+            return JSONResponse(content={
+                "success": False,
+                "error": "权限错误",
+                "message": "指定的内容文件夹不能位于预览暂存目录内"
+            }, status_code=403)
         
         # Verify the content folder exists and is a directory.
         if not os.path.exists(content_folder):
@@ -675,9 +687,9 @@ async def publish_to_workshop(request: Request):
                     }, status_code=400)
 
                 try:
-                    new_preview_path = _assert_workshop_path(
-                        os.path.join(content_folder, f'preview{file_extension}'),
+                    new_preview_path = _assert_direct_preview_target(
                         content_folder,
+                        f'preview{file_extension}',
                     )
                 except PermissionError:
                     return JSONResponse(content={
@@ -688,7 +700,11 @@ async def publish_to_workshop(request: Request):
                 if os.path.normcase(os.path.realpath(preview_image)) != os.path.normcase(os.path.realpath(new_preview_path)):
                     source_preview = preview_image
                     if os.path.isdir(new_preview_path):
-                        logger.warning(f'目标预览路径已是目录，保留已验证的源预览图片: {new_preview_path}')
+                        return JSONResponse(content={
+                            "success": False,
+                            "error": "预览图片无效",
+                            "message": "内容文件夹中已存在同名预览目录，无法写入预览图片"
+                        }, status_code=400)
                     else:
                         try:
                             import shutil
@@ -754,9 +770,9 @@ async def publish_to_workshop(request: Request):
                     )
                     if needs_canonical_copy:
                         try:
-                            new_preview_path = _assert_workshop_path(
-                                os.path.join(content_folder, f'preview{target_extension}'),
+                            new_preview_path = _assert_direct_preview_target(
                                 content_folder,
+                                f'preview{target_extension}',
                             )
                         except PermissionError:
                             return JSONResponse(content={
@@ -765,9 +781,28 @@ async def publish_to_workshop(request: Request):
                                 "message": "预览图片路径不在允许的范围内"
                             }, status_code=403)
                         if os.path.isdir(new_preview_path):
-                            logger.warning(f'自动预览目标路径已是目录，继续使用原预览图片: {new_preview_path}')
+                            return JSONResponse(content={
+                                "success": False,
+                                "error": "预览图片无效",
+                                "message": "内容文件夹中已存在同名预览目录，无法写入预览图片"
+                            }, status_code=400)
                         elif detected_format not in allowed_for_ext and os.path.exists(new_preview_path):
-                            logger.warning(f'目标预览文件已存在，避免覆盖: {new_preview_path}')
+                            if not os.path.isfile(new_preview_path):
+                                return JSONResponse(content={
+                                    "success": False,
+                                    "error": "预览图片无效",
+                                    "message": "内容文件夹中已存在同名但无效的预览图片"
+                                }, status_code=400)
+                            try:
+                                await asyncio.to_thread(_verify_preview_image_file, new_preview_path)
+                            except Exception:
+                                return JSONResponse(content={
+                                    "success": False,
+                                    "error": "预览图片无效",
+                                    "message": "内容文件夹中已存在同名但无效的预览图片"
+                                }, status_code=400)
+                            logger.warning(f'目标预览文件已存在且有效，直接使用: {new_preview_path}')
+                            preview_image = new_preview_path
                         else:
                             try:
                                 import shutil

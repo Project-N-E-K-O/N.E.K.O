@@ -56,6 +56,7 @@ from utils.frontend_utils import (
     find_models,
     find_workshop_item_by_id,
     find_workshop_item_model_file,
+    is_valid_live2d_model_name as _is_valid_live2d_model_name,
     model_url_dir,
 )
 from utils.live2d_model_refs import is_unsafe_model_ref as _is_unsafe_model_ref
@@ -137,19 +138,6 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _is_valid_live2d_model_name(model_name: str | None, *, for_upload: bool = False) -> bool:
-    """Return whether ``model_name`` is a single safe directory/item identifier."""
-    if not isinstance(model_name, str):
-        return False
-    stripped = model_name.strip()
-    if not stripped or stripped in {".", ".."} or stripped.strip(".") == "":
-        return False
-    forbidden_chars = ("/", "\\", ":", "\x00") if (for_upload or os.name == "nt") else ("/", "\\", "\x00")
-    if ".." in model_name or any(ch in model_name for ch in forbidden_chars):
-        return False
-    return True
 
 
 def _iter_live2d_search_roots() -> list[pathlib.Path]:
@@ -1705,16 +1693,21 @@ def _sanitize_live2d_upload_relpath(raw_filename: str | None) -> pathlib.PurePos
     return pathlib.PurePosixPath(*parts)
 
 
+async def _run_cancellation_safe_io(func, *args, **kwargs):
+    """Run blocking filesystem I/O in a worker and wait for it before propagating cancellation."""
+    task = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({task})
+        raise
+
+
 async def _write_staged_upload_bytes(target_file_path: pathlib.Path, content: bytes) -> None:
     """Write staged upload bytes without letting cancellation exit TemporaryDirectory early."""
-    writer = asyncio.ensure_future(asyncio.to_thread(target_file_path.write_bytes, content))
-    try:
-        await asyncio.shield(writer)
-    except asyncio.CancelledError:
-        while not writer.done():
-            with suppress(asyncio.CancelledError):
-                await asyncio.wait({writer})
-        raise
+    await _run_cancellation_safe_io(target_file_path.write_bytes, content)
 
 
 @upload_router.post('/upload_model')
@@ -1796,10 +1789,10 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     })
                 else:
                     logger.info(f"清理残留的无效模型目录: {target_model_dir}")
-                    await asyncio.to_thread(shutil.rmtree, target_model_dir, ignore_errors=True)
+                    await _run_cancellation_safe_io(shutil.rmtree, target_model_dir, ignore_errors=True)
 
             # Copy model root to user-documents live2d directory.
-            await asyncio.to_thread(shutil.copytree, model_root_dir, target_model_dir)
+            await _run_cancellation_safe_io(shutil.copytree, model_root_dir, target_model_dir)
 
             # After upload iterate all *.motion3.json files,
             # empty Segments=[] for official whitelist and model-declared .model3.json LipSync parameters.

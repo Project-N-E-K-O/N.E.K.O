@@ -552,3 +552,84 @@ async def test_write_staged_upload_bytes_waits_for_worker_on_cancellation(tmp_pa
     with pytest.raises(asyncio.CancelledError):
         await task
     assert dest.read_bytes() == b"payload"
+
+
+def test_cards_and_publish_live2d_name_validation_matches_posix_and_windows(monkeypatch):
+    import os
+    from main_routers import live2d_router
+    from main_routers.characters_router import cards
+    from main_routers.workshop_router import publish
+
+    assert live2d_router._is_valid_live2d_model_name("Blue:Night", for_upload=True) is False
+
+    monkeypatch.setattr(os, "name", "posix")
+    assert cards._is_valid_live2d_model_name("Blue:Night") is True
+    assert publish._is_valid_live2d_model_name("Blue:Night") is True
+    assert cards._is_valid_live2d_model_name("../Blue:Night") is False
+    assert publish._is_valid_live2d_model_name("Blue/Night") is False
+
+    monkeypatch.setattr(os, "name", "nt")
+    assert cards._is_valid_live2d_model_name("Blue:Night") is False
+    assert publish._is_valid_live2d_model_name("Blue:Night") is False
+
+
+def test_find_model_directory_rejects_library_root_alias_but_allows_subdir(tmp_path, monkeypatch):
+    from utils import config_manager as cm_mod
+    from utils import frontend_utils
+
+    user_docs = tmp_path / "docs_live2d"
+    user_docs.mkdir()
+    lib2 = tmp_path / "steam_lib2" / "workshop" / "content" / "123"
+    lib2.mkdir(parents=True)
+    real_item = lib2 / "999"
+    real_item.mkdir()
+    (real_item / "LegitModel.model3.json").write_text("{}", encoding="utf-8")
+
+    alias_to_root = lib2 / "Alias"
+    try:
+        alias_to_root.symlink_to(lib2, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlinks are not supported in this test environment: {exc}")
+
+    fake_cm = SimpleNamespace(
+        live2d_dir=user_docs,
+        readable_live2d_dir=user_docs,
+        get_live2d_lookup_roots=lambda prefer_writable=True: [user_docs],
+        get_workshop_path=lambda: "",
+    )
+    monkeypatch.setattr(cm_mod, "get_config_manager", lambda: fake_cm)
+    monkeypatch.setattr(frontend_utils, "_resolve_workshop_search_dirs", lambda: [str(lib2)])
+
+    assert frontend_utils.find_model_directory("Alias") == (None, None)
+    assert frontend_utils.find_model_directory("LegitModel") == (str(real_item), "/workshop")
+
+
+@pytest.mark.asyncio
+async def test_run_cancellation_safe_io_waits_for_worker_on_cancellation():
+    import asyncio
+    import threading
+    from main_routers import live2d_router
+
+    started = threading.Event()
+    release = threading.Event()
+    finished = False
+
+    def _slow_io(marker):
+        nonlocal finished
+        started.set()
+        assert release.wait(timeout=2.0)
+        finished = marker
+        return marker
+
+    task = asyncio.create_task(live2d_router._run_cancellation_safe_io(_slow_io, "done"))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done(), "cancellation returned before worker I/O finished"
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished == "done"

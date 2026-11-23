@@ -1523,3 +1523,114 @@ test('PR3976 4662528107: plugin put OFF by a failed start keeps the saved plugin
         && c.body && c.body.flags && Object.prototype.hasOwnProperty.call(c.body.flags, 'user_plugin_enabled'));
     assert.equal(pluginWrites.pop().body.flags.user_plugin_enabled, true, 'tutorial end must not record plugins as OFF');
 });
+
+test('PR3981 #57: switching characters while waiting for CSRF token aborts agent restore before sending POST', async () => {
+    const flags = { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false };
+
+    // Case A: owner switches CatA -> CatB during initial CSRF page_config fetch -> no /api/agent/command POST sent.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 1601, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: flags,
+        }));
+        const server = makeAgentServer();
+        let releaseCsrf = null;
+        const csrfGate = new Promise(resolve => { releaseCsrf = resolve; });
+        let csrfRequestedResolve = null;
+        const csrfRequested = new Promise(resolve => { csrfRequestedResolve = resolve; });
+        const handler = async (url, init, body) => {
+            if (url === '/api/config/page_config') {
+                csrfRequestedResolve();
+                await csrfGate;
+                return { ok: true, status: 200, json: async () => ({ autostart_csrf_token: 'tok-initial' }) };
+            }
+            return await server.handler(url, init, body);
+        };
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+        await csrfRequested;
+        // User switches character while restore is awaiting CSRF token.
+        rt.win.lanlan_config.lanlan_name = 'CatB';
+        releaseCsrf();
+        await flushMicrotasks();
+        const postCalls = rt.fetchCalls.filter(c => c.method === 'POST');
+        assert.equal(postCalls.length, 0, 'must NOT send /api/agent/command or /api/agent/flags after switching owner mid-CSRF fetch');
+        const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
+        assert.notEqual(persisted.masterAttempted, true, 'aborted master attempt must not be marked attempted');
+    }
+
+    // Case B: owner switches CatA -> CatB during 403 csrf_validation_failed retry -> retry is aborted; unchanged owner retries cleanly.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 1602, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: flags,
+        }));
+        const server = makeAgentServer();
+        let pageConfigCount = 0;
+        let releaseRetryCsrf = null;
+        const retryCsrfGate = new Promise(resolve => { releaseRetryCsrf = resolve; });
+        let retryCsrfRequestedResolve = null;
+        const retryCsrfRequested = new Promise(resolve => { retryCsrfRequestedResolve = resolve; });
+        let return403NextCommand = true;
+        const handler = async (url, init, body) => {
+            if (url === '/api/config/page_config') {
+                pageConfigCount += 1;
+                if (pageConfigCount === 2) {
+                    retryCsrfRequestedResolve();
+                    await retryCsrfGate;
+                    return { ok: true, status: 200, json: async () => ({ autostart_csrf_token: 'tok-retry' }) };
+                }
+                return { ok: true, status: 200, json: async () => ({ autostart_csrf_token: 'tok-stale' }) };
+            }
+            if (url === '/api/agent/command' && (init.method || 'GET') === 'POST' && return403NextCommand) {
+                return403NextCommand = false;
+                return {
+                    ok: false,
+                    status: 403,
+                    json: async () => ({ error_code: 'csrf_validation_failed' }),
+                    clone() { return { json: async () => ({ error_code: 'csrf_validation_failed' }) }; },
+                };
+            }
+            return await server.handler(url, init, body);
+        };
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+        await retryCsrfRequested;
+        rt.win.lanlan_config.lanlan_name = 'CatB';
+        releaseRetryCsrf();
+        await flushMicrotasks();
+        const cmdPosts = rt.fetchCalls.filter(c => c.url === '/api/agent/command' && c.method === 'POST');
+        assert.equal(cmdPosts.length, 1, '403 retry POST must NOT fire when character switched during CSRF refresh');
+        assert.equal(server.master, false, 'target character B must not have agent enabled');
+    }
+
+    // Case C: when character stays CatA, 403 csrf_validation_failed completes its single CSRF retry and restores.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 1603, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: flags,
+        }));
+        const server = makeAgentServer();
+        let pageConfigCount = 0;
+        let failFirstCmdWithCsrf = true;
+        const handler = async (url, init, body) => {
+            if (url === '/api/config/page_config') {
+                pageConfigCount += 1;
+                return { ok: true, status: 200, json: async () => ({ autostart_csrf_token: `tok-${pageConfigCount}` }) };
+            }
+            if (url === '/api/agent/command' && (init.method || 'GET') === 'POST' && failFirstCmdWithCsrf) {
+                failFirstCmdWithCsrf = false;
+                return {
+                    ok: false,
+                    status: 403,
+                    json: async () => ({ error_code: 'csrf_validation_failed' }),
+                    clone() { return { json: async () => ({ error_code: 'csrf_validation_failed' }) }; },
+                };
+            }
+            return await server.handler(url, init, body);
+        };
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+        await flushMicrotasks();
+        assert.equal(server.master, true, 'restore with unchanged owner should retry once after 403 and enable master');
+        assert.equal(server.child.computer_use_enabled, true);
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
+});

@@ -454,6 +454,7 @@
       }));
       this._disposed = false;
       this._cachedCsrfToken = '';
+      this._csrfTokenStale = false;
       this._csrfFetchPromise = null;
       this._activeCommandRouteIdentity = null;
       this._memoryConsentEnabled = false;
@@ -1427,6 +1428,7 @@
     }
 
     _postWithCsrf(path, payload, options = {}) {
+      const deadlineMs = Number.isFinite(options?.deadlineMs) ? options.deadlineMs : null;
       return this.withCsrfRetry((headers) => {
         const body = jsonBody(payload, headers);
         // Include host identity and the actual token on every CSRF attempt.
@@ -1435,8 +1437,19 @@
             operation: options.operation,
           });
         }
+        let timeoutMs = options.timeoutMs;
+        if (deadlineMs != null) {
+          const remainingMs = deadlineMs - Date.now();
+          if (remainingMs <= 0) {
+            throw this._hostError('timeout', `${this.displayName} host request timed out`, {
+              operation: options.operation,
+            });
+          }
+          timeoutMs = remainingMs;
+        }
         return this._post(path, body, {
           ...options,
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(options.keepalive ? { keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES } : {}),
           headers: { ...headers, ...(options.headers || {}) },
           credentials: options.credentials || 'same-origin',
@@ -1445,6 +1458,7 @@
         signal: options.signal,
         operation: options.operation,
         trackCancellation: true,
+        deadlineMs,
       });
     }
 
@@ -2167,10 +2181,11 @@
     getMutationHeaders(options = {}) {
       const forceRefresh = options?.forceRefresh === true;
       if (forceRefresh) {
+        this._csrfTokenStale = true;
         this._csrfFetchPromise = null;
       }
       const loadFromPageConfig = (useCached = !forceRefresh) => {
-        if (useCached && this._cachedCsrfToken) {
+        if (useCached && this._cachedCsrfToken && !this._csrfTokenStale) {
           return Promise.resolve({
             'Content-Type': 'application/json',
             'X-CSRF-Token': this._cachedCsrfToken,
@@ -2187,6 +2202,7 @@
             if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
               headers['X-CSRF-Token'] = config.autostart_csrf_token;
               this._cachedCsrfToken = config.autostart_csrf_token;
+              this._csrfTokenStale = false;
             }
             return headers;
           })
@@ -2197,9 +2213,7 @@
             }
             return headers;
           });
-        if (!forceRefresh) {
-          this._csrfFetchPromise = pending;
-        }
+        this._csrfFetchPromise = pending;
         return pending.then((cached) => ({ ...cached }));
       };
       const security = this._window.nekoLocalMutationSecurity;
@@ -2210,6 +2224,7 @@
             const resolvedToken = csrfTokenFromHeaders(headers);
             if (resolvedToken) {
               this._cachedCsrfToken = resolvedToken;
+              this._csrfTokenStale = false;
               return headers;
             }
             return loadFromPageConfig(false);
@@ -2248,13 +2263,18 @@
       return entry;
     }
 
-    _awaitWithAbortSignal(promise, signal, operation = 'request', csrfOpEntry = null) {
+    _awaitWithAbortSignal(promise, signal, operation = 'request', csrfOpEntry = null, deadlineMs = null) {
       if (csrfOpEntry?.cancelReason) {
         return Promise.reject(
           this._hostError(csrfOpEntry.cancelReason, `${this.displayName} host request was cancelled`, { operation }),
         );
       }
-      if (!signal && !csrfOpEntry) return promise;
+      if (deadlineMs != null && (deadlineMs - Date.now()) <= 0) {
+        return Promise.reject(
+          this._hostError('timeout', `${this.displayName} host request timed out`, { operation }),
+        );
+      }
+      if (!signal && !csrfOpEntry && deadlineMs == null) return promise;
       if (signal?.aborted) {
         return Promise.reject(
           this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation }),
@@ -2267,11 +2287,19 @@
         const onHostCancel = (reason) => {
           reject(this._hostError(reason || 'cancelled', `${this.displayName} host request was cancelled`, { operation }));
         };
+        let timeoutId = null;
+        if (deadlineMs != null) {
+          const remainingMs = Math.max(1, deadlineMs - Date.now());
+          timeoutId = this._window.setTimeout(() => {
+            reject(this._hostError('timeout', `${this.displayName} host request timed out`, { operation }));
+          }, remainingMs);
+        }
         signal?.addEventListener('abort', onAbort, { once: true });
         csrfOpEntry?.waiters.add(onHostCancel);
         Promise.resolve(promise)
           .then(resolve, reject)
           .finally(() => {
+            if (timeoutId != null) this._window.clearTimeout(timeoutId);
             signal?.removeEventListener('abort', onAbort);
             csrfOpEntry?.waiters.delete(onHostCancel);
           });
@@ -2282,6 +2310,7 @@
       const signal = options?.signal;
       const operation = String(options?.operation || 'request');
       const trackCancellation = options?.trackCancellation === true;
+      const deadlineMs = Number.isFinite(options?.deadlineMs) ? options.deadlineMs : null;
       if (this._disposed) {
         throw this._hostError('disposed', `${this.displayName} host adapter has been disposed`, { operation });
       }
@@ -2292,6 +2321,7 @@
           signal,
           operation,
           csrfOpEntry,
+          deadlineMs,
         );
         if (csrfOpEntry.cancelReason || signal?.aborted) {
           throw this._hostError(
@@ -2299,6 +2329,9 @@
             `${this.displayName} host request was cancelled`,
             { operation },
           );
+        }
+        if (deadlineMs != null && (deadlineMs - Date.now()) <= 0) {
+          throw this._hostError('timeout', `${this.displayName} host request timed out`, { operation });
         }
         let response = await requestWithHeaders(initialHeaders);
         if (csrfOpEntry.cancelReason || signal?.aborted) {
@@ -2318,12 +2351,16 @@
           );
         }
         if (errorPayload?.error_code !== 'csrf_validation_failed') return response;
-        if (signal || trackCancellation) {
+        if (deadlineMs != null && (deadlineMs - Date.now()) <= 0) {
+          throw this._hostError('timeout', `${this.displayName} host request timed out`, { operation });
+        }
+        if (signal || trackCancellation || deadlineMs != null) {
           const refreshedHeaders = await this._awaitWithAbortSignal(
             this.refreshMutationHeaders(),
             signal,
             operation,
             csrfOpEntry,
+            deadlineMs,
           );
           if (csrfOpEntry.cancelReason || signal?.aborted) {
             throw this._hostError(
@@ -2331,6 +2368,9 @@
               `${this.displayName} host request was cancelled`,
               { operation },
             );
+          }
+          if (deadlineMs != null && (deadlineMs - Date.now()) <= 0) {
+            throw this._hostError('timeout', `${this.displayName} host request timed out`, { operation });
           }
           response = await requestWithHeaders(refreshedHeaders);
         } else {
@@ -3872,6 +3912,7 @@
       // nothing on the awaited path and is strictly better than certain failure
       // on the unload path.
       const endTimeoutMs = boundedPositiveInteger(options.timeoutMs, 8000, 30000);
+      const endDeadlineMs = Date.now() + endTimeoutMs;
       let response;
       if (options.useBeacon) {
         // Dispatch the unload fallback synchronously before any `await` so an
@@ -3890,6 +3931,11 @@
         if (!this._disposed && !options.signal?.aborted && response.status === 403) {
           const errPayload = await response.clone().json().catch(() => ({}));
           if (errPayload?.error_code === 'csrf_validation_failed') {
+            if (endDeadlineMs - Date.now() <= 0) {
+              throw this._hostError('timeout', `${this.displayName} host request timed out after ${endTimeoutMs}ms`, {
+                operation: 'route_end',
+              });
+            }
             const csrfOpEntry = this._createCsrfOperationTracker('route_end');
             let refreshedHeaders;
             try {
@@ -3898,6 +3944,7 @@
                 options.signal,
                 'route_end',
                 csrfOpEntry,
+                endDeadlineMs,
               );
             } finally {
               this._pendingCsrfOperations.delete(csrfOpEntry);
@@ -3910,12 +3957,18 @@
                 : fallbackPayloadObj
             );
             if (!this._disposed && !csrfOpEntry.cancelReason && !options.signal?.aborted) {
+              const retryTimeoutMs = endDeadlineMs - Date.now();
+              if (retryTimeoutMs <= 0) {
+                throw this._hostError('timeout', `${this.displayName} host request timed out after ${endTimeoutMs}ms`, {
+                  operation: 'route_end',
+                });
+              }
               response = await this._post(this._gameEndpoint('end'), retryBody, {
                 headers: refreshedHeaders,
                 credentials: 'same-origin',
                 keepalive: utf8ByteLength(retryBody) <= KEEPALIVE_BODY_BYTES,
                 operation: 'route_end',
-                timeoutMs: endTimeoutMs,
+                timeoutMs: retryTimeoutMs,
                 signal: options.signal,
               });
             }
@@ -3926,6 +3979,7 @@
           keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES,
           operation: 'route_end',
           timeoutMs: endTimeoutMs,
+          deadlineMs: endDeadlineMs,
           signal: options.signal,
         });
       }
