@@ -45,15 +45,13 @@ permissions:
   # lists the suspect commits.
   contents: read
 
-concurrency:
-  # One reporter at a time per watched workflow, in arrival order, so two
-  # quick failures cannot both decide that no issue is open yet.
-  group: main-red-reporter-${{ github.event.workflow_run.workflow_id || inputs.run_id }}
-  cancel-in-progress: false
-
 jobs:
-  report:
-    name: Report main status
+  resolve:
+    # The issue lock below is per watched workflow. A live event carries the
+    # workflow id; a manual replay only has a run id, so look it up first —
+    # otherwise a replay and a live report of the same workflow could each
+    # see no open issue and open two.
+    name: Resolve watched workflow
     if: >-
       github.repository == 'Project-N-E-K-O/N.E.K.O' &&
       (github.event_name == 'workflow_dispatch' ||
@@ -62,6 +60,36 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository &&
        (github.event.workflow_run.conclusion == 'failure' ||
         github.event.workflow_run.conclusion == 'success')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      workflow_id: ${{ steps.resolve.outputs.workflow_id }}
+    steps:
+      - name: Look up the workflow of the run
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+          EVENT_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+        run: |
+          case "$RUN_ID" in
+            ''|*[!0-9]*) echo "::error::run_id must be a number, got '$RUN_ID'"; exit 1 ;;
+          esac
+          if [ -n "$EVENT_WORKFLOW_ID" ]; then
+            workflow_id="$EVENT_WORKFLOW_ID"
+          else
+            workflow_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '.workflow_id')
+          fi
+          echo "workflow_id=$workflow_id" >> "$GITHUB_OUTPUT"
+
+  report:
+    name: Report main status
+    needs: resolve
+    concurrency:
+      # One reporter at a time per watched workflow, live or replayed, so two
+      # quick reports cannot both decide that no issue is open yet.
+      group: main-red-reporter-${{ needs.resolve.outputs.workflow_id }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import urllib.error
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -149,6 +151,7 @@ class FakeGitHub:
             {"id": 99, "name": "Unit pytest (Windows)", "conclusion": "failure", "html_url": "https://example.invalid/job/99"}
         ]
         self.writes: list[tuple[str, str, dict | None]] = []
+        self.pages_read: list[str] = []
 
     @staticmethod
     def _commit(sha, message, login):
@@ -158,19 +161,25 @@ class FakeGitHub:
         if path == f"/repos/{REPO}/actions/runs/{self.run['id']}":
             return self.run
         if path.startswith(f"/repos/{REPO}/actions/workflows/"):
-            return {"workflow_runs": self.runs}
+            return {"workflow_runs": self._page(path, self.runs)}
         if path.startswith(f"/repos/{REPO}/actions/runs/{self.run['id']}/jobs"):
             return {"jobs": [*self.failed_jobs, {"id": 1, "name": "ok", "conclusion": "success", "html_url": "x"}]}
         if path.startswith(f"/repos/{REPO}/issues?"):
             return self.issues
         if path.startswith(f"/repos/{REPO}/compare/"):
-            return {"commits": self.commits, "total_commits": len(self.commits)}
+            return {"commits": self._page(path, self.commits), "total_commits": len(self.commits)}
         if path.startswith(f"/repos/{REPO}/commits/"):
             return self.commits[-1]
         if path.startswith(f"/repos/{REPO}/issues/"):
             number = int(path.rsplit("/", 1)[1])
             return {"user": {"login": {10: "alice", 11: "dependabot[bot]"}[number]}}
         raise AssertionError(f"unexpected GET {path}")
+
+    def _page(self, path, items):
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(path).query))
+        size, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+        self.pages_read.append(path)
+        return items[(page - 1) * size : page * size]
 
     def call(self, method, path, body=None, ok=(200, 201)):
         if method == "GET":
@@ -309,7 +318,56 @@ def test_missing_last_success_lists_only_the_failing_commit():
     assert "没找到" in mr.render_failure(report, for_comment=False)
 
 
-# ---- workflow wiring ----------------------------------------------------------
+def test_long_red_streak_pages_back_to_the_last_success_and_every_commit():
+    current = _failure()
+    failures = [
+        _run(1000 - i, "failure", f"2026-01-04T{i // 60:02d}:{i % 60:02d}:00Z") for i in range(150)
+    ]
+    failures.sort(key=lambda r: r["created_at"], reverse=True)
+    good = _run(1, "success", "2026-01-01T00:00:00Z", sha="b" * 40)
+    commits = [FakeGitHub._commit(f"{i:02d}", f"change {i} (#10)", "merger") for i in range(250)]
+    gh = FakeGitHub(current, [current, *failures, good], commits=commits)
+    runs = mr.run_history(gh, current)
+    assert mr.last_success_before(current, runs)["id"] == 1
+    report = mr.collect_failure(gh, current, runs)
+    assert len(report.suspects) == 250 and not report.suspects_truncated
+    assert sum("/compare/" in p for p in gh.pages_read) == 3
+
+
+def test_history_stops_paging_once_the_last_success_is_found():
+    current = _failure()
+    # 250 older runs, so every page is full; the success sits on the first page.
+    older = [
+        _run(900 - i, "success" if i == 240 else "failure", f"2026-01-04T{i // 60:02d}:{i % 60:02d}:00Z")
+        for i in range(250)
+    ]
+    older.sort(key=lambda r: r["created_at"], reverse=True)
+    gh = FakeGitHub(current, [current, *older])
+    mr.run_history(gh, current)
+    assert sum("/actions/workflows/" in p for p in gh.pages_read) == 1
+
+
+def test_log_download_failure_still_reports(monkeypatch):
+    gh = mr.GitHub("token", REPO)
+    monkeypatch.setattr(gh, "_request", lambda *a, **k: (302, b"", {"Location": "https://blob.invalid/log"}))
+
+    def broken(*args, **kwargs):
+        raise urllib.error.URLError("storage unavailable")
+
+    monkeypatch.setattr(mr.urllib.request, "urlopen", broken)
+    assert gh.job_log(1) == ""
+
+
+# ---- workflow wiring ----
+
+
+def test_live_and_replayed_reports_share_one_lock_per_workflow():
+    workflow = yaml.safe_load(WORKFLOW.read_bytes().decode("utf-8"))
+    assert "concurrency" not in workflow  # a workflow-level group would differ between live and replay
+    report = workflow["jobs"]["report"]
+    assert report["needs"] == "resolve"
+    assert report["concurrency"]["group"] == "main-red-reporter-${{ needs.resolve.outputs.workflow_id }}"
+    assert report["concurrency"]["cancel-in-progress"] is False
 
 
 @pytest.fixture(scope="module")
@@ -333,8 +391,9 @@ def test_reporter_permissions_and_dispatch_defaults(workflow):
     inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
     assert inputs["run_id"]["required"] is True
     assert inputs["dry_run"]["default"] is True
+    gate = workflow["jobs"]["resolve"]["if"]
+    assert "conclusion == 'failure'" in gate and "conclusion == 'success'" in gate
+    assert "cancelled" not in gate
     job = workflow["jobs"]["report"]
-    assert "conclusion == 'failure'" in job["if"] and "conclusion == 'success'" in job["if"]
-    assert "cancelled" not in job["if"]
     env = job["steps"][-1]["env"]
     assert env["DISCORD_WEBHOOK_URL"] == "${{ secrets.DISCORD_HEALTH_WEBHOOK_URL }}"

@@ -26,6 +26,12 @@ Selection rules (the "trans" strategy validated offline on 150 merged PRs):
   every imported module, or a facade whose name was traced elsewhere) is a
   weak dependency: it selects the importer when that ``__init__`` itself
   changed, but does not pass on changes to everything else it imports.
+* Fixtures: a test that requests a conftest fixture (as a parameter or via
+  ``usefixtures``, also through fixtures requesting fixtures) depends on
+  what that fixture imports. A module imported at conftest level or inside
+  an autouse fixture runs for every test in the conftest's directory, so a
+  change to that module itself selects the whole directory (the full suite
+  for the root conftests).
 * A test file is selected when anything in its transitive closure changed,
   which also covers a changed test file itself and helpers that reach
   application code indirectly.
@@ -129,6 +135,8 @@ class RepoIndex:
     tests: dict[str, TestFile]  # candidate test files under tests/unit
     path_to_module: dict[str, str] = field(default_factory=dict)
     test_tree_tokens: dict[str, frozenset[str]] | None = None  # built lazily
+    # conftest path -> modules outside tests/ that run for every test in its scope
+    conftest_autouse: dict[str, set[str]] = field(default_factory=dict)
 
     @property
     def total_weight(self) -> int:
@@ -411,6 +419,19 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
         deps[mod] = strong
         weak_deps[mod] = weak - strong - {mod}
 
+    # Fixtures reach code without an import in the test: a test that takes a
+    # conftest fixture as a parameter depends on what that fixture imports.
+    fixture_deps, conftest_autouse = _conftest_fixtures(modules, trees, resolver)
+    for rel, tree in trees.items():
+        if tree is None or not rel.startswith(TEST_ROOT + "/") or not is_test_module(rel):
+            continue
+        used = _used_fixture_names(tree)
+        mod = module_name(rel)
+        for conftest_rel, fixtures in fixture_deps.items():
+            if rel.startswith(conftest_rel.rsplit("/", 1)[0] + "/"):
+                for name in used & fixtures.keys():
+                    deps[mod] |= fixtures[name] - {mod}
+
     test_tree_text = {rel: text for rel, text in texts.items() if rel.startswith("tests/")}
     tests: dict[str, TestFile] = {}
     for rel, tree in trees.items():
@@ -426,7 +447,104 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
         test_tree_text=test_tree_text,
         tests=tests,
         path_to_module={rel: mod for mod, rel in modules.items()},
+        conftest_autouse=conftest_autouse,
     )
+
+
+def _fixture_decorator(dec: ast.expr) -> tuple[bool, bool, str | None]:
+    """(is a fixture, autouse, name override) for one decorator."""
+    target = dec.func if isinstance(dec, ast.Call) else dec
+    if isinstance(target, ast.Attribute):
+        name = target.attr
+    elif isinstance(target, ast.Name):
+        name = target.id
+    else:
+        return False, False, None
+    if name != "fixture":
+        return False, False, None
+    autouse, alias = False, None
+    if isinstance(dec, ast.Call):
+        for kw in dec.keywords:
+            if kw.arg == "autouse" and isinstance(kw.value, ast.Constant):
+                autouse = bool(kw.value.value)
+            elif kw.arg == "name" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                alias = kw.value.value
+    return True, autouse, alias
+
+
+def _resolve_nodes(resolver: _Resolver, rel: str, nodes: list[ast.stmt], imports_only: bool = False) -> set[str]:
+    scanned = _scan_imports(rel, ast.Module(body=list(nodes), type_ignores=[]), "")
+    out: set[str] = set()
+    groups = ((scanned.exact, False),) if imports_only else ((scanned.exact, False), (scanned.loose, True))
+    for names, loose in groups:
+        for name in names:
+            out |= resolver.resolve(name, loose)[0]
+    return out
+
+
+def _conftest_fixtures(
+    modules: dict[str, str], trees: dict[str, ast.Module | None], resolver: _Resolver
+) -> tuple[dict[str, dict[str, set[str]]], dict[str, set[str]]]:
+    """Per conftest: fixture name -> modules it imports, and the modules every test in scope runs.
+
+    The second map holds what the conftest imports at module level or inside
+    an autouse fixture, outside tests/ (test-tree helpers are already scoped
+    by the conftest rule). Only those modules themselves count, not their
+    imports: an autouse fixture touches exactly what it imports.
+    """
+    fixture_deps: dict[str, dict[str, set[str]]] = {}
+    autouse: dict[str, set[str]] = {}
+    for rel in modules.values():
+        tree = trees.get(rel)
+        if tree is None or not rel.startswith("tests/") or PurePosixPath(rel).name != "conftest.py":
+            continue
+        fixtures: dict[str, set[str]] = {}
+        params: dict[str, set[str]] = {}
+        always: list[ast.stmt] = []
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    always.append(node)
+                continue
+            for dec in node.decorator_list:
+                is_fixture, is_autouse, alias = _fixture_decorator(dec)
+                if is_fixture:
+                    name = alias or node.name
+                    fixtures[name] = _resolve_nodes(resolver, rel, [node])
+                    params[name] = {a.arg for a in node.args.args + node.args.kwonlyargs}
+                    if is_autouse:
+                        always.append(node)
+                    break
+        for _ in range(len(fixtures)):  # fixtures requesting other fixtures
+            changed = False
+            for name, requested in params.items():
+                for other in requested & fixtures.keys():
+                    if other != name and not fixtures[other] <= fixtures[name]:
+                        fixtures[name] |= fixtures[other]
+                        changed = True
+            if not changed:
+                break
+        fixture_deps[rel] = fixtures
+        # Import statements only: `sys.modules.get("pkg.mod")` in a reset
+        # fixture touches a module some test already loaded, it loads nothing.
+        autouse[rel] = {
+            m
+            for m in _resolve_nodes(resolver, rel, always, imports_only=True)
+            if not modules.get(m, "tests/").startswith("tests/")
+        }
+    return fixture_deps, autouse
+
+
+def _used_fixture_names(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names |= {a.arg for a in node.args.args + node.args.kwonlyargs}
+        elif isinstance(node, ast.Call):
+            target = node.func
+            if isinstance(target, ast.Attribute) and target.attr == "usefixtures":
+                names |= {a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)}
+    return names
 
 
 def _reverse_closure(index: RepoIndex, seeds: set[str]) -> set[str]:
@@ -469,25 +587,28 @@ def _test_tree_closure(index: RepoIndex, rel: str) -> set[str]:
     return {index.modules[m] for m in seen if m in index.modules}
 
 
-def _literal_for(rel: str) -> str | None:
+def _literal_for(rel: str) -> tuple[str, ...] | None:
+    """File-name tokens that must all appear in a test for it to count as naming ``rel``."""
     path = PurePosixPath(rel)
-    literal = path.name
-    if literal in GENERIC_BASENAMES:
-        literal = f"{path.parent.name}/{path.name}" if path.parent.name else literal
-    return literal if len(literal) >= MIN_LITERAL_LEN else None
+    if len(path.name) < MIN_LITERAL_LEN:
+        return None
+    if path.name in GENERIC_BASENAMES and path.parent.name:
+        # "templates/index.html" is often spelled ROOT / "templates" / "index.html",
+        # so the directory and the name are matched as separate tokens.
+        return (path.parent.name, path.name)
+    return (path.name,)
 
 
 def _tokens(text: str) -> frozenset[str]:
     return frozenset(t.strip(".-") for t in _TOKEN_RE.findall(text))
 
 
-def _mentioning(index: RepoIndex, literal: str) -> set[str]:
-    """Test-tree files naming ``literal`` as a whole file name (not inside a longer one)."""
-    if "/" in literal:
-        return {p for p, text in index.test_tree_text.items() if literal in text}
+def _mentioning(index: RepoIndex, literal: tuple[str, ...]) -> set[str]:
+    """Test-tree files naming every token of ``literal`` as a whole word (not inside a longer name)."""
     if index.test_tree_tokens is None:
         index.test_tree_tokens = {p: _tokens(text) for p, text in index.test_tree_text.items()}
-    return {p for p, tokens in index.test_tree_tokens.items() if literal in tokens}
+    wanted = set(literal)
+    return {p for p, tokens in index.test_tree_tokens.items() if wanted <= tokens}
 
 
 def _ignored(rel: str) -> bool:
@@ -517,6 +638,17 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
             return Selection("full", f"file loaded by a root conftest changed: {rel}", sorted(candidates), changed)
 
     chosen: set[str] = set()
+    changed_modules = {m for m in (module_name(rel) for rel in changed) if m}
+    for conftest_rel, always in sorted(index.conftest_autouse.items()):
+        hit = sorted(always & changed_modules)
+        if not hit:
+            continue
+        if conftest_rel in ROOT_CONFTESTS:
+            return Selection(
+                "full", f"{hit[0]} runs in a fixture of {conftest_rel} for every test", sorted(candidates), changed
+            )
+        scope = conftest_rel.rsplit("/", 1)[0] + "/"
+        chosen |= {p for p in candidates if p.startswith(scope)}
     seeds: set[str] = set()
     literal_seeds: set[str] = set()
     for rel in changed:

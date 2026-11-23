@@ -159,7 +159,7 @@ jobs:
           $lines = @(
             '### Flaky check (`--lf` re-run)',
             '',
-            "Re-running only the failed tests exited with $rc: **$verdict**.",
+            "Re-running only the failed tests exited with ${rc}: **$verdict**.",
             $(if ($verdict -eq 'passed') { 'The failures did not reproduce; treat them as flaky until proven otherwise.' } else { 'The failures reproduced.' })
           )
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

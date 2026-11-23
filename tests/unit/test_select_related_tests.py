@@ -54,6 +54,8 @@ FILES = {
     "docs/guide.md": "# guide\n",
     "README.md": "# readme\n",
     "static/widget-panel.js": "export const x = 1;\n",
+    "templates/index.html": "<html></html>\n",
+    "static/index.html": "<html></html>\n",
     "app/__init__.py": "from .core import Engine\nfrom . import heavy\n\nLOCAL = 1\n",
     "app/core.py": "from app.util import helper\n\nclass Engine:\n    pass\n",
     "app/util.py": "def helper():\n    return 1\n",
@@ -61,11 +63,21 @@ FILES = {
     "app/other.py": "VALUE = 3\n",
     "app/patched.py": "VALUE = 4\n",
     "app/dynamic.py": "VALUE = 5\n",
+    "app/server_mod.py": "VALUE = 6\n",
+    "app/state_reset.py": "def reset():\n    pass\n",
+    "app/sub_state.py": "def reset():\n    pass\n",
     "tests/__init__.py": "",
     "tests/conftest.py": "from tests.root_helper import guard\n",
     "tests/root_helper.py": "def guard():\n    return None\n",
     "tests/unit/__init__.py": "",
-    "tests/unit/conftest.py": "",
+    "tests/unit/conftest.py": (
+        "import sys\nimport pytest\n\n"
+        "@pytest.fixture(autouse=True)\ndef _reset():\n"
+        "    from app.state_reset import reset\n    reset()\n"
+        "    sys.modules.get('app.heavy')\n\n"
+        "@pytest.fixture\ndef server():\n    from app import server_mod\n    return server_mod\n\n"
+        "@pytest.fixture\ndef wrapped_server(server):\n    return server\n"
+    ),
     "tests/unit/fakes_helper.py": "from app.other import VALUE\n\ndef make():\n    return VALUE\n",
     "tests/unit/sibling_helper.py": "import app.heavy\n",
     "tests/unit/test_core.py": "from app.core import Engine\n\ndef test_engine():\n    assert Engine\n",
@@ -98,12 +110,23 @@ FILES = {
         "def test_plain():\n    assert helper\n"
     ),
     "tests/unit/test_unrelated.py": "def test_alone():\n    assert True\n",
+    "tests/unit/test_template_parts.py": (
+        "from pathlib import Path\n\n"
+        "def test_template():\n    assert Path('.') / 'templates' / 'index.html'\n"
+    ),
     # Names a doc and a workflow: the docs rule must win over the literal rule.
     "tests/unit/test_docs_reader.py": (
         "def test_docs():\n    assert 'docs/guide.md' and 'README.md' and 'workflows/docs.yml'\n"
     ),
     "tests/unit/sub/__init__.py": "",
-    "tests/unit/sub/conftest.py": "from tests.unit.sub.sub_helper import fixture_value\n",
+    "tests/unit/sub/conftest.py": (
+        "import pytest\nfrom tests.unit.sub.sub_helper import fixture_value\n\n"
+        "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n"
+    ),
+    "tests/unit/test_uses_fixture.py": "def test_server(server):\n    assert server\n",
+    "tests/unit/test_uses_fixture_indirectly.py": (
+        "import pytest\n\n@pytest.mark.usefixtures('wrapped_server')\ndef test_wrapped():\n    pass\n"
+    ),
     "tests/unit/sub/sub_helper.py": "def fixture_value():\n    return 1\n",
     "tests/unit/sub/test_a.py": "def test_a():\n    assert True\n",
     "tests/unit/sub/test_b.py": "class TestB:\n    def test_one(self):\n        pass\n\n    def test_two(self):\n        pass\n",
@@ -170,6 +193,13 @@ def test_file_name_mentioned_in_a_test_selects_it(index):
     assert _selected(index, "static/widget-panel.js") == ["tests/unit/test_static_text.py"]
 
 
+def test_generic_file_name_matches_with_its_directory_as_separate_parts(index):
+    # The test spells the path as Path(...) / "templates" / "index.html".
+    assert _selected(index, "templates/index.html") == ["tests/unit/test_template_parts.py"]
+    # The same generic name in another directory is a different file.
+    assert _selected(index, "static/index.html") == []
+
+
 def test_file_name_inside_a_longer_name_does_not_match(index):
     # "panel.js" is a suffix of "widget-panel.js" but names a different file.
     assert _selected(index, "static/panel.js") == []
@@ -202,6 +232,27 @@ def test_helper_of_root_conftest_counts_as_global(index):
 def test_sub_directory_conftest_selects_its_directory(index):
     for changed in ("tests/unit/sub/conftest.py", "tests/unit/sub/sub_helper.py"):
         assert _selected(index, changed) == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
+
+
+def test_fixture_parameter_counts_as_a_dependency(index):
+    # Neither test imports app.server_mod; they get it from a conftest fixture,
+    # one through a parameter and one through usefixtures on a fixture chain.
+    assert _selected(index, "app/server_mod.py") == [
+        "tests/unit/test_uses_fixture.py",
+        "tests/unit/test_uses_fixture_indirectly.py",
+    ]
+
+
+def test_module_imported_by_a_root_autouse_fixture_selects_everything(index):
+    result = sel.select(index, ["app/state_reset.py"])
+    assert result.mode == "full"
+    assert "app.state_reset" in result.reason
+    # sys.modules lookups in that fixture load nothing and do not count.
+    assert sel.select(index, ["app/heavy.py"]).mode == "partial"
+
+
+def test_module_imported_by_a_sub_directory_autouse_fixture_selects_that_directory(index):
+    assert _selected(index, "app/sub_state.py") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
 
 
 def test_shard_marked_files_are_left_to_the_shards(index):
@@ -392,6 +443,21 @@ def test_related_shards_run_exactly_like_the_full_job(workflow):
         assert pin in full and pin in shard
     # The file list must never be spelled out on the Windows command line.
     assert '"@related-tests/shard-${{ matrix.shard }}.args"' in shard
+
+
+def test_powershell_steps_have_no_scope_qualified_variable_typos(workflow):
+    # In a PowerShell string "$rc:" parses as a drive/scope-qualified variable
+    # and the whole script fails to parse before its first command runs.
+    import re
+
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            run = step.get("run", "")
+            shell = step.get("shell") or ("pwsh" if str(job.get("runs-on", "")).startswith("windows") else "bash")
+            if shell != "pwsh":
+                continue
+            bad = [m for m in re.findall(r"\$([A-Za-z_]\w*):", run) if m.lower() not in {"env", "global", "script", "using"}]
+            assert not bad, f"{step.get('name')}: ${bad[0]}: is parsed as a qualified variable; write ${{{bad[0]}}}"
 
 
 def test_selection_job_does_not_install_the_app(workflow):

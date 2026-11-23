@@ -43,6 +43,8 @@ FLAKY_LABEL = "flaky"
 LABEL_COLORS = {LABEL: ("b60205", "A watched workflow is failing on main"), FLAKY_LABEL: ("fbca04", "Failure passed on re-run")}
 MAX_TESTS = 80
 MAX_COMMITS = 60
+PAGE_SIZE = 100
+MAX_PAGES = 20  # 2000 runs or commits back: far beyond any red streak worth listing
 RERUN_MARKER = "NEKO_LF_RERUN_RESULT"
 
 _TIMESTAMP_RE = re.compile(r"^﻿?\d{4}-\d{2}-\d{2}T[\d:.]+Z ")
@@ -257,8 +259,13 @@ class GitHub:
             location = headers.get("Location") or headers.get("location")
             # The redirect target is a pre-signed blob URL: sending the API
             # token along would leak it and makes the storage host reject us.
-            with urllib.request.urlopen(location, timeout=120) as resp:
-                raw = resp.read()
+            try:
+                with urllib.request.urlopen(location, timeout=120) as resp:
+                    raw = resp.read()
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                # Report with job names and the run link rather than not at all.
+                print(f"warning: could not download the log of job {job_id}: {exc}", file=sys.stderr)
+                return ""
         elif status != 200:
             return ""
         return raw.decode("utf-8", errors="replace")
@@ -271,6 +278,18 @@ def _post_discord(url: str, content: str) -> None:
         urllib.request.urlopen(req, timeout=30).close()
     except (urllib.error.URLError, OSError) as exc:  # a broken webhook must not hide the issue update
         print(f"warning: Discord notification failed: {exc}", file=sys.stderr)
+
+
+def run_history(gh: GitHub, run: dict) -> list[dict]:
+    """Completed push runs of the run's workflow on main, newest first, back to the last success before ``run``."""
+    runs: list[dict] = []
+    base = f"/repos/{gh.repo}/actions/workflows/{run['workflow_id']}/runs?branch=main&event=push&status=completed"
+    for page in range(1, MAX_PAGES + 1):
+        batch = gh.get(f"{base}&per_page={PAGE_SIZE}&page={page}")["workflow_runs"]
+        runs += batch
+        if len(batch) < PAGE_SIZE or last_success_before(run, runs) is not None:
+            break
+    return runs
 
 
 def collect_failure(gh: GitHub, run: dict, runs: list[dict]) -> FailureReport:
@@ -294,9 +313,18 @@ def collect_failure(gh: GitHub, run: dict, runs: list[dict]) -> FailureReport:
     suspects: list[Suspect] = []
     truncated = False
     if good is not None:
-        compare = gh.get(f"/repos/{repo}/compare/{good['head_sha']}...{run['head_sha']}")
-        commits = compare.get("commits", [])
-        truncated = compare.get("total_commits", len(commits)) > len(commits)
+        commits = []
+        total = 0
+        for page in range(1, MAX_PAGES + 1):
+            compare = gh.get(
+                f"/repos/{repo}/compare/{good['head_sha']}...{run['head_sha']}?per_page={PAGE_SIZE}&page={page}"
+            )
+            batch = compare.get("commits", [])
+            total = compare.get("total_commits", len(commits) + len(batch))
+            commits += batch
+            if not batch or len(commits) >= total:
+                break
+        truncated = total > len(commits)
     else:
         commits = [gh.get(f"/repos/{repo}/commits/{run['head_sha']}")]
     authors: dict[int, str | None] = {}
@@ -338,9 +366,7 @@ def run_reporter(
         return [f"skip: run {run_id} is not a push to main of {repo} (event={run.get('event')}, branch={run.get('head_branch')})"]
     if run.get("conclusion") not in ("success", "failure"):
         return [f"skip: conclusion is {run.get('conclusion')!r}"]
-    runs = gh.get(
-        f"/repos/{repo}/actions/workflows/{run['workflow_id']}/runs?branch=main&event=push&status=completed&per_page=100"
-    )["workflow_runs"]
+    runs = run_history(gh, run)
     newer = newer_decisive_run(run, runs)
     if newer is not None:
         note = f"a newer run #{newer.get('run_number')} ({newer['conclusion']}) already decided main's state"
