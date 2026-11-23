@@ -646,7 +646,8 @@ def test_market_connection_dropped_by_back_stays_quiet_and_recovers_from_bfcache
     page.evaluate("document.addEventListener('click', event => event.preventDefault())")
     page.get_by_role('link', name='返回选择剧本').click()
     pending[0].abort()  # a network failure rejects and reaches the catch branch
-    page.wait_for_timeout(200)
+    # finally clears aria-busy, so the failure has been fully handled before asserting quietness.
+    expect(page.locator('#theater-market-connection')).to_have_attribute('aria-busy', 'false')
     # A late failure after back must not flash an error with a retry button that does nothing.
     expect(retry).to_be_hidden()
     expect(status).to_have_attribute('data-i18n', 'theater.marketPreparing')
