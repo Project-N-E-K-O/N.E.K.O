@@ -93,7 +93,11 @@ def _safe_str(value: Any) -> str:
 
 
 def _serialize_tool_item(item: Any) -> Any:
-    """Dump Pydantic/MCP content models while remaining compatible with zero-arg stubs."""
+    """Dump Pydantic/MCP content models (including nested containers) cleanly."""
+    if isinstance(item, dict):
+        return {k: _serialize_tool_item(v) for k, v in item.items()}
+    if isinstance(item, (list, tuple)):
+        return [_serialize_tool_item(v) for v in item]
     model_dump = getattr(item, "model_dump", None)
     if not callable(model_dump):
         return item
@@ -116,7 +120,7 @@ def _serialize_tool_item(item: Any) -> Any:
 def _format_tool_result(tool_result: Any) -> str:
     """Format a tool result into text, isolating serialization failures per list item."""
     try:
-        if isinstance(tool_result, list):
+        if isinstance(tool_result, (list, tuple)):
             serialized_items = []
             for item in tool_result:
                 try:

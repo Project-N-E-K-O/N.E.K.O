@@ -175,7 +175,11 @@ def _git(*args: str) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=REPO_ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+        check=False,
     )
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
@@ -183,26 +187,71 @@ def _git(*args: str) -> str:
     return result.stdout
 
 
+def _changed_py_entries(base: str) -> list[tuple[str, str | None]]:
+    """Return ``(new_path, old_path_or_none)`` for Python files touched in HEAD.
+
+    ``old_path`` is populated only for renames whose source was also a
+    non-excluded ``.py`` file, so moved lines keep their pre-existing
+    exemption while lines actually modified or newly moved from excluded
+    trees (e.g. ``plugin/``) are still checked.
+    """
+    out = _git(
+        "-c", "diff.renames=true", "diff", "--name-status", "-B", "-M", "-z", f"{base}...HEAD"
+    )
+    tokens = out.split("\0")
+    entries: list[tuple[str, str | None]] = []
+    idx = 0
+    while idx < len(tokens):
+        status = tokens[idx]
+        if not status:
+            idx += 1
+            continue
+        kind = status[0]
+        if kind in ("R", "C"):
+            if idx + 2 >= len(tokens):
+                break
+            old_path = tokens[idx + 1]
+            new_path = tokens[idx + 2]
+            idx += 3
+            if new_path.endswith(".py"):
+                if (
+                    old_path.endswith(".py")
+                    and not _is_excluded(REPO_ROOT / old_path)
+                ):
+                    entries.append((new_path, old_path))
+                else:
+                    entries.append((new_path, None))
+        else:
+            if idx + 1 >= len(tokens):
+                break
+            path = tokens[idx + 1]
+            idx += 2
+            if kind == "D":
+                continue
+            if path.endswith(".py"):
+                entries.append((path, None))
+    return entries
+
+
 def _changed_py_files(base: str) -> list[str]:
     """Python files changed in HEAD relative to merge-base with `base`.
     Posix-style repo-relative paths; deletions drop out naturally because
     the path no longer exists on disk (filtered by the caller)."""
-    out = _git("diff", "--name-only", f"{base}...HEAD")
-    return [
-        ln.strip().replace("\\", "/")
-        for ln in out.splitlines()
-        if ln.strip().endswith(".py")
-    ]
+    return [new for new, _ in _changed_py_entries(base)]
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
-def _added_lines(base: str, path: str) -> set[int]:
+def _added_lines(base: str, path: str, old_path: str | None = None) -> set[int]:
     """1-based line numbers in the NEW file touched by the diff.
     Implicit count is ``1`` per the unified-diff spec (matching ``git diff``);
     pure-deletion hunks have count 0 and contribute nothing."""
-    diff = _git("diff", "--unified=0", f"{base}...HEAD", "--", path)
+    if old_path is not None:
+        merge_base = _git("merge-base", base, "HEAD").strip()
+        diff = _git("diff", "--unified=0", f"{merge_base}:{old_path}", f"HEAD:{path}")
+    else:
+        diff = _git("diff", "--unified=0", f"{base}...HEAD", "--", path)
     lines: set[int] = set()
     for ln in diff.splitlines():
         m = _HUNK_HEADER_RE.match(ln)
@@ -238,16 +287,25 @@ def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
                     yield f
 
 
+def _safe_display_path(path: Path) -> str:
+    """Format raw surrogate-escaped paths safely for strict text streams."""
+    return (
+        path.as_posix()
+        .encode("utf-8", errors="surrogateescape")
+        .decode("utf-8", errors="backslashreplace")
+    )
+
+
 def _parse_file(path: Path) -> tuple[ast.Module | None, list[str]]:
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
-        print(f"{path}: skipped — {e}", file=sys.stderr)
+        print(f"{_safe_display_path(path)}: skipped — {e}", file=sys.stderr)
         return None, []
     try:
         tree = ast.parse(source, filename=str(path))
     except SyntaxError as e:
-        print(f"{path}:{e.lineno}: syntax error — {e.msg}", file=sys.stderr)
+        print(f"{_safe_display_path(path)}:{e.lineno}: syntax error — {e.msg}", file=sys.stderr)
         return None, []
     return tree, source.splitlines()
 
@@ -257,8 +315,9 @@ def _report(path: Path, violations: list[tuple[int, int, str]]) -> int:
         rel = path.relative_to(REPO_ROOT)
     except ValueError:
         rel = path
+    safe_rel = _safe_display_path(rel)
     for lineno, col, msg in violations:
-        print(f"{rel.as_posix()}:{lineno}:{col}  {CODE}  {msg}")
+        print(f"{safe_rel}:{lineno}:{col}  {CODE}  {msg}")
     return len(violations)
 
 
@@ -315,11 +374,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 0
-        for rel in _changed_py_files(args.base):
+        for rel, old_rel in _changed_py_entries(args.base):
             file = REPO_ROOT / rel
             if not file.is_file() or _is_excluded(file):
                 continue
-            changed = _added_lines(args.base, rel)
+            changed = _added_lines(args.base, rel, old_path=old_rel)
             if not changed:
                 continue
             tree, lines = _parse_file(file)

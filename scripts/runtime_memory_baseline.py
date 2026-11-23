@@ -899,17 +899,7 @@ def _http_probe_validation_errors(
 
 
 def _assert_ports_available(ports: list[int]) -> None:
-    busy: list[int] = []
-    for port in ports:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            probe.bind(("127.0.0.1", port))
-        except OSError:
-            busy.append(port)
-        finally:
-            probe.close()
+    busy = [port for port in ports if not _port_released(port)]
     if busy:
         raise RuntimeError(
             "benchmark ports must be free before startup; refusing launcher "
