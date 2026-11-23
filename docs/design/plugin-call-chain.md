@@ -340,7 +340,7 @@ P2 起如果 SDK 预检的拒绝原因要在界面显示、P3 的待确认通知
 | `reply_tail.subscribe` / `register` 走 HTTP 到主服务，`plugin_id` 由插件自报 | 宿主不经手 | P4 |
 | 插件经 HTTP 发 `POST /runs` 调别的插件（`mcp_adapter` 在用） | 宿主只看到一次 `run`，不知道是哪个插件发的；被调插件的链 = 自己 | P4（或给 `/runs` 加调用方令牌，另议） |
 | 插件进程内截屏、直连主服务改设置 | 宿主不经手 | P4 |
-| 自建 executor 的 `run_in_executor`（以及插件自建事件循环或换掉默认 executor 后的 `run_in_executor(None, ...)`）、裸线程、入口结束后的后台任务里发出的请求 | 父 id 带不上或不保证带上（5.1） | 按插件自发处理；只在该插件正被别的插件调用（有存活链）时再标 `possible_laundering`；只记不拦（已拍板） |
+| 自建 executor 的 `run_in_executor`（以及插件自建事件循环或换掉默认 executor 后的 `run_in_executor(None, ...)`）、裸线程、入口结束后的后台任务里发出的请求 | 父 id 带不上或不保证带上（5.1） | 父 id 带上且查得到记录时按那条链正常归属；带不上或查不到时按插件自发处理，只在该插件正被别的插件调用（有存活链）时再标 `possible_laundering`；只记不拦（已拍板） |
 
 ## 10. 已定事项（2026-11-18）
 

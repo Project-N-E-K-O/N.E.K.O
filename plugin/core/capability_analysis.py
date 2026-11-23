@@ -876,6 +876,12 @@ _CONTEXT_LOSS = (
     "concurrent.futures.process.ProcessPoolExecutor",
     "concurrent.futures.thread.ThreadPoolExecutor",
     "multiprocessing.pool.ThreadPool",
+    # A loop the plugin makes itself has a plain default executor, so
+    # run_in_executor(None, ...) on it loses the context (see below).
+    "asyncio.new_event_loop",
+    "asyncio.events.new_event_loop",
+    "asyncio.Runner",
+    "asyncio.runners.Runner",
 )
 # Analysis warnings that leave part of the plugin unscanned.
 _NOT_ANALYZED_WARNINGS = frozenset(
@@ -1058,12 +1064,14 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
     if reference.is_call and method.endswith(".run_in_executor"):
         # The plugin runtime installs a context-copying default executor on
         # the loops it runs plugin code on, so a literal None executor keeps
-        # the caller's context variables. Any other executor does not, and
-        # the scan cannot tell a loop the plugin made itself, or a replaced
-        # default executor, from the runtime's.
+        # the caller's context variables. Any other executor does not. The
+        # scan cannot tell which loop a call runs on; making a loop and
+        # replacing the default executor are reported where they happen.
         executor = _call_argument(node, 0, "executor")
         if isinstance(executor, ast.Constant) and executor.value is None:
             return None
+        return "context_loss"
+    if reference.is_call and method.endswith(".set_default_executor"):
         return "context_loss"
     return None
 

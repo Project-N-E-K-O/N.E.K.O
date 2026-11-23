@@ -396,8 +396,7 @@ def test_report_carries_declarations_from_plugin_toml(tmp_path):
 
 
 def test_analyzer_version_was_bumped_for_the_new_report_fields():
-    assert capability_analysis.ANALYZER_VERSION >= 5
-
+    assert capability_analysis.ANALYZER_VERSION >= 6
 
 
 def test_function_attribution_follows_classes_and_nested_functions(tmp_path):
@@ -1522,6 +1521,12 @@ def test_default_executor_keeps_the_context(tmp_path, call):
         "from concurrent.futures import ThreadPoolExecutor\n"
         "with ThreadPoolExecutor() as pool:\n    pool.submit(g)",
         "import threading\nthreading.Thread(target=g).start()",
+        # A loop the plugin makes itself, or a replaced default executor.
+        "import asyncio\nloop = asyncio.new_event_loop()",
+        "from asyncio import new_event_loop\nloop = new_event_loop()",
+        "from asyncio.runners import Runner\nwith Runner() as runner:\n    runner.run(main())",
+        "import asyncio\nwith asyncio.Runner() as runner:\n    runner.run(main())",
+        "async def f(loop, pool):\n    loop.set_default_executor(pool)",
     ],
 )
 def test_other_executors_and_threads_still_lose_the_context(tmp_path, source):

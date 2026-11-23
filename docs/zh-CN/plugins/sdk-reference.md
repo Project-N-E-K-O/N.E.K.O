@@ -366,7 +366,7 @@ chain.allows("plugin_sdk.main_agent.memory:read")
 - `rights` 里是权限 id，例如 `plugin_sdk.main_agent.memory:read`。在一个版本内它同时带着旧名字（`memory.read`、`conversations.read`、`messages.push`），`allows()` 两种写法都接受。
 - `allows()` 只是参考。权限未知时它一律回答 `False`，所以「没有」和「不知道」读出来都是 `False`，要区分就看 `rights_known`。每次使用由宿主自己判定：这里是 `False` 不代表宿主一定拒绝，是 `True` 也只是投递那一刻的快照。
 - 交给裸 `threading.Thread`、自建线程池，或交给带自建 executor 的 `loop.run_in_executor` 的工作会丢掉调用上下文，宿主会把这些请求当成插件自发的。`asyncio.to_thread` 会保留；自己开线程时，用 `contextvars.copy_context().run(...)` 包住要做的事。
-- `loop.run_in_executor(None, ...)` 也会保留，但只限插件运行时执行你代码的那个事件循环：运行时把它的默认 executor 换成了会复制上下文的版本。在自己新建的事件循环上，或者换掉默认 executor 之后，就会丢掉上下文。`neko-plugin check` 分辨不出这些情况，所以不把 `run_in_executor(None, ...)` 列为盲区。
+- `loop.run_in_executor(None, ...)` 也会保留，但只限插件运行时执行你代码的那个事件循环：运行时把它的默认 executor 换成了会复制上下文的版本。在自己新建的事件循环上，或者换掉默认 executor 之后，就会丢掉上下文。`neko-plugin check` 分辨不出 `run_in_executor(None, ...)` 跑在哪个事件循环上，所以不把这个调用列为盲区，改为列出 `asyncio.new_event_loop`、`asyncio.Runner` 和 `set_default_executor`。其他自己弄出事件循环的写法（比如在你的代码里调用 `asyncio.run`）不会列出。
 - 它和旧的 `plugin.sdk.shared.runtime.call_chain`（只在一个插件进程内部记调用）是两回事。
 
 宿主会记录插件互调和能力使用，用于审计（只记编号和能力名，不记参数、返回值和消息原文）。设计见 [`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md)。
