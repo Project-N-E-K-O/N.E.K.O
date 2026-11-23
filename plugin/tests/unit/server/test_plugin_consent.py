@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 from pathlib import Path
@@ -676,6 +677,60 @@ async def test_source_reads_wait_for_plugin_directory_mutation(monkeypatch, tmp_
         if job is not None:
             await asyncio.wrap_future(job)
         assert reading.is_set()
+        assert reports.read("demo")["capabilities"] == ["messages.push"]
+    finally:
+        await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_source_revision_walks_wait_for_plugin_directory_mutation(
+    monkeypatch, tmp_path, reports
+):
+    # The revision check walks and stats the plugin tree before and after the
+    # scan. Unlocked, a walk still in progress keeps directory handles open
+    # while an update renames the plugin directory (Windows: WinError 5).
+    from plugin.server.application.plugins.operation_lock import plugin_operation_lock
+
+    root = tmp_path / "demo"
+    manifest(root)
+    (root / "main.py").write_text("self.ctx.push_message()", encoding="utf-8")
+    held = threading.local()
+    pending = threading.Event()
+    walks: list[bool] = []
+    original_lock = analysis.hold_plugin_operation_file_lock
+    original_revision = analysis.source_revision
+
+    @contextlib.contextmanager
+    def tracked_lock(stop):
+        pending.set()
+        with original_lock(stop):
+            held.depth = getattr(held, "depth", 0) + 1
+            try:
+                yield
+            finally:
+                held.depth -= 1
+
+    def tracked_revision(*args, **kwargs):
+        walks.append(getattr(held, "depth", 0) > 0)
+        return original_revision(*args, **kwargs)
+
+    monkeypatch.setattr(analysis, "hold_plugin_operation_file_lock", tracked_lock)
+    monkeypatch.setattr(analysis, "source_revision", tracked_revision)
+    runner = analysis.CapabilityAnalysisService(reports)
+    try:
+        async with plugin_operation_lock.hold():
+            runner.reanalyze("demo", root, "1")
+            assert await asyncio.to_thread(pending.wait, 2)
+            # The worker is waiting for the lock and has not walked the tree.
+            assert walks == []
+            moved = root.rename(tmp_path / "moved")
+            moved.rename(root)
+        with runner._lock:
+            job = runner._jobs.get("demo", (None, None))[1]
+        if job is not None:
+            await asyncio.wrap_future(job)
+        # Both revision walks (before and after the scan) ran under the lock.
+        assert walks == [True, True]
         assert reports.read("demo")["capabilities"] == ["messages.push"]
     finally:
         await runner.close()

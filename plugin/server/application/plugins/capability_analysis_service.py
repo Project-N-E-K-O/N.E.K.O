@@ -177,7 +177,12 @@ class CapabilityAnalysisService:
                 return
         revision = None
         try:
-            revision = source_revision(root, version, stop=self._stop)
+            # The revision walks the plugin tree (os.walk/stat). Like the
+            # source read below it must share the operation file lock with
+            # update/uninstall, which rename plugin directories: on Windows an
+            # open directory handle makes that rename fail with WinError 5.
+            with hold_plugin_operation_file_lock(self._stop):
+                revision = source_revision(root, version, stop=self._stop)
             saved = None if force else self._read_cached_report(plugin_id)
             if saved is not None and is_fresh(saved, revision):
                 with self._lock:
@@ -200,7 +205,9 @@ class CapabilityAnalysisService:
                 _source=revision,
                 _source_root=str(root),
             )
-            if source_revision(root, version, stop=self._stop) != revision:
+            with hold_plugin_operation_file_lock(self._stop):
+                current = source_revision(root, version, stop=self._stop)
+            if current != revision:
                 with self._lock:
                     if self._current(plugin_id, token):
                         self._reports[plugin_id] = _report(
