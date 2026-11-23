@@ -339,11 +339,12 @@ class Families:
 
         if action == orch.FORM_FAMILY and agent:
             taker = await self._ledger.get_session(agent)
-            if taker is None or taker.kind != "single" or (taker.project and taker.project != DEFAULT_PROJECT):
-                # The one that was to take it became a project's since it was looked at (or is
-                # gone): it goes on there, and no other project is made beside that one.
+            if taker is not None and (taker.kind != "single" or (taker.project and taker.project != DEFAULT_PROJECT)):
+                # The one that was to take it became a project's since it was looked at: it goes
+                # on there, and no other project is made beside that one. (One that is gone takes
+                # nothing: the others still make their project, and one of it takes this.)
                 action, moved = orch.CONTINUE, True
-                if taker is not None and taker.kind == "line" and taker.project:
+                if taker.kind == "line" and taker.project:
                     # (In that project: should the member take no more work by now, another of it does.)
                     project = taker.project
         if action == orch.FORM_FAMILY:
@@ -387,6 +388,11 @@ class Families:
             if await self._ledger.lead_session(commission.lanlan_name, project) is not None:
                 # The project got a leader since it was looked at.
                 action, moved = orch.TO_LEADER, True
+            elif takes and await self._busy(takes[0]):
+                # A member that takes work is there after all, with too much waiting for it: as where
+                # a commission would go on in it, the project gets a leader.
+                action, moved = orch.TO_LEADER, True
+                verdict = replace(verdict, reason=LEADER_BUSY)
             elif takes:
                 # A member that takes work is there after all: no other is started beside it.
                 session, action, moved = takes[0], orch.CONTINUE, True

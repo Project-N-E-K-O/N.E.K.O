@@ -1995,18 +1995,20 @@ class TaskAgentManager:
             verdict = await self.families.decide(commission)
             commission, session = await self.families.place(commission, verdict)
             self._session_of[commission.id] = session.id
+            guessed: set[str] = set()
             if verdict.members and commission.project:
                 # Those that became the project's members count as ones that change files from
                 # here on, before anything is awaited: each is looked at below, and one that does
-                # not is taken off again.
-                for member in verdict.members:
-                    self._writes_in.setdefault(member, (commission.project, member))
-            await self._note_writer(session.id)
+                # not is taken off again (at work or not: it was only guessed here).
+                guessed = {member for member in verdict.members if member not in self._writes_in}
+                for member in guessed:
+                    self._writes_in[member] = (commission.project, member)
+            await self._note_writer(session.id, guessed=session.id in guessed)
             if verdict.members:
                 # Task agents that became a project's members with it: each may be at work, and so
                 # may task agents they started, which were none of a project's when they began.
                 for other in {*verdict.members, *self._held_by} - {session.id}:
-                    await self._note_writer(other)
+                    await self._note_writer(other, guessed=other in guessed)
             return commission
         commission = await self._file_under_project(commission)
         # What the session takes, as the first line of its card says until
@@ -2066,7 +2068,7 @@ class TaskAgentManager:
                 commission.id, kind="line", name=name, preset=WORKING_PRESET, duty=about
             )
 
-    async def _note_writer(self, session_id: str | None) -> None:
+    async def _note_writer(self, session_id: str | None, *, guessed: bool = False) -> None:
         """Note whether a session writes files in a project, for one such to work there at a time (``_session_free_for``).
 
         A member of a project whose preset can change files, with a tool
@@ -2106,7 +2108,7 @@ class TaskAgentManager:
             or not member.project
             or member.project == DEFAULT_PROJECT
         ):
-            self._unnote_writer(session_id)
+            self._unnote_writer(session_id, guessed=guessed)
             return
         try:
             changes = (await self._template_of(kept)).changes_files
@@ -2117,17 +2119,20 @@ class TaskAgentManager:
         if changes:
             self._writes_in[session_id] = (member.project, member.id)
         else:
-            self._unnote_writer(session_id)
+            self._unnote_writer(session_id, guessed=guessed)
 
-    def _unnote_writer(self, session_id: str) -> None:
+    def _unnote_writer(self, session_id: str, *, guessed: bool = False) -> None:
         """Take a session off the ones that change files in a project, unless a run of it is under way.
 
         One at work was opened with the tools its preset had then: a
         template changed since, or a new commission filed for it, does
         not make that run one that reads. It is looked at again with the
-        next commission, once this one let go of it.
+        next commission, once this one let go of it. One that was noted
+        on a guess (``guessed``: as it became a project's member, before
+        it was looked at) is taken off whether at work or not: nothing
+        but the guess said it changes files.
         """
-        if self._held_by.get(session_id) is None:
+        if guessed or self._held_by.get(session_id) is None:
             self._writes_in.pop(session_id, None)
 
     async def _settle_for_the_queue(self, commission_id: str) -> None:
@@ -6175,7 +6180,10 @@ class TaskAgentManager:
         Not one its leader is handing over (``_said_while_handed``), but
         for what hands it over itself (``handed``): until it is the other
         task agent's, whatever else would take it up would start it where
-        it was. What a wake brings then waits, as below.
+        it was. What a wake brings then waits, as below; anything else
+        (what a task agent it started hands back, an answer sent anew) is
+        kept with what the user said meanwhile, and goes to the other
+        task agent after the leader's brief.
 
         Such a commission waits for something: for task agents it started
         (``_wake_closed_parent``), or, resting, for what it asked to be
@@ -6185,7 +6193,10 @@ class TaskAgentManager:
         going along with the work it is about to be given.
         """
         if parent_id in self._said_while_handed and not handed:
-            return False
+            if isinstance(message, _Handed):
+                return False
+            self._said_while_handed[parent_id].append(message)
+            return True
         while not self._closed:
             current = self._sessions.get(parent_id)
             starting = parent_id in self._taking_up and (current is None or not current.ready and not current.closing)

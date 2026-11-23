@@ -359,7 +359,13 @@ def test_doing_it_over_from_the_start_is_not_asking_for_another_task_agent():
     part = orch.by_rules("Ask Report Writer to start a new section in the report", "", standing, bars)
     assert part is not None and (part.action, part.agent) == (orch.CONTINUE, "writer")
     # Asking for another one is still that, whoever is named.
-    for text in ("start a new agent for what Report Writer did", "Report Writer is busy, start a new one for the report"):
+    for text in (
+        "start a new agent for what Report Writer did",
+        "Report Writer is busy, start a new one for the report",
+        "start a new task agent for the report, not Report Writer",
+        "start a new subagent beside Report Writer",
+        "start a new thread for the report Report Writer wrote",
+    ):
         other = orch.by_rules(text, "", standing, bars)
         assert other is not None and (other.action, other.agent) == (orch.SUMMON_STRAY, None)
 

@@ -2161,14 +2161,19 @@ async def test_what_is_said_between_a_leader_letting_go_and_the_member_being_que
     # The leader's session is let go of, and the commission is not queued for the member yet.
     assert receipt.commission_id not in host.task_agents._sessions
     assert (await host.ledger.get(receipt.commission_id)).status == "working"
-    # Nothing else takes it up meanwhile: it would start where it was, in the leader's session.
-    assert await host.task_agents._wake_working(receipt.commission_id, "wake up", reason="woken") is False
+    # Nothing else takes it up meanwhile: it would start where it was, in the leader's session. What a
+    # wake brings waits; anything else is kept, and goes to the member with what the user said.
+    from nekopower.host.task_agents import _Handed
+
+    assert await host.task_agents._wake_working(receipt.commission_id, _Handed("a note", []), reason="woken") is False
+    assert await host.task_agents._wake_working(receipt.commission_id, "what the scout found", reason="woken") is True
     assert receipt.commission_id not in host.task_agents._queue
     assert await host.tell(receipt.commission_id, "and the footer too")
     go_on.set()
     await wait_status(host, receipt.commission_id, "done")
 
-    assert "and the footer too" in "\n".join(_user_messages(member_llm.requests[0]))
+    told = "\n".join(_user_messages(member_llm.requests[0]))
+    assert "and the footer too" in told and "what the scout found" in told and "a note" not in told
     assert "and the footer too" not in json.dumps(leader_llm.requests)
     assert host.task_agents._said_while_handed == {}
 
@@ -2570,7 +2575,10 @@ async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_pro
     one = await host.ledger.create_session(lanlan_name="Lan", name="one", kind="single", title="Weekly sales report")
     started = await host.ledger.create_session(lanlan_name="Lan", name="one/agent-1", kind="child", parent_id=one.id, preset="worker")
     looks = await host.ledger.create_session(lanlan_name="Lan", name="one/agent-2", kind="child", parent_id=one.id, preset="scout")
-    for session in (one, started, looks):
+    reads = await host.ledger.create_session(
+        lanlan_name="Lan", name="reads", kind="single", title="Sales report figures", preset="scout"
+    )
+    for session in (one, started, looks, reads):
         await agents._note_writer(session.id)
         # At work, each for a commission of its own.
         agents._held_by[session.id] = f"at work in {session.id}"
@@ -2579,7 +2587,7 @@ async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_pro
         lanlan_name="Lan", title="the weekly sales report", dispatch_text="the weekly sales report", source="dispatch",
         route="task_agent",
     )
-    verdict = orch.Verdict(action=orch.FORM_FAMILY, agent=one.id, members=(one.id,), relation=orch.RECURRENCE)
+    verdict = orch.Verdict(action=orch.FORM_FAMILY, agent=one.id, members=(one.id, reads.id), relation=orch.RECURRENCE)
 
     async def decided(_commission: Any) -> Any:
         return verdict
@@ -2588,7 +2596,9 @@ async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_pro
     try:
         placed = await agents._give_session(commission)
 
-        # The one it started that can change files is noted with it; the one that reads is not.
+        # The one it started that can change files is noted with it; the one that reads is not. Nor
+        # is the member that reads only, at work though it is: that it changes files was a guess.
+        assert (await host.ledger.get_session(reads.id)).kind == "line"
         assert agents._writes_in == {one.id: (placed.project, one.id), started.id: (placed.project, one.id)}
         # A run under way stays noted whatever is read of its preset meanwhile: it has the tools it was opened with.
         await host.ledger.update_session(one.id, project="_daily")
@@ -2741,3 +2751,49 @@ async def test_a_commission_that_went_while_its_member_was_looked_for_is_not_mar
     live.closing = False
     host.brain.drop_pending_dispatches()
     release.set()
+
+
+async def test_a_member_found_as_another_would_be_started_gets_its_project_a_leader_when_it_has_too_much_waiting(
+    hosts, tmp_path
+):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    member = await host.ledger.create_session(lanlan_name="Lan", name="Budget app", kind="line", project="Budget app")
+    for index in range(settings.LEADER_WHEN_UNDER_WAY):
+        waiting, _made = await host.ledger.create(
+            lanlan_name="Lan", title=f"job {index}", dispatch_text=f"job {index}", source="dispatch", route="task_agent",
+            session_id=member.id, project="Budget app",
+        )
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title="one more for the budget app", dispatch_text="one more for the budget app",
+        source="dispatch", route="task_agent",
+    )
+    # As where the member was not among the sessions looked at: decided to start another in the project.
+    verdict = orch.Verdict(action=orch.SUMMON_IN_PROJECT, project="Budget app", preset="general", relation=orch.FOLLOW_UP)
+
+    placed, session = await host.task_agents.families.place(commission, verdict)
+
+    # Not handed to the member that has enough, nor to another beside it: the project gets a leader.
+    assert (session.kind, session.preset, placed.session_id) == ("project", "boss", session.id)
+    (derived,) = await _events(host, commission.id, "leader_derived")
+    assert derived["reason"] == "busy"
+    assert [item.id for item in await host.ledger.members("Lan", "Budget app")] == [member.id]
+
+
+async def test_task_agents_whose_taker_is_gone_still_become_a_project_and_one_of_them_takes_the_commission(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    other = await host.ledger.create_session(lanlan_name="Lan", name="report again", kind="single", title="Weekly report again")
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title="the weekly report", dispatch_text="the weekly report", source="dispatch", route="task_agent"
+    )
+    # The one that was to take it is not on record any more by the time the commission is placed.
+    verdict = orch.Verdict(
+        action=orch.FORM_FAMILY, agent="no-such-session", members=("no-such-session", other.id), relation=orch.RECURRENCE
+    )
+
+    placed, session = await host.task_agents.families.place(commission, verdict)
+
+    (project,) = [item.name for item in await host.space.list_projects() if not item.name.startswith("_")]
+    assert (session.id, session.kind, session.project, placed.project) == (other.id, "line", project, project)
+    (formed,) = await _events(host, commission.id, "family_formed")
+    assert formed == {"project": project, "members": [other.id]}
