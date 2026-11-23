@@ -1347,11 +1347,11 @@
       }
     }
 
-    function musicItemKey(item, idx) {
+    function musicItemKey(item, occurrence = 0) {
       if (item && item.item_id) {
         return "id:" + String(item.item_id);
       }
-      return "url:" + String((item && item.url) || "") + "#" + idx;
+      return "url:" + String((item && item.url) || "") + "#" + occurrence;
     }
 
     async function playMediaElement(mediaEl) {
@@ -1717,8 +1717,27 @@
         node.remove();
       });
 
-      state.musicItems.forEach((item, idx) => {
-        const key = musicItemKey(item, idx);
+      const urlOccurrences = new Map();
+      const nextEntries = state.musicItems.map((item) => {
+        let occurrence = 0;
+        if (!item || !item.item_id) {
+          const urlKey = String((item && item.url) || "");
+          occurrence = urlOccurrences.get(urlKey) || 0;
+          urlOccurrences.set(urlKey, occurrence + 1);
+        }
+        return { item, key: musicItemKey(item, occurrence) };
+      });
+      const nextKeys = new Set(nextEntries.map((entry) => entry.key));
+
+      Array.from(existingByKey.entries()).forEach(([key, card]) => {
+        if (!nextKeys.has(key)) {
+          existingByKey.delete(key);
+          releaseCardAudio(card);
+          card.remove();
+        }
+      });
+
+      nextEntries.forEach(({ item, key }, idx) => {
         let card = existingByKey.get(key);
         if (card) {
           existingByKey.delete(key);

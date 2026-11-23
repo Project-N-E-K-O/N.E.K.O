@@ -504,3 +504,45 @@ async def test_os_activity_snapshot_skips_tick_when_unavailable_or_running(
     assert running.tick_calls == 0
     assert snap_running.foreground_category == "browser"
     assert snap_running.privacy_state == "visible"
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_handles_on_demand_tick_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import main_logic.activity as activity_mod
+
+    class _FailingTickCollector:
+        os_signals_available = True
+        _task = None
+        _poll_interval = 5.0
+        _psutil = None
+        tick_calls = 0
+
+        def snapshot(self):
+            return SimpleNamespace(
+                timestamp=1.0,
+                idle_seconds=4.5,
+                window_title="Code",
+                process_name="code.exe",
+                os_signals_available=True,
+            )
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+            raise RuntimeError("executor shut down")
+
+    stub = _FailingTickCollector()
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: stub)
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda snap: SimpleNamespace(category="coding") if snap.window_title == "Code" else None,
+    )
+
+    snap = await activity_api.get_os_activity_snapshot("study_companion", now=100.0)
+    assert stub.tick_calls == 1
+    assert snap.os_signals_available is True
+    assert snap.foreground_category == "coding"
+    assert snap.system_idle_seconds == 4.5
+    assert snap.privacy_state == "visible"

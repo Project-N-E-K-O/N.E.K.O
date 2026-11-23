@@ -750,6 +750,9 @@
         let cooldownDirty = false;
         let nameEditSeq = 0;
         let cooldownEditSeq = 0;
+        let pendingNameSaves = 0;
+        let pendingCooldownSaves = 0;
+        let loadStatusSeq = 0;
         let lastSyncedName = '';
         let lastSyncedCooldown = '';
         let translations = {};
@@ -983,8 +986,10 @@
 
         // ── 加载状态 ──
         async function loadStatus() {
+            var reqSeq = ++loadStatusSeq;
             console.log('[ClaudeCompanion] Loading status...');
             var result = await callPlugin('get_status');
+            if (reqSeq !== loadStatusSeq) return;
             console.log('[ClaudeCompanion] Status result:', result);
             if (!result) {
                 document.getElementById('status-dot').classList.add('offline');
@@ -1001,14 +1006,18 @@
             document.getElementById('cooldown-val').textContent = result.cooldown || '-';
             var serverName = result.user_name || '';
             var serverCooldown = String(result.cooldown || 60);
-            lastSyncedName = serverName;
-            lastSyncedCooldown = serverCooldown;
+            if (pendingNameSaves === 0) {
+                lastSyncedName = serverName;
+            }
+            if (pendingCooldownSaves === 0) {
+                lastSyncedCooldown = serverCooldown;
+            }
             var nameInput = document.getElementById('input-name');
-            if (nameInput && !nameDirty && document.activeElement !== nameInput) {
+            if (nameInput && !nameDirty && pendingNameSaves === 0 && document.activeElement !== nameInput) {
                 nameInput.value = serverName;
             }
             var cooldownInput = document.getElementById('input-cooldown');
-            if (cooldownInput && !cooldownDirty && document.activeElement !== cooldownInput) {
+            if (cooldownInput && !cooldownDirty && pendingCooldownSaves === 0 && document.activeElement !== cooldownInput) {
                 cooldownInput.value = serverCooldown;
             }
         }
@@ -1078,7 +1087,13 @@
             var nameSeq = nameEditSeq;
             var name = submitted.trim();
             if (!name) { showToast(t('ui.toast_username_empty', '请输入用户名')); return; }
-            var r = await callPlugin('set_user_name', { name: name });
+            var r;
+            pendingNameSaves++;
+            try {
+                r = await callPlugin('set_user_name', { name: name });
+            } finally {
+                pendingNameSaves--;
+            }
             if (r && r.user_name) {
                 if (nameSeq === nameEditSeq && (!nameInput || nameInput.value === submitted)) {
                     lastSyncedName = String(r.user_name);
@@ -1098,7 +1113,13 @@
             var cooldownSeq = cooldownEditSeq;
             var sec = parseInt(submitted);
             if (isNaN(sec) || sec < 10) { showToast(t('ui.toast_cooldown_invalid', '冷却时间至少 10 秒')); return; }
-            var r = await callPlugin('set_cooldown', { seconds: sec });
+            var r;
+            pendingCooldownSaves++;
+            try {
+                r = await callPlugin('set_cooldown', { seconds: sec });
+            } finally {
+                pendingCooldownSaves--;
+            }
             if (r && r.cooldown_seconds) {
                 if (cooldownSeq === cooldownEditSeq && (!cooldownInput || cooldownInput.value === submitted)) {
                     lastSyncedCooldown = String(r.cooldown_seconds);
@@ -1140,14 +1161,14 @@
             if (nameInput) {
                 nameInput.addEventListener('input', function() {
                     nameEditSeq++;
-                    nameDirty = nameInput.value !== lastSyncedName;
+                    nameDirty = pendingNameSaves > 0 || nameInput.value !== lastSyncedName;
                 });
             }
             var cooldownInput = document.getElementById('input-cooldown');
             if (cooldownInput) {
                 cooldownInput.addEventListener('input', function() {
                     cooldownEditSeq++;
-                    cooldownDirty = cooldownInput.value !== lastSyncedCooldown;
+                    cooldownDirty = pendingCooldownSaves > 0 || cooldownInput.value !== lastSyncedCooldown;
                 });
             }
             await loadLocale();

@@ -18,8 +18,7 @@ HTML_PATH = (
 )
 
 
-def test_music_pusher_refresh_reconciles_list_and_preserves_playing_audio() -> None:
-    """F0293: 5s refreshAll reuses unchanged audio nodes and releases deleted playing ones."""
+def _run_music_pusher_ui_test(initial_items_js: str, run_body_js: str) -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node not found")
@@ -150,10 +149,7 @@ const document = {{
   createElement(tag) {{ return makeNode(tag); }},
 }};
 
-let currentItems = [
-  {{ item_id: 'track-1', title: 'Song One', artist: 'A', duration_sec: 120, url: 'https://example.com/one.mp3' }},
-  {{ item_id: 'track-2', title: 'Song Two', artist: 'B', duration_sec: 150, url: 'https://example.com/two.mp3' }},
-];
+let currentItems = {initial_items_js};
 
 let intervalFn = null;
 let runSeq = 0;
@@ -212,6 +208,26 @@ vm.createContext(sandbox);
 vm.runInContext({page_script!r} + '\\nthis.__test_state = state; this.__test_attach = attachAudioToVisualizer;', sandbox);
 
 async function run() {{
+{run_body_js}
+}}
+
+run().catch((err) => {{
+  console.error(err);
+  process.exit(1);
+}});
+"""
+    proc = run_node_script(node, harness, capture_output=True, text=True)
+    assert proc.returncode == 0, f"stdout={{proc.stdout}}\\nstderr={{proc.stderr}}"
+
+
+def test_music_pusher_refresh_reconciles_list_and_preserves_playing_audio() -> None:
+    """F0293: 5s refreshAll reuses unchanged audio nodes and releases deleted playing ones."""
+    _run_music_pusher_ui_test(
+        initial_items_js="""[
+  { item_id: 'track-1', title: 'Song One', artist: 'A', duration_sec: 120, url: 'https://example.com/one.mp3' },
+  { item_id: 'track-2', title: 'Song Two', artist: 'B', duration_sec: 150, url: 'https://example.com/two.mp3' },
+]""",
+        run_body_js="""
   await new Promise((r) => globalThis.setTimeout(r, 30));
   const musicList = byId.get('music-list');
   assert.strictEqual(musicList.children.length, 2);
@@ -229,8 +245,8 @@ async function run() {{
 
   // 1) Refresh with same tracks (even with updated title) must reuse DOM & audio without reload/pause
   currentItems = [
-    {{ item_id: 'track-1', title: 'Song One (Edited)', artist: 'A', duration_sec: 120, url: 'https://example.com/one.mp3' }},
-    {{ item_id: 'track-2', title: 'Song Two', artist: 'B', duration_sec: 150, url: 'https://example.com/two-v2.mp3' }},
+    { item_id: 'track-1', title: 'Song One (Edited)', artist: 'A', duration_sec: 120, url: 'https://example.com/one.mp3' },
+    { item_id: 'track-2', title: 'Song Two', artist: 'B', duration_sec: 150, url: 'https://example.com/two-v2.mp3' },
   ];
   assert.ok(intervalFn, '5s refresh interval should be registered');
   await intervalFn();
@@ -256,7 +272,7 @@ async function run() {{
 
   // 3) Deleting the playing track pauses/unloads it and clears activeElement
   currentItems = [
-    {{ item_id: 'track-2', title: 'Song Two', artist: 'B', duration_sec: 150, url: 'https://example.com/two-v2.mp3' }},
+    { item_id: 'track-2', title: 'Song Two', artist: 'B', duration_sec: 150, url: 'https://example.com/two-v2.mp3' },
   ];
   await intervalFn();
   assert.strictEqual(musicList.children.length, 1);
@@ -264,12 +280,47 @@ async function run() {{
   assert.strictEqual(firstAudio.paused, true);
   assert.strictEqual(firstCard.parentNode, null);
   assert.strictEqual(sandbox.__test_state.audioViz.activeElement, null);
-}}
+""",
+    )
 
-run().catch((err) => {{
-  console.error(err);
-  process.exit(1);
-}});
-"""
-    proc = run_node_script(node, harness, capture_output=True, text=True)
-    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+
+def test_music_pusher_preserves_playing_item_without_id_when_preceding_removed() -> None:
+    """Items without item_id use URL + occurrence keys so deleting earlier items keeps playing cards."""
+    _run_music_pusher_ui_test(
+        initial_items_js="""[
+  { title: 'Alpha', artist: 'A', duration_sec: 100, url: 'https://example.com/a.mp3' },
+  { title: 'Beta', artist: 'B', duration_sec: 110, url: 'https://example.com/b.mp3' },
+  { title: 'Alpha Twin', artist: 'A2', duration_sec: 120, url: 'https://example.com/a.mp3' },
+]""",
+        run_body_js="""
+  await new Promise((r) => globalThis.setTimeout(r, 30));
+  const musicList = byId.get('music-list');
+  assert.strictEqual(musicList.children.length, 3);
+  assert.strictEqual(musicList.children[0].dataset.itemKey, 'url:https://example.com/a.mp3#0');
+  assert.strictEqual(musicList.children[1].dataset.itemKey, 'url:https://example.com/b.mp3#0');
+  assert.strictEqual(musicList.children[2].dataset.itemKey, 'url:https://example.com/a.mp3#1');
+
+  const alphaTwinCard = musicList.children[2];
+  const alphaTwinAudio = alphaTwinCard.querySelector('audio');
+  const betaCard = musicList.children[1];
+  const betaAudio = betaCard.querySelector('audio');
+  await betaAudio.play();
+  sandbox.__test_attach(betaAudio);
+  assert.strictEqual(betaAudio.loadCalls, 1);
+  assert.strictEqual(betaAudio.paused, false);
+
+  // Remove the first Alpha item and its second occurrence; Beta shifts from index 1 to 0.
+  currentItems = [
+    { title: 'Beta', artist: 'B', duration_sec: 110, url: 'https://example.com/b.mp3' },
+  ];
+  await intervalFn();
+  assert.strictEqual(musicList.children.length, 1);
+  assert.strictEqual(musicList.children[0], betaCard);
+  assert.strictEqual(musicList.children[0].querySelector('audio'), betaAudio);
+  assert.strictEqual(betaAudio.loadCalls, 1, 'playing card without item_id must not reload');
+  assert.strictEqual(betaAudio.pauseCalls, 0, 'playing card without item_id must not pause');
+  assert.strictEqual(betaAudio.paused, false);
+  assert.strictEqual(alphaTwinCard.parentNode, null);
+  assert.ok(alphaTwinAudio.loadCalls >= 2, 'deleted occurrence card must release audio');
+""",
+    )

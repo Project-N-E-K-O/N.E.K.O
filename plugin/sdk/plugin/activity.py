@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
+import logging
 import sys
 import threading
 import time
 from typing import Any, Literal
 from weakref import WeakKeyDictionary
+
+_logger = logging.getLogger(__name__)
 
 PrivacyState = Literal["visible", "private", "unavailable"]
 
@@ -86,7 +89,10 @@ async def _read_system_signal_snapshot_async() -> Any:
                             psutil_mod.cpu_percent(interval=None)
                         with suppress(Exception):
                             setattr(collector, "_sdk_psutil_primed", True)
-                    await collector._tick()
+                    try:
+                        await collector._tick()
+                    except Exception as exc:
+                        _logger.debug("On-demand system signal tick failed: %s", exc)
                     snap = collector.snapshot()
     return snap
 

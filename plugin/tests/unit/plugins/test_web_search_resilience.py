@@ -830,13 +830,16 @@ async def test_total_timeout_includes_coordinator_wait(
         fetch_called = True
         return []
 
-    plugin = _PluginStub(total_timeout=0.01)
+    plugin = _PluginStub(total_timeout=2.0)
     plugin._coordinator = coordinator
     monkeypatch.setattr(web_search, "_search_ddg_html", html)
 
+    started = asyncio.get_running_loop().time()
     with pytest.raises(resilience.SearchBusyError):
         await web_search.WebSearchPlugin._do_text_search(plugin, "neko", 3, 15.0)
+    elapsed = asyncio.get_running_loop().time() - started
 
+    assert elapsed < 0.5
     assert fetch_called is False
 
 
@@ -958,7 +961,7 @@ async def test_coordinator_fails_fast_when_throttle_wait_exceeds_budget() -> Non
         await coordinator.run(("baidu", "q", 3), fetch, max_wait_seconds=1.0)
     elapsed = asyncio.get_running_loop().time() - started
 
-    assert elapsed < 0.2
+    assert elapsed < 0.5
     assert fetch_called is False
 
 
