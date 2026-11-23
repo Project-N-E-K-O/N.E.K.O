@@ -130,6 +130,8 @@ const { t, te } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const projects = ref<SpaceProject[]>([])
+// Whether the projects were read, once at least: until then nothing is known of the one the address names.
+const projectsRead = ref(false)
 const loading = ref(false)
 const error = ref('')
 const changing = ref(false)
@@ -151,10 +153,12 @@ const selected = computed<SpaceProject | null>(() => {
     : !project.archive_year && project.name === name)) ?? null
 })
 const isArchived = computed(() => !!selected.value?.archive_year)
-// Whether the project the address names is the one shown: not while the projects are still read,
-// nor when it is not among them (renamed, put away, or they could not be read). An address
-// that names none means the familiars of no project.
-const projectSettled = computed(() => !(typeof route.query.project === 'string' && route.query.project) || selected.value !== null)
+// Whether it is known where the familiar the address names belongs. An address that names no
+// project means the familiars of none. One that names a project: once the projects were read.
+// It is that project's board then, or the project is not at work any more (put away, renamed)
+// and none of its familiars is on any board: what was said in one of them is read all the same.
+// Not while the projects are still read, nor when they could not be.
+const projectSettled = computed(() => !(typeof route.query.project === 'string' && route.query.project) || projectsRead.value)
 const scope = computed<SpaceScope>(() => {
   const project = selected.value
   if (!project) return {}
@@ -196,6 +200,7 @@ async function load() {
   loading.value = true
   try {
     projects.value = (await listProjects()).projects
+    projectsRead.value = true
     error.value = ''
   } catch (failure) {
     error.value = describeConsoleError(failure, t, te)

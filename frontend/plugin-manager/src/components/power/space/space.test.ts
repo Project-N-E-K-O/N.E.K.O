@@ -414,13 +414,23 @@ describe('the familiar space page', () => {
     await flush()
     expect(byTest('familiar-past')).toBeTruthy()
     cleanup?.()
-    // A project that is not among them (renamed, put away): nothing is concluded.
+    // The projects could not be read: nothing is known of the one that is named, nothing is concluded.
     api.getTranscript.mockClear()
-    api.listProjects.mockResolvedValue({ projects: [project()] })
-    route.query = { project: 'Renamed since', familiar: 's1' }
+    api.listProjects.mockRejectedValue({ code: 'agent_unreachable', response: { status: 503 } })
+    route.query = { project: 'Ledger tool', familiar: 's1' }
     await mount(FamiliarSpace)
     expect(byTest('familiar-past')).toBeNull()
     expect(api.getTranscript).not.toHaveBeenCalled()
+    cleanup?.()
+    // Read, and the project that is named is not at work any more (put away, renamed): none of
+    // its familiars is on a board, and what was said in the one that is named is read all the same.
+    api.listProjects.mockResolvedValue({ projects: [
+      project(), project({ name: 'Moving list', archive_year: '2026', directory: 'moving-list', workdir: null, commissions: 2 }),
+    ] })
+    route.query = { project: 'Moving list', familiar: 's7' }
+    await mount(FamiliarSpace)
+    expect(byTest('familiar-past')).toBeTruthy()
+    expect(api.getTranscript).toHaveBeenCalledWith('s7', { before: null })
     cleanup?.()
     // No project named: the familiars of none are the ones meant.
     route.query = { familiar: 's9' }
