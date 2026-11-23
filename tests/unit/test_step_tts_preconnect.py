@@ -484,6 +484,71 @@ def test_interrupt_during_the_wait_for_a_spare_close_drops_the_connect(monkeypat
     assert stuck.closed.is_set()
 
 
+def test_cutting_off_a_spare_never_abandons_its_close_half_way(monkeypatch):
+    # The spare gave up on its own handshake and is closing when the speech
+    # arrives. Cutting it off then must not cancel that close: the socket
+    # would stay CLOSING while the speech's own connect went ahead beside it.
+    _route_to_lanlan_app(monkeypatch)
+    monkeypatch.setattr(_step_protocol, "_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.1)
+    stuck = _SlowCloseStatefulSocket([])  # connects, never confirms, slow to close
+    fresh = _socket("fresh", final_events=_app_round_end("fresh"))
+    spare_closed_at_fresh_connect = []
+
+    def on_connect(socket):
+        if socket is fresh:
+            spare_closed_at_fresh_connect.append(stuck.closed.is_set())
+
+    _recording_connects(monkeypatch, [_warmup_socket(), stuck, fresh], on_connect)
+    backstop = threading.Timer(3.0, stuck.release.set)
+    backstop.start()
+    try:
+        _run(
+            _Requests(
+                _PRECONNECT,
+                _wait(lambda: stuck.closing),  # its handshake gave up; closing now
+                ("speech-1", _OPENING),
+                (None, None),
+                _pause(0.2),
+                stuck.release.set,
+            ),
+            queue.Queue(),
+        )
+    finally:
+        backstop.cancel()
+
+    assert spare_closed_at_fresh_connect == [True]
+    assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
+
+
+def test_a_spare_already_closed_by_the_server_is_replaced_at_once(monkeypatch):
+    # Closing a CLOSED socket waits for nothing, so it must not count as a
+    # close in progress that holds back the replacement.
+    _route_to_lanlan_app(monkeypatch)
+    dropped = _socket("dropped")
+    spare = _socket("spare", final_events=_app_round_end("spare"))
+    connects = _install_sockets(monkeypatch, _warmup_socket(), dropped, spare)
+    observations = {}
+
+    _run(
+        _Requests(
+            _PRECONNECT,
+            _wait(lambda: len(connects) == 2),
+            _pause(0.05),
+            dropped.closed.set,  # the server closed it while it idled
+            _PRECONNECT,
+            _observe(observations, "replaced", lambda: len(connects) == 3, timeout=0.5),
+            ("speech-1", _OPENING),
+            (None, None),
+        ),
+        queue.Queue(),
+    )
+
+    assert observations == {"replaced": True}
+    assert dropped.send_attempts == 0
+    assert _sent_types(spare) == ["tts.create", "tts.text.delta", "tts.text.done"]
+
+
 def test_no_new_spare_while_a_retired_one_is_still_closing(monkeypatch):
     _route_to_lanlan_app(monkeypatch)
     monkeypatch.setattr(_step_protocol, "_PRECONNECT_IDLE_SECONDS", 0.05)

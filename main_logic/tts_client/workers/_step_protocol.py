@@ -617,13 +617,15 @@ def run_step_protocol_tts_worker(
                     wait_spare_conn(), timeout=_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS,
                 )
             except asyncio.CancelledError:
-                await _close_candidate_best_effort(spare_ws, "关闭被取消的预建 TTS socket 失败")
+                _close_spare_ws_tracked(spare_ws)
                 raise
             except Exception as e:
                 logger.debug("提前建立 TTS 连接失败: %s", e)
             if spare_session_id:
                 return spare_ws, spare_session_id
-            await _close_candidate_best_effort(spare_ws, "关闭握手未完成的预建 TTS socket 失败")
+            # Not awaited here: cancelling this task must only ever cut the
+            # connect or confirm phase, never a close already under way.
+            _close_spare_ws_tracked(spare_ws)
             return None
 
         async def _expire_spare_socket(owned_task) -> None:
@@ -654,24 +656,54 @@ def run_step_protocol_tts_worker(
             spare_cleanup_tasks.add(task)
             task.add_done_callback(spare_cleanup_tasks.discard)
 
+        async def _drain_spare_cleanup(limit_seconds: float) -> None:
+            """Give retired spares' closes a bounded wait at worker exit.
+
+            Bounded like the warmup close: a peer that never answers the close
+            handshake must not hold up exit. Looped because a cancelled spare
+            hands its socket to a new close task as the cancellation lands.
+            Kept out of the worker's ``finally`` (no loop there, see
+            tests/unit/test_no_return_through_looping_finally.py).
+            """
+            deadline = asyncio.get_running_loop().time() + limit_seconds
+            while spare_cleanup_tasks:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return
+                await asyncio.wait(set(spare_cleanup_tasks), timeout=remaining)
+
+        def _close_spare_ws_tracked(spare_ws) -> None:
+            """Close a spare socket in its own tracked task.
+
+            The close is never awaited by the spare task, so cancelling that
+            task cannot abandon a close half way (websockets does not abort the
+            transport when the wait for the close is cancelled) and drop it
+            from the tracking that keeps the next connect from overlapping it.
+            A socket that is already closed has nothing left to wait for.
+            """
+            if not _ws_may_hold_connection(spare_ws):
+                return
+            _keep_until_done(asyncio.create_task(
+                _close_candidate_best_effort(spare_ws, "关闭未用上的预建 TTS socket 失败")
+            ))
+
         def _retire_spare_task(task) -> None:
             """Get rid of a spare without waiting on its socket's close.
 
             Closing waits for the close handshake (websockets' default
             close_timeout is 10s); neither a speech nor a queued interrupt may
-            wait on that. The cleanup stays referenced until it finishes, and
-            shutdown gives what is left a bounded wait.
+            wait on that. The close runs in its own tracked task, and shutdown
+            gives what is left a bounded wait.
             """
             if not task.done():
-                # Its cancellation path closes the half-open socket.
+                # Cuts only its connect or confirm phase: its cancellation
+                # path hands any socket to _close_spare_ws_tracked.
                 task.cancel()
                 _keep_until_done(task)
                 return
             result = task.result()
             if result is not None:
-                _keep_until_done(asyncio.create_task(
-                    _close_candidate_best_effort(result[0], "关闭未用上的预建 TTS socket 失败")
-                ))
+                _close_spare_ws_tracked(result[0])
 
         def _start_spare_socket() -> None:
             nonlocal spare_task, spare_expiry_task, spare_progress
@@ -1413,10 +1445,7 @@ def run_step_protocol_tts_worker(
             # Clean up resources.
             try:
                 _discard_spare_socket()
-                if spare_cleanup_tasks:
-                    # Bounded like the warmup close below: a peer that never
-                    # answers the close handshake must not hold up exit.
-                    await asyncio.wait(set(spare_cleanup_tasks), timeout=2.5)
+                await _drain_spare_cleanup(2.5)
             except Exception as e:
                 logger.debug("关闭预建 TTS socket 失败: %s", e)
             if warmup_close_task is not None and not warmup_close_task.done():
