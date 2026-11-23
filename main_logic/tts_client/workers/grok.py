@@ -435,10 +435,12 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     # sid, and subsequent same-sid chunks silently hit ``if not ws: continue``
                     # until a new sid retries, muting the entire utterance.
                     if ws:
-                        # Closed in the background via the spare's tracked close: an inline wait_for would cancel a slow close and leave the socket CLOSING untracked, beside the next connect; the
-                        # socket's own 0.5s close_timeout bounds it, and the
-                        # connect below waits for it (preemptible).
-                        spare.close_tracked(ws)
+                        # Via the spare's tracked close: an inline wait_for would
+                        # cancel a slow close and leave the socket CLOSING
+                        # untracked, beside the next connect. Waited for up to
+                        # the socket's own close bound, as the inline close was,
+                        # so the receiver still reads what is already on the wire.
+                        await spare.close_tracked_and_wait(ws, _XAI_TTS_CLOSE_TIMEOUT_SECONDS + 0.1)
                         ws = None
                     if receive_task and not receive_task.done():
                         audio_jitter.flush()
@@ -518,6 +520,9 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     # On send failure, restore text to current-sid pending for retry after reconnection.
                     pending_text.append(payload_text)
                     pending_text_sid = current_speech_id
+                    # Usually already dead; if not, tracked so the next
+                    # connect never sits beside it.
+                    spare.close_tracked(ws)
                     ws = None
                     current_speech_id = None
                     # Symmetric with step/qwen: synchronously cancel old receive_task on send failure,

@@ -262,7 +262,7 @@ class SpareSocket:
         # checks again.
         self.start(blocked)
 
-    def close_tracked(self, ws_conn) -> None:
+    def close_tracked(self, ws_conn):
         """Close a socket in its own tracked task.
 
         Never awaited by whoever retires the socket, so cancelling that caller
@@ -270,13 +270,28 @@ class SpareSocket:
         transport when the wait for the close is cancelled) and drop it from
         the tracking that keeps the next connect from overlapping it. A socket
         that is known to be closed has nothing left to wait for; one whose
-        state cannot be read is closed anyway.
+        state cannot be read is closed anyway. Returns the close task, or
+        None when there is nothing to close.
         """
         if ws_conn is None:
-            return
+            return None
         if getattr(getattr(ws_conn, "state", None), "name", None) == "CLOSED":
-            return
-        self._keep_until_done(asyncio.create_task(_close_best_effort(ws_conn)))
+            return None
+        task = asyncio.create_task(_close_best_effort(ws_conn))
+        self._keep_until_done(task)
+        return task
+
+    async def close_tracked_and_wait(self, ws_conn, limit_seconds: float) -> None:
+        """Close a socket in a tracked task and wait for it, up to a limit.
+
+        For a socket whose receiver should keep reading what is already on
+        the wire while the close completes, as an inline close used to allow.
+        Past the limit the close carries on in the background, still tracked;
+        the wait never cancels it.
+        """
+        task = self.close_tracked(ws_conn)
+        if task is not None:
+            await asyncio.wait({task}, timeout=limit_seconds)
 
     def _retire_task(self, task) -> None:
         """Get rid of a spare without waiting on its socket's close."""

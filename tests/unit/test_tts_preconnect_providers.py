@@ -875,3 +875,100 @@ def _no_delay(real_sleep):
         await real_sleep(0)
 
     return sleep
+
+
+_AUDIO_EVENTS = {
+    "qwen": lambda b64: {"type": "response.audio.delta", "delta": b64},
+    "grok": lambda b64: {"type": "audio.delta", "delta": b64},
+    "elevenlabs": lambda b64: {"audio": b64},
+}
+
+
+class _TailOnCloseSock(_Sock):
+    """A peer that still has an audio frame on the wire when the close starts,
+    and answers the close a moment later, like a real one."""
+
+    def __init__(self, name, kind, tail, replies=None):
+        super().__init__(name, kind, replies=replies)
+        self._tail = tail
+
+    async def __anext__(self):
+        while self._events.empty():
+            if self.closed.is_set():
+                raise StopAsyncIteration
+            await asyncio.sleep(0.005)
+        return self._events.get()
+
+    async def close(self):
+        self.close_attempts += 1
+        if not self.closing:
+            self.closing = True
+            self._put(self._tail)
+        await asyncio.sleep(0.1)
+        self.closed.set()
+
+
+def test_replacing_a_running_round_still_reads_audio_already_on_the_wire(provider, monkeypatch):
+    # The next speech replaces a round whose socket still carries a frame.
+    # The close runs in a tracked task now, but the receiver must still get
+    # to read that frame, as it did while an inline close was awaited.
+    if provider.name == "qwen":
+        pytest.skip("Qwen has always cancelled its receiver before closing the old socket")
+    tail_b64 = base64.b64encode(b"\x03\x00" * 12000).decode("ascii")  # 0.5s at 24 kHz
+    template = provider.make_socket("template")
+    first = _TailOnCloseSock(
+        "first", template._kind, _AUDIO_EVENTS[provider.name](tail_b64), replies=template._replies,
+    )
+    second = provider.make_socket("second")
+    warmups = _warmups(provider)
+    connects = _Connects(monkeypatch, [*warmups, first, second])
+    responses = queue.Queue()
+
+    provider.run(
+        _Requests(
+            ("speech-1", _OPENING),
+            _wait(lambda: provider.spoken(first) == [_OPENING]),
+            ("speech-2", _OPENING),
+            _wait(lambda: provider.spoken(second) == [_OPENING]),
+        ),
+        responses,
+    )
+
+    audio = [item for item in list(responses.queue) if isinstance(item, (bytes, bytearray))]
+    assert audio, "the frame that was already on the wire was dropped"
+    connects.assert_one_connection_at_a_time()
+
+
+class _OpenButFailingSendSock(_Sock):
+    """Stays open after a failed text send (a transient write error)."""
+
+    async def send(self, payload):
+        if json.loads(payload).get("type") == "text.delta" and not self.sent_ok_once:
+            self.sent_ok_once = True
+            self.send_attempts += 1
+            raise RuntimeError(f"{self.name}: write failed")
+        await super().send(payload)
+
+    sent_ok_once = False
+
+
+def test_grok_socket_left_open_by_a_failed_send_never_sits_beside_the_next(monkeypatch):
+    monkeypatch.setattr(grok_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    first = _OpenButFailingSendSock("first", _type_kind)
+    second = _grok_socket("second")
+    connects = _Connects(monkeypatch, [_grok_socket("warmup"), first, second])
+
+    grok_mod.grok_streaming_tts_worker(
+        _Requests(
+            ("speech-1", _OPENING),  # the send fails; the socket stays open
+            ("speech-1", "The next chunk of the same speech."),
+            (None, None),
+            _wait(lambda: any(e.get("type") == "text.done" for e in second.sent)),
+        ),
+        queue.Queue(),
+        "xai-test",
+        "eve",
+    )
+
+    assert first.closed.is_set()
+    connects.assert_one_connection_at_a_time()
