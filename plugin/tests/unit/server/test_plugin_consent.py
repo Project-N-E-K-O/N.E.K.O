@@ -42,6 +42,38 @@ def store(tmp_path):
     return PluginConsentStore(ConfigManager(tmp_path))
 
 
+class Decisions:
+    """Consent decisions as the consent dialog stores and reads them: in the
+    permission store (isolated per test by conftest)."""
+
+    def decide(self, plugin_id, decision, capabilities, version="1"):
+        from plugin.server.application.plugins import permission_service
+
+        return permission_service.record_consent_decision(plugin_id, decision, capabilities)
+
+    def read(self, plugin_id):
+        from plugin.server.application.plugins import permission_service
+
+        return permission_service.consent_record(plugin_id)
+
+    def delete(self, plugin_id):
+        from plugin.server.application.plugins import permission_service
+
+        permission_service.forget_permissions(plugin_id)
+
+
+@pytest.fixture
+def decisions():
+    return Decisions()
+
+
+def seed_legacy(store, plugins):
+    path = store._manager_override.get_runtime_config_path("plugin_consents.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 2, "plugins": plugins}), encoding="utf-8")
+    return path
+
+
 @pytest.fixture
 def reports(tmp_path):
     return CapabilityReportStore(tmp_path / "reports")
@@ -318,49 +350,47 @@ def test_source_revision_bounds_the_files_it_stats(tmp_path, monkeypatch):
     assert analysis.source_revision(tmp_path, "1") != initial
 
 
-def test_decisions_are_durable_and_delete_removes_the_record(store):
-    saved = store.decide("demo", "approved", ["memory.read", "conversations.read"], "1")
-    assert saved["decision"] == "approved"
-    assert saved["approved_capabilities"] == [
-        "conversations.read",
-        "memory.read",
-    ]
-    assert saved["version"] == "1"
-    assert saved["decided_at"]
-    restored = PluginConsentStore(store._manager_override)
-    assert restored.read("demo")["decision"] == "approved"
-    store.decide("demo", "denied", [], "1")
-    reread = PluginConsentStore(store._manager_override)
-    assert reread.read("demo")["decision"] == "denied"
-    assert reread.read("demo")["approved_capabilities"] == []
+def test_legacy_store_only_deletes_entries(store):
+    seed_legacy(
+        store,
+        {
+            "demo": {"decision": "approved", "approved_capabilities": ["memory.read"]},
+            "other": {"decision": "denied", "approved_capabilities": []},
+        },
+    )
+    assert not hasattr(store, "decide") and not hasattr(store, "update")
     store.delete("demo")
-    assert PluginConsentStore(store._manager_override).read("demo") == {}
+    reread = PluginConsentStore(store._manager_override)
+    assert reread.read("demo") == {}
+    assert reread.read("other")["decision"] == "denied"
     store.delete("demo")
 
 
 def test_failed_save_does_not_overwrite_invalid_store(store):
+    seed_legacy(store, {"demo": {"decision": "approved", "approved_capabilities": []}})
     store._manager_override.fail = True
     with pytest.raises(ServerDomainError) as error:
-        store.decide("demo", "approved", [], "1")
+        store.delete("demo")
     assert error.value.code == "PLUGIN_CONSENT_WRITE_FAILED"
-    assert store.read("demo") == {}
+    assert store.read("demo")["decision"] == "approved"
+    store._manager_override.fail = False
     path = store._manager_override.get_runtime_config_path("plugin_consents.json")
     path.write_text("not json")
     restored = PluginConsentStore(store._manager_override)
     with pytest.raises(ServerDomainError) as error:
-        restored.decide("demo", "approved", [], "1")
+        restored.delete("demo")
     assert error.value.code == "PLUGIN_CONSENT_READ_FAILED"
     assert path.read_text() == "not json"
 
 
-def test_report_storage_failure_does_not_change_the_decision(store, reports, monkeypatch):
-    store.decide("demo", "approved", ["memory.read"], "1")
+def test_report_storage_failure_does_not_change_the_decision(decisions, reports, monkeypatch):
+    decisions.decide("demo", "approved", ["memory.read"], "1")
     monkeypatch.setattr(
         reports, "save", lambda *_: (_ for _ in ()).throw(OSError("disk error"))
     )
     with pytest.raises(OSError):
         reports.save("demo", {"status": "completed"})
-    assert store.read("demo")["decision"] == "approved"
+    assert decisions.read("demo")["decision"] == "approved"
 
 
 @pytest.mark.parametrize(
@@ -414,7 +444,7 @@ def test_derived_consent_state(status, capabilities, record, expected):
 
 @pytest.mark.asyncio
 async def test_background_scan_never_blocks_decisions_and_deduplicates(
-    monkeypatch, store, reports, tmp_path
+    monkeypatch, decisions, reports, tmp_path
 ):
     entered, release = threading.Event(), threading.Event()
     calls = []
@@ -432,7 +462,7 @@ async def test_background_scan_never_blocks_decisions_and_deduplicates(
         runner.ensure_analyzed("demo", tmp_path, "1")
         runner.ensure_analyzed("demo", tmp_path, "1")
         assert await asyncio.to_thread(entered.wait, 2)
-        store.decide("demo", "approved", [], "1")
+        decisions.decide("demo", "approved", [], "1")
         assert runner.report("demo", tmp_path, "1")["status"] == "running"
         release.set()
         with runner._lock:
@@ -853,7 +883,7 @@ async def test_install_committed_runs_one_analysis_job(
 
 @pytest.mark.asyncio
 async def test_start_plugin_never_consults_consent(
-    monkeypatch, store, tmp_path
+    monkeypatch, decisions, tmp_path
 ):
     from plugin.server.application.plugins import lifecycle_service as lifecycle
     from plugin.core.state import state
@@ -868,24 +898,22 @@ async def test_start_plugin_never_consults_consent(
         def is_alive(self):
             return True
 
-    monkeypatch.setattr(service, "consent_store", store)
     monkeypatch.setitem(state.plugin_hosts, "demo", Host())
     result = await lifecycle.PluginLifecycleService().start_plugin(
         "demo", refresh_registry=False
     )
     assert result["success"] is True
     assert result["already_running"] is True
-    assert store.read("demo") == {}
+    assert decisions.read("demo") == {}
 
 
 @pytest.mark.asyncio
 async def test_batch_autostart_skips_denied_and_starts_undecided(
-    monkeypatch, store
+    monkeypatch, decisions
 ):
     from plugin.server.application.plugins import lifecycle_service as lifecycle
 
-    monkeypatch.setattr(service, "consent_store", store)
-    store.decide("denied_plugin", "denied", [], "1")
+    decisions.decide("denied_plugin", "denied", [], "1")
     started = []
 
     async def fake_start(plugin_id, **kwargs):
@@ -902,11 +930,10 @@ async def test_batch_autostart_skips_denied_and_starts_undecided(
     assert result["skipped_denied"] == ["denied_plugin"]
 
 
-def _consent_app(monkeypatch, store, report, tmp_path):
+def _consent_app(monkeypatch, decisions, report, tmp_path):
     from plugin.server.routes import plugin_consent as routes
 
     manifest(tmp_path)
-    monkeypatch.setattr(service, "consent_store", store)
     monkeypatch.setattr(service, "plugin_source", lambda _: (tmp_path, "1"))
     monkeypatch.setattr(
         service,
@@ -944,7 +971,7 @@ async def test_first_details_request_schedules_analysis(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_consent_api_records_approval_as_a_union_of_capabilities(
-    monkeypatch, store, tmp_path
+    monkeypatch, decisions, tmp_path
 ):
     report = {
         "status": "completed",
@@ -952,8 +979,8 @@ async def test_consent_api_records_approval_as_a_union_of_capabilities(
         "evidence": [],
         "warnings": [],
     }
-    app = _consent_app(monkeypatch, store, report, tmp_path)
-    store.decide("demo", "approved", ["messages.push"], "1")
+    app = _consent_app(monkeypatch, decisions, report, tmp_path)
+    decisions.decide("demo", "approved", ["messages.push"], "1")
     async with AsyncClient(
         transport=ASGITransport(app), base_url="http://test"
     ) as client:
@@ -971,7 +998,7 @@ async def test_consent_api_records_approval_as_a_union_of_capabilities(
             "/plugin-consent/plugins/demo", json={"approved": True, "snapshot": snapshot}
         )
         assert stale.status_code == 409
-        assert store.read("demo")["approved_capabilities"] == ["messages.push"]
+        assert decisions.read("demo")["approved_capabilities"] == ["messages.push"]
         fresh = (await client.get("/plugin-consent/plugins/demo")).json()
         snapshot["unconfirmed"] = fresh["unconfirmed"]
         response = await client.post(
@@ -990,7 +1017,7 @@ async def test_consent_api_records_approval_as_a_union_of_capabilities(
 
 @pytest.mark.asyncio
 async def test_reject_records_denied_and_stops_a_running_plugin(
-    monkeypatch, store, tmp_path
+    monkeypatch, decisions, tmp_path
 ):
     from plugin.server.application.plugins import lifecycle_service as lifecycle
 
@@ -1000,7 +1027,7 @@ async def test_reject_records_denied_and_stops_a_running_plugin(
         "evidence": [],
         "warnings": [],
     }
-    app = _consent_app(monkeypatch, store, report, tmp_path)
+    app = _consent_app(monkeypatch, decisions, report, tmp_path)
     stopped = []
 
     async def fake_stop(self, plugin_id, **kwargs):
@@ -1017,18 +1044,18 @@ async def test_reject_records_denied_and_stops_a_running_plugin(
         assert response.status_code == 200
         assert response.json()["decision"] == "denied"
         assert stopped == ["demo"]
-        assert store.read("demo")["decision"] == "denied"
+        assert decisions.read("demo")["decision"] == "denied"
 
 
 @pytest.mark.asyncio
 async def test_reject_tolerates_a_plugin_that_is_not_running(
-    monkeypatch, store, tmp_path
+    monkeypatch, decisions, tmp_path
 ):
     from plugin.server.application.plugins import lifecycle_service as lifecycle
 
     app = _consent_app(
         monkeypatch,
-        store,
+        decisions,
         {"status": "completed", "capabilities": [], "evidence": [], "warnings": []},
         tmp_path,
     )
@@ -1050,20 +1077,20 @@ async def test_reject_tolerates_a_plugin_that_is_not_running(
 
 
 @pytest.mark.asyncio
-async def test_delete_consent_revokes_the_record(monkeypatch, store, tmp_path):
+async def test_delete_consent_revokes_the_record(monkeypatch, decisions, tmp_path):
     app = _consent_app(
         monkeypatch,
-        store,
+        decisions,
         {"status": "completed", "capabilities": [], "evidence": [], "warnings": []},
         tmp_path,
     )
-    store.decide("demo", "approved", ["memory.read"], "1")
+    decisions.decide("demo", "approved", ["memory.read"], "1")
     async with AsyncClient(
         transport=ASGITransport(app), base_url="http://test"
     ) as client:
         response = await client.delete("/plugin-consent/plugins/demo")
         assert response.status_code == 200
-        assert store.read("demo") == {}
+        assert decisions.read("demo") == {}
         assert response.json()["decision"] is None
 
 
@@ -1105,7 +1132,7 @@ async def test_stale_notice_approval_schedules_a_new_report(tmp_path, reports, m
                 json={"approved": True, "snapshot": notice},
             )
             assert response.status_code == 409
-            assert service.consent_store.read("demo") == {}
+            assert Decisions().read("demo") == {}
             assert (await client.get("/plugin-consent/notices")).json() == []
             with runner._lock:
                 job = runner._jobs["demo"][1]
@@ -1120,7 +1147,7 @@ async def test_stale_notice_approval_schedules_a_new_report(tmp_path, reports, m
 
 @pytest.mark.asyncio
 async def test_notices_list_only_running_plugins_still_needing_confirmation(
-    monkeypatch, store, tmp_path
+    monkeypatch, decisions, tmp_path
 ):
     from plugin.core.state import state
 
@@ -1130,13 +1157,13 @@ async def test_notices_list_only_running_plugins_still_needing_confirmation(
         "evidence": [],
         "warnings": [],
     }
-    app = _consent_app(monkeypatch, store, report, tmp_path)
+    app = _consent_app(monkeypatch, decisions, report, tmp_path)
     meta = {"config_path": str(tmp_path / "plugin.toml"), "name": "Demo", "version": "1"}
     for plugin_id in ("demo", "denied", "stopped"):
         monkeypatch.setitem(state.plugins, plugin_id, dict(meta))
     monkeypatch.setitem(state.plugin_hosts, "demo", object())
     monkeypatch.setitem(state.plugin_hosts, "denied", object())
-    store.decide("denied", "denied", [], "1")
+    decisions.decide("denied", "denied", [], "1")
     async with AsyncClient(
         transport=ASGITransport(app), base_url="http://test"
     ) as client:
@@ -1155,7 +1182,7 @@ async def test_notices_list_only_running_plugins_still_needing_confirmation(
 
 
 @pytest.mark.asyncio
-async def test_decision_waits_for_uninstall_and_revalidates(monkeypatch, store):
+async def test_decision_waits_for_uninstall_and_revalidates(monkeypatch, decisions):
     from plugin.server.application.plugins.operation_lock import plugin_operation_lock
 
     present = True
@@ -1166,7 +1193,6 @@ async def test_decision_waits_for_uninstall_and_revalidates(monkeypatch, store):
         return Path("demo"), "1"
 
     monkeypatch.setattr(service, "plugin_source", source)
-    monkeypatch.setattr(service, "consent_store", store)
     monkeypatch.setattr(
         service,
         "read_report",
@@ -1185,24 +1211,23 @@ async def test_decision_waits_for_uninstall_and_revalidates(monkeypatch, store):
         assert not request.done()
         # The real uninstall operation clears consent under this same lock.
         present = False
-        store.delete("demo")
+        decisions.delete("demo")
     try:
         await request
     except ServerDomainError as error:
         assert error.code == "PLUGIN_NOT_FOUND"
     else:
         pytest.fail("approved a plugin after uninstall")
-    assert store.read("demo") == {}
+    assert decisions.read("demo") == {}
 
 
 @pytest.mark.asyncio
-async def test_uninstall_waits_for_a_decision_then_forgets_it(monkeypatch, store):
+async def test_uninstall_waits_for_a_decision_then_forgets_it(monkeypatch, decisions):
     from plugin.server.application.plugins.operation_lock import (
         serialized_plugin_operation,
     )
 
     entered, release = threading.Event(), threading.Event()
-    monkeypatch.setattr(service, "consent_store", store)
     monkeypatch.setattr(service, "plugin_source", lambda _: (Path("demo"), "1"))
     monkeypatch.setattr(
         service,
@@ -1214,18 +1239,18 @@ async def test_uninstall_waits_for_a_decision_then_forgets_it(monkeypatch, store
             "warnings": [],
         },
     )
-    original = store.decide
+    original = service.record_consent_decision
 
     def slow_decide(*args, **kwargs):
         entered.set()
         assert release.wait(3)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(store, "decide", slow_decide)
+    monkeypatch.setattr(service, "record_consent_decision", slow_decide)
 
     @serialized_plugin_operation
     async def uninstall():
-        store.delete("demo")
+        decisions.delete("demo")
 
     approval = asyncio.create_task(
         service.approve_plugin("demo", version="1", unconfirmed=[], analysis_status="completed")
@@ -1239,7 +1264,7 @@ async def test_uninstall_waits_for_a_decision_then_forgets_it(monkeypatch, store
         release.set()
     assert (await approval)["decision"] == "approved"
     await deletion
-    assert store.read("demo") == {}
+    assert decisions.read("demo") == {}
 
 
 @pytest.mark.asyncio
@@ -1247,7 +1272,7 @@ async def test_forget_plugin_removes_report_and_consent_record(
     monkeypatch, store, reports, tmp_path
 ):
     reports.save("demo", {"status": "completed"})
-    store.decide("demo", "approved", ["memory.read"], "1")
+    seed_legacy(store, {"demo": {"decision": "approved", "approved_capabilities": ["memory.read"]}})
     runner = analysis.CapabilityAnalysisService(reports)
     monkeypatch.setattr(analysis, "analysis_service", runner)
     monkeypatch.setattr(service, "consent_store", store)
@@ -1435,11 +1460,10 @@ async def test_freshness_is_uniform_across_report_statuses(
 
 @pytest.mark.asyncio
 async def test_revoke_is_serialized_with_other_plugin_operations(
-    monkeypatch, store, tmp_path
+    monkeypatch, decisions, tmp_path
 ):
     from plugin.server.application.plugins.operation_lock import plugin_operation_lock
 
-    monkeypatch.setattr(service, "consent_store", store)
     monkeypatch.setattr(service, "plugin_source", lambda _: (tmp_path, "1"))
     monkeypatch.setattr(
         service,
@@ -1451,22 +1475,21 @@ async def test_revoke_is_serialized_with_other_plugin_operations(
             "warnings": [],
         },
     )
-    store.decide("demo", "approved", ["memory.read"], "1")
+    decisions.decide("demo", "approved", ["memory.read"], "1")
     async with plugin_operation_lock.hold():
         request = asyncio.create_task(service.revoke_plugin("demo"))
         await asyncio.sleep(0)
         assert not request.done()
     await request
-    assert store.read("demo") == {}
+    assert decisions.read("demo") == {}
 
 
 @pytest.mark.asyncio
 async def test_deny_stops_a_running_plugin_without_deadlock(
-    monkeypatch, store, tmp_path
+    monkeypatch, decisions, tmp_path
 ):
     from plugin.server.application.plugins import lifecycle_service as lifecycle
 
-    monkeypatch.setattr(service, "consent_store", store)
     monkeypatch.setattr(service, "plugin_source", lambda _: (tmp_path, "1"))
     monkeypatch.setattr(
         service,
@@ -1488,4 +1511,4 @@ async def test_deny_stops_a_running_plugin_without_deadlock(
     details = await asyncio.wait_for(service.deny_plugin("demo"), timeout=10)
     assert details["decision"] == "denied"
     assert stopped == ["demo"]
-    assert store.read("demo")["decision"] == "denied"
+    assert decisions.read("demo")["decision"] == "denied"

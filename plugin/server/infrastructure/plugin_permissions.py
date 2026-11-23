@@ -15,6 +15,7 @@ Document shape (``schema_version`` 1)::
         "<plugin_id>": {
           "source": {"channel": "market", "fingerprint": "..."} | null,
           "legacy_denied": true,       # optional, see LEGACY_DENIED
+          "legacy_approved": true,     # optional, see LEGACY_APPROVED
           "permissions": {
             "<permission id>": {
               "state": "granted" | "denied" | "undecided",
@@ -32,6 +33,10 @@ Document shape (``schema_version`` 1)::
 A permission missing from ``permissions`` is undecided, except on a record
 with ``legacy_denied`` (see LEGACY_DENIED), where an explicit ``undecided``
 entry is stored instead.
+
+When a plugin's source changes, its grants are discarded; only the
+plugin-level markers in ``KEPT_ON_SOURCE_CHANGE`` stay (a denial does, an
+approval does not).
 
 On the first load the decisions recorded in the legacy ``plugin_consents.json``
 are imported once. The legacy file is only ever read here, never written.
@@ -75,6 +80,17 @@ SCOPE_ALL = "all"
 # implicitly declared permission of that plugin counts as denied unless the
 # record holds an explicit entry for it (including an explicit "undecided").
 LEGACY_DENIED = "legacy_denied"
+# Set on a plugin record whose whole-plugin approval came from the consent
+# flow (imported or decided there). It only records that the plugin was
+# approved, possibly with no permission at all (e.g. an incomplete analysis);
+# it grants nothing by itself. Never set together with LEGACY_DENIED.
+LEGACY_APPROVED = "legacy_approved"
+_PLUGIN_MARKERS = (LEGACY_DENIED, LEGACY_APPROVED)
+
+# What a source change keeps of a plugin record (besides its source): the
+# one place that decides it. Every grant and every other marker is dropped;
+# an empty set would make a source change ask again about everything.
+KEPT_ON_SOURCE_CHANGE: frozenset[str] = frozenset({LEGACY_DENIED})
 
 
 ChangeListener = Callable[["frozenset[str] | None"], None]
@@ -217,6 +233,14 @@ def _load_error(exc: Exception) -> ServerDomainError:
         500,
         details={"file": FILENAME, "retryable": False},
     )
+
+
+def _drop_for_source_change(record: dict) -> None:
+    """Discard what no longer applies once the plugin's code may differ."""
+    record["permissions"] = {}
+    for marker in _PLUGIN_MARKERS:
+        if marker not in KEPT_ON_SOURCE_CHANGE:
+            record.pop(marker, None)
 
 
 class PluginPermissionStore:
@@ -366,6 +390,7 @@ class PluginPermissionStore:
                     "scope": SCOPE_ALL,
                     "decided_at": decided_at,
                 }
+            record[LEGACY_APPROVED] = True
         elif decision == "denied":
             record[LEGACY_DENIED] = True
         else:
@@ -543,8 +568,7 @@ class PluginPermissionStore:
             return False
         now = _now()
         if known is not None:
-            record["permissions"] = {}
-            record.pop(LEGACY_DENIED, None)
+            _drop_for_source_change(record)
             record["source_changed_at"] = now
         record["source"] = current.to_dict()
         record["updated_at"] = now
@@ -648,10 +672,10 @@ class PluginPermissionStore:
         newly_approved: list[str] | tuple[str, ...] | None = None,
         source: PluginSource | None = None,
     ) -> dict:
-        """Mirror a decision made through the existing consent flow.
+        """Record a decision made through the consent dialog.
 
-        Transitional: kept only while the consent dialog is still a writer;
-        remove together with that dialog.
+        The consent dialog writes its decisions only here; remove this
+        together with that dialog.
 
         ``decision`` is ``"approved"`` (``capabilities`` are the legacy names
         approved in total, ``newly_approved`` the ones the user was asked
@@ -659,8 +683,8 @@ class PluginPermissionStore:
         only if they are still stored, e.g. not discarded by a source
         change), ``"denied"`` or ``None`` (revoked). Only entries
         that came from the consent flow (``legacy_any``) and the
-        ``legacy_denied`` marker are touched; decisions made in the permission
-        flow itself are kept. Saving uses the same failure rules as any
+        ``legacy_denied`` / ``legacy_approved`` markers are touched; decisions
+        made in the permission flow itself are kept. Saving uses the same failure rules as any
         write; the call is idempotent, so retrying converges.
         """
         if decision not in ("approved", "denied", None):
@@ -679,7 +703,7 @@ class PluginPermissionStore:
                 permission_id = LEGACY_PERMISSION_NAMES.get(name)
                 if permission_id is None:
                     logger.warning(
-                        "legacy capability {!r} has no permission mapping; not mirrored",
+                        "legacy capability {!r} has no permission mapping; not recorded",
                         name,
                     )
                     continue
@@ -707,7 +731,7 @@ class PluginPermissionStore:
                     del permissions[permission_id]
             for permission_id in sorted(approved & asked):
                 existing = permissions.get(permission_id)
-                # Keep grants already mirrored and grants / denials decided in
+                # Keep grants already recorded and grants / denials decided in
                 # the permission flow; an explicit "undecided" (from clear())
                 # is no decision, so this approval replaces it.
                 if existing is not None and existing.get("state") != STATE_UNDECIDED:
@@ -719,15 +743,42 @@ class PluginPermissionStore:
                     "scope": SCOPE_ALL,
                     "decided_at": now,
                 }
+            for marker in _PLUGIN_MARKERS:
+                record.pop(marker, None)
             if decision == "denied":
                 record[LEGACY_DENIED] = True
-            else:
-                record.pop(LEGACY_DENIED, None)
+            elif decision == "approved":
+                record[LEGACY_APPROVED] = True
             if record == self._document["plugins"].get(plugin_id):
                 return copy.deepcopy(record)
             record["updated_at"] = now
             self._commit(manager, document)
             return copy.deepcopy(record)
+
+    def drop_grants(self, plugin_id: str) -> dict | None:
+        """Drop what a source change drops, without changing the source.
+
+        For a caller that cannot record the plugin's new source but knows
+        its code changed. Keeps what ``KEPT_ON_SOURCE_CHANGE`` keeps; a
+        record left with nothing to keep is removed. Returns the record
+        before the change (``None`` when there was none).
+        """
+        with self._lock:
+            manager = self._load_for_write()
+            cached = self._document["plugins"].get(plugin_id)
+            if cached is None:
+                return None
+            document = copy.deepcopy(self._document)
+            record = document["plugins"][plugin_id]
+            _drop_for_source_change(record)
+            if not any(record.get(marker) for marker in KEPT_ON_SOURCE_CHANGE):
+                del document["plugins"][plugin_id]
+            elif record == cached:
+                return copy.deepcopy(cached)
+            else:
+                record["updated_at"] = _now()
+            self._commit(manager, document)
+            return copy.deepcopy(cached)
 
     def forget(self, plugin_id: str) -> dict | None:
         """Drop every grant of ``plugin_id``; returns the removed record."""

@@ -115,10 +115,10 @@ async def test_observe_failures_never_change_the_call(gate, monkeypatch, broken)
     if broken == "lookup":
         monkeypatch.setattr(capability_gate.registry, "lookup", boom)
     else:
-        from plugin.server.infrastructure import plugin_consent
+        from plugin.server.application.plugins import permission_service
 
         monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
-        monkeypatch.setattr(plugin_consent.consent_store, "read", boom)
+        monkeypatch.setattr(permission_service.permission_store, "view", boom)
 
     async def inner(ctx, request):
         return "ok"
@@ -324,16 +324,16 @@ def test_decisions_are_not_evicted_by_forward_entries(gate):
 
 
 def test_failed_consent_reads_are_not_retried_on_every_use(gate, monkeypatch):
-    from plugin.server.infrastructure import plugin_consent
+    from plugin.server.application.plugins import permission_service
 
     reads = []
 
-    def broken(plugin_id):
+    def broken(plugin_id, _source):
         reads.append(plugin_id)
         raise OSError("unreadable")
 
     monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
-    monkeypatch.setattr(plugin_consent.consent_store, "read", broken)
+    monkeypatch.setattr(permission_service.permission_store, "view", broken)
     assert capability_gate.granted_capabilities("a") == (frozenset(), False)
     assert capability_gate.granted_capabilities("a") == (frozenset(), False)
     assert reads == ["a"]
@@ -356,18 +356,6 @@ async def test_internal_push_field_is_never_forwarded(monkeypatch, disabled):
     assert checked == [("a", "r1", PUSH, "MESSAGE_PUSH")]
 
 
-def test_a_malformed_record_only_affects_its_own_plugin(gate, monkeypatch):
-    from plugin.server.infrastructure import plugin_consent
-
-    records = {"bad": {"decision": "approved", "approved_capabilities": 7},
-               "good": {"decision": "approved", "approved_capabilities": ["memory.read", "messages.push", "x.y"]}}
-    monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
-    monkeypatch.setattr(plugin_consent.consent_store, "read", lambda plugin_id: records[plugin_id])
-    assert capability_gate.granted_capabilities("bad") == (frozenset(), False)
-    # Stored earlier names map to permission ids; names outside the vocabulary are dropped.
-    assert capability_gate.granted_capabilities("good") == (frozenset({MEMORY, PUSH}), True)
-
-
 async def test_audit_route_keeps_entries_and_names_the_switch_source(gate, monkeypatch):
     call_audit.record({"kind": "forward"})
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", "off")
@@ -381,9 +369,7 @@ async def test_audit_route_keeps_entries_and_names_the_switch_source(gate, monke
     assert body["checks_disabled_sources"] == ["host_config", "legacy_env"]
 
 
-def test_audit_keeps_only_identifier_shaped_event_names_and_valid_grants(gate, monkeypatch):
-    from plugin.server.infrastructure import plugin_consent
-
+def test_audit_keeps_only_identifier_shaped_event_names(gate):
     record = capability_gate.begin_call("a", "r1", "plugin_entry", "user said: hello there", None)
     capability_gate.end_call(record, "ok", 0)
     (forward,) = call_audit.entries()
@@ -394,12 +380,6 @@ def test_audit_keeps_only_identifier_shaped_event_names_and_valid_grants(gate, m
     depth_error = RuntimeError()
     depth_error.code = "CALL_DEPTH_EXCEEDED"
     assert capability_gate.result_code(depth_error) == "CALL_DEPTH_EXCEEDED"
-    monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
-    monkeypatch.setattr(plugin_consent.consent_store, "read",
-                        lambda plugin_id: {"decision": "approved", "approved_capabilities": {"memory.read": False}})
-    assert capability_gate.granted_capabilities("a") == (frozenset(), False)
-    monkeypatch.setattr(plugin_consent.consent_store, "read", lambda plugin_id: {"decision": "approved"})
-    assert capability_gate.granted_capabilities("a") == (frozenset(), True)  # missing = none, as derive_consent
 
 
 async def test_audit_route_returns_every_retained_entry(gate, monkeypatch):
