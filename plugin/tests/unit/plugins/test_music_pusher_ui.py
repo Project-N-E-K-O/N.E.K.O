@@ -207,6 +207,17 @@ sandbox.window.document = document;
 vm.createContext(sandbox);
 vm.runInContext({page_script!r} + '\\nthis.__test_state = state; this.__test_attach = attachAudioToVisualizer;', sandbox);
 
+// Waits for what the page does on its own (its first load goes through several
+// mocked requests, each a promise and a zero-delay timer), however busy the
+// machine is. A fixed short sleep turned red on a loaded CI runner.
+async function waitFor(predicate, what, timeoutMs = 10000) {{
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {{
+    if (Date.now() > deadline) throw new Error('timed out waiting for ' + what);
+    await new Promise((r) => globalThis.setTimeout(r, 5));
+  }}
+}}
+
 async function run() {{
 {run_body_js}
 }}
@@ -228,7 +239,7 @@ def test_music_pusher_refresh_reconciles_list_and_preserves_playing_audio() -> N
   { item_id: 'track-2', title: 'Song Two', artist: 'B', duration_sec: 150, url: 'https://example.com/two.mp3' },
 ]""",
         run_body_js="""
-  await new Promise((r) => globalThis.setTimeout(r, 30));
+  await waitFor(() => byId.get('music-list').children.length === 2, 'the first render of the list');
   const musicList = byId.get('music-list');
   assert.strictEqual(musicList.children.length, 2);
 
@@ -293,7 +304,7 @@ def test_music_pusher_preserves_playing_item_without_id_when_preceding_removed()
   { title: 'Alpha Twin', artist: 'A2', duration_sec: 120, url: 'https://example.com/a.mp3' },
 ]""",
         run_body_js="""
-  await new Promise((r) => globalThis.setTimeout(r, 30));
+  await waitFor(() => byId.get('music-list').children.length === 3, 'the first render of the list');
   const musicList = byId.get('music-list');
   assert.strictEqual(musicList.children.length, 3);
   assert.strictEqual(musicList.children[0].dataset.itemKey, 'url:https://example.com/a.mp3#0');
