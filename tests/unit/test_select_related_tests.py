@@ -72,6 +72,7 @@ FILES = {
     "app/pkgx/core.py": "VALUE = 13\n",
     "tests/fixtures/policy.json": "{}\n",
     "tests/unit/fixtures/wire_samples/case_one.json": "{}\n",
+    "tests/unit/sub/fixtures/sub_samples/one.json": "{}\n",
     "tests/unit/test_wire_samples.py": (
         "from pathlib import Path\n\n"
         "def test_samples():\n    assert list((Path(__file__).parent / 'fixtures' / 'wire_samples').glob('*.json'))\n"
@@ -179,7 +180,8 @@ FILES = {
     "tests/unit/sub/conftest.py": (
         "import pytest\nimport tests.unit.pkgb\nfrom tests.unit.sub.sub_helper import fixture_value\n"
         "from tests.unit.shared_helper import shared\n\nPOLICY = 'tests/fixtures/policy.json'\n"
-        "PAYLOAD = 'tests/fixtures/test_payload.py'\n\n"
+        "PAYLOAD = 'tests/fixtures/test_payload.py'\n"
+        "SAMPLES = Path(__file__).parent / 'fixtures' / 'sub_samples'\n\n"
         "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n    import app.gone_backend\n\n"
         "@pytest.fixture\ndef boot_dep():\n    import app.sub_backend\n    return app.sub_backend\n\n"
         "@pytest.fixture\ndef sub_service():\n    from app import sub_service\n    return sub_service\n\n"
@@ -436,6 +438,11 @@ def test_separately_packaged_directory_resolves_by_its_import_name(index):
 
 def test_data_file_a_test_globs_by_directory_selects_it(index):
     assert _selected(index, "tests/unit/fixtures/wire_samples/case_one.json") == ["tests/unit/test_wire_samples.py"]
+    # A conftest that globs the directory brings its whole directory along.
+    assert _selected(index, "tests/unit/sub/fixtures/sub_samples/one.json") == [
+        "tests/unit/sub/test_a.py",
+        "tests/unit/sub/test_b.py",
+    ]
     # A generic directory name ("fixtures") alone names nothing.
     assert sel._data_dir_literal("tests/fixtures/policy.json") is None
     # A test file outside a data directory does not match through its directory ("frontend").

@@ -880,9 +880,11 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
             seeds.add(mod)
         dir_literal = _data_dir_literal(rel)
         if dir_literal:
-            # Weaker evidence than a file name: it selects the tests that glob the
-            # directory, but does not spread to whole conftest directories.
-            literal_seeds |= _mentioning(index, dir_literal)
+            # Tests (or a conftest fixture) that glob the directory. Limited to
+            # data directories, so it scopes like a file name would.
+            dir_hits = _mentioning(index, dir_literal)
+            literal_seeds |= dir_hits
+            scoped_literal_seeds |= dir_hits
         literal = _literal_for(rel, common_names)
         if literal:
             hits = _mentioning(index, literal)
