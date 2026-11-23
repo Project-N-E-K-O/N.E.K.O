@@ -2301,6 +2301,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     };
     anchorEl.addEventListener('keydown', (event) => {
         if (event.target !== anchorEl || !['Enter', ' ', 'ArrowRight'].includes(event.key)) return;
+        if (event.key !== 'ArrowRight' && anchorEl.getAttribute('role') === 'switch') return;
         event.preventDefault();
         event.stopImmediatePropagation();
         focusPanel();

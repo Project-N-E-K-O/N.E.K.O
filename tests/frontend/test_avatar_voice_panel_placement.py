@@ -645,3 +645,44 @@ def test_character_side_panel_supports_keyboard_navigation_and_emote_entry(page:
     page.keyboard.press('Escape')
     assert page.evaluate('document.activeElement.id') == 'keyboard-character-anchor'
     page.wait_for_function("getComputedStyle(window.__keyboardPanel).display === 'none'")
+
+
+@pytest.mark.parametrize('toggle_id', ['proactive-chat', 'proactive-vision', 'visit-enabled'])
+@pytest.mark.parametrize('key', ['Enter', 'Space', 'ArrowRight'])
+def test_side_panel_switch_keeps_its_activation_keys(page: Page, toggle_id, key):
+    _install_toolbar(page, open_voice=False)
+    before = page.evaluate("""id => {
+        Object.assign(window, {proactiveChatEnabled:false, proactiveVisionEnabled:false, visitEnabled:false});
+        window.__settingSaves = 0;
+        window.saveNEKOSettings = () => { window.__settingSaves += 1; };
+        window.acquireProactiveVisionAfterUserEnable = () => {};
+        const manager = live2dManager;
+        const toggle = manager._createSettingsToggleItem({id, label:id, inverted:id==='proactive-vision'});
+        toggle.id = 'review-side-switch';
+        toggle.style.cssText += ';position:fixed;left:40px;top:300px;pointer-events:auto';
+        document.body.append(toggle);
+        const panel = manager._createSidePanelContainer();
+        panel._anchorElement = toggle;
+        const button = document.createElement('button');
+        button.id = 'review-switch-detail'; button.textContent = 'Detail';
+        panel.append(button); document.body.append(panel);
+        manager._attachSidePanelHover(toggle, panel);
+        window.__reviewSwitchPanel = panel;
+        return toggle.querySelector('input').checked;
+    }""", toggle_id)
+    switch = page.locator('#review-side-switch')
+    switch.focus()
+    switch.press(key)
+    after = page.evaluate("""() => ({
+        checked:document.querySelector('#review-side-switch input').checked,
+        saves:window.__settingSaves, focused:document.activeElement.id,
+        panel:getComputedStyle(window.__reviewSwitchPanel).display,
+    })""")
+    if key == 'ArrowRight':
+        assert after['checked'] == before and after['saves'] == 0, after
+        assert after['focused'] == 'review-switch-detail' and after['panel'] == 'flex', after
+        page.keyboard.press('Escape')
+        assert page.evaluate('document.activeElement.id') == 'review-side-switch'
+    else:
+        assert after['checked'] != before and after['saves'] == 1, after
+        assert after['focused'] == 'review-side-switch' and after['panel'] == 'none', after
