@@ -43,6 +43,17 @@ describe('knowledge API client', () => {
     })
   })
 
+  it.each([[true, false], [false, true]])('keeps global enabled=%s separate from saved pack_enabled=%s', async (enabled, packEnabled) => {
+    const payload = { ok: true, pack_id: 'p1', enabled, pack_enabled: packEnabled }
+    axiosMocks.request.mockResolvedValue({ data: payload })
+    const { knowledgeApi } = await loadKnowledgeApi()
+
+    await expect(knowledgeApi.setPackEnabled({ pack_id: 'p1', enabled: packEnabled })).resolves.toEqual(payload)
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
+      url: '/market/knowledge/packs/enabled', method: 'POST', data: { pack_id: 'p1', enabled: packEnabled },
+    })
+  })
+
   it('rejects a logical failure with its reason', async () => {
     axiosMocks.request.mockResolvedValue({ data: { ok: false, reason: 'duplicate_title' } })
     const { KnowledgeApiError, knowledgeApi } = await loadKnowledgeApi()

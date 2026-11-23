@@ -1269,7 +1269,8 @@ function setPackEnabled(row: KnowledgePack, enabled: boolean) {
       await ElMessageBox.confirm(t('knowledge.cloudDisclosure'), t('common.warning'), { type: 'warning' })
     }
     const response = await knowledgeApi.setPackEnabled({ pack_id: row.pack_id, enabled })
-    row.enabled = response.enabled ?? enabled
+    // Global availability also uses enabled in the envelope, independently of this pack.
+    row.enabled = response.pack_enabled ?? enabled
   })
 }
 

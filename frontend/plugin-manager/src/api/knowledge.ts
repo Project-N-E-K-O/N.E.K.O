@@ -540,8 +540,9 @@ export const knowledgeApi = {
 
   setEnabled: (enabled: boolean) =>
     post<KnowledgeEnvelope & { enabled: boolean }>('settings', { enabled }),
+  // The envelope's enabled describes global availability; pack_enabled is the saved pack policy.
   setPackEnabled: (data: { pack_id: string; enabled: boolean }) =>
-    post<KnowledgeEnvelope & { pack_id: string; enabled: boolean }>('packs/enabled', data),
+    post<KnowledgeEnvelope & { pack_id: string; pack_enabled: boolean }>('packs/enabled', data),
   setEntryDisabled: (data: { pack_id: string; title: string; disabled: boolean }) =>
     post<KnowledgeEnvelope & { pack_id: string; disabled: boolean; disabled_entries: number }>(
       'entry/disabled',

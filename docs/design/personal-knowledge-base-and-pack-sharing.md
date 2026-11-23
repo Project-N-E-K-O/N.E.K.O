@@ -173,7 +173,7 @@ vectors.f32
 | POST `sources/commit` | preview_id、sha256、enabled、enabled_confirmed；新 pack 默认关闭，返回既有 import_commit job；提交时再次核对实际启用状态，追加到已启用包须独立确认 |
 | POST `sources/remove` | pack_id/doc_id，复用原任务状态和取消，保留包当前的开关 |
 | POST `sources/restore` | pack_id/doc_id/版本、enabled_confirmed（严格 bool，缺省 false）；恢复同样冻结披露确认，激活时按包的实际启用状态校验，保留包当前的开关 |
-| POST `packs/enabled` | pack 级参与检索开关 |
+| POST `packs/enabled` | 请求 `enabled` 控制 pack 级参与检索；响应 `pack_enabled` 为保存后的包状态，响应信封中的 `enabled` 仍表示全局知识库开关 |
 | POST `packs/export` | pack_id、format_version 固定为 2（默认 2），返回 pack_export job；后端自动生成发布版本，显式请求格式 1 或传入 `version` 会被拒绝 |
 | POST `packs/exports/delete` | 仅 job_id；删除已完成导出记录及未被引用的本地 ZIP，返回 artifact_retained 说明文件是否因引用而保留 |
 | GET `packs/artifacts?artifact_id` | 只接受 SHA-256 身份，受控二进制下载 |
@@ -194,6 +194,7 @@ Main 的本地原生读取保留既有访问方式，未向外部浏览器来源
 ## 7. UI、桌面与市场
 
 - 在现有 pack 表展示来源和启用；在同一页预览确认、文档列表/版本恢复、导出与公开分享。
+- 包的参与检索开关按响应 `pack_enabled` 写回，独立于全局 `enabled`；紧接着的列表刷新失败时，也保留本次已保存的包状态，不用全局状态覆盖。
 - 导出区按“导出与分享”和“已导出的数据包”分组，提供就绪状态、自动版本说明及唯一的“导出数据包”按钮。历史产物以卡片展示冻结包名、时间、大小和状态，下载/发布/删除使用固定操作组；删除须确认，且与同一产物的下载或发布对话框互斥。排队任务不显示原始 UUID，公开确认也使用包名。窄屏操作组换行，深浅主题沿用 Element 变量。所有文案同步八语，不展示 v1/v2 格式选项或版本号输入框。
 - 导出就绪提示优先展示完整存量向量可直接导出；不可用包沿用修复提示。本地向量关闭且尚未就绪时，明确提示开启并补齐后再导出，不暗示后台正在计算，也不自动修改开关或加载模型。
 - 聊天沿既有知识链路：全局知识库与 pack 的“参与检索”均开启时，主聊天获得 `query_public_knowledge` 工具；插件/agent 开关不能代替知识包开关。“自动参考”另控制文字聊天及独立 ASR 转文字后的回复前检索，原生实时语音不走这一自动参考入口。

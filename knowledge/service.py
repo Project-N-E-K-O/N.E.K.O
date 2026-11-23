@@ -831,7 +831,9 @@ class KnowledgeService:
     async def set_pack_enabled(self, pack_id: str, enabled: bool) -> dict[str, Any]:
         """Gate all retrieval while preserving the pack and its vector policy."""
         record = await self._update_record(pack_id, enabled=bool(enabled))
-        return {"pack_id": pack_id, "enabled": record.enabled}
+        # The HTTP envelope reserves enabled for global availability; keep the
+        # persisted pack policy distinct so the UI cannot read the other switch.
+        return {"pack_id": pack_id, "pack_enabled": record.enabled}
 
     async def set_pack_local_embedding(self, pack_id: str, enabled: bool) -> dict[str, Any]:
         async def run() -> PackRecord:

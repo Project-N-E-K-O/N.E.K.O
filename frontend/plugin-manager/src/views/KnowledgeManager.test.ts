@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, markRaw, nextTick } from 'vue'
 import { createI18n } from 'vue-i18n'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessageBox } from 'element-plus'
 import enUS from '@/i18n/locales/en-US'
 import { KnowledgeApiError, type KnowledgeDiagnosticQuery, type KnowledgePackJob } from '@/api/knowledge'
 
@@ -146,6 +146,7 @@ afterEach(() => {
   document.body.innerHTML = ''
   vi.useRealTimers()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('KnowledgeManager diagnostics', () => {
@@ -321,21 +322,44 @@ describe('KnowledgeManager overview', () => {
     expect(container.textContent).toContain('The pack registry file is damaged or unreadable.')
   })
 
-  it('toggles pack retrieval independently of automatic context and local vectors', async () => {
+  it.each([
+    { globalEnabled: true, requested: false, saved: false },
+    { globalEnabled: false, requested: true, saved: true },
+    { globalEnabled: true, requested: true, saved: false },
+  ])('keeps the saved pack toggle independent of global availability after a failed refresh (%s)', async ({ globalEnabled, requested, saved }) => {
+    let acknowledge!: (value: Awaited<ReturnType<typeof ElMessageBox.confirm>>) => void
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockReturnValue(new Promise(resolve => { acknowledge = resolve }))
+    api.status.mockResolvedValue(readyStatus(globalEnabled))
     api.packs.mockResolvedValue({ ok: true, packs: [{
       pack_id: 'imp.test', source: { name: 'My notes', homepage: '', license: '' },
-      origin: 'imported', enabled: true, auto_context: false, local_embedding: true,
+      origin: 'imported', enabled: !requested, auto_context: false, local_embedding: true,
       declared_material_type: 'knowledge', material_type_override: null, effective_material_type: 'knowledge',
       entries: 1, disabled_entries: 0, chunks_total: 1, chunks_ready: 0, chunks_failed: 0,
       vector_state: 'waiting', export_ready: false, broken: false, subscription: null, installed_at: '', updated_at: '',
     }] })
-    api.setPackEnabled.mockResolvedValue({ ok: true, pack_id: 'imp.test', enabled: false })
+    api.setPackEnabled.mockResolvedValue({ ok: true, pack_id: 'imp.test', enabled: globalEnabled, pack_enabled: saved })
     const container = await mount()
     await openTab('packs')
     expect(container.textContent).toContain('Imported documents')
-    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    const toggle = container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!
+    expect(toggle.querySelector('input')!.getAttribute('aria-checked')).toBe(String(!requested))
+    const initialPackLoads = api.packs.mock.calls.length
+    api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
+    toggle.click()
     await flush()
-    expect(api.setPackEnabled).toHaveBeenCalledWith({ pack_id: 'imp.test', enabled: false })
+    if (requested) {
+      expect(confirm).toHaveBeenCalledWith(enUS.knowledge.cloudDisclosure, enUS.common.warning, { type: 'warning' })
+      expect(api.setPackEnabled).not.toHaveBeenCalled()
+      acknowledge('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    } else {
+      expect(confirm).not.toHaveBeenCalled()
+    }
+    await flush()
+    expect(api.setPackEnabled).toHaveBeenCalledExactlyOnceWith({ pack_id: 'imp.test', enabled: requested })
+    expect(api.packs).toHaveBeenCalledTimes(initialPackLoads + 1)
+    // A failed refresh leaves this response as the visible source of truth.
+    expect(toggle.querySelector('input')!.getAttribute('aria-checked')).toBe(String(saved))
+    expect(container.querySelector('[data-testid="knowledge-global-switch"] input')!.getAttribute('aria-checked')).toBe(String(globalEnabled))
     expect(api.setPackAutoContext).not.toHaveBeenCalled()
     expect(api.setPackIndexPolicy).not.toHaveBeenCalled()
     expect(container.querySelector<HTMLInputElement>('input[type="file"]')!.accept).toContain('.pdf')

@@ -94,6 +94,33 @@ async def test_import_then_query_reports_tool_availability(client):
     assert "Kotatsu" in result["context"]
 
 
+@pytest.mark.parametrize("global_enabled, pack_enabled", [(True, False), (False, True), (True, True), (False, False)])
+async def test_pack_toggle_keeps_pack_enabled_distinct_from_global_availability(client, global_enabled, pack_enabled):
+    http, service = client
+    imported = await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers={"Content-Type": "application/json"})
+    assert imported.json()["ok"] is True
+    await _wait_active(http)
+    await service.set_pack_enabled("route-pack", not pack_enabled)
+    settings = (await http.post("/internal/knowledge/settings", json={"enabled": global_enabled})).json()
+    assert settings["ok"] is True and settings["enabled"] is global_enabled
+
+    # Repeating the write checks both a changed pack and an already-matching
+    # pack without conflating either state with the global envelope switch.
+    for _ in range(2):
+        response = await http.post("/internal/knowledge/packs/enabled", json={"pack_id": "route-pack", "enabled": pack_enabled})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True and body["pack_id"] == "route-pack"
+        persisted = json.loads((service.root / "registry.json").read_text())
+        assert persisted["enabled"] is global_enabled
+        assert persisted["packs"]["route-pack"]["enabled"] is pack_enabled
+        listed = (await http.get("/internal/knowledge/packs")).json()["packs"][0]
+        assert listed["enabled"] is pack_enabled
+        assert body["enabled"] is global_enabled
+        assert body["ready"] is True and body["tool_available"] is (global_enabled and pack_enabled)
+        assert body["pack_enabled"] is pack_enabled
+
+
 async def test_local_zip_defaults_disabled_without_fabricating_original_history(client, tmp_path):
     from tests.unit.test_knowledge_archive_v2 import make_archive
 
