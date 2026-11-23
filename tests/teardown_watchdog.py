@@ -11,6 +11,8 @@ for the test, counted from its setup:
 the stack of every thread is written out, then the process ends. Under xdist
 the test is reported as failed and a new worker goes on. A test that passed is
 left to pytest-timeout, whose timer is still running through its teardown.
+Not for a test timed with ``func_only`` (its fixtures have no limit), nor
+while a debugger is in use (pytest-timeout stands down then as well).
 
 Registered from ``tests/conftest.py`` (``pytest_configure``).
 """
@@ -59,6 +61,54 @@ def timeout_seconds(item: pytest.Item) -> float:
         return 0.0
 
 
+def _item_settings(item: pytest.Item) -> Any:
+    """pytest-timeout's own settings for this test, None when they cannot be had."""
+    try:
+        from pytest_timeout import _get_item_settings
+
+        return _get_item_settings(item)
+    except Exception:  # noqa: BLE001 - not installed, or its internals moved
+        return None
+
+
+def times_fixtures(item: pytest.Item) -> bool:
+    """Whether pytest-timeout's limit covers this test's fixtures, not only its function.
+
+    With ``func_only`` (marker or ``timeout_func_only``) it times the test
+    function alone, and a long setup is allowed: there is no budget for the
+    whole test that a teardown could be held to.
+    """
+    settings = _item_settings(item)
+    if settings is not None:
+        return not settings.func_only
+    marker = item.get_closest_marker("timeout")
+    if marker is not None and marker.kwargs.get("func_only") is not None:
+        return not marker.kwargs["func_only"]
+    try:
+        return not item.config.getini("timeout_func_only")
+    except ValueError:  # pytest-timeout is not installed
+        return True
+
+
+def debugging(item: pytest.Item) -> bool:
+    """Whether someone is at a debugger, as pytest-timeout tells it (or ``--pdb``).
+
+    pytest-timeout stops its timers once a debugger is entered; a watchdog
+    that ends the process must not come back after ``continue``.
+    """
+    if item.config.getvalue("usepdb"):
+        return True
+    settings = _item_settings(item)
+    if settings is not None and settings.disable_debugger_detection:
+        return False
+    try:
+        from pytest_timeout import is_debugging
+
+        return bool(is_debugging())
+    except Exception:  # noqa: BLE001 - not installed, or its internals moved
+        return False
+
+
 def _stderr_fd(config: pytest.Config) -> Any:
     """Where pytest's own faulthandler writes: the real stderr, not the captured one."""
     try:
@@ -87,7 +137,9 @@ def pytest_runtest_makereport(item: pytest.Item, call: Any):
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_teardown(item: pytest.Item, nextitem: Any):
-    limit = timeout_seconds(item) if item.stash.get(_FAILED_BEFORE_TEARDOWN, False) else 0.0
+    limit = 0.0
+    if item.stash.get(_FAILED_BEFORE_TEARDOWN, False) and times_fixtures(item) and not debugging(item):
+        limit = timeout_seconds(item)
     if limit > 0:
         # What is left of the test's whole budget, counted from its setup: a
         # test that failed at second 299 does not get another 300 for its
