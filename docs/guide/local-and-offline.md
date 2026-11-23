@@ -6,9 +6,9 @@ seoSchemaType: WebPage
 
 # Can N.E.K.O run completely offline?
 
-N.E.K.O is not an out-of-the-box, fully offline product. Its interface and default memory storage are local, and selected components can be self-hosted, but the normal free path and many model, voice, Steam, Cloud, Workshop, feed, browser, and Agent features require a network connection.
+N.E.K.O is not an out-of-the-box, fully offline product. Its interface and default memory storage are local, and selected components can be self-hosted, but the normal free path and many model, voice, optional cross-device sync, Steam, Cloud, Workshop, feed, browser, and Agent features require a network connection.
 
-Last fact review: **2026-07-23**.
+Last fact review: **2026-11-22**.
 
 ## Four terms that should not be mixed together
 
@@ -33,6 +33,7 @@ The internal name `OmniOfflineClient` refers to the **non-realtime text Chat Com
 | Shipped free profiles | Project-hosted remote service | Yes | No user API key, but not offline |
 | ASR, TTS, and voice registration | Depends on provider | Often | Selected local TTS or vLLM-Omni paths exist; requirements differ |
 | Steam, Workshop, and Steam Cloud | Steam services | Yes | Unavailable offline |
+| Cross-device chat and memory sync | N.E.K.O. sync service (`sync.nekotech.cn`) | When enabled | Disabled by default; requires Community OAuth login (`community.project-neko.cn`). Saving sync enabled in the character card sends `includeHistory: true` and includes existing recent-memory history (no separate UI history toggle; `includeHistory` defaults to `false` only on direct REST calls omitting it); separate from Steam Cloud |
 | Browser, feeds, trends, and online content | External sources | Yes | The feature cannot fetch current external content without network access |
 | Remote Agent channels | Channel-specific services | Often | Keyboard-and-mouse and browser control act on the local machine, but every step is decided by a model call that can still be remote |
 
@@ -55,6 +56,7 @@ Local storage does not by itself determine where model processing occurs.
 - free API requests forwarded through the current N.E.K.O service path;
 - speech samples or text sent to a selected cloud ASR, TTS, or voice service;
 - user-triggered Steam Cloud or Workshop content;
+- chat originals, recent memory, learned-memory snapshots (`facts`, `persona`, `reflections`), and approved character profiles or model bindings sent to the N.E.K.O. sync service (`sync.nekotech.cn`) when Community OAuth login (`community.project-neko.cn`) and per-character cross-device sync are enabled;
 - screenshots of the desktop and the content of web pages, which the keyboard-and-mouse and browser tools return to the Agent model while a task uses them;
 - online feeds, browser requests, and remote Agent work.
 
@@ -68,7 +70,7 @@ A more local setup is assembled component by component:
 2. verify that every required role—not only text chat—is supported;
 3. configure local speech components where available;
 4. keep optional embeddings local;
-5. disable or avoid Steam Cloud, Workshop, online feeds, browser work, and remote Agent channels when they are outside the intended boundary;
+5. disable or avoid cross-device chat sync, Steam Cloud, Workshop, online feeds, browser work, and remote Agent channels when they are outside the intended boundary;
 6. test the application with outbound network access blocked and document which features degrade.
 
 Project N.E.K.O currently does not expose a verified “one-click offline mode” that performs all of these steps.

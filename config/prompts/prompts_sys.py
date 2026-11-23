@@ -128,7 +128,7 @@ RESULT_PARSER_PHRASES = {
 # The last sentence asks her to say a word before any tool call (recall,
 # knowledge lookup, the task tools, plugin tools), so a call never leaves the
 # user facing silence. It is in both openings: the recall tool exists in a
-# session without NekoClaw as well.
+# session without NekoPower as well.
 SESSION_INIT_PROMPT = {
     'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。调用任何工具前，先自然地说一声。',
     'zh-TW': '你是一個角色扮演大師。請照要求扮演以下角色（{name}）。呼叫任何工具前，先自然地說一聲。',
@@ -140,7 +140,7 @@ SESSION_INIT_PROMPT = {
     'pt': 'Você é especialista em roleplay. Interprete o seguinte personagem ({name}) conforme as instruções. Antes de chamar qualquer ferramenta, diga primeiro uma palavra de forma natural.',
 }
 
-# The opening of a session with NekoClaw switched on. Real actions go through
+# The opening of a session with NekoPower switched on. Real actions go through
 # the two task tools (``config/prompts/prompts_task_tools.py``) and she speaks
 # by what they answer. No list of capabilities is given here on purpose: what
 # can be done is answered by the tools' receipts, not by this sentence.
@@ -228,6 +228,7 @@ def get_context_summary_ready(
     ('audio' / 'text'); chat-platform plugins are always 'text'. Callers
     still ``.format(name=..., master=...)`` the result — the group variant
     simply has no ``{master}`` slot to fill."""
+    lang = normalize_sys_prompt_locale(lang)
     if is_group:
         return _loc(CONTEXT_SUMMARY_READY_GROUP, lang)
     if str(input_mode or '').strip() == 'text':

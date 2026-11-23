@@ -358,15 +358,17 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             )).map(light => light.dataset.modelType),
             rowPairs: { ...MODEL_CONFIG_ROW_PAIRS },
             conversation: rect(cards[0]),
-            vision: rect(cards[1]),
-            summary: rect(cards[2]),
-            correction: rect(cards[3]),
-            emotion: rect(cards[4]),
-            omni: rect(cards[5]),
-            agent: rect(cards[6]),
-            tts: rect(cards[7]),
-            game: rect(cards[8]),
-            image: rect(cards[9]),
+            memory: rect(cards[1]),
+            recognition: rect(cards[2]),
+            decision: rect(cards[3]),
+            omni: rect(cards[4]),
+            tts: rect(cards[5]),
+            agentAdvanced: rect(cards[6]),
+            agent: rect(cards[7]),
+            agentSmall: rect(cards[8]),
+            game: rect(cards[9]),
+            image: rect(cards[10]),
+            cardCount: cards.length,
         };
     }""")
 
@@ -374,63 +376,73 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["columns"] == 2
     assert desktop["contentIds"] == [
         "conversation-model-content",
-        "vision-model-content",
-        "summary-model-content",
-        "correction-model-content",
-        "emotion-model-content",
+        "memory-model-content",
+        "recognition-model-content",
+        "decision-model-content",
         "omni-model-content",
-        "agent-model-content",
         "tts-model-content",
+        "agent-advanced-model-content",
+        "agent-model-content",
+        "agent-small-model-content",
         "game-model-content",
         "image-model-content",
     ]
     assert desktop["titleKeys"] == [
         "api.conversationModelConfig",
-        "api.visionModelConfig",
         "api.summaryModelConfig",
-        "api.correctionModelConfig",
         "api.emotionModelConfig",
+        "api.decisionModelConfig",
         "api.realtimeModelConfig",
-        "api.agentApiConfigTitle",
         "api.ttsModelConfig",
+        "api.agentAdvancedApiConfigTitle",
+        "api.agentApiConfigTitle",
+        "api.agentSmallApiConfigTitle",
         "api.gameModelsConfig",
         "api.imageModelConfig",
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
-        "vision",
-        "summary",
-        "correction",
-        "emotion",
+        "memory",
+        "recognition",
         "omni",
         "agent",
+        "agentAdvanced",
+        "agentSmall",
         "tts",
         "gameMain",
         "gameSummary",
+        "gameRecognition",
+        "decision",
     ]
     assert desktop["rowPairs"] == {
-        "conversation": "vision",
-        "vision": "conversation",
-        "summary": "correction",
-        "correction": "summary",
-        "emotion": "omni",
-        "omni": "emotion",
-        "agent": "tts",
-        "tts": "agent",
-        "game": "image",
-        "image": "game",
+        "conversation": "memory",
+        "memory": "conversation",
+        "recognition": "decision",
+        "decision": "recognition",
+        "omni": "tts",
+        "tts": "omni",
+        "agent-advanced": "agent",
+        "agent": "agent-advanced",
+        "agent-small": "game",
+        "game": "agent-small",
     }
-    assert desktop["conversation"]["top"] == desktop["vision"]["top"]
-    assert desktop["conversation"]["left"] < desktop["vision"]["left"]
-    assert abs(desktop["conversation"]["width"] - desktop["vision"]["width"]) <= 1
-    assert desktop["summary"]["top"] == desktop["correction"]["top"]
-    assert desktop["summary"]["left"] < desktop["correction"]["left"]
-    assert abs(desktop["summary"]["width"] - desktop["correction"]["width"]) <= 1
-    assert desktop["emotion"]["top"] == desktop["omni"]["top"]
-    assert desktop["agent"]["top"] == desktop["tts"]["top"]
-    assert desktop["game"]["top"] > desktop["agent"]["top"]
-    assert desktop["game"]["top"] == desktop["image"]["top"]
-    assert desktop["game"]["left"] < desktop["image"]["left"]
+    assert desktop["conversation"]["top"] == desktop["memory"]["top"]
+    assert desktop["conversation"]["left"] < desktop["memory"]["left"]
+    assert abs(desktop["conversation"]["width"] - desktop["memory"]["width"]) <= 1
+    assert desktop["recognition"]["top"] == desktop["decision"]["top"]
+    assert desktop["recognition"]["left"] < desktop["decision"]["left"]
+    assert abs(desktop["recognition"]["width"] - desktop["decision"]["width"]) <= 1
+    assert desktop["omni"]["top"] == desktop["tts"]["top"]
+    assert desktop["agentAdvanced"]["top"] == desktop["agent"]["top"]
+    assert desktop["agentAdvanced"]["left"] < desktop["agent"]["left"]
+    assert desktop["agentAdvanced"]["top"] > desktop["omni"]["top"]
+    assert desktop["agentSmall"]["top"] == desktop["game"]["top"]
+    assert desktop["agentSmall"]["left"] < desktop["game"]["left"]
+    # Image generation is the odd card out and sits alone on the last row.
+    assert desktop["image"]["top"] > desktop["game"]["top"]
+    # The retired vision slot has no card any more (stored settings are kept); the
+    # minigame recognition slot lives inside the minigame card.
+    assert desktop["cardCount"] == 11
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)
@@ -439,12 +451,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
         const content = document.getElementById('conversation-model-content');
         const card = content.closest('.model-config-container').getBoundingClientRect();
-        const partner = document.getElementById('vision-model-content')
+        const partner = document.getElementById('memory-model-content')
             .closest('.model-config-container').getBoundingClientRect();
         const contentRect = content.getBoundingClientRect();
         const header = content.previousElementSibling;
-        const partnerHeader = document.getElementById('vision-model-content').previousElementSibling;
-        const summaryHeader = document.getElementById('summary-model-content').previousElementSibling;
+        const partnerHeader = document.getElementById('memory-model-content').previousElementSibling;
+        const unpairedHeader = document.getElementById('recognition-model-content').previousElementSibling;
         const headerStyle = getComputedStyle(header);
         return {
             cardWidth: Math.round(card.width),
@@ -461,7 +473,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             headerTransform: headerStyle.transform,
             headerBackground: headerStyle.backgroundImage,
             partnerOpacity: getComputedStyle(partnerHeader).opacity,
-            summaryOpacity: getComputedStyle(summaryHeader).opacity,
+            unpairedOpacity: getComputedStyle(unpairedHeader).opacity,
             contentBorderTopWidth: getComputedStyle(content).borderTopWidth,
             contentBorderTopColor: getComputedStyle(content).borderTopColor,
         };
@@ -478,19 +490,19 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert expanded["headerTransform"] != "none"
     assert "linear-gradient" in expanded["headerBackground"]
     assert float(expanded["partnerOpacity"]) < 1
-    assert expanded["summaryOpacity"] == "1"
+    assert expanded["unpairedOpacity"] == "1"
     assert expanded["contentBorderTopWidth"] == "3px"
     assert expanded["contentBorderTopColor"] == "rgb(64, 197, 241)"
 
     mock_page.evaluate("""() => {
         toggleModelConfig('conversation');
-        toggleModelConfig('vision');
+        toggleModelConfig('memory');
     }""")
     mock_page.wait_for_timeout(650)
 
     right_expanded = mock_page.evaluate("""() => {
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
-        const content = document.getElementById('vision-model-content').getBoundingClientRect();
+        const content = document.getElementById('memory-model-content').getBoundingClientRect();
         return {
             gridLeft: Math.round(grid.left),
             gridWidth: Math.round(grid.width),
@@ -506,7 +518,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     mock_page.wait_for_timeout(350)
     paired_expansion = mock_page.evaluate("""() => {
         const left = document.getElementById('conversation-model-content').getBoundingClientRect();
-        const right = document.getElementById('vision-model-content').getBoundingClientRect();
+        const right = document.getElementById('memory-model-content').getBoundingClientRect();
         return {
             leftWidth: Math.round(left.width),
             leftRight: Math.round(left.right),
@@ -516,14 +528,14 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     }""")
 
     assert abs(paired_expansion["leftWidth"] - desktop["conversation"]["width"]) <= 1
-    assert abs(paired_expansion["rightWidth"] - desktop["vision"]["width"]) <= 1
+    assert abs(paired_expansion["rightWidth"] - desktop["memory"]["width"]) <= 1
     assert paired_expansion["leftRight"] < paired_expansion["rightLeft"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(80)
     collapsing_pair = mock_page.evaluate("""() => {
         const left = document.getElementById('conversation-model-content');
-        const right = document.getElementById('vision-model-content');
+        const right = document.getElementById('memory-model-content');
         const leftRect = left.getBoundingClientRect();
         const rightRect = right.getBoundingClientRect();
         return {
@@ -538,13 +550,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert collapsing_pair["leftHeight"] > 0
     assert collapsing_pair["isCollapsing"] is True
     assert collapsing_pair["leftRight"] < collapsing_pair["rightLeft"]
-    assert abs(collapsing_pair["rightWidth"] - desktop["vision"]["width"]) <= 1
+    assert abs(collapsing_pair["rightWidth"] - desktop["memory"]["width"]) <= 1
 
     mock_page.wait_for_timeout(600)
     settled_pair = mock_page.evaluate("""() => {
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
         const left = document.getElementById('conversation-model-content');
-        const right = document.getElementById('vision-model-content');
+        const right = document.getElementById('memory-model-content');
         const rightRect = right.getBoundingClientRect();
         return {
             gridLeft: Math.round(grid.left),
@@ -1626,10 +1638,15 @@ def test_custom_tts_without_voice_explains_core_voice_fallback(mock_page: Page, 
     type_voice("")
     provider.select_option("custom", force=True, timeout=5000)
     expect(hint).to_have_css("display", "block")
-    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。")
+    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用语音模型自带的声音。")
 
+    # Switching language rebuilds the provider dropdowns asynchronously (the option
+    # text itself is retranslated at once, so it is no signal). Wait until the old
+    # option node is replaced so the rebuild cannot race with the edits below.
+    old_custom_option = mock_page.locator("#ttsModelProvider option[value='custom']").element_handle()
     mock_page.evaluate("window.changeLanguage('en')")
-    expect(hint).to_contain_text("Core API's built-in voice")
+    expect(hint).to_contain_text("Voice Model's built-in voice")
+    mock_page.wait_for_function("(el) => !el.isConnected", arg=old_custom_option, timeout=10000)
 
     type_voice("af_heart")
     expect(hint).to_have_css("display", "none")
@@ -1910,7 +1927,7 @@ def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, r
     ("model_type", "follow_provider"),
     [
         ("gameMain", "follow_conversation"),
-        ("gameSummary", "follow_summary"),
+        ("gameSummary", "follow_memory"),
     ],
 )
 def test_switching_game_model_away_from_follow_clears_model_readonly(
@@ -2260,6 +2277,153 @@ def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: 
     mock_page.locator('#conversationModelId ~ button').click()
     menu = mock_page.locator('#conversationModelId-model-menu')
     expect(menu.locator('.api-provider-dropdown-option')).to_be_visible()
-    mock_page.evaluate("""() => document.getElementById('visionModelId')
+    mock_page.evaluate("""() => document.getElementById('recognitionModelId')
         .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
     expect(menu).to_be_hidden()
+
+
+@pytest.mark.frontend
+def test_hidden_vision_slot_is_kept_on_save_and_cleared_only_on_clear(mock_page: Page, running_server: str):
+    """The vision card is gone; a stored vision config survives saves until the user clears custom models."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            visionModelProvider="custom",
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+            visionModelApiKey="",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    assert mock_page.locator("#vision-model-content").count() == 0
+    assert mock_page.locator("#visionModelProvider").count() == 0
+
+    capture = """async () => {
+        window.__capturedSavePayload = null;
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload
+            || { __status: document.getElementById('status')?.textContent || '' };
+    }"""
+    payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
+    assert not any(key.startswith("visionModel") for key in payload)
+
+    # A clear whose save failed is dropped when the saved settings reload.
+    mock_page.evaluate("confirmClearCustomApi()")
+    mock_page.evaluate("loadCurrentApiKey()")
+    payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
+    assert not any(key.startswith("visionModel") for key in payload)
+
+    mock_page.evaluate("confirmClearCustomApi()")
+    # Without custom models the page asks for the provider key before saving.
+    mock_page.evaluate("document.getElementById('apiKeyInput').value = 'test-key'")
+    payload = mock_page.evaluate(capture)
+    assert "__status" not in payload, payload
+    assert payload["visionModelProvider"] == "follow_assist"
+    assert payload["visionModelUrl"] == ""
+    assert payload["visionModelId"] == ""
+    assert payload["visionModelApiKey"] == ""
+
+
+@pytest.mark.frontend
+def test_chat_model_card_says_it_must_read_images(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    title = mock_page.locator('#conversation-model-content').locator('xpath=..').locator('[data-i18n="api.conversationModelConfig"]')
+    expect(title).to_have_text("聊天模型")
+    expect(mock_page.locator('[data-i18n="api.conversationModelVisionHint"]')).to_contain_text("需要能看图")
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("provider, shown", [("custom", True), ("follow_assist", False)])
+def test_legacy_vision_destination_is_visible_and_can_be_stopped(mock_page: Page, running_server: str, provider, shown):
+    """Images still going to a separately configured vision model are shown, with a way to stop it."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            visionModelProvider=provider,
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+            visionModelApiKey="",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    notice = mock_page.locator("#legacyVisionNotice")
+    mock_page.evaluate("document.getElementById('custom-api-options').style.display = 'block'; toggleModelConfig('conversation')")
+    expect(mock_page.locator("#conversationModelUrl")).to_be_visible()
+    # Real visibility, not just the hidden attribute (.field-row sets display:flex).
+    if not shown:
+        expect(notice).not_to_be_visible()
+        return
+    expect(notice).to_be_visible()
+    # Turning custom models off hides it; turning them on again shows it.
+    mock_page.evaluate("document.getElementById('enableCustomApi').checked = false; toggleCustomApi(true)")
+    assert mock_page.evaluate("getComputedStyle(document.getElementById('legacyVisionNotice')).display") == "none"
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi(true);
+        document.getElementById('custom-api-options').style.display = 'block';
+    }""")
+    expect(notice).to_be_visible()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("llava")
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("127.0.0.1:11434")
+
+    mock_page.locator("#legacyVisionStopBtn").click()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("保存后")
+    payload = mock_page.evaluate("""async () => {
+        window.__capturedSavePayload = null;
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload;
+    }""")
+    assert payload["visionModelId"] == "" and payload["visionModelUrl"] == ""
+    assert payload["enableCustomApi"] is True
+
+
+
+@pytest.mark.frontend
+def test_legacy_vision_notice_appears_when_custom_models_are_turned_on(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=False,
+            visionModelProvider="custom",
+            visionModelUrl="http://127.0.0.1:11434/v1",
+            visionModelId="llava",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    assert mock_page.evaluate("getComputedStyle(document.getElementById('legacyVisionNotice')).display") == "none"
+    mock_page.evaluate("""() => {
+        document.getElementById('enableCustomApi').checked = true;
+        toggleCustomApi(true);
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('conversation');
+    }""")
+    expect(mock_page.locator("#legacyVisionNotice")).to_be_visible()
+    expect(mock_page.locator("#legacyVisionNoticeText")).to_contain_text("llava")

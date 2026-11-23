@@ -35,6 +35,11 @@
         {"path": "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-chat-angry.mp3", "media_type": "audio/mpeg"}
       ]
     },
+    "cat1.oiia": {
+      "resources": [
+        {"path": "/static/assets/cat-resources/voice/dev_neko/action/cat1-voice-oiia.wav", "media_type": "audio/wav"}
+      ]
+    },
     "cat2.sleep": {
       "resources": [
         {"path": "/static/assets/cat-resources/voice/dev_neko/sleep/cat2-sleep1.mp3", "media_type": "audio/mpeg"},

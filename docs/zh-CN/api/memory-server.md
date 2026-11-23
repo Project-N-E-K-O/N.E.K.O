@@ -286,9 +286,8 @@
 | 工作 | 当前 tier 或运行时 |
 |---|---|
 | 用于可选 cosine 召回和去重候选的本地文本 embeddings | `data/embedding_models/<profile>/` 中打包的 CPU ONNX profile；不使用 API 模型 tier |
-| 近期历史压缩、事实抽取、证据信号检测、反思合成与反馈检查、事实去重决策，以及内部 LLM recall 重排 | `summary` |
-| 近期历史复核、persona 修正/精炼、reflection 精炼，以及 reflection promotion merge | `correction` |
-| 负向关键词目标分类 | `emotion` |
+| 近期历史压缩与复核、事实抽取、证据信号检测、反思合成与精炼及反馈检查、事实去重决策、persona 修正/精炼，以及 reflection promotion merge | `summary`（复核、修正、精炼、合并这几类调用开着思考） |
+| 负向关键词目标分类，以及 recall 重排的聊天模型兜底（怕慢） | `emotion` |
 | 面向用户的 `POST /query_memory` 融合 | 不使用 LLM tier；BM25 + 可选 cosine + reciprocal-rank fusion |
 
 这些是当前实现默认值，不是 API 保证。运维者为每个 tier 配置底层模型、base URL 和凭据。

@@ -322,7 +322,7 @@ async def test_invoke_emotion_tier_uses_project_message_classes(monkeypatch):
             return self.get_model_api_config(name)
 
         def get_model_api_config(self, name):
-            assert name == "emotion"
+            assert name == "recognition"
             return {
                 "model": "fake-emotion-model",
                 "api_key": "fake-key",

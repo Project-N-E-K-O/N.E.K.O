@@ -56,6 +56,7 @@ if TYPE_CHECKING:
 
     # ⚠ Never import loguru. The actual type of the logger field is plugin.logging_config.PluginLoggerAdapter.
     from plugin.logging_config import PluginLoggerAdapter as LoguruLogger
+    from plugin.sdk.shared.core.call_chain_view import CallChainView
     from plugin.sdk.shared.core.types import PushMessageRejected, PushMessageResult
 
 
@@ -63,6 +64,15 @@ _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plu
 
 _CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
 _CURRENT_LANLAN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_lanlan", default=None)
+
+
+def _attach_parent_request_id(payload: Dict[str, Any]) -> None:
+    """Let the host attribute this push to the invocation that made it."""
+    from plugin.core.rpc import current_request_id
+
+    parent = current_request_id()
+    if parent is not None:
+        payload["_rpc_parent_request_id"] = parent
 
 
 def _is_submission_backpressure(error: BaseException) -> bool:
@@ -285,6 +295,7 @@ class PluginContext:
     _effective_config: Optional[Dict[str, Any]] = None
     _effective_config_uncertain: bool = False
     _current_lanlan: Optional[str] = None
+    _permissions: Optional[Any] = field(default=None, init=False, repr=False)
 
     @property
     def bus(self) -> "BusHubProtocol":
@@ -309,6 +320,18 @@ class PluginContext:
             images = PluginImages(self)
             self._images = images
         return images
+
+    @property
+    def permissions(self) -> Any:
+        """This plugin's permission states as the host last sent them (``get`` / ``on_change``)."""
+        with self._runtime_lock:
+            permissions = self._permissions
+            if permissions is None:
+                from plugin.sdk.shared.permissions.runtime import PluginPermissions
+
+                permissions = PluginPermissions(self.logger)
+                self._permissions = permissions
+            return permissions
 
     @property
     def models(self) -> Any:
@@ -591,6 +614,13 @@ class PluginContext:
     def current_lanlan(self) -> Optional[str]:
         """Recipient of this invocation, never the last caller on another task."""
         return _CURRENT_LANLAN.get()
+
+    @property
+    def call_chain(self) -> "CallChainView":
+        """Read-only view of how this invocation was reached; never None (see CallChainView)."""
+        from plugin.sdk.shared.core.call_chain_view import current_call_chain
+
+        return current_call_chain(self.plugin_id)
 
     @property
     def handler_ctx(self) -> Optional[str]:
@@ -1437,6 +1467,9 @@ class PluginContext:
                 oversized = _reject_if_payload_too_large(authenticated_payload)
                 if oversized is not None:
                     return oversized
+                # After the size check, so the local verdict is unchanged; the
+                # host removes it before the record is stored or published.
+                _attach_parent_request_id(authenticated_payload)
                 fast_put = getattr(
                     self.message_queue,
                     "put_fast_nowait",

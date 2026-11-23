@@ -817,6 +817,8 @@ class VoiceIdentityService:
             session = self._enrollment
             if session is None or session.enrollment_id != enrollment_id:
                 raise VoiceIdentityServiceError("stale_enrollment")
+            if self._runtime_audio_contract_transition_pending:
+                raise VoiceIdentityServiceError("stale_enrollment")
             if session.profile_id is not None and session.profile_id != profile_id:
                 raise VoiceIdentityServiceError("stale_enrollment")
             if self._session_expired(session):
@@ -852,6 +854,15 @@ class VoiceIdentityService:
                 operation_task=operation_task,
             )
         except _StaleEnrollmentOperation as exc:
+            async with self._operation_lock:
+                if self._session_operation_matches(
+                    session,
+                    session_generation,
+                    operation_nonce,
+                    segment_index,
+                    operation_task,
+                ):
+                    self._clear_segment_operation(session)
             raise VoiceIdentityServiceError("stale_enrollment") from exc
         except EnrollmentAudioError as exc:
             async with self._operation_lock:
@@ -942,16 +953,28 @@ class VoiceIdentityService:
             )
             raise asyncio.CancelledError
         try:
-            if not self._session_operation_matches(
-                session,
-                session_generation,
-                operation_nonce,
-                segment_index,
-                operation_task,
-            ) or self._session_expired(session):
+            if (
+                not self._session_operation_matches(
+                    session,
+                    session_generation,
+                    operation_nonce,
+                    segment_index,
+                    operation_task,
+                )
+                or self._session_expired(session)
+                or self._runtime_audio_contract_transition_pending
+            ):
                 computed.wipe()
                 if self._enrollment is session and self._session_expired(session):
                     await self._retire_expired_session(session)
+                elif self._session_operation_matches(
+                    session,
+                    session_generation,
+                    operation_nonce,
+                    segment_index,
+                    operation_task,
+                ):
+                    self._clear_segment_operation(session)
                 raise VoiceIdentityServiceError("stale_enrollment")
 
             if segment_index in (1, 2):
@@ -1253,6 +1276,7 @@ class VoiceIdentityService:
                 operation_task,
             )
             or self._session_expired(session)
+            or self._runtime_audio_contract_transition_pending
         ):
             raise _StaleEnrollmentOperation
 
@@ -1693,6 +1717,7 @@ class VoiceIdentityService:
             or session.profile_id != profile_id
             or session.phase != "committing"
             or self._session_expired(session)
+            or self._runtime_audio_contract_transition_pending
         ):
             raise VoiceIdentityServiceError("stale_enrollment")
 
@@ -1765,6 +1790,9 @@ class VoiceIdentityService:
     ) -> VoiceIdentityServiceStatus:
         self._require_initialized()
         if not runtime_ready:
+            if self._enrollment is not None:
+                self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+                return self.status()
             if self._requested_enabled:
                 # Reconciliation must build partial runtimes against the
                 # newly committed DSP contract, even when one manager failed.
@@ -1806,6 +1834,9 @@ class VoiceIdentityService:
             and not self._runtime_audio_contract_transition_pending
         ):
             return self.status()
+        if self._enrollment is not None:
+            self._set_ineffective(VoiceIdentityEffectiveReason.RUNTIME_DEGRADED)
+            raise VoiceIdentityServiceError("audio_contract_changed")
         self._runtime_noise_reduction_enabled = enabled
         profile = self._profile
         if not self._requested_enabled:
@@ -1866,10 +1897,9 @@ class VoiceIdentityService:
                 and not self._runtime_audio_contract_transition_pending
             ):
                 return True
-            if (
-                not self._requested_enabled
-                or self._profile is None
-                or self._runtime_mode == "off"
+            if self._runtime_mode == "off" or (
+                self._enrollment is None
+                and (not self._requested_enabled or self._profile is None)
             ):
                 return True
             cancellations: list[asyncio.CancelledError] = []

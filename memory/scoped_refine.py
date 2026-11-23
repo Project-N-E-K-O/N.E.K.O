@@ -649,13 +649,13 @@ class ScopedLiteRefineEngine:
             .replace('{COUNT}', str(len(cluster)))
         )
 
-        # Lite-pipeline cost contract: its purpose requires lower cost than the full engine:
-        #   summary tier instead of the full engine's correction tier;
+        # Lite-pipeline cost contract: its purpose requires lower cost than the full engine.
+        # Both use the summary tier (the correction tier was merged into it); the savings are:
         #   omit extra_body so create_chat_llm supplies each provider's default thinking-disabled dialect,
         #   unlike the full engine's explicit None enabling thinking;
         #   short 60s timeout instead of 110s.
         set_call_type("memory_scoped_refine")
-        api_config = await self._cm.aget_model_api_config('summary')
+        api_config = await self._cm.aget_model_api_config('memory')
         llm = await create_chat_llm_async(
             api_config['model'],
             api_config['base_url'],

@@ -180,7 +180,7 @@ describe('publishFlow', () => {
     ['already_published', 'done', { key: 'marketVersionListed' }],
     ['pending_review', 'waiting', { key: 'marketVersionPendingReview', params: { candidate: 12 } }],
     ['rejected', 'todo', { key: 'marketVersionRejected', params: { candidate: 12 } }],
-    ['superseded', 'waiting', { key: 'marketVersionSuperseded' }],
+    ['superseded', 'failed', { key: 'marketVersionSuperseded' }],
   ] as const)('shows the Market answer %s', (marketStatus, state, detail) => {
     const flow = flowOf({
       status: status({ remote: published }),
@@ -193,7 +193,7 @@ describe('publishFlow', () => {
   it.each([
     ['verifying', 'waiting', { key: 'marketVersionVerifying' }],
     ['accepted', 'waiting', { key: 'marketVersionVerifying' }],
-    ['platform_attention', 'waiting', { key: 'marketVersionPlatformAttention' }],
+    ['platform_attention', 'failed', { key: 'marketVersionPlatformAttention' }],
     ['rejected', 'todo', { key: 'marketVersionRejectedReceipt' }],
     ['pending_review', 'waiting', { key: 'marketVersionAwaitingReview' }],
   ] as const)('shows the Market receipt status %s', (marketStatus, state, detail) => {

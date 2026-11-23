@@ -13,11 +13,27 @@ const routes: RouteRecordRaw[] = [
     children: [
       {
         path: '',
+        name: 'Home',
+        component: () => import('@/views/PowerHome.vue'),
+        meta: {
+          titleKey: 'power.nav.home'
+        }
+      },
+      // What the plugins have of their own, below "Plugins" in the sidebar.
+      // The underscore keeps them apart from a plugin's id (`plugins/:id`).
+      {
+        path: 'plugins/_overview',
         name: 'Dashboard',
         component: () => import('@/views/Dashboard.vue'),
         meta: {
-          titleKey: 'nav.dashboard'
+          titleKey: 'power.nav.overview'
         }
+      },
+      {
+        path: 'plugins/_forge',
+        name: 'PluginAuthoring',
+        component: () => import('@/views/PluginAuthoring.vue'),
+        meta: { titleKey: 'authoring.title' },
       },
       {
         path: 'plugins',
@@ -33,6 +49,22 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/PluginDetail.vue'),
         meta: {
           titleKey: 'plugins.pluginDetail'
+        }
+      },
+      {
+        path: 'familiars/space',
+        name: 'FamiliarSpace',
+        component: () => import('@/views/FamiliarSpace.vue'),
+        meta: {
+          titleKey: 'power.space.title'
+        }
+      },
+      {
+        path: 'familiars/runtime',
+        name: 'FamiliarRuntime',
+        component: () => import('@/views/FamiliarRuntime.vue'),
+        meta: {
+          titleKey: 'power.runtime.title'
         }
       },
       {
@@ -95,11 +127,17 @@ const routes: RouteRecordRaw[] = [
           titleKey: 'nav.adapterUI'
         }
       },
+      // Where the forge used to be: links and the page's own navigation
+      // still point here, with the project they name.
       {
         path: 'workbench',
-        name: 'PluginAuthoring',
-        component: () => import('@/views/PluginAuthoring.vue'),
-        meta: { titleKey: 'authoring.title' },
+        redirect: (to) => ({ path: '/plugins/_forge', query: to.query }),
+      },
+      {
+        path: 'workbench/feedback',
+        name: 'MarketFeedback',
+        component: () => import('@/views/MarketFeedback.vue'),
+        meta: { titleKey: 'marketFeedback.title' },
       },
       {
         path: ':pathMatch(.*)*',

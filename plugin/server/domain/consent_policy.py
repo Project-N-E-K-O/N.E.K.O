@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from plugin.sdk.shared.permissions import normalize_permission
+
 ANALYZING_STATUSES = frozenset({"queued", "running", "unavailable"})
 INCOMPLETE_STATUSES = frozenset({"partial", "failed"})
 
@@ -16,16 +18,24 @@ class ConsentView:
     decision: str | None
 
 
+def _comparable(name):
+    return normalize_permission(name) or name
+
+
 def derive_consent(record: dict, report: dict) -> ConsentView:
     status = report.get("status")
     decision = record.get("decision")
     approved_capabilities = (
-        set(record.get("approved_capabilities") or [])
+        {_comparable(name) for name in record.get("approved_capabilities") or []}
         if decision == "approved"
         else set()
     )
+    # Compare through the legacy-name mapping so a report and an approval
+    # written with different names for the same permission still match.
     unconfirmed = sorted(
-        set(report.get("capabilities") or []) - approved_capabilities
+        name
+        for name in set(report.get("capabilities") or [])
+        if _comparable(name) not in approved_capabilities
     )
     if status in ANALYZING_STATUSES:
         state = "analyzing"

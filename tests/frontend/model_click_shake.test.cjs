@@ -15,6 +15,7 @@ function dom() {
             this.listeners.get(type).add(fn);
         }
         removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
+        dispatchEvent(event) { this.fire(event.type, event); return true; }
         fire(type, event = {}) {
             event.type = type;
             event.preventDefault ||= () => {};
@@ -23,6 +24,9 @@ function dom() {
         }
     }
     const window = new Target();
+    window.CustomEvent = class CustomEvent {
+        constructor(type, init = {}) { this.type = type; this.detail = init.detail; }
+    };
     const document = new Target();
     const canvas = new Target();
     const shakes = [];
@@ -258,4 +262,462 @@ test('VRM and MMD shake on a left-click or one-finger tap, not on drag, orbit or
 
         h.interaction.cleanupDragAndZoom();
     }
+});
+
+// ---- 连点规则 ----
+
+function comboHelper(extraWindow = {}) {
+    const h = dom();
+    h.window.window = h.window;
+    let now = 1_000_000;
+    let nextTimer = 1;
+    const timers = new Map();
+    const clock = {
+        advance(ms) {
+            now += ms;
+            for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+                if (timer.at <= now && timers.has(id)) {
+                    timers.delete(id);
+                    timer.fn();
+                }
+            }
+        },
+        pending: () => timers.size
+    };
+    class FakeDate extends Date {
+        static now() { return now; }
+    }
+    const sent = [];
+    const emotions = [];
+    Object.assign(h.window, {
+        appButtons: { sendAvatarInteractionPayload: async payload => { sent.push(payload); return true; } },
+        applyEmotion: emotion => emotions.push(emotion)
+    }, extraWindow);
+    load(h, 'static/avatar/avatar-click-shake.js', {
+        window: h.window,
+        Date: FakeDate,
+        setTimeout: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn, at: now + ms }); return id; },
+        clearTimeout: id => timers.delete(id)
+    });
+    const shake = h.window.NekoAvatarClickShake;
+    return { ...h, shake, clock, sent, emotions, gap: Math.floor(shake.COMBO_WINDOW_MS / 2) };
+}
+
+function peak(animation) {
+    const values = animation.keyframes.map(frame => frame.translate.split(' ').map(parseFloat));
+    return {
+        x: Math.max(...values.map(([x]) => Math.abs(x || 0))),
+        y: Math.max(...values.map(([, y]) => Math.abs(y || 0)))
+    };
+}
+
+test('combo grows the shake 1x -> 1.5x -> 2x with happy then surprised, and the 4th tap shakes up and down and gets angry', () => {
+    const h = comboHelper();
+    const results = [];
+    for (let i = 0; i < 4; i++) {
+        results.push(h.shake.tap(h.canvas));
+        h.clock.advance(h.gap);
+    }
+    assert.deepEqual(results.map(r => r.count), [1, 2, 3, 4]);
+    assert.deepEqual(results.map(r => r.angry), [false, false, false, true]);
+    // 只有第 1 下照常播点击动作/表情，第 2 下起表情归连点管
+    assert.deepEqual(results.map(r => r.allowTouchSet), [true, false, false, false]);
+    assert.deepEqual(h.shakes.map(peak), [
+        { x: 4, y: 0 }, { x: 6, y: 0 }, { x: 8, y: 0 }, { x: 0, y: 10 }
+    ]);
+    assert.ok(h.shakes[3].keyframes.every(f => /^0 -?\d+(\.\d+)?px$/.test(f.translate)));
+    assert.ok(h.shakes[3].options.duration > h.shakes[0].options.duration);
+    assert.deepEqual(h.emotions, ['happy', 'surprised', 'angry']);
+    // 第 4 下立刻出声，第 2/3 下排着的语音已作废
+    assert.deepEqual(h.sent.map(p => p.intensity), ['angry']);
+    assert.equal(h.sent[0].tool_id, 'tap');
+    assert.equal(h.sent[0].action_id, 'poke');
+    assert.equal(h.sent[0].target, 'avatar');
+    h.clock.advance(h.shake.COMBO_WINDOW_MS * 2);
+    assert.equal(h.sent.length, 1, 'the cancelled 2nd/3rd-tap lines must never be sent afterwards');
+});
+
+test('for 30 seconds after the angry tap, clicks give no feedback at all', () => {
+    const h = comboHelper();
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    const shakesAtAngry = h.shakes.length;
+    for (let i = 0; i < 6; i++) {
+        const result = h.shake.tap(h.canvas);
+        assert.equal(result.allowTouchSet, false);
+        h.clock.advance(h.gap);
+    }
+    h.clock.advance(h.shake.ANGRY_COOLDOWN_MS - 6 * h.gap - 2 * h.gap - 1);
+    assert.equal(h.shake.tap(h.canvas).allowTouchSet, false, 'still inside the cooldown');
+    assert.equal(h.shakes.length, shakesAtAngry, 'no shake during the cooldown');
+    assert.deepEqual(h.emotions, ['happy', 'surprised', 'angry']);
+    assert.equal(h.sent.length, 1);
+
+    h.clock.advance(h.gap + 1);
+    const fresh = h.shake.tap(h.canvas);
+    assert.deepEqual([fresh.count, fresh.angry, fresh.allowTouchSet], [1, false, true]);
+    assert.equal(peak(h.shakes.at(-1)).x, 4);
+});
+
+test('a single tap is silent; the 2nd tap speaks only after the combo ends', () => {
+    const h = comboHelper();
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS * 2);
+    assert.equal(h.sent.length, 0);
+    assert.deepEqual(h.emotions, []);
+
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    assert.equal(h.sent.length, 0, 'voice waits until the clicking stops');
+    h.clock.advance(h.shake.COMBO_WINDOW_MS);
+    assert.deepEqual(h.sent.map(p => p.intensity), ['normal']);
+    assert.deepEqual(h.emotions, ['happy']);
+});
+
+test('the 3rd tap interrupts the 2nd tap: only one rapid line is sent', () => {
+    const h = comboHelper();
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS);
+    assert.deepEqual(h.sent.map(p => p.intensity), ['rapid']);
+    assert.equal(h.clock.pending(), 0);
+});
+
+test('a pause longer than the combo window starts over from the first tap', () => {
+    const h = comboHelper();
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS + 1);
+    assert.deepEqual(h.sent.map(p => p.intensity), ['normal']);
+    const next = h.shake.tap(h.canvas);
+    assert.equal(next.count, 1);
+    assert.equal(next.allowTouchSet, true);
+    assert.equal(peak(h.shakes.at(-1)).x, 4);
+});
+
+test('combo still speaks and changes expression when the shake itself is turned off', () => {
+    const h = comboHelper({ modelClickShakeEnabled: false });
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    assert.equal(h.shakes.length, 0);
+    assert.deepEqual(h.emotions, ['happy', 'surprised', 'angry']);
+    assert.deepEqual(h.sent.map(p => p.intensity), ['angry']);
+});
+
+test('tutorial and a held avatar tool keep the plain shake without combo voice, expressions or cooldown', () => {
+    const tutorial = comboHelper({ isInTutorial: true });
+    for (let i = 0; i < 6; i++) {
+        const result = tutorial.shake.tap(tutorial.canvas);
+        assert.equal(result.angry, false);
+        assert.equal(result.allowTouchSet, true);
+        tutorial.clock.advance(tutorial.gap);
+    }
+    tutorial.clock.advance(5000);
+    assert.equal(tutorial.sent.length, 0);
+    assert.deepEqual(tutorial.emotions, []);
+    assert.equal(tutorial.shakes.length, 6);
+    assert.ok(tutorial.shakes.every(a => peak(a).x === 4 && peak(a).y === 0));
+
+    const tool = comboHelper();
+    tool.shake.tap(tool.canvas);
+    tool.clock.advance(tool.gap);
+    tool.shake.tap(tool.canvas);
+    tool.window.fire('react-chat-window:avatar-tool-state', { detail: { active: true, toolId: 'hammer' } });
+    tool.clock.advance(5000);
+    assert.equal(tool.sent.length, 0, 'picking up a tool drops the pending combo line');
+    for (let i = 0; i < 4; i++) tool.shake.tap(tool.canvas);
+    assert.deepEqual(tool.emotions, ['happy']);
+    tool.window.fire('neko:deactivate-avatar-tool');
+    for (let i = 0; i < 4; i++) tool.shake.tap(tool.canvas);
+    assert.deepEqual(tool.emotions, ['happy', 'happy', 'surprised', 'angry']);
+});
+
+test('theater keeps the shake but suppresses combo voice, expressions and the angry cooldown', () => {
+    let theater = true;
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    assert.equal(peak(h.shakes[3]).y, 10);
+    // 第 5 下仍然要晃，不能被冷却吞掉
+    const fifth = h.shake.tap(h.canvas);
+    assert.equal(fifth.count, 1);
+    assert.equal(h.shakes.length, 5);
+    h.clock.advance(5000);
+    assert.equal(h.sent.length, 0);
+    assert.deepEqual(h.emotions, []);
+
+    // 退出剧场后立刻点，也是正常的第 1 下
+    theater = false;
+    const after = h.shake.tap(h.canvas);
+    assert.deepEqual([after.count, after.angry, after.allowTouchSet], [1, false, true]);
+    assert.equal(h.shakes.length, 6);
+});
+
+test('Live2D plays the delayed touch motion for a lone tap, but not once the next tap joins the combo', async () => {
+    const h = live2d();
+    let touchChecks = 0;
+    h.manager._canTriggerTouchSetArea = () => { touchChecks += 1; return false; };
+    h.window.applyEmotion = () => {};
+    h.canvas.fire('pointerdown', pointer(30, 200));
+    h.document.fire('pointerup', pointer(30, 200));
+    await new Promise(resolve => setTimeout(resolve, 360));
+    assert.equal(touchChecks, 1, 'a single tap keeps the configured touch motion');
+
+    // 第 2 下落在首击的 300ms 等待期里：首击的点击动作也不能再播，否则会盖掉 happy
+    const h2 = live2d();
+    let touchChecks2 = 0;
+    h2.manager._canTriggerTouchSetArea = () => { touchChecks2 += 1; return false; };
+    h2.window.applyEmotion = () => {};
+    for (let i = 0; i < 2; i++) {
+        h2.canvas.fire('pointerdown', pointer(40 + i, 200));
+        h2.document.fire('pointerup', pointer(40 + i, 200));
+    }
+    await new Promise(resolve => setTimeout(resolve, 360));
+    assert.equal(touchChecks2, 0);
+});
+
+test('Live2D never plays touch motions during the angry cooldown', async () => {
+    const h = live2d();
+    let touchChecks = 0;
+    h.manager._canTriggerTouchSetArea = () => { touchChecks += 1; return false; };
+    h.window.applyEmotion = () => {};
+    for (let i = 0; i < 6; i++) {
+        h.canvas.fire('pointerdown', pointer(20 + i, 200));
+        h.document.fire('pointerup', pointer(20 + i, 200));
+    }
+    assert.equal(h.shakes.length, 4, 'taps 5 and 6 fall in the cooldown and do not shake');
+    assert.equal(peak(h.shakes[3]).y, 10);
+    await new Promise(resolve => setTimeout(resolve, 360));
+    assert.equal(touchChecks, 0);
+});
+
+test('Live2D clears running click motions and emotion changes before each hard-coded combo expression', () => {
+    const h = live2d();
+    const calls = [];
+    Object.assign(h.manager, {
+        _cancelTouchSetExpressionRestore: () => calls.push('cancelRestore'),
+        _stopClickEffectAction: () => calls.push('stopClickEffect'),
+        _cancelAvatarOperations: () => calls.push('cancelOperations'),
+        clearEmotionEffects: () => calls.push('clearEffects'),
+        isAvatarPerformanceCapabilityLocked: () => false
+    });
+    h.window.applyEmotion = emotion => calls.push(`emotion:${emotion}`);
+    for (let i = 0; i < 2; i++) {
+        h.canvas.fire('pointerdown', pointer(50 + i, 200));
+        h.document.fire('pointerup', pointer(50 + i, 200));
+    }
+    assert.deepEqual(calls, ['cancelRestore', 'stopClickEffect', 'cancelOperations', 'clearEffects', 'emotion:happy']);
+
+    // 演出锁住表情/动作时不抢占
+    calls.length = 0;
+    h.manager.isAvatarPerformanceCapabilityLocked = () => true;
+    h.canvas.fire('pointerdown', pointer(52, 200));
+    h.document.fire('pointerup', pointer(52, 200));
+    assert.deepEqual(calls, ['emotion:surprised']);
+
+    // 点在别的画布上（VRM/MMD）不碰 Live2D
+    calls.length = 0;
+    h.manager.isAvatarPerformanceCapabilityLocked = () => false;
+    h.window.dispatchEvent(new h.window.CustomEvent('neko:avatar-click-combo-emotion', {
+        detail: { element: {}, count: 2, emotion: 'happy' }
+    }));
+    assert.deepEqual(calls, []);
+});
+
+test('pending combo lines stay with the clicked character', () => {
+    const switched = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
+    switched.shake.tap(switched.canvas);
+    switched.clock.advance(switched.gap);
+    switched.shake.tap(switched.canvas);
+    switched.window.lanlan_config.lanlan_name = 'B';
+    switched.clock.advance(switched.shake.COMBO_WINDOW_MS);
+    assert.equal(switched.sent.length, 0, 'B must not answer a click on A');
+
+    const switching = comboHelper({ lanlan_config: { lanlan_name: 'A' }, appState: { isSwitchingCatgirl: false } });
+    switching.shake.tap(switching.canvas);
+    switching.clock.advance(switching.gap);
+    switching.shake.tap(switching.canvas);
+    switching.window.appState.isSwitchingCatgirl = true;
+    switching.clock.advance(switching.shake.COMBO_WINDOW_MS);
+    assert.equal(switching.sent.length, 0, 'nothing is sent while a switch is in progress');
+
+    // A 生气的冷却不算到 B 头上；换角色后连点从头算
+    const cooled = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
+    for (let i = 0; i < 4; i++) {
+        cooled.shake.tap(cooled.canvas);
+        cooled.clock.advance(cooled.gap);
+    }
+    cooled.window.lanlan_config.lanlan_name = 'B';
+    const first = cooled.shake.tap(cooled.canvas);
+    assert.equal(first.count, 1);
+    assert.equal(first.allowTouchSet, true);
+});
+
+test('a line already handed to the host is re-checked against the clicked character after the reconnect wait', () => {
+    const calls = [];
+    const h = comboHelper({
+        lanlan_config: { lanlan_name: 'A' },
+        appState: { isSwitchingCatgirl: false },
+        appButtons: { sendAvatarInteractionPayload: (payload, options) => { calls.push({ payload, options }); return Promise.resolve(true); } }
+    });
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS);
+    assert.equal(calls.length, 1);
+    const { isStillValid } = calls[0].options;
+    assert.equal(typeof isStillValid, 'function');
+    assert.equal(isStillValid(), true);
+    h.window.appState.isSwitchingCatgirl = true;
+    assert.equal(isStillValid(), false, 'a switch in progress invalidates the queued line');
+    h.window.appState.isSwitchingCatgirl = false;
+    h.window.lanlan_config.lanlan_name = 'B';
+    assert.equal(isStillValid(), false, "A's click must not be sent on B's connection");
+    h.window.lanlan_config.lanlan_name = 'A';
+    assert.equal(isStillValid(), true);
+
+    // 等重连期间开了小剧场、进了教程或拿起了工具，也都作废
+    let theater = true;
+    h.window.nekoTheaterRuntime = { blocksOrdinaryChat: () => theater };
+    assert.equal(isStillValid(), false, 'theater started during the wait');
+    theater = false;
+    h.window.isInTutorial = true;
+    assert.equal(isStillValid(), false, 'tutorial started during the wait');
+    h.window.isInTutorial = false;
+    h.window.dispatchEvent(new h.window.CustomEvent('react-chat-window:avatar-tool-state', { detail: { active: true } }));
+    assert.equal(isStillValid(), false, 'avatar tool picked up during the wait');
+    h.window.dispatchEvent(new h.window.CustomEvent('react-chat-window:avatar-tool-state', { detail: { active: false } }));
+    assert.equal(isStillValid(), true);
+});
+
+test('reloading the model (character switch) clears the angry cooldown, so A -> B -> A starts fresh', () => {
+    const h = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    assert.equal(h.shake.tap(h.canvas).allowTouchSet, false, 'same character, no reload: still cooling down');
+
+    h.window.lanlan_config.lanlan_name = 'B';
+    h.window.fire('live2d-model-ready', { detail: {} });
+    h.window.lanlan_config.lanlan_name = 'A';
+    h.window.fire('live2d-model-ready', { detail: {} });
+    const back = h.shake.tap(h.canvas);
+    assert.deepEqual([back.count, back.angry, back.allowTouchSet], [1, false, true]);
+
+    for (const name of ['vrm-model-loaded', 'mmd-model-loaded', 'pngtuber-model-loaded']) {
+        const other = comboHelper({ lanlan_config: { lanlan_name: 'A' } });
+        for (let i = 0; i < 4; i++) other.shake.tap(other.canvas);
+        other.window.fire(name, { detail: {} });
+        assert.equal(other.shake.tap(other.canvas).count, 1, name);
+    }
+});
+
+test('leaving the theater mid-combo starts counting again from the first tap', () => {
+    let theater = true;
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    for (let i = 0; i < 5; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    // 第 5 下在剧场里开了新的一串；不等连点窗口过去就离场再点
+    theater = false;
+    const after = h.shake.tap(h.canvas);
+    assert.deepEqual([after.count, after.angry, after.allowTouchSet], [1, false, true]);
+    assert.equal(peak(h.shakes.at(-1)).x, 4);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS * 2);
+    assert.deepEqual(h.emotions, []);
+    assert.equal(h.sent.length, 0);
+});
+
+test('entering the theater during the angry cooldown still shakes, but keeps touch effects blocked', () => {
+    let theater = false;
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    const shakesAtAngry = h.shakes.length;
+    theater = true;
+    const results = [];
+    for (let i = 0; i < 4; i++) {
+        results.push(h.shake.tap(h.canvas));
+        h.clock.advance(h.gap);
+    }
+    assert.equal(h.shakes.length, shakesAtAngry + 4, 'every theater tap shakes even while still angry');
+    assert.deepEqual(results.map(r => r.count), [1, 2, 3, 4]);
+    assert.ok(results.every(r => r.allowTouchSet === false && r.angry === false));
+    assert.ok(results.every(r => !h.shake.stillAllowsTouchSet(r)));
+    h.clock.advance(h.shake.COMBO_WINDOW_MS * 2);
+    assert.deepEqual(h.emotions, ['happy', 'surprised', 'angry']);
+    assert.equal(h.sent.length, 1);
+    // 离场时冷却还没过：照旧一点反馈都没有
+    theater = false;
+    const shakesBeforeLeaving = h.shakes.length;
+    assert.equal(h.shake.tap(h.canvas).allowTouchSet, false);
+    assert.equal(h.shakes.length, shakesBeforeLeaving);
+});
+
+test('taps during the theater never leave a line queued for after it ends', () => {
+    let theater = true;
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    theater = false;
+    h.clock.advance(h.shake.COMBO_WINDOW_MS);
+    assert.equal(h.sent.length, 0, 'a double tap in the theater must not speak after leaving it');
+
+    // 第 2 下在剧场外排上了，第 3 下进剧场：那句也作废
+    const h2 = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => theater } });
+    theater = false;
+    h2.shake.tap(h2.canvas);
+    h2.clock.advance(h2.gap);
+    h2.shake.tap(h2.canvas);
+    h2.clock.advance(h2.gap);
+    theater = true;
+    h2.shake.tap(h2.canvas);
+    theater = false;
+    h2.clock.advance(h2.shake.COMBO_WINDOW_MS);
+    assert.equal(h2.sent.length, 0);
+    assert.equal(h2.clock.pending(), 0);
+});
+
+test('Live2D first-tap click effect does not fall back to an expression once a combo preempts its motion', async () => {
+    const h = live2d();
+    const expressions = [];
+    Object.assign(h.manager, {
+        _cancelTouchSetExpressionRestore() {},
+        _stopClickEffectAction() {},
+        _cancelAvatarOperations() {},
+        clearEmotionEffects() {},
+        isAvatarPerformanceCapabilityLocked: () => false,
+        getRandomElement: list => list[0],
+        fileReferences: { Motions: { happy: [{ File: 'happy.motion3.json' }] }, Expressions: [] },
+        emotionMapping: { expressions: { happy: ['happy.exp3.json'] } },
+        playExpression: async (...args) => { expressions.push(args); return true; },
+        // 第 2 下在首击动作加载期间抢占：动作被中止，返回 false
+        playActionMotion: async () => { h.manager.preemptForClickComboEmotion(); return false; }
+    });
+    const before = h.manager._clickComboPreemptGeneration || 0;
+    assert.equal(await h.manager._playTemporaryClickEffect('happy'), false);
+    assert.deepEqual(expressions, []);
+    assert.equal(h.manager._clickComboPreemptGeneration, before + 1);
+
+    // 没被抢占时，动作失败仍照常用表情兜底
+    h.manager.playActionMotion = async () => false;
+    await h.manager._playTemporaryClickEffect('happy');
+    assert.equal(expressions.length, 1);
+    assert.equal(typeof expressions[0][2].isCurrent, 'function');
 });

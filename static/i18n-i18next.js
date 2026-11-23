@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 剧本市场连接页新增标题、重新连接和返回选剧文案（八语言）。
-    const LOCALE_VERSION = '2026-11-19-theater-market-recovery';
+    // 合并 main 后重新 bump：剧本市场连接页文案（八语言）与主线表情包制作资源。
+    const LOCALE_VERSION = '2026-11-23-theater-market-recovery-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

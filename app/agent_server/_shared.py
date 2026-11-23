@@ -20,8 +20,8 @@ project import so import-time failures are persisted), the ``Modules``
 singleton state bag, cross-module numeric constants, and the state primitives
 (``_bump_state_revision`` / ``_set_capability`` / background-task bookkeeping).
 
-Tasks are not kept here. Every task is a commission in the NekoClaw host's
-ledger (``nekoclaw/host``); ``nekoclaw_mount`` connects this process to it.
+Tasks are not kept here. Every task is a commission in the NekoPower host's
+ledger (``nekopower/host``); ``nekopower_mount`` connects this process to it.
 
 Split out of the former monolithic ``app/agent_server.py``. ``Modules`` is
 mutable shared state with this module as its single owner: sibling modules
@@ -107,6 +107,35 @@ def _get_throttled_logger() -> ThrottledLogger:
 def _bump_state_revision() -> int:
     Modules.state_revision += 1
     return Modules.state_revision
+
+
+def _put_switch_off(key: str) -> None:
+    """Put a capability switch off, and drop what was kept for task agents if it was the last one on.
+
+    In one go, with nothing awaited in between: NekoPower is off the
+    moment its last capability switch is (``nekopower_on``), and
+    what was kept of the main dialogue goes then. Not after
+    whatever the caller waits for next (a browser that is being
+    closed, a plugin host that is being stopped): the switch may
+    be on again by then, or the caller cancelled. Every place
+    that puts one of them off does it by this.
+    """
+    Modules.agent_flags[key] = False
+    try:
+        # Resolved when called: that module imports this one.
+        from .api_runtime import forget_turns_if_nekopower_is_off
+
+        forget_turns_if_nekopower_is_off()
+    except Exception:
+        # Seen: with this failed, what was said before the switch went
+        # off is handed to a task agent once NekoPower is on again.
+        # (Whether NekoPower is off now could not be looked at, that is:
+        # the dropping itself says so by itself when it fails.)
+        logger.warning(
+            "[NekoPower] looking whether NekoPower is off now failed as a switch went off;"
+            " the messages kept for task agents are not dropped",
+            exc_info=True,
+        )
 
 
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:

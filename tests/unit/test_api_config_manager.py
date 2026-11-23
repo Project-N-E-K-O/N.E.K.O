@@ -294,7 +294,6 @@ class TestRequestyResolution:
         for task, model in {
             'conversation': 'google/gemini-2.5-flash',
             'summary': 'google/gemini-2.5-flash',
-            'correction': 'google/gemini-2.5-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-2.5-flash',
             'agent': 'google/gemini-3.8-flash',
@@ -374,7 +373,7 @@ class TestOpperResolution:
             core_key if core_provider != 'free' else ''
         )
         assert cfg['AGENT_MODEL_API_KEY'] == opper_key
-        for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
+        for task in ('conversation', 'summary', 'emotion', 'vision', 'agent'):
             resolved = config_manager.get_model_api_config(task)
             assert resolved['api_key'] == opper_key, task
             assert resolved['base_url'] == 'https://api.opper.ai/v3/compat', task
@@ -468,7 +467,6 @@ class TestAtlasCloudResolution:
         for task, model in {
             'conversation': 'google/gemini-3.1-flash-lite',
             'summary': 'deepseek-ai/deepseek-v4-flash',
-            'correction': 'deepseek-ai/deepseek-v4-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-3.1-flash-lite',
             'agent': 'google/gemini-3-flash-preview',
@@ -612,11 +610,11 @@ class TestCustomApiToggle:
         """enableCustomApi=true → all custom model types can be overridden."""
         model_types = [
             ('conversation', 'CONVERSATION_MODEL'),
-            ('summary', 'SUMMARY_MODEL'),
+            ('summary', 'MEMORY_MODEL'),
             ('gameMain', 'GAME_MAIN_MODEL'),
             ('gameSummary', 'GAME_SUMMARY_MODEL'),
-            ('correction', 'CORRECTION_MODEL'),
-            ('emotion', 'EMOTION_MODEL'),
+            ('emotion', 'RECOGNITION_MODEL'),
+            ('decision', 'DECISION_MODEL'),
             ('vision', 'VISION_MODEL'),
             ('agent', 'AGENT_MODEL'),
             ('omni', 'REALTIME_MODEL'),
@@ -661,12 +659,12 @@ class TestCustomApiToggle:
             'conversationModelUrl': 'https://conversation.custom.test/v1',
             'conversationModelId': 'conversation-custom-model',
             'conversationModelApiKey': 'sk-conversation-custom',
-            'summaryModelProvider': 'custom',
-            'summaryModelUrl': 'https://summary.custom.test/v1',
-            'summaryModelId': 'summary-custom-model',
-            'summaryModelApiKey': 'sk-summary-custom',
+            'memoryModelProvider': 'custom',
+            'memoryModelUrl': 'https://summary.custom.test/v1',
+            'memoryModelId': 'summary-custom-model',
+            'memoryModelApiKey': 'sk-summary-custom',
             'gameMainModelProvider': 'follow_conversation',
-            'gameSummaryModelProvider': 'follow_summary',
+            'gameSummaryModelProvider': 'follow_memory',
         })
 
         game_main = config_manager.get_model_api_config('game_main')
@@ -734,12 +732,12 @@ class TestCustomApiToggle:
             'conversationModelUrl': 'http://localhost:8080/v1',
             'conversationModelId': 'local-conversation-model',
             'conversationModelApiKey': '',
-            'summaryModelProvider': 'custom',
-            'summaryModelUrl': 'http://localhost:8081/v1',
-            'summaryModelId': 'local-summary-model',
-            'summaryModelApiKey': '',
+            'memoryModelProvider': 'custom',
+            'memoryModelUrl': 'http://localhost:8081/v1',
+            'memoryModelId': 'local-summary-model',
+            'memoryModelApiKey': '',
             'gameMainModelProvider': 'follow_conversation',
-            'gameSummaryModelProvider': 'follow_summary',
+            'gameSummaryModelProvider': 'follow_memory',
         })
 
         cfg = config_manager.get_core_config()
@@ -773,7 +771,7 @@ class TestCustomApiToggle:
         assert game_main['model'] == core_config['CONVERSATION_MODEL']
         assert game_main['base_url'] == core_config['OPENROUTER_URL']
         assert game_main['api_key'] == 'sk-gemini'
-        assert game_summary['model'] == core_config['SUMMARY_MODEL']
+        assert game_summary['model'] == core_config['MEMORY_MODEL']
         assert game_summary['base_url'] == core_config['OPENROUTER_URL']
         assert game_summary['api_key'] == 'sk-gemini'
 
@@ -799,7 +797,7 @@ class TestCustomApiToggle:
         assert game_main['model'] == openai_profile['CONVERSATION_MODEL']
         assert game_main['base_url'] == openai_profile['OPENROUTER_URL']
         assert game_main['api_key'] == 'sk-core-openai'
-        assert game_summary['model'] == openai_profile['SUMMARY_MODEL']
+        assert game_summary['model'] == openai_profile['MEMORY_MODEL']
         assert game_summary['base_url'] == openai_profile['OPENROUTER_URL']
         assert game_summary['api_key'] == 'sk-core-openai'
 
@@ -1186,7 +1184,7 @@ class TestGetModelApiConfig:
 
     @pytest.mark.unit
     def test_custom_off_returns_assist_fallback(self, config_manager):
-        """enableCustomApi=false → get_model_api_config('summary') returns assist profile."""
+        """enableCustomApi=false → get_model_api_config('memory') returns assist profile."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
             'coreApi': 'qwen',
@@ -1194,7 +1192,7 @@ class TestGetModelApiConfig:
             'assistApiKeyQwen': 'sk-qwen-test',
             'enableCustomApi': False,
         })
-        result = config_manager.get_model_api_config('summary')
+        result = config_manager.get_model_api_config('memory')
 
         assert result['is_custom'] is False
         assert result['api_key'] == 'sk-qwen-test'
@@ -1208,11 +1206,11 @@ class TestGetModelApiConfig:
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'enableCustomApi': True,
-            'summaryModelUrl': 'https://custom-summary.test/v1',
-            'summaryModelId': 'custom-summary-v2',
-            'summaryModelApiKey': 'sk-custom-summary',
+            'memoryModelUrl': 'https://custom-summary.test/v1',
+            'memoryModelId': 'custom-summary-v2',
+            'memoryModelApiKey': 'sk-custom-summary',
         })
-        result = config_manager.get_model_api_config('summary')
+        result = config_manager.get_model_api_config('memory')
 
         assert result['is_custom'] is True
         assert result['model'] == 'custom-summary-v2'
@@ -2523,11 +2521,11 @@ class TestGptsovitsEnabledSaveMigration:
             'assistApi': 'kimi_code',
             'assistApiKeyKimiCode': 'sk-kimi-code-test',
             'enableCustomApi': True,
-            'conversationModelProvider': 'follow_summary',
-            'summaryModelProvider': 'follow_conversation',
+            'conversationModelProvider': 'follow_memory',
+            'memoryModelProvider': 'follow_conversation',
         })
 
-        summary_config = config_manager.get_model_api_config('summary')
+        summary_config = config_manager.get_model_api_config('memory')
         conversation_config = config_manager.get_model_api_config('conversation')
 
         assert summary_config['provider_type'] == 'anthropic'
@@ -2549,6 +2547,48 @@ class TestGptsovitsEnabledSaveMigration:
         assert realtime_config['provider_type'] == 'openai_compatible'
         assert realtime_config['api_key'] == 'sk-core-qwen'
         assert 'dashscope' in realtime_config['base_url']
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('raw_flag', ['false', '0', 'no', 'off'])
+    def test_string_false_enable_custom_api_normalizes_to_false(self, config_manager, raw_flag):
+        base_payload = {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-core-qwen',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-assist-qwen',
+            'memoryModelUrl': 'https://custom.invalid/v1',
+            'memoryModelId': 'custom-summary',
+            'imageModelProvider': 'custom',
+            'imageModelUrl': 'https://custom.invalid/v1',
+            'imageModelId': 'custom-img',
+            'imageModelApiKey': 'sk-img',
+        }
+        _write_core_config(config_manager, {**base_payload, 'enableCustomApi': True})
+        assert config_manager.get_model_api_config('image')['enabled'] is True
+
+        _write_core_config(config_manager, {**base_payload, 'enableCustomApi': raw_flag})
+
+        cfg = config_manager.get_core_config()
+        assert cfg['ENABLE_CUSTOM_API'] is False
+        assert cfg['MEMORY_MODEL_URL'] != 'https://custom.invalid/v1'
+
+        summary_cfg = config_manager.get_model_api_config('memory')
+        assert summary_cfg['is_custom'] is False
+        assert summary_cfg['model'] != 'custom-summary'
+
+        image_cfg = config_manager.get_model_api_config('image')
+        assert image_cfg['enabled'] is False
+
+        direct_summary = config_manager.get_model_api_config(
+            'memory',
+            _core_config={
+                **cfg,
+                'ENABLE_CUSTOM_API': raw_flag,
+                'MEMORY_MODEL': 'custom-summary',
+                'MEMORY_MODEL_URL': 'https://custom.invalid/v1',
+            },
+        )
+        assert direct_summary['is_custom'] is False
 
 
 if __name__ == '__main__':

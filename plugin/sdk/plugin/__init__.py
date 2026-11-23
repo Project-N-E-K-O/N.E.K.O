@@ -19,6 +19,9 @@ from . import settings as _settings
 from . import ui as ui
 from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, tr
+from plugin.sdk.shared.models.exceptions import PermissionDeniedError, SystemPermissionDeniedError
+from plugin.sdk.shared.permissions.state import PermissionState
+from plugin.sdk.shared.permissions.testing import FakePermissions
 
 # --- Base ---
 NEKO_PLUGIN_META_ATTR = _base.NEKO_PLUGIN_META_ATTR
@@ -46,6 +49,8 @@ quick_action = _decorators.quick_action
 # --- LLM tool ---
 llm_tool = _llm_tool.llm_tool
 LlmToolMeta = _llm_tool.LlmToolMeta
+LlmToolRegisterResult = _llm_tool.LlmToolRegisterResult
+LlmToolUnregisterResult = _llm_tool.LlmToolUnregisterResult
 
 # --- Activity ---
 OsActivitySnapshot = _activity.OsActivitySnapshot
@@ -102,6 +107,8 @@ __all__ = [
     # LLM tool
     "llm_tool",
     "LlmToolMeta",
+    "LlmToolRegisterResult",
+    "LlmToolUnregisterResult",
     # Activity
     "OsActivitySnapshot",
     "get_os_activity_snapshot",
@@ -123,6 +130,11 @@ __all__ = [
     # Errors
     "SdkError",
     "TransportError",
+    "PermissionDeniedError",
+    "SystemPermissionDeniedError",
+    # Permissions
+    "PermissionState",
+    "FakePermissions",
     # Logging
     "get_plugin_logger",
     # Settings

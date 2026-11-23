@@ -28,7 +28,7 @@ This module does, once a week per character with thinking on:
    The annotator only prefixes each bullet with a number and records which
    entry the number stands for; the text is otherwise byte-identical, which
    ``test_annotated_render_matches_injected_render`` holds in place.
-2. Ask the correction-tier model to suppress, rewrite or merge entries that
+2. Ask the summary-tier model to suppress, rewrite or merge entries that
    are contradictory, redundant, hollow, stale or unclear.
 3. Validate every number against the map — read-only (character-card) and
    unknown numbers are rejected and counted, never applied.
@@ -509,7 +509,7 @@ def classify_model_failure(exc: BaseException) -> str:
     such as bad credentials or an unknown model, and anything unrecognised.
     A final failure waits for the next weekly cycle, when the input has
     changed anyway. Connection errors come from the shared OpenAI + Anthropic
-    list the chat retry path uses, so either backend of the correction tier
+    list the chat retry path uses, so either backend of the summary tier
     is recognised.
     """
     import asyncio
@@ -629,7 +629,7 @@ async def _ainvoke(config_manager, prompt: str, *, name: str, round_no: int):
     # rewrite long-term persona and are not undone automatically. A larger
     # output allowance than the shared one, since the whole injected block
     # is under review.
-    api_config = await config_manager.aget_model_api_config('correction')
+    api_config = await config_manager.aget_model_api_config('memory')
     resp, cap = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt built by _build_prompt, which truncates the memory block to MEMORY_INTROSPECTION_INPUT_MAX_TOKENS.
         api_config, prompt,
         timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,

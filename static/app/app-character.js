@@ -465,6 +465,86 @@
         // 才 set true（这点说明模型/socket/UI/lanlan_config 都到位、只剩 unlockAchievement
         // 等末尾副作用 await），watchdog 检测这个 flag 精准。
         let switchHasCommitted = false;
+        let chatUiClearedForSwitch = false;
+        let previousChatContainerNodes = null;
+        let previousReactMessages = null;
+        let previousReactSwitchSnapshot = null;
+        let previousDocumentTitle = document.title;
+        let previousChatTurnState = null;
+
+        const restorePreviousChatUi = () => {
+            if (!chatUiClearedForSwitch || switchHasCommitted) return;
+            chatUiClearedForSwitch = false;
+
+            try {
+                if (typeof previousDocumentTitle === 'string') {
+                    document.title = previousDocumentTitle;
+                }
+                const chatContainer = document.getElementById('chatContainer');
+                if (chatContainer && Array.isArray(previousChatContainerNodes)) {
+                    const postClearNodes = Array.from(chatContainer.childNodes);
+                    chatContainer.innerHTML = '';
+                    previousChatContainerNodes.forEach(node => {
+                        try { chatContainer.appendChild(node); } catch (_e) { /* ignore */ }
+                    });
+                    postClearNodes.forEach(node => {
+                        if (!previousChatContainerNodes.includes(node)) {
+                            try { chatContainer.appendChild(node); } catch (_e) { /* ignore */ }
+                        }
+                    });
+                }
+                if (previousReactSwitchSnapshot
+                        && window.reactChatWindowHost
+                        && typeof window.reactChatWindowHost.restoreSwitchSnapshot === 'function') {
+                    window.reactChatWindowHost.restoreSwitchSnapshot(previousReactSwitchSnapshot);
+                } else if (Array.isArray(previousReactMessages) && window.reactChatWindowHost) {
+                    const currentReactState = (typeof window.reactChatWindowHost.getState === 'function')
+                        ? window.reactChatWindowHost.getState()
+                        : null;
+                    const liveReactMessages = (currentReactState && Array.isArray(currentReactState.messages))
+                        ? currentReactState.messages
+                        : [];
+                    const seenIds = new Set(
+                        previousReactMessages
+                            .map(msg => (msg && msg.id !== undefined && msg.id !== null && msg.id !== '' ? String(msg.id) : ''))
+                            .filter(Boolean)
+                    );
+                    const postClearReactMessages = liveReactMessages.filter(msg => {
+                        if (!msg) return false;
+                        const msgId = (msg.id !== undefined && msg.id !== null && msg.id !== '') ? String(msg.id) : '';
+                        if (!msgId) return true;
+                        if (seenIds.has(msgId)) return false;
+                        seenIds.add(msgId);
+                        return true;
+                    });
+                    const mergedReactMessages = previousReactMessages.concat(postClearReactMessages);
+                    if (typeof window.reactChatWindowHost.setMessages === 'function') {
+                        window.reactChatWindowHost.setMessages(mergedReactMessages);
+                    } else if (typeof window.reactChatWindowHost.appendMessage === 'function') {
+                        mergedReactMessages.forEach(msg => {
+                            try { window.reactChatWindowHost.appendMessage(msg); } catch (_e) { /* ignore */ }
+                        });
+                    }
+                }
+                const hasNewTurnState = !!(
+                    window.currentGeminiMessage
+                    || window._geminiTurnFullText
+                    || window._geminiTurnEndSealed
+                    || (Array.isArray(window.currentTurnGeminiBubbles) && window.currentTurnGeminiBubbles.length > 0)
+                    || (Array.isArray(window.currentTurnGeminiAttachments) && window.currentTurnGeminiAttachments.length > 0)
+                );
+                const socketStillBelongsToOldSession = !S.socket || S.socket === _switchOldSocket;
+                if (previousChatTurnState && !hasNewTurnState && socketStillBelongsToOldSession) {
+                    window.currentGeminiMessage = previousChatTurnState.currentGeminiMessage;
+                    window._geminiTurnFullText = previousChatTurnState._geminiTurnFullText;
+                    window._geminiTurnEndSealed = previousChatTurnState._geminiTurnEndSealed;
+                    window.currentTurnGeminiBubbles = previousChatTurnState.currentTurnGeminiBubbles;
+                    window.currentTurnGeminiAttachments = previousChatTurnState.currentTurnGeminiAttachments;
+                }
+            } catch (chatRestoreErr) {
+                console.warn('[猫娘切换] 恢复聊天 UI 失败:', chatRestoreErr);
+            }
+        };
         // try 体里 line 486 / 489 / 493 那一段是关键全局副作用区段：S.socket.close()、
         // lanlan_config.lanlan_name = newCatgirl、connectWebSocket()。老 attempt 卡在
         // removeModel/clearAudioQueue 这类无 timeout 的 await 上苏醒后会接着跑这一段，
@@ -499,6 +579,7 @@
                     // 用户重试同名角色被 dedupe 拦掉、且 model_type 跟实际仍跑的旧模型不一致让
                     // 后续分支走偏。
                     restorePreviousLanlanConfig();
+                    restorePreviousChatUi();
                     // socket 收尾：line 529 早期 retire 把 S.socket 置 null，卡死场景下 catch/finally
                     // 永远不到，_switchOldSocket 既不会被关也不会被恢复——orphan 连接到 server，
                     // 同时当前页 S.socket=null 是断联态。复用 catch+finally 的 socket 处理：
@@ -889,8 +970,32 @@
                 S.socket = null;
             }
 
-            // 清空聊天记录和相关全局状态
+            // 先保存旧角色聊天 UI 与全局 turn 状态快照，以便未 commit 前失败回滚时恢复
             const chatContainer = document.getElementById('chatContainer');
+            previousChatContainerNodes = chatContainer ? Array.from(chatContainer.childNodes) : null;
+            previousReactSwitchSnapshot = (window.reactChatWindowHost && typeof window.reactChatWindowHost.captureSwitchSnapshot === 'function')
+                ? window.reactChatWindowHost.captureSwitchSnapshot()
+                : null;
+            const reactState = (window.reactChatWindowHost && typeof window.reactChatWindowHost.getState === 'function')
+                ? window.reactChatWindowHost.getState()
+                : null;
+            previousReactMessages = (reactState && Array.isArray(reactState.messages))
+                ? reactState.messages.slice()
+                : null;
+            previousChatTurnState = {
+                currentGeminiMessage: window.currentGeminiMessage ?? null,
+                _geminiTurnFullText: window._geminiTurnFullText ?? '',
+                _geminiTurnEndSealed: !!window._geminiTurnEndSealed,
+                currentTurnGeminiBubbles: Array.isArray(window.currentTurnGeminiBubbles)
+                    ? window.currentTurnGeminiBubbles.slice()
+                    : [],
+                currentTurnGeminiAttachments: Array.isArray(window.currentTurnGeminiAttachments)
+                    ? window.currentTurnGeminiAttachments.slice()
+                    : [],
+            };
+            chatUiClearedForSwitch = true;
+
+            // 清空聊天记录和相关全局状态
             if (chatContainer) {
                 chatContainer.innerHTML = '';
             }
@@ -1916,10 +2021,10 @@
             // commit 前 dispose 会让中途失败的 rollback 没法恢复旧 MMD（容器没渲染 + 实例已销毁）。
             _disposeDeferredMmd();
             clearGoodbyeStateForCharacterSwitch();
-            // 角色卡切换后猫爪必须重新归零并拉取新快照，防止工具服务的旧全局状态污染新角色。
+            // 角色卡切换后喵能力必须重新归零并拉取新快照，防止工具服务的旧全局状态污染新角色。
             if (typeof window.resetAgentUiForCharacterSwitch === 'function') {
                 Promise.resolve(window.resetAgentUiForCharacterSwitch(newCatgirl))
-                    .catch(err => console.warn('[猫娘切换] 刷新猫爪状态失败:', err));
+                    .catch(err => console.warn('[猫娘切换] 刷新喵能力状态失败:', err));
             }
             rehideMainUIIfModelManagerOwnsVisibility('character-switch-commit');
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
@@ -1982,6 +2087,7 @@
                 // 分支后用自己看到的 snapshot 覆盖新 attempt 的成功状态。
                 if (S._currentSwitchAttemptId === myAttemptId && !switchHasCommitted) {
                     restorePreviousLanlanConfig();
+                    restorePreviousChatUi();
                     console.log('[猫娘切换] 切换失败，已恢复切换前的 lanlan_config（', previousLanlanConfig.lanlan_name, '/', previousLanlanConfig.model_type, '/', previousLanlanConfig.live3d_sub_type, '），允许用户重试同一目标');
                     // 恢复 S.socket 引用：line 530 早期 retire 把 S.socket 设成 null（让 stale
                     // onmessage/onclose 在清空会话期间走 stale guard）。如果新 connectWebSocket

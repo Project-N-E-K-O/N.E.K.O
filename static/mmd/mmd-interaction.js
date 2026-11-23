@@ -478,9 +478,9 @@ class MMDInteraction {
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
                     this._rememberDragHintPanPointer(e);
-                    // 点一下（没拖动）给个原地颤动的即时反馈
+                    // 点一下（没拖动）给个原地颤动的即时反馈；连点逐级加大、第 4 下生气
                     if (window.NekoAvatarClickShake?.isTap(clickShakeTap, e)) {
-                        window.NekoAvatarClickShake.play(canvas);
+                        window.NekoAvatarClickShake.tap(canvas);
                     }
                 }
                 // 保留本次拖拽类型再清状态，跨屏切换只对 pan 生效
@@ -951,7 +951,8 @@ class MMDInteraction {
         return easingMap[easingType] || easingMap.easeOutCubic;
     }
 
-    _animateModelToPosition(startPosition, targetPosition) {
+    _animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return Promise.resolve(false);
         const mesh = this.manager.currentModel?.mesh;
         if (!mesh) return Promise.resolve(false);
         if (!Number.isFinite(targetPosition?.x) || !Number.isFinite(targetPosition?.y) || !Number.isFinite(targetPosition?.z)) {
@@ -974,8 +975,27 @@ class MMDInteraction {
         this._isSnappingModel = true;
 
         return new Promise((resolve) => {
-            this._snapResolve = resolve;
+            const animationToken = { isCurrentSettlement };
+            this._activeSnapAnimation = animationToken;
+            const finish = (result) => {
+                if (this._activeSnapAnimation === animationToken) {
+                    this._activeSnapAnimation = null;
+                    this._isSnappingModel = false;
+                    this._snapCancelFrame = null;
+                    this._snapResolve = null;
+                }
+                resolve(result);
+            };
+            animationToken.cancel = () => {
+                if (this._activeSnapAnimation === animationToken) this._snapCancelFrame?.();
+                finish(false);
+            };
+            this._snapResolve = finish;
             const animate = (currentTime) => {
+                if (this._activeSnapAnimation !== animationToken || !isCurrentSettlement() || this.manager.currentModel?.mesh !== mesh) {
+                    finish(false);
+                    return;
+                }
                 const elapsed = currentTime - startTime;
                 const progress = Math.min(elapsed / duration, 1);
                 const eased = easingFn(progress);
@@ -990,10 +1010,7 @@ class MMDInteraction {
                     this._snapCancelFrame = this._scheduleSnapFrame(animate);
                 } else {
                     mesh.position.copy(targetPosition);
-                    this._isSnappingModel = false;
-                    this._snapCancelFrame = null;
-                    this._snapResolve = null;
-                    resolve(true);
+                    finish(true);
                 }
             };
 
@@ -1005,7 +1022,10 @@ class MMDInteraction {
      * 将 MMD 模型回弹到当前可见区域内。
      * 返回 true 表示位置被修正；修正完成后会保存最终位置。
      */
-    async _snapModelIntoScreen({ animate = true } = {}) {
+    async _snapModelIntoScreen({ animate = true, isCurrentSettlement = () => true } = {}) {
+        if (!isCurrentSettlement()) return false;
+        const previousSnap = this._activeSnapAnimation;
+        if (previousSnap?.isCurrentSettlement?.() === false) previousSnap.cancel();
         if (this._isSnappingModel) return false;
         const mesh = this.manager.currentModel?.mesh;
         if (!mesh || !this.manager.camera || !this.manager.renderer || !THREE) return false;
@@ -1023,21 +1043,24 @@ class MMDInteraction {
 
         let changed = false;
         if (animate) {
-            changed = await this._animateModelToPosition(startPosition, targetPosition);
+            changed = await this._animateModelToPosition(startPosition, targetPosition, { isCurrentSettlement });
         } else {
             mesh.position.copy(targetPosition);
             changed = true;
         }
 
-        if (changed) {
-            await this._savePositionAfterInteraction();
+        if (changed && isCurrentSettlement()) {
+            await this._savePositionAfterInteraction({ isCurrentSettlement });
         }
         return changed;
     }
 
     // ═══════════════════ 偏好保存 ═══════════════════
 
-    async _savePositionAfterInteraction() {
+    async _savePositionAfterInteraction(options = {}) {
+        const isCurrentSettlement = typeof options.isCurrentSettlement === 'function'
+            ? options.isCurrentSettlement : () => true;
+        if (!isCurrentSettlement()) return false;
         if (!this.manager.currentModel || !this.manager.currentModel.url) return;
 
         const modelUrl = this.manager.currentModel.url;
@@ -1076,6 +1099,8 @@ class MMDInteraction {
                 console.warn('[MMD] 获取显示器信息失败:', error);
             }
         }
+
+        if (!isCurrentSettlement()) return false;
 
         // 视口信息（跨分辨率缩放归一化）
         let viewportInfo = null;

@@ -28,7 +28,10 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # N.E.K.O project root.
@@ -39,6 +42,14 @@ PYTHON_EXE = sys.executable
 HANDLER_MODULE = "plugin.server.market_protocol_handler"
 # Protocol-handler command.
 HANDLER_CMD = f'"{PYTHON_EXE}" -m {HANDLER_MODULE} "%1"'
+# Linux handler desktop entry and the MIME type it claims.
+LINUX_DESKTOP_FILE_NAME = "neko-protocol-handler.desktop"
+LINUX_SCHEME_MIME_TYPE = "x-scheme-handler/neko"
+# macOS Launch Services registration tool.
+LSREGISTER = (
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+    "LaunchServices.framework/Support/lsregister"
+)
 
 
 def _desktop_exec_quote(value: str) -> str:
@@ -74,6 +85,34 @@ def _posix_shell_quote(value: str) -> str:
     """Quote a value for the small macOS shell launcher."""
 
     return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
+def _run_required(args: list[str], what: str) -> bool:
+    """Run a registration command whose failure means registration failed."""
+    try:
+        result = subprocess.run(args, check=False)
+    except OSError as exc:
+        print(f"[FAIL] {what} could not be started ({args[0]}): {exc}")
+        return False
+    if result.returncode != 0:
+        print(f"[FAIL] {what} exited with status {result.returncode}: {args[0]}")
+        return False
+    return True
+
+
+def _run_optional(args: list[str]) -> None:
+    """Run a best-effort refresh command; missing tools and failures are ignored."""
+    try:
+        subprocess.run(
+            args,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        # The refresh is optional: a missing or broken tool only delays the
+        # desktop's cache update and must not fail the registration.
+        pass
 
 
 def register() -> bool:
@@ -227,9 +266,10 @@ exec {quoted_python_exe} -m {HANDLER_MODULE} "$@"
     handler_path.chmod(0o755)
 
     # Register the URL scheme.
-    os.system("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
-              "LaunchServices.framework/Support/lsregister "
-              f"-R '{app_dir}'")
+    if not _run_required([LSREGISTER, "-R", str(app_dir)], "lsregister"):
+        print("[FAIL] neko:// protocol was not registered (macOS)")
+        print(f"     App bundle left at: {app_dir}")
+        return False
 
     print(f"[OK] Registered neko:// protocol (macOS)")
     print(f"     App: {app_dir}")
@@ -237,10 +277,20 @@ exec {quoted_python_exe} -m {HANDLER_MODULE} "$@"
 
 
 def _remove_macos() -> bool:
-    """macOS: delete the helper app."""
-    import shutil
+    """macOS: unregister the helper app from Launch Services and delete it."""
     app_dir = Path.home() / "Applications" / "NekoProtocolHandler.app"
     if app_dir.exists():
+        # Mirror registration: lsregister -u must run while the bundle exists.
+        # On failure keep the bundle, so a rerun can still unregister it.
+        if not _run_required([LSREGISTER, "-u", str(app_dir)], "lsregister"):
+            print("[FAIL] neko:// protocol was not removed (macOS)")
+            print(f"     App bundle left at: {app_dir}")
+            # Deleting the bundle first would hide it from later --remove runs
+            # and leave the Launch Services record behind.
+            print("     Rerun --remove once lsregister works. Only if lsregister is")
+            print("     unavailable for good, delete the bundle manually:")
+            print(f"     rm -rf {_posix_shell_quote(str(app_dir))}")
+            return False
         shutil.rmtree(app_dir)
     print("[OK] Removed neko:// protocol (macOS)")
     return True
@@ -253,7 +303,7 @@ def _register_linux() -> bool:
     desktop_dir = Path.home() / ".local" / "share" / "applications"
     desktop_dir.mkdir(parents=True, exist_ok=True)
 
-    desktop_file = desktop_dir / "neko-protocol-handler.desktop"
+    desktop_file = desktop_dir / LINUX_DESKTOP_FILE_NAME
     python_exe = _desktop_exec_quote(PYTHON_EXE)
     project_root = _desktop_entry_value_escape(str(PROJECT_ROOT))
     desktop_content = f"""[Desktop Entry]
@@ -266,22 +316,136 @@ MimeType=x-scheme-handler/neko;
 """
     desktop_file.write_text(desktop_content)
 
+    # Update the desktop database first (optional refresh) so the cache sees
+    # the new .desktop file even if setting the default handler fails.
+    _run_optional(["update-desktop-database", str(desktop_dir)])
     # Register the MIME type.
-    os.system(f"xdg-mime default neko-protocol-handler.desktop x-scheme-handler/neko")
-    # Update the desktop database.
-    os.system(f"update-desktop-database {desktop_dir} 2>/dev/null || true")
+    if not _run_required(
+        ["xdg-mime", "default", desktop_file.name, LINUX_SCHEME_MIME_TYPE],
+        "xdg-mime",
+    ):
+        print("[FAIL] neko:// protocol was not registered (Linux)")
+        print(f"     Desktop file left at: {desktop_file}")
+        return False
 
     print(f"[OK] Registered neko:// protocol (Linux)")
     print(f"     Desktop file: {desktop_file}")
     return True
 
 
+# mimeapps.list groups that xdg-mime / desktop environments use to associate
+# the scheme with a handler.
+_MIMEAPPS_GROUPS = ("[Default Applications]", "[Added Associations]")
+
+
+def _linux_mimeapps_paths() -> list[Path]:
+    """User mimeapps.list files that may hold the neko:// association."""
+    config_home = os.environ.get("XDG_CONFIG_HOME", "")
+    # The XDG spec ignores relative values.
+    if not config_home or not os.path.isabs(config_home):
+        config_home = str(Path.home() / ".config")
+    config_dir = Path(config_home)
+    return [
+        config_dir / "mimeapps.list",
+        # Desktop-specific overrides such as gnome-mimeapps.list.
+        *sorted(config_dir.glob("*-mimeapps.list")),
+        # Legacy location still written by older xdg-utils.
+        Path.home() / ".local" / "share" / "applications" / "mimeapps.list",
+    ]
+
+
+def _drop_mimeapps_association(path: Path) -> None:
+    """Remove our desktop file from the neko:// entries of a mimeapps.list.
+
+    Other handlers listed for the scheme and every other line are kept as is.
+    Raises OSError when the file cannot be read or written; bytes that are
+    not valid UTF-8 are carried through unchanged.
+    """
+    if not path.is_file():
+        return
+    # Edit the real file so a symlinked mimeapps.list (dotfile managers)
+    # stays a symlink.
+    path = path.resolve()
+    # Work on bytes split at "\n" only, so CRLF endings and any other
+    # characters are written back exactly as read.
+    raw = path.read_bytes()
+    # Files without the scheme are never rewritten, whatever their encoding.
+    if LINUX_SCHEME_MIME_TYPE.encode("ascii") not in raw:
+        return
+    # surrogateescape round-trips bytes that are not valid UTF-8 unchanged.
+    lines = raw.decode("utf-8", errors="surrogateescape").split("\n")
+    group = None
+    changed = False
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if index == 0:
+            # A leading UTF-8 BOM would otherwise hide the first group header.
+            stripped = stripped.removeprefix("\ufeff").strip()
+        if stripped.startswith("["):
+            group = stripped
+        key, sep, value = line.partition("=")
+        if (
+            sep
+            and group in _MIMEAPPS_GROUPS
+            and key.strip() == LINUX_SCHEME_MIME_TYPE
+        ):
+            body = value.rstrip("\r")
+            ending = value[len(body):]
+            # Drop only our entry; the surviving entries keep their exact text.
+            entries = body.split(";")
+            remaining = [e for e in entries if e.strip() != LINUX_DESKTOP_FILE_NAME]
+            if len(remaining) != len(entries):
+                changed = True
+                if not any(e.strip() for e in remaining):
+                    # The removed line's "\n" goes with it. When it was the
+                    # unterminated last line, the previous line's "\r\n"
+                    # becomes the file end, so drop its now-dangling "\r".
+                    if index == len(lines) - 1 and kept and kept[-1].endswith("\r"):
+                        kept[-1] = kept[-1][:-1]
+                    continue
+                line = f"{key}={';'.join(remaining)}{ending}"
+        kept.append(line)
+    if not changed:
+        return
+    # Write a sibling file and swap it in so a failure never truncates the
+    # user's associations.
+    # mkstemp creates a new, uniquely named file exclusively, so it never
+    # follows a pre-existing symlink and concurrent runs do not share it.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".neko-tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write("\n".join(kept).encode("utf-8", errors="surrogateescape"))
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    finally:
+        # Only ever remove the file this call created.
+        if tmp.exists():
+            tmp.unlink()
+
+
 def _remove_linux() -> bool:
-    """Linux: delete the .desktop file."""
-    desktop_file = Path.home() / ".local" / "share" / "applications" / "neko-protocol-handler.desktop"
+    """Linux: drop the default-handler association and the .desktop file."""
+    desktop_file = Path.home() / ".local" / "share" / "applications" / LINUX_DESKTOP_FILE_NAME
+    ok = True
+    for mimeapps in _linux_mimeapps_paths():
+        try:
+            _drop_mimeapps_association(mimeapps)
+        except OSError as exc:
+            print(f"[FAIL] Could not remove the neko:// association from {mimeapps}: {exc}")
+            ok = False
     if desktop_file.exists():
         desktop_file.unlink()
-        os.system(f"update-desktop-database {desktop_file.parent} 2>/dev/null || true")
+    if desktop_file.parent.is_dir():
+        # Refresh even when the .desktop file was already gone, so a stale
+        # mimeinfo.cache entry is dropped too.
+        _run_optional(["update-desktop-database", str(desktop_file.parent)])
+    if not ok:
+        print("[FAIL] neko:// protocol was only partly removed (Linux)")
+        return False
     print("[OK] Removed neko:// protocol (Linux)")
     return True
 

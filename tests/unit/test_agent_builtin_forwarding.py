@@ -17,7 +17,7 @@
 While a task agent uses the keyboard and mouse or the browser, a banner is
 shown over the desktop or the browser window, and Esc on it stops the task.
 The agent process sends a ``builtin_activity`` event and offers the routes
-(covered in ``tests/unit/nekoclaw/test_agent_wiring.py``). Here:
+(covered in ``tests/unit/nekopower/test_agent_wiring.py``). Here:
 
 * the main server hands the event to every connected page as
   ``agent_builtin_activity``;

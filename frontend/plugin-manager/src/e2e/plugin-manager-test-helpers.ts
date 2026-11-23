@@ -70,6 +70,9 @@ export async function isolateAppearanceApis(page: Page) {
   await page.route('**/market/oauth/status', (route) =>
     route.fulfill({ json: { authenticated: false, auth_state: 'disconnected' } })
   )
+  await page.route('**/market/feedback?*', route =>
+    route.fulfill({ status: 409, json: { detail: { code: 'market_auth_required' } } })
+  )
   await page.route('**/market/installed?*', (route) => route.fulfill({ json: { items: [] } }))
   await page.route('**/plugin-cli/plugins', (route) =>
     route.fulfill({ json: { plugins: [], plugin_refs: [], count: 0 } })
@@ -161,6 +164,18 @@ export async function stubCorePluginManagerApis(page: Page) {
     route.fulfill({ json: { csrf_token: 'e2e-csrf-token' } })
   )
   await page.route('**/health', (route) => route.fulfill({ json: { status: 'ok' } }))
+  // What the home page reads of the task agents: all of it switched off, nobody at work.
+  await page.route('**/console/switches', (route) =>
+    route.fulfill({
+      json: {
+        success: true,
+        switches: { enabled: false, flags: {}, gate: { ready: true }, capabilities: {}, model_images: { sees: true } },
+      },
+    })
+  )
+  await page.route('**/console/board*', (route) =>
+    route.fulfill({ json: { success: true, revision: 'e2e', projects: [], loose: [] } })
+  )
   await page.route('**/plugins?*', (route) => route.fulfill({ json: { plugins: [], message: '' } }))
   await page.route('**/plugin/status', (route) => route.fulfill({ json: { plugins: {} } }))
   await page.route('**/server/info', (route) =>

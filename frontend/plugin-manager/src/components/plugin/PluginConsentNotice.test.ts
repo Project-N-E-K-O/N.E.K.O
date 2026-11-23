@@ -85,6 +85,11 @@ describe('running-plugin consent notice', () => {
     expect(root.textContent).toContain('pluginConsent.upgraded')
   })
 
+  it('derives the label key for permission ids the same way as the other views', () => {
+    const root = mount([notice('one', { unconfirmed: ['plugin_sdk.main_agent.memory:read'] })], () => {})
+    expect(root.textContent).toContain('pluginConsent.capabilities.plugin_sdk_main_agent_memory_read.title')
+  })
+
   it('reject records the denial, refreshes plugins, and closes when finished', async () => {
     api.rejectPluginConsent.mockResolvedValue({})
     let done = false

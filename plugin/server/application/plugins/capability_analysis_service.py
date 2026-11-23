@@ -10,6 +10,7 @@ import threading
 import tomllib
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from plugin.core.capability_analysis import (
     analyze_capabilities,
     iter_capability_sources,
     read_capability_sources,
+    skipped_inventory,
 )
 from plugin.core.state import state
 from plugin.logging_config import get_logger
@@ -58,6 +60,9 @@ def source_revision(root: Path, version: str, *, stop: threading.Event | None = 
         "size": stat.st_size,
         "python": hashlib.sha256(json.dumps(sources).encode()).hexdigest(),
         "truncated": truncated,
+        "skipped": hashlib.sha256(
+            json.dumps(skipped_inventory(root, stop), sort_keys=True).encode()
+        ).hexdigest(),
     }
 
 
@@ -68,6 +73,10 @@ def is_fresh(report: dict | None, revision: dict | None) -> bool:
         and report.get("_analyzer_version") == ANALYZER_VERSION
         and report.get("_source") == revision
     )
+
+
+class _Superseded(Exception):
+    """The job was superseded or forgotten while it waited for the lock."""
 
 
 def _report(status: str, **fields) -> dict:
@@ -167,13 +176,32 @@ class CapabilityAnalysisService:
             return report
         return None
 
+    @contextmanager
+    def _source_lock(self, plugin_id, token):
+        """Hold the operation file lock for a read of the plugin tree.
+
+        The job is re-checked once the lock is held: an uninstall that ran
+        forget() and removed the directory while this job waited must not
+        be followed by a read of the removed tree.
+        """
+        with hold_plugin_operation_file_lock(self._stop):
+            with self._lock:
+                if not self._current(plugin_id, token):
+                    raise _Superseded
+            yield
+
     def _run(self, plugin_id, root, version, token, force):
         with self._lock:
             if not self._current(plugin_id, token):
                 return
         revision = None
         try:
-            revision = source_revision(root, version, stop=self._stop)
+            # The revision walks the plugin tree (os.walk/stat). Like the
+            # source read below it must share the operation file lock with
+            # update/uninstall, which rename plugin directories: on Windows an
+            # open directory handle makes that rename fail with WinError 5.
+            with self._source_lock(plugin_id, token):
+                revision = source_revision(root, version, stop=self._stop)
             saved = None if force else self._read_cached_report(plugin_id)
             if saved is not None and is_fresh(saved, revision):
                 with self._lock:
@@ -187,7 +215,7 @@ class CapabilityAnalysisService:
                 self._reports[plugin_id] = _report(
                     "running", version=version, _source_root=str(root)
                 )
-            with hold_plugin_operation_file_lock(self._stop):
+            with self._source_lock(plugin_id, token):
                 sources = read_capability_sources(root, stop=self._stop)
             report = analyze_capabilities(root, stop=self._stop, sources=sources)
             report.update(
@@ -196,7 +224,9 @@ class CapabilityAnalysisService:
                 _source=revision,
                 _source_root=str(root),
             )
-            if source_revision(root, version, stop=self._stop) != revision:
+            with self._source_lock(plugin_id, token):
+                current = source_revision(root, version, stop=self._stop)
+            if current != revision:
                 with self._lock:
                     if self._current(plugin_id, token):
                         self._reports[plugin_id] = _report(
@@ -204,6 +234,8 @@ class CapabilityAnalysisService:
                         )
                 return
             self._publish(plugin_id, token, report)
+        except _Superseded:
+            return
         except Exception as exc:
             if self._stop.is_set():
                 return
@@ -317,7 +349,111 @@ def notify_install_committed(result: dict) -> dict:
             logger.warning(
                 "Capability job enqueue failed: error={}", type(exc).__name__
             )
+        # Best-effort and off the event loop: the binding write takes the
+        # storage lock and fsyncs, which must never stall async install paths
+        # or in-flight model streams. A malformed entry must not fail the
+        # committed install either.
+        try:
+            plugin_id = str(installed["target_plugin_id"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Host model auto-bind skipped: install entry lacks target_plugin_id")
+            continue
+        threading.Thread(
+            target=_auto_bind_host_models_safe,
+            args=(plugin_id, str(installed.get("target_dir") or "")),
+            daemon=True,
+            name=f"host-model-autobind-{plugin_id}",
+        ).start()
     return result
+
+
+async def notify_install_committed_async(result: dict) -> dict:
+    """:func:`notify_install_committed`, then persist each installed plugin's
+    install source into its stored permission grants.
+
+    Awaited by the install owner while it still holds the plugin operation
+    lock, so the grants follow the source even if the plugin stays stopped.
+    The store work runs in a worker thread and never raises.
+    """
+    import asyncio
+
+    from plugin.server.application.plugins.permission_service import (
+        reconcile_installed_plugins,
+    )
+
+    notify_install_committed(result)
+    await asyncio.to_thread(reconcile_installed_plugins, result)
+    return result
+
+
+def _auto_bind_host_models_safe(plugin_id: str, target_dir: str) -> None:
+    stop = analysis_service._stop
+    try:
+        # Manifest reads share the operation file lock with uninstall/update,
+        # which move plugin directories: on Windows an open plugin.toml handle
+        # would make those moves fail. The binding write happens after the
+        # lock is released so plugin operations never wait on its fsync.
+        with hold_plugin_operation_file_lock(stop):
+            plugin_id, requirements = _read_auto_bind_requirements(plugin_id, target_dir)
+        _auto_bind_host_models(plugin_id, requirements)
+    except Exception as exc:
+        if stop.is_set():
+            return
+        logger.warning(
+            "Host model auto-bind failed: plugin_id={}, error={}",
+            plugin_id, type(exc).__name__,
+        )
+
+
+def _read_auto_bind_requirements(plugin_id: str, target_dir: str):
+    """Resolve the manifest id and read its model declarations (lock held)."""
+    # target_plugin_id is the directory name; load_model_requirements
+    # demands the manifest's plugin.id. Resolve it the same way the
+    # install gate does, falling back to the directory name.
+    manifest_path: Path | None = None
+    if target_dir:
+        from plugin.server.application.install_source.scanner import PluginDirectoryScanner
+
+        candidate = Path(target_dir) / "plugin.toml"
+        declared = PluginDirectoryScanner._load_plugin_id(Path(target_dir))
+        if declared and declared != plugin_id:
+            logger.info(
+                "Host model auto-bind uses manifest id: dir_id={}, manifest_id={}",
+                plugin_id, declared,
+            )
+            plugin_id = declared
+        elif not declared:
+            logger.warning(
+                "Host model auto-bind: manifest id unreadable, using directory id: plugin_id={}",
+                plugin_id,
+            )
+        if candidate.is_file():
+            manifest_path = candidate
+    if manifest_path is None:
+        return plugin_id, _load_auto_bind_requirements(plugin_id)
+    # The registry may not know this install yet, and the directory
+    # name can differ from plugin.id: pin the manifest actually
+    # installed. ContextVars do not cross threads, so bind in here.
+    from plugin.server.infrastructure.config_access import (
+        ConfigAccessSnapshot,
+        bind_config_access,
+    )
+
+    snapshot = ConfigAccessSnapshot(plugin_id=plugin_id, manifest_path=manifest_path, host=None)
+    with bind_config_access(snapshot):
+        return plugin_id, _load_auto_bind_requirements(plugin_id)
+
+
+def _load_auto_bind_requirements(plugin_id: str):
+    from plugin.server.application.model_config_service import load_model_requirements
+
+    return load_model_requirements(plugin_id)
+
+
+def _auto_bind_host_models(plugin_id: str, requirements) -> None:
+    from plugin.server.application.model_config_service import ModelConfigService
+
+    ModelConfigService().ensure_host_follow_binding(plugin_id, requirements=requirements)
 
 
 def schedule_analysis(plugin_id: str, *, force: bool = False) -> None:

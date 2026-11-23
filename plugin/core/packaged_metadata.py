@@ -26,8 +26,13 @@ from plugin.utils.source_paths import (
 _GENERATED_METADATA_NAMES = frozenset({PACKAGED_METADATA_FILENAME})
 
 # Schema 4 preserves the complete entry contract, including timeout/result
-# fields lost in schema 3. Older schemas must take the isolated scan path.
-PACKAGED_METADATA_SCHEMA_VERSION = 4
+# fields lost in schema 3. Schema 5 guarantees ``handlers`` also covers
+# ``__routers__`` entries: v4 files built before the host registered them
+# list router entries without handlers, and reusing one left those entries
+# on the global default timeout (#3066). Nothing in a v4 file tells the two
+# builds apart. Older schemas must take the isolated scan path, which then
+# rewrites the file in place.
+PACKAGED_METADATA_SCHEMA_VERSION = 5
 
 # Bound allocation before parsing metadata supplied by third-party packages.
 MAX_PACKAGED_METADATA_BYTES = 1024 * 1024

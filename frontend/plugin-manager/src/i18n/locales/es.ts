@@ -1,7 +1,9 @@
 import { pluginConsentMessages } from '../plugin-consent'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import powerMessages from '../power/es'
 
 /**
  * Paquete de idioma español
@@ -9,8 +11,10 @@ import { authoringMessages } from '../authoring'
 export default {
   pluginConsent: pluginConsentMessages['es'],
   authoring: authoringMessages['es'],
+  marketFeedback: marketFeedbackMessages['es'],
   modelApi: modelApiMessages['es'],
   modelBindings: modelBindingsMessages['es'],
+  power: powerMessages,
   common: {
     chooseLanguage: "Elegir idioma",
     surfaceLanguagePending: "El idioma de la aplicación cambió. Se conserva el idioma del panel para proteger el trabajo sin guardar.",
@@ -24,6 +28,7 @@ export default {
 
     loading: 'Cargando...',
     refresh: 'Actualizar',
+    retry: 'Reintentar',
     search: 'Buscar',
     filter: 'Filtrar',
     reset: 'Restablecer',
@@ -823,6 +828,22 @@ export default {
       install: 'Instalar',
       analyze: 'Analizar'
     },
+    messages: {
+      selectPluginToBuild: 'Selecciona primero al menos un plugin para compilar.',
+      bundleRequiresTwoPlugins: 'Un paquete combinado requiere seleccionar al menos dos plugins.',
+      bundleBuildFailedWithError: 'Error al compilar el paquete combinado: {error}',
+      bundleBuildCompleted: 'Paquete combinado compilado.',
+      bundleBuildPartialFailed: 'Falló la compilación del paquete combinado en {count} elemento(s).',
+      buildFailedWithError: 'Error de compilación: {error}',
+      buildCompletedWithFailures: 'Compilación finalizada: {built} correcto(s), {failed} con error.',
+      buildCompleted: 'Compilación finalizada: {built} correcto(s).',
+      inspectCompleted: 'Inspección del paquete completada.',
+      verifyPassed: 'Verificación del paquete aprobada.',
+      verifyFailed: 'La verificación del paquete falló.',
+      selectAtLeastOnePlugin: 'Selecciona al menos un plugin.',
+      analyzeCompleted: 'Análisis completado.',
+      analyzeFailedWithError: 'Error en el análisis: {error}'
+    },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
       metrics: {
@@ -1100,7 +1121,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'Gestor de plugins N.E.K.O'
+    titleSuffix: 'N.E.K.O NekoPower'
   },
   tutorial: {
     yuiGuide: {

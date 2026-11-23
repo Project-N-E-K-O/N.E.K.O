@@ -31,7 +31,7 @@ You do not need to write code. Pick an AI coding agent, copy one message to it, 
 
    ![Filling in the model API on first open](/images/plugins/onboarding/neko-api-setup-en.png)
 
-   1. Pick a core API provider.
+   1. Pick a Voice Model Provider.
    2. Enter your API key.
    3. Click "Save Settings".
 
@@ -57,7 +57,7 @@ You do not need to write code. Pick an AI coding agent, copy one message to it, 
 
 1. Install Git first (the Route B card has the official download link — run the installer).
 2. Open Plugin Manager (see [How to open Plugin Manager](#how-to-open-plugin-manager)).
-3. Click "Plugin studio" in the sidebar, then "New plugin":
+3. In the sidebar, open "Plugins" and click "Plugin forge" under it, then "New plugin":
 
    ![The Plugin studio entry and the New plugin button](/images/plugins/onboarding/neko-studio-entry-en.png)
 
@@ -111,11 +111,11 @@ You do not need to write code. Pick an AI coding agent, copy one message to it, 
 
 Both routes use the plugin manager. Open it from the N.E.K.O main window:
 
-![Opening Plugin Manager from the N.E.K.O main window](/images/plugins/onboarding/neko-open-plugin-manager-en.png)
+1. Hover over the catgirl and click the round hammer button (NekoPower) that appears. NekoPower opens in a new window.
+2. If the "NekoPower" switch at the top of its home page is off, turn it on; plugins are switched on with it. If NekoPower is already on but plugins are not running ("User Plugin" was switched off by itself earlier), switch NekoPower off and on again.
+3. Click "Plugins" in the sidebar on the left.
 
-1. Hover over the catgirl and click the round paw button that appears.
-2. In the popup, turn on "NekoClaw Master Switch" and "User Plugin".
-3. Hover over the "User Plugin" row and click the "Management Panel" button that appears — Plugin Manager opens in a new window.
+On the few Linux desktops that take screenshots through a shared screen stream, the hammer still opens the old popup: hover over the "User Plugin" row and click the "Management Panel" button that appears.
 
 ## 4. Share it with others
 

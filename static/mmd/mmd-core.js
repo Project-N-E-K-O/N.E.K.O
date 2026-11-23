@@ -512,7 +512,7 @@ class MMDCore {
             this._updateLoadingOverlay(loadingSessionId, 'model');
             const mmd = await new Promise((resolve, reject) => {
                 loader.load(
-                    modelUrl,
+                    MMDCore.toRequestUrl(modelUrl),
                     (mmd) => {
                         this._pendingMmd = mmd;
                         resolve(mmd);
@@ -873,11 +873,49 @@ class MMDCore {
 
     // ═══════════════════ 模型信息 ═══════════════════
 
+    /**
+     * Local model / VMD animation URL for the request only. Character config and model lists keep
+     * raw file names (the identity used for preferences and config names), so
+     * '#', '?' and '%' must be escaped here or the browser reads them as URL
+     * syntax (#3379). Valid %XX runs are decoded once first, the same rule as
+     * getConfigName, so an already-encoded path is not encoded twice.
+     * Trade-off: a file literally named with a valid escape (e.g. 'a%23b.pmx')
+     * is read as that escape; such names did not load before this either.
+     *
+     * Lists only return names ending in the file extension, so a value ending in
+     * it is a raw name throughout ('a?.vmd' escapes the '?'). Otherwise a '?' or
+     * '#' right after the last extension starts a query / fragment that saved
+     * config may carry ('x.vmd?v=1'); it is kept as URL syntax. A tail that itself
+     * ends in the extension ('x.vmd?src=a.vmd') is read as part of the name.
+     */
+    static toRequestUrl(modelUrl) {
+        if (typeof modelUrl !== 'string') return modelUrl;
+        const paths = window.MMD_PATHS || {};
+        const prefixes = ['/user_mmd/', '/static/mmd/', '/workshop/'];
+        for (const prefix of [paths.user_mmd, paths.static_mmd]) {
+            if (typeof prefix === 'string' && prefix.startsWith('/')) prefixes.push(prefix.replace(/\/*$/, '/'));
+        }
+        if (!prefixes.some(prefix => modelUrl.startsWith(prefix))) return modelUrl;
+        let path = modelUrl;
+        let suffix = '';
+        if (!/\.(?:vmd|pmx|pmd)$/i.test(modelUrl)) {
+            const match = modelUrl.match(/^(.*\.(?:vmd|pmx|pmd))([?#].*)$/is);
+            if (match) [, path, suffix] = match;
+        }
+        return path.split('/').map(segment => encodeURIComponent(
+            segment.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
+                try { return decodeURIComponent(encoded); }
+                catch (_) { return encoded; }
+            })
+        )).join('/') + suffix;
+    }
+
     // 与后端模型列表的 Path.stem 一致；内部模型名仍仅用于展示元信息。
     static getConfigName(modelUrl) {
         if (typeof modelUrl !== 'string' || !modelUrl) return '';
         try {
-            const filename = new URL(modelUrl, window.location.href).pathname.split('/').pop();
+            // Raw local names may contain '#' or '?'; escape them before URL parsing.
+            const filename = new URL(MMDCore.toRequestUrl(modelUrl), window.location.href).pathname.split('/').pop();
             // Backend URLs can contain literal percent signs. Decode valid runs once,
             // without rejecting the entire filename or double-decoding escaped names.
             return filename.replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
@@ -993,12 +1031,27 @@ class MMDCore {
         return this.performanceMode === 'low' ? 30 : (this.performanceMode === 'medium' ? 45 : 60);
     }
 
-    // 同步 targetFPS/frameTime 到当前配置；rAF 路径每帧调用，配置变更立即生效。
+    // rAF 驱动下实际执行的帧率上限：配置帧率 ≥ 实测刷新率×0.9（即总闸让它留在 rAF）时放宽到 max(配置, 刷新率×1.5)，
+    // 显示器本身就是上限——下面 _render 的节流按精确帧间隔比较，60Hz 屏上 rAF 稍早一点
+    // （16.6ms < 16.667ms）就整帧跳过。与 live2d-core.js / vrm-manager.js 的同名方法对称，
+    // 判定在 frame-pacing.js；非 Pet / 刷新率未测出 / 换屏后未重测 / 配置明显低于刷新率：原样返回。
+    _resolveRafCapFps(fps) {
+        const requested = Number(fps);
+        const pacing = window.nekoFramePacing;
+        if (!pacing || typeof pacing.rafCapFps !== 'function') return requested;
+        const capped = Number(pacing.rafCapFps(requested));
+        return Number.isFinite(capped) && capped >= 0 ? capped : requested;
+    }
+
+    // 同步 targetFPS/frameTime 到当前配置；rAF 路径每帧调用，配置变更、刷新率重测立即生效。
+    // targetFPS 保持配置值；frameTime 按 rAF 上限算（0 = 不节流）。
     _refreshTargetFps() {
         const fps = this._resolveConfiguredTargetFps();
-        if (fps === this.targetFPS) return;
+        const capFps = this._resolveRafCapFps(fps);
+        if (fps === this.targetFPS && capFps === this._rafCapFps) return;
         this.targetFPS = fps;
-        this.frameTime = fps > 0 ? 1000 / fps : 0;
+        this._rafCapFps = capFps;
+        this.frameTime = capFps > 0 ? 1000 / capFps : 0;
     }
 
     // 静止地板帧率：不超过用户配置；配置为 0（不限帧）时仍压到地板省 CPU。

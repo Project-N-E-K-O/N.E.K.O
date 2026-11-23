@@ -243,3 +243,44 @@ async def test_poll_xhh_qr_logs_once_when_local_save_raises():
     warning_mock.assert_called_once_with(
         "⚠️ 小黑盒登录凭证自动保存异常 (不影响登录): OSError"
     )
+
+
+def test_encrypted_cookie_and_key_writes_are_atomic_and_keep_0o600(tmp_path, monkeypatch):
+    """F0527: failed encrypted save or key write preserves existing bytes and sets 0o600 on POSIX."""
+    import os
+    import stat
+    import sys
+
+    monkeypatch.setattr(cookies_login, "CONFIG_DIR", tmp_path)
+    cookie_file = tmp_path / "xhh_cookies.json"
+    monkeypatch.setitem(cookies_login.COOKIE_FILES, "xhh", cookie_file)
+
+    assert cookies_login._save_cookies_to_file_uncached(
+        "xhh", {"user_heybox_id": "111", "user_pkey": "old-secret"}, encrypt=True
+    ) is True
+    key_file = cookies_login.get_cookie_key_file("xhh")
+    original_cipher = cookie_file.read_bytes()
+    original_key = key_file.read_bytes()
+
+    if sys.platform != "win32":
+        assert stat.S_IMODE(cookie_file.stat().st_mode) == 0o600
+        assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+
+    # Inject os.replace failure during encrypted cookie save -> old ciphertext stays intact.
+    def fail_replace(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("utils.file_utils.os.replace", fail_replace)
+    assert cookies_login._save_cookies_to_file_uncached(
+        "xhh", {"user_heybox_id": "222", "user_pkey": "new-secret"}, encrypt=True
+    ) is False
+    assert cookie_file.read_bytes() == original_cipher
+    assert list(tmp_path.glob("*.tmp")) == []
+
+    # Inject os.replace failure during key write -> old key bytes stay intact.
+    with pytest.raises(OSError, match="disk full"):
+        _write_encryption_key("xhh", key_file, b"new-key-bytes")
+    assert key_file.read_bytes() == original_key
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert os.path.exists(cookie_file)
+

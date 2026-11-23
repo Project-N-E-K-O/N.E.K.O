@@ -103,6 +103,8 @@ async def async_task(self, url: str, **_):
             return Ok({"data": await response.json()})
 ```
 
+Create async clients such as `aiohttp.ClientSession` inside the call that uses them, as above: `startup`, entry calls, and `shutdown` run on different event loops. `aiohttp` is a third-party package; declare it in your plugin's `pyproject.toml` `[project].dependencies` and run `neko-plugin sync <plugin>`.
+
 ---
 
 ## Thread Safety

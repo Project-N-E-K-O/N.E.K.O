@@ -1,7 +1,9 @@
 import { pluginConsentMessages } from '../plugin-consent'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import powerMessages from '../power/ru'
 
 /**
  * Русский языковой пакет
@@ -9,8 +11,10 @@ import { authoringMessages } from '../authoring'
 export default {
   pluginConsent: pluginConsentMessages['ru'],
   authoring: authoringMessages['ru'],
+  marketFeedback: marketFeedbackMessages['ru'],
   modelApi: modelApiMessages['ru'],
   modelBindings: modelBindingsMessages['ru'],
+  power: powerMessages,
   common: {
     chooseLanguage: "Выбрать язык",
     surfaceLanguagePending: "Язык приложения изменён. Язык панели сохранён, чтобы не потерять несохранённые данные.",
@@ -24,6 +28,7 @@ export default {
 
     loading: 'Загрузка...',
     refresh: 'Обновить',
+    retry: 'Повторить',
     search: 'Поиск',
     filter: 'Фильтр',
     reset: 'Сброс',
@@ -823,6 +828,22 @@ export default {
       install: 'Установка',
       analyze: 'Анализ'
     },
+    messages: {
+      selectPluginToBuild: 'Сначала выберите плагины для сборки.',
+      bundleRequiresTwoPlugins: 'Для бандла нужно выбрать не менее двух плагинов.',
+      bundleBuildFailedWithError: 'Ошибка сборки бандла: {error}',
+      bundleBuildCompleted: 'Сборка бандла завершена.',
+      bundleBuildPartialFailed: 'Сборка бандла: ошибок {count}.',
+      buildFailedWithError: 'Ошибка сборки: {error}',
+      buildCompletedWithFailures: 'Сборка завершена: успешно {built}, с ошибками {failed}.',
+      buildCompleted: 'Сборка завершена: успешно {built}.',
+      inspectCompleted: 'Проверка содержимого пакета завершена.',
+      verifyPassed: 'Пакет прошёл верификацию.',
+      verifyFailed: 'Пакет не прошёл верификацию.',
+      selectAtLeastOnePlugin: 'Выберите хотя бы один плагин.',
+      analyzeCompleted: 'Анализ завершён.',
+      analyzeFailedWithError: 'Ошибка анализа: {error}'
+    },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
       metrics: {
@@ -1100,7 +1121,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O Управление плагинами'
+    titleSuffix: 'N.E.K.O NekoPower'
   },
   tutorial: {
     yuiGuide: {

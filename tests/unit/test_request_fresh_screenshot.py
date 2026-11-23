@@ -466,3 +466,131 @@ def test_old_screenshot_cleanup_cannot_clear_new_future_or_trigger_fallback(monk
         assert manager._proactive_vision_revocation_epoch == 1
 
     asyncio.run(run())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('host,expected_capture', [
+    ('127.0.0.1', True),
+    ('::1', True),
+    ('localhost', True),
+    ('::ffff:127.0.0.1', True),
+    ('::ffff:192.168.1.2', False),
+    ('192.168.1.2', False),
+    ('testclient', False),
+])
+def test_backend_fallback_accepts_ipv4_mapped_loopback_peers(monkeypatch, host, expected_capture):
+    """Dual-stack listeners report IPv4 loopback peers as ::ffff:127.0.0.1 (#3795)."""
+    for key in ('NEKO_BEHIND_PROXY', 'NEKO_ACTIVITY_TRACKER_REMOTE', 'ACTIVITY_TRACKER_REMOTE'):
+        monkeypatch.delenv(key, raising=False)
+    fresh, capture = _run_fallback(monkeypatch, host)
+    assert fresh.declined is False
+    assert capture.call_count == int(expected_capture)
+    if expected_capture:
+        assert fresh.source == 'backend_fallback'
+        assert fresh.b64
+    else:
+        assert not fresh.b64
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('host', ['127.0.0.1', '::1', '::ffff:127.0.0.1'])
+@pytest.mark.parametrize('env,headers,expected_capture', [
+    # Proxy mode: a forwarded connection's peer may be the proxy, not the user.
+    ({'NEKO_BEHIND_PROXY': 'true'}, {'x-forwarded-for': '203.0.113.9'}, False),
+    ({'NEKO_BEHIND_PROXY': 'true'}, {'forwarded': 'for=203.0.113.9'}, False),
+    ({'NEKO_BEHIND_PROXY': 'true'}, {}, True),
+    # Remote deployments: the backend desktop is not the user's screen.
+    ({'NEKO_ACTIVITY_TRACKER_REMOTE': 'true'}, {}, False),
+    ({'ACTIVITY_TRACKER_REMOTE': '1'}, {}, False),
+    # Desktop mode keeps accepting local debugging proxies, like the screenshot route.
+    ({}, {'x-forwarded-for': '127.0.0.1'}, True),
+])
+def test_backend_fallback_matches_screenshot_route_peer_policy(monkeypatch, host, env, headers, expected_capture):
+    from types import SimpleNamespace as NS
+    from main_routers.system_router import _shared
+
+    for key in ('NEKO_BEHIND_PROXY', 'NEKO_ACTIVITY_TRACKER_REMOTE', 'ACTIVITY_TRACKER_REMOTE'):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    route_allows = (
+        _shared._is_loopback_request(NS(client=NS(host=host), headers=headers))
+        and not _shared._is_remote_backend_deployment()
+    )
+    assert route_allows is expected_capture
+    fresh, capture = _run_fallback(monkeypatch, host, headers)
+    assert capture.call_count == int(expected_capture)
+    assert bool(fresh.b64) is expected_capture
+
+
+def _run_fallback(monkeypatch, host, headers=None):
+    """Drive request_fresh_screenshot into its backend fallback after a frontend timeout."""
+    from unittest.mock import AsyncMock, Mock
+    from main_logic import core as core_facade
+    from main_logic.core import proactive
+
+    read = AsyncMock(return_value={'proactiveVisionEnabled': True})
+    capture = Mock(return_value=Image.new('RGB', (320, 180), (20, 80, 180)))
+    monkeypatch.setattr(core_facade, 'aload_global_conversation_settings', read)
+    monkeypatch.setattr(proactive, 'capture_desktop_screenshot', capture)
+
+    async def run():
+        fake = SimpleNamespace(_screenshot_future=None, lanlan_name='Repro')
+
+        async def send(_payload):
+            # Frontend never answers, so the request times out into the fallback branch.
+            return None
+
+        fake.websocket = SimpleNamespace(
+            send_json=send, client=SimpleNamespace(host=host), headers=headers or {},
+        )
+        return await LLMSessionManager.request_fresh_screenshot(
+            fake, timeout=0.01, allow_backend_fallback=True,
+        )
+
+    return asyncio.run(run()), capture
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('when', ['backend_capture', 'frontend_reply'])
+def test_revoke_then_regrant_during_capture_declines_the_image(monkeypatch, when):
+    """A quick off/on while capturing must not release an image taken under the revoked consent."""
+    from unittest.mock import AsyncMock, Mock
+    from main_logic import core as core_facade
+    from main_logic.core import proactive
+
+    for key in ('NEKO_BEHIND_PROXY', 'NEKO_ACTIVITY_TRACKER_REMOTE', 'ACTIVITY_TRACKER_REMOTE'):
+        monkeypatch.delenv(key, raising=False)
+    # Live and persisted consent both read as granted again when checked.
+    monkeypatch.setattr(core_facade, 'aload_global_conversation_settings',
+                        AsyncMock(return_value={'proactiveVisionEnabled': True}))
+    fake = SimpleNamespace(_screenshot_future=None, lanlan_name='Repro',
+                           _proactive_vision_enabled=True, _proactive_vision_revocation_epoch=0)
+
+    def revoke_and_regrant():
+        fake._proactive_vision_revocation_epoch += 1
+
+    def capture_side_effect():
+        revoke_and_regrant()
+        return Image.new('RGB', (320, 180), (20, 80, 180))
+
+    capture = Mock(side_effect=capture_side_effect)
+    monkeypatch.setattr(proactive, 'capture_desktop_screenshot', capture)
+
+    async def run():
+        async def send(payload):
+            if when == 'frontend_reply':
+                revoke_and_regrant()
+                LLMSessionManager.resolve_screenshot_request(
+                    fake, _png_b64(320, 180), request_id=payload['request_id'],
+                )
+
+        fake.websocket = SimpleNamespace(send_json=send, client=SimpleNamespace(host='::ffff:127.0.0.1'))
+        return await LLMSessionManager.request_fresh_screenshot(
+            fake, timeout=0.01, allow_backend_fallback=True,
+        )
+
+    fresh = asyncio.run(run())
+    assert fresh.declined is True
+    assert not fresh.b64
+    assert capture.call_count == int(when == 'backend_capture')

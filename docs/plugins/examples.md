@@ -13,7 +13,6 @@ from plugin.sdk.plugin import (
 class GreeterPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         self.greet_count = 0
 
     @lifecycle(id="startup")
@@ -25,6 +24,7 @@ class GreeterPlugin(NekoPluginBase):
         id="greet",
         name="Greet",
         description="Greet someone by name",
+        # Published only (shown to callers); not validated at runtime.
         input_schema={
             "type": "object",
             "properties": {
@@ -46,50 +46,36 @@ class GreeterPlugin(NekoPluginBase):
 ## Async API client with cross-plugin calls
 
 ```python
+from typing import Any, Literal
+
 import aiohttp
-from typing import Any, Optional
+from pydantic import BaseModel
 from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    NekoPluginBase, neko_plugin, plugin_entry,
     Ok, Err, SdkError, unwrap_or,
 )
+
+class FetchParams(BaseModel):
+    endpoint: str
+    method: Literal["GET", "POST"] = "GET"
 
 @neko_plugin
 class APIClientPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
-        self.session: Optional[aiohttp.ClientSession] = None
         self.base_url = "https://api.example.com"
 
-    @lifecycle(id="startup")
-    async def startup(self, **_):
-        self.session = aiohttp.ClientSession()
-        return Ok({"status": "ready"})
-
-    @lifecycle(id="shutdown")
-    async def shutdown(self, **_):
-        if self.session:
-            await self.session.close()
-        return Ok({"status": "stopped"})
-
-    @plugin_entry(
-        id="fetch",
-        name="Fetch Data",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "endpoint": {"type": "string"},
-                "method": {"type": "string", "enum": ["GET", "POST"], "default": "GET"}
-            },
-            "required": ["endpoint"]
-        }
-    )
+    @plugin_entry(id="fetch", name="Fetch Data", params=FetchParams)
     async def fetch(self, endpoint: str, method: str = "GET", **_):
         try:
             url = f"{self.base_url}/{endpoint.lstrip('/')}"
-            async with self.session.request(method, url) as response:
-                data = await response.json()
-                return Ok({"status": response.status, "data": data})
+            # One session per call: startup, entry calls, and shutdown run on
+            # different event loops, so a session created in startup cannot be
+            # used here or closed cleanly in shutdown.
+            async with aiohttp.ClientSession() as session:
+                async with session.request(method, url) as response:
+                    data = await response.json()
+                    return Ok({"status": response.status, "data": data})
         except Exception as e:
             return Err(SdkError(f"Request failed: {e}"))
 
@@ -114,14 +100,19 @@ class APIClientPlugin(NekoPluginBase):
         return result
 ```
 
-## Plugin with hooks and timer
+`aiohttp` is a third-party package: declare it in your plugin's `pyproject.toml` `[project].dependencies` and run `neko-plugin sync <plugin>`, rather than relying on what the host environment happens to have installed.
+
+## Plugin with call counting and timer
+
+The hook decorators (`@before_entry`, `@after_entry`, ...) only record metadata and are not executed today (see [Hook Decorators](./decorators#hook-decorators-aop)), so count calls inside the entries themselves:
 
 ```python
+import threading
 import time
 from typing import Any
 from plugin.sdk.plugin import (
     NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    timer_interval, before_entry, after_entry,
+    timer_interval,
     Ok, Err, SdkError,
 )
 
@@ -129,75 +120,72 @@ from plugin.sdk.plugin import (
 class MonitoredPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         self.call_stats: dict[str, int] = {}
+        self._stats_lock = threading.Lock()  # the timer runs in another thread
 
     @lifecycle(id="startup")
     async def on_startup(self, **_):
         return Ok({"status": "ready"})
 
-    # --- Hooks ---
-
-    @before_entry(target="*")
-    def count_calls(self, *, entry_id, **_):
-        """Count every entry point invocation."""
-        self.call_stats[entry_id] = self.call_stats.get(entry_id, 0) + 1
-
-    @after_entry(target="*")
-    def log_results(self, *, entry_id, result, **_):
-        """Log every entry point result."""
-        # Do not persist raw result payloads; they may contain user content.
-        self.logger.info(f"[{entry_id}] completed result_type={type(result).__name__}")
+    def _count(self, entry_id: str) -> None:
+        with self._stats_lock:
+            self.call_stats[entry_id] = self.call_stats.get(entry_id, 0) + 1
 
     # --- Entry points ---
 
     @plugin_entry(id="process", description="Process some data")
     async def process(self, data: str, **_):
+        self._count("process")
         return Ok({"processed": data.upper()})
 
     @plugin_entry(id="stats", description="Get call statistics")
     async def stats(self, **_):
-        return Ok({"stats": dict(self.call_stats)})
+        self._count("stats")
+        with self._stats_lock:
+            return Ok({"stats": dict(self.call_stats)})
 
     # --- Timer ---
 
     @timer_interval(id="health_check", seconds=300, auto_start=True)
     async def health_check(self, **_):
+        with self._stats_lock:
+            total_calls = sum(self.call_stats.values())
         self.report_status({
             "status": "healthy",
             "uptime": time.time(),
-            "total_calls": sum(self.call_stats.values()),
+            "total_calls": total_calls,
         })
         return Ok({"healthy": True})
 ```
 
 ## Plugin with persistent storage
 
+`self.store` is disabled unless `plugin.toml` enables it; while disabled, `set()` stores nothing and `get()` returns the default:
+
+```toml
+[plugin.store]
+enabled = true
+```
+
 ```python
 from typing import Any
+from pydantic import BaseModel
 from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
+    NekoPluginBase, neko_plugin, plugin_entry,
     Ok, Err, SdkError,
 )
+
+class NoteInput(BaseModel):
+    title: str
+    content: str
 
 @neko_plugin
 class NotesPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
         # self.store is already constructed by NekoPluginBase; use it directly.
 
-    @plugin_entry(
-        id="save_note",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "content": {"type": "string"}
-            },
-            "required": ["title", "content"]
-        }
-    )
+    @plugin_entry(id="save_note", params=NoteInput)
     async def save_note(self, title: str, content: str, **_):
         saved = await self.store.set(f"note:{title}", {
             "title": title,
@@ -231,18 +219,25 @@ from plugin.sdk.plugin import (
 class DynamicPlugin(NekoPluginBase):
     def __init__(self, ctx: Any):
         super().__init__(ctx)
-        self.logger = ctx.logger
 
     @lifecycle(id="startup")
     async def on_startup(self, **_):
         # Register entries at runtime based on config
-        commands = self.metadata.get("commands", {})
+        cfg = await self.config.dump()
+        commands = cfg.get("commands", {})
         for cmd_id, cmd_config in commands.items():
             self.register_dynamic_entry(
                 entry_id=cmd_id,
                 handler=self._make_handler(cmd_config),
                 name=cmd_config.get("name", cmd_id),
                 description=cmd_config.get("description", ""),
+                # Dynamic registration does not infer a schema from the handler
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "cmd": {"type": "string", "description": "Command input"},
+                    },
+                },
             )
         return Ok({"registered": list(commands.keys())})
 

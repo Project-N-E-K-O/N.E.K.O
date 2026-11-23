@@ -1821,22 +1821,22 @@ async function main() {
     'a 34-code-point property name was rejected by a 64-code-point bound');
   astralGame.dispose();
 
-  // The manifest rule "memory/context/server-leaderboard/voice-input need
-  // runtime" is checked against what the manifest REQUESTS. A host may
-  // legitimately withhold an OPTIONAL runtime, and the dependent grant is then
-  // permanently unusable -- every one of those calls needs an active route the
-  // game can never start.
-  // The fixture transport implements neither memory method, so `memory` would
-  // never be granted here for an unrelated reason. Give the probe transports the
-  // two methods so the grant is genuinely available, and the difference between
-  // the two probes really is whether runtime was granted.
-  const memoryCapableTransport = {
+  // Route-only capabilities (such as `vision`, `voice-input`, `leaderboard-server`)
+  // require an active runtime route, so withholding an optional `runtime` drops
+  // them post-negotiation and fails if they were marked required. By contrast,
+  // `context-read`, `memory` (consent/presentation), and pre-route `media-timeline`
+  // calls remain usable without an active route.
+  const routeAndPrerouteTransport = {
     ...transport,
-    configureGameMemoryConsent: async () => ({ ok: true }),
+    analyzeGameVision: async () => ({ ok: true, analysis: 'clear' }),
+    readGameContext: async () => ({ ok: true, scopes: { 'character-public': { name: 'SDK Neko' } } }),
+    configureGameMemoryConsent: async () => ({ ok: true, enabled: true }),
     submitGameMemory: async () => ({ ok: true }),
+    requestMedia: async (payload) => ({ ok: true, action: payload?.action || 'history' }),
+    mountMedia: async () => ({ dispose() {}, play() {}, pause() {}, interrupt() {} }),
   };
   const withheldRuntimeTransport = {
-    ...memoryCapableTransport,
+    ...routeAndPrerouteTransport,
     async connectGame(request) {
       const base = await transport.connectGame(request);
       return {
@@ -1850,25 +1850,160 @@ async function main() {
     await window.NekoMiniGame.connect({
       id: 'runtime-withheld-required',
       version: '1.0.0',
-      requiredCapabilities: ['logging', 'memory'],
+      requiredCapabilities: ['logging', 'vision'],
       optionalCapabilities: ['runtime'],
     }, { transport: withheldRuntimeTransport });
   } catch (error) { withheldRequiredError = error; }
   assert(withheldRequiredError?.code === 'capability_unavailable',
-    'a required runtime-dependent capability connected without runtime');
-  // Optional instead of required: the connection stands, but the unusable grant
-  // must not be reported as granted.
+    'a required route-only capability connected without runtime');
+  let withheldRequiredMemoryError = null;
+  try {
+    await window.NekoMiniGame.connect({
+      id: 'runtime-withheld-required-memory',
+      version: '1.0.0',
+      requiredCapabilities: ['logging', 'memory'],
+      optionalCapabilities: ['runtime'],
+    }, { transport: withheldRuntimeTransport });
+  } catch (error) { withheldRequiredMemoryError = error; }
+  assert(withheldRequiredMemoryError?.code === 'capability_unavailable'
+    && withheldRequiredMemoryError?.details?.missing?.includes('memory'),
+  'required memory connected without runtime even though memory.submit() is permanently unusable');
+  let withheldRequiredMediaError = null;
+  try {
+    await window.NekoMiniGame.connect({
+      id: 'runtime-withheld-required-media',
+      version: '1.0.0',
+      requiredCapabilities: ['logging', 'media-timeline'],
+      optionalCapabilities: ['runtime'],
+    }, { transport: withheldRuntimeTransport });
+  } catch (error) { withheldRequiredMediaError = error; }
+  assert(withheldRequiredMediaError?.code === 'capability_unavailable'
+    && withheldRequiredMediaError?.details?.missing?.includes('media-timeline'),
+  'required media-timeline connected without runtime even though media.mount/watch are unusable');
+  const requiredContextClient = await window.NekoMiniGame.connect({
+    id: 'runtime-withheld-required-context-read',
+    version: '1.0.0',
+    requiredCapabilities: ['logging', 'context-read'],
+    optionalCapabilities: ['runtime'],
+  }, { transport: withheldRuntimeTransport });
+  assert(requiredContextClient.capabilities.has('context-read'),
+    'required context-read should stay usable when optional runtime is withheld');
+  const requiredContextResp = await requiredContextClient.context.read(['character-public']);
+  assert(requiredContextResp.ok === true, 'required context-read failed without runtime');
+  requiredContextClient.dispose();
+  // Optional instead of required: the connection stands, route-only `vision` is
+  // dropped from both `granted` and `has()`, and pre-route capabilities stay usable.
   const withheldOptionalClient = await window.NekoMiniGame.connect({
     id: 'runtime-withheld-optional',
     version: '1.0.0',
     requiredCapabilities: ['logging'],
-    optionalCapabilities: ['runtime', 'memory'],
+    optionalCapabilities: ['runtime', 'vision', 'context-read', 'memory', 'media-timeline'],
   }, { transport: withheldRuntimeTransport });
   assert(!withheldOptionalClient.capabilities.has('runtime'),
     'the withheld-runtime probe did not actually withhold runtime');
-  assert(!withheldOptionalClient.capabilities.has('memory'),
-    'memory was reported as granted while runtime was withheld');
+  assert(!withheldOptionalClient.capabilities.has('vision'),
+    'route-only vision was reported as granted while runtime was withheld');
+  assert(!withheldOptionalClient.capabilities.granted.includes('vision'),
+    'capabilities.granted still included dropped route-only capability vision');
+  assert(withheldOptionalClient.capabilities.unavailable.includes('vision'),
+    'capabilities.unavailable omitted dropped route-only capability vision');
+  assert(withheldOptionalClient.capabilities.has('context-read')
+    && withheldOptionalClient.capabilities.has('memory')
+    && withheldOptionalClient.capabilities.has('media-timeline'),
+  'pre-route capabilities were dropped when optional runtime was withheld');
+  for (const cap of withheldOptionalClient.capabilities.granted) {
+    assert(withheldOptionalClient.capabilities.has(cap),
+      `capabilities.granted contains ${cap} which capabilities.has() rejects`);
+    assert(!withheldOptionalClient.capabilities.unavailable.includes(cap),
+      `capabilities.granted and capabilities.unavailable both contain ${cap}`);
+  }
+  const preRouteContext = await withheldOptionalClient.context.read(['character-public']);
+  assert(preRouteContext.ok === true, 'context.read failed when optional runtime was withheld');
+  const preRouteConsent = await withheldOptionalClient.memory.configureConsent(true);
+  assert(preRouteConsent.ok === true, 'memory.configureConsent failed when optional runtime was withheld');
+  const fakeElements = [];
+  const makeFakeEl = (tag) => {
+    const el = {
+      tagName: String(tag).toUpperCase(),
+      children: [],
+      style: {},
+      className: '',
+      textContent: '',
+      attributes: new Map(),
+      append(...nodes) { this.children.push(...nodes); },
+      appendChild(node) { this.children.push(node); return node; },
+      remove() {},
+      setAttribute(k, v) { this.attributes.set(k, String(v)); },
+      addEventListener() {},
+      removeEventListener() {},
+      ownerDocument: null,
+    };
+    fakeElements.push(el);
+    return el;
+  };
+  const fakeDoc = {
+    head: makeFakeEl('head'),
+    getElementById: () => null,
+    createElement: (tag) => {
+      const el = makeFakeEl(tag);
+      el.ownerDocument = fakeDoc;
+      return el;
+    },
+  };
+  fakeDoc.head.ownerDocument = fakeDoc;
+  const consentContainer = fakeDoc.createElement('div');
+  const consentUi = withheldOptionalClient.presentation.memoryConsent.mount({
+    container: consentContainer,
+    label: 'Allow memory',
+  });
+  assert(typeof consentUi.dispose === 'function', 'presentation.memoryConsent.mount failed pre-route');
+  consentUi.dispose();
+  const preRouteHistory = await withheldOptionalClient.media.request('history');
+  assert(preRouteHistory.ok === true, 'media.request(history) failed when optional runtime was withheld');
+  let memorySubmitErr = null;
+  try { await withheldOptionalClient.memory.submit({}); } catch (err) { memorySubmitErr = err; }
+  assert(memorySubmitErr?.code === 'session_invalid' || memorySubmitErr?.code === 'invalid_state',
+    `expected session_invalid/invalid_state from memory.submit without runtime, got ${memorySubmitErr?.code}`);
+  let mediaMountErr = null;
+  try { await withheldOptionalClient.media.mount({}); } catch (err) { mediaMountErr = err; }
+  assert(mediaMountErr?.code === 'invalid_state',
+    `expected invalid_state from media.mount without runtime, got ${mediaMountErr?.code}`);
+  let mediaWatchErr = null;
+  try { await withheldOptionalClient.media.request('watch'); } catch (err) { mediaWatchErr = err; }
+  assert(mediaWatchErr?.code === 'invalid_state',
+    `expected invalid_state from media.request(watch) without runtime, got ${mediaWatchErr?.code}`);
   withheldOptionalClient.dispose();
+  // Bridge failure drops `speech-output` from grantedSet, granted, and has() consistently.
+  let speechBridgeStartCalls = 0;
+  let speechBridgeStopCalls = 0;
+  const failingSpeechBridgeTransport = {
+    ...routeAndPrerouteTransport,
+    requestSpeechOutput: async () => ({ ok: true }),
+    preloadSpeechOutput: async () => ({ ok: true }),
+    mirrorSpeechOutput: async () => ({ ok: true }),
+    startSpeechOutputBridge: () => {
+      speechBridgeStartCalls += 1;
+      return false;
+    },
+    stopSpeechOutputBridge: () => {
+      speechBridgeStopCalls += 1;
+    },
+  };
+  const bridgeDropClient = await window.NekoMiniGame.connect({
+    id: 'speech-bridge-drop',
+    version: '1.0.0',
+    requiredCapabilities: ['logging'],
+    optionalCapabilities: ['speech-output'],
+  }, { transport: failingSpeechBridgeTransport });
+  assert(speechBridgeStartCalls === 1, 'startSpeechOutputBridge was not invoked once');
+  assert(speechBridgeStopCalls === 1, 'stopSpeechOutputBridge cleanup was not invoked once on bridge start failure');
+  assert(!bridgeDropClient.capabilities.has('speech-output'),
+    'speech-output remained enabled after bridge start failed');
+  assert(!bridgeDropClient.capabilities.granted.includes('speech-output'),
+    'capabilities.granted still included speech-output after bridge failure');
+  assert(bridgeDropClient.capabilities.unavailable.includes('speech-output'),
+    'capabilities.unavailable omitted speech-output after bridge failure');
+  bridgeDropClient.dispose();
   // Contracts are not capabilities and cannot be dropped, so they fail instead.
   let withheldContractError = null;
   try {
@@ -1882,18 +2017,19 @@ async function main() {
   } catch (error) { withheldContractError = error; }
   assert(withheldContractError?.code === 'capability_unavailable',
     'declared contracts connected without the runtime that carries them');
-  // Control: the SAME manifest with runtime granted keeps its memory grant, so
-  // none of the three assertions above can be satisfied by an implementation
-  // that simply stopped granting memory.
+  // Control: the SAME manifest with runtime granted keeps its vision grant, so
+  // none of the assertions above can be satisfied by an implementation that
+  // simply stopped granting vision.
   const grantedRuntimeClient = await window.NekoMiniGame.connect({
     id: 'runtime-granted-control',
     version: '1.0.0',
     requiredCapabilities: ['logging'],
-    optionalCapabilities: ['runtime', 'memory'],
-  }, { transport: memoryCapableTransport });
+    optionalCapabilities: ['runtime', 'vision'],
+  }, { transport: routeAndPrerouteTransport });
   assert(grantedRuntimeClient.capabilities.has('runtime')
-    && grantedRuntimeClient.capabilities.has('memory'),
-  'memory stopped being granted even when runtime was');
+    && grantedRuntimeClient.capabilities.has('vision')
+    && grantedRuntimeClient.capabilities.granted.includes('vision'),
+  'vision stopped being granted even when runtime was');
   grantedRuntimeClient.dispose();
 
   let mountedSignal,abortObserved=false,mediaDisposed=0;

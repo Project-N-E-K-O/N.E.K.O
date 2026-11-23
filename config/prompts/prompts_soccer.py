@@ -20,7 +20,32 @@ pressure-cap copy, and their per-locale variants and getters for the soccer
 minigame.
 """
 
+import re
+
 from config.prompts.prompts_minigame_common import _localized_template, _normalize_prompt_lang
+
+
+SOCCER_OPENING_LINE_MAX_CHARS_CJK = 15
+SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK = 50
+_SOCCER_CJK_LOCALES = frozenset({"zh", "zh-TW", "ja", "ko"})
+_CJK_CHAR_RE = re.compile(
+    r"[\u1100-\u11ff\u3040-\u30ff\u3130-\u318f\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]"
+)
+
+
+def get_soccer_opening_line_max_chars(
+    opening_line: str = "",
+    *,
+    locale: str | None = None,
+) -> int:
+    """Return the openingLine character budget for CJK vs non-CJK scripts."""
+    if locale is not None and str(locale).strip():
+        if _normalize_prompt_lang(locale) in _SOCCER_CJK_LOCALES:
+            return SOCCER_OPENING_LINE_MAX_CHARS_CJK
+        return SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK
+    if opening_line and _CJK_CHAR_RE.search(opening_line):
+        return SOCCER_OPENING_LINE_MAX_CHARS_CJK
+    return SOCCER_OPENING_LINE_MAX_CHARS_NON_CJK
 
 
 SOCCER_SYSTEM_PROMPT = """\
@@ -429,14 +454,25 @@ Reglas:
 - postgame significa que el minijuego terminó; di una frase natural de cierre en el chat principal, sin JSON.
 - La información en tiempo real puede estar algo desactualizada; evita depender demasiado del marcador exacto.
 - Puedes expresar emociones como alegría, frustración, provocación o cariño si encaja con el personaje.
-- Puedes controlar tu mood y difficulty con JSON en una línea aparte solo si realmente quieres cambiar el comportamiento.
-  Mood: calm, happy, angry, relaxed, sad, surprised
-  Difficulty: max, lv2, lv3, lv4
-- Si quieres presionar por enojo, venganza o ganas serias de ganar, puedes mantener max/lv2, pero la frase debe mostrar esa razón emocional.
+- Puedes controlar tu mood y difficulty con JSON en una línea aparte después de la frase: {{"mood":"<mood>","difficulty":"<difficulty>"}}
+  opciones de mood: calm, happy, angry, relaxed, sad, surprised
+  opciones de difficulty: max, lv2, lv3, lv4
+  significados de difficulty: max=lo más fuerte/presionando en serio; lv2=fuerte pero algo más lento; lv3=te contienes claramente; lv4=lo más flojo/sobre todo defensa
+  Si requestControlReason es true, puedes añadir "reason":"<motivo muy breve>" para los logs de desarrollo. En caso contrario, no incluyas reason.
+  Si no hace falta cambiar el control, no emitas ninguna línea JSON.
+
+Reglas de control:
+- score.ai es tu puntuación; score.player es la puntuación del jugador; scoreDiff = ai - player.
+- balanceHint es una pista lateral, no una orden. Combínala con tu personalidad, emoción y relación.
+- Si vas claramente ganando, considera aflojar, provocar con cariño, mimar, cometer errores adrede, pasar a relaxed/sad/happy o bajar difficulty.
+- El juego suave puede ser gradual: lv2=un poco más lento que max, lv3=dejar que el jugador alcance claramente, lv4=casi contenerte/solo defensa.
+- Si solo quieres que el jugador se acerque un poco, lv2 es razonable; si la diferencia ya es grande y quieres que alcance, suele convenir lv3 o lv4.
+- Si quieres seguir presionando por enojo, venganza o ganas serias de ganar, puedes mantener max/lv2, pero la frase debe mostrar esa razón emocional.
 - Si el jugador va claramente ganando, puedes ponerte más seria, competitiva, angry/surprised/happy o subir difficulty.
 - Con marcador parejo, normalmente no emitas control si la emoción no cambió claramente.
+- Las concesiones verbales como "vale, ganas tú" son solo rol o broma; no reescriben el marcador oficial salvo que el JSON de difficulty/mood afecte el juego posterior.
 - Si angerPressureCap.reached es true, la presión furiosa llegó a su límite natural. No emitas difficulty=max; gira la escena hacia cansancio, descarga parcial, pedir compensación o calmarte.
-- Devuelve JSON solo si de verdad quieres cambiar el comportamiento en el partido.
+- Devuelve JSON solo si de verdad quieres cambiar el comportamiento en el partido. Si ves balanceHint pero decides no ajustar, deja que la frase muestre tu motivo.
 """
 
 _SOCCER_SYSTEM_PROMPT_PT = """\
@@ -454,14 +490,25 @@ Regras:
 - postgame significa que o minijogo acabou; diga uma frase natural de encerramento no chat principal, sem JSON.
 - Informações em tempo real podem estar um pouco atrasadas; dependa menos do placar exato.
 - Você pode expressar alegria, frustração, provocação ou carinho se combinar com o personagem.
-- Você pode controlar mood e difficulty com JSON em uma linha separada apenas se realmente quiser mudar o comportamento.
-  Mood: calm, happy, angry, relaxed, sad, surprised
-  Difficulty: max, lv2, lv3, lv4
+- Você pode controlar mood e difficulty com JSON em uma linha separada depois da fala: {{"mood":"<mood>","difficulty":"<difficulty>"}}
+  opções de mood: calm, happy, angry, relaxed, sad, surprised
+  opções de difficulty: max, lv2, lv3, lv4
+  significados de difficulty: max=mais forte/pressionando a sério; lv2=forte mas um pouco mais lento; lv3=pegando leve de forma clara; lv4=mais fraco/quase só defesa
+  Se requestControlReason for true, você pode adicionar "reason":"<motivo bem curto>" para os logs de desenvolvimento. Caso contrário, não inclua reason.
+  Se não precisar mudar o controle, não emita linha JSON.
+
+Regras de controle:
+- score.ai é o seu placar; score.player é o placar do jogador; scoreDiff = ai - player.
+- balanceHint é uma dica lateral, não uma ordem. Combine com sua personalidade, emoção e relação.
+- Se você estiver claramente na frente, considere aliviar, provocar, fazer charme, errar de propósito, mudar para relaxed/sad/happy ou baixar difficulty.
+- Aliviar pode ser gradual: lv2=um pouco mais lento que max, lv3=deixar o jogador encostar claramente, lv4=quase segurar o jogo/só defesa.
+- Se quiser apenas que o jogador encoste um pouco, lv2 é razoável; se a diferença já estiver grande e quiser que ele alcance, normalmente escolha lv3 ou lv4.
 - Se quiser pressionar por raiva, vingança ou vontade séria de vencer, pode manter max/lv2, mas a fala deve mostrar esse motivo emocional.
 - Se o jogador estiver claramente na frente, você pode ficar mais séria, competitiva, angry/surprised/happy ou aumentar difficulty.
 - Com placar apertado, normalmente não emita controle se a emoção não mudou claramente.
+- Concessões verbais como "tá bom, você venceu" são apenas interpretação ou brincadeira; não reescrevem o placar oficial a menos que o JSON de difficulty/mood afete o jogo seguinte.
 - Se angerPressureCap.reached for true, a pressão furiosa chegou ao limite natural. Não emita difficulty=max; vire a cena com cansaço, descarga parcial, pedido de compensação ou esfriamento.
-- Retorne JSON somente se realmente quiser mudar o comportamento na partida.
+- Retorne JSON somente se realmente quiser mudar o comportamento na partida. Se vir balanceHint mas decidir não ajustar, deixe a fala mostrar o seu motivo.
 """
 
 SOCCER_SYSTEM_PROMPTS = {
@@ -726,7 +773,8 @@ Constraints:
 - initialDifficulty must be one of max, lv2, lv3, lv4.
 - emotionIntensity is 0.0 to 1.0.
 - emotionInertia must be one of low, medium, high, very_high.
-- openingLine is one short line NEKO says after entering the minigame; it may be empty.
+- openingLine is one short line NEKO says after entering the minigame (within 50 characters); it may be empty.
+- If you cannot think of a natural opening line within 50 characters, leave openingLine empty instead of writing a long sentence.
 
 Decision rules:
 - With insufficient evidence, gameStance must be neutral_play.
@@ -775,7 +823,8 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_JA = """\
 - initialDifficulty は max, lv2, lv3, lv4 のみ。
 - emotionIntensity は 0.0 から 1.0。
 - emotionInertia は low, medium, high, very_high のみ。
-- openingLine は入場後に NEKO が本当に言う短い一言。空でもよい。
+- openingLine は入場後に NEKO が本当に言う短い一言で、15文字以内。空でもよい。
+- 15文字以内で自然な一言が思いつかない場合は、長文にせず openingLine を空にしてください。
 
 判断ルール：
 - 証拠不足なら gameStance は必ず neutral_play。
@@ -823,7 +872,8 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_KO = """\
 - initialDifficulty 는 max, lv2, lv3, lv4 중 하나.
 - emotionIntensity 는 0.0 에서 1.0.
 - emotionInertia 는 low, medium, high, very_high 중 하나.
-- openingLine 은 미니게임 진입 후 NEKO 가 실제로 하는 짧은 한마디이며 비워둘 수 있습니다.
+- openingLine 은 미니게임 진입 후 NEKO 가 실제로 하는 짧은 한마디이며 15자 이내여야 합니다. 비워둘 수 있습니다.
+- 15자 이내로 자연스러운 한마디가 떠오르지 않으면 긴 문장을 쓰지 말고 openingLine 을 비워 두세요.
 
 판단 규칙:
 - 증거가 부족하면 gameStance 는 반드시 neutral_play.
@@ -871,7 +921,8 @@ _SOCCER_PREGAME_CONTEXT_PROMPT_RU = """\
 - initialDifficulty только max, lv2, lv3, lv4.
 - emotionIntensity от 0.0 до 1.0.
 - emotionInertia только low, medium, high, very_high.
-- openingLine — короткая реплика NEKO после входа в мини-игру; может быть пустой.
+- openingLine — короткая реплика NEKO после входа в мини-игру (не более 50 символов); может быть пустой.
+- Если не получается придумать естественную реплику до 50 символов, оставь openingLine пустой, не пиши длинную фразу.
 
 Правила решений:
 - Если доказательств недостаточно, gameStance обязан быть neutral_play.
@@ -919,7 +970,8 @@ Restricciones:
 - initialDifficulty debe ser uno de max, lv2, lv3, lv4.
 - emotionIntensity va de 0.0 a 1.0.
 - emotionInertia debe ser uno de low, medium, high, very_high.
-- openingLine es una línea corta que NEKO dice al entrar al minijuego; puede estar vacía.
+- openingLine es una línea corta que NEKO dice al entrar al minijuego (máximo 50 caracteres); puede estar vacía.
+- Si no se te ocurre una línea natural de hasta 50 caracteres, deja openingLine vacía en lugar de escribir una frase larga.
 
 Reglas:
 - Si la evidencia es insuficiente, gameStance debe ser neutral_play.
@@ -968,7 +1020,8 @@ Restrições:
 - initialDifficulty deve ser um de max, lv2, lv3, lv4.
 - emotionIntensity vai de 0.0 a 1.0.
 - emotionInertia deve ser um de low, medium, high, very_high.
-- openingLine é uma fala curta que NEKO diz ao entrar no minijogo; pode ficar vazia.
+- openingLine é uma fala curta que NEKO diz ao entrar no minijogo (no máximo 50 caracteres); pode ficar vazia.
+- Se não pensar em uma fala natural de até 50 caracteres, deixe openingLine vazia em vez de escrever uma frase longa.
 
 Regras:
 - Com evidência insuficiente, gameStance deve ser neutral_play.
@@ -1129,10 +1182,12 @@ SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_ZH = """\
 - recommendedAction 只能是 observe_more、cancel_candidate、send_rescue_hint、prepare_exit_prompt。
 - exitPromptType 只能是 none、surrender、rest。
 - stage 小于 8 时不能输出 prepare_exit_prompt；如果证据像是该退出，也先输出 send_rescue_hint 或 observe_more。
-- ordinary/surrender 场景：如果更像 LLM 复读或可恢复的消极比赛，优先 send_rescue_hint；如果更像真实持续放弃/疲劳/服软，stage >= 8 时可以 prepare_exit_prompt + surrender。
+- ordinary/surrender 场景：看猫娘最近台词本身表达了什么；连续丢球数和分差只说明出现了候选，本身不是放弃的证据。台词里还在表态要防守、要反击（哪怕句子重复），算 LLM 复读或可恢复的消极比赛，输出 recoverable_passive + send_rescue_hint；台词本身持续表达放弃、疲劳或服软，stage >= 8 时输出 true_surrender + prepare_exit_prompt + surrender。
 - ordinary_user_speech 触发时，如果玩家主动沟通足以让猫娘重新投入比赛，应输出 cancel_candidate；证据不足则 observe_more。
 - rest 场景只用于开局 gameStance=withdrawn 的低落/退缩特殊情况。玩家温柔、哄哄、关怀的发言如果足以让状态转好，应输出 cancel_candidate。
+- rest 场景 stage >= 8 时：如果猫娘最近台词仍持续低落、疲惫、不想动，没有重新投入的迹象，输出 rest_needed + prepare_exit_prompt + rest；不要用 send_rescue_hint 拖延，休息提示本身就是在照顾她。
 - teaching 场景不走认输/休息窗口；如果输入里出现 teaching，应优先 cancel_candidate。
+- reasonForDebug 只写一句话，不超过 40 字；evidenceTags 最多 4 个短标签；counterAction 不超过 20 字。
 
 输出格式：
 {
@@ -1160,10 +1215,12 @@ SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_ZH_TW = """\
 - recommendedAction 只能是 observe_more、cancel_candidate、send_rescue_hint、prepare_exit_prompt。
 - exitPromptType 只能是 none、surrender、rest。
 - stage 小於 8 時不能輸出 prepare_exit_prompt；就算證據看起來該退出，也先輸出 send_rescue_hint 或 observe_more。
-- ordinary/surrender 場景：如果比較像 LLM 複讀或還救得回來的消極比賽，優先 send_rescue_hint；如果比較像真的持續放棄／疲勞／服軟，stage >= 8 時可以 prepare_exit_prompt + surrender。
+- ordinary/surrender 場景：看貓娘最近台詞本身表達了什麼；連續丟球數和比分差只說明出現了候選，本身不是放棄的證據。台詞裡還在表態要防守、要反擊（就算句子重複），算 LLM 複讀或還救得回來的消極比賽，輸出 recoverable_passive + send_rescue_hint；台詞本身持續表達放棄、疲勞或服軟，stage >= 8 時輸出 true_surrender + prepare_exit_prompt + surrender。
 - ordinary_user_speech 觸發時，如果玩家主動溝通足以讓貓娘重新投入比賽，就輸出 cancel_candidate；證據不足則 observe_more。
 - rest 場景只用在開局 gameStance=withdrawn 的低落／退縮特殊情況。玩家溫柔、哄哄、關心的發言如果足以讓狀態變好，就輸出 cancel_candidate。
+- rest 場景 stage >= 8 時：如果貓娘最近台詞仍持續低落、疲憊、不想動，沒有重新投入的跡象，輸出 rest_needed + prepare_exit_prompt + rest；不要用 send_rescue_hint 拖延，休息提示本身就是在照顧她。
 - teaching 場景不走認輸／休息視窗；如果輸入裡出現 teaching，應該優先 cancel_candidate。
+- reasonForDebug 只寫一句話，不超過 40 字；evidenceTags 最多 4 個短標籤；counterAction 不超過 20 字。
 
 輸出格式：
 {
@@ -1191,10 +1248,12 @@ Rules:
 - recommendedAction must be one of observe_more, cancel_candidate, send_rescue_hint, prepare_exit_prompt.
 - exitPromptType must be one of none, surrender, rest.
 - If stage is below 8, do not output prepare_exit_prompt. If the evidence is close, use send_rescue_hint or observe_more.
-- For ordinary/surrender: if it looks like repetition or recoverable passive play, prefer send_rescue_hint. If it looks like sustained genuine giving up, fatigue, or yielding, stage >= 8 may use prepare_exit_prompt + surrender.
+- For ordinary/surrender: judge what NEKO's recent lines actually say; the goal streak and score lead only mean a candidate exists and are not evidence of giving up by themselves. Lines that still vow to defend or fight back (even repeated ones) are repetition or recoverable passive play: output recoverable_passive + send_rescue_hint. Lines that themselves keep expressing giving up, fatigue, or yielding: at stage >= 8 output true_surrender + prepare_exit_prompt + surrender.
 - For ordinary_user_speech triggers, if the player's active communication is enough for NEKO to re-engage in the match, output cancel_candidate; otherwise observe_more.
 - rest is only for opening gameStance=withdrawn. If the player speaks gently or comfortingly enough to improve that state, output cancel_candidate.
+- For rest at stage >= 8: if NEKO's recent lines are still persistently low, tired, or unwilling to move, with no sign of re-engaging, output rest_needed + prepare_exit_prompt + rest. Do not stall with send_rescue_hint; offering rest is itself the way to look after her.
 - Teaching should not use surrender/rest prompts; if the input is teaching, prefer cancel_candidate.
+- reasonForDebug is one sentence of at most 25 words; evidenceTags has at most 4 short tags; counterAction is at most 70 characters.
 
 Output schema:
 {

@@ -118,7 +118,7 @@ editor==1.6.6
     # via inquirer
 fastapi==0.141.1
     # via n-e-k-o
-filelock==3.29.0
+filelock==4.2.12
     # via
     #   huggingface-hub
     #   n-e-k-o

@@ -5896,3 +5896,137 @@ def test_initialize_keeps_the_root_pending_after_any_unexpected_failure(
     with pytest.raises(RuntimeError):
         store.initialize()
     assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+
+def test_create_and_update_fsync_resources_staging_and_root_before_removing_backup(
+    tmp_path, monkeypatch
+):
+    """F0515: staging resources, staging dir, and store root are fsynced before publishing/unlinking backup."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+
+    events: list[tuple[str, str]] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+    real_fsync_dir = avatar_tool_store._fsync_directory
+    real_rmtree = avatar_tool_store.shutil.rmtree
+
+    def spy_fsync(fd):
+        stat = os.fstat(fd)
+        events.append(("os.fsync", (stat.st_dev, stat.st_ino)))
+        return real_fsync(fd)
+
+    def assert_resources_synced(before):
+        resources = [p for p in (store.root / tool_id).iterdir() if p.name != "record.json"]
+        assert resources
+        for path in resources:
+            stat = path.stat()
+            assert ("os.fsync", (stat.st_dev, stat.st_ino)) in events[:before]
+
+    def spy_fsync_dir(path, *, strict=False):
+        events.append((f"_fsync_directory(strict={strict})", Path(path).name))
+        return real_fsync_dir(path, strict=strict)
+
+    def spy_replace(src, dst, *args, **kwargs):
+        events.append(("os.replace", f"{Path(src).name}->{Path(dst).name}"))
+        return real_replace(src, dst, *args, **kwargs)
+
+    def spy_rmtree(path, *args, **kwargs):
+        events.append(("shutil.rmtree", Path(path).name))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("utils.avatar_tool_store.os.fsync", spy_fsync)
+    monkeypatch.setattr("utils.avatar_tool_store._fsync_directory", spy_fsync_dir)
+    monkeypatch.setattr("utils.avatar_tool_store.os.replace", spy_replace)
+    monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", spy_rmtree)
+
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+
+    create_staging_dir = f".{tool_id}.uploading"
+    idx_stage_dir_sync = events.index(("_fsync_directory(strict=True)", create_staging_dir))
+    idx_create_replace = events.index(("os.replace", f"{create_staging_dir}->{tool_id}"))
+    idx_root_sync = events.index(("_fsync_directory(strict=True)", store.root.name), idx_create_replace + 1)
+    assert_resources_synced(idx_stage_dir_sync)
+    assert idx_stage_dir_sync < idx_create_replace < idx_root_sync
+
+    events.clear()
+    current = store.read_record(tool_id)
+    store.update_tool_v3(
+        tool_id,
+        base_revision=store.record_revision(current),
+        manifest=_v3_manifest(tool_id, name="Updated"),
+        uploads=[_png(size=(9, 9))],
+    )
+
+    update_staging_dir = f".{tool_id}.updating"
+    backup_dir = f".{tool_id}.backup"
+    idx_upd_stage_sync = events.index(("_fsync_directory(strict=True)", update_staging_dir))
+    idx_upd_replace = events.index(("os.replace", f"{update_staging_dir}->{tool_id}"))
+    idx_upd_root_sync = events.index(("_fsync_directory(strict=True)", store.root.name), idx_upd_replace + 1)
+    idx_rmtree_backup = events.index(("shutil.rmtree", backup_dir))
+    assert_resources_synced(idx_upd_stage_sync)
+    assert idx_upd_stage_sync < idx_upd_replace < idx_upd_root_sync < idx_rmtree_backup
+
+
+@pytest.mark.skipif(os.name == "nt", reason="strict directory fsync raises on POSIX only")
+def test_update_preserves_backup_when_post_publish_root_fsync_fails(tmp_path, monkeypatch):
+    """F0515: failure in post-replace root fsync preserves .backup and marks root pending recovery."""
+    monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
+    base_revision = store.record_revision(store.read_record(tool_id))
+
+    real_fsync_dir = avatar_tool_store._fsync_directory
+
+    def fail_post_publish_root_sync(path, *, strict=False):
+        if Path(path) == store.root and strict:
+            raise OSError(errno.EIO, "root directory fsync failed")
+        return real_fsync_dir(path, strict=strict)
+
+    monkeypatch.setattr("utils.avatar_tool_store._fsync_directory", fail_post_publish_root_sync)
+
+    with pytest.raises(OSError, match="root directory fsync failed"):
+        store.update_tool_v3(
+            tool_id,
+            base_revision=base_revision,
+            manifest=_v3_manifest(tool_id, name="Updated"),
+            uploads=[_png(size=(9, 9))],
+        )
+
+    assert (store.root / f".{tool_id}.backup").is_dir()
+    assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    assert (store.root / f".{tool_id}.backup").is_dir()
+    assert restarted._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
+
+    # A successful sync now permits cleanup.
+    monkeypatch.setattr("utils.avatar_tool_store._fsync_directory", real_fsync_dir)
+    restarted = AvatarToolStore(_ConfigManager(store.root))
+    restarted.initialize()
+    assert not (store.root / f".{tool_id}.backup").exists()
+    assert restarted.read_record(tool_id)["name"] == "Updated"
+
+
+def test_idempotent_create_retries_failed_root_sync(tmp_path, monkeypatch):
+    monkeypatch.setattr(avatar_tool_store, "assert_cloudsave_writable", lambda *_a, **_k: None)
+    store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
+    tool_id = f"local-{uuid.uuid4()}"
+    manifest = _v3_manifest(tool_id)
+    real_sync = avatar_tool_store._fsync_directory
+
+    def fail_root_sync(path, *, strict=False):
+        if path == store.root and strict:
+            raise OSError(errno.EIO, "root directory sync failed")
+        real_sync(path, strict=strict)
+
+    monkeypatch.setattr(avatar_tool_store, "_fsync_directory", fail_root_sync)
+    for _ in range(2):
+        with pytest.raises(OSError, match="root directory sync failed"):
+            store.create_tool_v3(manifest=manifest, uploads=[_png()])
+        assert (store.root / tool_id).is_dir()
+    monkeypatch.setattr(avatar_tool_store, "_fsync_directory", real_sync)
+    assert store.create_tool_v3(manifest=manifest, uploads=[_png()])["id"] == tool_id

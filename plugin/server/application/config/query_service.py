@@ -10,7 +10,7 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.config_merge import deep_merge
+from plugin.server.infrastructure.config_merge import RESERVED_TOP_LEVEL_SECTIONS, deep_merge
 from plugin.server.infrastructure.config_paths import get_plugin_config_path
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config
 from plugin.server.infrastructure.config_profiles import (
@@ -485,7 +485,7 @@ class ConfigQueryService:
 
         merged_config: dict[str, object] = dict(base_config)
         for key, value in overlay_config.items():
-            if key == "plugin":
+            if key == "plugin" or key in RESERVED_TOP_LEVEL_SECTIONS:
                 continue
             current_value = merged_config.get(key)
             if isinstance(current_value, dict) and isinstance(value, dict):

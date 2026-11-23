@@ -26,6 +26,7 @@
 |---|---|---|
 | `set_agent_enabled` | `enabled`，可选 `profile` | 切换总开关；关闭时会叫停全部在办的任务 |
 | `set_flag` | `key`、`value` | 切换 `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled` 之一 |
+| `set_task_hud_visible` | `value`（布尔），可选 `if_unset`（为 `true` 时只在还没设过时才存；主界面补交它以前的本地设置用） | 主界面显不显示任务悬浮窗；由 Agent 进程记着（`agent_task_hud.json`），放在状态快照的 `task_hud_visible` 里发出（没设过为 `null`） |
 | `refresh_state` | 无 | 返回并广播新的状态快照 |
 
 `request_id` 和 `lanlan_name` 可选。未知命令或 flag key 由 Agent Server 拒绝；上游/代理失败返回 `502`。
@@ -50,7 +51,7 @@
 
 ### 任务对象
 
-一个任务就是猫爪台账里一件委托在 HUD 上的样子。`GET /api/agent/tasks` 返回 `{"tasks":[...]}`；状态快照的 `active_tasks` 和 WebSocket 的 `agent_task_update` 消息里是同一种对象。
+一个任务就是喵能力台账里一件委托在 HUD 上的样子。`GET /api/agent/tasks` 返回 `{"tasks":[...]}`；状态快照的 `active_tasks` 和 WebSocket 的 `agent_task_update` 消息里是同一种对象。
 
 | 字段 | 含义 |
 |---|---|
@@ -117,7 +118,7 @@
 
 | 设置项 | 含义 |
 |---|---|
-| `mode` | `own_profile`（默认）：启动用户的浏览器，配一份放在数据根下的独立资料目录（`nekoclaw/browser_profile`），要用的网站在里面登录一次即可。`attach`：直接操控用户正在用的浏览器；要求 Chrome 144 以上，用户自己在 `chrome://inspect/#remote-debugging` 打开远程调试，每次连接都要在浏览器里点允许 |
+| `mode` | `own_profile`（默认）：启动用户的浏览器，配一份放在数据根下的独立资料目录（`nekopower/browser_profile`），要用的网站在里面登录一次即可。`attach`：直接操控用户正在用的浏览器；要求 Chrome 144 以上，用户自己在 `chrome://inspect/#remote-debugging` 打开远程调试，每次连接都要在浏览器里点允许 |
 | `executable` | 指定要用的浏览器路径，代替自动找到的那个；`null` 表示自动查找 |
 | `headless` | 启动浏览器时不开窗口；只对 `own_profile` 有效 |
 
@@ -131,4 +132,4 @@
 |---|---|---|
 | `GET` | `/api/agent/user_plugin/dashboard` | 重定向到本地插件 dashboard；接受经校验的 `v` 和环回 `yui_opener_origin` 查询值 |
 
-Dashboard 路由只是浏览器辅助入口，不是任务 API。浏览器没有提交任务的路由：任务由主对话模型用 `dispatch_task` 工具交办，主服务器再转给 Agent Server 的内部路由 `/nekoclaw/dispatch`。参见 [Agent Server API](/zh-CN/api/agent-server)。
+Dashboard 路由只是浏览器辅助入口，不是任务 API。浏览器没有提交任务的路由：任务由主对话模型用 `dispatch_task` 工具交办，主服务器再转给 Agent Server 的内部路由 `/nekopower/dispatch`。参见 [Agent Server API](/zh-CN/api/agent-server)。

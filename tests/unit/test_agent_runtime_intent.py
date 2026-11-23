@@ -6,7 +6,7 @@ Scope:
 2. ``app.agent_server.model_probe``: classification of a failed probe of the
    agent model into permanent vs transient reasons (the probe itself is
    covered in ``test_agent_model_probe.py``), and the reason codes for input
-   that cannot be sent (``nekoclaw.builtin.desktop``)
+   that cannot be sent (``nekopower.builtin.desktop``)
 3. Master-switch semantics: ``set_agent_enabled(False)`` no longer wipes
    sub flags (issue: cycling the master gate used to forget user intent
    for every sub feature)
@@ -180,12 +180,12 @@ def test_permanent_connectivity_reasons_set():
 
 
 # The reason the keyboard-and-mouse switch is refused with when input cannot
-# be sent comes from ``nekoclaw.builtin.desktop``: pyautogui is imported on
+# be sent comes from ``nekopower.builtin.desktop``: pyautogui is imported on
 # first use and a failed import is classified.
 
 
 def _pyautogui_failed_to_import(monkeypatch: pytest.MonkeyPatch, error: Exception):
-    from nekoclaw.builtin import desktop
+    from nekopower.builtin import desktop
 
     monkeypatch.setattr(desktop, "_pyautogui", None)
     monkeypatch.setattr(desktop, "_import_error", error)
@@ -251,7 +251,7 @@ def test_input_that_cannot_be_sent_is_reported_with_its_reason(monkeypatch: pyte
 
 
 def test_points_on_the_model_scale_stay_away_from_the_failsafe_corners():
-    from nekoclaw.builtin.desktop import COORDINATE_MAX, ScaledInput
+    from nekopower.builtin.desktop import COORDINATE_MAX, ScaledInput
 
     class FakeBackend:
         def __init__(self):
@@ -284,7 +284,7 @@ def test_points_on_the_model_scale_stay_away_from_the_failsafe_corners():
 
 
 class _Desktop:
-    """Stands in for ``nekoclaw.builtin.desktop.Desktop``: says whether input can be sent."""
+    """Stands in for ``nekopower.builtin.desktop.Desktop``: says whether input can be sent."""
 
     def __init__(self) -> None:
         self.input_ready: tuple[bool, str] = (True, "")
@@ -298,10 +298,10 @@ def desktop(monkeypatch: pytest.MonkeyPatch) -> _Desktop:
     """Whether the keyboard and mouse can be used is the probe of the agent
     model plus input that can be sent. The second half would import
     pyautogui; this answers in its place."""
-    from app.agent_server import nekoclaw_builtins
+    from app.agent_server import nekopower_builtins
 
     fake = _Desktop()
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", fake)
+    monkeypatch.setattr(nekopower_builtins.provider, "_desktop", fake)
     return fake
 
 
@@ -482,6 +482,38 @@ async def test_stale_master_off_cannot_stop_reenabled_master_lifecycle(
     assert srv.Modules.analyzer_enabled is True
     assert srv.Modules.agent_flags["user_plugin_enabled"] is True
     assert stops == []
+
+
+@pytest.mark.asyncio
+async def test_the_switch_brings_the_plugins_on_with_it_and_leaves_the_device_switches_alone(
+    agent_state_isolation, isolated_intent_store: Path
+):
+    """One switch for all of it: switched on, the plugins are on, whatever was kept of their own switch.
+
+    The keyboard and mouse and the browser stay as they were: they say what
+    a task agent may touch on this computer, and are switched on by hand.
+    What is kept for the plugins says "on" from then: the user switched
+    them on with it, whatever they had kept of the plugins' own switch.
+    """
+    srv = agent_state_isolation
+    from app.agent_runtime_intent import get_intent, set_intent
+
+    # Switched off by its own switch some time ago.
+    set_intent("user_plugin_enabled", False)
+    assert srv.Modules.agent_flags.get("user_plugin_enabled") is not True
+    before = set(srv.Modules._persistent_tasks)
+    with patch.object(
+        srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        answer = await srv.agent_command({"command": "set_agent_enabled", "enabled": True})
+    await _await_new_agent_tasks(srv, before)
+
+    assert answer["success"] is True and srv.Modules.analyzer_enabled is True
+    assert srv.Modules.agent_flags["user_plugin_enabled"] is True
+    assert srv.Modules.agent_flags.get("computer_use_enabled") is not True
+    assert srv.Modules.agent_flags.get("browser_use_enabled") is not True
+    # Kept for the plugins as well: a restore brings them on, and an older "off" of theirs is over.
+    assert get_intent("analyzer_enabled") is True and get_intent("user_plugin_enabled") is True
 
 
 @pytest.mark.asyncio
@@ -1108,6 +1140,64 @@ async def test_restore_escape_hatch_via_env(
 
     await srv_mod._maybe_restore_agent_intent()
     assert called["n"] == 0
+    assert srv_mod._intent_restore_finished is True
+
+
+@pytest.mark.asyncio
+async def test_restore_finished_flag_only_after_replay_completes(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``intent_restore_finished`` (served by GET /agent/flags) must stay False
+    while the replay is still running and turn True once it ends, including
+    when the replay raises."""
+    from app.agent_server import api_routes as srv_mod
+    srv_mod._reset_intent_restore_for_testing()
+
+    seen_during_replay = {}
+
+    async def _fake_do_restore():
+        seen_during_replay["finished"] = srv_mod._intent_restore_finished
+        flags = await srv_mod.get_agent_flags()
+        seen_during_replay["served"] = flags["intent_restore_finished"]
+        raise RuntimeError("replay failed")
+
+    monkeypatch.setattr(srv_mod, "_do_restore_agent_intent", _fake_do_restore)
+
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is False
+    await srv_mod._maybe_restore_agent_intent()
+    assert seen_during_replay == {"finished": False, "served": False}
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is True
+
+
+@pytest.mark.asyncio
+async def test_restore_finished_flag_waits_for_background_replay_tasks(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The CU/BU probe and user-plugin replay run as background tasks that can
+    still write flags after ``_do_restore_agent_intent`` returns; the flag must
+    stay False until they end (even when one of them raises)."""
+    from app.agent_server import api_routes as srv_mod
+    srv_mod._reset_intent_restore_for_testing()
+
+    release = asyncio.Event()
+
+    async def _slow_replay_write():
+        await release.wait()
+        raise RuntimeError("probe failed")
+
+    async def _fake_do_restore():
+        srv_mod._intent_restore_background_tasks.append(asyncio.create_task(_slow_replay_write()))
+
+    monkeypatch.setattr(srv_mod, "_do_restore_agent_intent", _fake_do_restore)
+
+    await srv_mod._maybe_restore_agent_intent()
+    await asyncio.sleep(0)
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is False
+
+    release.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is True
 
 
 @pytest.mark.asyncio
@@ -1386,3 +1476,52 @@ async def test_restore_proceeds_when_master_intent_on(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert user_plugin_calls == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kept", "plugins_on"), [(False, False), (None, True), (True, True)])
+async def test_a_restore_at_start_leaves_plugins_the_user_switched_off_as_they_are(
+    agent_state_isolation, isolated_intent_store: Path, kept, plugins_on
+):
+    """Replaying the switch at start is not the user switching it on.
+
+    Plugins the user switched off by their own switch stay off; where
+    nothing was kept of that switch, they come on with the one for all.
+    """
+    srv = agent_state_isolation
+    import app.agent_runtime_intent as ari
+
+    ari.set_intent("analyzer_enabled", True)
+    if kept is not None:
+        ari.set_intent("user_plugin_enabled", kept)
+    before = set(srv.Modules._persistent_tasks)
+    with patch.object(
+        srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False},
+    ):
+        answer = await srv.agent_command({"command": "set_agent_enabled", "enabled": True, "_persist_intent": False})
+    # Whatever it started (nothing, where the plugins stay off).
+    await asyncio.gather(*(set(srv.Modules._persistent_tasks) - before))
+
+    assert answer["success"] is True and srv.Modules.analyzer_enabled is True
+    assert bool(srv.Modules.agent_flags.get("user_plugin_enabled")) is plugins_on
+    # What was kept is as it was.
+    assert ari.get_intent("user_plugin_enabled") is kept
+
+
+@pytest.mark.asyncio
+async def test_get_agent_flags_serves_saved_intent(
+    agent_state_isolation, isolated_intent_store: Path
+):
+    """GET /agent/flags serves the saved switch intents so the page can tell a
+    switch the user turned off (intent False) from one the backend put off after
+    a failed start (intent unchanged)."""
+    from app import agent_runtime_intent as ari
+    from app.agent_server import api_routes as srv_mod
+
+    assert (await srv_mod.get_agent_flags())["intent"] == {}
+    ari.set_intent("analyzer_enabled", True)
+    ari.set_intent("user_plugin_enabled", False)
+    served = (await srv_mod.get_agent_flags())["intent"]
+    assert served == {"analyzer_enabled": True, "user_plugin_enabled": False}
+    served["user_plugin_enabled"] = True
+    assert ari.get_intent("user_plugin_enabled") is False, "served intent must be a copy"

@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import tempfile
+import traceback
 import zipfile
 from pathlib import Path
 
@@ -45,6 +46,7 @@ from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
+from utils.url_utils import is_utf8_text
 
 router = APIRouter(prefix="/api/model/mmd", tags=["mmd"])
 logger = get_module_logger(__name__, "Main")
@@ -63,6 +65,38 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 ALLOWED_MODEL_EXTENSIONS = {'.pmx', '.pmd'}
 ALLOWED_ANIMATION_EXTENSIONS = {'.vmd'}
 RESERVED_DIRS = {'animation', 'emotion_config'}
+
+
+def _file_check(path: Path) -> bool | None:
+    """``path.is_file()``, or None when the type cannot be checked.
+
+    On Python 3.11 ``is_file()`` raises for e.g. a link into an unreadable
+    folder (EACCES) instead of returning False.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return None
+
+
+def _iter_model_files(root: Path):
+    """Yield model files under ``root``, matching the extension in any letter case.
+
+    The upload checks accept ``Foo.PMX``; ``rglob('*.pmx')`` is case-sensitive on
+    Linux, so scanning by pattern would lose such files. Folders named like a
+    model (``old.PMX/``) and dangling links are not model files.
+
+    A path whose type cannot be checked (e.g. a link into an unreadable folder
+    raises PermissionError) is still yielded, as the name-only scan did: the
+    "folder already has a model" checks must then keep the folder, not treat it
+    as residue or fail into the import cleanup that deletes it.
+    """
+    for path in root.rglob('*'):
+        if path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
+            continue
+        # Type unknown (None): keep the path so the folder is not deleted.
+        if _file_check(path) is not False:
+            yield path
 
 
 def safe_mmd_path(mmd_dir: Path, filename: str, subdir: str | None = None) -> tuple[Path | None, str]:
@@ -102,7 +136,8 @@ def _ensure_mmd_directory(config_mgr) -> Path | None:
         animation_dir.mkdir(parents=True, exist_ok=True)
         return mmd_dir
     except Exception as e:
-        logger.error(f"创建 MMD 目录失败: {e}")
+        logger.error(f"创建 MMD 目录失败: {type(e).__name__}")
+        print(f"创建 MMD 目录失败: {type(e).__name__}: {e}")
         return None
 
 
@@ -500,17 +535,14 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
 
             if target_dir.exists():
                 # Check valid model files; absent means leftover empty directory, automatically clean up.
-                has_valid_model = any(
-                    any(target_dir.rglob(f'*{ext}'))
-                    for ext in ALLOWED_MODEL_EXTENSIONS
-                )
+                has_valid_model = any(_iter_model_files(target_dir))
                 if has_valid_model:
                     return JSONResponse(status_code=400, content={
                         "success": False,
                         "error": f"目录 {extract_dir_name} 已存在，请先删除旧模型"
                     })
                 else:
-                    logger.info(f"清理残留的无效模型目录: {target_dir}")
+                    logger.info(f"清理残留的无效模型目录: {extract_dir_name}")
                     await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
 
             # Extract using corrected filenames.
@@ -526,9 +558,8 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                 await asyncio.to_thread(_extract_zip_with_encoding, zf, target_dir, name_map)
 
         # Find extracted PMX path.
-        pmx_candidates = []
-        for ext in ALLOWED_MODEL_EXTENSIONS:
-            pmx_candidates.extend(target_dir.rglob(f'*{ext}'))
+        # Only a checked file can be returned as model_url for the frontend to load.
+        pmx_candidates = [p for p in _iter_model_files(target_dir) if _file_check(p)]
         if not pmx_candidates:
             await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
             return JSONResponse(status_code=500, content={
@@ -536,9 +567,11 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
             })
 
         pmx_file = pmx_candidates[0]
-        rel_path = pmx_file.relative_to(mmd_dir)
+        # target_dir is resolved; resolve mmd_dir too, or a link or relative part
+        # in mmd_dir makes relative_to raise and the import cleanup delete the model.
+        rel_path = pmx_file.relative_to(mmd_dir.resolve())
         model_url = f"{MMD_USER_PATH}/{rel_path.as_posix()}"
-        file_count = sum(1 for _ in target_dir.rglob('*') if _.is_file())
+        file_count = sum(1 for path in target_dir.rglob('*') if _file_check(path))
 
         logger.info(f"成功解压 MMD 模型包: {extract_dir_name} ({file_count} 个文件, {total_size / (1024*1024):.1f}MB)")
 
@@ -579,61 +612,94 @@ async def get_mmd_models():
         config_mgr = get_config_manager()
         models = []
         seen_urls = set()
+        skipped = 0  # Non-UTF-8 names cannot be serialized or requested (#3230).
+        unchecked = 0  # Paths whose type cannot be checked (e.g. EACCES on Python 3.11).
 
         # 1. Project static/mmd/, recursively.
         project_root = config_mgr.project_root
         static_mmd_dir = project_root / "static" / "mmd"
         if static_mmd_dir.exists():
-            for ext in ALLOWED_MODEL_EXTENSIONS:
-                for model_file in static_mmd_dir.rglob(f'*{ext}'):
-                    rel_path = model_file.relative_to(static_mmd_dir)
-                    url = f"/static/mmd/{rel_path.as_posix()}"
-                    if url in seen_urls:
-                        continue
-                    seen_urls.add(url)
-                    models.append({
-                        "name": model_file.stem,
-                        "filename": model_file.name,
-                        "url": url,
-                        "rel_path": rel_path.as_posix(),
-                        "type": model_file.suffix.lstrip('.'),
-                        "size": model_file.stat().st_size,
-                        "location": "project"
-                    })
+            for model_file in _iter_model_files(static_mmd_dir):
+                # Dangling or looping link, or a path whose type cannot be checked:
+                # leave it out so the other models still list.
+                is_file = _file_check(model_file)
+                if not is_file:
+                    if is_file is None:
+                        unchecked += 1
+                    continue
+                rel_path = model_file.relative_to(static_mmd_dir)
+                if not is_utf8_text(rel_path.as_posix()):
+                    skipped += 1
+                    continue
+                url = f"/static/mmd/{rel_path.as_posix()}"
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                models.append({
+                    "name": model_file.stem,
+                    "filename": model_file.name,
+                    "url": url,
+                    "rel_path": rel_path.as_posix(),
+                    "type": model_file.suffix.lower().lstrip('.'),
+                    "size": model_file.stat().st_size,
+                    "location": "project"
+                })
 
         # 2. User mmd/, recursively, skipping reserved directories.
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if mmd_dir and mmd_dir.exists():
-            found_top_dirs = set()  # Record top-level subdirectories containing valid models.
-            for ext in ALLOWED_MODEL_EXTENSIONS:
-                for model_file in mmd_dir.rglob(f'*{ext}'):
-                    try:
-                        rel_path = model_file.relative_to(mmd_dir)
-                        if rel_path.parts and rel_path.parts[0] in RESERVED_DIRS:
-                            continue
-                    except (ValueError, IndexError):
+            found_top_dirs = set()  # Top-level subdirectories holding a model file, listed or skipped.
+            for model_file in _iter_model_files(mmd_dir):
+                is_file = _file_check(model_file)
+                if is_file is False:  # dangling or looping link
+                    continue
+                try:
+                    rel_path = model_file.relative_to(mmd_dir)
+                    if rel_path.parts and rel_path.parts[0].lower() in RESERVED_DIRS:
                         continue
-                    url = f"{MMD_USER_PATH}/{rel_path.as_posix()}"
-                    if url in seen_urls:
-                        continue
-                    seen_urls.add(url)
-                    # Record top-level subdirectories containing models.
-                    if rel_path.parts:
-                        found_top_dirs.add(rel_path.parts[0])
-                    models.append({
-                        "name": model_file.stem,
-                        "filename": model_file.name,
-                        "url": url,
-                        "rel_path": rel_path.as_posix(),
-                        "type": model_file.suffix.lstrip('.'),
-                        "size": model_file.stat().st_size,
-                        "location": "user"
-                    })
+                except (ValueError, IndexError):
+                    continue
+                # Record the folder before the UTF-8 skip: a folder whose only model
+                # has a non-UTF-8 name is not import residue (and is counted once).
+                if rel_path.parts:
+                    found_top_dirs.add(rel_path.parts[0])
+                if is_file is None:
+                    # Type cannot be checked: leave it out so the other models still
+                    # list. Its folder was recorded above, so it is not offered as
+                    # deletable residue (delete-by-folder would refuse it anyway).
+                    unchecked += 1
+                    continue
+                if not is_utf8_text(rel_path.as_posix()):
+                    skipped += 1
+                    continue
+                url = f"{MMD_USER_PATH}/{rel_path.as_posix()}"
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                models.append({
+                    "name": model_file.stem,
+                    "filename": model_file.name,
+                    "url": url,
+                    "rel_path": rel_path.as_posix(),
+                    "type": model_file.suffix.lower().lstrip('.'),
+                    "size": model_file.stat().st_size,
+                    "location": "user"
+                })
 
             # Find incomplete top-level model directories lacking PMX/PMD.
             # Usually failed-import residue; list so users can delete.
             for item in mmd_dir.iterdir():
-                if item.is_dir() and item.name not in RESERVED_DIRS and item.name not in found_top_dirs:
+                try:
+                    is_dir = item.is_dir()
+                except OSError:
+                    # Type cannot be checked (e.g. EACCES on Python 3.11): not
+                    # offered as residue, and the rest of the list still loads.
+                    unchecked += 1
+                    continue
+                if is_dir and item.name.lower() not in RESERVED_DIRS and item.name not in found_top_dirs:
+                    if not is_utf8_text(item.name):
+                        skipped += 1
+                        continue
                     models.append({
                         "name": item.name,
                         "filename": "",
@@ -656,34 +722,75 @@ async def get_mmd_models():
                     if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
                         # Recursively search installation directory for PMX/PMD.
                         installed_path = Path(installed_folder)
-                        for ext in ALLOWED_MODEL_EXTENSIONS:
-                            for model_file in installed_path.rglob(f'*{ext}'):
-                                try:
-                                    rel_path = model_file.relative_to(installed_path)
-                                except ValueError:
-                                    continue
-                                url = f"/workshop/{item_id}/{rel_path.as_posix()}"
-                                if url in seen_urls:
-                                    continue
-                                seen_urls.add(url)
-                                models.append({
-                                    "name": model_file.stem,
-                                    "filename": model_file.name,
-                                    "url": url,
-                                    "rel_path": rel_path.as_posix(),
-                                    "type": model_file.suffix.lstrip('.'),
-                                    "size": model_file.stat().st_size,
-                                    "location": "steam_workshop",
-                                    "source": "steam_workshop",
-                                    "item_id": str(item_id)
-                                })
+                        for model_file in _iter_model_files(installed_path):
+                            # Dangling or looping link, or type cannot be checked.
+                            is_file = _file_check(model_file)
+                            if not is_file:
+                                if is_file is None:
+                                    unchecked += 1
+                                continue
+                            try:
+                                rel_path = model_file.relative_to(installed_path)
+                            except ValueError:
+                                continue
+                            if not is_utf8_text(rel_path.as_posix()):
+                                skipped += 1
+                                continue
+                            url = f"/workshop/{item_id}/{rel_path.as_posix()}"
+                            if url in seen_urls:
+                                continue
+                            seen_urls.add(url)
+                            models.append({
+                                "name": model_file.stem,
+                                "filename": model_file.name,
+                                "url": url,
+                                "rel_path": rel_path.as_posix(),
+                                "type": model_file.suffix.lower().lstrip('.'),
+                                "size": model_file.stat().st_size,
+                                "location": "steam_workshop",
+                                "source": "steam_workshop",
+                                "item_id": str(item_id)
+                            })
         except Exception as e:
             logger.error(f"获取创意工坊MMD模型时出错: {e}")
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 MMD 模型")
+        if unchecked:
+            logger.warning(f"跳过 {unchecked} 个无法检查类型的 MMD 模型路径")
         return JSONResponse(content={"success": True, "models": models})
     except Exception as e:
         logger.error(f"获取 MMD 模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+def _list_animation_dir(directory: Path, suffix: str | None = None) -> list[Path]:
+    """Entries of an animation folder, or [] if it cannot be read.
+
+    ``suffix`` keeps only entries with that extension in any letter case, matching
+    the upload check (``glob('*.vmd')`` would miss ``Foo.VMD`` on Linux).
+    One unreadable folder must not fail the whole list; its path stays out of
+    the persistent log.
+    """
+    try:
+        entries = list(directory.iterdir())
+        if suffix:
+            entries = [entry for entry in entries if entry.suffix.lower() == suffix]
+        return entries
+    except Exception as dir_error:
+        logger.warning(f"处理动画目录失败: {type(dir_error).__name__}")
+        print(f"处理动画目录失败 {directory!r}: {type(dir_error).__name__}: {dir_error}")
+        return []
+
+
+def _animation_dir_exists(directory: Path) -> bool:
+    """``directory.exists()``, treating a check that raises (e.g. PermissionError) as missing."""
+    try:
+        return directory.exists()
+    except Exception as dir_error:
+        logger.warning(f"检查动画目录失败: {type(dir_error).__name__}")
+        print(f"检查动画目录失败 {directory!r}: {type(dir_error).__name__}: {dir_error}")
+        return False
 
 
 @router.get('/animations')
@@ -693,31 +800,21 @@ def get_mmd_animations():
         config_mgr = get_config_manager()
         animations = []
         seen_urls = set()
+        skipped = 0  # Non-UTF-8 names cannot be serialized or requested.
+        failed = 0
 
         # 1. Project static/mmd/animation/.
         project_root = config_mgr.project_root
         static_anim_dir = project_root / "static" / "mmd" / "animation"
-        if static_anim_dir.exists():
-            for anim_file in static_anim_dir.glob('*.vmd'):
-                url = f"/static/mmd/animation/{anim_file.name}"
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                animations.append({
-                    "name": anim_file.stem,
-                    "filename": anim_file.name,
-                    "url": url,
-                    "type": "vmd",
-                    "size": anim_file.stat().st_size
-                })
-
-        # 2. User mmd/animation/.
-        mmd_dir = _ensure_mmd_directory(config_mgr)
-        if mmd_dir:
-            user_anim_dir = mmd_dir / "animation"
-            if user_anim_dir.exists():
-                for anim_file in user_anim_dir.glob('*.vmd'):
-                    url = f"{MMD_USER_PATH}/animation/{anim_file.name}"
+        if _animation_dir_exists(static_anim_dir):
+            for anim_file in _list_animation_dir(static_anim_dir, '.vmd'):
+                try:
+                    if not anim_file.is_file():
+                        continue
+                    if not is_utf8_text(anim_file.name):
+                        skipped += 1
+                        continue
+                    url = f"/static/mmd/animation/{anim_file.name}"
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
@@ -728,10 +825,46 @@ def get_mmd_animations():
                         "type": "vmd",
                         "size": anim_file.stat().st_size
                     })
+                except Exception as file_error:
+                    failed += 1
+                    print(f"处理动画文件失败 {anim_file!r}: {type(file_error).__name__}: {file_error}")
 
+        # 2. User mmd/animation/.
+        mmd_dir = _ensure_mmd_directory(config_mgr)
+        if mmd_dir:
+            user_anim_dir = mmd_dir / "animation"
+            if _animation_dir_exists(user_anim_dir):
+                for anim_file in _list_animation_dir(user_anim_dir, '.vmd'):
+                    try:
+                        if not anim_file.is_file():
+                            continue
+                        if not is_utf8_text(anim_file.name):
+                            skipped += 1
+                            continue
+                        url = f"{MMD_USER_PATH}/animation/{anim_file.name}"
+                        if url in seen_urls:
+                            continue
+                        seen_urls.add(url)
+                        animations.append({
+                            "name": anim_file.stem,
+                            "filename": anim_file.name,
+                            "url": url,
+                            "type": "vmd",
+                            "size": anim_file.stat().st_size
+                        })
+                    except Exception as file_error:
+                        failed += 1
+                        print(f"处理动画文件失败 {anim_file!r}: {type(file_error).__name__}: {file_error}")
+
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VMD 动画")
+        if failed:
+            logger.warning(f"跳过 {failed} 个处理失败的 VMD 动画文件")
         return JSONResponse(content={"success": True, "animations": animations})
     except Exception as e:
-        logger.error(f"获取 VMD 动画列表失败: {e}")
+        # Exception text and tracebacks may carry absolute paths: details go to print only.
+        logger.error(f"获取 VMD 动画列表失败: {type(e).__name__}")
+        print(f"获取 VMD 动画列表失败: {traceback.format_exc()}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
@@ -821,9 +954,110 @@ async def update_emotion_mapping(request: Request):
 
 
 def _count_and_rmtree(path: Path) -> int:
-    count = sum(1 for f in path.rglob('*') if f.is_file())
+    # Counts checkable files only: an entry whose type cannot be checked is not
+    # counted (rmtree still removes it) and does not stop the delete.
+    count = sum(1 for f in path.rglob('*') if _file_check(f))
     shutil.rmtree(path)
     return count
+
+
+def _tree_has_model_named(root: Path, key: str, skip_top_dirs: frozenset[str] = frozenset()) -> bool:
+    """Whether root holds a model file whose normalised stem matches key.
+
+    Uses os.walk instead of Path.rglob: on Python 3.11 rglob silently skips
+    directories it cannot list, which would hide a same-named model. Raises
+    the first listing error when the scan was incomplete and no match was found.
+    """
+    errors: list[OSError] = []
+    wanted = key.casefold()
+    for dirpath, dirnames, filenames in os.walk(root, onerror=errors.append):
+        if skip_top_dirs and Path(dirpath) == root:
+            dirnames[:] = [name for name in dirnames if name.lower() not in skip_top_dirs]
+        for name in filenames:
+            candidate = Path(dirpath, name)
+            if (candidate.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
+                    and candidate.stem.replace("..", "_").casefold() == wanted):
+                try:
+                    if candidate.is_file():
+                        return True
+                except OSError as exc:
+                    errors.append(exc)
+    if errors:
+        raise errors[0]
+    return False
+
+
+def _remove_unused_emotion_mapping(config_mgr, mmd_dir: Path, model_name: str) -> None:
+    key = model_name.replace("..", "_")
+    mapping_dir = mmd_dir / "emotion_config"
+    mapping = mapping_dir / f"{key}.json"
+    try:
+        if not mapping.is_file() or not mapping.resolve().is_relative_to(mapping_dir.resolve()):
+            return
+        roots = [mmd_dir, config_mgr.project_root / "static" / "mmd"]
+        for folder in (config_mgr.get_steam_workshop_path(), config_mgr.get_workshop_path()):
+            if folder:
+                roots.append(Path(folder))
+        for root in dict.fromkeys(roots):
+            if not root.is_dir():
+                continue
+            skip = frozenset(RESERVED_DIRS) if root == mmd_dir else frozenset()
+            if _tree_has_model_named(root, key, skip):
+                return
+        mapping.unlink(missing_ok=True)
+        logger.info("删除 MMD 情感映射配置: %s", mapping.name)
+    except (OSError, RuntimeError) as exc:
+        # Best-effort cleanup: an incomplete scan (or a symlink loop in resolve) keeps the mapping.
+        logger.warning("清理 MMD 情感映射配置失败，保留原文件 %s: %s", mapping.name, exc)
+
+
+def _is_other_model(candidate: Path, resolved_target: Path) -> bool:
+    try:
+        return candidate.resolve() != resolved_target
+    except (OSError, RuntimeError):
+        # Cannot confirm this model-extension entry aliases the deleted target; keep the folder.
+        return True
+
+
+def _tree_has_other_model(root: Path, resolved_target: Path) -> bool:
+    """Whether root contains another model file or cannot be scanned completely.
+
+    Uses os.walk instead of Path.rglob: on Python 3.11 rglob silently skips
+    unreadable subdirectories, which could hide a sibling model and cause rmtree
+    to destroy shared textures. Any listing error or unreadable model-extension
+    candidate conservatively returns True so the directory is preserved.
+    """
+    errors: list[OSError] = []
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=errors.append):
+        for name in filenames:
+            candidate = Path(dirpath, name)
+            if candidate.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
+                continue
+            if _file_check(candidate) is False:
+                continue
+            if _is_other_model(candidate, resolved_target):
+                return True
+    return bool(errors)
+
+
+def _delete_subdir_model_sync(safe_path: Path, top_subdir: Path) -> int:
+    """Delete an MMD model in a subdirectory, removing the directory only if no sibling model remains."""
+    resolved_target = safe_path.resolve()
+    resolved_top = top_subdir.resolve()
+    if not _tree_has_other_model(top_subdir, resolved_target):
+        return _count_and_rmtree(top_subdir)
+
+    safe_path.unlink()
+    cur = safe_path.parent.resolve()
+    while cur != resolved_top.parent and cur.is_relative_to(resolved_top):
+        try:
+            if any(cur.iterdir()):
+                break
+            cur.rmdir()
+        except OSError:
+            break
+        cur = cur.parent
+    return 1
 
 
 @router.delete('/model')
@@ -855,11 +1089,13 @@ async def delete_mmd_model(request: Request):
             # safe_mmd_path rejects directories, but incomplete model directories must be deletable.
             # Check direct child of mmd_dir and presence of model files.
             candidate = (mmd_dir / rel_path).resolve()
-            if candidate.is_dir() and candidate.parent.resolve() == mmd_dir.resolve() and candidate.is_relative_to(mmd_dir.resolve()) and candidate.name.lower() not in RESERVED_DIRS:
-                has_model = any(
-                    any(candidate.rglob(f'*{ext}'))
-                    for ext in ALLOWED_MODEL_EXTENSIONS
-                )
+            try:
+                candidate_is_dir = candidate.is_dir()
+            except OSError:
+                # Type cannot be checked: refuse with the path error below instead of 500.
+                candidate_is_dir = False
+            if candidate_is_dir and candidate.parent.resolve() == mmd_dir.resolve() and candidate.is_relative_to(mmd_dir.resolve()) and candidate.name.lower() not in RESERVED_DIRS:
+                has_model = any(_iter_model_files(candidate))
                 if has_model:
                     # Valid models present: delete by model URL, never directory path.
                     return JSONResponse(status_code=400, content={
@@ -867,7 +1103,7 @@ async def delete_mmd_model(request: Request):
                     })
                 # Incomplete directory without model files: permit deletion.
                 deleted_files = await asyncio.to_thread(_count_and_rmtree, candidate)
-                logger.info(f"删除残缺 MMD 模型目录: {candidate}")
+                logger.info(f"删除残缺 MMD 模型目录: {candidate.name}")
                 return JSONResponse(content={
                     "success": True,
                     "message": f"已删除残缺模型目录 {rel_path}",
@@ -894,22 +1130,17 @@ async def delete_mmd_model(request: Request):
                 return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
             if top_subdir.name.lower() in RESERVED_DIRS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "不能删除保留目录"})
-            deleted_files = await asyncio.to_thread(_count_and_rmtree, top_subdir)
-            logger.info(f"删除 MMD 模型目录: {top_subdir} ({deleted_files} 个文件)")
+            deleted_files = await asyncio.to_thread(_delete_subdir_model_sync, safe_path, top_subdir)
+            logger.info(f"删除 MMD 模型: {safe_path.name} ({deleted_files} 个文件)")
         else:
             # Top-level model: delete model file only.
             if safe_path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "只能删除模型文件"})
             safe_path.unlink()
             deleted_files = 1
-            logger.info(f"删除 MMD 模型文件: {safe_path}")
+            logger.info(f"删除 MMD 模型文件: {safe_path.name}")
 
-        # Delete corresponding emotion map too, using same normalization as GET/POST.
-        safe_model_name = model_name.replace('..', '_')
-        emotion_config = mmd_dir / "emotion_config" / f"{safe_model_name}.json"
-        if emotion_config.exists() and emotion_config.resolve().is_relative_to((mmd_dir / "emotion_config").resolve()):
-            emotion_config.unlink()
-            logger.info(f"删除 MMD 情感映射配置: {emotion_config}")
+        await asyncio.to_thread(_remove_unused_emotion_mapping, config_mgr, mmd_dir, model_name)
 
         return JSONResponse(content={
             "success": True,
@@ -932,10 +1163,19 @@ async def list_mmd_animations_for_delete(request: Request):
 
         user_anim_dir = mmd_dir / "animation"
         animations = []
+        skipped = 0  # Non-UTF-8 names cannot be serialized or requested.
+        failed = 0
 
-        if user_anim_dir.exists():
-            for vmd_file in user_anim_dir.iterdir():
-                if vmd_file.is_file() and vmd_file.suffix.lower() == '.vmd':
+        if _animation_dir_exists(user_anim_dir):
+            for vmd_file in _list_animation_dir(user_anim_dir):
+                try:
+                    if vmd_file.suffix.lower() != '.vmd':
+                        continue
+                    if not vmd_file.is_file():
+                        continue
+                    if not is_utf8_text(vmd_file.name):
+                        skipped += 1
+                        continue
                     rel_path = vmd_file.relative_to(mmd_dir)
                     animations.append({
                         "name": vmd_file.stem,
@@ -943,10 +1183,19 @@ async def list_mmd_animations_for_delete(request: Request):
                         "url": f"{MMD_USER_PATH}/{rel_path.as_posix()}",
                         "path": rel_path.as_posix()
                     })
+                except Exception as file_error:
+                    failed += 1
+                    print(f"处理动画文件失败 {vmd_file!r}: {type(file_error).__name__}: {file_error}")
 
+        if skipped:
+            logger.warning(f"跳过 {skipped} 个文件名不是合法 UTF-8 的 VMD 动画")
+        if failed:
+            logger.warning(f"跳过 {failed} 个处理失败的 VMD 动画文件")
         return JSONResponse(content={"success": True, "animations": animations})
     except Exception as e:
-        logger.error(f"获取 VMD 动画列表失败: {e}", exc_info=True)
+        # Exception text and tracebacks may carry absolute paths: details go to print only.
+        logger.error(f"获取 VMD 动画列表失败: {type(e).__name__}")
+        print(f"获取 VMD 动画列表失败: {traceback.format_exc()}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
@@ -990,7 +1239,7 @@ async def delete_mmd_animation(request: Request):
 
         # Delete file.
         safe_path.unlink()
-        logger.info(f"删除 VMD 动画文件: {safe_path}")
+        logger.info(f"删除 VMD 动画文件: {safe_path.name}")
 
         return JSONResponse(content={
             "success": True,

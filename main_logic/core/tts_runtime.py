@@ -51,8 +51,10 @@ from main_logic.tts_client import (
     TTS_SHUTDOWN_SENTINEL,
     TTS_AUDIO_DONE_SENTINEL,
     TTS_SOFT_FLUSH_SENTINEL,
+    TTS_PRECONNECT_SENTINEL,
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
+    worker_supports_preconnect,
     VLLM_OMNI_DEFAULT_MODEL,
 )
 from main_logic.tts_client.workers.gptsovits import GPTSOVITS_END_TIMEOUT_SECONDS
@@ -431,6 +433,29 @@ class TtsRuntimeMixin:
         except RuntimeError:
             # No running loop (synchronous test fixture enqueues directly): no fallback, simply do not send.
             self._tts_soft_flush_task = None
+
+    def request_tts_preconnect(self) -> bool:
+        """Ask the TTS worker to open the next speech's socket now.
+
+        Called when a reply's LLM request starts, so the socket handshake runs
+        while the model is still producing its first text instead of after it.
+        Only for workers that recognize ``TTS_PRECONNECT_SENTINEL``; a worker
+        that does not would read it as a new speech id. Returns whether the
+        request was queued.
+        """
+        if not getattr(self, "_tts_preconnect_supported", False):
+            return False
+        if not getattr(self, "use_tts", True):
+            # Replies are not spoken through this worker (it may still be alive
+            # for the mirror channel, see _clear_tts_pipeline).
+            return False
+        if getattr(self, "_tts_quota_blocked", False):
+            # Every connect is refused until the quota window passes.
+            return False
+        if not (self.tts_ready and self.tts_thread and self.tts_thread.is_alive()):
+            return False
+        self.tts_request_queue.put((TTS_PRECONNECT_SENTINEL, None))
+        return True
 
     def _cancel_tts_soft_flush(self) -> None:
         task = getattr(self, "_tts_soft_flush_task", None)
@@ -1213,7 +1238,7 @@ class TtsRuntimeMixin:
                 int(getattr(self, "_game_speech_preload_pending_batches", 1)) - 1,
             )
 
-    async def _clear_tts_pipeline(self):
+    async def _clear_tts_pipeline(self, *, still_owned=None):
         """Clear the TTS request/response queues and pending caches, stopping the current synthesis.
 
         Gate is on worker liveness, not ``self.use_tts``: mirror channel
@@ -1230,10 +1255,16 @@ class TtsRuntimeMixin:
         notice): ``_interrupt_tts_now`` (synchronous),
         ``_let_tts_interrupt_land`` (audio a handler already held goes out,
         what leaked meanwhile is dropped) and ``_finish_tts_clear``.
+        ``still_owned``, when given, is rechecked before draining leaked
+        responses and again under ``tts_cache_lock`` before clearing pending
+        caches, so an overtaken caller leaves successor speech untouched.
         """
         interrupt = self._interrupt_tts_now()
-        await self._let_tts_interrupt_land(interrupt)
-        await self._finish_tts_clear(interrupt)
+        await self._let_tts_interrupt_land(interrupt, still_owned=still_owned)
+        if still_owned is None:
+            await self._finish_tts_clear(interrupt)
+        else:
+            await self._finish_tts_clear(interrupt, still_owned=still_owned)
 
     @staticmethod
     def _drain_tts_responses(response_queue) -> None:
@@ -1323,7 +1354,7 @@ class TtsRuntimeMixin:
         if still_owned is None or still_owned():
             self._drain_tts_responses(interrupt[1])
 
-    async def _finish_tts_clear(self, interrupt) -> None:
+    async def _finish_tts_clear(self, interrupt, *, still_owned=None) -> None:
         """The last step of ``_clear_tts_pipeline``, given what
         ``_interrupt_tts_now`` returned: the pending caches."""
         if interrupt is None:
@@ -1343,6 +1374,15 @@ class TtsRuntimeMixin:
             # replay list; a replacement cache still belongs to its new owner.
             if (not (owns_queues or owns_transferred_replay)
                     or not self._tts_output_is_current()):
+                return
+            if still_owned is not None and not still_owned():
+                # Successor speech already took over: prune only chunks belonging
+                # to the interrupted speech_id and preserve successor state.
+                if speech_id is not None:
+                    self.tts_pending_chunks[:] = [
+                        chunk for chunk in self.tts_pending_chunks
+                        if chunk[0] != speech_id
+                    ]
                 return
             self.tts_pending_chunks.clear()
             # Clear queued again: during the 20ms above, concurrent paths (finish_proactive_delivery,
@@ -1605,6 +1645,10 @@ class TtsRuntimeMixin:
         self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
         # Send text-idle soft flush only to workers recognizing this sentinel (capability in registry).
         self._tts_soft_flush_supported = bool(meta and meta.soft_flush)
+        # Read off the worker callable rather than the registry: 'free' runs the
+        # Step protocol but is deliberately absent from TTS_PROVIDER_REGISTRY.
+        # Unwraps functools.partial (ElevenLabs binds its base URL that way).
+        self._tts_preconnect_supported = worker_supports_preconnect(tts_worker)
         self._cancel_tts_soft_flush()
         self._tts_replay_progress_supported = bool(
             meta and meta.category == "http_sentence"

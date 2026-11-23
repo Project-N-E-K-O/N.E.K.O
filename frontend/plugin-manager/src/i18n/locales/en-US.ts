@@ -1,7 +1,9 @@
 import { pluginConsentMessages } from '../plugin-consent'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
+import powerMessages from '../power/en-US'
 
 /**
  * English language pack
@@ -9,8 +11,10 @@ import { authoringMessages } from '../authoring'
 export default {
   pluginConsent: pluginConsentMessages['en-US'],
   authoring: authoringMessages['en-US'],
+  marketFeedback: marketFeedbackMessages['en-US'],
   modelApi: modelApiMessages['en-US'],
   modelBindings: modelBindingsMessages['en-US'],
+  power: powerMessages,
   common: {
     chooseLanguage: "Choose language",
     surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
@@ -24,6 +28,7 @@ export default {
 
     loading: 'Loading...',
     refresh: 'Refresh',
+    retry: 'Retry',
     search: 'Search',
     filter: 'Filter',
     reset: 'Reset',
@@ -823,6 +828,22 @@ export default {
       install: 'Install',
       analyze: 'Analyze'
     },
+    messages: {
+      selectPluginToBuild: 'Select at least one plugin to build first.',
+      bundleRequiresTwoPlugins: 'Select at least two plugins for a bundle.',
+      bundleBuildFailedWithError: 'Bundle build failed: {error}',
+      bundleBuildCompleted: 'Bundle build completed.',
+      bundleBuildPartialFailed: 'Bundle build failed for {count} item(s).',
+      buildFailedWithError: 'Build failed: {error}',
+      buildCompletedWithFailures: 'Build completed: {built} succeeded, {failed} failed.',
+      buildCompleted: 'Build completed: {built} succeeded.',
+      inspectCompleted: 'Package inspection completed.',
+      verifyPassed: 'Package verification passed.',
+      verifyFailed: 'Package verification failed.',
+      selectAtLeastOnePlugin: 'Select at least one plugin.',
+      analyzeCompleted: 'Analysis completed.',
+      analyzeFailedWithError: 'Analysis failed: {error}'
+    },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
       metrics: {
@@ -1100,7 +1121,7 @@ export default {
     }
   },
   app: {
-    titleSuffix: 'N.E.K.O Plugin Manager'
+    titleSuffix: 'N.E.K.O NekoPower'
   },
   tutorial: {
     yuiGuide: {

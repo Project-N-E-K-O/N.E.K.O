@@ -75,18 +75,43 @@ jobs:
             done
             return 1
           }
+          # Codex comment filter, one output line per piece of evidence:
+          #   - Receipts: walk the body line by line. Each Codex heading line
+          #     ("Codex Review: …", "### 💡 Codex Review",
+          #     "### 🛡️ Codex Security Review", "## Codex Review Summary")
+          #     starts a section; a "Reviewed commit:" line counts only inside
+          #     a code-review section, so a security section's commit can never
+          #     be credited to a code review in the same comment.
+          #   - Review state: parse the whole JSON up to the closing "-->".
+          #     If it does not parse, print a marker line instead of dropping
+          #     it silently.
+          codex_filter='
+            .[] | select(.user.login == env.CODEX) | (.body // "")
+            | ( reduce (split("\n")[]) as $l ({sec: null, out: []};
+                  (if ($l | test("^\\s*(#+\\s*\\S*\\s*)?Codex (Security )?Review\\b"))
+                   then .sec = (if ($l | test("^\\s*(Codex Review:|#+\\s*\\S*\\s*Codex Review\\s*$)"))
+                                then "code" else "other" end)
+                   else . end)
+                  | if .sec == "code"
+                    then .out += [$l | capture("Reviewed commit:[*` ]*(?<s>[0-9a-f]{7,40})") | .s]
+                    else . end)
+                | .out[] ),
+              ( capture("codex-review-state:v1 (?<j>\\{.*\\})\\s*-->") | .j
+                | (try fromjson catch null)
+                | if . == null then "STATE_PARSE_ERROR"
+                  else (.code_review // {} | select(.status == "completed") | .commit_sha // empty)
+                  end )'
           if ! head=$(fetch gh api "repos/$REPO/pulls/$PR" --jq .head.sha) ||
              ! reviews=$(fetch gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
                  --jq '.[] | select(.user.login == env.CODEX) | .commit_id') ||
              ! comments=$(fetch gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                 --jq '.[] | select(.user.login == env.CODEX) | .body
-                       | ((select(test("(?m)^\\s*(Codex Review:|#+\\s*\\S*\\s*Codex Review\\s*$)"))
-                           | capture("Reviewed commit:[*` ]*(?<s>[0-9a-f]{7,40})") | .s) // empty),
-                         ((capture("codex-review-state:v1 (?<j>\\{.*?\\}\\})") | .j | fromjson
-                           | .code_review | select(.status == "completed") | .commit_sha) // empty)'); then
+                 --jq "$codex_filter"); then
             echo "::error::Could not read the PR or its Codex reviews; reverting claude-converged to be safe."
             revert
             exit 1
+          fi
+          if grep -qx STATE_PARSE_ERROR <<<"$comments"; then
+            echo "::warning::A Codex review-state comment could not be parsed; it was not counted as evidence."
           fi
           shas=$(printf '%s\n%s\n' "$reviews" "$comments" | grep -E '^[0-9a-f]{7,40}$' || true)
           for sha in $shas; do

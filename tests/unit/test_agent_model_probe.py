@@ -213,6 +213,41 @@ def test_a_probe_that_keeps_failing_reports_its_last_failure(setup):
     assert setup.probe.last_error == "401 Unauthorized"
 
 
+@pytest.mark.parametrize(
+    "outcomes",
+    [[SimpleNamespace(choices=[])], [Exception("Read timeout")]],
+    ids=["answered", "failed"],
+)
+def test_a_probe_tags_its_own_request_as_agent_and_leaves_the_caller_untagged(setup, monkeypatch, outcomes):
+    # The probe is synchronous; a caller that runs it on its own thread (as
+    # these tests do) shares that thread's context. If the "agent" tag
+    # outlived the request, every later LLM call on that thread would be
+    # booked as "agent" -- which made unrelated usage tests fail when they
+    # ran after this file in the same pytest worker.
+    import contextvars
+
+    from utils.token_tracker import _current_call_type
+
+    seen: list[str] = []
+    invoke_raw = setup.client.invoke_raw
+
+    def tagged_invoke_raw(messages: Any, **options: Any) -> Any:
+        seen.append(_current_call_type.get())
+        return invoke_raw(messages, **options)
+
+    monkeypatch.setattr(setup.client, "invoke_raw", tagged_invoke_raw)
+    setup.client.outcomes = list(outcomes)
+
+    def run() -> str:
+        _current_call_type.set("caller")
+        setup.probe.check_connectivity()
+        return _current_call_type.get()
+
+    # A fresh context, so a regression here cannot leak into later tests.
+    assert contextvars.Context().run(run) == "caller"
+    assert seen == ["agent"]
+
+
 def test_the_client_is_kept_between_probes_and_rebuilt_when_the_model_configuration_changes(setup):
     setup.probe.check_connectivity()
     setup.probe.check_connectivity()
@@ -313,7 +348,7 @@ def test_a_probe_that_cannot_be_rebuilt_leaves_the_one_there_is(setup, modules, 
 
 
 class Desktop:
-    """Stands in for ``nekoclaw.builtin.desktop.Desktop``; pyautogui is never imported."""
+    """Stands in for ``nekopower.builtin.desktop.Desktop``; pyautogui is never imported."""
 
     def __init__(self, ready: bool = True, reason: str = "") -> None:
         self.ready, self.reason = ready, reason
@@ -324,10 +359,10 @@ class Desktop:
 
 @pytest.fixture
 def desktop(monkeypatch: pytest.MonkeyPatch) -> Desktop:
-    from app.agent_server import nekoclaw_builtins
+    from app.agent_server import nekopower_builtins
 
     fake = Desktop()
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", fake)
+    monkeypatch.setattr(nekopower_builtins.provider, "_desktop", fake)
     return fake
 
 
@@ -341,7 +376,7 @@ def test_the_keyboard_and_mouse_are_available_when_the_model_answers_and_input_c
         "enabled": True,
         "ready": True,
         "reasons": [],
-        "provider": "nekoclaw",
+        "provider": "nekopower",
         "model": "test-model",
     }
 
@@ -443,7 +478,7 @@ async def test_availability_of_the_keyboard_and_mouse_with_everything_in_place(s
         "enabled": True,
         "ready": True,
         "reasons": [],
-        "provider": "nekoclaw",
+        "provider": "nekopower",
         "model": "test-model",
         # Nothing is known against the model: it is sent the screenshots the tool works from.
         "model_images": {"sees": True},
@@ -564,8 +599,8 @@ async def test_switching_the_keyboard_off_needs_no_check(setup, switch, desktop,
 
 
 async def test_availability_says_why_the_model_is_sent_no_pictures(setup, switch, monkeypatch, tmp_path):
-    from nekoclaw.host import mount
-    from nekoclaw.host.model_capabilities import ModelCapabilityStore
+    from nekopower.host import mount
+    from nekopower.host.model_capabilities import ModelCapabilityStore
 
     config = setup.probe.model_config()
     store = ModelCapabilityStore(tmp_path / "model_capabilities.json")

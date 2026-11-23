@@ -90,14 +90,14 @@ def create_offline_client(test_provider: str = TEST_PROVIDER, model_override: Op
         raise OfflineClientError(f"API key for {provider} not found.")
 
     base_url = profile.get('OPENROUTER_URL')
-    model = profile.get('CORRECTION_MODEL')
+    model = model_override or profile.get('MEMORY_MODEL')
     if not base_url or not model:
-        raise OfflineClientError("Profile missing OPENROUTER_URL or CORRECTION_MODEL.")
+        raise OfflineClientError("Profile missing OPENROUTER_URL or MEMORY_MODEL.")
 
     return OmniOfflineClient(
         base_url=base_url,
         api_key=api_key,
-        model=model_override or model,
+        model=model,
         vision_model=profile.get('VISION_MODEL', ''),
         vision_base_url=profile.get('VISION_BASE_URL', ''),
         vision_api_key=profile.get('VISION_API_KEY', ''),

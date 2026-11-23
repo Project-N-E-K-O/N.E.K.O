@@ -414,6 +414,8 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
         });
     }
     let resetCount = 0;
+    const useResetTargets = typeof this._isMotionResidueResetSuspended === 'function'
+        && !this._isMotionResidueResetSuspended();
 
     for (const [paramId, initialValue] of Object.entries(this.initialParameters)) {
         try {
@@ -421,7 +423,16 @@ Live2DManager.prototype._resetParametersToInitialState = function(options = {}) 
             const baseline = this._findRecordedParameterBaseline(paramId, coreModel, {
                 includeSavedParameters: true
             });
-            const resetValue = baseline.found ? baseline.value : initialValue;
+            let resetValue = baseline.found ? baseline.value : initialValue;
+            if (useResetTargets) {
+                // 教程和演出之外按「保存值，否则 moc 默认值」复位；淡出层正在处理的参数交给它。
+                const index = live2dResolveResetParameterIndex(this, coreModel, paramId);
+                if (index >= 0) {
+                    if (this._isMotionResidueFading(index)) continue;
+                    const target = this._resolveParameterResetTarget(coreModel, index);
+                    if (Number.isFinite(target)) resetValue = target;
+                }
+            }
 
             if (paramId.startsWith('param_')) {
                 const paramIndex = parseInt(paramId.substring(6), 10);
@@ -563,6 +574,10 @@ Live2DManager.prototype._resetRecordedParameterIds = function(paramIds, options 
         if (paramId) uniqueParamIds.add(paramId);
     });
 
+    if (typeof this._isMotionResidueResetSuspended === 'function' && !this._isMotionResidueResetSuspended()) {
+        return this._resetParameterIdsToResetTargets(uniqueParamIds, coreModel, protectedIds, options);
+    }
+
     for (const paramId of uniqueParamIds) {
         if (protectedIds.has(paramId)) continue;
         if (live2dExpressionOwnsAmplitude(this, paramId, coreModel)) continue;
@@ -582,6 +597,53 @@ Live2DManager.prototype._resetRecordedParameterIds = function(paramIds, options 
         }
     }
 
+    return resetCount;
+};
+
+// 教程和演出之外的复位：目标是用户保存值，否则 moc 默认值。options.smooth 时交给
+// 淡出层平滑拉回；淡出层没装上（如 Cubism 2 模型）时退回即时写入。
+Live2DManager.prototype._resetParameterIdsToResetTargets = function(paramIds, coreModel, protectedIds, options = {}) {
+    const candidates = [];
+    for (const paramId of paramIds) {
+        if (protectedIds.has(paramId)) continue;
+        if (live2dExpressionOwnsAmplitude(this, paramId, coreModel)) continue;
+        candidates.push(paramId);
+    }
+    const queued = options.smooth === true ? this._queueMotionResidueReset(candidates) : new Set();
+    let resetCount = 0;
+    for (const paramId of candidates) {
+        if (queued.has(paramId)) {
+            resetCount++;
+            continue;
+        }
+        try {
+            const index = live2dResolveResetParameterIndex(this, coreModel, paramId);
+            let target;
+            if (index >= 0) {
+                if (this._isMotionResidueFading(index)) {
+                    resetCount++;
+                    continue;
+                }
+                target = this._resolveParameterResetTarget(coreModel, index);
+            }
+            if (!Number.isFinite(target)) {
+                const baseline = this._findRecordedParameterBaseline(paramId, coreModel, {
+                    includeSavedParameters: true
+                });
+                if (!baseline.found) continue;
+                target = baseline.value;
+            }
+            if (index >= 0) coreModel.setParameterValueByIndex(index, target);
+            else coreModel.setParameterValueById(paramId, target);
+            if (options.updateSavedParameters && Array.isArray(coreModel._savedParameters)
+                && index >= 0 && index < coreModel._savedParameters.length) {
+                coreModel._savedParameters[index] = target;
+            }
+            resetCount++;
+        } catch (e) {
+            // 参数不存在或 Cubism API 差异，忽略单项失败。
+        }
+    }
     return resetCount;
 };
 
@@ -606,6 +668,341 @@ Live2DManager.prototype._resetActiveMotionParameters = function(options = {}) {
 Live2DManager.prototype._clearActiveMotionParamIds = function() {
     this._motionParameterTrackGeneration = (this._motionParameterTrackGeneration || 0) + 1;
     this._activeMotionParamIds = null;
+};
+
+// ===== 动作残留复位 =====
+// SDK 每帧先跑 motion、再 saveParameters，帧末 loadParameters 把参数拉回保存值。
+// 动作结束后最后一帧的曲线值就成了新的基准，一直留到下一个碰同一参数的动作。
+// 这里在 afterMotionUpdate（motion 之后、saveParameters 之前）把已结束动作碰过的
+// 参数平滑拉回目标值：用户保存值，否则 moc 默认值。教程、演出、参数编辑持有模型时
+// 完全不介入，保留它们各自的快照和恢复逻辑。
+const LIVE2D_MOTION_RESIDUE_FADE_MS = 300;
+const LIVE2D_MOTION_CURVE_TARGET_PARAMETER = 1;
+const live2dMotionCurveParameterIds = new WeakMap();
+
+// 只读 SDK 已加载的 Cubism 4 动作对象；读不到结构时返回 null，调用方不介入。
+function live2dReadMotionCurveParameterIds(motion) {
+    if (!motion || typeof motion !== 'object') return null;
+    if (live2dMotionCurveParameterIds.has(motion)) return live2dMotionCurveParameterIds.get(motion);
+    const data = motion._motionData;
+    const curves = data && data.curves;
+    let ids = null;
+    if (curves && typeof curves.length === 'number') {
+        const count = Number.isInteger(data.curveCount) ? Math.min(data.curveCount, curves.length) : curves.length;
+        ids = [];
+        for (let i = 0; i < count; i++) {
+            const curve = curves[i];
+            if (!curve || curve.type !== LIVE2D_MOTION_CURVE_TARGET_PARAMETER || curve.id == null) continue;
+            const id = String(curve.id);
+            if (id && !ids.includes(id)) ids.push(id);
+        }
+    }
+    live2dMotionCurveParameterIds.set(motion, ids);
+    return ids;
+}
+
+// 曲线参数 ID → 参数索引，按「动作 + 模型」缓存，避免每帧对每条曲线查一次索引。
+const live2dMotionCurveParameterIndexes = new WeakMap();
+function live2dReadMotionCurveParameterIndexes(motion, coreModel, count) {
+    const ids = live2dReadMotionCurveParameterIds(motion);
+    if (!ids) return null;
+    const cached = live2dMotionCurveParameterIndexes.get(motion);
+    if (cached && cached.coreModel === coreModel && cached.count === count) return cached.pairs;
+    const pairs = [];
+    for (const id of ids) {
+        let index = -1;
+        try { index = coreModel.getParameterIndex(id); } catch (_) {}
+        if (!Number.isInteger(index) || index < 0 || index >= count) continue;
+        pairs.push([index, id]);
+    }
+    live2dMotionCurveParameterIndexes.set(motion, { coreModel, count, pairs });
+    return pairs;
+}
+
+function live2dResolveResetParameterIndex(manager, coreModel, paramId) {
+    if (!coreModel || paramId === undefined || paramId === null) return -1;
+    const count = typeof coreModel.getParameterCount === 'function' ? coreModel.getParameterCount() : 0;
+    let index = -1;
+    try {
+        if (typeof manager._resolveModelParameterKey === 'function') {
+            const resolved = manager._resolveModelParameterKey(coreModel, paramId);
+            if (resolved && Number.isInteger(resolved.idx)) index = resolved.idx;
+        } else if (typeof coreModel.getParameterIndex === 'function') {
+            index = coreModel.getParameterIndex(String(paramId));
+        }
+    } catch (_) {
+        index = -1;
+    }
+    // Cubism 4 会给不存在的 ID 分配超出参数个数的虚拟索引，不能写。
+    return Number.isInteger(index) && index >= 0 && index < count ? index : -1;
+}
+
+Live2DManager.prototype._getMotionCurveParameterIds = function(motion) {
+    const ids = live2dReadMotionCurveParameterIds(motion);
+    return ids ? new Set(ids) : null;
+};
+
+Live2DManager.prototype._getLoadedMotionParameterIds = function(groupName, index, model = this.currentModel) {
+    const motion = model?.internalModel?.motionManager?.motionGroups?.[groupName]?.[index];
+    return this._getMotionCurveParameterIds(motion);
+};
+
+// 教程、演出、参数编辑各自持有模型的快照和恢复逻辑；这些时候新的复位一律不介入，
+// 旧的复位路径也按原来的快照基准走。
+Live2DManager.prototype._isMotionResidueResetSuspended = function() {
+    if (typeof window !== 'undefined') {
+        if (window.isInTutorial === true || window.isNekoClickGuideActive === true) return true;
+        const tutorialManager = window.universalTutorialManager;
+        if (tutorialManager && tutorialManager.isTutorialRunning === true) return true;
+        if (typeof window.isNekoHomeTutorialInteractionLocked === 'function') {
+            try {
+                if (window.isNekoHomeTutorialInteractionLocked()) return true;
+            } catch (_) {
+                return true;
+            }
+        }
+    }
+    if (this._avatarPerformanceSessionOwners && this._avatarPerformanceSessionOwners.size > 0) return true;
+    if (this._avatarPerformanceBypassLocks === true || this._temporaryMotionSuspendToken) return true;
+    if (this._parameterEditingMode === true) return true;
+    if (typeof this.isAvatarPerformanceCapabilityLocked === 'function') {
+        for (const capability of ['motion', 'params', 'expression']) {
+            try {
+                if (this.isAvatarPerformanceCapabilityLocked(capability)) return true;
+            } catch (_) {
+                return true;
+            }
+        }
+    }
+    return false;
+};
+
+Live2DManager.prototype._getSavedParameterResetTargets = function(coreModel) {
+    const saved = this._shouldApplySavedParams ? this.savedModelParameters : null;
+    const revision = this._parameterConfigRevision || 0;
+    const cache = this._savedParameterResetTargetCache;
+    if (cache && cache.coreModel === coreModel && cache.saved === saved && cache.revision === revision) {
+        return cache.targets;
+    }
+    const targets = new Map();
+    if (saved && typeof saved === 'object') {
+        // 与保存参数层相同的别名规则：同一参数既有命名键又有 param_N 时以命名键为准。
+        const fromIndexKey = new Map();
+        for (const [key, value] of Object.entries(saved)) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) continue;
+            const index = live2dResolveResetParameterIndex(this, coreModel, key);
+            if (index < 0) continue;
+            // 保存参数层刻意不应用的保存值（眨眼、嘴部、可见性、运行时呼吸）不作复位目标，回退到 moc 默认值。
+            if (typeof this._isRuntimeManagedSavedParameter === 'function') {
+                let resolvedId = null;
+                try { resolvedId = this._resolveModelParameterKey(coreModel, key)?.resolvedId || null; } catch (_) {}
+                if (this._isRuntimeManagedSavedParameter(coreModel, [key, resolvedId])) continue;
+            }
+            const isIndexKey = /^(?:param_)?\d+$/.test(String(key));
+            if (targets.has(index) && isIndexKey && !fromIndexKey.get(index)) continue;
+            targets.set(index, numeric);
+            fromIndexKey.set(index, isIndexKey);
+        }
+    }
+    this._savedParameterResetTargetCache = { coreModel, saved, revision, targets };
+    return targets;
+};
+
+// 复位目标：用户保存值，否则 moc 默认值（用户模型的默认值不一定是 0）。
+Live2DManager.prototype._resolveParameterResetTarget = function(coreModel, index) {
+    if (!coreModel || !Number.isInteger(index) || index < 0) return undefined;
+    const savedTargets = this._getSavedParameterResetTargets(coreModel);
+    if (savedTargets.has(index)) return savedTargets.get(index);
+    if (typeof this._getCoreParameterDefaultValue !== 'function') return undefined;
+    const value = Number(this._getCoreParameterDefaultValue(coreModel, index));
+    return Number.isFinite(value) ? value : undefined;
+};
+
+Live2DManager.prototype._installMotionResidueFade = function(model = this.currentModel) {
+    const internalModel = model?.internalModel;
+    const coreModel = internalModel?.coreModel;
+    if (!internalModel || !coreModel || typeof internalModel.on !== 'function') return false;
+    const previous = this._motionResidueFade;
+    if (previous && previous.model === model && previous.internalModel === internalModel
+        && previous.coreModel === coreModel) return true;
+    this._uninstallMotionResidueFade();
+    const state = { model, internalModel, coreModel, touched: new Map(), fades: new Map(), listener: null,
+        updateCount: 0, wrapperFrameCount: -1, wrapperAlive: false };
+    state.listener = () => this._updateMotionResidueFade(state);
+    internalModel.on('afterMotionUpdate', state.listener);
+    this._motionResidueFade = state;
+    return true;
+};
+
+Live2DManager.prototype._uninstallMotionResidueFade = function(state = this._motionResidueFade) {
+    if (!state) return;
+    try {
+        if (state.listener && typeof state.internalModel?.off === 'function') {
+            state.internalModel.off('afterMotionUpdate', state.listener);
+        }
+    } catch (_) {}
+    state.touched.clear();
+    state.fades.clear();
+    state.wrapperAlive = false;
+    if (this._motionResidueFade === state) this._motionResidueFade = null;
+};
+
+Live2DManager.prototype._getCurrentMotionResidueFade = function() {
+    const state = this._motionResidueFade;
+    if (!state || this.currentModel !== state.model || state.model.internalModel !== state.internalModel
+        || state.internalModel.coreModel !== state.coreModel) return null;
+    return state;
+};
+
+Live2DManager.prototype._releaseMotionResidueParameter = function(index) {
+    const state = this._getCurrentMotionResidueFade();
+    if (!state) return;
+    state.fades.delete(index);
+    state.touched.delete(index);
+};
+
+Live2DManager.prototype._isMotionResidueFading = function(index) {
+    const state = this._getCurrentMotionResidueFade();
+    return !!state && state.fades.has(index);
+};
+
+// 保存参数包装层每帧开头调用一次：淡出层自上一帧以来跑过、且没被教程或演出暂停，
+// 本帧才把参数让给它。淡出层停摆（没有 afterMotionUpdate）时包装层照原逻辑写，避免参数卡住。
+Live2DManager.prototype._beginMotionResidueWrapperFrame = function() {
+    const state = this._getCurrentMotionResidueFade();
+    if (!state) return false;
+    const alive = state.updateCount !== state.wrapperFrameCount;
+    state.wrapperFrameCount = state.updateCount;
+    state.wrapperAlive = alive && state.touched.size > 0 && !this._isMotionResidueResetSuspended();
+    return state.wrapperAlive;
+};
+
+// 给保存参数包装层用：'fading' 表示淡出层正在写这个参数；'handoff' 表示动作刚放手、
+// 本帧 afterMotionUpdate 才开始淡出；其余返回 null，包装层照原逻辑写保存值。
+Live2DManager.prototype._getMotionResidueParameterState = function(index) {
+    const state = this._getCurrentMotionResidueFade();
+    if (!state || !state.wrapperAlive || !state.touched.has(index)) return null;
+    return state.fades.has(index) ? 'fading' : 'handoff';
+};
+
+// 把参数交给淡出层，返回已接管的参数 ID；没装上或被暂停时返回空集合，调用方自己即时复位。
+Live2DManager.prototype._queueMotionResidueReset = function(paramIds) {
+    const handled = new Set();
+    const state = this._getCurrentMotionResidueFade();
+    if (!state || !paramIds || typeof paramIds.forEach !== 'function') return handled;
+    if (this._isMotionResidueResetSuspended()) return handled;
+    paramIds.forEach((paramId) => {
+        const index = live2dResolveResetParameterIndex(this, state.coreModel, paramId);
+        if (index < 0) return;
+        if (!state.touched.has(index)) state.touched.set(index, String(paramId));
+        handled.add(paramId);
+    });
+    return handled;
+};
+
+Live2DManager.prototype._isMotionResidueParamProtected = function(paramId, coreModel, protectedIds) {
+    if (protectedIds.has(paramId)) return true;
+    if (live2dExpressionOwnsAmplitude(this, paramId, coreModel)) return true;
+    return false;
+};
+
+Live2DManager.prototype._updateMotionResidueFade = function(state = this._motionResidueFade, now = performance.now()) {
+    if (!state || this._motionResidueFade !== state) return;
+    state.updateCount++;
+    const { model, internalModel, coreModel } = state;
+    if (this.currentModel !== model || model.destroyed || model.internalModel !== internalModel
+        || internalModel.coreModel !== coreModel) {
+        this._uninstallMotionResidueFade(state);
+        return;
+    }
+    if (this._isMotionResidueResetSuspended()) {
+        // 持有者接管期间不跟踪也不淡出，接管结束后也不追补它们留下的参数。
+        state.touched.clear();
+        state.fades.clear();
+        return;
+    }
+    const entries = internalModel.motionManager?.queueManager?._motions;
+    if (!Array.isArray(entries)) return;
+    const count = typeof coreModel.getParameterCount === 'function' ? coreModel.getParameterCount() : 0;
+
+    const active = new Set();
+    for (const entry of entries) {
+        if (!entry || (typeof entry.isFinished === 'function' && entry.isFinished())) continue;
+        const curves = live2dReadMotionCurveParameterIndexes(entry._motion, coreModel, count);
+        if (!curves) continue;
+        for (const [index, id] of curves) {
+            active.add(index);
+            state.touched.set(index, id);
+            state.fades.delete(index);
+        }
+    }
+    if (state.touched.size === 0) return;
+
+    let protectedIds = null;
+    const isProtected = (paramId) => {
+        if (!protectedIds) protectedIds = this._getActiveExpressionParamIds();
+        return this._isMotionResidueParamProtected(paramId, coreModel, protectedIds);
+    };
+
+    for (const [index, paramId] of state.touched) {
+        if (active.has(index) || state.fades.has(index)) continue;
+        // 跳过正在生效的表情、常驻表情和嘴部振幅参数，与旧复位的保护范围一致。
+        if (isProtected(paramId)) {
+            state.touched.delete(index);
+            continue;
+        }
+        const target = this._resolveParameterResetTarget(coreModel, index);
+        let from;
+        try { from = coreModel.getParameterValueByIndex(index); } catch (_) {}
+        if (!Number.isFinite(target) || !Number.isFinite(from)) {
+            state.touched.delete(index);
+            continue;
+        }
+        if (Math.abs(from - target) <= 0.0001) {
+            state.touched.delete(index);
+            continue;
+        }
+        state.fades.set(index, { paramId, from, target, start: now, last: null });
+    }
+
+    for (const [index, fade] of state.fades) {
+        if (isProtected(fade.paramId)) {
+            state.fades.delete(index);
+            state.touched.delete(index);
+            continue;
+        }
+        let current;
+        try { current = coreModel.getParameterValueByIndex(index); } catch (_) {
+            state.fades.delete(index);
+            state.touched.delete(index);
+            continue;
+        }
+        // 别的写入方（新的动作、呼吸、外观叠加、旧的即时复位）接手了，就交给它。
+        if (fade.last !== null && current !== fade.last) {
+            state.fades.delete(index);
+            state.touched.delete(index);
+            continue;
+        }
+        const progress = LIVE2D_MOTION_RESIDUE_FADE_MS > 0
+            ? Math.min(Math.max((now - fade.start) / LIVE2D_MOTION_RESIDUE_FADE_MS, 0), 1)
+            : 1;
+        const eased = progress < 0.5
+            ? 4 * progress * progress * progress
+            : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+        try {
+            coreModel.setParameterValueByIndex(index, fade.from + (fade.target - fade.from) * eased);
+            fade.last = coreModel.getParameterValueByIndex(index);
+        } catch (_) {
+            state.fades.delete(index);
+            state.touched.delete(index);
+            continue;
+        }
+        if (progress >= 1) {
+            state.fades.delete(index);
+            state.touched.delete(index);
+        }
+    }
 };
 
 Live2DManager.prototype._nextMotionTimerGeneration = function() {
@@ -771,6 +1168,7 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
         let phase = 0;          // 0 = 采集含表情, 1 = 采集无表情 & 计算 delta, 2 = 淡出
         const valuesA = [];     // Phase 0 采集的全参数值（按索引）
         const deltaByIndex = {}; // { 参数索引: 差值 }
+        const motionResidueAtPhase0 = new Set(); // Phase 0 时正在淡出的动作残留参数
         let startTime = 0;
 
         const onBeforeUpdate = function() {
@@ -796,6 +1194,10 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
                 for (let i = 0; i < paramCount; i++) {
                     try { valuesA[i] = cm.getParameterValueByIndex(i); }
                     catch (e) { valuesA[i] = 0; }
+                    // 动作残留淡出可能在 Phase 1 之前结束，按采样时的状态一并排除。
+                    if (typeof self._isMotionResidueFading === 'function' && self._isMotionResidueFading(i)) {
+                        motionResidueAtPhase0.add(i);
+                    }
                 }
 
                 // 停止表情源（下一帧生效），不停止 motion
@@ -824,6 +1226,9 @@ Live2DManager.prototype.smoothResetToInitialState = function(duration = 800) {
             if (phase === 1) {
                 for (let i = 0; i < paramCount; i++) {
                     if (live2dExpressionOwnsAmplitude(self, `param_${i}`, cm)) continue;
+                    // 动作残留淡出层这两帧之间改的值不是表情叠加量。
+                    if (motionResidueAtPhase0.has(i)) continue;
+                    if (typeof self._isMotionResidueFading === 'function' && self._isMotionResidueFading(i)) continue;
                     try {
                         const b = cm.getParameterValueByIndex(i);
                         const a = valuesA[i];
@@ -953,8 +1358,8 @@ Live2DManager.prototype.softClearEmotionEffects = async function(options = {}) {
         return false;
     }
 
-    const resetCount = this._resetActiveMotionParameters({ preserveExpression });
-    const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression });
+    const resetCount = this._resetActiveMotionParameters({ preserveExpression, smooth: preserveExpression });
+    const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression, smooth: preserveExpression });
     this._clearActiveMotionParamIds();
     console.log(`已平滑清理motion效果，重置${resetCount}个motion参数，显式恢复${explicitResetCount}个motion参数`);
 
@@ -1541,7 +1946,10 @@ Live2DManager.prototype._playMotionNow = async function(emotion, options = {}) {
         && this._isCurrentMotionTimerGeneration(motionTimerGuardGeneration)
         && (!admittedOperation || this._activeActionMotionOperation === admittedOperation)
     );
+    let paramIdsFromLoadedMotion = false;
     const clearTrackedMotionParamsIfCurrent = () => {
+        // 参数列表已直接从 SDK 已加载的动作读到时，fetch 只用来取时长，失败也不清。
+        if (paramIdsFromLoadedMotion) return;
         if (
             isCurrentPlayMotionInvocation()
             && this.currentModel === motionParamTrackModel
@@ -1573,6 +1981,17 @@ Live2DManager.prototype._playMotionNow = async function(emotion, options = {}) {
 
                     if (motion) {
                         console.log(`成功开始播放motion（motion组: ${runtimeChoice.group}，预期文件: ${runtimeMotionFile}）`);
+                        // 直接读 SDK 已加载的动作曲线，不等下面的 fetch，动作先结束也不会漏记。
+                        // 教程和演出期间维持原来只靠 fetch 记录的时序。
+                        if (typeof this._isMotionResidueResetSuspended === 'function'
+                            && !this._isMotionResidueResetSuspended()) {
+                            const loadedParamIds = this._getLoadedMotionParameterIds(
+                                runtimeChoice.group, runtimeChoice.index, motionParamTrackModel);
+                            if (loadedParamIds) {
+                                this._setActiveMotionParamIds(loadedParamIds);
+                                paramIdsFromLoadedMotion = true;
+                            }
+                        }
 
                         // 获取motion的实际持续时间
                         let motionDuration = 5000; // 默认5秒
@@ -1767,8 +2186,8 @@ Live2DManager.prototype.clearEmotionEffects = function() {
     // 只清角度/呼吸会留下上一个 motion 的残影；但也不能全量回滚模型，
     // 否则 idle motion 会把当前表情或用户基准姿态冲掉。这里仅恢复当前
     // motion 文件实际声明过的参数，并继续保护当前 expression、常驻表情和口型参数。
-    const resetCount = this._resetActiveMotionParameters({ preserveExpression: true });
-    const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression: true });
+    const resetCount = this._resetActiveMotionParameters({ preserveExpression: true, smooth: true });
+    const explicitResetCount = this._resetExplicitMotionParameters({ preserveExpression: true, smooth: true });
     this._clearActiveMotionParamIds();
     console.log(`已按初始基准重置${resetCount}个motion参数，显式恢复${explicitResetCount}个motion参数，expression参数已保留`);
     

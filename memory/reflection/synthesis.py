@@ -443,7 +443,7 @@ class SynthesisMixin:
 
         try:
             set_call_type("memory_reflection")
-            api_config = await self._config_manager.aget_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('memory')
             # Timeout: see MEMORY_LLM_HARD_TIMEOUT_SECONDS. Upstream forwarding
             # caps at 120s, clients at ≤110s. Thinking-enabled multi-field
             # JSON ontology is longer than classification, justifying 110s. LLM runs unlocked,
