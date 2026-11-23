@@ -7,7 +7,7 @@ is cancelled there as well), and no release that fixes this is left on PyPI
 run on to the job's time limit with nothing in the log.
 
 Such a teardown gets a watchdog for what is left of pytest-timeout's limit
-for the test, counted from its setup:
+for the test, counted from its setup, and at least 60 seconds:
 the stack of every thread is written out, then the process ends. Under xdist
 the test is reported as failed and a new worker goes on. A test that passed is
 left to pytest-timeout, whose timer is still running through its teardown.
@@ -131,7 +131,10 @@ def pytest_runtest_setup(item: pytest.Item):
 def pytest_runtest_makereport(item: pytest.Item, call: Any):
     outcome = yield
     report = outcome.get_result()
-    if report.when in ("setup", "call") and report.failed:
+    # Only where an exception was raised: that is when pytest-timeout (and
+    # pytest's faulthandler timer) are cancelled. An xfail(strict=True) that
+    # passed is a failed report without one, and both timers are still running.
+    if report.when in ("setup", "call") and report.failed and call.excinfo is not None:
         item.stash[_FAILED_BEFORE_TEARDOWN] = True
 
 
@@ -143,9 +146,12 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: Any):
     if limit > 0:
         # What is left of the test's whole budget, counted from its setup: a
         # test that failed at second 299 does not get another 300 for its
-        # teardown. Spent already, it still gets a moment to write the stacks.
+        # teardown. But never less than a grace an ordinary teardown fits in
+        # (closing a loop, stopping tasks, removing a temporary tree): where
+        # pytest-timeout fails a test by a signal (Linux, macOS) the run goes
+        # on afterwards, and ending the process here would lose the rest of it.
         started = item.stash.get(_STARTED_AT, time.monotonic())
-        left = max(limit - (time.monotonic() - started), _AT_LEAST_SECONDS)
+        left = max(limit - (time.monotonic() - started), _TEARDOWN_GRACE_SECONDS)
         faulthandler.dump_traceback_later(left, file=_stderr_fd(item.config), exit=True)
     try:
         yield
@@ -156,4 +162,4 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: Any):
 
 _FAILED_BEFORE_TEARDOWN = pytest.StashKey[bool]()
 _STARTED_AT = pytest.StashKey[float]()
-_AT_LEAST_SECONDS = 1.0
+_TEARDOWN_GRACE_SECONDS = 60.0
