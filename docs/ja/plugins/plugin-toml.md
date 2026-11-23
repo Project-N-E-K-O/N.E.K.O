@@ -305,6 +305,7 @@ UI が不要なら、このセクションは書かなくてかまいません�
 | `plugin_sdk.main_agent.messages:push` | N.E.K.O にメッセージ・カード・返信の添付を送る |
 | `plugin_sdk.models:invoke` | AI モデルを呼び出す |
 | `system.network:connect` | ネットワークに接続する |
+| `system.network:listen` | このコンピューターでネットワークポートを開き、他のプログラムから接続できるようにする |
 | `system.fs:read` / `system.fs:write` | プラグイン自身のデータディレクトリ以外のファイルを読む / 書く |
 | `system.process:spawn` | 他のプログラムを起動する |
 | `system.env:read` | 環境変数を読む |

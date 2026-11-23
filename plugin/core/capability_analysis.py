@@ -26,7 +26,8 @@ from plugin.utils.source_paths import is_vendor_sync_path, iter_plugin_python_fi
 CAPABILITIES = tuple(sorted(spec.legacy_name for spec in PERMISSIONS.values() if spec.legacy_name))
 # Bump when a change to analysis makes persisted reports stale.
 # 5: permission ids, declarations, blind spots; legacy capabilities unchanged.
-ANALYZER_VERSION = 5
+# 6: system.network:listen (servers moved out of system.network:connect).
+ANALYZER_VERSION = 6
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -683,10 +684,15 @@ BLIND_SPOT_TYPES = (
 
 _MODELS = "plugin_sdk.models:invoke"
 _NETWORK = "system.network:connect"
+_LISTEN = "system.network:listen"
 _PROCESS = "system.process:spawn"
 _ENV = "system.env:read"
 _FS_READ = "system.fs:read"
 _FS_WRITE = "system.fs:write"
+
+# Methods that make a plain socket accept connections. They continue the
+# "socket.socket" network pattern, so _NOT_UNDER keeps them out of it.
+_SOCKET_LISTEN_METHODS = ("bind", "listen", "accept")
 
 # Standard-library and well-known third-party origins. A reference matches a
 # pattern when it equals it or continues it with "." or "()".
@@ -696,14 +702,12 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "socket.socket",
             "socket.create_connection",
-            "socket.create_server",
             "urllib.request.urlopen",
             "urllib.request.build_opener",
             "urllib.request.urlretrieve",
             "http.client.HTTPConnection",
             "http.client.HTTPSConnection",
             "asyncio.open_connection",
-            "asyncio.start_server",
             "ftplib.FTP",
             "ftplib.FTP_TLS",
             "smtplib.SMTP",
@@ -730,6 +734,37 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "websocket.WebSocketApp",
             "urllib3.PoolManager",
             "urllib3.request",
+        ),
+    ),
+    (
+        _LISTEN,
+        (
+            "socket.create_server",
+            # A socket stored in a name resolves through it (s = socket.socket();
+            # s.bind(...)); a with-target or a parameter does not.
+            *(f"socket.socket().{method}" for method in _SOCKET_LISTEN_METHODS),
+            "asyncio.start_server",
+            *(
+                f"asyncio.{loop}().create_server"
+                for loop in ("get_event_loop", "get_running_loop", "new_event_loop")
+            ),
+            "http.server.HTTPServer",
+            "http.server.ThreadingHTTPServer",
+            *(
+                f"socketserver.{kind}{protocol}Server"
+                for kind in ("", "Threading", "Forking")
+                for protocol in ("TCP", "UDP")
+            ),
+            "wsgiref.simple_server.make_server",
+            "wsgiref.simple_server.WSGIServer",
+            "xmlrpc.server.SimpleXMLRPCServer",
+            "xmlrpc.server.DocXMLRPCServer",
+            "websockets.serve",
+            "websockets.server.serve",
+            "aiohttp.web.run_app",
+            "aiohttp.web.TCPSite",
+            "uvicorn.run",
+            "uvicorn.Server",
         ),
     ),
     (
@@ -816,6 +851,11 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+# Patterns a permission's own patterns would also match but which belong to
+# another permission only (a socket that binds listens, it does not connect).
+_NOT_UNDER: dict[str, tuple[str, ...]] = {
+    _NETWORK: tuple(f"socket.socket().{method}" for method in _SOCKET_LISTEN_METHODS),
+}
 # Data attributes whose mere read is the use (no call needed).
 _DATA_READS = ("os.environ", "os.environb")
 # Methods on those that change the mapping rather than read it.
@@ -843,6 +883,10 @@ _IMPORT_HINTS = {
     "urllib3": _NETWORK,
     "urllib.request": _NETWORK,
     "http.client": _NETWORK,
+    "http.server": _LISTEN,
+    "socketserver": _LISTEN,
+    "wsgiref.simple_server": _LISTEN,
+    "xmlrpc.server": _LISTEN,
     "ftplib": _NETWORK,
     "smtplib": _NETWORK,
     "subprocess": _PROCESS,
@@ -990,7 +1034,7 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
         results.extend((permission, direct, {"mode": mode}) for permission in permissions)
         return results
     for permission, patterns in _EXTERNAL_RULES:
-        if _matches(name, patterns):
+        if _matches(name, patterns) and not _matches(name, _NOT_UNDER.get(permission, ())):
             basis = direct
             if _matches(name, _DATA_READS):
                 # A mutating method, called or only taken (set_env = os.environ.update).

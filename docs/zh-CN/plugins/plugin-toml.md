@@ -301,6 +301,7 @@ permissions = ["state:read"]
 | `plugin_sdk.main_agent.messages:push` | 向 N.E.K.O 推送消息、卡片或给回复附加内容 |
 | `plugin_sdk.models:invoke` | 调用 AI 模型 |
 | `system.network:connect` | 联网 |
+| `system.network:listen` | 在本机开放网络端口，让别的程序连进来 |
 | `system.fs:read` / `system.fs:write` | 读 / 写插件自己数据目录以外的文件 |
 | `system.process:spawn` | 启动其他程序 |
 | `system.env:read` | 读环境变量 |

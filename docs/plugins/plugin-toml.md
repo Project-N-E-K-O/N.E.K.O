@@ -306,6 +306,7 @@ Permission ids:
 | `plugin_sdk.main_agent.messages:push` | Send messages, cards or reply attachments to N.E.K.O |
 | `plugin_sdk.models:invoke` | Call AI models |
 | `system.network:connect` | Connect to the network |
+| `system.network:listen` | Open a network port on this computer so other programs can connect to it |
 | `system.fs:read` / `system.fs:write` | Read / write files outside the plugin's own data directory |
 | `system.process:spawn` | Start other programs |
 | `system.env:read` | Read environment variables |
