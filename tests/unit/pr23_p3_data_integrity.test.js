@@ -1002,7 +1002,8 @@ test('PR3976 master-on persisted: child flags still restore on next load after o
         assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
     }
 
-    // Case C: user turned master OFF themselves after the interrupted restore -> respect it, do not re-enable.
+    // Case C: master found OFF on a later load (user turned it off, or backend not yet replayed):
+    // never re-enable it, keep the snapshot, and retry later.
     {
         const storage = createStorage();
         storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
@@ -1011,9 +1012,40 @@ test('PR3976 master-on persisted: child flags still restore on next load after o
         const server = makeAgentServer();
         const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
         await flushMicrotasks();
-        assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0, 'must not re-enable a master switch the user turned off');
-        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+        assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0, 'must not re-enable a master switch found OFF');
+        assert.notEqual(storage.getItem(HOME_TUTORIAL_KEY), null, 'snapshot must be kept: OFF may be a backend cold start');
+        assert.ok(rt.scheduledTimeouts.some(t => !t.cleared), 'a retry must be scheduled');
     }
+});
+
+test('PR3976 4662066742: backend cold start after master-on keeps the snapshot and restores child flags once the backend replays master', async () => {
+    const storage = createStorage();
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+        version: 1,
+        token: 901,
+        createdAt: Date.now(),
+        lanlanName: 'CatA',
+        agentFlags: { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false },
+        masterAttempted: true,
+        masterApplied: true,
+    }));
+    // Fresh backend: everything OFF until greeting_check replays the persisted intent.
+    const server = makeAgentServer();
+    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+    await flushMicrotasks();
+    assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0);
+    assert.notEqual(storage.getItem(HOME_TUTORIAL_KEY), null, 'cold-start OFF must not delete the snapshot');
+
+    // Backend replays master ON (children still at the suppressed OFF intent).
+    server.master = true;
+    server.child.user_plugin_enabled = true;
+    const retry = rt.scheduledTimeouts.find(t => !t.cleared);
+    assert.ok(retry);
+    retry.fn();
+    await flushMicrotasks();
+    assert.equal(server.child.computer_use_enabled, true, 'child flags must be restored after the backend replays master');
+    assert.equal(server.child.user_plugin_enabled, false);
+    assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
 });
 
 test('PR3976 4661699788 / 4661805757: plugin switch found OFF after master-on is left alone, other child flags still restore', async () => {
@@ -1125,5 +1157,14 @@ test('PR3976 coderabbit 709: master observed ON after an ambiguous attempt is pe
     await flushMicrotasks();
     assert.equal(rt2.fetchCalls.filter(c => c.method === 'POST').length, 0, 'must not re-enable a master switch the user turned off');
     assert.equal(server.master, false);
-    assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    // Retries also never re-enable it.
+    for (let i = 0; i < 8; i += 1) {
+        const retry = rt2.scheduledTimeouts.find(t => !t.cleared && !t.fired);
+        if (!retry) break;
+        retry.fired = true;
+        retry.fn();
+        await flushMicrotasks();
+    }
+    assert.equal(rt2.fetchCalls.filter(c => c.method === 'POST').length, 0, 'retries must not re-enable it either');
+    assert.equal(server.master, false);
 });

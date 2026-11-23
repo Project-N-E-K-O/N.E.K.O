@@ -339,6 +339,9 @@
             snapshotToken: snapshotToken,
             masterAttempted: masterApplied || !!(persisted && persisted.masterAttempted === true),
             masterApplied: masterApplied,
+            // 只有本页亲手打开或亲眼看到总开关开着，之后再看到它关着才算用户改动；
+            // 上一页留下的进度遇到总开关关着，也可能是后端刚重启、还没把意图放回去。
+            masterAppliedThisPage: false,
         };
     }
 
@@ -399,6 +402,7 @@
             });
             if (attemptState && flags.agent_enabled) {
                 attemptState.masterApplied = true;
+                attemptState.masterAppliedThisPage = true;
                 markPersistedAgentRestoreProgress(attemptState.snapshotToken, 'masterApplied');
             }
         }
@@ -712,14 +716,20 @@
                         return false;
                     }
                 } else if (attemptState.masterApplied) {
-                    if (expectsMasterOn && currentFlags.agent_enabled !== true) {
-                        clearPersistedAgentRestoreSnapshot(persisted.token);
-                        return false;
-                    }
                     if (hasUnexpectedChildFlagEnabled(currentFlags, persisted.agentFlags, { allowMasterPluginSideEffect: expectsMasterOn })) {
                         clearPersistedAgentRestoreSnapshot(persisted.token);
                         return false;
                     }
+                    if (expectsMasterOn && currentFlags.agent_enabled !== true) {
+                        if (attemptState.masterAppliedThisPage) {
+                            clearPersistedAgentRestoreSnapshot(persisted.token);
+                            return false;
+                        }
+                        // 后端启动时所有开关都是关的，要等 greeting_check 才按记录的意图放回去。
+                        // 分不清是用户关的还是还没放回：不重开总开关，也不删快照，退避后再看。
+                        throw new Error('agent_restore_master_pending');
+                    }
+                    attemptState.masterAppliedThisPage = true;
                 } else {
                     if (currentFlags.agent_enabled === true) {
                         if (hasUnexpectedChildFlagEnabled(currentFlags, persisted.agentFlags, { allowMasterPluginSideEffect: expectsMasterOn })) {
@@ -727,6 +737,7 @@
                             return false;
                         }
                         attemptState.masterApplied = true;
+                        attemptState.masterAppliedThisPage = true;
                         markPersistedAgentRestoreProgress(attemptState.snapshotToken, 'masterApplied');
                     } else if (hasAnyEnabledAgentFlag(currentFlags)) {
                         clearPersistedAgentRestoreSnapshot(persisted.token);
