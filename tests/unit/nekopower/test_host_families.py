@@ -2398,3 +2398,81 @@ async def test_what_is_said_as_a_commission_is_handed_over_and_written_down_afte
     )
     assert "and make the logo smaller" not in json.dumps(leader_llm.requests)
     await _let_go(host)
+
+
+async def test_what_is_said_while_it_is_put_on_record_as_handed_over_reaches_the_member(hosts, tmp_path, monkeypatch):
+    release, working = asyncio.Event(), asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    async def at_work() -> None:
+        await working.wait()
+
+    called, ended = _hand_over()
+    leader_llm = ScriptedLLM([called, [wait, *ended]])
+    member_llm = ScriptedLLM([[at_work, *_report("header fixed")], [say("noted"), finish()]])
+    host = _host(hosts, tmp_path, _by_role(leader_llm, member_llm))
+    workdir = await _project(host, "Shop site", tmp_path)
+    _in_git(host, workdir)
+    await _allow_members(host)
+    receipt = await _dispatch(host, "fix the header of the shop site")
+    await wait_until(lambda: len(leader_llm.requests) == 2, what="the leader having handed it over")
+    append = host.ledger.append_event
+    writing, go_on = asyncio.Event(), asyncio.Event()
+
+    async def slowly(commission_id: str, kind: str, payload: dict[str, Any]) -> Any:
+        if kind == "handed_over" and not writing.is_set():
+            writing.set()
+            await go_on.wait()
+        return await append(commission_id, kind, payload)
+
+    monkeypatch.setattr(host.ledger, "append_event", slowly)
+    release.set()
+    await asyncio.wait_for(writing.wait(), 10)
+
+    # Queued for the member, the record not written yet: nothing is kept aside any more, and it is said to it there.
+    assert receipt.commission_id not in host.task_agents._said_while_handed
+    assert await host.tell(receipt.commission_id, "and the footer too")
+    go_on.set()
+    working.set()
+
+    await wait_until(lambda: "and the footer too" in json.dumps(member_llm.requests), what="the member being told it")
+    assert "and the footer too" not in json.dumps(leader_llm.requests)
+    assert len(await _events(host, receipt.commission_id, "handed_over")) == 1
+    await _let_go(host)
+
+
+async def test_a_commission_stopped_as_its_leader_lets_go_is_not_put_on_record_as_handed_over(
+    hosts, tmp_path, monkeypatch, caplog
+):
+    host, receipt, _session, _leader_llm, member_llm, release = await _handing_over(hosts, tmp_path)
+    leader = await host.ledger.lead_session("Lan", "Shop site")
+    update = host.ledger.update_session
+    reached, go_on = asyncio.Event(), asyncio.Event()
+
+    async def slowly(session_id: str, **values: Any) -> Any:
+        if session_id == leader.id and values.get("status") == "closed" and not reached.is_set():
+            reached.set()
+            await go_on.wait()
+        return await update(session_id, **values)
+
+    monkeypatch.setattr(host.ledger, "update_session", slowly)
+    assert await host.tell(receipt.commission_id, "and make the logo smaller")
+    release.set()
+    await asyncio.wait_for(reached.wait(), 10)
+    # Stopped between the leader letting go of it and its being queued for the member.
+    await host.ledger.transition(receipt.commission_id, "cancelled", reason="stopped by the user")
+    with caplog.at_level("WARNING"):
+        go_on.set()
+        await wait_until(lambda: receipt.commission_id not in host.task_agents._said_while_handed, what="the hand-over ending")
+        await host.task_agents.settle()
+
+    stopped = await host.ledger.get(receipt.commission_id)
+    # It stays the leader's, no member is started for it, and nothing says it was handed over.
+    assert (stopped.status, stopped.session_id, stopped.handed_by) == ("cancelled", leader.id, None)
+    assert await _events(host, receipt.commission_id, "handed_over") == [] and member_llm.requests == []
+    # What was said to it meanwhile is on record with it, and that it was not passed on is logged, without the words.
+    assert await _events(host, receipt.commission_id, "told") == [{"text": "and make the logo smaller", "queued": True}]
+    logged = [record.getMessage() for record in caplog.records if "was not handed over" in record.getMessage()]
+    assert len(logged) == 1 and "1 thing(s)" in logged[0] and "logo" not in logged[0]

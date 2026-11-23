@@ -7571,6 +7571,10 @@ class TaskAgentManager:
                         await self._wake_working(
                             commission_id, said_meanwhile.pop(0), reason="said while it was handed over"
                         )
+                    # Nothing more is kept here from this moment, with nothing awaited since the last
+                    # look: what is said while the record below is written finds the commission
+                    # queued, or at work in the other task agent, and is said to it there (``tell``).
+                    self._said_while_handed.pop(commission_id, None)
                     try:
                         # On record once it waits for the other task agent: one whose leader could
                         # not be closed, or that could not be queued, was not handed over.
