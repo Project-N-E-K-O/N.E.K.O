@@ -382,7 +382,9 @@ async def get_workshop_voice_reference(item_id: str):
             "available": False,
             "error": str(e),
         }, status_code=404)
-    except ValueError as e:
+    # PermissionError: reference_audio resolves outside the item folder
+    # (escape or another drive); same answer as an invalid manifest.
+    except (ValueError, PermissionError) as e:
         return JSONResponse({
             "success": False,
             "available": False,
@@ -437,7 +439,9 @@ async def get_workshop_voice_reference_audio(item_id: str):
             "success": False,
             "error": str(e),
         }, status_code=404)
-    except ValueError as e:
+    # PermissionError: reference_audio resolves outside the item folder
+    # (escape or another drive); same answer as an invalid manifest.
+    except (ValueError, PermissionError) as e:
         return JSONResponse({
             "success": False,
             "error": str(e),
