@@ -1755,14 +1755,17 @@ class TaskAgentManager:
             # Settled before it is queued (``_settle_for_the_queue``). That
             # waits: whether it is still wanted is asked again after it, and
             # a place that came free meanwhile is taken.
+            # On record as on its way into the queue for as long as anything
+            # is awaited: from here to the queue nothing is.
             self._settling_for_queue.add(commission.id)
             try:
                 await self._settle_for_the_queue(commission.id)
+                queueable = await self._still_queueable(commission.id)
             finally:
                 self._settling_for_queue.discard(commission.id)
             stopped = commission.id in self._stopped_while_settling
             self._stopped_while_settling.discard(commission.id)
-            if stopped or not await self._still_queueable(commission.id):
+            if stopped or not queueable:
                 # Over meanwhile (cancelled with everything else, say), when
                 # nothing could find it to stop it: not queued.
                 self._candidates.pop(commission.id, None)

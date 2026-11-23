@@ -404,7 +404,7 @@ class RoleModels:
                 except SlotUnavailable:
                     raise
                 except Exception:  # noqa: BLE001 - the tier cannot be read just now
-                    raise SlotUnavailable(HOST_API_NOT_CONFIGURED) from None
+                    raise SlotUnavailable(MODEL_CONFIG_UNREADABLE) from None
                 agent = False
         else:
             config = {

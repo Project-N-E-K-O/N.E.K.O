@@ -1430,7 +1430,8 @@ async def test_a_commission_that_waits_for_a_place_has_its_session_settled_as_it
     first = (await _dispatch(host, "sort the photos")).commission_id
     await wait_status(host, first, "working")
     second = (await _dispatch(host, "sort the music")).commission_id
-    await wait_status(host, second, "queued")
+    # In the queue, which is after it was settled (a commission is "queued" on record from when it is filed).
+    await wait_until(lambda: second in host.task_agents._queue, what="the second commission being queued")
     # The user changes the setting while it waits: it was settled as it was queued.
     await host.set_role_model("general", None)
     release.set()
@@ -2188,6 +2189,44 @@ async def test_a_commission_stopped_while_it_is_settled_for_the_queue_is_not_que
     assert await asyncio.wait_for(handing, 10) is False
     assert later.id not in tasks._queue
     assert tasks._settling_for_queue == set() and tasks._stopped_while_settling == set()
+    monkeypatch.setattr(host.ledger, "get", get)
+    release_first.set()
+    await wait_status(host, first, "done")
+
+
+async def test_a_commission_stopped_as_its_record_is_read_on_its_way_into_the_queue_is_not_queued(
+    hosts, tmp_path, monkeypatch
+):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first = asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait_first, *_report()]]), manager, max_task_agents=1)
+    tasks = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the music", dispatch_text="sort the music", source="dispatch", route="task_agent"
+    )
+    get = host.ledger.get
+    stopped: list[str] = []
+
+    async def stopped_as_it_is_read(commission_id: str) -> Any:
+        if commission_id == later.id and later.id in tasks._settling_for_queue and not stopped:
+            # Stopped this very moment, and what the ledger has of it cannot be read.
+            stopped.append(commission_id)
+            await tasks.abort(commission_id)
+            raise OSError("the disk is busy")
+        return await get(commission_id)
+
+    monkeypatch.setattr(host.ledger, "get", stopped_as_it_is_read)
+
+    assert await tasks.submit(later) is False
+    assert stopped == [later.id] and later.id not in tasks._queue
     monkeypatch.setattr(host.ledger, "get", get)
     release_first.set()
     await wait_status(host, first, "done")
