@@ -90,8 +90,21 @@ async def get_agent_flags():
         # False until the startup replay of the saved switches has finished, so the
         # page can tell "not replayed yet" apart from "switched off".
         "intent_restore_finished": _intent_restore_finished,
+        # The saved switch intents. A switch the backend put off after a failed
+        # start keeps its intent; one the user switched off has it False.
+        "intent": _agent_intent_snapshot(),
         "notification": note
     }
+
+
+def _agent_intent_snapshot() -> Dict[str, bool]:
+    from app.agent_runtime_intent import load_intent
+
+    try:
+        return dict(load_intent() or {})
+    except Exception as exc:
+        logger.warning("[Agent] reading the saved switch intent failed (exc_type=%s)", type(exc).__name__)
+        return {}
 
 
 @app.get("/agent/state")

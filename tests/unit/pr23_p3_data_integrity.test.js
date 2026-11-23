@@ -915,6 +915,7 @@ function makeAgentServer() {
         hangChildPost: false,
         onCommand: null,
         intentRestoreFinished: true,
+        intent: null,
     };
     server.handler = async (url, init, body) => {
         if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET') {
@@ -925,6 +926,7 @@ function makeAgentServer() {
                     analyzer_enabled: server.master,
                     agent_flags: Object.assign({}, server.child),
                     intent_restore_finished: server.intentRestoreFinished,
+                    intent: server.intent,
                 }),
             };
         }
@@ -1465,6 +1467,7 @@ test('PR3976 4662499204: plugin turned OFF during the restore backoff stays OFF 
     const server = makeAgentServer();
     server.master = true;               // restored by the interrupted attempt
     server.child.user_plugin_enabled = false; // user switched plugins OFF during the backoff
+    server.intent = { analyzer_enabled: true, user_plugin_enabled: false };
     server.onCommand = async (body) => {
         if (body.enabled) server.child.user_plugin_enabled = true; // master-on side effect
     };
@@ -1488,4 +1491,35 @@ test('PR3976 4662499204: plugin turned OFF during the restore backoff stays OFF 
     assert.equal(server.master, true);
     assert.equal(server.child.computer_use_enabled, true);
     assert.equal(server.child.user_plugin_enabled, false, 'tutorial end must not turn plugins back ON');
+});
+
+test('PR3976 4662528107: plugin put OFF by a failed start keeps the saved plugin preference when a tutorial restart reuses the snapshot', async () => {
+    const storage = createStorage();
+    const oldFlags = { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: true };
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+        version: 1, token: 1501, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: oldFlags, masterApplied: true,
+    }));
+    const server = makeAgentServer();
+    server.master = true;
+    server.child.user_plugin_enabled = false;                           // backend put it off after a failed start
+    server.intent = { analyzer_enabled: true, user_plugin_enabled: true }; // ...without touching the saved intent
+    let gets = 0;
+    const handler = async (url, init, body) => {
+        if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET' && ++gets === 1) {
+            return { ok: false, status: 502, json: async () => ({}) };
+        }
+        return await server.handler(url, init, body);
+    };
+    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+    await flushMicrotasks();
+    rt.win.NekoHomeTutorialFeatureController.begin('tutorial-restart');
+    await flushMicrotasks();
+    const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
+    assert.equal(persisted.agentFlags.user_plugin_enabled, true, 'a failed start must not replace the saved plugin preference');
+
+    rt.win.NekoHomeTutorialFeatureController.end('tutorial-ended');
+    await flushMicrotasks();
+    const pluginWrites = rt.fetchCalls.filter(c => c.url === '/api/agent/flags' && c.method === 'POST'
+        && c.body && c.body.flags && Object.prototype.hasOwnProperty.call(c.body.flags, 'user_plugin_enabled'));
+    assert.equal(pluginWrites.pop().body.flags.user_plugin_enabled, true, 'tutorial end must not record plugins as OFF');
 });

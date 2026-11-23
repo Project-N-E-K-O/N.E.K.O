@@ -98,10 +98,6 @@
         });
     }
 
-    async function fetchAgentFlagSnapshot() {
-        return (await fetchAgentFlagState()).flags;
-    }
-
     async function fetchAgentFlagState() {
         const response = await fetch('/api/agent/flags', {
             method: 'GET',
@@ -126,6 +122,10 @@
             intentRestoreFinished: payload.intent_restore_finished === true,
             // 后端明确说还没放回完（字段缺失时不算）。
             intentRestorePending: payload.intent_restore_finished === false,
+            // 后端记录的开关意图：启动失败被后端关掉的开关意图不变，用户关掉的意图为 false。
+            intentFlags: payload.intent && typeof payload.intent === 'object' && !Array.isArray(payload.intent)
+                ? payload.intent
+                : null,
         };
     }
 
@@ -323,7 +323,7 @@
     // 冷启动还会退避重试），此刻读到的开关是上一轮关掉的「全关」，不能拿它覆盖旧快照。
     // 旧快照属于别的角色、此刻又是全关时，原样留着它，这一轮不写快照；
     // 此刻已有开着的开关，说明用户之后自己调过（开关是全局的），旧快照已过时，按此刻的存。
-    function resolveAgentRestoreTarget(currentFlags) {
+    function resolveAgentRestoreTarget(currentFlags, intentFlags) {
         const inspected = inspectPersistedAgentRestoreSnapshot();
         if (inspected.status === 'owner_mismatch') {
             return { flags: currentFlags, persist: hasAnyEnabledAgentFlag(currentFlags) };
@@ -335,9 +335,13 @@
             && isUnfinishedRecoveryState(currentFlags, inspected.payload)
         ) {
             const flags = Object.assign({}, inspected.payload.agentFlags);
-            // 恢复已开总开关、插件却是关的：教程结束时总开关会重开、插件会被顺带打开，
-            // 这里没法「不动插件」，只能写回此刻的关，免得把用户关掉的插件又打开。
-            if (isPluginOffAfterMasterOn(currentFlags, inspected.payload.agentFlags)) {
+            // 恢复已开总开关、插件却是关的：用户关的（意图为 false）就记成关，免得教程结束时
+            // 重开总开关又把插件顺带打开；启动失败被后端关掉的（意图仍是开）保留快照里的开。
+            if (
+                isPluginOffAfterMasterOn(currentFlags, inspected.payload.agentFlags)
+                && intentFlags
+                && intentFlags.user_plugin_enabled === false
+            ) {
                 flags.user_plugin_enabled = false;
             }
             return {
@@ -502,11 +506,12 @@
 
     async function snapshotAndDisableAgentFlags(token) {
         try {
-            const currentFlags = await fetchAgentFlagSnapshot();
+            const currentState = await fetchAgentFlagState();
+            const currentFlags = currentState.flags;
             if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
                 return;
             }
-            const target = resolveAgentRestoreTarget(currentFlags);
+            const target = resolveAgentRestoreTarget(currentFlags, currentState.intentFlags);
             const flags = target.flags;
             if (state.featureSuppression.snapshot) {
                 state.featureSuppression.snapshot.agentFlags = flags;
