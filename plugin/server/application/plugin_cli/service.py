@@ -599,6 +599,7 @@ class PluginCliService:
         # it looked up. A failed save stops the replacement here, unchanged. A
         # replacement that records no source keeps the current one, so it
         # needs no binding.
+        current_entry: LockEntry | None = None
         if install_source is not None or plan.reason == "manual_takeover":
             current_entry = await asyncio.to_thread(
                 _lock_entry_for_plugin,
@@ -717,9 +718,12 @@ class PluginCliService:
                 )
 
         source_write_attempted = False
+        requested_source_written = False
+        requested_source_warning: str | None = None
 
         async def install_new() -> dict[str, object]:
-            nonlocal source_write_attempted
+            nonlocal source_write_attempted, requested_source_written
+            nonlocal requested_source_warning
             install_result = await asyncio.to_thread(
                 self._install_sync,
                 package=package,
@@ -736,6 +740,26 @@ class PluginCliService:
                     install_result=install_result,
                     package_path=package_path,
                 )
+            elif install_source is not None:
+                # Recorded here, before the replacement restarts the plugin,
+                # so the new code starts under its own source and never
+                # under the previous package's grants.
+                requested_source_written = True
+                warning = await self._requested_install_source_warning(
+                    install_result=install_result,
+                    package=package,
+                )
+                if warning is not None:
+                    # The source still reads as the previous package's, so
+                    # its grants would carry over: drop them before the
+                    # restart; the plugin is asked again.
+                    if not await asyncio.to_thread(
+                        forget_installed_plugins,
+                        install_result,
+                        plugin_ids=(plan.plugin_id,),
+                    ):
+                        warning += "; permission grants of the previous package could not be cleared"
+                requested_source_warning = warning
             return install_result
 
         try:
@@ -744,6 +768,7 @@ class PluginCliService:
                 install_new=install_new,
                 preserve_targets=((target_dir,) if plan.manifestless_state else ()),
                 initialize_runtime_config=not plan.manifestless_state,
+                install_changes_permissions=install_source is not None,
                 validate_backup=(
                     validate_manual_takeover_backup
                     if manual_manager is not None
@@ -793,6 +818,30 @@ class PluginCliService:
                         plan.plugin_id,
                         type(restore_exc).__name__,
                     )
+            if requested_source_written:
+                if current_entry is None:
+                    # Nothing to put back: the lock had no entry for the
+                    # previous package.
+                    source_restored = False
+                else:
+                    try:
+                        assert install_source_manager is not None
+                        await asyncio.to_thread(
+                            install_source_manager.restore_entry_for_rollback,
+                            current_entry,
+                        )
+                    except Exception as restore_exc:
+                        source_restored = False
+                        logger.error(
+                            "requested install source rollback failed plugin_id={} err_type={}",
+                            plan.plugin_id,
+                            type(restore_exc).__name__,
+                        )
+                if not source_restored:
+                    logger.error(
+                        "requested install source not restored after rollback plugin_id={}",
+                        plan.plugin_id,
+                    )
             details = _replacement_error_details(exc)
             if not source_restored:
                 details["rollback_status"] = "incomplete"
@@ -814,22 +863,8 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
-        if manual_manager is None and install_source is not None:
-            warning = await self._requested_install_source_warning(
-                install_result=response,
-                package=package,
-            )
-            if warning is not None:
-                # The new package runs, but its source still reads as the
-                # previous package's, so the grants given to that package
-                # would carry over. Drop them; the plugin is asked again.
-                if not await asyncio.to_thread(
-                    forget_installed_plugins,
-                    response,
-                    plugin_ids=(plan.plugin_id,),
-                ):
-                    warning += "; permission grants of the previous package could not be cleared"
-                response = {**response, "install_source_warning": warning}
+        if requested_source_warning is not None:
+            response = {**response, "install_source_warning": requested_source_warning}
         if _analyze_after_commit:
             await notify_install_committed_async(response)
         return response
