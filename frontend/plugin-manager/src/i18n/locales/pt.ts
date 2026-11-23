@@ -1060,6 +1060,7 @@ export default {
     pluginBuilt: 'Plugin empacotado: {packageName}',
     pluginDeleted: 'Plugin excluído',
     pluginDeletedBuiltinRestartFailed: 'O plugin {plugin} foi excluído, mas a versão integrada restaurada não pôde ser iniciada: {error}',
+    pluginDeletedPermissionsNotCleared: 'O plugin {plugin} foi excluído, mas os registros de permissões não puderam ser lidos, então suas permissões não foram removidas. Se o arquivo voltar a ser legível, as permissões antigas podem permanecer.',
     startFailed: 'Falha ao iniciar',
     autoStartEnabled: 'Início automático ativado',
     autoStartDisabled: 'Início automático desativado',

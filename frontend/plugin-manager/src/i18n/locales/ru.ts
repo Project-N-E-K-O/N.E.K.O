@@ -1060,6 +1060,7 @@ export default {
     pluginBuilt: 'Плагин упакован: {packageName}',
     pluginDeleted: 'Плагин удален',
     pluginDeletedBuiltinRestartFailed: 'Плагин {plugin} удалён, но восстановленную встроенную версию не удалось запустить: {error}',
+    pluginDeletedPermissionsNotCleared: 'Плагин {plugin} удалён, но записи о разрешениях не удалось прочитать, поэтому его разрешения не были сброшены. Если файл снова станет читаемым, старые разрешения могут остаться.',
     startFailed: 'Ошибка запуска',
     autoStartEnabled: 'Автозапуск включён',
     autoStartDisabled: 'Автозапуск выключен',

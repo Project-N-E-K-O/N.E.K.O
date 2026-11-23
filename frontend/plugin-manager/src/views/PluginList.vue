@@ -547,6 +547,7 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { getMarketUrl } from '@/api/market'
 import { deletePlugin } from '@/api/plugins'
+import { collectPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
@@ -1326,24 +1327,19 @@ async function handleBatchDelete() {
 
   batchBusy.value = true
   let ok = 0; let fail = 0
-  const restartWarnings: string[] = []
+  const deleteWarnings: string[] = []
   for (const p of plugins) {
     try {
       const result = await deletePlugin(p.id)
       ok++
-      if (result.restored_builtin_restart_error) {
-        restartWarnings.push(t('messages.pluginDeletedBuiltinRestartFailed', {
-          plugin: p.name,
-          error: result.restored_builtin_restart_error.message,
-        }))
-      }
+      deleteWarnings.push(...collectPluginDeleteWarnings(result, p.name, t))
     } catch { fail++ }
   }
   batchBusy.value = false
   clearSelection()
-  if (restartWarnings.length > 0) ElMessage.warning(restartWarnings.join('; '))
+  if (deleteWarnings.length > 0) ElMessage.warning(deleteWarnings.join('; '))
   if (fail > 0) ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  else if (restartWarnings.length === 0) {
+  else if (deleteWarnings.length === 0) {
     ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
   }
   await refreshAfterPluginChange()

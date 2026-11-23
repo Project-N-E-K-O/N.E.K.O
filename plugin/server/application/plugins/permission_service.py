@@ -42,7 +42,7 @@ MESSAGES_PUSH = "plugin_sdk.main_agent.messages:push"
 # are still on disk, though; if the file becomes readable again (e.g. after
 # upgrading back to the version that wrote it) they apply as stored, and the
 # usual source rules reconcile them on the next plugin start.
-_UNUSABLE_STORE_CODES = (CORRUPT, UNSUPPORTED_VERSION)
+UNUSABLE_STORE_CODES = (CORRUPT, UNSUPPORTED_VERSION)
 
 # A replacement cannot tell which source a source-less grant record belongs to.
 SOURCE_UNKNOWN = "PLUGIN_PERMISSION_SOURCE_UNKNOWN"
@@ -215,7 +215,7 @@ def forget_installed_plugins(result: dict, *, plugin_ids: tuple[str, ...] = ()) 
     are dropped and the plugin is asked again. Call under the plugin
     operation lock. Never raises; returns whether every grant was dropped.
     A damaged or newer-version store counts as dropped (see
-    ``_UNUSABLE_STORE_CODES``), although its records stay on disk.
+    ``UNUSABLE_STORE_CODES``), although its records stay on disk.
     """
     targets = set(plugin_ids)
     complete = True
@@ -231,7 +231,7 @@ def forget_installed_plugins(result: dict, *, plugin_ids: tuple[str, ...] = ()) 
         try:
             forget_permissions(plugin_id)
         except ServerDomainError as exc:
-            if exc.code in _UNUSABLE_STORE_CODES:
+            if exc.code in UNUSABLE_STORE_CODES:
                 # Holds no usable grant, same as bind_permission_source.
                 continue
             logger.error(
@@ -306,7 +306,7 @@ def bind_permission_source(plugin_id: str, source: PluginSource) -> None:
     try:
         permission_store.bind_unbound_source(plugin_id, source)
     except ServerDomainError as exc:
-        if exc.code not in _UNUSABLE_STORE_CODES:
+        if exc.code not in UNUSABLE_STORE_CODES:
             raise
         logger.warning(
             "plugin permission source not bound plugin_id={} code={}", plugin_id, exc.code
@@ -345,7 +345,7 @@ def bind_entry_permission_source(plugin_id: str, entry) -> None:
     try:
         held = permission_store.holds_unbound_grant(plugin_id)
     except ServerDomainError as exc:
-        if exc.code not in _UNUSABLE_STORE_CODES:
+        if exc.code not in UNUSABLE_STORE_CODES:
             raise
         logger.warning(
             "plugin permission source not bound plugin_id={} code={}", plugin_id, exc.code

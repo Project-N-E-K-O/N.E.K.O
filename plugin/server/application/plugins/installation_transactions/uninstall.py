@@ -22,6 +22,7 @@ from plugin.server.application.install_source.models import LockEntry
 from plugin.server.application.install_source.scanner import PluginDirectoryScanner
 from plugin.server.application.plugins.consent_service import forget_plugin
 from plugin.server.application.plugins.permission_service import (
+    UNUSABLE_STORE_CODES,
     forget_permissions,
     restore_permissions,
 )
@@ -81,6 +82,9 @@ class UninstallPluginResult:
     runtime_restart: RuntimeRestart
     cleanup_pending: bool
     runtime_restart_error: dict[str, str] | None = None
+    # Set when the permission store could not be read, so the plugin's grants
+    # were not cleared; ``{"code": ..., "message": ...}``.
+    permission_warning: dict[str, str] | None = None
 
 
 class UninstallPluginError(RuntimeError):
@@ -785,18 +789,43 @@ async def _rollback_precommit(
     )
 
 
-async def _forget_permissions_precommit(plugin_id: str) -> dict | None:
+async def _forget_permissions_precommit(
+    plugin_id: str,
+) -> tuple[dict | None, dict[str, str] | None]:
     """Clear the plugin's permission grants before anything else changes.
 
     This runs while the registry and install source still describe the
     plugin being removed, so a first-use import binds to that plugin and no
     concurrent reader can observe another source for a record that still
-    exists. Any failure (unreadable store or failed write) aborts the
-    uninstall; the error keeps the store's own code.
+    exists. Returns ``(removed_record, warning)``.
+
+    A damaged or newer-version store (``UNUSABLE_STORE_CODES``) holds no
+    grant that could apply, the same rule the replacement paths use, so the
+    uninstall goes on and ``warning`` tells the user the grants were not
+    cleared. Otherwise a damaged store would block every uninstall. Its
+    records stay on disk: if the file becomes readable again, this plugin's
+    old entry is still there. Any other failure (a possibly transient read
+    error or a failed write) aborts the uninstall; the error keeps the
+    store's own code.
     """
     try:
-        return await asyncio.to_thread(forget_permissions, plugin_id)
+        return await asyncio.to_thread(forget_permissions, plugin_id), None
     except ServerDomainError as exc:
+        if exc.code in UNUSABLE_STORE_CODES:
+            logger.error(
+                "uninstall could not clear permission grants, store unusable; "
+                "continuing plugin_id={} code={}",
+                plugin_id,
+                exc.code,
+            )
+            return None, {
+                "code": exc.code,
+                "message": (
+                    "Permission records could not be read, so this plugin's "
+                    "grants were not cleared; its old entry may remain once "
+                    "the file is readable again"
+                ),
+            }
         raise ServerDomainError(
             exc.code,
             "Uninstall could not clear the plugin's permission grants: " + exc.message,
@@ -898,10 +927,13 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
     autostart_was_pending = False
     autostart_gate_rollback: str | None = None
     removed_permissions: dict | None = None
+    permission_warning: dict[str, str] | None = None
     permission_rollback: str | None = None
     try:
         stage = "forget_permissions"
-        removed_permissions = await _forget_permissions_precommit(plugin_id)
+        removed_permissions, permission_warning = await _forget_permissions_precommit(
+            plugin_id
+        )
 
         stage = "stop"
         if was_running:
@@ -1118,4 +1150,5 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
         runtime_restart=runtime_restart,
         cleanup_pending=cleanup_pending,
         runtime_restart_error=runtime_restart_error,
+        permission_warning=permission_warning,
     )

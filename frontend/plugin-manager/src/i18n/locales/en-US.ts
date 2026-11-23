@@ -1060,6 +1060,7 @@ export default {
     pluginBuilt: 'Plugin built: {packageName}',
     pluginDeleted: 'Plugin deleted',
     pluginDeletedBuiltinRestartFailed: 'Plugin {plugin} was deleted, but the restored built-in version failed to start: {error}',
+    pluginDeletedPermissionsNotCleared: 'Plugin {plugin} was deleted, but its permission records could not be read, so its permission grants were not cleared. If the file becomes readable again, its old grants may remain.',
     startFailed: 'Failed to start',
     autoStartEnabled: 'Auto start enabled',
     autoStartDisabled: 'Auto start disabled',
