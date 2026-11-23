@@ -250,11 +250,14 @@ async def _resolve_user_plugin_base() -> str:
 def _get_http_client() -> httpx.AsyncClient:
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None:
+        from utils.internal_http_client import internal_service_event_hooks
+
         _HTTP_CLIENT = httpx.AsyncClient(
             timeout=httpx.Timeout(2.5, connect=0.5),
             limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
             proxy=None,
             trust_env=False,
+            event_hooks=internal_service_event_hooks(),
         )
     return _HTTP_CLIENT
 

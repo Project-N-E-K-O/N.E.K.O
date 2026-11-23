@@ -66,8 +66,11 @@ ProgressCallback = Callable[..., Awaitable[None]]
 
 def _default_client_factory(**kwargs: Any) -> Any:
     import httpx
+    from utils.internal_http_client import merge_internal_service_event_hooks
 
-    return httpx.AsyncClient(**kwargs)
+    merged = dict(kwargs)
+    merged["event_hooks"] = merge_internal_service_event_hooks(merged.get("event_hooks"))
+    return httpx.AsyncClient(**merged)
 
 
 def _reraise_swallowed_cancellation() -> None:

@@ -396,6 +396,19 @@ def internal_service_proof(key: str, method: str, path: str, expires: int | None
     return _signed(key, "internal-service", f"{method.upper()}:{path}", "internal", deadline)
 
 
+def _request_signing_path(request: Request) -> str:
+    """Return the canonical raw request path (without query string) for proof verification."""
+    raw = request.scope.get("raw_path")
+    if isinstance(raw, (bytes, bytearray)) and raw:
+        return bytes(raw).split(b"?", 1)[0].decode("latin-1")
+    if isinstance(raw, str) and raw:
+        return raw.split("?", 1)[0]
+    scope_path = request.scope.get("path")
+    if isinstance(scope_path, str) and scope_path:
+        return scope_path
+    return request.url.path
+
+
 def _internal_service_identity(request: Request, key: str) -> str | None:
     proof = request.headers.get(INTERNAL_SERVICE_HEADER, "")
     if not proof or has_forwarding_metadata(request.headers):
@@ -407,7 +420,7 @@ def _internal_service_identity(request: Request, key: str) -> str | None:
         return None
     if not local_peer:
         return None
-    return _verified(key, "internal-service", f"{request.method.upper()}:{request.url.path}", proof)
+    return _verified(key, "internal-service", f"{request.method.upper()}:{_request_signing_path(request)}", proof)
 
 
 def _market_internal_identity(request: Request, key: str) -> str | None:

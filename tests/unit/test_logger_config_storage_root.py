@@ -356,3 +356,94 @@ def test_logging_layout_log_subdirectory_allows_none_and_plain_name():
 
     assert log_subdirectory(None) == Path()
     assert log_subdirectory("plugin") == Path("plugin")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("delay", [False, True])
+def test_iter_handlers_rejects_symlinked_main_and_error_log_targets(tmp_path, monkeypatch, delay):
+    """Final log file targets must not follow symlinks outside the log root (delay=False and delay=True)."""
+    from utils.logger_config import RobustLoggerConfig, _SafeRotatingFileHandler
+    from utils.logging_layout import log_filename
+
+    selected_root = tmp_path / "storage"
+    log_dir = selected_root / "logs"
+    log_dir.mkdir(parents=True)
+    outside_main = tmp_path / "outside_main.log"
+    outside_error = tmp_path / "outside_error.log"
+    outside_main.write_text("UNTOUCHED_MAIN", encoding="utf-8")
+    outside_error.write_text("UNTOUCHED_ERROR", encoding="utf-8")
+
+    main_target = log_dir / log_filename("Main")
+    error_target = log_dir / log_filename("Main", kind="error")
+    try:
+        main_target.symlink_to(outside_main)
+        error_target.symlink_to(outside_error)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
+    config = RobustLoggerConfig(service_name="Main")
+    handlers = list(config.iter_handlers(delay=delay))
+
+    rotating_handlers = [h for h in handlers if isinstance(h, _SafeRotatingFileHandler)]
+    for h in handlers:
+        h.close()
+    assert rotating_handlers == []
+    assert outside_main.read_text(encoding="utf-8") == "UNTOUCHED_MAIN"
+    assert outside_error.read_text(encoding="utf-8") == "UNTOUCHED_ERROR"
+
+
+@pytest.mark.unit
+def test_safe_rotating_file_handler_blocks_symlink_swap_and_supports_rollover(tmp_path, monkeypatch):
+    """_SafeRotatingFileHandler refuses delayed/swap symlinks and rotates normal log files cleanly."""
+    import logging
+    from utils.logger_config import RobustLoggerConfig, _SafeRotatingFileHandler
+
+    # Prevent delayed symlink-swap case from writing to an outside file even after __init__.
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    outside = tmp_path / "outside_swap.log"
+    outside.write_text("ORIGINAL", encoding="utf-8")
+    swap_path = logs_dir / "swap.log"
+
+    handler = _SafeRotatingFileHandler(
+        swap_path,
+        allowed_root=logs_dir,
+        maxBytes=128,
+        backupCount=2,
+        encoding="utf-8",
+        delay=True,
+    )
+    try:
+        try:
+            swap_path.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlinks unavailable in this environment")
+        with pytest.raises(OSError):
+            handler._open()
+        assert outside.read_text(encoding="utf-8") == "ORIGINAL"
+    finally:
+        handler.close()
+
+    # Verify normal logging and rotation continue working end-to-end.
+    selected_root = tmp_path / "storage"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
+    config = RobustLoggerConfig(service_name="Main", max_bytes=80, backup_count=2)
+    handlers = list(config.iter_handlers(delay=False))
+    rotating = [h for h in handlers if isinstance(h, _SafeRotatingFileHandler)]
+    assert len(rotating) >= 2
+    test_logger = logging.getLogger("test.safe_rotation")
+    test_logger.propagate = False
+    test_logger.setLevel(logging.INFO)
+    for h in rotating:
+        test_logger.addHandler(h)
+    try:
+        for idx in range(5):
+            test_logger.error(f"line-{idx}-" + ("x" * 40))
+    finally:
+        for h in list(handlers):
+            test_logger.removeHandler(h)
+            h.close()
+
+    assert Path(config.log_file).exists()
+    assert (config.log_dir / f"{config.log_file.name}.1").exists()

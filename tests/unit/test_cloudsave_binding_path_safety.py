@@ -194,3 +194,60 @@ def test_local_live2d_fallback_rejects_symlinked_workshop_item_dir(tmp_path: Pat
         asset_source_id="",
     )
     assert resolved is None
+
+
+def test_invalid_or_escaping_ref_fails_closed_even_when_workshop_fallback_exists(tmp_path: Path):
+    """Invalid traversal/symlink refs must return None instead of falling back to another valid workshop model."""
+    cm = _make_config_manager(tmp_path)
+    workshop_root = Path(cm.get_workshop_path())
+    legit_file = workshop_root / "123" / "legit.model3.json"
+    legit_file.parent.mkdir(parents=True, exist_ok=True)
+    legit_file.write_text('{"Version": 3}', encoding="utf-8")
+
+    # 1. Invalid traversal ref must fail closed immediately (even though item 123 has a valid model).
+    invalid_summary = bindings._derive_character_binding_summary(
+        cm,
+        "char_invalid",
+        {"live2d": "/workshop/../../secret.model3.json"},
+    )
+    assert invalid_summary["asset_fingerprint"] == ""
+    assert (
+        bindings._resolve_binding_file_path(
+            cm,
+            model_type="live2d",
+            model_ref="/workshop/../../secret.model3.json",
+            asset_source="steam_workshop",
+            asset_source_id="123",
+        )
+        is None
+    )
+
+    # 2. Legitimate relocated workshop ref (safe path that moved subdirs) still resolves via fallback.
+    relocated = bindings._resolve_binding_file_path(
+        cm,
+        model_type="live2d",
+        model_ref="/workshop/123/old_sub/legit.model3.json",
+        asset_source="steam_workshop",
+        asset_source_id="123",
+    )
+    assert relocated == legit_file
+
+    # 3. Symlink inside workshop_root pointing outside workshop_root fails closed even with legit model present.
+    outside_secret = tmp_path / "outside_escape.model3.json"
+    outside_secret.write_text('{"Version": 3}', encoding="utf-8")
+    symlink_target = workshop_root / "123" / "evil_link.model3.json"
+    try:
+        symlink_target.symlink_to(outside_secret)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    assert (
+        bindings._resolve_binding_file_path(
+            cm,
+            model_type="live2d",
+            model_ref="/workshop/123/evil_link.model3.json",
+            asset_source="steam_workshop",
+            asset_source_id="123",
+        )
+        is None
+    )

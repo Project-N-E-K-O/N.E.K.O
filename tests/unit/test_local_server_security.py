@@ -136,25 +136,38 @@ async def test_local_servers_stream_limit_stops_oversized_chunked_payload_withou
         assert exact_resp.status_code == 400
 
 
-def test_survey_server_admin_rejects_query_param_token_and_uses_bearer_header(
+@pytest.mark.parametrize(
+    ("server_dir", "alias", "env_key", "admin_path"),
+    [
+        (SURVEY_DIR, "_test_survey_srv_auth", "SURVEY_ADMIN_TOKEN", "/api/v1/admin/summary"),
+        (TELEMETRY_DIR, "_test_telemetry_srv_auth", "TELEMETRY_ADMIN_TOKEN", "/api/v1/admin/stats"),
+    ],
+)
+def test_local_servers_admin_rejects_query_param_token_and_strips_env_token(
+    server_dir: Path,
+    alias: str,
+    env_key: str,
+    admin_path: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    """F0140: survey_server must accept admin token via Authorization header only, rejecting ?token=."""
+    """F0140 & symmetry: admin APIs must reject ?token=, accept stripped Bearer tokens, and handle non-ASCII safely."""
     srv = _load_local_server(
-        SURVEY_DIR,
-        module_alias="_test_survey_srv_auth",
+        server_dir,
+        module_alias=alias,
         monkeypatch=monkeypatch,
         tmp_path=tmp_path,
-        env_overrides={"SURVEY_ADMIN_TOKEN": "s3cr3t-survey-token-999"},
+        env_overrides={env_key: "  s3cr3t-local-token-999 \n"},
     )
+    assert srv.ADMIN_TOKEN == "s3cr3t-local-token-999"
+
     with TestClient(srv.app) as client:
-        r_query = client.get("/api/v1/admin/summary?token=s3cr3t-survey-token-999")
+        r_query = client.get(f"{admin_path}?token=s3cr3t-local-token-999")
         assert r_query.status_code == 401
 
         r_header = client.get(
-            "/api/v1/admin/summary",
-            headers={"Authorization": "Bearer s3cr3t-survey-token-999"},
+            admin_path,
+            headers={"Authorization": "Bearer s3cr3t-local-token-999"},
         )
         assert r_header.status_code == 200
 
@@ -165,7 +178,7 @@ def test_survey_server_admin_rejects_query_param_token_and_uses_bearer_header(
         {
             "type": "http",
             "method": "GET",
-            "path": "/api/v1/admin/summary",
+            "path": admin_path,
             "query_string": b"",
             "headers": [(b"authorization", b"Bearer token-\xe9")],
         }
@@ -174,7 +187,22 @@ def test_survey_server_admin_rejects_query_param_token_and_uses_bearer_header(
         srv.require_admin(non_ascii_req)
     assert exc_info.value.status_code == 401
 
-    readme_text = (SURVEY_DIR / "README.md").read_text(encoding="utf-8")
+    # Non-ASCII configured server token also fails cleanly without raising TypeError.
+    monkeypatch.setattr(srv, "ADMIN_TOKEN", "non-ascii-\xe9")
+    ascii_req = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": admin_path,
+            "query_string": b"",
+            "headers": [(b"authorization", b"Bearer non-ascii")],
+        }
+    )
+    with pytest.raises(srv.HTTPException) as non_ascii_cfg_exc:
+        srv.require_admin(ascii_req)
+    assert non_ascii_cfg_exc.value.status_code == 401
+
+    readme_text = (server_dir / "README.md").read_text(encoding="utf-8")
     assert "?token=" not in readme_text
 
 
@@ -273,6 +301,23 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     assert not re.search(r"chown\b[^\n]*nobody[^\n]*\$INSTALL_DIR/venv", setup_sh)
     assert re.search(r"chown\b[^\n]*nobody[^\n]*\$INSTALL_DIR/data", setup_sh)
     assert re.search(r"chown\b[^\n]*root:root[^\n]*\$INSTALL_DIR/venv", setup_sh)
+
+    # Upgrade safety: reclaim root ownership on $INSTALL_DIR before installing files, and destroy any
+    # pre-existing venv before creating a fresh venv or invoking pip as root.
+    chown_root_pos = setup_sh.find('chown root:root "$INSTALL_DIR"')
+    chmod_root_pos = setup_sh.find('chmod 755 "$INSTALL_DIR"')
+    install_pos = setup_sh.find("install -o root -g root")
+    rm_venv_pos = setup_sh.find('rm -rf "$INSTALL_DIR/venv"')
+    create_venv_pos = setup_sh.find('python3 -m venv "$INSTALL_DIR/venv"')
+    pip_pos = setup_sh.find('$INSTALL_DIR/venv/bin/pip')
+    assert 0 <= chown_root_pos < install_pos < create_venv_pos
+    assert 0 <= chmod_root_pos < install_pos < create_venv_pos
+    assert 0 <= rm_venv_pos < create_venv_pos < pip_pos
+
+    if server_dir == TELEMETRY_DIR:
+        readme_text = (server_dir / "README.md").read_text(encoding="utf-8")
+        assert "utils/token_tracker/reporting.py" in setup_sh
+        assert "utils/token_tracker/reporting.py" in readme_text
 
     # Ensure JSON body helper in telemetry/survey remains callable (no accidental import breakage).
     assert json.dumps({"ok": True}) == '{"ok": true}'

@@ -177,7 +177,12 @@ async def _call_local_install(
     base_url = f"http://127.0.0.1:{bridge['port']}"
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as client:
+        from utils.internal_http_client import internal_service_event_hooks
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(180.0),
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             # Trigger installation
             res = await client.post(
                 f"{base_url}/market/install",

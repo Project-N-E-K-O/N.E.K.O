@@ -44,6 +44,7 @@ For exe-packaged applications, supporting:
 ╚══════════════════════════════════════════════════════════════════════════╝
 """
 import os
+import stat
 import sys
 import logging
 import threading
@@ -85,6 +86,113 @@ def mark_project_handler(handler):
     """Identify project-created sinks for explicit plugin child rebinding."""
     handler._neko_owned = True
     handler._neko_pid = os.getpid()
+
+
+def _is_symlink_or_reparse_point(path: str | os.PathLike[str]) -> bool:
+    """Return True if path is a symbolic link (even if dangling) or a Windows reparse point."""
+    try:
+        if os.path.islink(path):
+            return True
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if reparse_flag:
+            st = os.lstat(path)
+            if getattr(st, "st_file_attributes", 0) & reparse_flag:
+                return True
+    except OSError:
+        return os.path.islink(path)
+    return False
+
+
+def _assert_safe_log_file_target(path: str | os.PathLike[str], allowed_root: Path) -> Path:
+    """Validate that a log target is not a symlink/reparse point and stays within allowed_root."""
+    target = Path(path)
+    if _is_symlink_or_reparse_point(target):
+        raise OSError(f"Refusing symlink/reparse log target: {target}")
+    root_real = os.path.normcase(os.path.realpath(str(allowed_root)))
+    parent_real = os.path.normcase(os.path.realpath(str(target.parent)))
+    if os.path.commonpath([root_real, parent_real]) != root_real:
+        raise ValueError(f"Log directory escapes allowed root: {target.parent}")
+    target_real = os.path.normcase(os.path.realpath(str(target)))
+    if os.path.commonpath([root_real, target_real]) != root_real or target_real == root_real:
+        raise ValueError(f"Log target escapes allowed root: {target}")
+    return target
+
+
+def _open_log_file_nofollow(
+    path: str | os.PathLike[str],
+    mode: str,
+    encoding: str | None,
+    errors: str | None,
+    allowed_root: Path,
+):
+    """Open a regular log file within allowed_root without following symlinks or reparse points."""
+    target = _assert_safe_log_file_target(path, allowed_root)
+    base_mode = mode.replace("b", "").replace("t", "")
+    if base_mode == "a":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    elif base_mode == "a+":
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+    elif base_mode == "w":
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    elif base_mode == "w+":
+        flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC
+    else:
+        raise ValueError(f"Unsupported log file mode: {mode!r}")
+
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    if "b" in mode and hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+
+    fd = os.open(os.fspath(target), flags, 0o600)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"Refusing non-regular log target: {target}")
+        return os.fdopen(fd, mode, encoding=encoding, errors=errors)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+class _SafeRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler that rejects symlinks/reparse points and root escapes on open."""
+
+    def __init__(
+        self,
+        filename,
+        allowed_root: Path,
+        mode: str = "a",
+        maxBytes: int = 0,
+        backupCount: int = 0,
+        encoding: str | None = None,
+        delay: bool = False,
+        errors: str | None = None,
+    ):
+        """Initialize the handler after validating the initial target path."""
+        self._allowed_root = Path(allowed_root)
+        _assert_safe_log_file_target(filename, self._allowed_root)
+        super().__init__(
+            filename,
+            mode=mode,
+            maxBytes=maxBytes,
+            backupCount=backupCount,
+            encoding=encoding,
+            delay=delay,
+            errors=errors,
+        )
+
+    def _open(self):
+        """Open the active log file without following symlinks."""
+        return _open_log_file_nofollow(
+            self.baseFilename,
+            self.mode,
+            self.encoding,
+            self.errors,
+            self._allowed_root,
+        )
 
 
 def format_log_message(message, args):
@@ -399,14 +507,17 @@ class RobustLoggerConfig:
         
         # 2. Rotating file handler.
         try:
-            # Use RotatingFileHandler for size-based rotation.
+            # Use _SafeRotatingFileHandler for size-based rotation without following symlinks.
             # Probe now, but open the live stream on first emit. A previous
             # writer may rotate the file while replacements are being built.
             if delay:
-                with self.log_file.open("a", encoding="utf-8"):
+                with _open_log_file_nofollow(
+                    self.log_file, "a", encoding="utf-8", errors=None, allowed_root=self._log_root
+                ):
                     pass
-            file_handler = RotatingFileHandler(
+            file_handler = _SafeRotatingFileHandler(
                 self.log_file,
+                allowed_root=self._log_root,
                 maxBytes=self.max_bytes,
                 backupCount=self.backup_count,
                 encoding='utf-8',
@@ -430,8 +541,9 @@ class RobustLoggerConfig:
                 dev_debug_dir = _get_development_log_directory()
                 dev_debug_dir.mkdir(parents=True, exist_ok=True)
                 debug_filename = log_filename(self.service_name, app_name=self.app_name, kind="debug")
-                debug_handler = RotatingFileHandler(
+                debug_handler = _SafeRotatingFileHandler(
                     dev_debug_dir / debug_filename,
+                    allowed_root=dev_debug_dir,
                     maxBytes=self.max_bytes,
                     backupCount=self.backup_count,
                     encoding='utf-8',
@@ -450,10 +562,13 @@ class RobustLoggerConfig:
             error_filename = log_filename(self.service_name, app_name=self.app_name, kind="error")
             error_log_file = self.log_dir / error_filename
             if delay:
-                with error_log_file.open("a", encoding="utf-8"):
+                with _open_log_file_nofollow(
+                    error_log_file, "a", encoding="utf-8", errors=None, allowed_root=self._log_root
+                ):
                     pass
-            error_handler = RotatingFileHandler(
+            error_handler = _SafeRotatingFileHandler(
                 error_log_file,
+                allowed_root=self._log_root,
                 maxBytes=self.max_bytes,
                 backupCount=self.backup_count,
                 encoding='utf-8',

@@ -93,7 +93,13 @@ async def release_tool_host_instance(host_instance_id: str) -> None:
     # This runs on the HTTP server loop, which may differ from the IPC loop.
     httpx = await ensure_httpx()
     try:
-        async with httpx.AsyncClient(timeout=0.5, trust_env=False) as client:
+        from utils.internal_http_client import internal_service_event_hooks
+
+        async with httpx.AsyncClient(
+            timeout=0.5,
+            trust_env=False,
+            event_hooks=internal_service_event_hooks(),
+        ) as client:
             response = await asyncio.wait_for(
                 client.post(
                     f"{_main_server_base_url()}/api/tools/release-host",
@@ -118,9 +124,12 @@ def _get_http_client() -> httpx.AsyncClient:
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None:
         httpx = load_httpx()
+        from utils.internal_http_client import internal_service_event_hooks
+
         _HTTP_CLIENT = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0, connect=2.0),
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            event_hooks=internal_service_event_hooks(),
         )
     return _HTTP_CLIENT
 

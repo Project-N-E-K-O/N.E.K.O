@@ -52,13 +52,18 @@ done
 # 创建目录
 echo "→ Installing to $INSTALL_DIR ..."
 sudo mkdir -p "$INSTALL_DIR/data"
+sudo chown root:root "$INSTALL_DIR"
+sudo chmod 755 "$INSTALL_DIR"
 
-# 复制文件（从脚本所在目录的父目录）
-sudo cp "$SOURCE_DIR/server.py" "$SOURCE_DIR/models.py" "$SOURCE_DIR/security.py" \
-        "$SOURCE_DIR/storage.py" "$SOURCE_DIR/requirements.txt" "$INSTALL_DIR/"
+# 安全替换脚本与依赖清单（清理旧文件并保持 root 所有，防止旧 nobody 目录残留符号链接劫持）
+for f in server.py models.py security.py storage.py requirements.txt; do
+    sudo rm -f "$INSTALL_DIR/$f"
+    sudo install -o root -g root -m 644 "$SOURCE_DIR/$f" "$INSTALL_DIR/$f"
+done
 
-# 创建虚拟环境并安装依赖
+# 创建虚拟环境并安装依赖（升级时先销毁旧 venv，避免执行旧 nobody 目录下的 pip）
 echo "→ Creating virtualenv ..."
+sudo rm -rf "$INSTALL_DIR/venv"
 sudo python3 -m venv "$INSTALL_DIR/venv"
 echo "→ Installing dependencies ..."
 sudo "$INSTALL_DIR/venv/bin/pip" install --no-cache-dir --require-hashes --only-binary :all: -r "$INSTALL_DIR/requirements.txt" -i https://pypi.org/simple/
@@ -144,6 +149,6 @@ echo "  仪表盘:"
 echo "    curl -H 'Authorization: Bearer $ADMIN_TOKEN' \\"
 echo "         http://YOUR_SERVER_IP:$PORT/api/v1/admin/dashboard"
 echo ""
-echo "  客户端配置 (token_tracker.py):"
+echo "  客户端配置 (utils/token_tracker/reporting.py):"
 echo "    _TELEMETRY_SERVER_URL = \"http://YOUR_SERVER_IP:$PORT\""
 echo ""

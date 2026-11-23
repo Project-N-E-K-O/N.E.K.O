@@ -1638,7 +1638,13 @@ async def save_recent_file(request: Request):
             from config import MEMORY_SERVER_PORT
             # Per-call AsyncClient: cold path triggered by manually saving recent conversations.
             try:
-                async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
+                from utils.internal_http_client import internal_service_event_hooks
+
+                async with httpx.AsyncClient(
+                    proxy=None,
+                    trust_env=False,
+                    event_hooks=internal_service_event_hooks(),
+                ) as client:
                     await client.post(
                         f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cancel_correction/{catgirl_name}",
                         timeout=2.0

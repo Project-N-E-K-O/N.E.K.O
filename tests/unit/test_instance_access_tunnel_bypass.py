@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+import ast
 import time
+from pathlib import Path
 
 import httpx
 import pytest
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request as FastAPIRequest, WebSocket
 from fastapi.testclient import TestClient
+from starlette.requests import Request as StarletteRequest
 
-from utils.http.internal_client import aclose_internal_http_client_current_loop, get_internal_http_client
+from utils.http.internal_client import (
+    _httpx_signing_path,
+    aclose_internal_http_client_current_loop,
+    attach_internal_service_proof,
+    attach_internal_service_proof_sync,
+    get_internal_http_client,
+    internal_service_event_hooks,
+    merge_internal_service_event_hooks,
+)
 from utils.instance_access import (
     INTERNAL_SERVICE_HEADER,
     InstanceAccessMiddleware,
     _local_native,
+    _request_signing_path,
     internal_service_proof,
 )
 
@@ -210,3 +222,374 @@ def test_desktop_mode_keeps_zero_step_loopback_without_touching_instance_key(
         assert ws.receive_json() == {"ok": True}
     assert not (tmp_path / "instance_access.key").exists()
     assert callable(_local_native)
+
+
+async def test_raw_path_signing_parity_across_client_and_middleware(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """R1111-01: _httpx_signing_path and _request_signing_path agree on percent-encoded raw_path without query."""
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+
+    url = "http://127.0.0.1:48911/release/%E5%96%B5%3F%23?a=1&b=2"
+    raw_req = httpx.Request("GET", url)
+    assert _httpx_signing_path(raw_req) == "/release/%E5%96%B5%3F%23"
+
+    starlette_req = StarletteRequest(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/release/喵?#",
+            "raw_path": b"/release/%E5%96%B5%3F%23",
+            "query_string": b"a=1&b=2",
+            "headers": [],
+            "scheme": "http",
+            "server": ("127.0.0.1", 48911),
+        }
+    )
+    assert _request_signing_path(starlette_req) == "/release/%E5%96%B5%3F%23"
+
+    app = FastAPI()
+    seen: list[tuple[str, str]] = []
+
+    @app.get("/release/{item}")
+    async def release_item(request: FastAPIRequest, item: str):
+        seen.append((item, _request_signing_path(request)))
+        return {"ok": True, "item": item}
+
+    app.add_middleware(InstanceAccessMiddleware)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+
+    async with httpx.AsyncClient(transport=transport) as unsigned:
+        assert (await unsigned.get(url)).status_code == 401
+
+    wrong_decoded_proof = internal_service_proof(KEY, "GET", "/release/喵")
+    async with httpx.AsyncClient(transport=transport) as bad_signed:
+        assert (
+            await bad_signed.get(url, headers={INTERNAL_SERVICE_HEADER: wrong_decoded_proof})
+        ).status_code == 401
+
+    async with httpx.AsyncClient(
+        transport=transport,
+        event_hooks=internal_service_event_hooks(),
+    ) as signed:
+        resp = await signed.get(url)
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "item": "喵?#"}
+    assert seen == [("喵?#", "/release/%E5%96%B5%3F%23")]
+
+    custom_called: list[str] = []
+
+    def _extra_sync_hook(req: httpx.Request) -> None:
+        custom_called.append(req.url.path)
+
+    merged_sync = merge_internal_service_event_hooks({"request": [_extra_sync_hook]}, sync=True)
+    assert attach_internal_service_proof_sync in merged_sync["request"]
+    assert _extra_sync_hook in merged_sync["request"]
+
+    sync_headers: list[str] = []
+    mock_transport = httpx.MockTransport(
+        lambda req: (sync_headers.append(req.headers.get(INTERNAL_SERVICE_HEADER, "")), httpx.Response(200, json={"ok": True}))[1]
+    )
+    with httpx.Client(transport=mock_transport, event_hooks=merged_sync) as sync_client:
+        sync_resp = sync_client.get(url)
+        assert sync_resp.status_code == 200
+    assert custom_called == ["/release/喵?#"]
+    assert sync_headers and sync_headers[0]
+    assert attach_internal_service_proof in internal_service_event_hooks()["request"]
+
+
+async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
+    clean_user_data_dir,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """R1111-01: migrated internal loopback callers attach signed proof and pass InstanceAccessMiddleware."""
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+
+    app = FastAPI()
+    recorded: list[tuple[str, str, bool]] = []
+
+    @app.post("/notify_config_changed")
+    async def notify_config_changed(request: FastAPIRequest):
+        recorded.append(("POST", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        return {"status": "ok"}
+
+    @app.post("/reload")
+    async def reload_memory(request: FastAPIRequest):
+        recorded.append(("POST", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        return {"status": "success"}
+
+    @app.get("/plugins")
+    async def list_plugins(request: FastAPIRequest):
+        recorded.append(("GET", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        return {"plugins": []}
+
+    @app.post("/api/tools/register")
+    async def register_tool_route(request: FastAPIRequest):
+        recorded.append(("POST", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        return {"ok": True, "affected_roles": ["Lanlan"], "failed_roles": []}
+
+    @app.post("/api/llm-tools/callback/p/t")
+    async def plugin_tool_callback(request: FastAPIRequest):
+        recorded.append(("POST", request.url.path, bool(request.headers.get(INTERNAL_SERVICE_HEADER))))
+        return {"output": {"ran": True}, "is_error": False}
+
+    app.add_middleware(InstanceAccessMiddleware)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+
+    # Sanity check: headerless callers are rejected on every internal endpoint.
+    async with httpx.AsyncClient(transport=transport) as raw_client:
+        for method, path in (
+            ("POST", "http://127.0.0.1:48915/notify_config_changed"),
+            ("POST", "http://127.0.0.1:48912/reload"),
+            ("GET", "http://127.0.0.1:48916/plugins"),
+            ("POST", "http://127.0.0.1:48911/api/tools/register"),
+            ("POST", "http://127.0.0.1:48916/api/llm-tools/callback/p/t"),
+        ):
+            assert (await raw_client.request(method, path)).status_code == 401
+    assert recorded == []
+
+    real_async_client = httpx.AsyncClient
+
+    class _ASGIRoutingAsyncClient(real_async_client):
+        """Route caller requests to the in-process ASGI app while keeping caller event_hooks untouched."""
+
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _ASGIRoutingAsyncClient)
+
+    # 1. characters_router/notify.py -> POST /reload
+    from main_routers.characters_router import notify as notify_mod
+
+    assert await notify_mod.notify_memory_server_reload(reason="proxy-test") is True
+    assert recorded[-1] == ("POST", "/reload", True)
+
+    # 2. app/agent_server/api_routes.py -> GET /plugins
+    from app.agent_server import api_routes
+
+    async def _fast_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(api_routes.asyncio, "sleep", _fast_sleep)
+    readiness = await api_routes._check_user_plugin_registry_readiness()
+    assert readiness["status"] == "empty"
+    assert recorded[-1] == ("GET", "/plugins", True)
+
+    # 3. plugin/server/messaging/llm_tool_registry.py -> POST /api/tools/register
+    from plugin.server.messaging import llm_tool_registry
+
+    monkeypatch.setattr(llm_tool_registry, "_HTTP_CLIENT", None)
+    try:
+        reg_resp = await llm_tool_registry.register_remote_tool(
+            plugin_id="p",
+            name="t",
+            description="desc",
+            parameters={"type": "object", "properties": {}},
+            timeout_seconds=10.0,
+        )
+        assert reg_resp["ok"] is True
+        assert recorded[-1] == ("POST", "/api/tools/register", True)
+    finally:
+        await llm_tool_registry.shutdown_http_client()
+        llm_tool_registry._HTTP_CLIENT = None
+
+    # 4. main_routers/tool_router.py -> POST callback_url
+    from main_logic.tool_calling import ToolCall
+    from main_routers import tool_router
+
+    monkeypatch.setattr(tool_router, "_HTTP_CLIENT", None)
+    try:
+        tool_res = await tool_router._remote_dispatch(
+            ToolCall(name="t", arguments={"x": 1}, call_id="c1"),
+            {"source": "plugin:p", "callback_url": "http://127.0.0.1:48916/api/llm-tools/callback/p/t"},
+        )
+        assert tool_res.is_error is False
+        assert tool_res.output == {"ran": True}
+        assert recorded[-1] == ("POST", "/api/llm-tools/callback/p/t", True)
+    finally:
+        if tool_router._HTTP_CLIENT is not None:
+            await tool_router._HTTP_CLIENT.aclose()
+        tool_router._HTTP_CLIENT = None
+
+    # 5. main_routers/config_router/core_config.py -> POST /notify_config_changed
+    import asyncio
+    from utils import config_manager as config_manager_module
+    from main_routers.config_router import core_config
+
+    manager = config_manager_module.get_config_manager("N.E.K.O")
+    manager.config_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda *a, **k: manager)
+    manager.save_json_config(
+        "core_config.json",
+        {"coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "old-key", "enableCustomApi": True},
+    )
+    manager._core_config_cache = None
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    class _FakeCoreRequest:
+        async def json(self):
+            return {"coreApi": "qwen", "assistApi": "qwen", "enableCustomApi": True, "coreApiKey": "new-key"}
+
+    monkeypatch.setattr(core_config, "get_session_manager", lambda: {})
+    monkeypatch.setattr(core_config, "get_initialize_character_data", lambda: _noop)
+    monkeypatch.setattr(core_config, "ensure_default_yui_voice_for_free_api", _noop)
+    monkeypatch.setattr(core_config, "_auto_resolve_provider_urls_for_save", _noop)
+    monkeypatch.setattr(core_config, "_core_api_save_lock", asyncio.Lock())
+
+    cfg_res = await core_config.update_core_config(_FakeCoreRequest())
+    assert cfg_res["success"] is True
+    assert recorded[-1] == ("POST", "/notify_config_changed", True)
+
+
+def test_ast_guard_all_internal_loopback_httpx_clients_sign_requests():
+    """Static guard: every httpx client in an internal-service caller path must attach internal-service hooks."""
+    repo_root = Path(__file__).resolve().parents[2]
+    scan_roots = (
+        "app",
+        "main_logic",
+        "main_routers",
+        "memory",
+        "nekopower",
+        "plugin/server",
+        "plugin/sdk",
+        "plugin/plugins",
+        "services",
+        "utils",
+    )
+    module_indicators = (
+        "MAIN_SERVER_PORT",
+        "MEMORY_SERVER_PORT",
+        "TOOL_SERVER_PORT",
+        "USER_PLUGIN_SERVER_PORT",
+        "USER_PLUGIN_BASE",
+        "resolve_user_plugin_base",
+        "_main_server_port",
+        "_main_server_base_url",
+        "plugin_server_url",
+        "_plugin_server_base",
+        "_agent_base",
+        "_main_base",
+        "48911",
+        "48912",
+        "48915",
+        "48916",
+    )
+    func_indicators = module_indicators + ("127.0.0.1", "localhost")
+    hook_helpers = (
+        "internal_service_event_hooks",
+        "merge_internal_service_event_hooks",
+        "attach_internal_service_proof",
+        "attach_internal_service_proof_sync",
+    )
+
+    # Explicitly documented non-internal / special-auth httpx clients that coexist with local port constants.
+    exempt_sites = {
+        ("app/main_server/preload.py", "_sync_preload_modules._warmup_httpx"),
+        ("app/main_server/web_app.py", "proxy_user_plugin_market_bridge"),
+        ("main_routers/characters_router/voice_cloning.py", "voice_clone"),
+        ("main_routers/community_oauth.py", "_refresh_oauth_token"),
+        ("main_routers/community_oauth.py", "_exchange_oauth_code"),
+        ("main_routers/community_oauth.py", "_bootstrap_session"),
+        ("main_routers/community_oauth.py", "_oauth_guest_bind"),
+        ("main_routers/community_oauth.py", "_revoke_tokens_best_effort"),
+        ("plugin/server/routes/knowledge_market.py", "_fetch_version_descriptor"),
+        ("plugin/server/routes/knowledge_market.py", "_download"),
+        ("plugin/server/routes/knowledge_market.py", "_report_subscription_best_effort"),
+        ("plugin/server/routes/knowledge_market.py", "_report_unsubscribe_best_effort"),
+        ("plugin/server/routes/market_bridge.py", "_proxy_market_catalog"),
+        ("plugin/server/routes/market_bridge.py", "_proxy_market_authenticated"),
+        ("plugin/server/routes/market_bridge.py", "market_feedback_avatars"),
+        ("plugin/server/routes/market_bridge.py", "_measure_github_proxy_sources.probe"),
+        ("plugin/server/routes/market_bridge.py", "_market_catalog_client"),
+        ("plugin/server/routes/market_bridge.py", "_exchange_oauth_code"),
+        ("plugin/server/routes/market_bridge.py", "_refresh_oauth_token"),
+        ("plugin/server/routes/market_bridge.py", "_revoke_oauth_token_best_effort"),
+        ("plugin/server/routes/market_bridge.py", "_fetch_auth_userinfo"),
+        ("plugin/server/routes/market_bridge.py", "_probe_market_user"),
+        ("plugin/server/routes/market_bridge.py", "_report_market_install"),
+    }
+
+    def _iter_calls(tree: ast.AST):
+        stack: list[ast.AST] = []
+
+        def _visit(node: ast.AST):
+            pushed = False
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                stack.append(node)
+                pushed = True
+            elif isinstance(node, ast.Call):
+                yield node, list(stack)
+            for child in ast.iter_child_nodes(node):
+                yield from _visit(child)
+            if pushed:
+                stack.pop()
+
+        return _visit(tree)
+
+    signed_count = 0
+    seen_exemptions: set[tuple[str, str]] = set()
+    unhooked: list[str] = []
+
+    for root_rel in scan_roots:
+        root_dir = repo_root / root_rel
+        for path in sorted(root_dir.rglob("*.py")):
+            if any(part in ("tests", "__pycache__") for part in path.parts) or path.name.startswith("test_"):
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "AsyncClient" not in source and "Client(" not in source:
+                continue
+            tree = ast.parse(source, filename=str(path))
+            mod_has_indicator = any(ind in source for ind in module_indicators)
+            relpath = path.relative_to(repo_root).as_posix()
+
+            for call, owners in _iter_calls(tree):
+                is_httpx_client = False
+                if (
+                    isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "httpx"
+                    and call.func.attr in ("AsyncClient", "Client")
+                ):
+                    is_httpx_client = True
+                elif isinstance(call.func, ast.Name) and call.func.id in ("AsyncClient", "Client"):
+                    is_httpx_client = True
+                if not is_httpx_client:
+                    continue
+
+                qualname = ".".join(getattr(o, "name", "") for o in owners) or "<module>"
+                func_node = next(
+                    (o for o in reversed(owners) if isinstance(o, (ast.FunctionDef, ast.AsyncFunctionDef))),
+                    None,
+                )
+                func_source = (ast.get_source_segment(source, func_node) or "") if func_node else ""
+                if not mod_has_indicator and not any(ind in func_source for ind in func_indicators):
+                    continue
+
+                has_hook = False
+                has_kw_splat = any(kw.arg is None for kw in call.keywords)
+                for kw in call.keywords:
+                    if kw.arg == "event_hooks":
+                        seg = ast.get_source_segment(source, kw.value) or ""
+                        if any(helper in seg for helper in hook_helpers):
+                            has_hook = True
+                            break
+                if not has_hook and has_kw_splat and any(helper in func_source for helper in hook_helpers):
+                    has_hook = True
+
+                site_key = (relpath, qualname)
+                if has_hook:
+                    signed_count += 1
+                elif site_key in exempt_sites:
+                    seen_exemptions.add(site_key)
+                else:
+                    unhooked.append(f"{relpath}:{call.lineno} ({qualname})")
+
+    assert signed_count >= 15, f"expected >= 15 signed internal httpx sites, found {signed_count}"
+    assert not unhooked, f"unsigned httpx client(s) in internal-service paths: {unhooked}"
+    stale_exemptions = exempt_sites - seen_exemptions
+    assert not stale_exemptions, f"stale exemption(s) in exempt_sites: {sorted(stale_exemptions)}"

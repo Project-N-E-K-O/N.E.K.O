@@ -95,34 +95,86 @@ def get_internal_http_client() -> httpx.AsyncClient:
         return client
 
 
-async def _attach_internal_service_proof(request: httpx.Request) -> None:
-    """Attach signed internal-service header on loopback hops when proxy/remote mode is active."""
+def _httpx_signing_path(request: httpx.Request) -> str:
+    """Return the raw path component (excluding query string) from an httpx.Request."""
+    raw = request.url.raw_path
+    if isinstance(raw, (bytes, bytearray)):
+        path = bytes(raw).split(b"?", 1)[0].decode("latin-1")
+    else:
+        path = str(raw).split("?", 1)[0]
+    return path or (request.url.path or "/")
+
+
+def _should_attach_internal_service_proof(request: httpx.Request) -> bool:
+    """Return True when a request targets loopback under proxy/remote mode without a pre-set header."""
     from utils.deployment import is_behind_proxy, is_remote_backend_deployment
+    from utils.instance_access import INTERNAL_SERVICE_HEADER
 
     if not (is_behind_proxy() or is_remote_backend_deployment()):
-        return
+        return False
+    if INTERNAL_SERVICE_HEADER in request.headers:
+        return False
     host = (request.url.host or "").strip().strip("[]").lower()
     if not host:
-        return
-    is_loopback = host == "localhost"
-    if not is_loopback:
-        import ipaddress
+        return False
+    if host == "localhost":
+        return True
+    import ipaddress
 
-        try:
-            ip = ipaddress.ip_address(host)
-            is_loopback = (getattr(ip, "ipv4_mapped", None) or ip).is_loopback
-        except ValueError:
-            is_loopback = False
-    if not is_loopback:
+    try:
+        ip = ipaddress.ip_address(host)
+        return bool((getattr(ip, "ipv4_mapped", None) or ip).is_loopback)
+    except ValueError:
+        return False
+
+
+async def attach_internal_service_proof(request: httpx.Request) -> None:
+    """Attach signed internal-service header on loopback hops when proxy/remote mode is active."""
+    if not _should_attach_internal_service_proof(request):
         return
     from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
 
-    if INTERNAL_SERVICE_HEADER in request.headers:
-        return
     key = await asyncio.to_thread(instance_key)
     request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
-        key, request.method, request.url.path
+        key, request.method, _httpx_signing_path(request)
     )
+
+
+_attach_internal_service_proof = attach_internal_service_proof
+
+
+def attach_internal_service_proof_sync(request: httpx.Request) -> None:
+    """Sync variant of attach_internal_service_proof for blocking httpx.Client callers."""
+    if not _should_attach_internal_service_proof(request):
+        return
+    from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, internal_service_proof
+
+    key = instance_key()
+    request.headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+        key, request.method, _httpx_signing_path(request)
+    )
+
+
+def internal_service_event_hooks(*, sync: bool = False) -> dict[str, list]:
+    """Return an httpx event_hooks mapping that signs loopback internal requests."""
+    hook = attach_internal_service_proof_sync if sync else attach_internal_service_proof
+    return {"request": [hook]}
+
+
+def merge_internal_service_event_hooks(
+    event_hooks: dict | None = None,
+    *,
+    sync: bool = False,
+) -> dict[str, list]:
+    """Return a copy of event_hooks with the internal-service request hook appended."""
+    hook = attach_internal_service_proof_sync if sync else attach_internal_service_proof
+    merged: dict[str, list] = {
+        key: list(value) for key, value in (event_hooks or {}).items()
+    }
+    request_hooks = merged.setdefault("request", [])
+    if hook not in request_hooks:
+        request_hooks.append(hook)
+    return merged
 
 
 def _create_internal_http_client() -> httpx.AsyncClient:
@@ -136,7 +188,7 @@ def _create_internal_http_client() -> httpx.AsyncClient:
         proxy=None,
         trust_env=False,
         transport=transport,
-        event_hooks={"request": [_attach_internal_service_proof]},
+        event_hooks=internal_service_event_hooks(),
     )
 
 

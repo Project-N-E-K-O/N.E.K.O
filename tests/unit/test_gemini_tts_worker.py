@@ -146,3 +146,45 @@ def test_gemini_tts_worker_sanitizes_transport_exception(monkeypatch, caplog):
     assert "ConnectError" in errors[0]
     assert secret_key not in errors[0]
     assert all(secret_key not in rec.getMessage() for rec in caplog.records)
+
+
+def test_gemini_tts_worker_warmup_connect_error_redacts_secret_and_synthesizes(monkeypatch, caplog):
+    """Warmup GET ConnectError must be logged without secret leakage while subsequent POST synthesis succeeds."""
+    secret_key = "AIzaSySecretWarmupConnect-777"
+    captured_methods: list[str] = []
+
+    pcm_bytes = b"\x01\x00\x02\x00" * 10
+    ok_json = {
+        "candidates": [{"content": {"parts": [{"inlineData": {"data": base64.b64encode(pcm_bytes).decode()}}]}}]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_methods.append(request.method)
+        if request.method == "GET":
+            raise httpx.ConnectError(f"warmup connect failed for {secret_key}", request=request)
+        return httpx.Response(200, json=ok_json)
+
+    transport = httpx.MockTransport(handler)
+    orig_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *a, **kw: orig_client(*a, transport=transport, **{k: v for k, v in kw.items() if k != "transport"}),
+    )
+
+    req_q: queue.Queue = queue.Queue()
+    resp_q: queue.Queue = queue.Queue()
+    req_q.put(("sp1", "Hello world."))
+    req_q.put((None, None))
+    req_q.put((TTS_SHUTDOWN_SENTINEL, None))
+
+    with caplog.at_level("WARNING"):
+        gemini_worker_mod.gemini_tts_worker(req_q, resp_q, secret_key, "Leda")
+
+    assert captured_methods == ["GET", "POST"]
+    out = _drain_queue(resp_q)
+    assert any(isinstance(item, bytes) and len(item) > 0 for item in out)
+    assert not any(isinstance(item, tuple) and item[0] == "__error__" for item in out)
+    assert any("ConnectError" in rec.getMessage() for rec in caplog.records)
+    assert all(secret_key not in rec.getMessage() for rec in caplog.records)
+    assert all(secret_key not in repr(item) for item in out)

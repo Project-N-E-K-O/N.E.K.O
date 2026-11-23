@@ -496,7 +496,7 @@ class QwenVoiceCloneClient:
         self._allowed_hosts = tuple(allowed_hosts) if allowed_hosts is not None else None
 
     def _validate_tflink_url(self, url: str, *, require_allowlist: bool = True) -> str:
-        """Validate a tfLink upload or download URL against HTTPS and SSRF rules."""
+        """Validate a tfLink upload or download URL against SSRF and allowlist rules."""
         import ipaddress
         from urllib.parse import urlsplit
 
@@ -506,8 +506,9 @@ class QwenVoiceCloneClient:
             raise QwenVoiceCloneError('无效的URL格式: contains control characters')
         candidate = url.strip()
         parsed = urlsplit(candidate)
-        if parsed.scheme.lower() != 'https':
-            raise QwenVoiceCloneError(f'无效的URL协议（仅允许HTTPS）: {candidate}')
+        scheme = parsed.scheme.lower()
+        if scheme not in {'http', 'https'}:
+            raise QwenVoiceCloneError(f'无效的URL协议（仅允许HTTP/HTTPS）: {candidate}')
         if parsed.username is not None or parsed.password is not None:
             raise QwenVoiceCloneError(f'无效的URL（不允许包含用户信息）: {candidate}')
         host = (parsed.hostname or '').rstrip('.').casefold()
@@ -530,20 +531,23 @@ class QwenVoiceCloneClient:
         ):
             raise QwenVoiceCloneError(f'拒绝不安全的内网/保留IP地址: {candidate}')
 
-        if require_allowlist:
-            if self._allowed_hosts is not None:
-                raw_hosts = self._allowed_hosts
-            else:
-                import config
+        if self._allowed_hosts is not None:
+            raw_hosts = self._allowed_hosts
+        else:
+            import config
 
-                raw_hosts = getattr(config, 'TFLINK_ALLOWED_HOSTS', ())
-            allowlist = {
-                str(entry).strip().rstrip('.').casefold()
-                for entry in raw_hosts
-                if str(entry).strip()
-            }
-            if not allowlist or host not in allowlist:
-                raise QwenVoiceCloneError(f'URL主机不在tfLink白名单内: {host}')
+            raw_hosts = getattr(config, 'TFLINK_ALLOWED_HOSTS', ())
+        allowlist = {
+            str(entry).strip().rstrip('.').casefold()
+            for entry in raw_hosts
+            if str(entry).strip()
+        }
+
+        if scheme == 'http' and (not allowlist or host not in allowlist):
+            raise QwenVoiceCloneError(f'无效的URL协议（非白名单主机仅允许HTTPS）: {candidate}')
+
+        if require_allowlist and (not allowlist or host not in allowlist):
+            raise QwenVoiceCloneError(f'URL主机不在tfLink白名单内: {host}')
 
         return candidate
 
@@ -620,6 +624,7 @@ class QwenVoiceCloneClient:
                         urljoin(tmp_url, location), require_allowlist=True
                     )
                     test_resp = await client.head(redirect_target, timeout=10)
+                    tmp_url = redirect_target
                 if test_resp.status_code >= 300:
                     raise QwenVoiceCloneError(
                         f'生成的临时URL无法访问: {tmp_url}, 状态码: {test_resp.status_code}'

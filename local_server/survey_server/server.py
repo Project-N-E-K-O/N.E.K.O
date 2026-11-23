@@ -55,7 +55,7 @@ from storage import SurveyStorage
 
 HMAC_SECRET = os.getenv("SURVEY_HMAC_SECRET", DEFAULT_HMAC_SECRET)
 DB_PATH = os.getenv("SURVEY_DB_PATH", "./data/survey.db")
-ADMIN_TOKEN = os.getenv("SURVEY_ADMIN_TOKEN", "")
+ADMIN_TOKEN = os.getenv("SURVEY_ADMIN_TOKEN", "").strip()
 MAX_BODY_SIZE = 256 * 1024            # Request body byte limit (usually <=10 KB after gzip).
 MAX_DECOMPRESSED_SIZE = 1024 * 1024   # Decompression limit to block zip bombs.
 
@@ -123,13 +123,20 @@ def _extract_token(request: Request) -> str:
 
 
 def require_admin(request: Request):
-    if not _is_admin_token_configured(ADMIN_TOKEN):
+    expected_token = (ADMIN_TOKEN or "").strip()
+    if not _is_admin_token_configured(expected_token):
         raise HTTPException(503, "Admin API not configured (set a non-placeholder SURVEY_ADMIN_TOKEN env var on server)")
     token = _extract_token(request)
     # Constant-time comparison: the admin endpoint exposes device_id / steam_user_id; ordinary != leaks a byte-by-byte comparison
     # progress through a timing side channel. compare_digest removes that difference. First reject non-ASCII: compare_digest
     # raises TypeError for strings containing non-ASCII characters; otherwise an Authorization header containing 'é' would turn a 401 into a 500.
-    if not token or not token.isascii() or not hmac.compare_digest(token, ADMIN_TOKEN):
+    if (
+        not token
+        or not expected_token
+        or not token.isascii()
+        or not expected_token.isascii()
+        or not hmac.compare_digest(token, expected_token)
+    ):
         raise HTTPException(401, "Invalid admin token")
 
 
@@ -370,7 +377,7 @@ if __name__ == "__main__":
         Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
         storage = SurveyStorage(DB_PATH)
     if args.admin_token:
-        ADMIN_TOKEN = args.admin_token
+        ADMIN_TOKEN = args.admin_token.strip()
 
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
