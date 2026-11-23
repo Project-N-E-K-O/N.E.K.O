@@ -1738,6 +1738,21 @@ async def test_what_the_ledger_finds_for_a_family_and_for_a_leader(tmp_path):
         assert (anew.result_summary, anew.ended_at > stuck.ended_at) == ("help page written", True)
         await ledger.append_event(under_way.id, "told_to_leader", {"commission_id": stopped.id, "ended_at": anew.ended_at})
         assert await ledger.handed_work(leader.id, limit=5) == []
+        # However many it was told of since, one it was not told of is found; ``limit`` at a time, the latest first.
+        early = await filed("an early one", project="Beta", session_id=reports.id, handed_by=leader.id)
+        await ledger.transition(early.id, "working", reason="t")
+        await ledger.transition(early.id, "done", reason="t", result_summary="early one done")
+        for index in range(12):
+            later = await filed(f"a later one {index}", project="Beta", session_id=reports.id, handed_by=leader.id)
+            await ledger.transition(later.id, "working", reason="t")
+            await ledger.transition(later.id, "done", reason="t", result_summary="done")
+            if index < 10:
+                told_of = (await ledger.get(later.id)).ended_at
+                await ledger.append_event(later.id, "told_to_leader", {"commission_id": stopped.id, "ended_at": told_of})
+        assert [item.title for item in await ledger.handed_work(leader.id, limit=2)] == ["a later one 11", "a later one 10"]
+        assert [item.title for item in await ledger.handed_work(leader.id, limit=5)] == [
+            "a later one 11", "a later one 10", "an early one",
+        ]
         assert under_way.status not in ("done", "blocked", "failed", "cancelled")
     finally:
         await ledger.close()
