@@ -54,6 +54,7 @@ from ._infra import (
     _non_bistream_tts_main_loop,
     _run_sentence_tts_worker,
 )
+from ._preconnect import worker_supports_preconnect
 from ._telemetry import _record_tts_telemetry
 from ._registry_meta import TTSProviderMeta, TTS_PROVIDER_REGISTRY
 
@@ -159,7 +160,7 @@ __all__ = [
     "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "TTS_SOFT_FLUSH_SENTINEL", "TTS_PRECONNECT_SENTINEL", "AudioDoneEmitter",
     "_resample_audio", "_parse_env_float", "_enqueue_error",
     "_ws_is_open", "SentenceBuffer", "_AudioQueueProxy", "_non_bistream_tts_main_loop",
-    "_run_sentence_tts_worker", "_record_tts_telemetry",
+    "_run_sentence_tts_worker", "_record_tts_telemetry", "worker_supports_preconnect",
     "TTSProviderMeta", "TTS_PROVIDER_REGISTRY",
     # workers
     "step_realtime_tts_worker", "free_realtime_tts_worker",
