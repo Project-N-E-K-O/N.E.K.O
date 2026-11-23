@@ -96,7 +96,7 @@ async def _call(route, arg):
     return response.status_code, json.loads(response.body)
 
 
-@pytest.mark.parametrize(
+_CONFIG_FILE_ROUTES = pytest.mark.parametrize(
     'route, leaf',
     [
         (config_files.read_workshop_file, 'card.chara.json'),
@@ -105,6 +105,9 @@ async def _call(route, arg):
     ],
     ids=['read-file', 'list-chara-files', 'list-audio-files'],
 )
+
+
+@_CONFIG_FILE_ROUTES
 @pytest.mark.asyncio
 async def test_config_file_routes_answer_cross_drive_like_an_escape(
     workshop, cross_drive, route, leaf
@@ -116,8 +119,9 @@ async def test_config_file_routes_answer_cross_drive_like_an_escape(
     other = await _call(route, other_path)
 
     assert escape == other
+    assert other[0] == 403
     assert other[1]['success'] is False
-    assert 'path not allowed' in other[1]['error']
+    assert '路径不在允许的范围内' in other[1]['error']
     body = json.dumps(other[1], ensure_ascii=False)
     assert str(workshop) not in body
     assert "same drive" not in body
@@ -126,6 +130,26 @@ async def test_config_file_routes_answer_cross_drive_like_an_escape(
     inside = str(workshop / 'workshop' / 'item_aaa' / leaf) if leaf else str(workshop / 'workshop' / 'item_aaa')
     status, payload = await _call(route, inside)
     assert status == 200 and payload['success'] is True
+
+
+@_CONFIG_FILE_ROUTES
+@pytest.mark.asyncio
+async def test_os_permission_error_after_the_guard_stays_500(workshop, monkeypatch, route, leaf):
+    # Only the containment check maps to 403. The OS refusing to open or list
+    # a path that *is* inside the base is a server-side failure.
+    def _denied(*_args, **_kwargs):
+        raise PermissionError(13, 'Permission denied', str(workshop / 'secret'))
+
+    if leaf:
+        monkeypatch.setattr('builtins.open', _denied)
+    else:
+        monkeypatch.setattr(config_files.os, 'listdir', _denied)
+
+    inside = str(workshop / 'workshop' / 'item_aaa' / leaf) if leaf else str(workshop / 'workshop' / 'item_aaa')
+    status, payload = await _call(route, inside)
+    assert status == 500
+    assert payload['success'] is False
+    assert '路径不在允许的范围内' not in payload['error']
 
 
 # ── /publish content_folder ────────────────────────────────────────────

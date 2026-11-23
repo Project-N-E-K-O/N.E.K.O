@@ -232,6 +232,18 @@ def _assert_under_base(path: str, base: str) -> str:
     return full
 
 
+def _path_not_allowed_response(action: str) -> JSONResponse:
+    # Only the containment check is mapped to 403: a PermissionError raised
+    # later (e.g. the OS denying open/listdir) is a server-side failure and
+    # stays on the generic 500 branch. The message is fixed; the requested
+    # path never goes into the response.
+    logger.warning(f"{action}: path not allowed")
+    return JSONResponse(
+        content={"success": False, "error": f"{action}: 路径不在允许的范围内"},
+        status_code=403,
+    )
+
+
 @router.get('/read-file')
 async def read_workshop_file(path: str):
     """Read workshop file content."""
@@ -240,9 +252,12 @@ async def read_workshop_file(path: str):
         
         # Decode URL-encoded paths.
         decoded_path = unquote(path)
-        decoded_path = _assert_under_base(
-            decoded_path, await get_workshop_path_async()
-        )
+        try:
+            decoded_path = _assert_under_base(
+                decoded_path, await get_workshop_path_async()
+            )
+        except PermissionError:
+            return _path_not_allowed_response("读取文件失败")
         logger.info(f"解码后的路径: {decoded_path}")
         
         # Check file existence.
@@ -286,9 +301,12 @@ async def list_chara_files(directory: str):
         logger.info(f"列出创意工坊目录下的角色卡文件请求，目录: {directory}")
         
         # Decode URL-encoded paths.
-        decoded_dir = _assert_under_base(
-            unquote(directory), await get_workshop_path_async()
-        )
+        try:
+            decoded_dir = _assert_under_base(
+                unquote(directory), await get_workshop_path_async()
+            )
+        except PermissionError:
+            return _path_not_allowed_response("列出角色卡文件失败")
         logger.info(f"解码后的目录路径: {decoded_dir}")
         
         # Check directory existence.
@@ -321,9 +339,12 @@ async def list_audio_files(directory: str):
         logger.info(f"列出创意工坊目录下的音频文件请求，目录: {directory}")
         
         # Decode URL-encoded paths and validate Workshop containment.
-        decoded_dir = _assert_under_base(
-            unquote(directory), await get_workshop_path_async()
-        )
+        try:
+            decoded_dir = _assert_under_base(
+                unquote(directory), await get_workshop_path_async()
+            )
+        except PermissionError:
+            return _path_not_allowed_response("列出音频文件失败")
         logger.info(f"解码后的目录路径: {decoded_dir}")
         
         # Check directory existence.
