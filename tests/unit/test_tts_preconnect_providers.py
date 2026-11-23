@@ -809,3 +809,57 @@ def test_qwen_late_text_after_a_retire_is_not_taken_for_a_finished_round(monkeyp
 
     assert observations == {"late_still_open": True}, "retired a socket whose audio was still coming"
     connects.assert_one_connection_at_a_time()
+
+
+class _FailingSendSock(_Sock):
+    """Accepts the connect, then fails every text.delta send."""
+
+    async def send(self, payload):
+        if json.loads(payload).get("type") == "text.delta":
+            self.send_attempts += 1
+            raise RuntimeError(f"{self.name}: dropped during send")
+        await super().send(payload)
+
+
+def test_grok_late_chunk_after_a_failed_flush_retry_still_reaches_a_socket(monkeypatch):
+    # The end-of-speech flush and its reconnect retry both fail, leaving no
+    # socket. A later chunk of the same speech must reconnect rather than be
+    # dropped against the missing socket.
+    monkeypatch.setattr(grok_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    first = _FailingSendSock("first", _type_kind)
+    last_chance = _FailingSendSock("last-chance", _type_kind)
+    recovered = _grok_socket("recovered")
+    plan = [_grok_socket("warmup"), first, last_chance, OSError("retry refused"), recovered]
+    connected = []
+
+    async def connect(*_args, **_kwargs):
+        item = plan.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        connected.append(item)
+        return item
+
+    monkeypatch.setattr(websockets, "connect", connect)
+    monkeypatch.setattr(grok_mod.asyncio, "sleep", _no_delay(grok_mod.asyncio.sleep))
+
+    grok_mod.grok_streaming_tts_worker(
+        _Requests(
+            ("speech-1", _OPENING),   # send fails on first: kept as pending
+            (None, None),             # last chance fails, its retry is refused
+            ("speech-1", "A late chunk of the same speech."),
+            (None, None),
+        ),
+        queue.Queue(),
+        "xai-test",
+        "eve",
+    )
+
+    assert recovered in connected, "the late chunk never got a socket"
+    assert _PROVIDERS[1].spoken(recovered) == ["A late chunk of the same speech."]
+
+
+def _no_delay(real_sleep):
+    async def sleep(_seconds):
+        await real_sleep(0)
+
+    return sleep

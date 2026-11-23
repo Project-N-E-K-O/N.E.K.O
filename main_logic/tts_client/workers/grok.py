@@ -411,8 +411,12 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                         if ws is None:
                             # The retry was preempted or failed; a queued
                             # interrupt/shutdown or the next speech takes over.
+                            # Like a failed send, the speech is unbound too, so
+                            # a later chunk of it reconnects instead of being
+                            # dropped against the missing socket.
                             pending_text.clear()
                             pending_text_sid = None
+                            current_speech_id = None
                             continue
                         try:
                             await ws.send(json.dumps({"type": "text.done"}))
