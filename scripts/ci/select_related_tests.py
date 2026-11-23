@@ -735,7 +735,8 @@ def _mentioning(index: RepoIndex, literal: tuple[str, ...]) -> set[str]:
     found = {p for p, tokens in index.test_tree_tokens.items() if wanted <= tokens}
     if len(literal) == 1:
         return found
-    separator = r"['\"]?\s*[/\\,]\s*['\"]?"
+    # Quotes and a closing parenthesis may sit between the parts: (Path("templates") / "index.html").
+    separator = r"['\"]?\)?\s*[/\\,]\s*['\"]?"
     pattern = re.compile(r"(?<![\w.-])" + separator.join(re.escape(part) for part in literal) + r"(?![\w-])")
     return {p for p in found if pattern.search(index.test_tree_text[p])}
 
@@ -801,7 +802,7 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
         if literal:
             hits = _mentioning(index, literal)
             literal_seeds |= hits
-            if not is_test_module(rel):
+            if not (is_test_module(rel) and rel.startswith(TEST_ROOT + "/")):
                 # A test file only matters to itself: a helper listing it by name
                 # (an exclusion list, say) does not make its conftest's tests depend on it.
                 scoped_literal_seeds |= hits

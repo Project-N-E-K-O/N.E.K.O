@@ -71,6 +71,8 @@ FILES = {
     "app/pkgy/thing.py": "THING = 1\n",
     "app/pkgx/core.py": "VALUE = 13\n",
     "tests/fixtures/policy.json": "{}\n",
+    "tests/fixtures/test_payload.py": "PAYLOAD = 1\n",
+    "pages/index.html": "<html></html>\n",
     "app/base_service.py": "VALUE = 7\n",
     "app/sub_service.py": "VALUE = 8\n",
     "app/engine.py": "VALUE = 9\n",
@@ -132,6 +134,10 @@ FILES = {
         "def test_plain():\n    assert helper\n"
     ),
     "tests/unit/test_unrelated.py": "def test_alone():\n    assert True\n",
+    "tests/unit/test_template_paren.py": (
+        "from pathlib import Path\n\n"
+        "def test_page():\n    assert (Path('pages') / 'index.html').name\n"
+    ),
     "tests/unit/test_template_parts.py": (
         "from pathlib import Path\n\n"
         "def test_template():\n    assert Path('.') / 'templates' / 'index.html'\n"
@@ -144,7 +150,8 @@ FILES = {
     "tests/unit/sub/__init__.py": "",
     "tests/unit/sub/conftest.py": (
         "import pytest\nimport tests.unit.pkgb\nfrom tests.unit.sub.sub_helper import fixture_value\n"
-        "from tests.unit.shared_helper import shared\n\nPOLICY = 'tests/fixtures/policy.json'\n\n"
+        "from tests.unit.shared_helper import shared\n\nPOLICY = 'tests/fixtures/policy.json'\n"
+        "PAYLOAD = 'tests/fixtures/test_payload.py'\n\n"
         "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n    import app.gone_backend\n\n"
         "@pytest.fixture\ndef boot_dep():\n    import app.sub_backend\n    return app.sub_backend\n\n"
         "@pytest.fixture\ndef sub_service():\n    from app import sub_service\n    return sub_service\n\n"
@@ -232,6 +239,8 @@ def test_file_name_mentioned_in_a_test_selects_it(index):
 def test_generic_file_name_matches_with_its_directory_as_separate_parts(index):
     # The test spells the path as Path(...) / "templates" / "index.html".
     assert _selected(index, "templates/index.html") == ["tests/unit/test_template_parts.py"]
+    # A closing parenthesis between the parts: (Path("pages") / "index.html").
+    assert _selected(index, "pages/index.html") == ["tests/unit/test_template_paren.py"]
     # The same generic name in another directory is a different file.
     assert _selected(index, "static/index.html") == []
 
@@ -368,6 +377,11 @@ def test_helper_shared_by_two_conftests_scopes_both_directories(index):
 def test_file_a_conftest_names_selects_that_conftests_directory(index):
     # sub/conftest.py names tests/fixtures/policy.json; no test there mentions it.
     assert _selected(index, "tests/fixtures/policy.json") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
+
+
+def test_fixture_data_named_test_star_still_scopes_like_any_other_file(index):
+    # tests/fixtures/test_payload.py looks like a test module by name but is data a conftest reads.
+    assert _selected(index, "tests/fixtures/test_payload.py") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
 
 
 def test_test_file_named_by_a_conftest_helper_only_selects_itself(index):
