@@ -362,6 +362,7 @@ async def replace_plugin(
     preserve_targets: tuple[Path, ...] = (),
     initialize_runtime_config: bool = True,
     install_changes_permissions: bool = False,
+    restore_source_before_restart: Callable[[], Awaitable[None]] | None = None,
     validate_backup: Callable[[Path], Awaitable[None]] | None = None,
     validate_channel_specific: Callable[[], Awaitable[None]] | None = None,
     on_rollback_start: Callable[[], None] | None = None,
@@ -498,15 +499,18 @@ async def replace_plugin(
                 plugin_id,
                 type(eviction_exc).__name__,
             )
-        if was_running:
+        # The source and the grants go back before the old plugin restarts:
+        # its start reconciles the grants with the recorded source and hands
+        # them to the plugin, so both must already be the old package's.
+        if restore_source_before_restart is not None:
             try:
-                await _start_plugin(plugin_id)
-            except Exception as restart_exc:
+                await restore_source_before_restart()
+            except Exception as source_exc:
                 restored = False
                 logger.error(
-                    "plugin rollback restart failed plugin_id={} err_type={}",
+                    "plugin rollback source restore failed plugin_id={} err_type={}",
                     plugin_id,
-                    type(restart_exc).__name__,
+                    type(source_exc).__name__,
                 )
         # Grants change only through a plugin start (which reconciles them)
         # or through ``install_new`` when the caller says it may drop them;
@@ -519,6 +523,16 @@ async def replace_plugin(
             )
         ):
             restored = False
+        if was_running:
+            try:
+                await _start_plugin(plugin_id)
+            except Exception as restart_exc:
+                restored = False
+                logger.error(
+                    "plugin rollback restart failed plugin_id={} err_type={}",
+                    plugin_id,
+                    type(restart_exc).__name__,
+                )
         if not code_restored:
             # Old source was not restored exactly: the failed new package may remain, so old grants cannot authorize autostart.
             # Inspect only the plugin code directory; auxiliary directories, cache cleanup, and restart failures do not change source identity.

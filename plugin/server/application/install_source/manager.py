@@ -1455,6 +1455,21 @@ class InstallSourceManager:
     # Write-path helpers (tasks 2.4 / 2.5)
     # ------------------------------------------------------------------
 
+    def _publish(self, old_lock: LockFile, new_lock: LockFile) -> None:
+        """Make ``new_lock`` current and persist it; keep ``old_lock`` on failure.
+
+        Callers hold ``self._lock``. Readers must never see an entry that
+        was not written to disk, so a failed save puts the previous
+        snapshot back before the error propagates.
+        """
+
+        self._current = new_lock
+        try:
+            self.save()
+        except BaseException:
+            self._current = old_lock
+            raise
+
     @staticmethod
     def _find_entry(
         lock: LockFile, root_id: RootId, directory_name: str
@@ -1650,8 +1665,7 @@ class InstallSourceManager:
             new_lock = self._replace_entry(
                 old_lock, new_entry, updated_at=now
             )
-            self._current = new_lock
-            self.save()
+            self._publish(old_lock, new_lock)
 
     # ------------------------------------------------------------------
     # Write path: record_market (design §8.2 / task 2.5)
@@ -1829,8 +1843,7 @@ class InstallSourceManager:
             new_lock = self._replace_entry(
                 old_lock, new_entry, updated_at=now
             )
-            self._current = new_lock
-            self.save()
+            self._publish(old_lock, new_lock)
 
     # ------------------------------------------------------------------
     # Write path: record_market_install / record_market_upgrade (design §3.2)
@@ -2339,8 +2352,7 @@ class InstallSourceManager:
                 updated_at=now,
             )
             new_lock = self._replace_entry(old_lock, new_entry, updated_at=now)
-            self._current = new_lock
-            self.save()
+            self._publish(old_lock, new_lock)
 
     # ------------------------------------------------------------------
     # Read path: list_entries / to_api_view (task 2.6 / design §11.3 / §12.3)

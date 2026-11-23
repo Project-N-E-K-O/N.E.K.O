@@ -4658,22 +4658,20 @@ async def _replace_market_plugin_transaction(
             message=exc.message,
             http_status=exc.status_code,
         ) from exc
-    try:
-        result = await replace_plugin(
-            layout=layout,
-            install_new=install_new,
-            additional_targets=additional_targets,
-            preserve_targets=preserve_targets,
-            validate_backup=validate_manual_backup,
-            validate_channel_specific=validate_channel_specific,
-            on_rollback_start=on_rollback_start,
-        )
-        await notify_install_committed_async(result.install_result)
-        return result
-    except ReplacePluginError:
-        if rollback_install_source is not None:
-            await rollback_install_source()
-        raise
+    result = await replace_plugin(
+        layout=layout,
+        install_new=install_new,
+        additional_targets=additional_targets,
+        preserve_targets=preserve_targets,
+        validate_backup=validate_manual_backup,
+        validate_channel_specific=validate_channel_specific,
+        on_rollback_start=on_rollback_start,
+        # On rollback the previous entry goes back before the old plugin
+        # restarts, so it starts under its own source.
+        restore_source_before_restart=rollback_install_source,
+    )
+    await notify_install_committed_async(result.install_result)
+    return result
 
 
 def _find_active_user_entry(manager: Any, plugin_ref: str) -> LockEntry | None:

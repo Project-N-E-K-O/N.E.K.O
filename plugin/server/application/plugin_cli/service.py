@@ -64,7 +64,6 @@ from plugin.server.application.plugins.source_switch import (
     switch_builtin_source,
 )
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
-from plugin.server.application.plugins.permission_push import push_permissions
 from plugin.server.application.plugins.permission_service import (
     bind_current_permission_source,
     bind_entry_permission_source,
@@ -719,12 +718,14 @@ class PluginCliService:
                 )
 
         source_write_attempted = False
+        requested_source_attempted = False
         requested_source_written = False
         requested_source_warning: str | None = None
+        source_restored = True
 
         async def install_new() -> dict[str, object]:
-            nonlocal source_write_attempted, requested_source_written
-            nonlocal requested_source_warning
+            nonlocal source_write_attempted, requested_source_attempted
+            nonlocal requested_source_written, requested_source_warning
             install_result = await asyncio.to_thread(
                 self._install_sync,
                 package=package,
@@ -745,6 +746,7 @@ class PluginCliService:
                 # Recorded here, before the replacement restarts the plugin,
                 # so the new code starts under its own source and never
                 # under the previous package's grants.
+                requested_source_attempted = True
                 warning = await self._requested_install_source_warning(
                     install_result=install_result,
                     package=package,
@@ -763,6 +765,52 @@ class PluginCliService:
                 requested_source_warning = warning
             return install_result
 
+        async def restore_source_before_restart() -> None:
+            # Runs on rollback, before the previous plugin restarts, so it
+            # starts under its own source. Restoring an entry that was not
+            # changed is a no-op, so any attempted write is undone.
+            nonlocal source_restored
+            if manual_entry is not None and source_write_attempted:
+                try:
+                    assert manual_manager is not None
+                    await asyncio.to_thread(
+                        manual_manager.restore_entry_for_rollback,
+                        manual_entry,
+                    )
+                except Exception as restore_exc:
+                    source_restored = False
+                    logger.error(
+                        "manual takeover source rollback failed plugin_id={} err_type={}",
+                        plan.plugin_id,
+                        type(restore_exc).__name__,
+                    )
+            if not requested_source_attempted:
+                return
+            if current_entry is None:
+                # Nothing to put back: the lock had no entry for the previous
+                # package, so a recorded source stays.
+                if requested_source_written:
+                    source_restored = False
+            else:
+                try:
+                    assert install_source_manager is not None
+                    await asyncio.to_thread(
+                        install_source_manager.restore_entry_for_rollback,
+                        current_entry,
+                    )
+                except Exception as restore_exc:
+                    source_restored = False
+                    logger.error(
+                        "requested install source rollback failed plugin_id={} err_type={}",
+                        plan.plugin_id,
+                        type(restore_exc).__name__,
+                    )
+            if not source_restored:
+                logger.error(
+                    "requested install source not restored after rollback plugin_id={}",
+                    plan.plugin_id,
+                )
+
         try:
             result = await replacement_transaction.replace_plugin(
                 layout=resolve_plugin_layout(plan.plugin_id, target_dir),
@@ -770,6 +818,7 @@ class PluginCliService:
                 preserve_targets=((target_dir,) if plan.manifestless_state else ()),
                 initialize_runtime_config=not plan.manifestless_state,
                 install_changes_permissions=install_source is not None,
+                restore_source_before_restart=restore_source_before_restart,
                 validate_backup=(
                     validate_manual_takeover_backup
                     if manual_manager is not None
@@ -804,50 +853,6 @@ class PluginCliService:
                     "auto-start preference for plugin_id={}",
                     plan.plugin_id,
                 )
-            source_restored = True
-            if manual_entry is not None and source_write_attempted:
-                try:
-                    assert manual_manager is not None
-                    await asyncio.to_thread(
-                        manual_manager.restore_entry_for_rollback,
-                        manual_entry,
-                    )
-                except Exception as restore_exc:
-                    source_restored = False
-                    logger.error(
-                        "manual takeover source rollback failed plugin_id={} err_type={}",
-                        plan.plugin_id,
-                        type(restore_exc).__name__,
-                    )
-            if requested_source_written:
-                if current_entry is None:
-                    # Nothing to put back: the lock had no entry for the
-                    # previous package.
-                    source_restored = False
-                else:
-                    try:
-                        assert install_source_manager is not None
-                        await asyncio.to_thread(
-                            install_source_manager.restore_entry_for_rollback,
-                            current_entry,
-                        )
-                    except Exception as restore_exc:
-                        source_restored = False
-                        logger.error(
-                            "requested install source rollback failed plugin_id={} err_type={}",
-                            plan.plugin_id,
-                            type(restore_exc).__name__,
-                        )
-                if not source_restored:
-                    logger.error(
-                        "requested install source not restored after rollback plugin_id={}",
-                        plan.plugin_id,
-                    )
-            if source_write_attempted or requested_source_written:
-                # The rollback restart ran while the lock still named the new
-                # package, so the restarted plugin may hold a snapshot without
-                # its grants; send one read under the restored source.
-                await push_permissions(plan.plugin_id)
             details = _replacement_error_details(exc)
             if not source_restored:
                 details["rollback_status"] = "incomplete"
