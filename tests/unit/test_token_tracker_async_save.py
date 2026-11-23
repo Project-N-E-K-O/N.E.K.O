@@ -1279,7 +1279,58 @@ def test_unsent_queue_handles_huge_int_without_overflow_and_isolates_surrogate_b
     assert not tracker_post_merge._unsent_queue_path.exists()
 
 
+def test_unsent_queue_dir_sync_error_defers_send_and_reuses_batch_seq(tracker_factory, monkeypatch):
+    """Numbered queue dir-sync failure must defer sending and reuse the same batch_seq on retry."""
+    import errno
+    from utils import file_utils
 
+    tracker = tracker_factory()
+    sent = []
+    monkeypatch.setattr(tracker, "_send_report", lambda *args: sent.append(args))
 
+    # Persist an unnumbered window (batch_seq=None) while reporting interval is suppressed.
+    tracker._report_interval = float("inf")
+    tracker.record("queued-model", 4, 2, 6)
+    tracker.save()
 
+    assert sent == []
+    assert tracker._unsent_queue_path.exists()
+    assert json.loads(tracker._unsent_queue_path.read_text(encoding="utf-8"))["batch_seq"] is None
+
+    # Re-enable reporting, but fail directory sync for the numbered queue write.
+    tracker._report_interval = 0
+    real_fsync_dir = file_utils._fsync_directory
+    sync_should_fail = True
+    sync_calls = []
+
+    def flaky_fsync_dir(path):
+        sync_calls.append(path)
+        if sync_should_fail:
+            raise OSError(errno.EIO, "directory sync failed")
+        return real_fsync_dir(path)
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", flaky_fsync_dir)
+
+    tracker.save()
+    assert sent == []
+    assert len(sync_calls) == 1
+    first_seq = tracker._pending_batch_seq
+    assert isinstance(first_seq, str) and first_seq
+    assert tracker._unsent_queue_path.exists()
+
+    # Subsequent retry while dir sync still fails keeps the exact same batch_seq without sending.
+    tracker.save()
+    assert sent == []
+    assert len(sync_calls) == 2
+    assert tracker._pending_batch_seq == first_seq
+
+    # Once dir sync recovers, the retry persists cleanly and sends once with the same batch_seq.
+    sync_should_fail = False
+    tracker.save()
+    assert len(sent) == 1
+    assert sent[0][2] == first_seq
+    assert sent[0][3] is True
+    assert [r["model"] for r in sent[0][1]] == ["queued-model"]
+    assert tracker._pending_batch_seq is None
+    assert not tracker._unsent_queue_path.exists()
 

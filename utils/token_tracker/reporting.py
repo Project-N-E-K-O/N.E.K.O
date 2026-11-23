@@ -543,11 +543,8 @@ class ReportingMixin:
             else:
                 self._unsent_queue_path.unlink(missing_ok=True)
             return True
-        except PublishedFileSyncError as exc:
-            logger.warning("Token tracker: unsent queue published but directory sync failed: %s", exc)
-            return True
         except OSError as exc:
-            logger.debug("Token tracker: failed to persist unsent queue: %s", exc)
+            logger.warning("Token tracker: failed to persist unsent queue: %s", exc)
             return False
 
     def submit_save(self, *, report_timeout: float | None = None) -> Future:
