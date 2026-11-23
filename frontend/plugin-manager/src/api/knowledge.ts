@@ -36,6 +36,7 @@ export const KNOWLEDGE_FAILURE_REASONS = [
   'job_not_retryable',
   'process_interrupted',
   'pack_changed',
+  'pack_content_changed',
   'capacity_entries',
   'capacity_chunks',
   'capacity_bytes',
@@ -75,6 +76,8 @@ export const KNOWLEDGE_FAILURE_REASONS = [
   'source_confirmation_required',
   'vectors_not_ready',
   'embedding_unavailable',
+  'artifact_hash_mismatch',
+  'pack_file_mismatch',
   'package_artifact_hash_mismatch',
   'package_invalid_archive',
   'package_invalid_vector',
@@ -196,6 +199,8 @@ export interface KnowledgeEntryDetail extends KnowledgeEntry {
 
 export interface KnowledgePack {
   pack_id: string
+  /** Active content identity for enable consent; absent on retained source-only groups. */
+  pack_sha256?: string
   source: KnowledgeSource
   declared_material_type: KnowledgeMaterialType
   material_type_override: KnowledgeMaterialType | null
@@ -541,7 +546,7 @@ export const knowledgeApi = {
   setEnabled: (enabled: boolean) =>
     post<KnowledgeEnvelope & { enabled: boolean }>('settings', { enabled }),
   // The envelope's enabled describes global availability; pack_enabled is the saved pack policy.
-  setPackEnabled: (data: { pack_id: string; enabled: boolean }) =>
+  setPackEnabled: (data: { pack_id: string; enabled: boolean; expected_pack_sha256?: string }) =>
     post<KnowledgeEnvelope & { pack_id: string; pack_enabled: boolean }>('packs/enabled', data),
   setEntryDisabled: (data: { pack_id: string; title: string; disabled: boolean }) =>
     post<KnowledgeEnvelope & { pack_id: string; disabled: boolean; disabled_entries: number }>(
@@ -608,6 +613,12 @@ export const knowledgeApi = {
         try { envelope = JSON.parse(await blob.text()) as KnowledgeEnvelope } catch { /* Use the invalid-response reason below. */ }
       }
       if (envelope?.ok === false) throw new KnowledgeApiError(String(envelope.reason || 'operation_failed'))
+      throw new KnowledgeApiError('knowledge_invalid_response')
+    }
+    // Only sniff the local-file header, independent of MIME type; full archive
+    // validation belongs to the server, and a large artifact need not be copied.
+    const prefix = new Uint8Array(await blob.slice(0, 4).arrayBuffer())
+    if (prefix.length !== 4 || prefix[0] !== 0x50 || prefix[1] !== 0x4b || prefix[2] !== 0x03 || prefix[3] !== 0x04) {
       throw new KnowledgeApiError('knowledge_invalid_response')
     }
     return { blob, filename }

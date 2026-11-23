@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import json
 import contextlib
+import re
 import uuid
 from pathlib import Path
 from urllib.parse import unquote
@@ -653,7 +654,14 @@ async def knowledge_pack_enabled(request: Request):
     payload = await _json_object(request)
     if payload is None or not _pack_id(payload) or not isinstance(payload.get("enabled"), bool):
         return _failure("invalid_request", 400)
-    return await _call(lambda svc: svc.set_pack_enabled(_pack_id(payload), payload["enabled"]))
+    # Browser-facing enable requests must bind their disclosure to a body;
+    # disabling remains available without a previously observed content hash.
+    expected = payload.get("expected_pack_sha256") if payload["enabled"] else None
+    if payload["enabled"] and (not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None):
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.set_pack_enabled(
+        _pack_id(payload), payload["enabled"], expected_pack_sha256=expected,
+    ))
 
 
 @router.get("/sources")

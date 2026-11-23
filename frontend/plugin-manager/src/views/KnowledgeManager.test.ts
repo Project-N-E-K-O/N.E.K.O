@@ -116,6 +116,16 @@ function job(state: KnowledgePackJob['state']): KnowledgePackJob {
   }
 }
 
+function pack(enabled = false, packId = 'imp.test', digest = 'a'.repeat(64)) {
+  return {
+    pack_id: packId, pack_sha256: digest, source: { name: 'My notes', homepage: '', license: '' },
+    origin: 'imported', enabled, auto_context: false, local_embedding: true,
+    declared_material_type: 'knowledge', material_type_override: null, effective_material_type: 'knowledge',
+    entries: 1, disabled_entries: 0, chunks_total: 1, chunks_ready: 0, chunks_failed: 0,
+    vector_state: 'waiting', export_ready: false, broken: false, subscription: null, installed_at: '', updated_at: '',
+  }
+}
+
 async function openTab(name: string) {
   const tab = document.querySelector<HTMLElement>(`#tab-${name}`)
   expect(tab, `missing tab ${name}`).toBeTruthy()
@@ -227,6 +237,30 @@ describe('KnowledgeManager overview', () => {
     expect(container.querySelector('[data-job-id="retry-new"]')).not.toBeNull()
   })
 
+  it.each(['knowledge_stopping', undefined])('preserves the admitted retry reason through failed and stale refreshes (%s)', async reason => {
+    vi.useFakeTimers()
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [
+      { ...job('failed'), reason: 'process_interrupted' },
+      { ...job('building'), job_id: 'other-running' },
+    ] })
+    api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-terminal', state: 'failed', ...(reason ? { reason } : {}) })
+    const container = await mount()
+    await openTab('packs')
+    api.packJobs.mockRejectedValueOnce(new KnowledgeApiError('knowledge_error'))
+    container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!.click()
+    await flush()
+    const text = () => container.querySelector('[data-job-id="retry-terminal"]')!.textContent!
+    expect(text()).toContain(enUS.knowledge.jobFailed)
+    expect(text()).not.toContain(enUS.knowledge.reasons.process_interrupted)
+    if (reason) expect(text()).toContain(enUS.knowledge.reasons.knowledge_stopping)
+    const callsBeforePoll = api.packJobs.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(api.packJobs.mock.calls.length).toBeGreaterThan(callsBeforePoll)
+    expect(text()).not.toContain(enUS.knowledge.reasons.process_interrupted)
+    if (reason) expect(text()).toContain(enUS.knowledge.reasons.knowledge_stopping)
+  })
+
   it('hands a retry over to the server snapshot after polling confirms its identity', async () => {
     vi.useFakeTimers()
     api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
@@ -330,13 +364,7 @@ describe('KnowledgeManager overview', () => {
     let acknowledge!: (value: Awaited<ReturnType<typeof ElMessageBox.confirm>>) => void
     const confirm = vi.spyOn(ElMessageBox, 'confirm').mockReturnValue(new Promise(resolve => { acknowledge = resolve }))
     api.status.mockResolvedValue(readyStatus(globalEnabled))
-    api.packs.mockResolvedValue({ ok: true, packs: [{
-      pack_id: 'imp.test', source: { name: 'My notes', homepage: '', license: '' },
-      origin: 'imported', enabled: !requested, auto_context: false, local_embedding: true,
-      declared_material_type: 'knowledge', material_type_override: null, effective_material_type: 'knowledge',
-      entries: 1, disabled_entries: 0, chunks_total: 1, chunks_ready: 0, chunks_failed: 0,
-      vector_state: 'waiting', export_ready: false, broken: false, subscription: null, installed_at: '', updated_at: '',
-    }] })
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(!requested)] })
     api.setPackEnabled.mockResolvedValue({ ok: true, pack_id: 'imp.test', enabled: globalEnabled, pack_enabled: saved })
     const container = await mount()
     await openTab('packs')
@@ -355,7 +383,9 @@ describe('KnowledgeManager overview', () => {
       expect(confirm).not.toHaveBeenCalled()
     }
     await flush()
-    expect(api.setPackEnabled).toHaveBeenCalledExactlyOnceWith({ pack_id: 'imp.test', enabled: requested })
+    expect(api.setPackEnabled).toHaveBeenCalledExactlyOnceWith({
+      pack_id: 'imp.test', enabled: requested, ...(requested ? { expected_pack_sha256: 'a'.repeat(64) } : {}),
+    })
     expect(api.packs).toHaveBeenCalledTimes(initialPackLoads + 1)
     // A failed refresh leaves this response as the visible source of truth.
     expect(toggle.querySelector('input')!.getAttribute('aria-checked')).toBe(String(saved))
@@ -363,6 +393,134 @@ describe('KnowledgeManager overview', () => {
     expect(api.setPackAutoContext).not.toHaveBeenCalled()
     expect(api.setPackIndexPolicy).not.toHaveBeenCalled()
     expect(container.querySelector<HTMLInputElement>('input[type="file"]')!.accept).toContain('.pdf')
+  })
+
+  it('updates the current pack row and open drawer when a refresh replaces the saving row', async () => {
+    let finish!: (value: object) => void
+    api.setPackEnabled.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(true)] })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    const initialLoads = api.packs.mock.calls.length
+    // This real refresh installs a new row object while the save is pending.
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(true)] })
+    container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
+    await flush()
+    expect(api.packs.mock.calls.length).toBeGreaterThan(initialLoads)
+    const manage = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent?.trim() === enUS.knowledge.managePack)!
+    manage.click()
+    await flush()
+    expect(document.querySelector('.pack-summary .el-tag')!.textContent).toBe(enUS.knowledge.entryEnabled)
+    api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
+    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false })
+    await flush()
+    expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe('false')
+    expect(document.querySelector('.pack-summary .el-tag')!.textContent).toBe(enUS.knowledge.entryDisabled)
+  })
+
+  it.each([true, false])('does not restore a missing pack or change another row after a save (%s)', async showOther => {
+    let finish!: (value: object) => void
+    api.setPackEnabled.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(true)] })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    api.packs.mockResolvedValue({ ok: true, packs: showOther ? [pack(true, 'other-pack')] : [] })
+    container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
+    await flush()
+    expect(container.querySelector('[data-testid="pack-enabled-imp.test"]')).toBeNull()
+    api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
+    finish({ ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: false })
+    await flush()
+    expect(container.querySelector('[data-testid="pack-enabled-imp.test"]')).toBeNull()
+    if (showOther) expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-other-pack"] input')!.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('binds enabling to the confirmed body and requires a fresh confirmation after replacement', async () => {
+    const oldDigest = 'a'.repeat(64), newDigest = 'b'.repeat(64)
+    let acknowledge!: (value: Awaited<ReturnType<typeof ElMessageBox.confirm>>) => void
+    const confirm = vi.spyOn(ElMessageBox, 'confirm')
+      .mockReturnValueOnce(new Promise(resolve => { acknowledge = resolve }))
+      .mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(false, 'imp.test', oldDigest)] })
+    api.setPackEnabled.mockImplementation(async data => {
+      if (data.expected_pack_sha256 !== newDigest) throw new KnowledgeApiError('pack_content_changed')
+      return { ok: true, pack_id: 'imp.test', enabled: true, pack_enabled: true }
+    })
+    const container = await mount()
+    await openTab('packs')
+    const toggle = () => container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!
+    toggle().click()
+    await flush()
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(api.setPackEnabled).not.toHaveBeenCalled()
+    // Another window replaces the same ID while the original confirmation is open.
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(false, 'imp.test', newDigest)] })
+    container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
+    await flush()
+    const loadsBeforeRejection = api.packs.mock.calls.length
+    acknowledge('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    await flush()
+    expect(api.setPackEnabled).toHaveBeenCalledExactlyOnceWith({ pack_id: 'imp.test', enabled: true, expected_pack_sha256: oldDigest })
+    expect(api.packs.mock.calls.length).toBeGreaterThan(loadsBeforeRejection)
+    expect(toggle().querySelector('input')!.getAttribute('aria-checked')).toBe('false')
+    expect(document.body.textContent).toContain(enUS.knowledge.reasons.pack_content_changed)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    // Loading the new body never enables it automatically: the user must click and confirm again.
+    toggle().click()
+    await flush()
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(api.setPackEnabled).toHaveBeenLastCalledWith({ pack_id: 'imp.test', enabled: true, expected_pack_sha256: newDigest })
+    expect(toggle().querySelector('input')!.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it.each([true, false])('applies a delayed enable only to the same displayed body (%s)', async sameBody => {
+    let finish!: (value: object) => void
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    api.setPackEnabled.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    api.packs.mockResolvedValue({ ok: true, packs: [pack()] })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    api.packs.mockResolvedValue({ ok: true, packs: [pack(false, 'imp.test', (sameBody ? 'a' : 'b').repeat(64))] })
+    container.querySelector<HTMLButtonElement>('.page-heading button')!.click()
+    await flush()
+    api.packs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
+    finish({ ok: true, pack_id: 'imp.test', enabled: false, pack_enabled: true })
+    await flush()
+    expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe(String(sameBody))
+  })
+
+  it('reloads without enabling when a pack has no content identity', async () => {
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    api.packs.mockResolvedValue({ ok: true, packs: [{ ...pack(), pack_sha256: undefined }] })
+    api.setPackEnabled.mockResolvedValue({ ok: true, pack_enabled: true })
+    const container = await mount()
+    await openTab('packs')
+    const loads = api.packs.mock.calls.length
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    expect(confirm).not.toHaveBeenCalled()
+    expect(api.setPackEnabled).not.toHaveBeenCalled()
+    expect(api.packs.mock.calls.length).toBeGreaterThan(loads)
+    expect(document.body.textContent).toContain(enUS.knowledge.reasons.pack_content_changed)
+    expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('does not enable a pack after the disclosure confirmation is cancelled', async () => {
+    vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue('cancel')
+    api.packs.mockResolvedValue({ ok: true, packs: [pack()] })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    expect(api.setPackEnabled).not.toHaveBeenCalled()
+    expect(container.querySelector<HTMLInputElement>('[data-testid="pack-enabled-imp.test"] input')!.getAttribute('aria-checked')).toBe('false')
   })
 })
 

@@ -86,7 +86,9 @@ async def test_import_then_query_reports_tool_availability(client):
     assert pack["enabled"] is False and pack["origin"] == "imported" and pack["sources_managed"] is False
     # Local packages can contain private text; explicit activation is required
     # before the existing query and availability behavior is exercised.
-    await http.post("/internal/knowledge/packs/enabled", json={"pack_id": "route-pack", "enabled": True})
+    await http.post("/internal/knowledge/packs/enabled", json={
+        "pack_id": "route-pack", "enabled": True, "expected_pack_sha256": pack["pack_sha256"],
+    })
 
     result = (await http.post("/internal/knowledge/query", json={"query": "kotatsu"})).json()
     assert result["result"] == "matched"
@@ -107,7 +109,10 @@ async def test_pack_toggle_keeps_pack_enabled_distinct_from_global_availability(
     # Repeating the write checks both a changed pack and an already-matching
     # pack without conflating either state with the global envelope switch.
     for _ in range(2):
-        response = await http.post("/internal/knowledge/packs/enabled", json={"pack_id": "route-pack", "enabled": pack_enabled})
+        payload = {"pack_id": "route-pack", "enabled": pack_enabled}
+        if pack_enabled:
+            payload["expected_pack_sha256"] = service._registry.packs["route-pack"].pack_sha256
+        response = await http.post("/internal/knowledge/packs/enabled", json=payload)
         assert response.status_code == 200
         body = response.json()
         assert body["ok"] is True and body["pack_id"] == "route-pack"

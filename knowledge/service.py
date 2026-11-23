@@ -828,9 +828,23 @@ class KnowledgeService:
         record = await self._update_record(pack_id, auto_context=bool(enabled))
         return {"pack_id": pack_id, "auto_context": record.auto_context}
 
-    async def set_pack_enabled(self, pack_id: str, enabled: bool) -> dict[str, Any]:
+    async def set_pack_enabled(
+        self, pack_id: str, enabled: bool, *, expected_pack_sha256: str | None = None,
+    ) -> dict[str, Any]:
         """Gate all retrieval while preserving the pack and its vector policy."""
-        record = await self._update_record(pack_id, enabled=bool(enabled))
+        async def run() -> PackRecord:
+            record = self._registry.packs.get(pack_id)
+            if record is None:
+                raise KnowledgeUnavailable("not_found")
+            # An earlier disclosure must not enable a replacement body. Check
+            # and save under the same lock, including after waiting for imports.
+            # Trusted internal callers retain direct toggles; browser enables
+            # always supply an expected hash validated by the HTTP route.
+            if enabled and expected_pack_sha256 is not None and record.pack_sha256 != expected_pack_sha256:
+                raise KnowledgeUnavailable("pack_content_changed")
+            return await self._apply_record_update(pack_id, enabled=bool(enabled))
+
+        record = await self._locked(run)
         # The HTTP envelope reserves enabled for global availability; keep the
         # persisted pack policy distinct so the UI cannot read the other switch.
         return {"pack_id": pack_id, "pack_enabled": record.enabled}
@@ -3841,6 +3855,8 @@ class KnowledgeService:
             packs.append(
                 {
                     "pack_id": record.pack_id,
+                    # Reuse the installed identity; listing never hashes files.
+                    "pack_sha256": record.pack_sha256,
                     "source": {
                         "name": record.source.name,
                         "homepage": record.source.homepage,

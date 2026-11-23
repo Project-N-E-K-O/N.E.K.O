@@ -580,6 +580,7 @@ import {
   createMarketPairing,
   isActiveKnowledgeJob,
   isKnownKnowledgeReason,
+  KnowledgeApiError,
   knowledgeApi,
   knowledgeFailureReason,
   knowledgeMarketUrl,
@@ -1227,7 +1228,8 @@ async function retryJob(job: KnowledgePackJob) {
     jobsGate.invalidate()
     // Show the admitted retry immediately, before the follow-up list is available.
     if (response.job_id && !packJobs.value.some(item => item.job_id === response.job_id)) {
-      const retry = { ...job, ...response, job_id: response.job_id, reason: '' }
+      // Admission may already finish with an actionable error before polling catches up.
+      const retry = { ...job, ...response, job_id: response.job_id, reason: response.reason ?? '' }
       unconfirmedRetries.set(retry.job_id, retry)
       lastJobStates.set(retry.job_id, retry.state)
       packJobs.value = [retry, ...packJobs.value]
@@ -1264,13 +1266,27 @@ function openPack(row: KnowledgePack) {
 }
 
 function setPackEnabled(row: KnowledgePack, enabled: boolean) {
+  // Consent belongs to the body shown when the user opens the confirmation,
+  // not a newer row installed by polling while that confirmation is pending.
+  const packId = row.pack_id
+  const confirmedDigest = row.pack_sha256
   return mutatePack(row, async () => {
-    if (enabled) {
-      await ElMessageBox.confirm(t('knowledge.cloudDisclosure'), t('common.warning'), { type: 'warning' })
+    try {
+      if (enabled) {
+        if (!confirmedDigest) throw new KnowledgeApiError('pack_content_changed')
+        await ElMessageBox.confirm(t('knowledge.cloudDisclosure'), t('common.warning'), { type: 'warning' })
+      }
+      const response = await knowledgeApi.setPackEnabled({
+        pack_id: packId, enabled, ...(enabled ? { expected_pack_sha256: confirmedDigest } : {}),
+      })
+      // Polling can replace row during the save. Never enable a newer body
+      // from a response for the confirmed body, or recreate a removed row.
+      const current = packs.value.find(pack => pack.pack_id === packId)
+      if (current && (!enabled || current.pack_sha256 === confirmedDigest)) current.enabled = response.pack_enabled ?? enabled
+    } catch (error) {
+      if (knowledgeFailureReason(error) === 'pack_content_changed') await loadPacks({ silent: true })
+      throw error
     }
-    const response = await knowledgeApi.setPackEnabled({ pack_id: row.pack_id, enabled })
-    // Global availability also uses enabled in the envelope, independently of this pack.
-    row.enabled = response.pack_enabled ?? enabled
   })
 }
 

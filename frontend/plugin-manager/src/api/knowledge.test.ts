@@ -7,6 +7,9 @@ const axiosMocks = vi.hoisted(() => ({
 
 vi.mock('axios', () => ({ default: axiosMocks }))
 
+// Nonempty ZIPs start with a local-file header; the browser only sniffs this prefix.
+const ZIP_PREFIX = new Uint8Array([0x50, 0x4b, 0x03, 0x04])
+
 async function loadKnowledgeApi() {
   return import('./knowledge')
 }
@@ -53,6 +56,29 @@ describe('knowledge API client', () => {
       url: '/market/knowledge/packs/enabled', method: 'POST', data: { pack_id: 'p1', enabled: packEnabled },
     })
   })
+
+  it('sends the package content identity selected before enable confirmation', async () => {
+    const data = { pack_id: 'p1', enabled: true, expected_pack_sha256: 'a'.repeat(64) }
+    axiosMocks.request.mockResolvedValue({ data: { ok: true, pack_id: 'p1', enabled: false, pack_enabled: true } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await knowledgeApi.setPackEnabled(data)
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
+      url: '/market/knowledge/packs/enabled', method: 'POST', data,
+    })
+  })
+
+  it.each(['artifact_hash_mismatch', 'pack_file_mismatch', 'pack_content_changed', 'package_artifact_hash_mismatch'])(
+    'preserves the actionable server failure reason %s for localized display', async reason => {
+      axiosMocks.request.mockResolvedValue({ data: { ok: false, reason } })
+      const { knowledgeApi, knowledgeFailureReason } = await loadKnowledgeApi()
+      const operation = reason === 'pack_content_changed'
+        ? knowledgeApi.setPackEnabled({ pack_id: 'p1', enabled: true, expected_pack_sha256: 'a'.repeat(64) })
+        : knowledgeApi.retryPackJob({ job_id: 'retry-1' })
+      const failure = await operation.catch(error => error)
+      expect(failure).toMatchObject({ reason })
+      expect(knowledgeFailureReason(failure)).toBe(reason)
+    },
+  )
 
   it('rejects a logical failure with its reason', async () => {
     axiosMocks.request.mockResolvedValue({ data: { ok: false, reason: 'duplicate_title' } })
@@ -211,8 +237,10 @@ describe('knowledge API client', () => {
     })
   })
 
-  it('downloads a completed export as binary while retaining the bridge token', async () => {
-    const blob = new Blob(['archive'], { type: 'application/zip' })
+  it.each(['application/zip', 'application/octet-stream'])('downloads a ZIP-signature export as %s while retaining the bridge token', async type => {
+    const blob = new Blob([ZIP_PREFIX, 'archive'], { type })
+    const slice = vi.spyOn(blob, 'slice')
+    const fullRead = vi.spyOn(blob, 'arrayBuffer')
     axiosMocks.request.mockResolvedValue({ data: blob })
     const { knowledgeApi } = await loadKnowledgeApi()
     await expect(knowledgeApi.artifact('a'.repeat(64))).resolves.toEqual({ blob, filename: '' })
@@ -220,10 +248,25 @@ describe('knowledge API client', () => {
       url: '/market/knowledge/packs/artifacts', method: 'GET', responseType: 'blob',
       params: { artifact_id: 'a'.repeat(64), token: 'fixture-token' },
     })
+    expect(slice).toHaveBeenCalledExactlyOnceWith(0, 4)
+    expect(fullRead).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'HTML error page', blob: new Blob(['<html>Sign in</html>'], { type: 'text/html' }) },
+    { label: 'binary error page', blob: new Blob(['<html>Sign in</html>'], { type: 'application/octet-stream' }) },
+    { label: 'mislabelled text', blob: new Blob(['archive'], { type: 'application/zip' }) },
+    { label: 'empty response', blob: new Blob([], { type: 'application/zip' }) },
+    { label: 'truncated prefix', blob: new Blob(['PK'], { type: 'application/zip' }) },
+    { label: 'empty ZIP', blob: new Blob([new Uint8Array([0x50, 0x4b, 0x05, 0x06])], { type: 'application/zip' }) },
+  ])('rejects a successful-HTTP $label instead of downloading it', async ({ blob }) => {
+    axiosMocks.request.mockResolvedValue({ data: blob })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await expect(knowledgeApi.artifact('a'.repeat(64))).rejects.toMatchObject({ reason: 'knowledge_invalid_response' })
   })
 
   it('refreshes the bridge after a binary JSON error without losing the artifact', async () => {
-    const blob = new Blob(['archive'])
+    const blob = new Blob([ZIP_PREFIX, 'archive'])
     axiosMocks.get.mockResolvedValueOnce({ data: { bridge_token: 'stale' } }).mockResolvedValueOnce({ data: { bridge_token: 'fresh' } })
     axiosMocks.request.mockRejectedValueOnce(httpError(403, new Blob([JSON.stringify({ detail: { code: 'invalid_bridge_token' } })])))
       .mockResolvedValueOnce({ data: blob, headers: { 'content-disposition': 'attachment; filename="Notes_2026-11-19_15-30-42.neko-knowledge.zip"' } })
@@ -233,7 +276,7 @@ describe('knowledge API client', () => {
   })
 
   it('uses the readable Unicode filename in the download response', async () => {
-    const blob = new Blob(['archive'], { type: 'application/zip' })
+    const blob = new Blob([ZIP_PREFIX, 'archive'], { type: 'application/zip' })
     const filename = '历史资料_2026-11-19_15-30-42.neko-knowledge.zip'
     axiosMocks.request.mockResolvedValue({ data: blob, headers: {
       'content-disposition': `attachment; filename*=utf-8''${encodeURIComponent(filename)}`,
@@ -247,7 +290,7 @@ describe('knowledge API client', () => {
   it.each(["attachment; filename*=utf-8''%E4%ZZ", 'attachment; filename="../notes.neko-knowledge.zip"',
     "attachment; filename*=utf-8''notes%0D%0A.neko-knowledge.zip"])(
     'does not use malformed or unsafe response filenames: %s', async disposition => {
-      axiosMocks.request.mockResolvedValue({ data: new Blob(['archive']), headers: { 'content-disposition': disposition } })
+      axiosMocks.request.mockResolvedValue({ data: new Blob([ZIP_PREFIX, 'archive']), headers: { 'content-disposition': disposition } })
       const { knowledgeApi } = await loadKnowledgeApi()
       expect((await knowledgeApi.artifact('a'.repeat(64))).filename).toBe('')
     },
@@ -346,10 +389,12 @@ describe('knowledge API client', () => {
       { default: { knowledge: { reasons: Record<string, string> } } }
     >
     expect(Object.keys(locales).length).toBeGreaterThanOrEqual(8)
+    const referenceKeys = Object.keys(Object.values(locales)[0]!.default.knowledge.reasons).sort()
     for (const [file, module] of Object.entries(locales)) {
       const reasons = module.default.knowledge.reasons
       const missing = KNOWLEDGE_FAILURE_REASONS.filter((reason) => !reasons[reason])
       expect(missing, file).toEqual([])
+      expect(Object.keys(reasons).sort(), file).toEqual(referenceKeys)
     }
   })
 
