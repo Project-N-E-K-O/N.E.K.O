@@ -721,9 +721,17 @@ async def _rollback_precommit(
     was_running: bool,
     stop_attempted: bool,
     registry_target: _RegistryRefreshTarget,
+    grants_not_cleared: bool = False,
 ) -> _RollbackOutcome:
     """Compensate in reverse stage order: source, code, preference,
-    registry, then the original runtime. Each step is best effort."""
+    registry, then the original runtime. Each step is best effort.
+
+    ``grants_not_cleared``: the permission store was unusable, so the
+    plugin's grants were left as they were, including the in-process copy
+    of its last read grants. That copy is kept only when the original
+    plugin is back; otherwise it is dropped before anything restarts under
+    this id.
+    """
     filesystem_changed = (
         source_update_attempted or staged_code is not None
     )
@@ -772,6 +780,10 @@ async def _rollback_precommit(
                 "uninstall rollback registry refresh failed plugin_id={}",
                 plugin_id,
             )
+    if grants_not_cleared and not (source_restored and registry_restored):
+        # The id may now resolve to another copy (e.g. the built-in a user
+        # override shadowed); a read failure must not hand it these grants.
+        forget_remembered_permissions(plugin_id)
     runtime_restart = await _restore_original_runtime(
         plugin_id,
         was_running=was_running and stop_attempted,
@@ -1000,6 +1012,7 @@ async def uninstall_plugin(plugin_id: str) -> UninstallPluginResult:
             was_running=was_running,
             stop_attempted=stop_attempted,
             registry_target=registry_target,
+            grants_not_cleared=permission_warning is not None,
         )
         if not rollback.source_restored:
             # If original source cannot be restored exactly, recovery permission must not cover whatever remains on disk. Check only

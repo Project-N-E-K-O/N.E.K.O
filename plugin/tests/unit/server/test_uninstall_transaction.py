@@ -1535,6 +1535,62 @@ async def test_uninstall_rollback_leaves_unusable_permission_store_untouched(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_incomplete_uninstall_rollback_drops_remembered_grants_before_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """When the rollback cannot bring the original code back, whatever starts
+    under this id may be another copy (e.g. a shadowed built-in); it must not
+    start with the removed plugin's remembered grants."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    granted = "plugin_sdk.main_agent.memory:read"
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.install(monkeypatch)
+    _grant_demo()
+    assert permission_service.permission_snapshot("demo")["states"][granted]["status"] == "granted"
+
+    class _MovedManager:
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "moved" / name
+
+    moved = tmp_path / "moved" / "plugin_permissions.json"
+    moved.parent.mkdir()
+    moved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_MovedManager())
+    )
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+
+    def _fail_clear(_plugin_id: str) -> None:
+        raise OSError("override disk full")
+
+    def _fail_restore(_staged) -> None:
+        raise OSError("rename back failed")
+
+    monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail_clear)
+    monkeypatch.setattr(uninstall_module, "_restore_staged_plugin_code_sync", _fail_restore)
+    seen_at_start: list[str] = []
+
+    async def _start(_self, plugin_id: str, **_kwargs: object) -> dict[str, object]:
+        snapshot = permission_service.permission_snapshot(plugin_id)
+        seen_at_start.append(snapshot["states"][granted]["status"])
+        return {"success": True}
+
+    monkeypatch.setattr(lifecycle_module.PluginLifecycleService, "start_plugin", _start)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "incomplete"
+    assert seen_at_start and "granted" not in seen_at_start
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_uninstall_rollback_keeps_remembered_grants(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
