@@ -1094,3 +1094,36 @@ test('PR3976 4661699788 / 4661805757: plugin switch found OFF after master-on is
         assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
     }
 });
+
+test('PR3976 coderabbit 709: master observed ON after an ambiguous attempt is persisted, so a later user master-OFF is respected after reload', async () => {
+    const storage = createStorage();
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+        version: 1,
+        token: 801,
+        createdAt: Date.now(),
+        lanlanName: 'CatA',
+        agentFlags: { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false },
+        masterAttempted: true,
+    }));
+    const server = makeAgentServer();
+    server.master = true;
+    server.child.user_plugin_enabled = true;
+    const failingCommand = async (url, init, body) => {
+        if (url === '/api/agent/command' && init.method === 'POST') {
+            return { ok: false, status: 502, json: async () => ({}) };
+        }
+        return await server.handler(url, init, body);
+    };
+    loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: failingCommand });
+    await flushMicrotasks();
+    assert.equal(JSON.parse(storage.getItem(HOME_TUTORIAL_KEY)).masterApplied, true, 'observed master-ON must be persisted');
+
+    // User turns master OFF, then reloads.
+    server.master = false;
+    server.child.user_plugin_enabled = false;
+    const rt2 = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+    await flushMicrotasks();
+    assert.equal(rt2.fetchCalls.filter(c => c.method === 'POST').length, 0, 'must not re-enable a master switch the user turned off');
+    assert.equal(server.master, false);
+    assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+});

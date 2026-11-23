@@ -727,6 +727,7 @@
                             return false;
                         }
                         attemptState.masterApplied = true;
+                        markPersistedAgentRestoreProgress(attemptState.snapshotToken, 'masterApplied');
                     } else if (hasAnyEnabledAgentFlag(currentFlags)) {
                         clearPersistedAgentRestoreSnapshot(persisted.token);
                         return false;
