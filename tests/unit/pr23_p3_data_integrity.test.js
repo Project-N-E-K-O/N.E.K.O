@@ -914,12 +914,18 @@ function makeAgentServer() {
         child: { computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false },
         hangChildPost: false,
         onCommand: null,
+        intentRestoreFinished: false,
     };
     server.handler = async (url, init, body) => {
         if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET') {
             return {
                 ok: true,
-                json: async () => ({ success: true, analyzer_enabled: server.master, agent_flags: Object.assign({}, server.child) }),
+                json: async () => ({
+                    success: true,
+                    analyzer_enabled: server.master,
+                    agent_flags: Object.assign({}, server.child),
+                    intent_restore_finished: server.intentRestoreFinished,
+                }),
             };
         }
         if (url === '/api/agent/command' && init.method === 'POST') {
@@ -1150,21 +1156,125 @@ test('PR3976 coderabbit 709: master observed ON after an ambiguous attempt is pe
     await flushMicrotasks();
     assert.equal(JSON.parse(storage.getItem(HOME_TUTORIAL_KEY)).masterApplied, true, 'observed master-ON must be persisted');
 
-    // User turns master OFF, then reloads.
+    // User turns master OFF, then reloads (backend did not restart: its startup replay is long finished).
     server.master = false;
     server.child.user_plugin_enabled = false;
+    server.intentRestoreFinished = true;
     const rt2 = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
     await flushMicrotasks();
     assert.equal(rt2.fetchCalls.filter(c => c.method === 'POST').length, 0, 'must not re-enable a master switch the user turned off');
     assert.equal(server.master, false);
-    // Retries also never re-enable it.
+    assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null, 'replay finished and master OFF: user choice, snapshot cleared');
+});
+
+test('PR3976 4662066742 (backend still replaying): unknown OFF keeps the snapshot and retries never re-enable master', async () => {
+    const storage = createStorage();
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+        version: 1, token: 802, createdAt: Date.now(), lanlanName: 'CatA',
+        agentFlags: { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false },
+        masterApplied: true,
+    }));
+    const server = makeAgentServer();
+    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+    await flushMicrotasks();
     for (let i = 0; i < 8; i += 1) {
-        const retry = rt2.scheduledTimeouts.find(t => !t.cleared && !t.fired);
+        const retry = rt.scheduledTimeouts.find(t => !t.cleared && !t.fired);
         if (!retry) break;
         retry.fired = true;
         retry.fn();
         await flushMicrotasks();
     }
-    assert.equal(rt2.fetchCalls.filter(c => c.method === 'POST').length, 0, 'retries must not re-enable it either');
-    assert.equal(server.master, false);
+    assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0, 'must never re-enable master while waiting');
+    assert.notEqual(storage.getItem(HOME_TUTORIAL_KEY), null, 'snapshot kept for the next load');
+});
+
+test('PR3976 4662107851: after the replay finished, master OFF clears the snapshot so a later user master-ON is not overridden', async () => {
+    const storage = createStorage();
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+        version: 1, token: 803, createdAt: Date.now(), lanlanName: 'CatA',
+        agentFlags: { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false },
+        masterApplied: true,
+    }));
+    const server = makeAgentServer();
+    server.intentRestoreFinished = true;
+    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+    await flushMicrotasks();
+    assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    assert.ok(!rt.scheduledTimeouts.some(t => !t.cleared), 'no retry left to replay the old snapshot');
+
+    // User turns master ON themselves: nothing from the old snapshot may follow.
+    server.master = true;
+    server.child.user_plugin_enabled = true;
+    await flushMicrotasks();
+    assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0);
+    assert.equal(server.child.user_plugin_enabled, true);
+});
+
+test('PR3976 4661901453: tutorial restart before the interrupted restore finishes keeps the old restore target', async () => {
+    const oldFlags = { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false };
+
+    // Case A: same owner, interrupted restore still backing off on 502 when the tutorial begins again.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 88, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: oldFlags,
+        }));
+        const server = makeAgentServer();
+        let flagsGets = 0;
+        const handler = async (url, init, body) => {
+            if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET') {
+                flagsGets += 1;
+                if (flagsGets === 1) {
+                    return { ok: false, status: 502, json: async () => ({}) };
+                }
+            }
+            return await server.handler(url, init, body);
+        };
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+        await flushMicrotasks();
+        assert.ok(rt.scheduledTimeouts.some(t => !t.cleared), 'restore is backing off');
+
+        rt.win.NekoHomeTutorialFeatureController.begin('tutorial-restart');
+        await flushMicrotasks();
+        const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
+        assert.notEqual(persisted.token, 88);
+        assert.equal(persisted.lanlanName, 'CatA');
+        assert.deepEqual(persisted.agentFlags, oldFlags, 'old restore target must survive the restart');
+
+        rt.win.NekoHomeTutorialFeatureController.end('tutorial-ended');
+        await flushMicrotasks();
+        assert.equal(server.master, true, 'tutorial end restores the original master switch');
+        assert.equal(server.child.computer_use_enabled, true, 'tutorial end restores the original child flags');
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
+
+    // Case B: snapshot belongs to another character and everything is OFF now -> left untouched.
+    {
+        const storage = createStorage();
+        const otherOwner = JSON.stringify({ version: 1, token: 89, createdAt: Date.now(), lanlanName: 'CatB', agentFlags: oldFlags });
+        storage.setItem(HOME_TUTORIAL_KEY, otherOwner);
+        const server = makeAgentServer();
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        rt.win.NekoHomeTutorialFeatureController.begin('tutorial-start');
+        await flushMicrotasks();
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), otherOwner, 'another character\'s snapshot must stay untouched');
+    }
+
+    // Case C: snapshot belongs to another character but the user has switches ON now -> current settings win.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({ version: 1, token: 90, createdAt: Date.now(), lanlanName: 'CatB', agentFlags: oldFlags }));
+        const server = makeAgentServer();
+        server.master = true;
+        server.child.browser_use_enabled = true;
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        rt.win.NekoHomeTutorialFeatureController.begin('tutorial-start');
+        await flushMicrotasks();
+        const persisted = JSON.parse(storage.getItem(HOME_TUTORIAL_KEY));
+        assert.equal(persisted.lanlanName, 'CatA');
+        assert.equal(persisted.agentFlags.agent_enabled, true);
+        assert.equal(persisted.agentFlags.browser_use_enabled, true, 'the user\'s current settings must be what gets restored');
+    }
 });

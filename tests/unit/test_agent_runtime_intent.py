@@ -1140,6 +1140,33 @@ async def test_restore_escape_hatch_via_env(
 
     await srv_mod._maybe_restore_agent_intent()
     assert called["n"] == 0
+    assert srv_mod._intent_restore_finished is True
+
+
+@pytest.mark.asyncio
+async def test_restore_finished_flag_only_after_replay_completes(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``intent_restore_finished`` (served by GET /agent/flags) must stay False
+    while the replay is still running and turn True once it ends, including
+    when the replay raises."""
+    from app.agent_server import api_routes as srv_mod
+    srv_mod._reset_intent_restore_for_testing()
+
+    seen_during_replay = {}
+
+    async def _fake_do_restore():
+        seen_during_replay["finished"] = srv_mod._intent_restore_finished
+        flags = await srv_mod.get_agent_flags()
+        seen_during_replay["served"] = flags["intent_restore_finished"]
+        raise RuntimeError("replay failed")
+
+    monkeypatch.setattr(srv_mod, "_do_restore_agent_intent", _fake_do_restore)
+
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is False
+    await srv_mod._maybe_restore_agent_intent()
+    assert seen_during_replay == {"finished": False, "served": False}
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is True
 
 
 @pytest.mark.asyncio

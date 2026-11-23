@@ -109,6 +109,7 @@ from .api_routes import (  # noqa: F401
     _RESTORE_PING_TIMEOUT_S,
     _do_restore_agent_intent,
     _intent_restore_done,
+    _intent_restore_finished,
     _intent_restore_lock,
     _maybe_restore_agent_intent,
     _reset_intent_restore_for_testing,

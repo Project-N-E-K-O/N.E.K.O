@@ -97,6 +97,10 @@
     }
 
     async function fetchAgentFlagSnapshot() {
+        return (await fetchAgentFlagState()).flags;
+    }
+
+    async function fetchAgentFlagState() {
         const response = await fetch('/api/agent/flags', {
             method: 'GET',
             cache: 'no-store',
@@ -114,7 +118,11 @@
         } else if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')) {
             flags.agent_enabled = !!flags.agent_enabled;
         }
-        return flags;
+        return {
+            flags: flags,
+            // 后端启动后按记录的意图放回开关这一步是否已做完；没有这个字段时当作还没做完。
+            intentRestoreFinished: payload.intent_restore_finished === true,
+        };
     }
 
     async function postAgentFlags(flags) {
@@ -275,7 +283,7 @@
         return inspected.status === 'valid' ? inspected.payload : null;
     }
 
-    function persistAgentRestoreSnapshot(flags, token, reason) {
+    function persistAgentRestoreSnapshot(flags, token, reason, owner) {
         if (!flags) {
             return;
         }
@@ -285,12 +293,35 @@
                 token: token,
                 createdAt: Date.now(),
                 reason: reason || 'home-tutorial-suppression',
-                lanlanName: getCurrentLanlanName(),
+                lanlanName: typeof owner === 'string' ? owner : getCurrentLanlanName(),
                 agentFlags: flags,
             }));
         } catch (error) {
             console.warn('[HomeTutorialRuntime] failed to persist agent restore snapshot:', error);
         }
+    }
+
+    // 教程开始时决定这一轮要恢复成什么。上一轮被打断的恢复可能还没做完（启动时要等存储就绪、
+    // 冷启动还会退避重试），此刻读到的开关是上一轮关掉的「全关」，不能拿它覆盖旧快照。
+    // 旧快照属于别的角色、此刻又是全关时，原样留着它，这一轮不写快照；
+    // 此刻已有开着的开关，说明用户之后自己调过（开关是全局的），旧快照已过时，按此刻的存。
+    function resolveAgentRestoreTarget(currentFlags) {
+        const inspected = inspectPersistedAgentRestoreSnapshot();
+        if (inspected.status === 'owner_mismatch') {
+            return { flags: currentFlags, persist: hasAnyEnabledAgentFlag(currentFlags) };
+        }
+        if (
+            (inspected.status === 'valid' || inspected.status === 'owner_pending')
+            && inspected.payload
+            && hasAnyEnabledAgentFlag(inspected.payload.agentFlags)
+        ) {
+            return {
+                flags: Object.assign({}, inspected.payload.agentFlags),
+                owner: inspected.payload.lanlanName,
+                persist: true,
+            };
+        }
+        return { flags: currentFlags, persist: true };
     }
 
     function clearPersistedAgentRestoreSnapshot(token) {
@@ -446,15 +477,19 @@
 
     async function snapshotAndDisableAgentFlags(token) {
         try {
-            const flags = await fetchAgentFlagSnapshot();
+            const currentFlags = await fetchAgentFlagSnapshot();
             if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
                 return;
             }
+            const target = resolveAgentRestoreTarget(currentFlags);
+            const flags = target.flags;
             if (state.featureSuppression.snapshot) {
                 state.featureSuppression.snapshot.agentFlags = flags;
                 state.featureSuppression.snapshot.agentRestoreToken = token;
             }
-            persistAgentRestoreSnapshot(flags, token, 'tutorial-suppression');
+            if (target.persist) {
+                persistAgentRestoreSnapshot(flags, token, 'tutorial-suppression', target.owner);
+            }
             await postAgentCommand('set_agent_enabled', { enabled: false });
             if (!state.featureSuppression.active || state.featureSuppression.token !== token) {
                 const restoreToken = state.featureSuppression.token;
@@ -696,7 +731,8 @@
                 if (latestInspected.status === 'owner_pending') {
                     throw new Error('agent_restore_owner_pending');
                 }
-                const currentFlags = await fetchAgentFlagSnapshot();
+                const currentState = await fetchAgentFlagState();
+                const currentFlags = currentState.flags;
                 if (!canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
                     return false;
                 }
@@ -721,12 +757,14 @@
                         return false;
                     }
                     if (expectsMasterOn && currentFlags.agent_enabled !== true) {
-                        if (attemptState.masterAppliedThisPage) {
+                        // 本页亲手打开或亲眼看到开着、之后又关了，是用户改的。上一页留下的进度：
+                        // 后端启动时所有开关都是关的，要等 greeting_check 按记录的意图放回去；
+                        // 放回已做完还是关的，也是用户改的。
+                        if (attemptState.masterAppliedThisPage || currentState.intentRestoreFinished) {
                             clearPersistedAgentRestoreSnapshot(persisted.token);
                             return false;
                         }
-                        // 后端启动时所有开关都是关的，要等 greeting_check 才按记录的意图放回去。
-                        // 分不清是用户关的还是还没放回：不重开总开关，也不删快照，退避后再看。
+                        // 后端还没放回：不重开总开关，也不删快照，退避后再看。
                         throw new Error('agent_restore_master_pending');
                     }
                     attemptState.masterAppliedThisPage = true;

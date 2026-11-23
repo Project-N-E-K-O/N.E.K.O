@@ -87,6 +87,9 @@ async def get_agent_flags():
         "analyzer_enabled": Modules.analyzer_enabled,
         "agent_api_gate": _check_agent_api_gate(),
         "revision": Modules.state_revision,
+        # False until the startup replay of the saved switches has finished, so the
+        # page can tell "not replayed yet" apart from "switched off".
+        "intent_restore_finished": _intent_restore_finished,
         "notification": note
     }
 
@@ -635,6 +638,7 @@ async def agent_command(payload: Dict[str, Any]):
 # is to tell the user "your API is dead, fix it" rather than retry forever.
 
 _intent_restore_done = False
+_intent_restore_finished = False
 _intent_restore_lock: Optional[asyncio.Lock] = None
 
 # Restore probe budget. Worst-case wall time when probes keep timing out:
@@ -651,7 +655,7 @@ _RESTORE_PING_MAX_ATTEMPTS = 3
 
 async def _maybe_restore_agent_intent() -> None:
     """Idempotent restore entry. Safe to call from every greeting_check."""
-    global _intent_restore_done, _intent_restore_lock
+    global _intent_restore_done, _intent_restore_finished, _intent_restore_lock
     if _intent_restore_done:
         return
     if os.environ.get("NEKO_DISABLE_AGENT_AUTO_RESTORE") == "1":
@@ -659,6 +663,7 @@ async def _maybe_restore_agent_intent() -> None:
         # the user can launch with this env var to skip restore entirely
         # and re-toggle manually.
         _intent_restore_done = True
+        _intent_restore_finished = True
         logger.info("[Agent] NEKO_DISABLE_AGENT_AUTO_RESTORE=1, skipping intent restore")
         return
     if _intent_restore_lock is None:
@@ -671,6 +676,8 @@ async def _maybe_restore_agent_intent() -> None:
             await _do_restore_agent_intent()
         except Exception as exc:
             logger.error("[Agent] Intent restore failed: %s", exc, exc_info=True)
+        finally:
+            _intent_restore_finished = True
 
 
 async def _do_restore_agent_intent() -> None:
@@ -857,8 +864,9 @@ async def _restore_user_plugin() -> None:
 
 def _reset_intent_restore_for_testing() -> None:
     """Test helper: clear the once-flag so a test can re-run restore."""
-    global _intent_restore_done, _intent_restore_lock
+    global _intent_restore_done, _intent_restore_finished, _intent_restore_lock
     _intent_restore_done = False
+    _intent_restore_finished = False
     _intent_restore_lock = None
 
 
