@@ -1995,6 +1995,12 @@ class TaskAgentManager:
             verdict = await self.families.decide(commission)
             commission, session = await self.families.place(commission, verdict)
             self._session_of[commission.id] = session.id
+            if verdict.members and commission.project:
+                # Those that became the project's members count as ones that change files from
+                # here on, before anything is awaited: each is looked at below, and one that does
+                # not is taken off again.
+                for member in verdict.members:
+                    self._writes_in.setdefault(member, (commission.project, member))
             await self._note_writer(session.id)
             if verdict.members:
                 # Task agents that became a project's members with it: each may be at work, and so
@@ -4449,6 +4455,9 @@ class TaskAgentManager:
         have handed it to a task agent itself.
         """
         if commission_id in self._session_of:
+            # Whether it changes files in a project is looked at as well: after a restart nothing
+            # is noted yet, and a commission taken up again comes by here and not by ``_give_session``.
+            await self._note_writer(self._session_of[commission_id])
             return True
         commission = await self._ledger.get(commission_id)
         if commission is None or commission.route != "task_agent":
@@ -7508,6 +7517,10 @@ class TaskAgentManager:
             made = True
             # The model it is sent to, by its preset: the leader's unless the user set another.
             await self.settle_model(target)
+        if self._sessions.get(commission_id) is not live or live.closing or live.handing_over is not None:
+            # It went while the member was looked for or made (stopped, say): nothing is marked,
+            # and nothing awaited between this look and the mark. (A member made for it stays, idle.)
+            raise RuntimeError("the commission is not at work any more; nothing is handed over")
         # (That it was handed over is put on record once the other task agent has it: ``_handed_over``.)
         live.handing_over = (target.id, target.name, brief, target.preset, made)
         self._said_while_handed[commission_id] = []

@@ -313,6 +313,8 @@ def test_the_small_model_s_answer_is_read() -> None:
     assert orch.read_answer('{"goes_to": 0, "relation": "new"}', keys) == (None, orch.NEW)
     # A relation that is none of them, with a candidate chosen: a follow-up, which makes no family.
     assert orch.read_answer('{"goes_to": 1, "relation": "whatever"}', keys) == ("project:shop", orch.FOLLOW_UP)
+    # Said to be new and given a candidate all the same: new, which goes on in nothing that was there.
+    assert orch.read_answer('{"goes_to": 2, "relation": "new"}', keys) == (None, orch.NEW)
     for unreadable in (
         "", "no idea", '{"goes_to": 3}', '{"goes_to": true}', '{"relation": "new"}', '{"goes_to": "--1"}', '{"goes_to": "1.5"}'
     ):

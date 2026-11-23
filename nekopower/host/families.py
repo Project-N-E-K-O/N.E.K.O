@@ -59,6 +59,10 @@ logger = logging.getLogger(__name__)
 Judge = Callable[[list[dict[str, Any]]], Awaitable["str | None"]]
 
 # Why a project got its leader.
+# The presets of a member that works: the one a member has that nobody
+# named a preset for, and the leader's on the one session a project had in
+# a build without leaders (``TaskAgentManager._template_of``).
+_WORKING_PRESETS = (orch.WORKING_PRESET, PRESET_OF_KIND["project"])
 LEADER_GIT = "git"
 LEADER_THIRD = "third_member"
 LEADER_BUSY = "busy"
@@ -339,6 +343,9 @@ class Families:
                 # The one that was to take it became a project's since it was looked at (or is
                 # gone): it goes on there, and no other project is made beside that one.
                 action, moved = orch.CONTINUE, True
+                if taker is not None and taker.kind == "line" and taker.project:
+                    # (In that project: should the member take no more work by now, another of it does.)
+                    project = taker.project
         if action == orch.FORM_FAMILY:
             formed = await self._form_family(verdict.members)
             if formed is None:
@@ -373,9 +380,17 @@ class Families:
 
         if action == orch.SUMMON_IN_PROJECT and project:
             members = await self._ledger.members(commission.lanlan_name, project)
+            # All of them, asked of the ledger: what was decided saw the sessions last in use only,
+            # and a member may have been opened since. One that works before one of another preset.
+            there = [member for member in members if await self._ledger.session_alive(member)]
+            takes = [member for member in there if member.preset in _WORKING_PRESETS] or there
             if await self._ledger.lead_session(commission.lanlan_name, project) is not None:
                 # The project got a leader since it was looked at.
                 action, moved = orch.TO_LEADER, True
+            elif takes:
+                # A member that takes work is there after all: no other is started beside it.
+                session, action, moved = takes[0], orch.CONTINUE, True
+                commission = await self._file(commission, project, known, session_id=session.id)
             elif len(members) + 1 >= settings.LEADER_AT_MEMBERS:
                 # The third task agent of a project is its leader's to start.
                 action, moved = orch.TO_LEADER, True

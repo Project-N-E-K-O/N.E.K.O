@@ -1744,6 +1744,11 @@ async def test_what_the_ledger_finds_for_a_family_and_for_a_leader(tmp_path):
         await ledger.append_event(under_way.id, "told_to_leader", {"commission_id": stopped.id, "ending": anew_at})
         assert await handed() == []
         # However many it was told of since, one it was not told of is found; ``limit`` at a time, the latest first.
+        # (The clock goes on again, a second at a time: which came later is told by it.)
+        import itertools
+
+        ticks = itertools.count(int(ledger._clock()) + 10)
+        ledger._clock = lambda: float(next(ticks))
         early = await filed("an early one", project="Beta", session_id=reports.id, handed_by=leader.id)
         await ledger.transition(early.id, "working", reason="t")
         await ledger.transition(early.id, "done", reason="t", result_summary="early one done")
@@ -1754,8 +1759,8 @@ async def test_what_the_ledger_finds_for_a_family_and_for_a_leader(tmp_path):
             if index < 10:
                 told_of = next(ending for item, ending in await ledger.handed_work(leader.id, limit=50) if item.id == later.id)
                 await ledger.append_event(later.id, "told_to_leader", {"commission_id": stopped.id, "ending": told_of})
-        assert {item.title for item in await handed(limit=2)} <= {"a later one 11", "a later one 10", "an early one"}
-        assert {item.title for item in await handed()} == {"a later one 11", "a later one 10", "an early one"}
+        assert [item.title for item in await handed(limit=2)] == ["a later one 11", "a later one 10"]
+        assert [item.title for item in await handed()] == ["a later one 11", "a later one 10", "an early one"]
         # What was made the project's with its session says so, for whoever reads what happened from where it left off.
         filed_under = [event.payload for event in await ledger.events(weekly.id) if event.type == "filed_under_project"]
         assert filed_under == [{"project": "Beta"}]
@@ -2638,3 +2643,101 @@ async def test_the_member_the_user_opened_a_project_with_gets_its_work_whatever_
     assert (member.id, member.preset) == (opened["session_id"], "scout")
     assert {"write", "edit", "bash", "pwsh"} <= set(specs[member.id].disabled_tools)
     assert await host.ledger.lead_session("Lan", "Shop site") is None
+
+
+async def test_a_member_that_was_not_among_the_sessions_looked_at_is_gone_on_with_and_no_other_is_started(
+    hosts, tmp_path, monkeypatch
+):
+    # However few sessions are looked at for what a sentence is about, a project's members are asked of the ledger.
+    monkeypatch.setattr(settings, "ORCHESTRATOR_SESSIONS_LOOKED_AT", 1)
+    scripts = {"weather": ScriptedLLM([_report("sunny")]), "the header": ScriptedLLM([_report("looked at the header")])}
+    specs: dict[str, Any] = {}
+    host = _host(hosts, tmp_path, _recording(scripts_by_commission(scripts), specs))
+    opened = await host.open_session("Lan", "Shop site", preset="scout", duty="looks things up in the shop site")
+    # A session in use since: the one that is looked at.
+    await wait_status(host, (await _dispatch(host, "what is the weather tomorrow")).commission_id, "done")
+    await _let_go(host)
+
+    receipt = await _dispatch(host, "look at the header of the shop site")
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    assert done.session_id == opened["session_id"]
+    assert [member.id for member in await host.ledger.members("Lan", "Shop site")] == [opened["session_id"]]
+    (decided,) = await _events(host, receipt.commission_id, "orchestrated")
+    assert (decided["action"], decided["placed"]) == ("summon_in_project", {"action": "continue", "session": done.session_id})
+    assert {"write", "edit"} <= set(specs[done.session_id].disabled_tools)
+
+
+async def test_a_task_agent_that_became_a_member_and_takes_no_more_work_is_followed_by_one_of_its_project(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Reports", tmp_path)
+    taker = await host.ledger.create_session(lanlan_name="Lan", name="weekly report", kind="single", title="Weekly report")
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title="the weekly report", dispatch_text="the weekly report", source="dispatch", route="task_agent"
+    )
+    verdict = orch.Verdict(action=orch.FORM_FAMILY, agent=taker.id, members=(taker.id,), relation=orch.RECURRENCE)
+    # Between the decision and the placing it became a member of a project, and its time ran out.
+    await host.ledger.adopt([taker.id], "Reports")
+    old = host.ledger._clock() - (settings.SESSION_SINGLE_LIFETIME_DAYS + 1) * 86400
+    await host.ledger.update_session(taker.id, last_active_at=old)
+
+    placed, session = await host.task_agents.families.place(commission, verdict)
+
+    # A new member of the project it had joined: neither a loose task agent nor another project.
+    assert (session.kind, session.project, placed.project) == ("line", "Reports", "Reports") and session.id != taker.id
+    assert [item.name for item in await host.space.list_projects() if not item.name.startswith("_")] == ["Reports"]
+
+
+async def test_a_commission_taken_up_again_is_noted_as_one_that_changes_files_though_nothing_was_noted_yet(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    agents = host.task_agents
+    member = await host.ledger.create_session(lanlan_name="Lan", name="Budget app", kind="line", project="Budget app")
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title="add a chart", dispatch_text="add a chart", source="dispatch", route="task_agent",
+        session_id=member.id, project="Budget app",
+    )
+    # As after a restart, where a commission that is taken up again is mapped to its session by another way.
+    agents._writes_in.clear()
+    agents._session_of[commission.id] = member.id
+
+    assert await agents._know_session(commission.id) is True
+
+    assert agents._writes_in == {member.id: ("Budget app", member.id)}
+
+
+async def test_a_commission_that_went_while_its_member_was_looked_for_is_not_marked_as_handed_over(
+    hosts, tmp_path, monkeypatch
+):
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    leader_llm = ScriptedLLM([[wait, say("thinking"), finish()]])
+    host = _host(hosts, tmp_path, _by_role(leader_llm, ScriptedLLM([])))
+    workdir = await _project(host, "Shop site", tmp_path)
+    _in_git(host, workdir)
+    await _allow_members(host)
+    member = await host.ledger.create_session(lanlan_name="Lan", name="Shop site/worker", kind="line", project="Shop site")
+    receipt = await _dispatch(host, "fix the header of the shop site")
+    await wait_until(lambda: len(leader_llm.requests) == 1, what="the leader being at work")
+    leader = await host.ledger.lead_session("Lan", "Shop site")
+    live = host.task_agents._sessions[receipt.commission_id]
+    alive = host.ledger.session_alive
+
+    async def meanwhile(session: Any, now: float | None = None) -> bool:
+        # The commission is stopped while the member named is looked at: its session is closing.
+        live.closing = True
+        return await alive(session, now)
+
+    monkeypatch.setattr(host.ledger, "session_alive", meanwhile)
+
+    with pytest.raises(RuntimeError, match="not at work any more"):
+        await host.task_agents._cb_hand_over(leader.id, {"to": member.name, "description": "d", "brief": "b"})
+
+    assert live.handing_over is None and receipt.commission_id not in host.task_agents._said_while_handed
+    assert host.task_agents._handing_claims == set()
+    live.closing = False
+    host.brain.drop_pending_dispatches()
+    release.set()

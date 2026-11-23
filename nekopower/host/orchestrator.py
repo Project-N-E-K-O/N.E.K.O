@@ -488,6 +488,9 @@ def read_choice(answer: dict[str, Any], keys: Sequence[str]) -> tuple[str | None
     if number > len(keys):
         return None
     relation = str(answer.get("relation") or "").strip().lower()
+    if relation == NEW:
+        # Said to be new and given a candidate all the same: new, which starts nothing in what was there.
+        return None, NEW
     if relation not in (FOLLOW_UP, RECURRENCE):
         relation = FOLLOW_UP
     return keys[number - 1], relation
