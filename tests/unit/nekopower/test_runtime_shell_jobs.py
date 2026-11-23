@@ -1139,3 +1139,64 @@ def test_spill_write_error_reports_partial_output(tmp_path):
     assert buf.spill_truncated
     assert f"partial output: {target}" in shell._stream_text(buf)
     assert f"partial output: {target}" in render_delta("", "", True, [str(target)], buf.spill_truncated)
+
+
+def test_spill_flush_and_close_errors_report_partial_output(monkeypatch, tmp_path):
+    import builtins
+    import io
+
+    flush_target = tmp_path / "flush_err.log"
+    close_target = tmp_path / "close_err.log"
+    exact_target = tmp_path / "exact_ok.log"
+    real_open = builtins.open
+
+    class _FailingSpillIO(io.BytesIO):
+        def __init__(self, *, fail_flush: bool = False, fail_close: bool = False):
+            super().__init__()
+            self._fail_flush = fail_flush
+            self._fail_close = fail_close
+
+        def flush(self):
+            if self._fail_flush:
+                raise OSError("No space left on device")
+            super().flush()
+
+        def close(self):
+            if self._fail_close:
+                raise OSError("No space left on device")
+            super().close()
+
+    def _mock_open(file, *args, **kwargs):
+        if Path(file) == flush_target:
+            return _FailingSpillIO(fail_flush=True)
+        if Path(file) == close_target:
+            return _FailingSpillIO(fail_close=True)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", _mock_open)
+
+    # 1. Flush OSError marks spill_truncated = True
+    buf_flush = procs.OutputBuffer(5, lambda: flush_target, max_spill_bytes=20)
+    buf_flush.feed(b"0123456789")
+    assert buf_flush.spill_truncated is False
+    buf_flush.flush()
+    assert buf_flush.spill_truncated is True
+    assert f"partial output: {flush_target}" in shell._stream_text(buf_flush)
+    assert f"partial output: {flush_target}" in render_delta("", "", True, [str(flush_target)], buf_flush.spill_truncated)
+
+    # 2. Close OSError marks spill_truncated = True
+    buf_close = procs.OutputBuffer(5, lambda: close_target, max_spill_bytes=20)
+    buf_close.feed(b"0123456789")
+    assert buf_close.spill_truncated is False
+    buf_close.close()
+    assert buf_close.spill_truncated is True
+    assert f"partial output: {close_target}" in shell._stream_text(buf_close)
+    assert f"partial output: {close_target}" in render_delta("", "", True, [str(close_target)], buf_close.spill_truncated)
+
+    # 3. Exact max_spill_bytes with normal flush + close keeps spill_truncated = False
+    buf_exact = procs.OutputBuffer(5, lambda: exact_target, max_spill_bytes=20)
+    buf_exact.feed(b"a" * 20)
+    buf_exact.flush()
+    buf_exact.close()
+    assert buf_exact.spill_truncated is False
+    assert f"full output: {exact_target}" in shell._stream_text(buf_exact)

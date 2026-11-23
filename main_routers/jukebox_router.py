@@ -34,10 +34,11 @@ import json
 import hashlib
 import os
 import re
+import secrets
 import shutil
 import zipfile
 import tempfile
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -67,6 +68,63 @@ def _get_jukebox_config_lock() -> asyncio.Lock:
     return lock
 
 
+_STAGING_CREATE_MAX_TRIES = 32
+_STAGING_OPEN_FLAGS = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+
+
+def _create_staging_temp_file(target_dir: Path, suffix: str) -> tuple[int, Path]:
+    """Create an exclusive staging file in target_dir with a fixed retry bound.
+
+    Avoids tempfile.NamedTemporaryFile / mkstemp: on Windows Python 3.11,
+    mkstemp retries PermissionError up to TMP_MAX (2**31 - 1) times whenever
+    os.access reports the directory as writable (e.g. Defender Controlled
+    Folder Access), causing upload workers to hang indefinitely.
+    """
+    for _ in range(_STAGING_CREATE_MAX_TRIES):
+        candidate = target_dir / f".tmp_upload_{secrets.token_hex(8)}{suffix}"
+        try:
+            fd = os.open(candidate, _STAGING_OPEN_FLAGS, 0o600)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            if isinstance(exc, PermissionError) and os.name == "nt" and os.path.lexists(candidate):
+                continue
+            raise
+        return fd, candidate
+    raise FileExistsError(f"Could not allocate unique staging file in {target_dir}")
+
+
+@contextmanager
+def _staging_temp_dir(target_dir: Path, prefix: str = ".tmp_import_"):
+    """Create and clean up a staging directory in target_dir with a fixed retry bound.
+
+    Avoids tempfile.TemporaryDirectory / mkdtemp for the same Windows
+    PermissionError spin-loop reason documented in _create_staging_temp_file.
+    """
+    created: Optional[Path] = None
+    for _ in range(_STAGING_CREATE_MAX_TRIES):
+        candidate = target_dir / f"{prefix}{secrets.token_hex(8)}"
+        try:
+            os.mkdir(candidate, 0o700)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            if isinstance(exc, PermissionError) and os.name == "nt" and os.path.lexists(candidate):
+                continue
+            raise
+        created = candidate
+        break
+    if created is None:
+        raise FileExistsError(f"Could not allocate unique staging directory in {target_dir}")
+    try:
+        yield created
+    finally:
+        try:
+            shutil.rmtree(created)
+        except OSError as exc:
+            logger.warning("Failed to remove jukebox staging dir %s: %s", created, exc)
+
+
 def _stage_upload_to_temp(
     src_file,
     target_dir: Path,
@@ -76,19 +134,21 @@ def _stage_upload_to_temp(
     """Copy an uploaded stream into a temporary file inside target_dir off the event loop."""
     target_dir.mkdir(parents=True, exist_ok=True)
     temp_path = None
+    fd = None
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=target_dir,
-            prefix=".tmp_upload_",
-            suffix=suffix,
-            delete=False,
-        ) as buffer:
-            temp_path = Path(buffer.name)
-            if created_paths is not None:
-                created_paths.append(temp_path)
+        fd, temp_path = _create_staging_temp_file(target_dir, suffix)
+        if created_paths is not None:
+            created_paths.append(temp_path)
+        with os.fdopen(fd, "wb") as buffer:
+            fd = None
             shutil.copyfileobj(src_file, buffer)
-            return temp_path
+        return temp_path
     except BaseException:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         if temp_path is not None:
             _cleanup_temp_paths([temp_path])
         raise
@@ -1715,7 +1775,7 @@ async def import_config(file: UploadFile = File(...)):
             if collection not in stage_dirs:
                 target_dir = config_mgr.app_docs_dir / "jukebox" / collection
                 target_dir.mkdir(parents=True, exist_ok=True)
-                stage_dirs[collection] = Path(staging.enter_context(tempfile.TemporaryDirectory(dir=target_dir)))
+                stage_dirs[collection] = staging.enter_context(_staging_temp_dir(target_dir))
             staged = stage_dirs[collection] / digest
             if not staged.exists():
                 shutil.copy2(src, staged)

@@ -165,7 +165,7 @@ class OutputBuffer:
                 if self.spill_path not in (self._protected or {}):
                     self._spill_file.close()
             except OSError:
-                pass
+                self.spill_truncated = True
             self._spill_file = None
 
     def close(self) -> None:
@@ -180,7 +180,7 @@ class OutputBuffer:
                     if self.spill_path not in (self._protected or {}):
                         self._spill_file.flush()
                 except OSError:
-                    pass
+                    self.spill_truncated = True
 
     def read_from(self, offset: int) -> tuple[str, int, bool]:
         """Return ``(text, next_offset, lossy)`` for everything from ``offset`` on.

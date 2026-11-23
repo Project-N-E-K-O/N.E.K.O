@@ -850,3 +850,97 @@ def test_failed_staging_frees_partial_file_before_return(monkeypatch, tmp_path):
     with pytest.raises(OSError, match="disk full"):
         jukebox_router._stage_upload_to_temp(io.BytesIO(), tmp_path, ".mp3", [])
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_upload_and_import_staging_fail_fast_on_permission_error(monkeypatch, tmp_path):
+    cm = _make_cm(tmp_path)
+    monkeypatch.setattr(jukebox_router, "get_config_manager", lambda: cm)
+    cfg = jukebox_router.JukeboxConfig(cm)
+
+    real_open = os.open
+    real_mkdir = os.mkdir
+    open_attempts = 0
+    mkdir_attempts = 0
+
+    def deny_open(path, flags, mode=0o777, *args, **kwargs):
+        nonlocal open_attempts
+        if Path(path).parent == cfg.songs_dir:
+            open_attempts += 1
+            raise PermissionError(13, "access denied", os.fspath(path))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    def deny_mkdir(path, mode=0o777, *args, **kwargs):
+        nonlocal mkdir_attempts
+        if Path(path).parent == cfg.songs_dir:
+            mkdir_attempts += 1
+            raise PermissionError(13, "access denied", os.fspath(path))
+        return real_mkdir(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(jukebox_router.os, "open", deny_open)
+    monkeypatch.setattr(jukebox_router.os, "mkdir", deny_mkdir)
+
+    # 1. Direct upload staging and upload_songs fail immediately on PermissionError (1 attempt)
+    with pytest.raises(PermissionError, match="access denied"):
+        jukebox_router._stage_upload_to_temp(io.BytesIO(b"audio"), cfg.songs_dir, ".mp3", [])
+    assert open_attempts == 1
+
+    res = await asyncio.wait_for(
+        jukebox_router.upload_songs(files=[_upload_file("denied.mp3", b"audio")], metadata="[]"),
+        timeout=2,
+    )
+    assert res["success"] is False
+    assert "access denied" in res["error"]
+    assert open_attempts == 2
+
+    # 2. Import staging directory fails immediately on PermissionError (1 attempt)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("songs/imported.mp3", b"imported-bytes")
+        zf.writestr(
+            "config.json",
+            json.dumps(
+                {
+                    "songs": {"s1": {"id": "s1", "name": "Song", "audio": "songs/imported.mp3"}},
+                    "actions": {},
+                    "bindings": {},
+                }
+            ),
+        )
+
+    with pytest.raises(PermissionError, match="access denied"):
+        await asyncio.wait_for(
+            jukebox_router.import_config(file=_upload_file("pkg.zip", buf.getvalue())),
+            timeout=2,
+        )
+    assert mkdir_attempts == 1
+
+    # 3. FileExistsError collisions respect the fixed retry cap
+    open_collisions = 0
+    mkdir_collisions = 0
+
+    def always_exists_open(path, flags, mode=0o777, *args, **kwargs):
+        nonlocal open_collisions
+        if Path(path).parent == cfg.songs_dir:
+            open_collisions += 1
+            raise FileExistsError(17, "exists", os.fspath(path))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    def always_exists_mkdir(path, mode=0o777, *args, **kwargs):
+        nonlocal mkdir_collisions
+        if Path(path).parent == cfg.songs_dir:
+            mkdir_collisions += 1
+            raise FileExistsError(17, "exists", os.fspath(path))
+        return real_mkdir(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(jukebox_router.os, "open", always_exists_open)
+    monkeypatch.setattr(jukebox_router.os, "mkdir", always_exists_mkdir)
+
+    with pytest.raises(FileExistsError):
+        jukebox_router._create_staging_temp_file(cfg.songs_dir, ".mp3")
+    assert open_collisions == jukebox_router._STAGING_CREATE_MAX_TRIES
+
+    with pytest.raises(FileExistsError):
+        with jukebox_router._staging_temp_dir(cfg.songs_dir):
+            pass
+    assert mkdir_collisions == jukebox_router._STAGING_CREATE_MAX_TRIES
