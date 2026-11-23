@@ -1012,12 +1012,70 @@
             else if (!event.shiftKey && index === buttons.length - 1) { event.preventDefault(); buttons[0].focus(); }
         });
     }
+    // Publish the named selector window in the shared registry used by common_dialogs.js
+    // openOrFocusWindow, so windows without its handle (e.g. a market window) can focus it.
+    function registerSelectorNamedWindow() {
+        var name = 'neko_theater';
+        if (window.name !== name) return;
+        var key = 'neko:named-window:' + name;
+        var focusKey = 'neko:named-window-focus:' + name;
+        var timer = 0;
+        var channel = null;
+        function mark() {
+            try { window.localStorage.setItem(key, JSON.stringify({url: window.location.href, timestamp: Date.now()})); } catch (_) {}
+        }
+        var handledRequestIds = [];
+        function focusSelf(data) {
+            if (!data || data.windowName !== name || data.type !== 'neko:named-window-focus') return;
+            // The same request arrives over both BroadcastChannel and storage; handle it once.
+            if (data.requestId) {
+                if (handledRequestIds.indexOf(data.requestId) !== -1) return;
+                handledRequestIds.push(data.requestId);
+                if (handledRequestIds.length > 16) handledRequestIds.shift();
+            }
+            var api = window.nekoWindowControl;
+            var restored = api && typeof api.restore === 'function'
+                ? Promise.resolve().then(function () { return api.restore(); }).catch(function () {})
+                : Promise.resolve();
+            restored.then(function () {
+                try { window.focus(); } catch (_) {}
+                // The ack means "a live selector took over", so the market window may close.
+                // A failed restore still leaves this selector open, so it is acknowledged too.
+                if (data.requestId && channel) {
+                    try { channel.postMessage({type: 'neko:named-window-focus-ack', windowName: name, requestId: data.requestId}); } catch (_) {}
+                }
+            });
+        }
+        function start() {
+            mark();
+            if (!timer) timer = window.setInterval(mark, 1000);
+            if (!channel && typeof BroadcastChannel !== 'undefined') {
+                try { channel = new BroadcastChannel('neko:named-window'); channel.onmessage = function (event) { focusSelf(event.data); }; } catch (_) { channel = null; }
+            }
+        }
+        function stop() {
+            if (timer) { window.clearInterval(timer); timer = 0; }
+            try { window.localStorage.removeItem(key); } catch (_) {}
+            if (channel) { try { channel.close(); } catch (_) {} channel = null; }
+        }
+        window.addEventListener('storage', function (event) {
+            if (event.key !== focusKey || !event.newValue) return;
+            try { focusSelf(JSON.parse(event.newValue)); } catch (_) {}
+        });
+        window.addEventListener('pageshow', start);
+        window.addEventListener('pagehide', stop);
+        // Background tabs throttle the interval; refresh whenever the selector is seen again.
+        document.addEventListener('visibilitychange', function () { if (timer) mark(); });
+        window.addEventListener('focus', function () { if (timer) mark(); });
+        start();
+    }
     document.addEventListener('DOMContentLoaded', function () {
         // Market entry is only a connection page, never a local selector or end-receipt consumer.
         if (new URLSearchParams(window.location.search).has('market') && window.nekoTheaterMarket) {
             window.nekoTheaterMarket.redirectSelector();
             return;
         }
+        registerSelectorNamedWindow();
         if (typeof BroadcastChannel !== 'undefined') {
             try { state.channel = new BroadcastChannel('neko_page_channel'); state.channel.addEventListener('message', handleCrossWindowMessage); } catch (_) { state.channel = null; }
         }
