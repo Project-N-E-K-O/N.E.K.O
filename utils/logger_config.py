@@ -132,10 +132,9 @@ def _open_log_file_nofollow(
         raise ValueError(f"Unsupported log file mode: {mode!r}")
 
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
-    if "b" in mode and hasattr(os, "O_BINARY"):
-        flags |= os.O_BINARY
+    flags |= getattr(os, "O_BINARY", 0)
 
-    fd = os.open(os.fspath(target), flags, 0o600)
+    fd = os.open(os.fspath(target), flags, 0o666)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):

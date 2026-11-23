@@ -662,6 +662,43 @@ def test_test_directory_writable_rejects_symlink_and_falls_back_to_next_candidat
 
 
 @pytest.mark.unit
+def test_open_log_file_nofollow_always_uses_o_binary_and_single_linesep(tmp_path, monkeypatch):
+    """_open_log_file_nofollow must pass O_BINARY even for text modes and open with mode 0o666."""
+    import os
+    from utils import logger_config
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    target = logs_dir / "newline_check.log"
+    with logger_config._open_log_file_nofollow(target, "a", "utf-8", None, logs_dir) as handle:
+        handle.write("x\n")
+    assert target.read_bytes() == ("x" + os.linesep).encode("utf-8")
+
+    orig_o_binary = getattr(logger_config.os, "O_BINARY", None)
+    o_binary_flag = orig_o_binary if orig_o_binary is not None else (1 << 30)
+    if orig_o_binary is None:
+        monkeypatch.setattr(logger_config.os, "O_BINARY", o_binary_flag, raising=False)
+
+    orig_open = os.open
+    seen_opens: list[tuple[int, int]] = []
+
+    def _spy_open(path, flags, mode=0o777, *args, **kwargs):
+        seen_opens.append((flags, mode))
+        real_flags = flags & ~o_binary_flag if orig_o_binary is None else flags
+        return orig_open(path, real_flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(logger_config.os, "open", _spy_open)
+    mode_target = logs_dir / "flags_check.log"
+    with logger_config._open_log_file_nofollow(mode_target, "a", "utf-8", None, logs_dir) as handle:
+        handle.write("y\n")
+
+    assert len(seen_opens) == 1
+    captured_flags, captured_mode = seen_opens[0]
+    assert bool(captured_flags & o_binary_flag) is True
+    assert captured_mode == 0o666
+
+
+@pytest.mark.unit
 def test_is_symlink_or_reparse_point_fails_closed_on_non_path_type():
     """Non-path objects must fail closed via TypeError instead of returning False."""
     from utils import logger_config, logging_layout
@@ -736,3 +773,40 @@ def test_iter_handlers_delay_probe_creates_no_files_when_last_resort_fallback_is
     finally:
         for handler in handlers:
             handler.close()
+
+
+@pytest.mark.unit
+def test_open_log_file_nofollow_always_uses_o_binary_and_single_linesep(tmp_path, monkeypatch):
+    """_open_log_file_nofollow must pass O_BINARY even for text modes and open with mode 0o666."""
+    import os
+    from utils import logger_config
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    target = logs_dir / "newline_check.log"
+    with logger_config._open_log_file_nofollow(target, "a", "utf-8", None, logs_dir) as handle:
+        handle.write("x\n")
+    assert target.read_bytes() == ("x" + os.linesep).encode("utf-8")
+
+    orig_o_binary = getattr(logger_config.os, "O_BINARY", None)
+    o_binary_flag = orig_o_binary if orig_o_binary is not None else (1 << 30)
+    if orig_o_binary is None:
+        monkeypatch.setattr(logger_config.os, "O_BINARY", o_binary_flag, raising=False)
+
+    orig_open = os.open
+    seen_opens: list[tuple[int, int]] = []
+
+    def _spy_open(path, flags, mode=0o777, *args, **kwargs):
+        seen_opens.append((flags, mode))
+        real_flags = flags & ~o_binary_flag if orig_o_binary is None else flags
+        return orig_open(path, real_flags, mode, *args, **kwargs)
+
+    monkeypatch.setattr(logger_config.os, "open", _spy_open)
+    mode_target = logs_dir / "flags_check.log"
+    with logger_config._open_log_file_nofollow(mode_target, "a", "utf-8", None, logs_dir) as handle:
+        handle.write("y\n")
+
+    assert len(seen_opens) == 1
+    captured_flags, captured_mode = seen_opens[0]
+    assert bool(captured_flags & o_binary_flag) is True
+    assert captured_mode == 0o666
