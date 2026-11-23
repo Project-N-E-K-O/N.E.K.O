@@ -19,6 +19,7 @@ import soxr
 import json
 import base64
 
+from .._http_pool import make_tts_http_client
 from .._infra import _enqueue_error, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
@@ -50,9 +51,11 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
             "Content-Type": "application/json",
         }
 
-        client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10, read=None, write=10, pool=10),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+        client = make_tts_http_client(
+            # The synthesis request sets its own tighter timeout; this default
+            # only keeps any other request off an unbounded read on a kept-
+            # alive connection a middlebox dropped silently.
+            timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
         )
 
         async def synthesize(text: str, speech_id: str) -> None:

@@ -209,3 +209,189 @@ async def test_frames_can_still_be_reloaded_explicitly() -> None:
     assert frames._plan is not None, "计划被顺手删了——显式 reload 就没了"
     refreshed = await frames.reload_with_async(ctx)
     assert [r.frame_id for r in refreshed] == ["f1", "f2", "f3"]
+
+
+def _bus_client(store: str):
+    from plugin.core.bus.events import EventClient
+    from plugin.core.bus.lifecycle import LifecycleClient
+    from plugin.core.bus.messages import MessageClient
+
+    id_field = {
+        "messages": "message_id",
+        "events": "event_id",
+        "lifecycle": "lifecycle_id",
+    }[store]
+
+    class _MultiStoreStubRpc:
+        def _resp(self):
+            return {
+                "ok": True,
+                "result": {
+                    "items": [
+                        {"payload": {id_field: "r1", "type": "a", "timestamp": 2.0, "source": "s1"}},
+                        {"payload": {id_field: "r2", "type": "b", "timestamp": 5.0, "source": "s2"}},
+                        {"payload": {id_field: "r3", "type": "a", "timestamp": 4.0, "source": "s1"}},
+                    ]
+                },
+            }
+
+        async def request_async(self, **_kw):
+            return self._resp()
+
+        def request(self, **_kw):
+            return self._resp()
+
+    ctx = SimpleNamespace(plugin_id="demo", _mp_rpc_client=_MultiStoreStubRpc(), bus=None)
+    client_cls = {
+        "messages": MessageClient,
+        "events": EventClient,
+        "lifecycle": LifecycleClient,
+    }[store]
+    client = client_cls(ctx)
+    ctx.bus = SimpleNamespace(**{store: client})
+    return ctx, client, id_field
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("store", ["messages", "events", "lifecycle"])
+@pytest.mark.asyncio
+async def test_async_chained_bus_list_evaluates_without_coroutine_leak(store: str) -> None:
+    """F0028: chained filter/sort/limit on async get() evaluates locally without coroutine leak."""
+    import warnings
+
+    def _sync_leg():
+        _sctx, sync_client, id_field = _bus_client(store)
+        chained = sync_client.get(max_count=10).filter(type="a").sort(by="timestamp", reverse=True).limit(1)
+        return [getattr(r, id_field) for r in chained]
+
+    sync_ids = await asyncio.to_thread(_sync_leg)
+
+    ctx, async_client, id_field = _bus_client(store)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        snapshot = await async_client.get(max_count=10)
+        chained = snapshot.filter(type="a").sort(by="timestamp", reverse=True).limit(1)
+        assert len(chained) == 1
+        async_ids = [getattr(r, id_field) for r in chained]
+        dumped_ids = [getattr(r, id_field) for r in chained.dump_records()]
+
+    assert async_ids == sync_ids == ["r3"]
+    assert dumped_ids == ["r3"]
+    assert chained._plan is not None
+    reloaded = await chained.reload_with_async(ctx)
+    assert [getattr(r, id_field) for r in reloaded] == ["r3"]
+    leaked = [w for w in caught if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)]
+    assert leaked == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_sync_reload_inside_event_loop_closes_coroutine_and_raises() -> None:
+    """Direct sync reload() inside an active event loop closes the coroutine and raises NonReplayableTraceError."""
+    import warnings
+
+    ctx, client, _ = _bus_client("events")
+    snapshot = await client.get(max_count=10)
+    chained = snapshot.filter(type="a")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with pytest.raises(NonReplayableTraceError):
+            chained.reload(ctx)
+    leaked = [w for w in caught if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)]
+    assert leaked == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("store", ["messages", "events", "lifecycle"])
+def test_sync_lazy_bus_list_consumed_in_asyncio_run_raises_without_leaks(store: str) -> None:
+    """F0028: unmaterialized sync-lazy BusList crossed into asyncio.run() must raise cleanly."""
+    import gc
+    import warnings
+
+    ctx, sync_client, id_field = _bus_client(store)
+    lazy_list = (
+        sync_client.get(max_count=10)
+        .filter(type="a")
+        .sort(by="timestamp", reverse=True)
+        .limit(1)
+    )
+    assert lazy_list._cache_valid is False
+
+    async def _consume() -> None:
+        with pytest.raises(NonReplayableTraceError):
+            len(lazy_list)
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.dump_records()
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.filter(source="s1")
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.sort(by="timestamp")
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.limit(1)
+        with pytest.raises(NonReplayableTraceError):
+            lazy_list.where(lambda _r: True)
+
+        reloaded = await lazy_list.reload_with_async(ctx)
+        assert [getattr(r, id_field) for r in reloaded] == ["r3"]
+
+        await lazy_list.reload_with_async(ctx, inplace=True)
+        assert len(lazy_list) == 1
+        assert [getattr(r, id_field) for r in lazy_list.dump_records()] == ["r3"]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(_consume())
+        gc.collect()
+
+    leaked = [
+        w
+        for w in caught
+        if issubclass(w.category, RuntimeWarning) and "was never awaited" in str(w.message)
+    ]
+    assert leaked == []
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("store", ["messages", "events", "lifecycle"])
+def test_non_replayable_async_bus_list_chained_outside_event_loop_stays_eager(store: str) -> None:
+    """Results from where()/sort(key=callable) stay locally materialized when chained outside the loop."""
+    ctx, client, id_field = _bus_client(store)
+
+    async def _produce():
+        snapshot = await client.get(max_count=10)
+        return (
+            snapshot.where(lambda r: r.type == "a"),
+            snapshot.sort(key=lambda r: float(r.timestamp or 0.0), reverse=True),
+        )
+
+    where_list, key_sorted_list = asyncio.run(_produce())
+
+    def _fail_sync_rpc(**_kw):  # pragma: no cover - must not be called
+        raise AssertionError("non-replayable BusList must not replay on chained local ops")
+
+    ctx._mp_rpc_client.request = _fail_sync_rpc
+
+    w_lim = where_list.limit(1)
+    w_filt = where_list.filter(source="s1")
+    s_lim = key_sorted_list.limit(1)
+
+    assert w_lim._cache_valid is True
+    assert w_filt._cache_valid is True
+    assert s_lim._cache_valid is True
+
+    assert len(w_lim) == 1
+    assert [getattr(r, id_field) for r in w_lim] == ["r1"]
+    assert [getattr(r, id_field) for r in w_filt.dump_records()] == ["r1", "r3"]
+    assert [getattr(r, id_field) for r in s_lim] == ["r2"]
+
+    with pytest.raises(NonReplayableTraceError):
+        w_lim.reload(ctx)
+    with pytest.raises(NonReplayableTraceError):
+        s_lim.reload(ctx)
+
+    # Structured sync chains still remain lazy and replay when materialized.
+    replay_ctx, sync_client, _ = _bus_client(store)
+    lazy_structured = sync_client.get(max_count=10).filter(type="a").limit(1)
+    assert lazy_structured._cache_valid is False
+    assert len(lazy_structured) == 1
+    assert [getattr(r, id_field) for r in lazy_structured.reload(replay_ctx)] == ["r1"]

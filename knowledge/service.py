@@ -413,18 +413,18 @@ class KnowledgeService:
             self._store.remove_files()
             self._store.initialize()
         try:
-            broken = self._reconcile_blocking(registry)
+            broken, registry = self._reconcile_blocking(registry)
         except Exception as exc:
             logger.warning("[Knowledge] index reconcile failed (%s); rebuilding", type(exc).__name__)
             self._store.remove_files()
             self._store.initialize()
-            broken = self._reconcile_blocking(registry)
+            broken, registry = self._reconcile_blocking(registry)
         self._registry = registry
         self._broken_packs = tuple(broken)
         self._clean_files_blocking(registry)
 
-    def _reconcile_blocking(self, registry: Registry) -> list[str]:
-        """Make ``knowledge.db`` match the registry; return packs whose raw file is lost."""
+    def _reconcile_blocking(self, registry: Registry) -> tuple[list[str], Registry]:
+        """Make ``knowledge.db`` match the registry; return broken packs and updated registry."""
         indexed = self._store.pack_versions()
         for pack_id in indexed.keys() - registry.packs.keys():
             self._store.delete_pack(pack_id)
@@ -432,6 +432,8 @@ class KnowledgeService:
         chunk_counts = self._store.chunk_stats(None)
         search_rows = self._store.search_row_counts()
         broken: list[str] = []
+        updated_registry = registry
+        registry_changed = False
         for pack_id, record in registry.packs.items():
             # The raw file is the source of truth even when the index is
             # current: a pack whose file is gone or altered cannot be rebuilt
@@ -461,11 +463,31 @@ class KnowledgeService:
                 self._store.delete_pack(pack_id)
                 broken.append(pack_id)
                 continue
-            self._store.replace_pack(
+            chunk_total = self._store.replace_pack(
                 pack, pack_sha256=record.pack_sha256, disabled_keys=record.disabled_titles
             )
+            actual_entries = len(pack.entries)
+            actual_chunks = (
+                chunk_total
+                if isinstance(chunk_total, int) and not isinstance(chunk_total, bool)
+                else count_pack_chunks(pack)
+            )
+            if actual_entries != record.entries or actual_chunks != record.chunks:
+                updated_registry = updated_registry.with_pack(
+                    replace(
+                        record,
+                        entries=actual_entries,
+                        chunks=actual_chunks,
+                    )
+                )
+                registry_changed = True
             logger.info("[Knowledge] rebuilt index of pack %s", pack_id)
-        return broken
+        if registry_changed:
+            try:
+                save_registry(self.root, updated_registry)
+            except (OSError, KnowledgeRegistryError) as exc:
+                logger.warning("[Knowledge] could not persist reconciled registry: %s", exc)
+        return broken, updated_registry
 
     def _clean_files_blocking(self, registry: Registry) -> None:
         """Drop leftovers; a file that cannot be deleted now is retried next start."""

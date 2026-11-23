@@ -260,3 +260,24 @@ async def test_execute_trigger_keeps_other_plugin_errors_internal(
         "entry_id": "run",
         "type": "PluginExecutionError",
     }
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_execute_trigger_preserves_cancelled_code_without_leaking_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = await _trigger_failing(monkeypatch, _remote_failure({
+        "code": "CANCELLED",
+        "message": "Execution cancelled",
+        "details": {"secret": "should-not-forward"},
+    }))
+
+    assert response["success"] is False
+    error = response["error"]
+    assert error["code"] == "CANCELLED"
+    assert error["details"] == {
+        "plugin_id": "dummy_plugin",
+        "entry_id": "run",
+        "type": "PluginExecutionError",
+    }

@@ -34,6 +34,7 @@ from utils.doubao_tts import (
 )
 from utils.logger_config import get_module_logger
 
+from .._http_pool import make_tts_http_client
 from .._infra import _enqueue_error, _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
@@ -94,9 +95,8 @@ def doubao_tts_worker(
             })
             raise RuntimeError("Doubao TTS voice id is not configured")
 
-        client = httpx.AsyncClient(
+        client = make_tts_http_client(
             timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
-            limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
         )
 
         async def synthesize(text: str, speech_id: str) -> None:

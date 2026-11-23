@@ -1120,18 +1120,24 @@ async def test_committed_installs_persist_each_source_so_old_grants_stay_gone(
     from plugin.server.application.plugins.capability_analysis_service import (
         notify_install_committed_async,
     )
+    from plugin.server.application.plugins.operation_lock import plugin_operation_lock
+
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
 
     # The plugin stays stopped through A -> B -> A. As in the real callers,
-    # the owner notifies the committed install once its source is recorded.
+    # the owner replaces and notifies the committed install under the plugin
+    # operation lock: the capability analysis queued by the first notify reads
+    # the plugin tree in the background and must not overlap the next rename.
     for source, manifest in ((source_b, NEW_PLUGIN_MANIFEST), (source_a, OLD_PLUGIN_MANIFEST)):
-        await replace_plugin(
-            layout=resolve_plugin_layout("demo", target),
-            install_new=installer(source, manifest),
-            validate_channel_specific=_async_none,
-        )
-        await notify_install_committed_async(
-            {"installed_plugins": [{"target_plugin_id": "demo", "target_dir": str(target)}]}
-        )
+        async with plugin_operation_lock.hold():
+            await replace_plugin(
+                layout=resolve_plugin_layout("demo", target),
+                install_new=installer(source, manifest),
+                validate_channel_specific=_async_none,
+            )
+            await notify_install_committed_async(
+                {"installed_plugins": [{"target_plugin_id": "demo", "target_dir": str(target)}]}
+            )
         assert store.read("demo")["source"] == source.to_dict()
 
     assert store.read("demo")["permissions"] == {}

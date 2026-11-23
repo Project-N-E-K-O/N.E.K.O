@@ -42,7 +42,7 @@ def free_realtime_tts_worker(
     )
 
 
-# Recognizes TTS_PRECONNECT_SENTINEL (see _step_protocol._start_spare_socket).
+# Recognizes TTS_PRECONNECT_SENTINEL (see .._preconnect.SpareSocket).
 free_realtime_tts_worker.supports_preconnect = True
 
 
