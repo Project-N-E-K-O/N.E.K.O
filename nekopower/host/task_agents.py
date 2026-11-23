@@ -3581,6 +3581,10 @@ class TaskAgentManager:
                 template=template,
             )
             session.changes_files = not _CHANGING_TOOLS <= set(spec.disabled_tools)
+            # Noted by the tools it is opened with: its preset was read anew for them, and may
+            # say otherwise than when its session was looked at before (a template changed in
+            # between). Others of its project wait for it from here on, or wait for it no more.
+            await self._note_writer(session.session_id)
             # On record with the session from here on: a later commission of
             # it is opened in the same place. (That the session is at work
             # was written with the commission's status.)
@@ -7729,10 +7733,11 @@ class TaskAgentManager:
         finally:
             unsaid = self._said_while_handed.pop(commission_id, None)
             if unsaid:
-                # Not handed over after all (stopped meanwhile, or it could not be queued): what the
-                # user said to it meanwhile is on record with it (``told``) and reaches nobody.
+                # Not handed over after all (stopped meanwhile, or it could not be queued): what was
+                # said to it meanwhile reaches nobody. (What the user said is on record with it,
+                # ``told``; what a task agent it started handed back is with that one's commission.)
                 logger.warning(
-                    "commission %s was not handed over; %d thing(s) the user said to it meanwhile were not passed on",
+                    "commission %s was not handed over; %d thing(s) said or handed to it meanwhile were not passed on",
                     commission_id,
                     len(unsaid),
                 )

@@ -2509,7 +2509,7 @@ async def test_a_commission_stopped_as_its_leader_lets_go_is_not_put_on_record_a
     # What was said to it meanwhile is on record with it, and that it was not passed on is logged, without the words.
     assert await _events(host, receipt.commission_id, "told") == [{"text": "and make the logo smaller", "queued": True}]
     logged = [record.getMessage() for record in caplog.records if "was not handed over" in record.getMessage()]
-    assert len(logged) == 1 and "1 thing(s)" in logged[0] and "logo" not in logged[0]
+    assert len(logged) == 1 and "1 thing(s) said or handed to it" in logged[0] and "logo" not in logged[0]
 
 
 async def test_two_calls_to_hand_one_commission_over_at_once_hand_it_over_once(hosts, tmp_path, monkeypatch):
@@ -3011,3 +3011,35 @@ async def test_a_queued_commission_stays_queued_when_the_last_place_goes_to_anot
         agents._held_by.clear()
         for key in [key for key in agents._sessions if str(key).startswith("another ") or key == "waits"]:
             del agents._sessions[key]
+
+
+async def test_a_session_is_noted_by_the_tools_it_is_opened_with_as_it_starts(hosts, tmp_path):
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    scripts = {"CSV export": ScriptedLLM([[wait, *_report("export added")]])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    await _project(host, "Budget app", tmp_path)
+    agents = host.task_agents
+    note, looked = agents._note_writer, []
+
+    async def stale(session_id: Any, **more: Any) -> None:
+        # What is noted of it as it is given its session is out of date by the time it starts
+        # (its template was changed in between): left out here.
+        looked.append(session_id)
+        if len(looked) > 1:
+            await note(session_id, **more)
+
+    agents._note_writer = stale
+    receipt = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_until(lambda: len(scripts["CSV export"].requests) == 1, what="the member being at work")
+    agents._note_writer = note
+
+    member = await _session_of(host, receipt.commission_id)
+    # Noted once more as its session is opened, by the tools that one has.
+    assert len(looked) >= 2 and agents._sessions[receipt.commission_id].changes_files is True
+    assert agents._writes_in == {member.id: ("Budget app", member.id)}
+    release.set()
+    await wait_status(host, receipt.commission_id, "done")
