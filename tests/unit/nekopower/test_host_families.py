@@ -2256,3 +2256,52 @@ async def test_a_task_agent_with_an_early_commission_still_under_way_is_not_take
     assert all(item.title != "sort the photos of 2019" for item in agent.done) and agent.idle_seconds == 0.0
     assert await host.ledger.under_way_in([session.id, "no-such-session"], skip=now.id) == {session.id}
     assert await host.ledger.under_way_in([]) == set()
+
+
+async def test_the_board_lists_the_members_that_work_and_not_every_one_a_project_ever_had(tmp_path):
+    from nekopower.host.ledger import Ledger
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    try:
+        now = ledger._clock()
+        long_ago = now - (settings.SESSION_SINGLE_LIFETIME_DAYS + 3) * 86400
+
+        async def member(name: str, project: str, *, at: float, who: str = "Lan") -> Any:
+            session = await ledger.create_session(lanlan_name=who, name=name, kind="line", project=project)
+            await ledger.update_session(session.id, last_active_at=at)
+            return session
+
+        leader, _made = await ledger.project_session("Lan", "Shop site")
+        await ledger.update_session(leader.id, last_active_at=long_ago)
+        over = [await member(f"Shop site/worker {index}", "Shop site", at=long_ago - index) for index in range(3)]
+        lately = await member("Shop site/scout", "Shop site", at=now - 3600)
+        at_work = await member("Shop site/worker", "Shop site", at=long_ago)
+        commission, _made = await ledger.create(
+            lanlan_name="Lan", title="fix the header", dispatch_text="fix the header", source="dispatch",
+            route="task_agent", session_id=at_work.id, project="Shop site",
+        )
+        await ledger.transition(commission.id, "working", reason="t")
+        await ledger.update_session(at_work.id, last_active_at=long_ago)
+        # A project without a leader whose one member was last in use long ago, and another character's in the first.
+        alone = await member("Garden", "Garden", at=long_ago)
+        before = await member("Garden 2", "Garden", at=long_ago - 5)
+        theirs = await member("Shop site", "Shop site", at=long_ago, who="Mio")
+
+        async def listed(**asked: Any) -> list[str]:
+            rows = await ledger.board_rows(
+                recent_since=now - settings.BOARD_RECENT_SECONDS, child_since=now, day_start=now, loose_max=5,
+                children_max=3, events_each=5, **asked,
+            )
+            return [session.id for session in rows.sessions]
+
+        shown = await listed()
+        # The leader, however long ago; the member at work, the one in use lately, and of each project and
+        # character the one last in use: not the ones a project had before.
+        assert set(shown) == {leader.id, at_work.id, lately.id, alone.id, theirs.id}
+        assert not {item.id for item in over} & set(shown) and before.id not in shown
+        assert shown.index(leader.id) < min(shown.index(at_work.id), shown.index(lately.id))
+        assert shown.index(at_work.id) < shown.index(lately.id)
+        assert set(await listed(project="Garden")) == {alone.id}
+        assert set(await listed(lanlan_name="Mio")) == {theirs.id}
+    finally:
+        await ledger.close()

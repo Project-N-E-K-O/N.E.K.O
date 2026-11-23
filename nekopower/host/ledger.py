@@ -2309,8 +2309,12 @@ class Ledger:
     ) -> BoardRows:
         """Return the sessions that are on the board, each with the commission in hand and its latest tool calls.
 
-        Not every session there ever was: the leader and the members of
-        every project (of ``project`` alone, when one is named); the sessions of one
+        Not every session there ever was: the leader of every project (of
+        ``project`` alone, when one is named), and those of its members in
+        which a commission is under way, which were in use since
+        ``recent_since``, or which was the last in use there for its
+        character (a project is shown with who works in it, however long
+        ago that was; the members it had before are not); the sessions of one
         commission in which one is under way or which were in use since
         ``recent_since``, ``loose_max`` of them at most and none when a
         project is named; under each of these the task agents it started
@@ -2346,13 +2350,23 @@ class Ledger:
             def sessions_of(sql: str, params: list[Any]) -> list[Session]:
                 return [item for item in (_session(row) for row in conn.execute(sql, params).fetchall()) if item]
 
-            sql = f"SELECT * FROM sessions WHERE kind IN ('project', 'line'){who}"
-            params: list[Any] = list(whose)
-            if project is not None:
-                sql += " AND project = ?"
-                params.append(project)
+            of_project = " AND project = ?" if project is not None else ""
+            named = [project] if project is not None else []
             # A leader before the members of its project.
-            leads = sessions_of(sql + " ORDER BY kind = 'project' DESC, last_active_at DESC, rowid DESC", params)
+            leads = sessions_of(
+                f"SELECT * FROM sessions WHERE kind = 'project'{who}{of_project} ORDER BY last_active_at DESC, rowid DESC",
+                [*whose, *named],
+            )
+            leads += sessions_of(
+                "SELECT * FROM (SELECT s.*, s.rowid AS number, EXISTS (SELECT 1 FROM commissions "
+                f"WHERE commissions.session_id = s.id AND commissions.status IN ({marks})) AS under_way, "
+                "NOT EXISTS (SELECT 1 FROM sessions o WHERE o.kind = 'line' AND o.lanlan_name = s.lanlan_name "
+                "AND o.project = s.project AND (o.last_active_at > s.last_active_at "
+                "OR (o.last_active_at = s.last_active_at AND o.rowid > s.rowid))) AS latest "
+                f"FROM sessions s WHERE s.kind = 'line'{who}{of_project}) "
+                "WHERE under_way OR latest OR last_active_at >= ? ORDER BY under_way DESC, last_active_at DESC, number DESC",
+                [*under_way, *whose, *named, recent_since],
+            )
             if project is None:
                 leads += sessions_of(
                     "SELECT * FROM (SELECT sessions.*, sessions.rowid AS number, EXISTS (SELECT 1 FROM commissions "
