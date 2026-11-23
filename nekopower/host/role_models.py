@@ -426,6 +426,10 @@ class RoleModels:
             found = await self.slot(slot_id)
         except SlotUnavailable as exc:
             return await self.agent(fallback or exc.code)
+        if found.tier != AGENT_TIER:
+            # It followed the task agent model as the slots were listed, and
+            # does not as it is read again: what it says now nobody chose.
+            return await self.agent(fallback or SLOT_CHANGED)
         return dataclass_replace(found, fallback=fallback)
 
     async def choose(

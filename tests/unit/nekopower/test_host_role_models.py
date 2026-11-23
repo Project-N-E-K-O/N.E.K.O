@@ -1824,3 +1824,99 @@ async def test_a_commission_stopped_while_it_is_settled_for_the_queue_is_neither
     assert await asyncio.wait_for(handing, 10) is False
     assert later.id not in tasks._queue and later.id not in tasks._sessions
     assert len(specs) == 1
+
+
+async def test_the_default_slot_rewritten_between_its_listing_and_its_reading_is_not_followed(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots())
+    slots = PluginModelSlots(manager)
+    listed = slots.list
+
+    async def rewritten_after_listing() -> list[Any]:
+        found = await listed()
+        # Between the two reads, the slot that followed the task agent model is pointed somewhere else.
+        rewritten = _default_slots()
+        rewritten[AGENT_SLOT] = _own(name="Familiar model", base_url="http://somewhere-else.test/v1")
+        _write_slots(manager, rewritten)
+        return found
+
+    slots.list = rewritten_after_listing
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager, model_slots=slots)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.slot, choice.config["base_url"], choice.fallback) == ("", "http://agent.test/v1", "slot_changed")
+
+
+async def test_a_commission_being_settled_for_the_queue_as_the_host_shuts_down_fails_and_is_not_queued(
+    hosts, tmp_path
+):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first, settling, release_settling = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait_first, *_report()]]), manager, max_task_agents=1)
+    tasks = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the music", dispatch_text="sort the music", source="dispatch", route="task_agent"
+    )
+    settle = tasks.settle_model
+
+    async def held_settling(session: Any) -> None:
+        settling.set()
+        await release_settling.wait()
+        await settle(session)
+
+    tasks.settle_model = held_settling
+    handing = asyncio.ensure_future(tasks.submit(later))
+    await asyncio.wait_for(settling.wait(), 10)
+    closing = asyncio.ensure_future(tasks.shutdown())
+    await wait_until(lambda: tasks._closed, what="the manager closing")
+    release_settling.set()
+    release_first.set()
+
+    assert await asyncio.wait_for(handing, 10) is False
+    await asyncio.wait_for(closing, 15)
+    assert later.id not in tasks._queue
+    assert (await host.ledger.get(later.id)).status == "failed"
+
+
+async def test_the_settling_lock_stays_while_another_waits_for_it_though_the_first_was_cancelled(hosts, tmp_path):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    slots = PluginModelSlots(manager)
+    resolve = slots.resolve
+    entered, never = asyncio.Event(), asyncio.Event()
+    first_call = {"yes": True}
+
+    async def first_held(slot_id: str) -> Any:
+        if first_call["yes"]:
+            first_call["yes"] = False
+            entered.set()
+            await never.wait()
+        return await resolve(slot_id)
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager, model_slots=slots)
+    tasks = host.task_agents
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    slots.resolve = first_held
+    first = asyncio.ensure_future(tasks.session_model(session))
+    await asyncio.wait_for(entered.wait(), 10)
+    second = asyncio.ensure_future(tasks.session_model(session))
+    await asyncio.sleep(0.05)
+
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
+
+    # The second waited for it, and has not come back: one that came now would wait behind it.
+    assert session.id in tasks._settle_locks
+    choice = await asyncio.wait_for(second, 10)
+    assert choice.slot == AGENT_SLOT
+    assert tasks._settle_locks == {}

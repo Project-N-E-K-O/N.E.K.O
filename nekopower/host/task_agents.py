@@ -1063,7 +1063,8 @@ class TaskAgentManager:
         # One settling of a session's model at a time (``_session_model``):
         # the start of a queued commission and the settling as it was queued
         # do not each write a model of their own.
-        self._settle_locks: dict[str, asyncio.Lock] = {}
+        # With how many hold or wait for it: it goes once none does.
+        self._settle_locks: dict[str, tuple[asyncio.Lock, int]] = {}
         self.role_models = RoleModels(
             store=RoleModelStore(paths.role_models_json),
             slots=model_slots,
@@ -1737,6 +1738,14 @@ class TaskAgentManager:
             # waits: whether it is still wanted is asked again after it, and
             # a place that came free meanwhile is taken.
             await self._settle_for_the_queue(commission.id)
+            if self._closed:
+                # Shut down meanwhile: what was queued then has been seen to,
+                # and this would wait in the queue for nobody.
+                self._candidates.pop(commission.id, None)
+                self._excerpts.pop(commission.id, None)
+                self._session_of.pop(commission.id, None)
+                await self._ledger.transition(commission.id, "failed", reason=_SHUT_DOWN_REASON)
+                return False
             if still_wanted is not None and not still_wanted():
                 self._candidates.pop(commission.id, None)
                 self._excerpts.pop(commission.id, None)
@@ -2089,7 +2098,8 @@ class TaskAgentManager:
         """
         from nekopower.host.role_models import recorded
 
-        lock = self._settle_locks.setdefault(kept.id, asyncio.Lock())
+        lock, users = self._settle_locks.get(kept.id, (asyncio.Lock(), 0))
+        self._settle_locks[kept.id] = (lock, users + 1)
         try:
             async with lock:
                 fresh = await self._ledger.get_session(kept.id) or kept
@@ -2099,8 +2109,13 @@ class TaskAgentManager:
                 await self._keep_model(fresh, choice, True)
                 return choice
         finally:
-            if self._settle_locks.get(kept.id) is lock and not lock.locked():
+            # Kept while anyone else holds or waits for it: one that came
+            # now would otherwise make another, and settle beside them.
+            held, left = self._settle_locks[kept.id]
+            if left <= 1:
                 del self._settle_locks[kept.id]
+            else:
+                self._settle_locks[kept.id] = (held, left - 1)
 
     async def _choose_model(
         self, kept: Session, *, record: bool, depth: int, use_setting: bool = True, fallback: str = ""
