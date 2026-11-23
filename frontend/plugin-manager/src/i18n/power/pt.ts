@@ -10,6 +10,7 @@ const messages: PowerMessages = {
     remote_backend: 'O backend roda em outra máquina: aqui você só pode ver as configurações, não alterá-las.',
     stale: 'Estas configurações foram alteradas em outro lugar. Elas foram recarregadas; confira e tente de novo.',
     permissions_unreadable: 'Não foi possível ler o arquivo de permissões. Conserte-o ou exclua-o e tente de novo.',
+    permissions_not_saved: 'Não foi possível salvar a permissão (o arquivo não pode ser gravado). Tente novamente mais tarde; o que aparece é o que vale agora.',
     no_model: 'Ainda não há um modelo configurado para os familiares.',
     out_of_range: 'Esse valor está fora do intervalo.',
     bad_number: 'Digite um número.',
