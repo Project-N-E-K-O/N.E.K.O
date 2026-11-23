@@ -283,7 +283,7 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # go out (stream_text / prompt_ephemeral). The host uses it to get
         # speech output ready while the model is still thinking. Sync so the
         # call adds no await to either entry point's reply-begin section.
-        self.on_response_start: Optional[Callable[[], None]] = None
+        self.on_response_start: Optional[Callable[[], object]] = None  # return value ignored
         self._conversation_history = []
         self._instructions = ""
         # Knowledge blocks the session's requests carry beside the history

@@ -581,6 +581,51 @@ def test_no_new_spare_while_a_retired_one_is_still_closing(monkeypatch):
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
+def test_a_new_reply_restarts_the_kept_spares_idle_window(monkeypatch):
+    # The second reply's preconnect keeps the existing spare; its idle window
+    # must count from that reply, or it expires right under it.
+    _route_to_lanlan_app(monkeypatch)
+    monkeypatch.setattr(_step_protocol, "_PRECONNECT_IDLE_SECONDS", 0.3)
+    spare = _socket("spare", final_events=_app_round_end("spare"))
+    fallback = _socket("fallback", final_events=_app_round_end("fallback"))
+    connects = _install_sockets(monkeypatch, _warmup_socket(), spare, fallback)
+
+    _run(
+        _Requests(
+            _PRECONNECT,
+            _pause(0.2),
+            _PRECONNECT,  # the next reply starts; the spare is still unused
+            _pause(0.2),  # past the first window, inside the restarted one
+            ("speech-1", _OPENING),
+            (None, None),
+        ),
+        queue.Queue(),
+    )
+
+    assert connects[1:] == [spare], "the spare expired under the reply"
+    assert _sent_types(spare) == ["tts.create", "tts.text.delta", "tts.text.done"]
+
+
+def test_spare_socket_uses_a_short_close_timeout(monkeypatch):
+    # Every later connect waits for a retired spare's close, so a peer that
+    # ignores the close handshake must not cost websockets' default 10s.
+    _route_to_lanlan_app(monkeypatch)
+    spare = _socket("spare", final_events=_app_round_end("spare"))
+    remaining = [_warmup_socket(), spare]
+    connect_kwargs = {}
+
+    async def connect(*_args, **kwargs):
+        socket = remaining.pop(0)
+        connect_kwargs[id(socket)] = kwargs
+        return socket
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+
+    _run(_Requests(_PRECONNECT, ("speech-1", _OPENING), (None, None)), queue.Queue())
+
+    assert connect_kwargs[id(spare)].get("close_timeout") == 2.0
+
+
 def test_repeated_preconnects_open_one_spare(monkeypatch):
     _route_to_lanlan_app(monkeypatch)
     spare = _socket("spare", final_events=_app_round_end("spare"))

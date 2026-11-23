@@ -601,7 +601,12 @@ def run_step_protocol_tts_worker(
             spare_ws = None
             spare_session_id = None
             try:
-                spare_ws = await websockets.connect(tts_url, additional_headers=headers)
+                # close_timeout as for the warmup socket: every later connect
+                # waits for a retired spare's close (_await_spare_cleanup), so
+                # a peer ignoring the close handshake must not cost 10s.
+                spare_ws = await websockets.connect(
+                    tts_url, additional_headers=headers, close_timeout=2.0,
+                )
                 progress["connected_at"] = asyncio.get_running_loop().time()
                 progress["connected"].set()
 
@@ -708,13 +713,20 @@ def run_step_protocol_tts_worker(
         def _start_spare_socket() -> None:
             nonlocal spare_task, spare_expiry_task, spare_progress
             if spare_task is not None:
-                if not spare_task.done():
-                    return  # still connecting
-                result = spare_task.result()
-                if result is not None and _ws_is_open(result[0]):
-                    return  # one usable spare at a time; it keeps its own expiry
+                result = spare_task.result() if spare_task.done() else None
+                if not spare_task.done() or (result is not None and _ws_is_open(result[0])):
+                    # Still connecting, or usable: one spare at a time. A new
+                    # reply just started, so its idle window restarts from
+                    # now rather than expiring under this reply.
+                    if spare_expiry_task is not None and not spare_expiry_task.done():
+                        spare_expiry_task.cancel()
+                    spare_expiry_task = asyncio.create_task(_expire_spare_socket(spare_task))
+                    return
                 # It failed, or the server dropped it while it idled: replace
-                # it instead of ignoring preconnects until it expires.
+                # it instead of ignoring preconnects until it expires. If its
+                # socket is still closing, the cleanup check below defers the
+                # replacement to the next preconnect (the speech then
+                # connects normally), keeping one connection per IP.
                 _discard_spare_socket()
             if _ws_may_hold_connection(ws):
                 # The previous round's socket is still open (its audio is still
@@ -1055,6 +1067,10 @@ def run_step_protocol_tts_worker(
 
                 if sid == "__interrupt__":
                     # Interruption: close immediately without tts.text.done or waiting for server confirmation.
+                    # A preconnected spare is bound to no speech and is kept on
+                    # purpose: an interrupt is usually followed by the user's
+                    # next reply, which adopts it. If none comes, its idle
+                    # expiry (_PRECONNECT_IDLE_SECONDS) closes it.
                     audio_jitter.begin_interrupt()
                     audio_done.begin_interrupt()  # Interrupted rounds send no audio_done; they use the independent cancellation channel.
                     try:
