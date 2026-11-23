@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collectPluginDeleteWarnings } from './pluginDeleteResult'
+import { collectBatchPluginDeleteWarnings, collectPluginDeleteWarnings } from './pluginDeleteResult'
 
 const t = (key: string, params?: Record<string, unknown>) =>
   `${key}:${JSON.stringify(params ?? {})}`
@@ -29,6 +29,38 @@ describe('collectPluginDeleteWarnings', () => {
     }, 'Demo', t)).toEqual([
       'messages.pluginDeletedBuiltinRestartFailed:{"plugin":"Demo","error":"boom"}',
       'messages.pluginDeletedPermissionsNotCleared:{"plugin":"Demo"}',
+    ])
+  })
+})
+
+describe('collectBatchPluginDeleteWarnings', () => {
+  it('reports the permission warning once for all affected plugins', () => {
+    const unusable = {
+      restored_builtin_restart_error: null,
+      permission_warning: { code: 'PLUGIN_PERMISSIONS_CORRUPT', message: 'x' },
+    }
+    expect(collectBatchPluginDeleteWarnings([
+      { result: unusable, plugin: 'A' },
+      { result: { restored_builtin_restart_error: null, permission_warning: null }, plugin: 'B' },
+      { result: unusable, plugin: 'C' },
+    ], t)).toEqual([
+      'messages.pluginDeletedPermissionsNotCleared:{"plugin":"A, C"}',
+    ])
+  })
+
+  it('keeps restart warnings per plugin before the permission warning', () => {
+    expect(collectBatchPluginDeleteWarnings([
+      {
+        result: {
+          restored_builtin_restart_error: { code: 'C', message: 'boom', error_type: 'E' },
+          permission_warning: { code: 'PLUGIN_PERMISSIONS_CORRUPT', message: 'x' },
+        },
+        plugin: 'A',
+      },
+      { result: { restored_builtin_restart_error: null }, plugin: 'B' },
+    ], t)).toEqual([
+      'messages.pluginDeletedBuiltinRestartFailed:{"plugin":"A","error":"boom"}',
+      'messages.pluginDeletedPermissionsNotCleared:{"plugin":"A"}',
     ])
   })
 })

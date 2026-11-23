@@ -547,7 +547,7 @@ import type {
 } from '@/composables/workbenchDescriptors'
 import { getMarketUrl } from '@/api/market'
 import { deletePlugin } from '@/api/plugins'
-import { collectPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
+import { collectBatchPluginDeleteWarnings } from '@/utils/pluginDeleteResult'
 import { buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
@@ -1327,17 +1327,19 @@ async function handleBatchDelete() {
 
   batchBusy.value = true
   let ok = 0; let fail = 0
-  const deleteWarnings: string[] = []
+  const deleted: Array<{ result: Awaited<ReturnType<typeof deletePlugin>>; plugin: string }> = []
   for (const p of plugins) {
     try {
       const result = await deletePlugin(p.id)
       ok++
-      deleteWarnings.push(...collectPluginDeleteWarnings(result, p.name, t))
+      deleted.push({ result, plugin: p.name })
     } catch { fail++ }
   }
   batchBusy.value = false
   clearSelection()
-  if (deleteWarnings.length > 0) ElMessage.warning(deleteWarnings.join('; '))
+  // One notice per warning, so sentences are not glued together.
+  const deleteWarnings = collectBatchPluginDeleteWarnings(deleted, t)
+  deleteWarnings.forEach((warning) => ElMessage.warning(warning))
   if (fail > 0) ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
   else if (deleteWarnings.length === 0) {
     ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))

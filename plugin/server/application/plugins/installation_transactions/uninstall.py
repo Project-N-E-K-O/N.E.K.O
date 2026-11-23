@@ -821,9 +821,9 @@ async def _forget_permissions_precommit(
             return None, {
                 "code": exc.code,
                 "message": (
-                    "Permission records could not be read, so this plugin's "
-                    "grants were not cleared; its old entry may remain once "
-                    "the file is readable again"
+                    "The permission records file is damaged or from a newer "
+                    "version, so any grants this plugin had were not cleared; "
+                    "they may still apply once the file is readable again"
                 ),
             }
         raise ServerDomainError(

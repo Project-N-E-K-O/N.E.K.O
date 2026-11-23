@@ -284,7 +284,7 @@ export function usePluginListContextActions() {
           usePluginConsentState().forget(plugin.id)
           const warnings = collectPluginDeleteWarnings(result, plugin.name, t)
           if (warnings.length > 0) {
-            ElMessage.warning(warnings.join('; '))
+            warnings.forEach((warning) => ElMessage.warning(warning))
           } else {
             ElMessage.success(t('messages.pluginDeleted'))
           }

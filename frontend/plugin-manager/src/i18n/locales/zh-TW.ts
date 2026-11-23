@@ -1060,7 +1060,7 @@ export default {
     pluginBuilt: '外掛已構建：{packageName}',
     pluginDeleted: '外掛已刪除',
     pluginDeletedBuiltinRestartFailed: '外掛 {plugin} 已刪除，但還原的內建版本啟動失敗：{error}',
-    pluginDeletedPermissionsNotCleared: '外掛 {plugin} 已刪除，但權限記錄暫時無法讀取，未能清除它的授權；記錄檔恢復後，該外掛的舊授權可能仍在。',
+    pluginDeletedPermissionsNotCleared: '外掛 {plugin} 已刪除，但權限記錄檔已損壞或版本不相容，未能清除它可能留有的授權；記錄檔恢復可讀後，這些授權可能仍然有效。',
     startFailed: '啟動失敗',
     autoStartEnabled: '已開啟自動啟動',
     autoStartDisabled: '已關閉自動啟動',
