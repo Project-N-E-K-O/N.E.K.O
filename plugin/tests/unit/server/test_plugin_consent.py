@@ -737,6 +737,55 @@ async def test_source_revision_walks_wait_for_plugin_directory_mutation(
 
 
 @pytest.mark.asyncio
+async def test_job_forgotten_while_waiting_for_the_lock_reads_nothing(
+    monkeypatch, tmp_path, reports
+):
+    # Uninstall forgets the job and removes the directory under the lock; the
+    # waiting job must stop once it gets the lock, not stat the removed tree.
+    import shutil
+
+    from plugin.server.application.plugins.operation_lock import plugin_operation_lock
+
+    root = tmp_path / "demo"
+    manifest(root)
+    pending = threading.Event()
+    walks: list[str] = []
+    failures: list[str] = []
+    original_lock = analysis.hold_plugin_operation_file_lock
+
+    def wait_for_source_lock(stop):
+        pending.set()
+        return original_lock(stop)
+
+    def revision(*_args, **_kwargs):
+        walks.append("revision")
+        raise AssertionError("forgotten job read the plugin tree")
+
+    monkeypatch.setattr(analysis, "hold_plugin_operation_file_lock", wait_for_source_lock)
+    monkeypatch.setattr(analysis, "source_revision", revision)
+    monkeypatch.setattr(
+        analysis,
+        "logger",
+        SimpleNamespace(warning=lambda message, *_a, **_k: failures.append(message)),
+    )
+    runner = analysis.CapabilityAnalysisService(reports)
+    try:
+        async with plugin_operation_lock.hold():
+            runner.reanalyze("demo", root, "1")
+            assert await asyncio.to_thread(pending.wait, 2)
+            with runner._lock:
+                job = runner._jobs["demo"][1]
+            runner.forget("demo")
+            shutil.rmtree(root)
+        await asyncio.wrap_future(job)
+        assert walks == []
+        assert failures == []
+        assert reports.read("demo") is None
+    finally:
+        await runner.close()
+
+
+@pytest.mark.asyncio
 async def test_stale_scan_cannot_replace_new_install_report(
     monkeypatch, store, reports, tmp_path
 ):
