@@ -48,8 +48,13 @@ Selection rules (the "trans" strategy validated offline on 150 merged PRs):
 * docs/** and Markdown files never select anything.
 
 The selected files are split into at most ``MAX_SHARDS`` shards, each holding
-roughly ``SHARD_SHARE`` of the full suite's test count, balanced greedily by
-test count.
+roughly ``SHARD_SHARE`` of the full suite's cost, balanced greedily. A file's
+cost is its measured run time from a JUnit report of an earlier full run
+(``--durations``, xunit1 so every case carries its file); files the report
+does not know are estimated from their test count at the report's average
+seconds per test. Without a report the cost is the test count: on the
+Windows runners that put one shard at 13k tests and 18 minutes next to one
+at 18k tests and 9 minutes, so the report matters.
 
 Outputs (``--out-dir``): ``selection.json`` plus one pytest argument file per
 shard (``shard-<n>.args``, one path per line). Pass a shard to pytest as
@@ -72,6 +77,7 @@ import os
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -94,6 +100,7 @@ ROOT_CONFTESTS = ("tests/conftest.py", "tests/unit/conftest.py")
 SHARD_SHARE = 0.30
 MAX_SHARDS = 4
 MIN_LITERAL_LEN = 6
+MIN_FILE_SECONDS = 0.01  # a fully skipped file still costs its import
 # Base names too generic to identify a file on their own; they are matched
 # together with their parent directory ("memory/__init__.py").
 GENERIC_BASENAMES = frozenset(
@@ -673,10 +680,44 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
     return Selection("partial", f"{len(chosen)} test file(s) depend on the changed files", sorted(chosen), changed)
 
 
+def load_durations(path: Path) -> dict[str, float]:
+    """Seconds per test file from JUnit XML reports (a file or a directory of them)."""
+    reports = [path] if path.is_file() else sorted(path.rglob("*.xml")) if path.is_dir() else []
+    seconds: dict[str, float] = {}
+    for report in reports:
+        try:
+            tree = ET.parse(report)
+        except (ET.ParseError, OSError):
+            continue
+        for case in tree.iter("testcase"):
+            file = case.get("file")
+            if not file:
+                continue
+            try:
+                spent = float(case.get("time") or 0.0)
+            except ValueError:
+                continue
+            rel = file.replace("\\", "/")
+            seconds[rel] = seconds.get(rel, 0.0) + spent
+    return seconds
+
+
+def shard_costs(index: RepoIndex, durations: dict[str, float]) -> tuple[dict[str, float], str]:
+    """Cost per candidate test file and the basis it was computed on ("durations" or "test count")."""
+    candidates = {p: t for p, t in index.tests.items() if not t.shard_marked}
+    known = {p: durations[p] for p in candidates if p in durations}
+    known_tests = sum(candidates[p].weight for p in known)
+    if not known or known_tests == 0:
+        return {p: float(t.weight) for p, t in candidates.items()}, "test count"
+    rate = sum(known.values()) / known_tests
+    costs = {p: max(known.get(p, t.weight * rate), MIN_FILE_SECONDS) for p, t in candidates.items()}
+    return costs, "durations"
+
+
 def plan_shards(
     files: list[str],
-    weights: dict[str, int],
-    total_weight: int,
+    weights: dict[str, float],
+    total_weight: float,
     share: float = SHARD_SHARE,
     max_shards: int = MAX_SHARDS,
 ) -> list[list[str]]:
@@ -685,7 +726,7 @@ def plan_shards(
     selected_weight = sum(weights.get(f, 1) for f in files)
     capacity = max(1.0, share * max(total_weight, 1))
     count = max(1, min(max_shards, math.ceil(selected_weight / capacity), len(files)))
-    heap: list[tuple[int, int]] = [(0, i) for i in range(count)]
+    heap: list[tuple[float, int]] = [(0.0, i) for i in range(count)]
     shards: list[list[str]] = [[] for _ in range(count)]
     for path in sorted(files, key=lambda f: (-weights.get(f, 1), f)):
         load, i = heapq.heappop(heap)
@@ -711,14 +752,24 @@ def write_outputs(
     out_dir: Path,
     github_output: Path | None,
     summary: Path | None,
+    costs: dict[str, float] | None = None,
+    basis: str = "test count",
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     weights = {p: t.weight for p, t in index.tests.items()}
+    costs = costs or {p: float(w) for p, w in weights.items()}
     total = index.total_weight
     shard_info = []
     for i, files in enumerate(shards, start=1):
         (out_dir / f"shard-{i}.args").write_bytes(("\n".join(files) + "\n").encode("utf-8"))
-        shard_info.append({"index": i, "files": len(files), "tests": sum(weights.get(f, 1) for f in files)})
+        shard_info.append(
+            {
+                "index": i,
+                "files": len(files),
+                "tests": sum(weights.get(f, 1) for f in files),
+                "cost": round(sum(costs.get(f, 1.0) for f in files), 1),
+            }
+        )
     selected_tests = sum(weights.get(f, 1) for f in selection.files)
     report = {
         "mode": selection.mode,
@@ -728,6 +779,7 @@ def write_outputs(
         "selected_tests": selected_tests,
         "total_tests": total,
         "selected_share": round(selected_tests / total, 4) if total else 0.0,
+        "cost_basis": basis,
         "shards": shard_info,
     }
     (out_dir / "selection.json").write_bytes(json.dumps(report, indent=2, ensure_ascii=False).encode("utf-8"))
@@ -748,7 +800,8 @@ def write_outputs(
             f"- changed files: {len(selection.changed)}",
             f"- selected: {len(selection.files)} file(s), {selected_tests} of {total} tests "
             f"({report['selected_share']:.1%})",
-            f"- shards: {len(shards)} " + ", ".join(f"#{s['index']}={s['tests']}" for s in shard_info),
+            f"- shards: {len(shards)}, balanced by {basis}: "
+            + ", ".join(f"#{s['index']}={s['tests']} tests/{s['cost']:g}" for s in shard_info),
         ]
         if selection.files and len(selection.files) <= 200:
             md += ["", "<details><summary>selected files</summary>", ""]
@@ -768,6 +821,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", default="related-tests", help="where selection.json and shard-*.args go")
     parser.add_argument("--github-output", help="append step outputs to this file ($GITHUB_OUTPUT)")
     parser.add_argument("--summary", help="append a Markdown summary to this file ($GITHUB_STEP_SUMMARY)")
+    parser.add_argument("--durations", help="JUnit XML report(s) of an earlier full run, a file or a directory")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -796,8 +850,9 @@ def main(argv: list[str] | None = None) -> int:
         selection = Selection("full", fallback_reason, candidates, [])
     else:
         selection = select(index, changed)
-    weights = {p: t.weight for p, t in index.tests.items()}
-    shards = plan_shards(selection.files, weights, index.total_weight)
+    durations = load_durations(Path(args.durations)) if args.durations else {}
+    costs, basis = shard_costs(index, durations)
+    shards = plan_shards(selection.files, costs, sum(costs.values()))
     report = write_outputs(
         index,
         selection,
@@ -805,11 +860,13 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.out_dir),
         Path(args.github_output) if args.github_output else None,
         Path(args.summary) if args.summary else None,
+        costs,
+        basis,
     )
     print(
         f"mode={report['mode']} files={len(report['selected_files'])} "
         f"tests={report['selected_tests']}/{report['total_tests']} ({report['selected_share']:.1%}) "
-        f"shards={[s['tests'] for s in report['shards']]} reason={report['reason']}"
+        f"shards({basis})={[s['cost'] for s in report['shards']]} reason={report['reason']}"
     )
     return 0
 

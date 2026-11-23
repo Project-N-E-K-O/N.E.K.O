@@ -317,6 +317,46 @@ def test_no_files_means_no_shards():
     assert sel.plan_shards([], {}, total_weight=100) == []
 
 
+JUNIT = """<?xml version="1.0" encoding="utf-8"?>
+<testsuites><testsuite name="pytest">
+<testcase classname="tests.unit.test_core" name="test_engine" file="tests\\unit\\test_core.py" line="3" time="30.0" />
+<testcase classname="tests.unit.sub.test_b.TestB" name="test_one" file="tests/unit/sub/test_b.py" line="2" time="1.5" />
+<testcase classname="tests.unit.sub.test_b.TestB" name="test_two" file="tests/unit/sub/test_b.py" line="5" time="2.5" />
+<testcase classname="x" name="no_file" time="99" />
+</testsuite></testsuites>
+"""
+
+
+def test_durations_are_read_per_file_from_junit_reports(tmp_path):
+    (tmp_path / "full.xml").write_bytes(JUNIT.encode("utf-8"))
+    (tmp_path / "broken.xml").write_bytes(b"<testsuites><testcase")
+    assert sel.load_durations(tmp_path) == {"tests/unit/test_core.py": 30.0, "tests/unit/sub/test_b.py": 4.0}
+    assert sel.load_durations(tmp_path / "missing") == {}
+
+
+def test_costs_use_durations_and_estimate_unknown_files(index):
+    costs, basis = sel.shard_costs(index, {"tests/unit/test_core.py": 30.0, "tests/unit/sub/test_b.py": 4.0})
+    assert basis == "durations"
+    assert costs["tests/unit/test_core.py"] == 30.0
+    # 34 s over 3 known tests: an unknown two-test file is estimated at two tests' worth.
+    assert costs["tests/unit/test_function_marked.py"] == pytest.approx(2 * 34.0 / 3)
+    assert "tests/unit/test_marked.py" not in costs
+
+
+def test_costs_fall_back_to_test_count_without_durations(index):
+    costs, basis = sel.shard_costs(index, {})
+    assert basis == "test count"
+    assert costs["tests/unit/sub/test_b.py"] == 2.0
+
+
+def test_slow_file_gets_a_shard_of_its_own():
+    # By test count these four files look alike; by time one dominates.
+    costs = {"slow.py": 600.0, "a.py": 100.0, "b.py": 100.0, "c.py": 100.0, "d.py": 100.0}
+    plan = sel.plan_shards(sorted(costs), costs, total_weight=1000.0)
+    assert len(plan) == 4
+    assert ["slow.py"] in plan
+
+
 # ---- command line, end to end on a real git history --------------------------
 
 
@@ -368,7 +408,25 @@ def test_cli_writes_args_files_and_step_outputs(git_repo, tmp_path):
     assert (out / "shard-1.args").read_bytes().decode("utf-8").splitlines() == ["tests/unit/test_via_helper.py"]
     outputs = dict(line.split("=", 1) for line in gh_output.read_bytes().decode("utf-8").splitlines())
     assert outputs == {"mode": "partial", "count": "1", "shard_count": "1", "matrix": "[1]"}
+    assert report["cost_basis"] == "test count"
     assert "Related unit tests" in summary.read_bytes().decode("utf-8")
+
+
+def test_cli_balances_by_the_durations_report(git_repo, tmp_path):
+    report_dir = tmp_path / "durations"
+    report_dir.mkdir()
+    (report_dir / "full.xml").write_bytes(JUNIT.encode("utf-8"))
+    changed = tmp_path / "changed.txt"
+    changed.write_bytes(b"pytest.ini\n")
+    out = tmp_path / "out"
+    proc = _run_cli(git_repo, out, "--changed-files", str(changed), "--durations", str(report_dir))
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads((out / "selection.json").read_bytes().decode("utf-8"))
+    assert report["mode"] == "full" and report["cost_basis"] == "durations"
+    # The full suite is the full cost: it needs every shard, whatever the file count.
+    assert len(report["shards"]) == sel.MAX_SHARDS
+    heaviest = max(report["shards"], key=lambda s: s["cost"])
+    assert "tests/unit/test_core.py" in (out / f"shard-{heaviest['index']}.args").read_bytes().decode("utf-8").split()
 
 
 def test_cli_falls_back_to_the_full_suite_when_the_diff_fails(git_repo, tmp_path):
@@ -437,7 +495,7 @@ def test_related_shards_run_exactly_like_the_full_job(workflow):
     shard = _step_runs(shard_job)
     assert shard_job["runs-on"] == workflow["jobs"]["unit-pytest"]["runs-on"]
     marker_expr = '-m "not unit_fast and not runtime and not integration_serial and not frontend_contract"'
-    for snippet in (marker_expr, "-n auto --dist loadfile", "--basetemp \"${{ runner.temp }}/"):
+    for snippet in (marker_expr, "-n auto --dist loadfile", "--basetemp \"${{ runner.temp }}/", "-o junit_family=xunit1"):
         assert snippet in full and snippet in shard
     for pin in ("uv pip install pyclipper==1.4.0", "uv pip install kaldi-native-fbank==1.22.3"):
         assert pin in full and pin in shard
@@ -458,6 +516,19 @@ def test_powershell_steps_have_no_scope_qualified_variable_typos(workflow):
                 continue
             bad = [m for m in re.findall(r"\$([A-Za-z_]\w*):", run) if m.lower() not in {"env", "global", "script", "using"}]
             assert not bad, f"{step.get('name')}: ${bad[0]}: is parsed as a qualified variable; write ${{{bad[0]}}}"
+
+
+def test_full_run_durations_feed_the_pr_shard_plan(workflow):
+    full = workflow["jobs"]["unit-pytest"]
+    upload = next(step for step in full["steps"] if step.get("with", {}).get("name") == "unit-durations")
+    assert upload["if"].startswith("always()")
+    assert upload["with"]["path"] in _step_runs(full)
+    select_job = workflow["jobs"]["select-related"]
+    fetch = next(step for step in select_job["steps"] if "unit-durations" in step.get("run", ""))
+    assert fetch["continue-on-error"] is True
+    assert "--branch main --event push" in fetch["run"]
+    assert "--durations" in _step_runs(select_job)
+    assert select_job["permissions"]["actions"] == "read"
 
 
 def test_selection_job_does_not_install_the_app(workflow):

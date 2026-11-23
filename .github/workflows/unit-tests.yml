@@ -139,7 +139,20 @@ jobs:
         #
         # The related shards below must run with the same options and the same
         # -m expression; test_select_related_tests.py checks they agree.
-        run: uv run pytest tests/unit -q -n auto --dist loadfile --basetemp "${{ runner.temp }}/neko-unit-suite" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract"
+        #
+        # The JUnit report (xunit1, so every case names its file) is what the
+        # PR selector balances its shards by; see the upload step below.
+        run: uv run pytest tests/unit -q -n auto --dist loadfile --basetemp "${{ runner.temp }}/neko-unit-suite" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract" --junitxml "${{ runner.temp }}/unit-junit/full.xml" -o junit_family=xunit1
+
+      - name: Upload test durations for PR shard planning
+        # Kept on failure too: a red run still measured every file it ran.
+        if: always() && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-durations
+          path: ${{ runner.temp }}/unit-junit/full.xml
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Re-run failed tests once (flaky check)
         # Runs only the tests the full run recorded as failed (`--lf` reads
@@ -170,6 +183,9 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read  # to download the durations artifact of a main run
     outputs:
       mode: ${{ steps.select.outputs.mode }}
       count: ${{ steps.select.outputs.count }}
@@ -188,6 +204,20 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Fetch test durations from the latest full run on main
+        # Best effort: without them the selector balances by test count.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(gh run list -R "$GITHUB_REPOSITORY" --workflow unit-tests.yml --branch main --event push --status completed --limit 10 --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$id" -R "$GITHUB_REPOSITORY" -n unit-durations -D "$RUNNER_TEMP/unit-durations"; then
+              echo "Using test durations from run $id"
+              exit 0
+            fi
+          done
+          echo "No durations artifact found on main; balancing by test count."
+
       - name: Select tests from the PR diff
         id: select
         # Static analysis only (ast + text); imports nothing from the app, so
@@ -202,6 +232,7 @@ jobs:
           --out-dir related-tests
           --github-output "$GITHUB_OUTPUT"
           --summary "$GITHUB_STEP_SUMMARY"
+          --durations "$RUNNER_TEMP/unit-durations"
 
       - name: Upload selection
         if: steps.select.outputs.count != '0'
@@ -259,9 +290,18 @@ jobs:
         # function level, which unit-test-shards.yml already runs.
         shell: pwsh
         run: |
-          uv run pytest "@related-tests/shard-${{ matrix.shard }}.args" -q -n auto --dist loadfile --basetemp "${{ runner.temp }}/neko-unit-related" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract"
+          uv run pytest "@related-tests/shard-${{ matrix.shard }}.args" -q -n auto --dist loadfile --basetemp "${{ runner.temp }}/neko-unit-related" -m "not unit_fast and not runtime and not integration_serial and not frontend_contract" --junitxml "${{ runner.temp }}/unit-junit/shard-${{ matrix.shard }}.xml" -o junit_family=xunit1
           if ($LASTEXITCODE -eq 5) { exit 0 }
           exit $LASTEXITCODE
+
+      - name: Upload shard report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-junit-related-${{ matrix.shard }}
+          path: ${{ runner.temp }}/unit-junit/shard-${{ matrix.shard }}.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
   unit-pytest-related:
     # The stable, required check for PRs: green when every shard passed or
