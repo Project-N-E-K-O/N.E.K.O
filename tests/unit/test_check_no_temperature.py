@@ -121,6 +121,8 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise ExceptionGroup('g', [KeyboardInterrupt()])\n    except* TypeError:\n        create_chat_llm(**opts)\n",
         "def f():\n    opts = {}\n    try:\n        raise OSError(2, 'missing')\n    except FileNotFoundError:\n        opts['temperature'] = 0.2\n    except OSError:\n        pass\n    create_chat_llm(**opts)\n",
         "def f():\n    opts = {'temperature': 0.2}\n    try:\n        work()\n        raise ValueError()\n    except ValueError:\n        opts.clear()\n    except TypeError:\n        pass\n    create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        raise TypeError()\n    except box().ValueError:\n        opts['temperature'] = 0.2\n    except TypeError:\n        pass\n    create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    try:\n        raise KeyError()\n    except mods[0].ValueError:\n        pass\n    except KeyError:\n        opts.clear()\n    create_chat_llm(**opts)\n",
     ],
 )
 def test_flags_direct_and_unpacked_temperature_kwargs(snippet: str):

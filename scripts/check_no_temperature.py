@@ -84,10 +84,14 @@ same-file class bases are indexed module-wide by bare class name, qualified
 exception names fall back to last-segment matching against unqualified
 handler names, normal-exit and mid-handler-raise paths in ``except*`` are
 merged conservatively, exceptions raised by separate ``except*`` clauses
-are propagated individually rather than synthesized into a group, and
-unmatched ``except`` / ``except*`` handlers are still conservatively
-checked against pre-handler entry state so unverified handlers are never
-silently skipped.
+are propagated individually rather than synthesized into a group,
+unmatched ``except`` / ``except*`` handler bodies are still checked
+conservatively against pre-handler entry state, and for a normal ``try``
+body containing only constant assignments and a static builtin ``raise``,
+provably unmatched handlers are excluded from post-``try`` exit state
+(assuming builtin exception names are not shadowed or rebound).
+``BaseExceptionGroup`` whose static members are all ``Exception``
+subclasses is not downcast to ``ExceptionGroup``.
 
 Output
 ------
@@ -222,24 +226,26 @@ def _canonical_exc_name(name: str) -> str:
     return _EXC_CANONICAL_NAMES.get(name, name)
 
 
-def _dotted_name(expr: ast.expr | None) -> str | None:
+def _dotted_name(expr: ast.expr | None, *, strict: bool = False) -> str | None:
     if isinstance(expr, ast.Name):
         return expr.id
     if isinstance(expr, ast.Attribute):
-        prefix = _dotted_name(expr.value)
+        prefix = _dotted_name(expr.value, strict=strict)
         if prefix is not None:
             return f"{prefix}.{expr.attr}"
-        return expr.attr
+        return None if strict else expr.attr
     return None
 
 
 def _raised_exc_name(
     exc: ast.expr | None,
     resolve_alias: Callable[[str], str] | None = None,
+    *,
+    strict: bool = False,
 ) -> str | None:
     if isinstance(exc, ast.Call):
-        return _raised_exc_name(exc.func, resolve_alias)
-    raw = _dotted_name(exc)
+        return _raised_exc_name(exc.func, resolve_alias, strict=strict)
+    raw = _dotted_name(exc, strict=strict)
     if raw is None:
         return None
     return _canonical_exc_name(resolve_alias(raw) if resolve_alias is not None else raw)
@@ -489,7 +495,7 @@ def _strict_handler_exc_names(
                 return None
             names.update(elt_names)
         return names or None
-    raw = _dotted_name(expr)
+    raw = _dotted_name(expr, strict=True)
     if raw is None:
         return None
     resolved = resolve_alias(raw) if resolve_alias is not None else raw
@@ -545,7 +551,7 @@ def _is_pure_exc_expr(
     resolve_alias: Callable[[str], str] | None = None,
 ) -> bool:
     if isinstance(expr, ast.Call):
-        func_name = _raised_exc_name(expr.func, resolve_alias)
+        func_name = _raised_exc_name(expr.func, resolve_alias, strict=True)
         if func_name is None:
             return False
         cls = _builtin_exc_cls(func_name, class_bases)
@@ -581,7 +587,7 @@ def _is_pure_exc_expr(
         if issubclass(cls, OSError) and len(expr.args) > 1:
             return False
         return all(_is_simple_nonraising_expr(a) for a in expr.args)
-    name = _raised_exc_name(expr, resolve_alias)
+    name = _raised_exc_name(expr, resolve_alias, strict=True)
     cls = _builtin_exc_cls(name, class_bases) if name is not None else None
     return cls is not None and cls not in (
         ExceptionGroup,
