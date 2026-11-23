@@ -668,6 +668,54 @@ async def test_taking_the_setting_of_a_server_away_ends_what_was_approved_for_th
     assert store.revision("mcp_server", "notes") == store.version != approved_in
 
 
+async def test_an_approval_taken_back_by_forbidding_a_server_is_not_given_back_when_its_setting_is_taken_away(tmp_path):
+    from nekopower.host.permissions import GrantScope, PermissionGate, PermissionStore
+
+    async def once(commission_id: str, ask: Any) -> str:
+        return "once"
+
+    store = PermissionStore(tmp_path / "permissions.json")
+    gate = PermissionGate(store, once)
+    # Approved while the server goes by the shared setting, which asks the first time.
+    approved = await gate.check("a", "mcp_server", key="notes", scope=GrantScope("notes"), hold_once=True)
+    assert approved.allow and gate.grant_active(approved.grant_id)
+    await store.set_mode("mcp_server", "deny", "notes")
+    assert not gate.grant_active(approved.grant_id)
+    # Back to the shared setting: it is asked about again, the old approval does not count.
+    assert await store.clear_mcp_server("notes")
+    assert await store.mode("mcp_server", "notes") == "first_ask"
+    assert not gate.grant_active(approved.grant_id)
+
+
+async def test_a_setting_that_could_not_be_taken_away_on_the_disk_is_still_there_to_take_away(tmp_path, monkeypatch):
+    from nekopower.host.permissions import PermissionStore
+
+    path = tmp_path / "permissions.json"
+    store = PermissionStore(path)
+    await store.set_mode("mcp_server", "deny")
+    await store.set_mode("mcp_server", "allow", "notes")
+    version, generation = store.version, store.revision("mcp_server")
+    write = store._write
+    failures = [OSError("the disk is full")]
+
+    def failing_once(*args: Any) -> None:
+        if failures:
+            raise failures.pop()
+        write(*args)
+
+    monkeypatch.setattr(store, "_write", failing_once)
+    with pytest.raises(OSError):
+        await store.clear_mcp_server("notes")
+    # Nothing changed, here or on the disk: it is allowed as before, and nothing approved ends.
+    assert await store.mode("mcp_server", "notes") == "allow"
+    assert (store.version, store.revision("mcp_server")) == (version, generation)
+    assert (await PermissionStore(path).snapshot())["mcp_servers"] == {"notes": "allow"}
+    # Asked again once the disk can be written: taken away in both places.
+    assert await store.clear_mcp_server("notes")
+    assert await store.mode("mcp_server", "notes") == "deny"
+    assert (await PermissionStore(path).snapshot())["mcp_servers"] == {}
+
+
 async def test_a_server_that_is_set_and_has_no_tool_now_is_still_listed_and_a_missing_adapter_is_said(consoles, tmp_path, monkeypatch):
     server = FakePluginServer.install(monkeypatch)
     console = consoles(tmp_path, server=server)

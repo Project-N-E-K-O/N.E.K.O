@@ -391,6 +391,10 @@ class PermissionStore:
         What was approved for the servers that go by the shared setting
         counts no more afterwards, for this one and for the others: they
         are asked once more.
+
+        The file is written first, and the setting is taken away here
+        only once it is: a write that fails (the error is raised) leaves
+        the setting as it was in both places, to be taken away again.
         """
         from utils.asyncio_executor import to_thread_through_cancellation
 
@@ -403,16 +407,32 @@ class PermissionStore:
                 return False
             if slot not in self._mcp_servers:
                 return True
-            del self._mcp_servers[slot]
-            self._version += 1
-            # From here on it has the generation the servers share, and nothing tells what
-            # was approved for it from what was approved for them. That generation moves on,
-            # whatever the two rules are: an approval given before the server had a setting
-            # of its own carries the generation they shared then, and would count again
-            # though the user took it back since by forbidding the server. It ends the
-            # approvals of the others that go by the shared setting as well.
-            self._revisions[(name, None)] = self._version
-            await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
+            categories = dict(self._categories)
+            remaining = {server: mode for server, mode in self._mcp_servers.items() if server != slot}
+            written = False
+
+            def write() -> None:
+                nonlocal written
+                self._write(categories, remaining)
+                written = True
+
+            try:
+                # A cancelled caller still waits for the write, under the lock.
+                await to_thread_through_cancellation(write)
+            finally:
+                # What is on the disk holds here too, the caller cancelled or not. Not written:
+                # nothing is changed, and asking again writes again.
+                if written:
+                    del self._mcp_servers[slot]
+                    self._version += 1
+                    # From here on it has the generation the servers share, and nothing tells
+                    # what was approved for it from what was approved for them. That generation
+                    # moves on, whatever the two rules are: an approval given before the server
+                    # had a setting of its own carries the generation they shared then, and
+                    # would count again though the user took it back since by forbidding the
+                    # server. It ends the approvals of the others that go by the shared
+                    # setting as well.
+                    self._revisions[(name, None)] = self._version
         return True
 
     async def snapshot(self) -> dict[str, Any]:
