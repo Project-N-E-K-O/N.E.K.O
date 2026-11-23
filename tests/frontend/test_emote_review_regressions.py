@@ -116,6 +116,81 @@ def test_animation_drag_ignores_a_second_pointer(editor, with_hold, foreign_even
     assert editor.locator('.pack-drag-ghost').count() == 0
 
 
+@pytest.mark.parametrize('kind', ['scene', 'image'])
+@pytest.mark.parametrize('with_hold', [False, True])
+@pytest.mark.parametrize('foreign_event', ['pointermove', 'pointerup', 'pointercancel'])
+def test_advanced_library_drag_keeps_its_pointer_and_drop_target(editor, kind, with_hold, foreign_event):
+    from tests.frontend.test_emote_stage_user_images import _switch_to_images
+
+    _import(editor, spine_zip(animations=3))
+    source_id = editor.evaluate('''async kind => {
+        const q=reviewEditor;
+        if(kind==='image') {
+            const canvas=document.createElement('canvas');canvas.width=canvas.height=16;
+            canvas.getContext('2d').fillRect(0,0,16,16);
+            const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+            await q.importStageImages([new File([blob],'drag.png',{type:'image/png'})]);
+        }
+        q.state.nodeGraph=NekoEmoteNodeGraph.normalizeGraph({schemaVersion:1,nodes:[
+            {id:'root',type:'source.default',params:{}},
+            {id:'idle',type:'output.state',params:{stateKey:'idle_image'}},
+            {id:'talk',type:'output.state',params:{stateKey:'talking_image'}},
+        ],links:['idle','talk'].map(to=>({from:'root',to,fromSocket:'look',toSocket:'look'}))});
+        q.openStateStage();
+        return kind==='image' ? q.stageImages()[0].id : q.getImportedScenes()[1].id;
+    }''', kind)
+    editor.locator('.st-anim').click()
+    if kind == 'image':
+        _switch_to_images(editor)
+        row = editor.locator('.st-userimg-bind')
+    else:
+        row = editor.locator(f'.st-pick[data-scene="{source_id}"]')
+    row.wait_for(state='visible')
+    box = row.bounding_box()
+    x, y = box['x'] + box['width'] / 2, box['y'] + box['height'] / 2
+    target = editor.locator('.st-tile[data-state="talking_image"]').bounding_box()
+    tx, ty = target['x'] + target['width'] / 2, target['y'] + target['height'] / 2
+    before_graph = editor.evaluate('reviewEditor.stageSession().getGraph()')
+    editor.clock.install()
+    if not with_hold:
+        editor.evaluate('window.NekoEmoteDragHold=null')
+    row.evaluate('''(node,[x,y])=>node.dispatchEvent(new PointerEvent('pointerdown',{
+        bubbles:true,pointerId:71,pointerType:'touch',button:0,clientX:x,clientY:y}))''', [x, y])
+    editor.clock.run_for(800)
+    ghost = editor.locator('.pack-drag-ghost')
+    assert ghost.count() == 1
+    position = ghost.evaluate('node=>[parseFloat(node.style.left),parseFloat(node.style.top)]')
+    assert position == pytest.approx([x, y], abs=1)
+    editor.evaluate('''([type,x,y])=>window.dispatchEvent(new PointerEvent(type,{
+        pointerId:72,pointerType:'touch',clientX:x,clientY:y}))''', [foreign_event, tx, ty])
+    editor.clock.run_for(32)
+    assert ghost.count() == 1
+    assert ghost.evaluate('node=>[parseFloat(node.style.left),parseFloat(node.style.top)]') == position
+    assert editor.evaluate('reviewEditor.stageSession().getGraph()') == before_graph
+
+    editor.evaluate('''([x,y])=>window.dispatchEvent(new PointerEvent('pointermove',{
+        pointerId:71,pointerType:'touch',clientX:x,clientY:y}))''', [tx, ty])
+    editor.clock.run_for(32)
+    assert ghost.evaluate('node=>[parseFloat(node.style.left),parseFloat(node.style.top)]') != position
+    editor.evaluate('''([x,y])=>window.dispatchEvent(new PointerEvent('pointerup',{
+        pointerId:71,pointerType:'touch',clientX:x,clientY:y}))''', [tx, ty])
+    assert ghost.count() == 0
+    sources = editor.evaluate('''() => {
+        const graph=reviewEditor.stageSession().getGraph();
+        return ['idle_image','talking_image'].map(key=>{
+            const output=graph.nodes.find(node=>node.params.stateKey===key);
+            const source=NekoEmoteNodeGraph.findSource(graph,output.id,'source');
+            return {type:source.type,params:source.params};
+        });
+    }''')
+    assert sources[0]['type'] == 'source.default'
+    assert sources[1]['type'] == ('source.scene' if kind == 'scene' else 'source.image')
+    if kind == 'scene':
+        assert sources[1]['params']['sceneId'] == source_id
+    else:
+        assert sources[1]['params']['imageIds'] == [source_id]
+
+
 @pytest.mark.parametrize('colors', [128, 256])
 @pytest.mark.parametrize('rgb', [[255, 255, 255], [0, 0, 0], [10, 200, 90], None])
 def test_monochrome_gif_preserves_decoded_color_and_transparency(page, running_server, colors, rgb):

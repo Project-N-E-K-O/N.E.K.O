@@ -1684,7 +1684,9 @@
                         window.setTimeout(() => { delete row.dataset.justDragged; }, 400);
                     }
                     hideLibraryPreview();
-                    beginDrag(payload, point, row);
+                    beginDrag(payload, {
+                        clientX: point.clientX, clientY: point.clientY, pointerId: event.pointerId,
+                    }, row);
                 };
                 const hold = window.NekoEmoteDragHold;
                 if (!hold) { fire(event); return; }
