@@ -150,6 +150,17 @@ def _normalize_pngtuber_config(
     result["mobile_offset_x"] = raw.get("mobile_offset_x", 0)
     result["mobile_offset_y"] = raw.get("mobile_offset_y", 0)
     result["mirror"] = bool(raw.get("mirror", False))
+    # 锚点必须在白名单里显式带上：这个函数是重建一个新 dict，漏字段就等于静默丢弃。
+    # 运行时的 normalizeConfig 只认这两个值，其它值它自己会退回推导，所以这里不猜。
+    anchor = raw.get("position_anchor")
+    if anchor in ("center", "bottom_right"):
+        result["position_anchor"] = anchor
+
+    # 说话 / 情绪谁压住谁。不加进白名单就会被这里剥掉：界面上选了，
+    # 运行时尚且读不到，属于最难自查的一类"设置看起来生效了"。
+    priority = raw.get("state_priority")
+    if isinstance(priority, str) and priority.strip().lower() in ("talking", "emotion"):
+        result["state_priority"] = priority.strip().lower()
     result["source_type"] = raw.get("source_type") or "transparent_asset"
     result["source_format"] = model_json.get("source_format") or raw.get("source_format") or result["source_type"]
     return result

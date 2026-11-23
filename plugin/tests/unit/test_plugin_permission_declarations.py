@@ -194,6 +194,8 @@ def _bases(report: dict) -> dict[str, str]:
         ("from urllib.request import urlopen\nurlopen('https://a')", "system.network:connect"),
         ("import httpx as h\nasync def f():\n    async with h.AsyncClient() as c:\n        pass", "system.network:connect"),
         ("import requests\nrequests.Session().get('x')", "system.network:connect"),
+        ("from websockets.asyncio.client import connect\nasync def f():\n    await connect('ws://a')", "system.network:connect"),
+        ("from websockets.sync.client import connect\nconnect('ws://a')", "system.network:connect"),
         ("import subprocess\nsubprocess.run(['ls'])", "system.process:spawn"),
         ("import os\nos.system('ls')", "system.process:spawn"),
         ("import asyncio\nasyncio.create_subprocess_exec('ls')", "system.process:spawn"),
@@ -207,6 +209,202 @@ def _bases(report: dict) -> dict[str, str]:
 def test_resolved_origins_are_direct_evidence(tmp_path, source, permission):
     report = _scan(tmp_path, source)
     assert report["permissions"][permission]["basis"] in capability_analysis.DIRECT_BASES
+
+
+LISTEN = "system.network:listen"
+CONNECT = "system.network:connect"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import socket\nsocket.create_server(('', 1))",
+        "from socket import create_server\ncreate_server(('', 1))",
+        "import socket\nsocket.socket().bind(('', 1))\nsocket.socket().listen()",
+        "import socket\ns = socket.socket(socket.AF_INET)\ns.listen()",
+        "import socket\ns = socket.socket()\nconn, addr = s.accept()",
+        "from socket import socket as sock\nserver = sock()\nserver.bind(('', 1))\nserver.listen()",
+        "import asyncio\nasync def f(cb):\n    await asyncio.start_server(cb, '', 1)",
+        "import asyncio\nasync def f(p):\n    await asyncio.get_running_loop().create_server(p, '', 1)",
+        "import asyncio\nloop = asyncio.get_event_loop()\nloop.create_server(object, '', 1)",
+        "import asyncio\nasyncio.new_event_loop().create_server(object, '', 1)",
+        "from http.server import HTTPServer\nHTTPServer(('127.0.0.1', 1), object)",
+        "import http.server\nhttp.server.ThreadingHTTPServer(('', 1), object)",
+        "import socketserver\nsocketserver.TCPServer(('', 1), object)",
+        "import socketserver\nsocketserver.UDPServer(('', 1), object)",
+        "import socketserver as ss\nss.ThreadingTCPServer(('', 1), object)",
+        "from socketserver import ThreadingUDPServer\nThreadingUDPServer(('', 1), object)",
+        "import socketserver\nsocketserver.ForkingTCPServer(('', 1), object)",
+        "import socketserver\nsocketserver.ForkingUDPServer(('', 1), object)",
+        "from wsgiref.simple_server import make_server\nmake_server('', 1, object)",
+        "from wsgiref import simple_server\nsimple_server.WSGIServer(('', 1), object)",
+        "from xmlrpc.server import SimpleXMLRPCServer\nSimpleXMLRPCServer(('', 1))",
+        "import xmlrpc.server\nxmlrpc.server.DocXMLRPCServer(('', 1))",
+        "import websockets\nasync def f(h):\n    await websockets.serve(h, '', 1)",
+        "from websockets.server import serve\nserve(object, '', 1)",
+        "from websockets.asyncio.server import serve\nasync def f(h):\n    await serve(h, '', 1)",
+        "from websockets.sync.server import serve\nserve(object, '', 1)",
+        "from websockets.asyncio.server import Server\nServer(object)",
+        "from aiohttp import web\nweb.SockSite(object, object)",
+        "from hypercorn.asyncio import serve\nasync def f(app, config):\n    await serve(app, config)",
+        "import hypercorn.trio\nhypercorn.trio.serve(object, object)",
+        "from aiohttp import web\nweb.run_app(web.Application())",
+        "import aiohttp.web\naiohttp.web.TCPSite(object, '', 1)",
+        "import uvicorn\nuvicorn.run(object)",
+        "import uvicorn\nuvicorn.Server(object)",
+        "from flask import Flask\napp = Flask(__name__)\napp.run(port=1)",
+    ],
+)
+def test_servers_are_direct_evidence_of_listen(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    plain_socket = source.startswith(("import socket\n", "from socket import socket")) and "create_server" not in source
+    if not plain_socket:
+        # Starting a server is not connecting out. (A plain socket's own
+        # construction stays connect evidence; see the next test.)
+        connect = report["permissions"].get(CONNECT, {"basis": None})
+        assert connect["basis"] not in capability_analysis.DIRECT_BASES
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A client choosing its local address before connecting.
+        "import socket\ns = socket.socket()\ns.bind(('127.0.0.1', 0))\ns.connect(('a', 1))\n",
+        # A UDP server: bind without listen.
+        "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\ns.bind(('', 1))\ns.recvfrom(1024)\n",
+    ],
+)
+def test_bind_alone_is_only_possible_listen_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_name"
+    manifest = '[plugin]\nid = "x"\n[permissions.ask]\n"system.network:connect" = { reason = "x" }\n'
+    issues = compare_declarations(_scan(tmp_path, source, manifest=manifest))
+    assert [(issue.severity, issue.code) for issue in issues if issue.params["permission"] == LISTEN] == [
+        ("warning", "used_undeclared_possible")
+    ]
+
+
+def test_a_socket_that_binds_reports_listen_there_and_connect_only_where_it_is_made(tmp_path):
+    report = _scan(
+        tmp_path,
+        "import socket\n"
+        "s = socket.socket()\n"
+        "s.bind(('', 1))\n"
+        "s.listen()\n"
+        "c = socket.socket()\n"
+        "c.connect(('a', 1))\n",
+    )
+    lines = lambda permission: [row["line"] for row in report["permissions"][permission]["findings"]]
+    assert lines(LISTEN) == [3, 4]
+    assert lines(CONNECT) == [2, 5, 6]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Plugin-defined names of the same spelling.
+        "class HTTPServer:\n    pass\nHTTPServer()",
+        "def create_server():\n    pass\ncreate_server()",
+        # Clients and unrelated socket use.
+        "import socket\nsocket.create_connection(('a', 1))",
+        "import asyncio\nasync def f():\n    await asyncio.open_connection('a', 1)",
+        "import socket\nsocket.socket().connect(('a', 1))",
+        "import socket\nsocket.socket.bind.__name__",
+        # An unresolved receiver: not followed (no suffix guess on .bind / .listen).
+        "def f(s):\n    s.bind(('', 1))\n    s.listen()",
+    ],
+)
+def test_listen_is_not_reported_for_lookalikes_and_clients(tmp_path, source):
+    assert LISTEN not in _scan(tmp_path, source)["permissions"]
+
+
+def test_server_subclass_and_import_are_weak_listen_evidence(tmp_path):
+    named = _scan(tmp_path, "import socketserver\nclass S(socketserver.ThreadingMixIn, socketserver.TCPServer):\n    pass\n")
+    assert named["permissions"][LISTEN]["basis"] == "resolved_name"
+    for statement in (
+        "import http.server",
+        "import socketserver",
+        "import wsgiref.simple_server",
+        "import xmlrpc.server",
+        # The imported name is the submodule.
+        "from http import server",
+        "from wsgiref import simple_server",
+        "from xmlrpc import server",
+    ):
+        imported = _scan(tmp_path, f"{statement}\n")
+        assert imported["permissions"][LISTEN]["basis"] == "import_only", statement
+        assert CONNECT not in imported["permissions"], statement
+
+
+def test_submodule_import_hints_apply_to_connect_too(tmp_path):
+    for statement in ("from http import client", "from urllib import request"):
+        assert _scan(tmp_path, f"{statement}\n")["permissions"][CONNECT]["basis"] == "import_only", statement
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from aiohttp import web\nweb.run_app(web.Application())",
+        "import aiohttp.web\naiohttp.web.run_app(object)",
+        "import websockets\nasync def f(h):\n    await websockets.serve(h, '', 1)",
+        "from websockets.asyncio.server import serve\nserve(object, '', 1)",
+        "import socket\nsocket.create_server(('', 1))",
+    ],
+)
+def test_a_server_only_import_gives_no_connect_hint(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    assert CONNECT not in report["permissions"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Also imported for something else: the hint stays.
+        "import aiohttp\nfrom aiohttp import web\nimport requests\nweb.run_app(object)",
+        # Only weak listen evidence does not explain the import.
+        "import socket\nstart = socket.create_server",
+        # A listen call on a different module than the one imported.
+        "import aiohttp\nimport uvicorn\nuvicorn.run(object)",
+    ],
+)
+def test_connect_hint_stays_unless_every_hinted_module_is_explained(tmp_path, source):
+    assert CONNECT in _scan(tmp_path, source)["permissions"]
+
+
+def test_check_applies_the_same_rules_to_listen(tmp_path):
+    server = "from http.server import HTTPServer\nHTTPServer(('127.0.0.1', 1), object)\n"
+
+    def issues(manifest: str, source: str = server):
+        return {
+            issue.params["permission"]: (issue.severity, issue.code)
+            for issue in compare_declarations(_scan(tmp_path, source, manifest=manifest))
+        }
+
+    assert issues('[plugin]\nid = "x"\n[permissions.ask]\n"system.env:read" = { reason = "x" }\n')[LISTEN] == (
+        "error",
+        "used_undeclared",
+    )
+    # Transition: no [permissions] table yet.
+    assert issues('[plugin]\nid = "x"\n')[LISTEN] == ("warning", "used_undeclared_no_table")
+    assert issues('[plugin]\nid = "x"\n[permissions.require]\n"system.network:listen" = { reason = "x" }\n') == {}
+    assert issues(
+        '[plugin]\nid = "x"\n[permissions.ask]\n"system.network:listen" = { reason = "x" }\n', "x = 1\n"
+    ) == {LISTEN: ("warning", "declared_unused")}
+    weak = issues(
+        '[plugin]\nid = "x"\n[permissions]\n',
+        "import socketserver\nclass S(socketserver.TCPServer):\n    pass\n",
+    )
+    assert weak[LISTEN] == ("warning", "used_undeclared_possible")
+
+
+def test_listen_declaration_parses_and_hosts_do_not_apply(tmp_path):
+    declarations, issues = _parse('[permissions.require]\n"system.network:listen" = { reason = "Hook port" }\n')
+    assert declarations.level(LISTEN) == "require" and issues == []
+    _, issues = _parse('[permissions.ask]\n"system.network:listen" = { reason = "x", hosts = ["a.com"] }\n')
+    assert _codes(issues) == [("warning", "hosts_unused")]
+    assert narrowing_issues([LISTEN], frozenset({LISTEN}), "@plugin_entry") == []
 
 
 def test_sdk_suffix_matches_are_weak_evidence_and_legacy_capabilities_are_unchanged(tmp_path):
@@ -334,7 +532,6 @@ def test_file_access_and_open_modes(tmp_path, call, expected, mode):
         ("import threading\nthreading.Thread(target=f).start()", "context_loss"),
         ("from concurrent.futures import ThreadPoolExecutor\nThreadPoolExecutor()", "context_loss"),
         ("async def f(loop, pool):\n    await loop.run_in_executor(pool, g)", "context_loss"),
-        ("async def f(loop):\n    await loop.run_in_executor(None, g)", "context_loss"),
         ("import importlib\nimportlib.import_module('subprocess')", "dynamic_import"),
         ("__import__('os')", "dynamic_import"),
         ("import sys\nsys.modules['os']", "dynamic_import"),
@@ -397,7 +594,8 @@ def test_report_carries_declarations_from_plugin_toml(tmp_path):
 
 
 def test_analyzer_version_was_bumped_for_the_new_report_fields():
-    assert capability_analysis.ANALYZER_VERSION >= 5
+    # 7: servers moved from system.network:connect to system.network:listen.
+    assert capability_analysis.ANALYZER_VERSION >= 7
 
 
 def test_function_attribution_follows_classes_and_nested_functions(tmp_path):
@@ -542,6 +740,21 @@ def test_cli_reports_undeclared_use_as_an_error_in_every_locale(tmp_path):
     _assert_all_locales(error)
 
 
+def test_cli_reports_an_undeclared_server_as_listen(tmp_path):
+    source = "from http.server import HTTPServer\nserver = HTTPServer(('127.0.0.1', 0), object)\n"
+    errors = _issues(_plugin(tmp_path, source, "[permissions]\n"), "error")
+    [error] = [message for message in errors if "system.network:listen" in message]
+    assert error.startswith("the code uses system.network:listen (worker.py:2)")
+    _assert_all_locales(error)
+    assert not [message for message in errors if "system.network:connect" in message]
+    declared = _plugin(
+        tmp_path / "declared",
+        source,
+        '[permissions.require]\n"system.network:listen" = { reason = "Receive hook calls" }\n',
+    )
+    assert not _issues(declared, "error")
+
+
 def test_cli_accepts_a_matching_declaration(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
@@ -673,7 +886,7 @@ def test_every_issue_code_has_a_message_in_all_locales():
         "text_translation_empty", "background_type", "background_on_require", "background_reason_missing",
         "background_reason_unused", "hosts_type", "hosts_unused", "narrowing_type", "narrowing_not_declared",
         "narrowing_unconfirmed", "used_undeclared", "used_undeclared_possible", "used_undeclared_no_table",
-        "declared_unused", "narrowing_runtime_unsupported",
+        "declared_unused", "narrowing_unsupported_decorator",
     }
     assert codes <= permission_messages.message_codes()
     source = Path(capability_analysis.__file__).read_text(encoding="utf-8") + Path(
@@ -689,7 +902,7 @@ def test_every_issue_code_has_a_message_in_all_locales():
 
 def test_permission_ids_cover_the_legacy_capabilities():
     assert set(capability_analysis.LEGACY_CAPABILITY_PERMISSIONS.values()) <= set(PERMISSION_IDS)
-    assert len(PERMISSION_IDS) == len(set(PERMISSION_IDS)) == 9
+    assert len(PERMISSION_IDS) == len(set(PERMISSION_IDS)) == 10
 
 
 # --- consent comparison across names ----------------------------------------------
@@ -882,7 +1095,7 @@ def test_vendor_sync_work_directories_are_not_reported(tmp_path):
     assert _scan(tmp_path, "x = 1\n")["blind_spots"] == []
 
 
-def test_cli_warns_that_the_sdk_does_not_take_permissions_yet(tmp_path):
+def test_cli_accepts_a_declared_narrowing_on_a_component(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "from plugin.sdk.plugin import plugin_entry\n"
@@ -891,10 +1104,21 @@ def test_cli_warns_that_the_sdk_does_not_take_permissions_yet(tmp_path):
         "    async def a(self): ...\n",
         '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
     )
-    warnings = _issues(plugin_dir, "error")
-    [warning] = [message for message in warnings if "does not accept permissions=" in message]
-    assert warning.startswith("@plugin_entry in worker.py:4:")
-    _assert_all_locales(warning)
+    assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
+
+
+def test_cli_permissions_on_a_non_component_decorator_is_an_error_in_every_locale(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "from plugin.sdk.plugin import lifecycle\n"
+        "class P:\n"
+        "    @lifecycle(id='startup', permissions=['system.network:connect'])\n"
+        "    async def a(self): ...\n",
+        '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
+    )
+    [error] = [message for message in _issues(plugin_dir, "error") if "does not take permissions=" in message]
+    assert error.startswith("@lifecycle in worker.py:4:")
+    _assert_all_locales(error)
 
 
 
@@ -1002,16 +1226,17 @@ def test_cli_only_checks_permissions_on_sdk_decorators(tmp_path):
     assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
 
 
-def test_cli_permissions_keyword_on_sdk_decorators_is_an_error(tmp_path):
+def test_cli_narrowing_outside_the_declarations_is_an_error(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "from plugin.sdk.plugin import plugin_entry\n"
         "class P:\n"
-        "    @plugin_entry(id='a', permissions=['system.network:connect'])\n"
+        "    @plugin_entry(id='a', permissions=['system.env:read'])\n"
         "    async def a(self): ...\n",
         '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
     )
-    assert any("does not accept permissions=" in message for message in _issues(plugin_dir, "error"))
+    errors = _issues(plugin_dir, "error")
+    assert any(message.startswith("@plugin_entry in worker.py:4: permissions= lists") for message in errors)
 
 
 @pytest.mark.parametrize(
@@ -1060,7 +1285,6 @@ def test_cli_follows_sdk_import_aliases_for_decorators(tmp_path, imports, decora
     )
     errors = _issues(plugin_dir, "error")
     assert any(message.startswith("@plugin_entry in worker.py:4: permissions= lists") for message in errors)
-    assert any("does not accept permissions=" in message for message in errors)
 
 
 def test_cli_ignores_plugin_owned_helpers_with_sdk_names(tmp_path):
@@ -1137,11 +1361,11 @@ def test_cli_only_counts_module_level_sdk_imports_for_decorators(tmp_path):
     "source,line",
     [
         # SDK import in the class body, used by a method decorator there.
-        ("class P:\n    from plugin.sdk.plugin import hook\n    @hook(permissions=[])\n    def a(self): ...\n", 4),
+        ("class P:\n    from plugin.sdk.plugin import hook\n    @hook(permissions=['system.env:read'])\n    def a(self): ...\n", 4),
         # Function-local SDK import with an alias.
         (
             "def register():\n    from plugin.sdk.plugin import plugin_entry as entry\n"
-            "    @entry(id='a', permissions=[])\n    def a(): ...\n    return a\n",
+            "    @entry(id='a', permissions=['system.env:read'])\n    def a(): ...\n    return a\n",
             4,
         ),
     ],
@@ -1149,7 +1373,7 @@ def test_cli_only_counts_module_level_sdk_imports_for_decorators(tmp_path):
 def test_cli_resolves_sdk_decorators_in_their_scope(tmp_path, source, line):
     plugin_dir = _plugin(tmp_path, source, "[permissions]\n")
     errors = _issues(plugin_dir, "error")
-    assert any(f"worker.py:{line}:" in message and "does not accept permissions=" in message for message in errors)
+    assert any(f"worker.py:{line}:" in message and "permissions= lists" in message for message in errors)
 
 
 def test_cli_local_helper_shadows_a_module_level_sdk_import(tmp_path):
@@ -1166,7 +1390,7 @@ def test_cli_class_body_imports_are_not_visible_in_methods(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "class P:\n    from plugin.sdk.plugin import hook\n"
-        "    def make(self):\n        @hook(permissions=[])\n        def a(): ...\n        return a\n",
+        "    def make(self):\n        @hook(permissions=['system.env:read'])\n        def a(): ...\n        return a\n",
         "[permissions]\n",
     )
     assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
@@ -1180,10 +1404,10 @@ def test_cli_class_body_imports_are_not_visible_in_methods(tmp_path):
     [
         # Later SDK import wins over an earlier local definition.
         ("def hook(**k):\n    return lambda f: f\nfrom plugin.sdk.plugin import hook\n"
-         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", True),
+         "class P:\n    @hook(permissions=['system.env:read'])\n    def a(self): ...\n", True),
         # Later local definition wins over an earlier SDK import.
         ("from plugin.sdk.plugin import hook\ndef hook(**k):\n    return lambda f: f\n"
-         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", False),
+         "class P:\n    @hook(permissions=['system.env:read'])\n    def a(self): ...\n", False),
         # A parameter shadows an enclosing SDK import.
         ("def register():\n    from plugin.sdk.plugin import hook\n"
          "    def build(hook):\n        @hook(permissions=['x'])\n        def a(): ...\n        return a\n    return build\n", False),
@@ -1256,14 +1480,14 @@ def test_sys_modules_access_beyond_membership_is_a_blind_spot(tmp_path, source, 
     [
         # Subscript / attribute assignment does not rebind the decorator name.
         ("from plugin.sdk.plugin import hook\nregistry = {}\nregistry[hook] = 1\nhook.note = 1\n"
-         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", True),
+         "class P:\n    @hook(permissions=['system.env:read'])\n    def a(self): ...\n", True),
         # A class body only sees what is bound before the class statement.
         ("def hook(**k):\n    return lambda f: f\n"
          "class P:\n    @hook(permissions=['x'])\n    def a(self): ...\n"
          "from plugin.sdk.plugin import hook\n", False),
         # Methods run later and see the module's final bindings.
         ("def hook(**k):\n    return lambda f: f\n"
-         "class P:\n    def make(self):\n        @hook(permissions=[])\n        def a(): ...\n        return a\n"
+         "class P:\n    def make(self):\n        @hook(permissions=['system.env:read'])\n        def a(): ...\n        return a\n"
          "from plugin.sdk.plugin import hook\n", True),
     ],
 )
@@ -1292,10 +1516,10 @@ def test_cli_plain_plugin_imports_keep_the_sdk_path(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "import plugin.sdk.plugin\nimport plugin.plugins.perm_demo.helpers\n"
-        "class P:\n    @plugin.sdk.plugin.hook(permissions=[])\n    def a(self): ...\n",
+        "class P:\n    @plugin.sdk.plugin.hook(permissions=['system.env:read'])\n    def a(self): ...\n",
         "[permissions]\n",
     )
-    assert any("does not accept permissions=" in message for message in _issues(plugin_dir, "error"))
+    assert any("permissions= lists" in message for message in _issues(plugin_dir, "error"))
 
 
 def test_cli_nested_class_body_uses_the_definition_time_snapshot(tmp_path):
@@ -1450,7 +1674,7 @@ def test_summary_location_matches_the_reported_basis():
     assert (row["basis"], row["line"]) == ("resolved_call", 7)
 
 
-def test_cli_rejects_permissions_on_every_sdk_decorator(tmp_path):
+def test_cli_checks_permissions_by_decorator_kind(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "from plugin.sdk.plugin import lifecycle, before_entry\n"
@@ -1462,10 +1686,12 @@ def test_cli_rejects_permissions_on_every_sdk_decorator(tmp_path):
         "[permissions.require]\n",
     )
     errors = _issues(plugin_dir, "error")
-    assert any(message.startswith("@lifecycle in worker.py:4: the plugin SDK does not accept permissions=") for message in errors)
-    assert any(message.startswith("@before_entry in worker.py:6: the plugin SDK does not accept permissions=") for message in errors)
-    # Subset checks stay limited to components that narrow.
-    assert not any("permissions= lists" in message for message in errors)
+    # Not a component: the keyword itself is the error, no subset check.
+    assert any(message.startswith("@lifecycle in worker.py:4: this decorator does not take permissions=") for message in errors)
+    assert not any(message.startswith("@lifecycle in worker.py:4: permissions= lists") for message in errors)
+    # An entry hook alias is a component: subset check only.
+    assert any(message.startswith("@before_entry in worker.py:6: permissions= lists") for message in errors)
+    assert not any("@before_entry" in message and "does not take" in message for message in errors)
 
 
 @pytest.mark.parametrize(
@@ -1491,6 +1717,54 @@ def test_process_pools_forks_and_downloads_are_direct_evidence(tmp_path, source,
     assert any(issue.code == "used_undeclared" and issue.params["permission"] == permission
                for issue in compare_declarations(report))
     assert scan_note(report) != "no_extra_usage"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "loop.run_in_executor(None, g)",
+        "loop.run_in_executor(executor=None, func=g)",
+        "asyncio.get_running_loop().run_in_executor(None, g, 1)",
+        "loop.run_in_executor(None, *rest)",
+    ],
+)
+def test_default_executor_keeps_the_context(tmp_path, call):
+    # The plugin runtime's default executor copies the submitting context.
+    report = _scan(tmp_path, f"import asyncio\nasync def f(loop):\n    await {call}")
+    assert report["status"] == "completed"
+    assert report["blind_spots"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "async def f(loop, pool):\n    await loop.run_in_executor(pool, g)",
+        "async def f(loop, pool):\n    await loop.run_in_executor(executor=pool, func=g)",
+        "async def f(loop, args):\n    await loop.run_in_executor(*args)",
+        "async def f(loop, opts):\n    await loop.run_in_executor(**opts)",
+        "async def f(loop):\n    await loop.run_in_executor(False, g)",
+        (
+            "from concurrent.futures import ThreadPoolExecutor\n"
+            "async def f(loop):\n    await loop.run_in_executor(ThreadPoolExecutor(), g)"
+        ),
+        (
+            "from concurrent.futures import ThreadPoolExecutor\n"
+            "with ThreadPoolExecutor() as pool:\n    pool.submit(g)"
+        ),
+        "import threading\nthreading.Thread(target=g).start()",
+        # A loop the plugin makes itself, or a replaced default executor.
+        "import asyncio\nloop = asyncio.new_event_loop()",
+        "from asyncio import new_event_loop\nloop = new_event_loop()",
+        "from asyncio.runners import Runner\nwith Runner() as runner:\n    runner.run(main())",
+        "import asyncio\nwith asyncio.Runner() as runner:\n    runner.run(main())",
+        "async def f(loop, pool):\n    loop.set_default_executor(pool)",
+    ],
+)
+def test_other_executors_and_threads_still_lose_the_context(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["status"] == "completed"
+    assert report["blind_spots"]
+    assert {spot["type"] for spot in report["blind_spots"]} == {"context_loss"}
 
 
 def test_process_pool_executor_is_still_a_context_loss_blind_spot(tmp_path):
@@ -1566,7 +1840,7 @@ def test_cli_rejects_permissions_on_sdk_class_decorators(tmp_path):
         encoding="utf-8",
     )
     errors = _issues(plugin_dir, "error")
-    assert any(message.startswith("@neko_plugin in __init__.py:4: the plugin SDK does not accept permissions=") for message in errors)
+    assert any(message.startswith("@neko_plugin in __init__.py:4: this decorator does not take permissions=") for message in errors)
 
 
 def test_type_checking_imports_do_not_bind_decorators(tmp_path):
@@ -1588,7 +1862,7 @@ def test_type_checking_imports_do_not_bind_decorators(tmp_path):
         (plugin_dir / "worker.py").read_text(encoding="utf-8").replace("if TYPE_CHECKING:", "if not TYPE_CHECKING:"),
         encoding="utf-8",
     )
-    assert [message for message in _issues(plugin_dir, "error") if "does not accept permissions=" in message]
+    assert [message for message in _issues(plugin_dir, "error") if "permissions= lists" in message]
 
 
 @pytest.mark.parametrize("excluded,shipped", [("ui", "ui/panel.js"), ("vendor", "vendor")])

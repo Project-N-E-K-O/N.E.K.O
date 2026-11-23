@@ -7,10 +7,11 @@ import sys
 import httpx
 
 from . import dashscope, openai
-from .config import ImageConfig
+from .config import ImageConfig, supports_image_edit, supports_text_to_image
 from .types import GeneratedImage, ImageGenerationError, ImageRequest, ImageResult
 
 __all__ = ["generate_image", "GeneratedImage", "ImageGenerationError", "ImageRequest", "ImageResult"]
+MAX_IMAGE_PROMPT_LENGTH = 2000
 
 
 async def generate_image(request: ImageRequest, *, config_manager=None, client=None, timeout: float = 180) -> ImageResult:
@@ -20,13 +21,18 @@ async def generate_image(request: ImageRequest, *, config_manager=None, client=N
     Cancellation propagates; a submitted provider job may still finish remotely.
     Injected clients remain caller-owned. No disk, logging or chat side effects.
     """
-    if not isinstance(request, ImageRequest) or not isinstance(request.prompt, str) or not request.prompt.strip() or len(request.prompt) > 2000:
+    if (not isinstance(request, ImageRequest) or not isinstance(request.prompt, str)
+            or not request.prompt.strip() or len(request.prompt) > MAX_IMAGE_PROMPT_LENGTH):
         raise ImageGenerationError("invalid_prompt")
     if not isinstance(request.size, str) or not re.fullmatch(r"[1-9][0-9]{1,3}x[1-9][0-9]{1,3}", request.size):
         raise ImageGenerationError("invalid_size")
     width, height = map(int, request.size.split("x"))
     if max(width, height) > 4096 or min(width, height) < 64:
         raise ImageGenerationError("invalid_size")
+    if (not isinstance(request.reference_images, tuple) or len(request.reference_images) > 3
+            or any(not isinstance(image, bytes) or not image.startswith(b"\x89PNG\r\n\x1a\n")
+                   or len(image) > 8 * 1024 * 1024 for image in request.reference_images)):
+        raise ImageGenerationError("invalid_reference")
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 600:
         raise ImageGenerationError("invalid_timeout")
     if config_manager is None:
@@ -44,6 +50,10 @@ async def generate_image(request: ImageRequest, *, config_manager=None, client=N
     adapter = {"openai": openai, "dashscope": dashscope}.get(config.protocol)
     if adapter is None:
         raise ImageGenerationError("invalid_configuration")
+    if request.reference_images and not supports_image_edit(config.protocol, config.model):
+        raise ImageGenerationError("image_edit_unsupported")
+    if not request.reference_images and not supports_text_to_image(config.protocol, config.model):
+        raise ImageGenerationError("text_to_image_unsupported")
     owned = client is None
     if owned:
         try:

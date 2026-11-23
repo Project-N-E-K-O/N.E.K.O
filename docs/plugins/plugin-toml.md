@@ -306,6 +306,7 @@ Permission ids:
 | `plugin_sdk.main_agent.messages:push` | Send messages, cards or reply attachments to N.E.K.O |
 | `plugin_sdk.models:invoke` | Call AI models |
 | `system.network:connect` | Connect to the network |
+| `system.network:listen` | Open a network port on this computer so other programs can connect to it |
 | `system.fs:read` / `system.fs:write` | Read / write files outside the plugin's own data directory |
 | `system.process:spawn` | Start other programs |
 | `system.env:read` | Read environment variables |
@@ -318,6 +319,22 @@ Permission ids:
 - Code the scan cannot see through (dynamic imports, `getattr` with a computed name, `eval`/`exec`, `ctypes`, threads, `vendor/`, non-Python files) is listed as info. "No findings" never means the plugin was proven harmless.
 
 This top-level table is unrelated to the `permissions` list of `[[plugin.ui.panel]]` / `[[plugin.ui.guide]]`.
+
+#### Narrowing per component
+
+A component can say it needs only part of what the table declares, with `permissions=[...]` on its decorator: `@plugin_entry`, `@llm_tool`, the entry hooks (`@hook`, `@before_entry`, `@after_entry`, `@around_entry`, `@replace_entry`), `@on_event`, `@custom_event`, `@timer_interval`, and their `plugin.entry` / `plugin.event` / `plugin.hook` / `plugin.timer` / `plugin.custom_event` forms. `register_llm_tool`, `register_dynamic_entry` and `PluginRouter.add_entry` take the same argument.
+
+```python
+@llm_tool(name="weather", permissions=["plugin_sdk.main_agent.memory:read"])
+async def weather(self, **_): ...
+```
+
+- Leaving it out is the default: the component inherits every declared permission. Narrowing is only used to show which features stop working when the user turns a permission off; it does not restrict what the component can do.
+- When the plugin registers its components, every narrowing must be a subset of `[permissions.require]` + `[permissions.ask]`. A component that lists anything else is not registered (an entry is not callable, an event handler is not subscribed) and the plugin log says which one and why. `neko-plugin check` reports the same thing before you publish.
+- An entry hook's permissions are added to every entry its `target` matches. A hook that lists an undeclared permission closes those entries.
+  - Careful: a hook without `permissions=` needs everything declared, so every entry it targets inherits everything too. One such hook on `target="*"` cancels the narrowing of every entry; give the hook its own `permissions=` if the entries narrow.
+- A `PluginRouter` can narrow all of its entries with a `permissions = [...]` class attribute (or `PluginRouter(permissions=[...])`); an entry or `add_entry(..., permissions=...)` that names its own overrides it. `add_entry` on an included router returns `Err(PermissionDeniedError)` for an undeclared permission.
+- `@neko_plugin`, `@lifecycle`, `@message` and other non-component decorators do not take `permissions=`.
 
 ---
 

@@ -622,24 +622,31 @@ def test_kimi_preset_slots_disable_thinking_and_focus_at_low_effort():
     assert focus_extra_body("kimi-k2.6") == {"thinking": {"type": "enabled"}}
 
 
-def test_silicon_preset_slots_all_send_enable_thinking_false():
-    """SiliconFlow hybrid models think by default; an unregistered preset model
+def test_silicon_preset_slots_send_the_thinking_params_each_model_accepts():
+    """SiliconFlow hybrid models think by default; an unregistered hybrid preset model
     would send no extra_body and think on every emotion / rerank / keyword call.
-    The emotion slot (Qwen3.5-35B-A3B, replacing delisted Ling-mini-2.0) is the
-    one most sensitive to latency."""
+
+    The recognition slot is the exception: Qwen3-VL-30B-A3B-Instruct (replacing
+    Qwen3.5-35B-A3B, which replaced delisted Ling-mini-2.0) never thinks, and
+    SiliconFlow rejects enable_thinking for it with a 400, so it must send nothing."""
     import json
     from pathlib import Path
 
     from config.api_profiles import DEFAULT_ASSIST_API_PROFILES
     from config.providers import EXTRA_BODY_OPENAI, MODELS_EXTRA_BODY_MAP, get_extra_body
 
+    recognition = "Qwen/Qwen3-VL-30B-A3B-Instruct"
     root = Path(__file__).resolve().parents[2]
     shipped = json.loads((root / "config" / "api_providers.json").read_text(encoding="utf-8"))
     json_slots = {k: v for k, v in shipped["assist_api_providers"]["silicon"].items() if k.endswith("_model")}
     py_slots = {k: v for k, v in DEFAULT_ASSIST_API_PROFILES["silicon"].items() if k.endswith("_MODEL")}
-    assert json_slots["recognition_model"] == py_slots["RECOGNITION_MODEL"] == "Qwen/Qwen3.5-35B-A3B"
+    assert json_slots["recognition_model"] == py_slots["RECOGNITION_MODEL"] == recognition
     base_url = shipped["assist_api_providers"]["silicon"]["openrouter_url"]
     for model in set(json_slots.values()) | set(py_slots.values()):
+        if model == recognition:
+            assert model not in MODELS_EXTRA_BODY_MAP
+            assert get_extra_body(model, base_url) == {}
+            continue
         assert MODELS_EXTRA_BODY_MAP.get(model) is EXTRA_BODY_OPENAI, model
         assert get_extra_body(model, base_url) == {"enable_thinking": False}, model
 

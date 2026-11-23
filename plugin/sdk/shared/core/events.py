@@ -45,6 +45,10 @@ class EventMeta:
     output_schema: InputSchema | None = None
     output_model: type | None = None
     strict_output: bool = False
+    # Component narrowing (``permissions=`` on the decorator): the subset of
+    # plugin.toml's declared permissions this component needs. ``None``
+    # inherits every declared permission. Checked at registration.
+    permissions: tuple[str, ...] | None = None
 
 
 @dataclass(slots=True)
