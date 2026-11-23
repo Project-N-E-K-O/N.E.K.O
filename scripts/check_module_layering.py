@@ -226,10 +226,10 @@ def find_forbidden_edges(edges: List["EdgeRecord"]) -> List[Tuple["EdgeRecord", 
     found: list[tuple[EdgeRecord, str]] = []
     for edge in edges:
         path, _, _, _, dst, _ = edge
-        try:
-            rel = path.relative_to(REPO_ROOT).as_posix()
-        except ValueError:
+        rel_path = _relative_to_root(path, None)
+        if rel_path is None:
             continue
+        rel = rel_path.as_posix()
         for prefix, forbidden, reason in FORBIDDEN_EDGES:
             if dst == forbidden and rel.startswith(prefix):
                 found.append((edge, reason))
@@ -281,10 +281,10 @@ def package_of_file(path: Path) -> Optional[str]:
     """Return the top-level package owning ``path``, or ``None`` if outside
     the layering scope (and therefore not subject to the rules).
     """
-    try:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
+    rel_path = _relative_to_root(path, None)
+    if rel_path is None:
         return None
+    rel = rel_path.as_posix()
     # Top-level launcher.py is its own "package" so we can place it in L6.
     if rel == "launcher.py":
         return "launcher"
@@ -422,24 +422,38 @@ def _is_excluded_rel(rel: str) -> bool:
     return False
 
 
-def _is_excluded(path: Path) -> bool:
-    if set(path.parts) & EXCLUDE_DIRS:
-        return True
-    try:
-        rel = path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        rel = path.as_posix()
+def _relative_to_root(path: Path, scan_root: Path | None) -> Path | None:
+    for root in (REPO_ROOT, scan_root):
+        if root is None:
+            continue
+        try:
+            rel = path.relative_to(root)
+            if ".." not in rel.parts:
+                return Path(path.name) if root == scan_root and rel == Path(".") else rel
+        except ValueError:
+            pass
+        try:
+            rel = path.resolve().relative_to(root.resolve())
+            return Path(path.name) if root == scan_root and rel == Path(".") else rel
+        except (ValueError, OSError, RuntimeError):
+            pass
+    return None
+
+
+def _is_excluded(path: Path, scan_root: Path | None = None) -> bool:
+    rel_path = _relative_to_root(path, scan_root)
+    rel = rel_path.as_posix() if rel_path is not None else path.as_posix()
     return _is_excluded_rel(rel)
 
 
 def _iter_python_files(paths: Iterable[Path]) -> Iterator[Path]:
     for p in paths:
         if p.is_file():
-            if p.suffix == ".py" and not _is_excluded(p):
+            if p.suffix == ".py" and not _is_excluded(p, scan_root=p):
                 yield p
         elif p.is_dir():
             for f in sorted(p.rglob("*.py")):
-                if not _is_excluded(f):
+                if not _is_excluded(f, scan_root=p):
                     yield f
 
 
@@ -739,10 +753,10 @@ def _strongly_connected_components(
 
 
 def _format_path(path: Path) -> str:
-    try:
-        return path.relative_to(REPO_ROOT).as_posix()
-    except ValueError:
-        return str(path)
+    rel_path = _relative_to_root(path, None)
+    if rel_path is not None:
+        return rel_path.as_posix()
+    return str(path)
 
 
 def main(argv: list[str] | None = None) -> int:
