@@ -135,7 +135,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-03-sync-capacity-feedback",
         "2026-11-03-sync-cache-main-merge",
         "2026-11-03-sync-recovery-memory-merge",
-        "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-sync-model-main-merge",
         "2026-10-30-sync-model-main-merge",
         "2026-10-29-sync-review-main-merge",
@@ -164,7 +163,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-27-theater-market-main-merge",
         "2026-10-26-theater-market-main-sync",
         "2026-10-26-theater-review-fixes",
-        "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-02-model-click-shake",
         "2026-10-30-news-overseas-trends-steam",
         "2026-10-30-edge-peek-first-notice",
@@ -356,7 +354,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-04-theater-storage-requesty-main-merge",
         "2026-10-04-external-route-registry-main-merge-round4",
         "2026-10-03-theater-air-basketball-main-merge",
-
         "2026-10-04-voice-readiness-review-main-merge",
         "2026-10-03-voice-readiness-model-picker-merge",
         "2026-10-04-storage-requesty-main-merge",
@@ -601,6 +598,11 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-air-basketball-review-fixes",
         "2026-10-03-air-basketball-review-round2",
         "2026-10-01-theater-click-guide-memory-reactivation",
+        "2026-11-23-frontend-i18n-after-capture-mask-merge",
+        "2026-11-22-pr03-i18n-rebase",
+        "2026-11-22-frontend-i18n-sync",
+        "2026-11-23-knowledge-model-tiers-merge",
+        "2026-11-23-frontend-i18n-after-agent-advanced-merge",
     }
 )
 
@@ -613,7 +615,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "6c2ec1946a4263cee3cb806721ded29062419e82a3ec78b454db0643d4d44edf"
+LOCALE_KEY_SIGNATURE = "be02cb796e3970a2f60ceec332302687cd92eed68714bdd52aca595dc6ac44f3"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

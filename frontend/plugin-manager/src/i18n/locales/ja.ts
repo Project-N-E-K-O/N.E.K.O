@@ -28,6 +28,7 @@ export default {
 
     loading: '読み込み中...',
     refresh: '更新',
+    retry: '再試行',
     search: '検索',
     filter: 'フィルター',
     reset: 'リセット',
@@ -918,6 +919,22 @@ export default {
       verify: '検証',
       install: 'インストール',
       analyze: '解析'
+    },
+    messages: {
+      selectPluginToBuild: '先にビルドするプラグインを選択してください。',
+      bundleRequiresTwoPlugins: 'バンドルには少なくとも 2 つのプラグインを選択する必要があります。',
+      bundleBuildFailedWithError: 'バンドルのビルドに失敗しました：{error}',
+      bundleBuildCompleted: 'バンドルのビルドが完了しました。',
+      bundleBuildPartialFailed: 'バンドルのビルドで {count} 件失敗しました。',
+      buildFailedWithError: 'ビルドに失敗しました：{error}',
+      buildCompletedWithFailures: 'ビルド完了：成功 {built} 件、失敗 {failed} 件。',
+      buildCompleted: 'ビルド完了：成功 {built} 件。',
+      inspectCompleted: 'パッケージの検査が完了しました。',
+      verifyPassed: 'パッケージの検証に合格しました。',
+      verifyFailed: 'パッケージの検証に失敗しました。',
+      selectAtLeastOnePlugin: '少なくとも 1 つのプラグインを選択してください。',
+      analyzeCompleted: '解析が完了しました。',
+      analyzeFailedWithError: '解析に失敗しました：{error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics

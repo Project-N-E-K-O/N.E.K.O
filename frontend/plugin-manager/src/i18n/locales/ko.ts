@@ -28,6 +28,7 @@ export default {
 
     loading: '로딩 중...',
     refresh: '새로고침',
+    retry: '다시 시도',
     search: '검색',
     filter: '필터',
     reset: '초기화',
@@ -918,6 +919,22 @@ export default {
       verify: '검증',
       install: '설치',
       analyze: '분석'
+    },
+    messages: {
+      selectPluginToBuild: '먼저 빌드할 플러그인을 선택하세요.',
+      bundleRequiresTwoPlugins: '번들에는 최소 두 개의 플러그인을 선택해야 합니다.',
+      bundleBuildFailedWithError: '번들 빌드 실패: {error}',
+      bundleBuildCompleted: '번들 빌드가 완료되었습니다.',
+      bundleBuildPartialFailed: '번들 빌드 {count}건 실패.',
+      buildFailedWithError: '빌드 실패: {error}',
+      buildCompletedWithFailures: '빌드 완료: 성공 {built}건, 실패 {failed}건.',
+      buildCompleted: '빌드 완료: 성공 {built}건.',
+      inspectCompleted: '패키지 검사가 완료되었습니다.',
+      verifyPassed: '패키지 검증을 통과했습니다.',
+      verifyFailed: '패키지 검증에 실패했습니다.',
+      selectAtLeastOnePlugin: '최소 하나의 플러그인을 선택하세요.',
+      analyzeCompleted: '분석이 완료되었습니다.',
+      analyzeFailedWithError: '분석 실패: {error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics

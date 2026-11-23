@@ -28,6 +28,7 @@ export default {
 
     loading: 'Carregando...',
     refresh: 'Atualizar',
+    retry: 'Tentar novamente',
     search: 'Pesquisar',
     filter: 'Filtrar',
     reset: 'Redefinir',
@@ -918,6 +919,22 @@ export default {
       verify: 'Verificar',
       install: 'Instalar',
       analyze: 'Analisar'
+    },
+    messages: {
+      selectPluginToBuild: 'Selecione primeiro pelo menos um plugin para compilar.',
+      bundleRequiresTwoPlugins: 'Um pacote combinado exige selecionar pelo menos dois plugins.',
+      bundleBuildFailedWithError: 'Falha ao compilar o pacote combinado: {error}',
+      bundleBuildCompleted: 'Compilação do pacote combinado concluída.',
+      bundleBuildPartialFailed: 'Falha na compilação do pacote combinado em {count} item(ns).',
+      buildFailedWithError: 'Falha na compilação: {error}',
+      buildCompletedWithFailures: 'Compilação concluída: {built} com sucesso, {failed} com falha.',
+      buildCompleted: 'Compilação concluída: {built} com sucesso.',
+      inspectCompleted: 'Inspeção do pacote concluída.',
+      verifyPassed: 'Verificação do pacote aprovada.',
+      verifyFailed: 'A verificação do pacote falhou.',
+      selectAtLeastOnePlugin: 'Selecione pelo menos um plugin.',
+      analyzeCompleted: 'Análise concluída.',
+      analyzeFailedWithError: 'Falha na análise: {error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics

@@ -734,6 +734,29 @@ import ghost from "./missing"
     expect(messages.some((message) => message.method === 'call' && message.payload?.actionId === 'remove_servers')).toBe(true)
   })
 
+  it('isolates entry-level function/var declarations so local render does not break state re-renders', async () => {
+    const { root } = executeHostedDocument(`
+      function render(label: string) {
+        return <span id="value">{'local:' + label}</span>
+      }
+      var api = 'shadowed'
+
+      export default function Panel(props) {
+        const [count, setCount] = props.useLocalState('count', 0)
+        void api
+        return <button id="inc" onClick={() => setCount(count + 1)}>{render(String(count))}</button>
+      }
+    `)
+
+    expect(root.querySelector('#value')?.textContent).toBe('local:0')
+    expect((window as any).render).toBe((window as any).NekoUiKit.render)
+
+    fireEvent.click(root.querySelector('#inc')!)
+    await flushMicrotasks()
+
+    expect(root.querySelector('#value')?.textContent).toBe('local:1')
+  })
+
   it('renders fatal fallback when the component throws', () => {
     const { root, messages } = executeHostedDocument(`
       export default function Panel() {

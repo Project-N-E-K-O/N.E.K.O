@@ -11,7 +11,7 @@
         <span class="source-cell__label">{{ t('plugins.installSource.labels.installedAt') }}</span>
       </div>
 
-      <template v-if="isImported">
+      <template v-if="isImported && importedDetail">
         <div class="source-cell">
           <el-icon class="source-cell__icon" :size="13"><Document /></el-icon>
           <span class="source-cell__value source-cell__value--mono">{{ importedDetail.package_filename }}</span>
@@ -24,7 +24,7 @@
         </div>
       </template>
 
-      <template v-if="isMarket">
+      <template v-if="isMarket && marketDetail">
         <div class="source-cell">
           <el-icon class="source-cell__icon" :size="13"><ShoppingCart /></el-icon>
           <span class="source-cell__value source-cell__value--mono">{{ marketDetail.plugin_market_id }}</span>
@@ -105,12 +105,20 @@ const { t, locale } = useI18n()
 const isImported = computed(() => props.installSource?.source === 'imported')
 const isMarket = computed(() => props.installSource?.source === 'market')
 
-const importedDetail = computed<PluginInstallSourceDetailImported>(() => {
-  return props.installSource?.source_detail as PluginInstallSourceDetailImported
+const importedDetail = computed<PluginInstallSourceDetailImported | null>(() => {
+  const detail = props.installSource?.source_detail
+  if (!detail || typeof detail !== 'object' || !('package_filename' in detail)) {
+    return null
+  }
+  return detail
 })
 
-const marketDetail = computed<PluginInstallSourceDetailMarket>(() => {
-  return props.installSource?.source_detail as PluginInstallSourceDetailMarket
+const marketDetail = computed<PluginInstallSourceDetailMarket | null>(() => {
+  const detail = props.installSource?.source_detail
+  if (!detail || typeof detail !== 'object' || !('plugin_market_id' in detail)) {
+    return null
+  }
+  return detail
 })
 
 /** First 8 hex chars of the sha256 — enough to eyeball; the full 64-char

@@ -28,6 +28,7 @@ export default {
 
     loading: 'Loading...',
     refresh: 'Refresh',
+    retry: 'Retry',
     search: 'Search',
     filter: 'Filter',
     reset: 'Reset',
@@ -918,6 +919,22 @@ export default {
       verify: 'Verify',
       install: 'Install',
       analyze: 'Analyze'
+    },
+    messages: {
+      selectPluginToBuild: 'Select at least one plugin to build first.',
+      bundleRequiresTwoPlugins: 'Select at least two plugins for a bundle.',
+      bundleBuildFailedWithError: 'Bundle build failed: {error}',
+      bundleBuildCompleted: 'Bundle build completed.',
+      bundleBuildPartialFailed: 'Bundle build failed for {count} item(s).',
+      buildFailedWithError: 'Build failed: {error}',
+      buildCompletedWithFailures: 'Build completed: {built} succeeded, {failed} failed.',
+      buildCompleted: 'Build completed: {built} succeeded.',
+      inspectCompleted: 'Package inspection completed.',
+      verifyPassed: 'Package verification passed.',
+      verifyFailed: 'Package verification failed.',
+      selectAtLeastOnePlugin: 'Select at least one plugin.',
+      analyzeCompleted: 'Analysis completed.',
+      analyzeFailedWithError: 'Analysis failed: {error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
