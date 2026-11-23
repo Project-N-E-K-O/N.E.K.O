@@ -923,8 +923,8 @@ def test_soccer_passive_guard_writes_structured_debug_events():
     assert "_showExternalUserVoiceBubble(output)" in external_route_input_block
     assert "const playerBubbleEl = document.getElementById('player-speech-bubble')" in script
     assert "positionSpeechBubble(playerBubbleEl, playerEl" in script
-    assert "_get_game_route_summary_llm_info(lanlan_name)" in passive_guard_ai_block
-    assert "_get_game_route_summary_llm_info," in router_source
+    assert "_get_game_route_recognition_llm_info(lanlan_name)" in passive_guard_ai_block
+    assert "_get_game_route_recognition_llm_info," in router_source
     assert "rest_streak_below_stage" in script
     assert "ordinary_candidate_below_stage" in script
     assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in script
