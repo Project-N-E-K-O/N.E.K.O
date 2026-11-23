@@ -289,10 +289,10 @@ async def upload_reference_audio(request: Request):
         }, status_code=409)
     except Exception as e:
         logger.error(f"上传参考语音失败: {e}")
-        # OSError messages carry server paths; keep them in the log only.
+        # Show the reason (disk full, permission denied, locked file) so the user can act on it.
         return JSONResponse({
             "success": False,
-            "error": "参考语音上传失败",
+            "error": f"参考语音上传失败: {e}",
         }, status_code=500)
 
 
@@ -341,10 +341,10 @@ async def remove_reference_audio(request: Request):
         }, status_code=409)
     except Exception as e:
         logger.error(f"删除参考语音失败: {e}")
-        # OSError messages carry server paths; keep them in the log only.
+        # Show the reason (disk full, permission denied, locked file) so the user can act on it.
         return JSONResponse({
             "success": False,
-            "error": "参考语音清理失败",
+            "error": f"参考语音清理失败: {e}",
         }, status_code=500)
 
 
@@ -382,7 +382,9 @@ async def get_workshop_voice_reference(item_id: str):
             "available": False,
             "error": str(e),
         }, status_code=404)
-    except ValueError as e:
+    # PermissionError: reference_audio resolves outside the item folder
+    # (escape or another drive); same answer as an invalid manifest.
+    except (ValueError, PermissionError) as e:
         return JSONResponse({
             "success": False,
             "available": False,
@@ -437,7 +439,9 @@ async def get_workshop_voice_reference_audio(item_id: str):
             "success": False,
             "error": str(e),
         }, status_code=404)
-    except ValueError as e:
+    # PermissionError: reference_audio resolves outside the item folder
+    # (escape or another drive); same answer as an invalid manifest.
+    except (ValueError, PermissionError) as e:
         return JSONResponse({
             "success": False,
             "error": str(e),

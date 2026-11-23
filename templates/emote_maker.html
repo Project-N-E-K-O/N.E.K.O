@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="emoteMaker.title">表情包制作 - Project N.E.K.O.</title>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version | default('0') }}">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/css/emote_maker.css?v={{ static_asset_version | default('0') }}">
+    <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <!-- Spine assets are validated by the lazy-loaded runtime before import commits. -->
+    <script src="/static/js/spine_runtime_loader.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <!-- Client ZIP assets stay in memory; fflate is MIT-licensed and vendored. -->
+    <script src="/static/libs/fflate.umd.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_template_client_store.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_template_registry.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_spine_renderer.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_gif_encoder.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_pngtuber_pack.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_node_graph.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_state_stage.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_template_library.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_group_library.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_drag_hold.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_pngtuber_layered.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_sheet.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_select.js?v={{ static_asset_version | default('0') }}" defer></script>
+    <script src="/static/js/emote_maker.js?v={{ static_asset_version | default('0') }}" defer></script>
+</head>
+<body>
+    <header class="page-title-bar">
+        <h1 data-i18n="emoteMaker.title">表情包制作</h1>
+        <div class="neko-window-controls">
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                <span class="neko-window-pin-icon" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
+                <span class="neko-window-minimize-icon"></span>
+            </button>
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化">
+                <span class="neko-window-maximize-icon"></span>
+            </button>
+            <button id="emote-maker-close" type="button" class="neko-window-control-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"></button>
+        </div>
+    </header>
+
+    <main class="emote-maker-page">
+        <div class="maker-grid">
+            <aside class="asset-panel panel-surface" aria-labelledby="asset-library-title">
+                <div class="panel-heading">
+                    <div>
+                        <span class="eyebrow">N.E.K.O.</span>
+                        <h2 id="asset-library-title" data-i18n="emoteMaker.assetLibrary">素材库</h2>
+                    </div>
+                </div>
+
+                <section class="template-import-card">
+                    <!-- 标题删了：卡里第一排就是按钮，标题只是复述。运行徽章留着，
+                         它报的是"能不能渲染"，这信息别处没有。 -->
+                    <div class="template-import-actions">
+                        <button id="select-template-archive-btn" class="icon-text-button template-archive-button" type="button" data-i18n="emoteMaker.selectTemplateArchive">导入 Spine ZIP</button>
+                        <span id="template-runtime-badge" class="template-runtime-badge" data-i18n="emoteMaker.templateNoRuntime">预览暂不可用</span>
+                    </div>
+                    <input id="template-archive-file" class="visually-hidden" type="file" accept=".zip,application/zip" tabindex="-1" aria-hidden="true">
+                    <p id="template-import-status" class="template-import-status" data-i18n="emoteMaker.spineZipRequired">请选择包含骨架、图集和全部贴图的 Spine ZIP。</p>
+                </section>
+                <label class="asset-search" for="asset-search-input">
+                    <span aria-hidden="true">⌕</span>
+                    <input id="asset-search-input" type="search" autocomplete="off" data-i18n-placeholder="emoteMaker.searchParts" placeholder="搜索模板">
+                </label>
+
+                <div class="asset-section-heading">
+                    <h3 id="asset-section-title" data-i18n="emoteMaker.noTemplates">模板暂未添加</h3>
+                </div>
+                <div id="asset-grid" class="asset-grid" role="tabpanel" aria-labelledby="asset-section-title" tabindex="0"></div>
+            </aside>
+
+            <div class="resize-handle resize-handle-col" id="resize-left" role="separator" aria-orientation="vertical" tabindex="0" data-i18n-aria="emoteMaker.resizeLibraryAria" aria-label="调整素材库宽度"></div>
+
+            <section class="workspace-panel panel-surface" aria-label="预览">
+                <div class="workspace-heading">
+                    <div>
+                        <span class="eyebrow" data-i18n="emoteMaker.previewTitle">表情包制作</span>
+                    </div>
+                    <div class="workspace-tools" aria-label="画布工具">
+                        <button id="undo-btn" class="tool-button" type="button" data-i18n="emoteMaker.undo">撤销</button>
+                        <button id="redo-btn" class="tool-button" type="button" data-i18n="emoteMaker.redo">重做</button>
+                        <button id="fit-btn" class="tool-button" type="button" data-i18n="emoteMaker.fitWindow">适应窗口</button>
+                        <button id="reset-view-btn" class="tool-button" type="button" data-i18n="emoteMaker.resetView">重置视图</button>
+                    </div>
+                </div>
+
+                <div class="canvas-stage">
+                    <div class="canvas-frame" id="canvas-frame">
+                        <canvas id="wardrobe-artwork-behind" width="1024" height="1024" aria-hidden="true" hidden></canvas>
+                        <canvas id="emote-canvas" width="1024" height="1024" aria-label="表情包预览"></canvas>
+                        <canvas id="emote-spine-canvas" width="1024" height="1024" aria-label="动画表情包预览" hidden></canvas>
+                        <div id="wardrobe-placements" hidden>
+                            <canvas id="wardrobe-artwork" width="1024" height="1024" aria-hidden="true" hidden></canvas>
+                            <div id="wardrobe-transform" class="wardrobe-transform" hidden>
+                                <div class="wardrobe-transform-frame" aria-hidden="true"></div>
+                                <button type="button" class="wardrobe-transform-scale" data-x="-1" data-y="-1" aria-label="等比缩放部件" data-i18n-aria="emoteMaker.wardrobeSpriteSize"></button>
+                                <button type="button" class="wardrobe-transform-scale" data-x="1" data-y="-1" aria-label="等比缩放部件" data-i18n-aria="emoteMaker.wardrobeSpriteSize"></button>
+                                <button type="button" class="wardrobe-transform-scale" data-x="-1" data-y="1" aria-label="等比缩放部件" data-i18n-aria="emoteMaker.wardrobeSpriteSize"></button>
+                                <button type="button" class="wardrobe-transform-scale" data-x="1" data-y="1" aria-label="等比缩放部件" data-i18n-aria="emoteMaker.wardrobeSpriteSize"></button>
+                                <button type="button" class="wardrobe-transform-rotate" aria-label="旋转部件" data-i18n-aria="emoteMaker.wardrobeSpriteRotate" data-i18n-title="emoteMaker.wardrobeSpriteRotate"><span aria-hidden="true">↻</span></button>
+                                <button id="wardrobe-sprite-remove" type="button" aria-label="移除部件" data-i18n-aria="emoteMaker.wardrobeSpriteRemove" data-i18n-title="emoteMaker.wardrobeSpriteRemove"><span aria-hidden="true">×</span></button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="template-canvas-status" class="template-canvas-status" role="status" aria-live="polite">
+                        <span id="template-canvas-status-text" data-i18n="emoteMaker.selectTemplateHint">请选择一个模板</span>
+                        <button id="canvas-import-btn" class="canvas-import-button" type="button" data-i18n="emoteMaker.selectTemplateArchive">导入 Spine ZIP</button>
+                    </div>
+                    <div class="canvas-zoom">
+                        <button id="zoom-out-btn" type="button" aria-label="缩小">−</button>
+                        <output id="zoom-value">100%</output>
+                        <button id="zoom-in-btn" type="button" aria-label="放大">+</button>
+                    </div>
+                    <div id="wardrobe-sprite-menu" hidden>
+                        <label><span data-i18n="emoteMaker.wardrobeSpriteBinding">跟随骨骼</span>
+                            <select id="wardrobe-sprite-bone" data-native-select></select>
+                        </label>
+                        <div class="wardrobe-layer-actions">
+                            <label><span data-i18n="emoteMaker.wardrobeLayer">图层</span>
+                                <select id="wardrobe-layer-slot" data-native-select></select>
+                            </label>
+                            <button id="wardrobe-layer-up" class="wardrobe-button" type="button" data-i18n="emoteMaker.wardrobeLayerUp">上移一层</button>
+                            <button id="wardrobe-layer-down" class="wardrobe-button" type="button" data-i18n="emoteMaker.wardrobeLayerDown">下移一层</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="resize-handle resize-handle-row" id="resize-dock" role="separator" aria-orientation="horizontal" tabindex="0" data-i18n-aria="emoteMaker.resizeListAria" aria-label="调整列表高度"></div>
+
+                <div class="animation-dock">
+                    <div class="quick-preview-heading">
+                        <!-- 只剩一份列表：以前「场景 / 动画」两个标签印的是同一批名字（场景名往往就是动画名），
+                             差别只藏在"点下去套不套取景"里，看不出来。挑取景改到导出设置里的组。 -->
+                        <div class="quick-preview-title">
+                            <h3 id="anim-dock-title" data-i18n="emoteMaker.segmentAnimations">动画</h3>
+                            <!-- 多选工具挂在标题同一行：以前它自己占一行，列表矮一截还常驻。 -->
+                            <span class="list-select-tools" id="list-select-tools" hidden>
+                                <button id="select-all-btn" class="text-button" type="button" data-i18n="emoteMaker.selectAll">全选</button>
+                                <button id="select-none-btn" class="text-button" type="button" data-i18n="emoteMaker.selectNone" hidden>取消全选</button>
+                                <span class="list-select-count" id="list-select-count"></span>
+                            </span>
+                        </div>
+                        <span data-i18n="emoteMaker.viewportHint">滚轮缩放 · Alt+滚轮旋转 · 中键平移</span>
+                    </div>
+                    <div id="animation-list" class="animation-list" role="list"></div>
+                    <div class="playback-controls">
+                        <button id="play-animation-btn" class="playback-button" type="button" data-i18n="common.play">播放</button>
+                        <input id="animation-progress" type="range" min="0" max="100" value="0" data-i18n-aria="emoteMaker.animationProgressLabel" aria-label="动画进度">
+                        <output id="animation-time">00:00</output>
+                        <label class="speed-control" for="animation-speed">
+                            <span data-i18n="emoteMaker.speed">速度</span>
+                            <input id="animation-speed" type="range" min="0.2" max="2" step="0.1" value="1">
+                        </label>
+                    </div>
+                </div>
+            </section>
+
+            <div class="resize-handle resize-handle-col" id="resize-right" role="separator" aria-orientation="vertical" tabindex="0" data-i18n-aria="emoteMaker.resizeInspectorAria" aria-label="调整部件设置宽度"></div>
+
+            <aside class="inspector-panel panel-surface" aria-labelledby="part-settings-title">
+                <div class="panel-heading inspector-heading">
+                    <div>
+                        <span class="eyebrow">CUSTOMIZE</span>
+                        <h2 id="part-settings-title" data-i18n="emoteMaker.partSettings">部件设置</h2>
+                    </div>
+                </div>
+
+                <div class="inspector-tabs" role="tablist" data-i18n-aria="emoteMaker.editorPanels" aria-label="编辑器面板">
+                    <button id="inspector-tab-parts" class="inspector-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="inspector-panel-parts" data-inspector-tab="parts" data-i18n="emoteMaker.partsTab">换装</button>
+                    <button id="inspector-tab-adjust" class="inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="inspector-panel-adjust" data-inspector-tab="adjust" data-i18n="emoteMaker.adjustTab">调整</button>
+                    <button id="inspector-tab-colors" class="inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="inspector-panel-colors" data-inspector-tab="colors" data-i18n="emoteMaker.colorsTab">颜色</button>
+                    <button id="inspector-tab-export" class="inspector-tab" type="button" role="tab" aria-selected="false" aria-controls="inspector-panel-export" data-inspector-tab="export" data-i18n="emoteMaker.exportTab">导出</button>
+                </div>
+
+                <div id="inspector-empty-state" class="inspector-empty-state" role="status" hidden>
+                    <span data-i18n="emoteMaker.selectTemplateArchive">导入 Spine ZIP</span>
+                </div>
+
+                <div id="inspector-panel-parts" class="inspector-tab-panel is-active" role="tabpanel" aria-labelledby="inspector-tab-parts" data-inspector-panel="parts">
+                    <section class="inspector-section part-groups-section">
+                        <div class="section-label-row">
+                            <span class="section-label" data-i18n="emoteMaker.chooseParts">选择部件</span>
+                            <div id="wardrobe-entry-actions" hidden>
+                                <button id="wardrobe-open" class="text-button" type="button" data-i18n="emoteMaker.wardrobeGenerate">猫猫辅助生成</button>
+                                <button id="wardrobe-library-open" class="text-button" type="button" data-i18n="emoteMaker.assetLibrary">素材库</button>
+                            </div>
+                        </div>
+                        <div id="template-skin-controls" class="template-compat-controls" hidden></div>
+                        <input id="template-attachment-search" class="template-compat-search" type="search" autocomplete="off"
+                               aria-controls="template-attachment-controls" data-i18n-placeholder="emoteMaker.searchWardrobeParts"
+                               data-i18n-aria="emoteMaker.searchWardrobeParts" placeholder="搜索部件" aria-label="搜索部件" hidden>
+                        <div id="template-attachment-controls" class="template-compat-controls" hidden></div>
+                        <p id="template-attachment-empty" class="template-compat-note" role="status" data-i18n="emoteMaker.noMatchingWardrobeParts" hidden>没有匹配的部件</p>
+                    </section>
+                </div>
+
+                <div id="inspector-panel-adjust" class="inspector-tab-panel" role="tabpanel" aria-labelledby="inspector-tab-adjust" data-inspector-panel="adjust" hidden>
+                    <section class="inspector-section adjustment-section">
+                        <div class="section-label-row">
+                            <span class="section-label" data-i18n="emoteMaker.adjustments">整体调整</span>
+                            <button id="reset-adjustments-btn" class="text-button" type="button" data-i18n="emoteMaker.reset">重置</button>
+                        </div>
+                        <label class="overwrite-row"><input id="adjust-overwrite" type="checkbox" checked><span data-i18n="emoteMaker.overwrite">覆盖默认值</span></label>
+                        <label class="range-row" for="adjust-x"><span data-i18n="emoteMaker.positionX">位置 X</span><output id="adjust-x-value">0</output><input id="adjust-x" type="range" min="-2000" max="2000" value="0"></label>
+                        <label class="range-row" for="adjust-y"><span data-i18n="emoteMaker.positionY">位置 Y</span><output id="adjust-y-value">0</output><input id="adjust-y" type="range" min="-2000" max="2000" value="0"></label>
+                        <label class="range-row" for="adjust-rotation"><span data-i18n="emoteMaker.rotation">旋转</span><output id="adjust-rotation-value">0°</output><input id="adjust-rotation" type="range" min="-180" max="180" value="0"></label>
+                        <label class="range-row" for="adjust-scale"><span data-i18n="emoteMaker.scale">缩放</span><output id="adjust-scale-value">100%</output><input id="adjust-scale" type="range" min="10" max="500" value="100"></label>
+                    </section>
+                </div>
+
+                <div id="inspector-panel-colors" class="inspector-tab-panel" role="tabpanel" aria-labelledby="inspector-tab-colors" data-inspector-panel="colors" hidden>
+                    <section class="inspector-section color-section">
+                        <div id="template-slot-controls" class="template-compat-controls" hidden></div>
+                        <section id="changed-part-colors" class="changed-part-colors" aria-labelledby="changed-part-colors-title" hidden>
+                            <h3 id="changed-part-colors-title" class="section-label" data-i18n="emoteMaker.colorChangedParts">已改色部件</h3>
+                            <ul id="changed-part-color-list"></ul>
+                        </section>
+                    </section>
+                </div>
+
+                <div id="inspector-panel-export" class="inspector-tab-panel" role="tabpanel" aria-labelledby="inspector-tab-export" data-inspector-panel="export" hidden>
+                                        <section class="inspector-section export-section">
+                        <label class="select-row"><span data-i18n="emoteMaker.exportFormat">格式</span><select id="export-format"><option value="png" data-i18n="emoteMaker.exportStatic">静态 PNG</option><option value="gif" data-i18n="emoteMaker.exportAnimated">动画 GIF</option></select></label>
+                        <label class="select-row" for="export-resolution"><span data-i18n="emoteMaker.exportResolution">分辨率</span><select id="export-resolution"><option value="128">128 × 128</option><option value="240" selected>240 × 240</option><option value="320">320 × 320</option><option value="480">480 × 480</option><option value="512">512 × 512</option><option id="export-resolution-1024" value="1024" hidden>1024 × 1024</option></select></label>
+                        <label class="select-row" for="export-fps"><span data-i18n="emoteMaker.exportFps">帧率</span><select id="export-fps"><option value="8">8 fps</option><option value="10">10 fps</option><option value="12">12 fps</option><option value="15">15 fps</option><option value="20" selected>20 fps</option><option value="24">24 fps</option><option value="30">30 fps</option><option value="48">48 fps</option><option value="60">60 fps</option></select></label>
+                        <label class="select-row"><span data-i18n="emoteMaker.transparentBackground">透明背景</span><input id="transparent-background" type="checkbox" checked></label>
+
+                    </section>
+
+                    <!-- 批量导出：攒"要导出的那几张"并一次出 zip。平时收起，别长期占着一整栏。 -->
+                    <details class="inspector-section group-section" id="group-section" hidden>
+                        <summary class="group-summary">
+                            <span class="group-summary-title" data-i18n="emoteMaker.batchExport">批量导出</span>
+                            <span class="group-summary-state" id="group-summary-state"></span>
+                        </summary>
+                        <div class="group-body">
+                            <div class="group-controls">
+                                <div class="group-picker-row">
+                                    <select id="batch-export-group-select" data-i18n-aria="emoteMaker.batchExportPicker" aria-label="组"></select>
+                                </div>
+                                <div class="group-action-row">
+                                    <button id="new-group-btn" class="group-create-btn" type="button" data-i18n="emoteMaker.newGroupFromCurrent">按当前配置创建组</button>
+                                    <button id="new-group-help" class="group-help" type="button" aria-label="按当前配置创建组是什么意思">?</button>
+                                </div>
+                                <p class="panel-note" data-i18n="emoteMaker.groupContextHint">右键中间的动作列表，就能加入当前组。</p>
+                            </div>
+                            <div id="group-members" class="group-members" role="list"></div>
+                            <p class="group-export-status" id="group-export-status"></p>
+                        </div>
+                    </details>
+
+                    <section class="inspector-section pack-section">
+                        <div class="section-label" data-i18n="emoteMaker.packTitle">形象包（PNGTuber）</div>
+                        <div class="pack-mode-row" role="tablist" data-i18n-aria="emoteMaker.packModeAria" aria-label="编辑方式">
+                            <button id="pack-mode-basic" class="list-segment-btn is-active" type="button" role="tab" aria-selected="true" data-pack-mode="basic" data-i18n="emoteMaker.packModeBasic">基础</button>
+                            <button id="pack-mode-graph" class="list-segment-btn" type="button" role="tab" aria-selected="false" data-pack-mode="graph" data-i18n="emoteMaker.packModeGraph">进阶</button>
+                        </div>
+
+                        <div id="pack-panel-basic">
+                            <div id="pack-basic-rows"></div>
+                        </div>
+
+                        <div id="pack-panel-graph" hidden>
+                            <button id="open-state-stage-btn" class="primary-button pack-editor-button" type="button" data-i18n="emoteMaker.stageOpen">打开进阶设置</button>
+                        </div>
+
+                        <label class="select-row" for="pack-name"><span class="select-row-label"><span data-i18n="emoteMaker.packNameLabel">形象包名称</span><button type="button" class="tip-help" data-tip-key="emoteMaker.packNameHint" data-i18n-aria="emoteMaker.packNameHint" aria-label="提示">?</button></span><input id="pack-name" type="text" maxlength="48" autocomplete="off" spellcheck="false"></label>
+
+                        <label class="select-row" for="pack-format"><span data-i18n="emoteMaker.packFormatLabel">包格式</span><select id="pack-format"><option value="flat" data-i18n="emoteMaker.packFormatFlat">平铺（GIF，通用兼容）</option><option value="layered" data-i18n="emoteMaker.packFormatLayered">分层（多状态，可驱动）</option></select></label>
+                        <label class="select-row" for="pack-priority"><span class="select-row-label"><span data-i18n="emoteMaker.packPriorityLabel">状态优先级</span><button type="button" class="tip-help" data-tip-key="emoteMaker.packPriorityHint" data-i18n-aria="emoteMaker.packPriorityHint" aria-label="提示">?</button></span><select id="pack-priority"><option value="talking" data-i18n="emoteMaker.packPriorityTalking">说话优先（情绪等话说完）</option><option value="emotion" data-i18n="emoteMaker.packPriorityEmotion">情绪优先（说话不覆盖）</option></select></label>
+                        <p class="panel-note" id="pack-status" role="status" aria-live="polite"></p>
+                        <div class="pack-actions">
+                            <button id="pack-export-btn" class="tool-button" type="button" data-i18n="emoteMaker.packExportZip">导出形象包</button>
+                            <button id="pack-import-btn" class="tool-button" type="button" data-i18n="emoteMaker.packImportNow">导入到模型管理</button>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="export-actions">
+                    <button id="color-back-to-top" class="color-back-to-top" type="button" aria-controls="inspector-panel-colors"
+                            data-i18n-aria="emoteMaker.colorBackToTop" data-i18n-title="emoteMaker.colorBackToTop"
+                            aria-label="返回颜色面板顶部" title="返回颜色面板顶部" hidden></button>
+                    <!-- 组选择气泡长在这排按钮上方：.export-actions 是定位父级，
+                         它坐在面板底部不滚动，气泡不会被 overflow:auto 裁掉。 -->
+                    <div id="group-export-picker" class="group-export-picker" role="group" hidden>
+                        <p class="group-picker-title" data-i18n="emoteMaker.batchExportPicker">选择要导出的组</p>
+                        <div id="group-picker-list" class="group-picker-list" role="list"></div>
+                    </div>
+                    <div class="export-actions-row">
+                        <button id="export-png-btn" class="primary-button" type="button">
+                            <span data-i18n="emoteMaker.exportCurrent">导出当前</span>
+                        </button>
+                        <button id="export-group-open-btn" class="secondary-button" type="button" aria-expanded="false" aria-controls="group-export-picker" data-i18n="emoteMaker.batchExport">批量导出</button>
+                    </div>
+                </div>
+            </aside>
+
+        </div>
+        <!-- 右键动作卡片的快捷菜单：就地加进/移出当前批量导出组，
+             不用先切到导出设置再找下拉。 -->
+        <div id="group-context-menu" class="group-context-menu" role="menu" hidden>
+            <p class="group-context-head" data-i18n="emoteMaker.groupContextTitle">批量导出组</p>
+            <p class="group-context-group" id="context-group-name"></p>
+            <button id="context-add-btn" class="group-context-item" type="button" role="menuitem" data-i18n="emoteMaker.groupContextAdd">加入当前组</button>
+            <button id="context-remove-btn" class="group-context-item" type="button" role="menuitem" data-i18n="emoteMaker.groupContextRemove">移出当前组</button>
+        </div>
+    </main>
+
+    <div id="emote-toast" class="emote-toast" role="status" aria-live="polite"></div>
+    <div id="emote-page-tips" class="emote-page-tips"></div>
+    <template id="emote-page-tip-template">
+        <div class="emote-timed-tip" hidden>
+            <div class="emote-timed-tip-progress" aria-hidden="true"></div>
+            <p role="status"></p>
+            <button class="emote-timed-tip-close" type="button" data-i18n-aria="emoteMaker.wardrobeClose"
+                    data-i18n-title="emoteMaker.wardrobeClose" aria-label="关闭" title="关闭">×</button>
+        </div>
+    </template>
+    <dialog id="wardrobe-dialog" class="wardrobe-dialog" aria-label="猫猫辅助生成" data-i18n-aria="emoteMaker.wardrobeGenerate">
+        <div class="wardrobe-views">
+            <button id="wardrobe-source-view" class="wardrobe-button wardrobe-view-tab" type="button" aria-controls="wardrobe-source-pane" aria-pressed="true" data-i18n="emoteMaker.wardrobeSourceView">挂件生成</button>
+            <button id="wardrobe-library-view" class="wardrobe-button wardrobe-view-tab" type="button" aria-controls="wardrobe-library-pane" aria-pressed="false" data-i18n="emoteMaker.assetLibrary">素材库</button>
+            <button id="wardrobe-close" class="wardrobe-button wardrobe-button-icon" type="button"
+                data-i18n-aria="emoteMaker.wardrobeClose" data-i18n-title="emoteMaker.wardrobeClose" aria-label="关闭" title="关闭">×</button>
+        </div>
+        <div class="wardrobe-body">
+            <section class="wardrobe-workspace">
+                <div id="wardrobe-padding-notice" class="emote-timed-tip" hidden>
+                    <div class="emote-timed-tip-progress" aria-hidden="true"></div>
+                    <p role="status" data-i18n="emoteMaker.wardrobeCropPadded">选框超出比例限制，生成时会自动补充空白区域。</p>
+                    <button id="wardrobe-padding-close" class="emote-timed-tip-close" type="button"
+                        data-i18n-aria="emoteMaker.wardrobeClose" data-i18n-title="emoteMaker.wardrobeClose" aria-label="关闭" title="关闭">×</button>
+                </div>
+                <section id="wardrobe-source-pane" class="wardrobe-view" aria-labelledby="wardrobe-source-view">
+                    <div class="wardrobe-annotation-tools">
+                        <div class="wardrobe-annotation-zoom">
+                            <button id="wardrobe-annotation-zoom-out" class="wardrobe-button wardrobe-button-icon" type="button" data-i18n-aria="chat.avatarCropZoomOut" data-i18n-title="chat.avatarCropZoomOut" aria-label="缩小" title="缩小" disabled>−</button>
+                            <output id="wardrobe-annotation-scale">100%</output>
+                            <button id="wardrobe-annotation-zoom-in" class="wardrobe-button wardrobe-button-icon" type="button" data-i18n-aria="chat.avatarCropZoomIn" data-i18n-title="chat.avatarCropZoomIn" aria-label="放大" title="放大" disabled>+</button>
+                            <button id="wardrobe-annotation-fit" class="wardrobe-button" type="button" data-i18n="emoteMaker.fitWindow" disabled>适应窗口</button>
+                            <button id="wardrobe-annotation-pan" class="wardrobe-button" type="button" data-i18n="emoteMaker.wardrobeMarkPan" aria-pressed="false" disabled>移动画布</button>
+                        </div>
+                    </div>
+                    <div id="wardrobe-annotations" class="wardrobe-annotation-actions">
+                        <output id="wardrobe-annotation-count" aria-live="polite" aria-label="已选区域" data-i18n-aria="emoteMaker.wardrobeCropCount">0/3</output>
+                        <button id="wardrobe-annotation-clear" class="wardrobe-button wardrobe-button-quiet" type="button" data-i18n="emoteMaker.wardrobeClearMarks" disabled>清空选框</button>
+                    </div>
+                    <p id="wardrobe-annotation-hint" class="panel-note" role="status" hidden></p>
+                    <div id="wardrobe-annotation-viewport" tabindex="0" aria-labelledby="wardrobe-source-view">
+                        <div class="wardrobe-annotation-stage">
+                            <p id="wardrobe-source-empty" class="panel-note" data-i18n="emoteMaker.wardrobeSourceEmpty">上传参考图后可在这里查看。</p>
+                            <div id="wardrobe-annotation-surface" hidden>
+                                <div id="wardrobe-annotation-crops" class="wardrobe-crop-layer" role="group" tabindex="-1" data-i18n-aria="emoteMaker.wardrobeSpriteCrop" aria-label="在参考图上框选部件"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                <section id="wardrobe-library-pane" class="wardrobe-view" aria-labelledby="wardrobe-library-view" hidden>
+                    <div class="wardrobe-library-browser">
+                        <input id="wardrobe-library-image" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                        <button id="wardrobe-library-import" class="wardrobe-button wardrobe-button-neutral" type="button"
+                                data-i18n="emoteMaker.wardrobeLibraryImport">导入图片</button>
+                        <p id="wardrobe-library-status" class="panel-note" role="status" aria-live="polite"></p>
+                        <p id="wardrobe-library-empty" class="panel-note" data-i18n="emoteMaker.wardrobeLibraryEmpty" hidden>导入图片或生成挂件后，可在这里取用。</p>
+                        <fieldset id="wardrobe-library-grid" aria-label="素材库" data-i18n-aria="emoteMaker.assetLibrary"></fieldset>
+                    </div>
+                    <div id="wardrobe-spritesheet-result" class="wardrobe-spritesheet-result" hidden>
+                        <div class="wardrobe-spritesheet-selection">
+                            <button id="wardrobe-spritesheet-save" class="wardrobe-button wardrobe-button-neutral" type="button" data-i18n="emoteMaker.wardrobeLibrarySave" hidden>存入素材库</button>
+                            <button id="wardrobe-sprite-add" class="wardrobe-button wardrobe-button-primary" type="button" data-i18n="emoteMaker.wardrobeSpriteAdd" disabled>添加所选部件</button>
+                        </div>
+                        <p id="wardrobe-sheet-status" class="panel-note" role="status" aria-live="polite"></p>
+                        <p id="wardrobe-spritesheet-layout-warning" class="panel-note" role="status" hidden data-i18n="emoteMaker.wardrobeSpriteLayoutWarning">部分部件可能过近或贴边，请在框选时检查边缘。</p>
+                        <div id="wardrobe-spritesheet-viewport">
+                            <div id="wardrobe-spritesheet-surface">
+                                <div id="wardrobe-spritesheet-picker" class="wardrobe-crop-layer" role="group" tabindex="-1" aria-label="裁切框" data-i18n-aria="emoteMaker.wardrobeCropBox"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </section>
+            <form id="wardrobe-form">
+                <div class="wardrobe-settings">
+                    <p id="wardrobe-model" class="panel-note"></p>
+                    <a id="wardrobe-config" href="/api_key" target="_blank" rel="noopener" hidden data-i18n="emoteMaker.wardrobeConfig">打开自定义 API 设置</a>
+                    <input id="wardrobe-reference" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+                    <button id="wardrobe-reference-open" class="wardrobe-button wardrobe-button-neutral" type="button" data-i18n="emoteMaker.wardrobeChooseReference">选择参考图</button>
+                    <div id="wardrobe-minimap" hidden>
+                        <div id="wardrobe-minimap-image" role="group" tabindex="0" aria-label="参考图导航" data-i18n-aria="emoteMaker.wardrobeReferenceNavigator">
+                            <img alt="" draggable="false">
+                            <div id="wardrobe-minimap-window" aria-hidden="true"></div>
+                        </div>
+                    </div>
+                    <label id="wardrobe-prompt-field" for="wardrobe-prompt" hidden>
+                        <span data-i18n="emoteMaker.wardrobePromptLabel">补充提示词（可选）</span>
+                        <textarea id="wardrobe-prompt" rows="3" maxlength="240"
+                                  data-i18n-placeholder="emoteMaker.wardrobePromptPlaceholder"
+                                  placeholder="说明要调整的颜色、样式或细节"></textarea>
+                    </label>
+                    <p class="panel-note" data-i18n="emoteMaker.wardrobeSpriteSend">配置的视觉和生图 API 仅接收框内的原图局部。生成的透明底挂件会自动存入素材库。</p>
+                    <p id="wardrobe-status" class="panel-note" role="status" aria-live="polite"></p>
+                </div>
+                <div class="wardrobe-footer">
+                    <input id="wardrobe-spritesheet-file" type="file" accept="image/png" hidden>
+                    <button id="wardrobe-spritesheet-open" class="wardrobe-button wardrobe-button-neutral" type="button" data-i18n="emoteMaker.wardrobeSpriteOpen">打开挂件</button>
+                    <button id="wardrobe-submit" class="wardrobe-button wardrobe-button-primary" type="submit" data-i18n="emoteMaker.wardrobeSpriteGenerate" disabled>生成挂件</button>
+                </div>
+            </form>
+        </div>
+        <dialog id="wardrobe-library-confirm" class="emote-confirm-card" aria-labelledby="wardrobe-library-confirm-text">
+            <form method="dialog">
+                <p id="wardrobe-library-confirm-text" data-i18n="emoteMaker.wardrobeLibraryConfirmDelete">从素材库删除这个挂件素材？</p>
+                <div class="emote-confirm-actions">
+                    <button class="emote-confirm-cancel" type="submit" value="cancel" autofocus data-i18n="emoteMaker.confirmCancel">取消</button>
+                    <button class="emote-confirm-ok" type="submit" value="delete" data-i18n="emoteMaker.confirmDelete">删除</button>
+                </div>
+            </form>
+        </dialog>
+    </dialog>
+    <div id="emote-confirm" class="emote-confirm" hidden>
+        <div class="emote-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="emote-confirm-text">
+            <p id="emote-confirm-text"></p>
+            <div class="emote-confirm-actions">
+                <button id="emote-confirm-cancel" class="emote-confirm-cancel" type="button" data-i18n="emoteMaker.confirmCancel">取消</button>
+                <button id="emote-confirm-ok" class="emote-confirm-ok" type="button" data-i18n="emoteMaker.confirmDelete">删除</button>
+            </div>
+        </div>
+    </div>
+    <!-- 跟着光标的说明：原生 title 要悬停半秒才出、位置也不受控，而这类一句话解释
+         属于"看见就懂"的东西，不该把它做成点击后落在页面底部的 toast。 -->
+    <div id="emote-cursor-tip" class="emote-cursor-tip" role="tooltip" hidden></div>
+</body>
+</html>

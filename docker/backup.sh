@@ -98,6 +98,7 @@ live2d
 vrm
 mmd
 pngtuber
+emote_templates
 avatar_tools
 workshop
 character_cards

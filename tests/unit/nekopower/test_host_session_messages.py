@@ -4993,7 +4993,7 @@ async def test_a_request_counted_for_a_session_is_not_taken_by_the_commission_of
     mark = agents._session_mark("the-one-id")
     agents._prepaid_starts.add(mark)
 
-    assert await agents._pay_first_request(_Session("the-one-id")) is True
+    assert await agents._pay_first_request(_Session("the-one-id", free=True)) is True
 
     # It pays for its own first request, and the session's stays for the commission the note gets.
     assert counted == ["the-one-id"] and agents._prepaid_starts == {mark}

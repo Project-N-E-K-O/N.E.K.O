@@ -692,6 +692,17 @@ async def test_cloudsave_router_download_rejects_invalid_flags_and_invalid_json(
             _assert_localized_error_payload(invalid_backup_payload, "cloudsave.error.invalidBooleanParameter")
             assert invalid_backup_payload["message_params"] == {"parameter": "backup_before_overwrite"}
 
+            for bad_force in ("true", 1, None):
+                invalid_force = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": bad_force}),
+                )
+                invalid_force_payload = json.loads(invalid_force.body)
+                assert invalid_force.status_code == 400
+                assert invalid_force_payload["code"] == "INVALID_PARAMETER"
+                _assert_localized_error_payload(invalid_force_payload, "cloudsave.error.invalidBooleanParameter")
+                assert invalid_force_payload["message_params"] == {"parameter": "force"}
+
             invalid_json = await cloudsave_router_module.post_cloudsave_character_download(
                 "小满",
                 _DummyRequest(json_exception=ValueError("bad json")),
@@ -1351,7 +1362,7 @@ async def test_download_active_session_no_force():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_download_active_session_force_bool_coercion():
-    """force='true' (string) → still returns 409 (strict bool check)."""
+    """force='true' (string) → returns 400 INVALID_PARAMETER (strict bool check) without terminating session."""
     with TemporaryDirectory() as td:
         mgr = _make_active_session_mgr()
         cm = _setup_force_test_env(Path(td), active_mgr=mgr)
@@ -1365,9 +1376,11 @@ async def test_download_active_session_force_bool_coercion():
             )
 
         payload = json.loads(resp.body)
-        assert resp.status_code == 409
-        assert payload["code"] == "ACTIVE_SESSION_BLOCKED"
-        _assert_localized_error_payload(payload, "cloudsave.error.activeSessionBlocked")
+        assert resp.status_code == 400
+        assert payload["code"] == "INVALID_PARAMETER"
+        _assert_localized_error_payload(payload, "cloudsave.error.invalidBooleanParameter")
+        assert payload["message_params"] == {"parameter": "force"}
+        mgr.end_session.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -1550,7 +1563,8 @@ async def test_download_reload_explicitly_resumes_a_reused_character_name():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_download_cancellation_during_release_withdraws_exact_claim():
+@pytest.mark.parametrize("retry", [False, True])
+async def test_download_cancellation_during_release_withdraws_exact_claim(retry):
     """Cancellation during release waits for its result, compensates, then propagates."""
     with TemporaryDirectory() as td:
         cm = _setup_force_test_env(Path(td))
@@ -1567,7 +1581,7 @@ async def test_download_cancellation_during_release_withdraws_exact_claim():
             cloudsave_router_module = importlib.import_module(
                 "main_routers.cloudsave_router"
             )
-            reload_memory = AsyncMock(return_value=True)
+            reload_memory = AsyncMock(side_effect=[False, True] if retry else [True])
             with patch.object(
                 cloudsave_router_module,
                 "release_memory_server_character",
@@ -1588,11 +1602,17 @@ async def test_download_cancellation_during_release_withdraws_exact_claim():
                 finish_release.set()
                 with pytest.raises(asyncio.CancelledError):
                     await operation
+                if retry:
+                    task, = cloudsave_router_module._claim_recovery_tasks
+                    await asyncio.wait_for(task, 3)
+                    assert not cloudsave_router_module._claim_recovery_tasks
 
         claim_token = release_memory.await_args.kwargs[
             "derived_task_claim_token"
         ]
-        reload_memory.assert_awaited_once_with(
+        assert reload_memory.await_count == (2 if retry else 1)
+        assert all(call == reload_memory.await_args for call in reload_memory.await_args_list)
+        reload_memory.assert_awaited_with(
             reason=(
                 "云存档下载前释放 SQLite 句柄: 小满"
                 "（release 失败或取消补偿）"
@@ -1604,7 +1624,7 @@ async def test_download_cancellation_during_release_withdraws_exact_claim():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_download_no_active_session_force_ignored():
-    """No active session + force=true → normal download (force ignored)."""
+    """No active session + force=true → still releases local memory handle before overwrite."""
     with TemporaryDirectory() as td:
         cm = _setup_force_test_env(Path(td))
         _write_runtime_state(cm, character_name="小满")
@@ -1614,6 +1634,10 @@ async def test_download_no_active_session_force_ignored():
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
 
             with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ) as release_mock, patch.object(
                 cloudsave_router_module,
                 "import_cloudsave_character_unit",
                 return_value={
@@ -1632,6 +1656,43 @@ async def test_download_no_active_session_force_ignored():
 
         assert isinstance(resp, dict)
         assert resp["success"] is True
+        release_mock.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_no_active_session_force_true_aborts_when_release_fails():
+    """No active session + overwrite=True + force=True must fail closed if handle release fails."""
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+            with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=False),
+            ) as release_mock, patch.object(
+                cloudsave_router_module,
+                "notify_memory_server_reload",
+                AsyncMock(return_value=True),
+            ), patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+            ) as import_mock:
+                resp = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+                )
+
+        payload = json.loads(resp.body)
+        assert resp.status_code == 503
+        assert payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
+        release_mock.assert_awaited_once()
+        import_mock.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1837,6 +1898,10 @@ async def test_download_keeps_cloud_fence_through_reload_and_lock_finalize():
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
             with patch.object(
                 cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ), patch.object(
+                cloudsave_router_module,
                 "import_cloudsave_character_unit",
                 return_value={"detail": {}, "backup_path": ""},
             ) as import_mock, patch.object(
@@ -1887,6 +1952,10 @@ async def test_cancelled_download_finishes_reload_before_propagating_cancel():
         with patch("utils.config_manager._config_manager", cm):
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
             with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ), patch.object(
                 cloudsave_router_module,
                 "import_cloudsave_character_unit",
                 side_effect=_import,

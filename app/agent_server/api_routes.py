@@ -87,8 +87,24 @@ async def get_agent_flags():
         "analyzer_enabled": Modules.analyzer_enabled,
         "agent_api_gate": _check_agent_api_gate(),
         "revision": Modules.state_revision,
+        # False until the startup replay of the saved switches has finished, so the
+        # page can tell "not replayed yet" apart from "switched off".
+        "intent_restore_finished": _intent_restore_finished,
+        # The saved switch intents. A switch the backend put off after a failed
+        # start keeps its intent; one the user switched off has it False.
+        "intent": _agent_intent_snapshot(),
         "notification": note
     }
+
+
+def _agent_intent_snapshot() -> Dict[str, bool]:
+    from app.agent_runtime_intent import load_intent
+
+    try:
+        return dict(load_intent() or {})
+    except Exception as exc:
+        logger.warning("[Agent] reading the saved switch intent failed (exc_type=%s)", type(exc).__name__)
+        return {}
 
 
 @app.get("/agent/state")
@@ -635,6 +651,14 @@ async def agent_command(payload: Dict[str, Any]):
 # is to tell the user "your API is dead, fix it" rather than retry forever.
 
 _intent_restore_done = False
+_intent_restore_finished = False
+# Background replay tasks (CU/BU probe, user plugin) started by the current
+# restore; ``_intent_restore_finished`` turns True only after they end. Work
+# those tasks hand off on their own is not tracked: the plugin start that
+# ``set_agent_flags`` schedules only switches the plugin off when the start
+# fails while its generation is still current, which reports a real failure
+# rather than replaying an older intent over a newer value.
+_intent_restore_background_tasks: List[asyncio.Task] = []
 _intent_restore_lock: Optional[asyncio.Lock] = None
 
 # Restore probe budget. Worst-case wall time when probes keep timing out:
@@ -651,7 +675,7 @@ _RESTORE_PING_MAX_ATTEMPTS = 3
 
 async def _maybe_restore_agent_intent() -> None:
     """Idempotent restore entry. Safe to call from every greeting_check."""
-    global _intent_restore_done, _intent_restore_lock
+    global _intent_restore_done, _intent_restore_finished, _intent_restore_lock
     if _intent_restore_done:
         return
     if os.environ.get("NEKO_DISABLE_AGENT_AUTO_RESTORE") == "1":
@@ -659,6 +683,7 @@ async def _maybe_restore_agent_intent() -> None:
         # the user can launch with this env var to skip restore entirely
         # and re-toggle manually.
         _intent_restore_done = True
+        _intent_restore_finished = True
         logger.info("[Agent] NEKO_DISABLE_AGENT_AUTO_RESTORE=1, skipping intent restore")
         return
     if _intent_restore_lock is None:
@@ -671,6 +696,23 @@ async def _maybe_restore_agent_intent() -> None:
             await _do_restore_agent_intent()
         except Exception as exc:
             logger.error("[Agent] Intent restore failed: %s", exc, exc_info=True)
+        background = [t for t in _intent_restore_background_tasks if not t.done()]
+        _intent_restore_background_tasks.clear()
+        if background:
+            watcher = asyncio.create_task(_mark_intent_restore_finished_after(background))
+            Modules._persistent_tasks.add(watcher)
+            watcher.add_done_callback(Modules._persistent_tasks.discard)
+        else:
+            _intent_restore_finished = True
+
+
+async def _mark_intent_restore_finished_after(tasks: List[asyncio.Task]) -> None:
+    """Flip ``_intent_restore_finished`` once the background replay writes are done."""
+    global _intent_restore_finished
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        _intent_restore_finished = True
 
 
 async def _do_restore_agent_intent() -> None:
@@ -730,6 +772,8 @@ async def _do_restore_agent_intent() -> None:
         Modules._persistent_tasks.add(t)
         t.add_done_callback(Modules._persistent_tasks.discard)
         parallel.append(t)
+
+    _intent_restore_background_tasks.extend(parallel)
 
     # We deliberately don't gather() the parallel tasks — they update
     # capability + flags + intent on their own, and the user sees the
@@ -857,8 +901,10 @@ async def _restore_user_plugin() -> None:
 
 def _reset_intent_restore_for_testing() -> None:
     """Test helper: clear the once-flag so a test can re-run restore."""
-    global _intent_restore_done, _intent_restore_lock
+    global _intent_restore_done, _intent_restore_finished, _intent_restore_lock
     _intent_restore_done = False
+    _intent_restore_finished = False
+    _intent_restore_background_tasks.clear()
     _intent_restore_lock = None
 
 

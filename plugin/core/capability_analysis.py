@@ -26,8 +26,9 @@ from plugin.utils.source_paths import is_vendor_sync_path, iter_plugin_python_fi
 CAPABILITIES = tuple(sorted(spec.legacy_name for spec in PERMISSIONS.values() if spec.legacy_name))
 # Bump when a change to analysis makes persisted reports stale.
 # 5: permission ids, declarations, blind spots; legacy capabilities unchanged.
-# 6: system.network:listen (servers moved out of system.network:connect).
-ANALYZER_VERSION = 6
+# 6: run_in_executor(None, ...) is no longer a context_loss blind spot.
+# 7: system.network:listen (servers moved out of system.network:connect).
+ANALYZER_VERSION = 7
 MAX_FILES = 500
 MAX_SOURCE_BYTES = 10 * 1024 * 1024
 MAX_FILE_BYTES = 1024 * 1024
@@ -931,6 +932,12 @@ _CONTEXT_LOSS = (
     "concurrent.futures.process.ProcessPoolExecutor",
     "concurrent.futures.thread.ThreadPoolExecutor",
     "multiprocessing.pool.ThreadPool",
+    # A loop the plugin makes itself has a plain default executor, so
+    # run_in_executor(None, ...) on it loses the context (see below).
+    "asyncio.new_event_loop",
+    "asyncio.events.new_event_loop",
+    "asyncio.Runner",
+    "asyncio.runners.Runner",
 )
 # Analysis warnings that leave part of the plugin unscanned.
 _NOT_ANALYZED_WARNINGS = frozenset(
@@ -1133,8 +1140,16 @@ def _reference_blind_spot(reference: _Reference) -> str | None:
     ):
         return "reflective_access"
     if reference.is_call and method.endswith(".run_in_executor"):
-        # Executor threads, the default one included, do not carry the
-        # caller's context variables.
+        # The plugin runtime installs a context-copying default executor on
+        # the loops it runs plugin code on, so a literal None executor keeps
+        # the caller's context variables. Any other executor does not. The
+        # scan cannot tell which loop a call runs on; making a loop and
+        # replacing the default executor are reported where they happen.
+        executor = _call_argument(node, 0, "executor")
+        if isinstance(executor, ast.Constant) and executor.value is None:
+            return None
+        return "context_loss"
+    if reference.is_call and method.endswith(".set_default_executor"):
         return "context_loss"
     return None
 

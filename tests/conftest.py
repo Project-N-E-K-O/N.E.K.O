@@ -718,6 +718,25 @@ def mock_memory_server():
     thread.join(timeout=5)
 
 
+@pytest.fixture()
+def emote_template_library_dir(tmp_path, monkeypatch):
+    from main_routers import emote_template_router
+
+    directory = tmp_path / "emote-templates"
+    monkeypatch.setattr(emote_template_router, "_template_library_directory", lambda: directory)
+    return directory
+
+
+@pytest.fixture()
+def builtin_emote_template_dir():
+    from main_routers.emote_template_router import _builtin_template_directory
+
+    directory = _builtin_template_directory()
+    if not directory.is_dir():
+        pytest.skip("YUI desktop template assets are not installed")
+    return directory
+
+
 @pytest.fixture(scope="session")
 def running_server(clean_user_data_dir, mock_memory_server):
     """
