@@ -1213,9 +1213,9 @@ async def test_a_note_or_a_question_goes_to_a_session_only_when_that_session_has
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
     await host.set_role_model("general", OWN_SLOT)
     writer = await _session_of_hers(host, "write", "writer")
-    reader = await _session_of_hers(host, "read", "reader")
+    await _session_of_hers(host, "read", "reader")
     await host.set_role_model("general", None)
-    plain = await _session_of_hers(host, "plain", "plain")
+    await _session_of_hers(host, "plain", "plain")
     manager.tiers["agent"] = {}
     tasks = host.task_agents
 
@@ -1525,7 +1525,6 @@ async def test_an_idle_session_is_not_summed_up_by_a_model_that_has_it_switched_
     await wait_until(lambda: tasks._held_by == {}, what="every session being let go")
     tasks._drop_idle_timer(done.session_id)
     key = await tasks._task_model_key(done.session_id)
-    wanted = tasks._idle_compact_wanted
     looked: list[str] = []
 
     async def on_until_looked_at(session_id: str) -> bool:
@@ -1545,7 +1544,6 @@ async def test_an_idle_session_is_not_summed_up_by_a_model_that_has_it_switched_
     monkeypatch.setattr(host.ledger, "begin_compacting", beginning)
     assert await tasks._idle_compact(done.session_id, after=0.0, model=key) is False
     assert looked == [done.session_id] and begun == []
-    del wanted
 
 
 async def test_a_slot_made_to_follow_a_tier_at_the_same_address_is_not_followed_when_the_tier_moves(hosts, tmp_path):
