@@ -949,20 +949,37 @@ def test_batch_cancellation_and_archive_failure_do_not_claim_success(editor, mod
 @pytest.mark.parametrize('backend', ['path', 'directory'])
 @pytest.mark.parametrize('cancellation', ['user', 'automatic'])
 def test_final_batch_archive_failure_is_not_hidden_by_a_late_cancellation(editor, backend, cancellation):
+    _check_final_batch_archive_cancellation(editor, backend, cancellation, successful=False)
+
+
+@pytest.mark.parametrize('backend', ['path', 'directory'])
+@pytest.mark.parametrize('cancellation', ['user', 'automatic'])
+def test_successful_final_batch_archive_respects_a_late_cancellation(editor, backend, cancellation):
+    _check_final_batch_archive_cancellation(editor, backend, cancellation, successful=True)
+
+
+def _check_final_batch_archive_cancellation(editor, backend, cancellation, *, successful):
     _import(editor, spine_zip(animations=2))
     editor.evaluate("""backend => {
         const q = reviewEditor;
         Object.assign(q.state, {exportFormat:'png',exportResolution:32});
-        window.reviewStoredFiles = []; window.reviewArchiveMessages = [];
+        window.reviewStoredFiles = []; window.reviewArchiveMessages = [];window.reviewArchiveSaved=false;
         window.reviewArchiveObserver = new MutationObserver(records => records.forEach(record =>
             record.addedNodes.forEach(node => {if(node.textContent) reviewArchiveMessages.push(node.textContent);} )));
         reviewArchiveObserver.observe(document.querySelector('#emote-toast'), {childList:true});
-        const gate = () => new Promise((_,reject) => {
+        const gate = () => new Promise((resolve,reject) => {
             window.reviewFailFinalZip = () => reject(Error('test-final-archive-failure'));
+            window.reviewCompleteFinalZip = () => {
+                if (backend === 'path') {
+                    reviewArchiveSaved=true;
+                    resolve(new Response(JSON.stringify({success:true}),{headers:{'Content-Type':'application/json'}}));
+                } else resolve({createWritable:async()=>({write:async()=>{},abort:async()=>{},
+                    close:async()=>{reviewArchiveSaved=true;}})});
+            };
         });
         const folder = {getFileHandle:async name => ({createWritable:async()=>({
             write:async data => reviewStoredFiles.push({name,bytes:Array.from(data)}),close:async()=>{},
-        })})};
+        }),getFile:async()=>new Blob([Uint8Array.from(reviewStoredFiles.find(file=>file.name===name).bytes)])})};
         const parent = {kind:'directory',entries:async function*(){},
             getDirectoryHandle:async()=>folder,getFileHandle:async()=>gate()};
         window.reviewOriginalFetch = window.fetch;
@@ -989,20 +1006,23 @@ def test_final_batch_archive_failure_is_not_hidden_by_a_late_cancellation(editor
         editor.locator('#export-group-open-btn').click(force=True)
     else:
         editor.evaluate('reviewEditor.advanceGeneration()')
-    result = editor.evaluate("""async () => {
+    result = editor.evaluate("""async successful => {
         try {
-            reviewFailFinalZip(); await reviewFinalBatch; await Promise.resolve();
+            if (successful) reviewCompleteFinalZip(); else reviewFailFinalZip();
+            await reviewFinalBatch; await Promise.resolve();
             const q = reviewEditor;
-            return {messages:reviewArchiveMessages,files:reviewStoredFiles,
+            return {messages:reviewArchiveMessages,files:reviewStoredFiles,archiveSaved:reviewArchiveSaved,
                 failure:q.translate('emoteMaker.groupExportZipFailed'),
                 stopped:q.translate('emoteMaker.groupExportCancelled'),
                 success:q.translate('emoteMaker.groupExportFolderDone')};
         } finally {window.fetch=reviewOriginalFetch;reviewArchiveObserver.disconnect();}
-    }""")
+    }""", successful)
     assert len(result['files']) == 2
     assert all(file['name'].endswith('.png') and file['bytes'] for file in result['files'])
-    assert not any(result['stopped'] in message or result['success'] in message for message in result['messages']), result
-    assert any(result['failure'] in message for message in result['messages']) == (cancellation == 'user'), result
+    assert result['archiveSaved'] == successful
+    assert not any(result['success'] in message for message in result['messages']), result
+    assert any(result['stopped'] in message for message in result['messages']) == (successful and cancellation == 'user'), result
+    assert any(result['failure'] in message for message in result['messages']) == (not successful and cancellation == 'user'), result
     assert editor.locator('#export-group-open-btn').is_enabled()
     assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
 

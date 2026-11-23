@@ -4530,7 +4530,7 @@
         } finally {
             signal.removeEventListener('abort', cancelQueuedCapture);
         }
-        if (!result) return;
+        if (!result || generation !== spineRendererGeneration) return;
         if (result.aborted && !groupExportAbort) return;
         if (result.blob) {
             fallbackDownload(

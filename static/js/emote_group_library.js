@@ -322,14 +322,15 @@
         if (canStore) {
             const blob = await packStored();
             return {
-                aborted: false, files, failed, stored, blob,
+                aborted: typeof shouldAbort === 'function' && Boolean(shouldAbort()), files, failed, stored, blob,
                 savedToFolder: stored.length > 0,
                 done: items.length, total: items.length,
             };
         }
         if (!files.length) return { aborted: false, files, failed, done: items.length, total: items.length };
         const blob = await zip(files);
-        return { aborted: false, files, failed, blob, done: items.length, total: items.length };
+        return { aborted: typeof shouldAbort === 'function' && Boolean(shouldAbort()),
+            files, failed, blob, done: items.length, total: items.length };
     }
 
     return Object.freeze({

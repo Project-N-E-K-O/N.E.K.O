@@ -339,6 +339,28 @@ test('缺少注入就立刻报错，不要跑到一半才崩', async () => {
     await assert.rejects(() => groups.runGroupExport({ plan: plan([]), produce: async () => new Uint8Array([1]) }), /zip/);
 });
 
+test('late cancellation retains the completed archive without packing it again', async () => {
+    for (const storedOutput of [false, true]) {
+        let abort = false, release, entered, calls = 0;
+        const waiting = new Promise(resolve => { entered = resolve; });
+        const gate = new Promise(resolve => { release = resolve; });
+        const pack = async () => { calls += 1; entered(); await gate; return 'completed-zip'; };
+        const pending = groups.runGroupExport({
+            plan: plan([{kind:'scene',name:'a',ext:'png'}]),
+            produce: async () => new Uint8Array([1]),
+            store: storedOutput ? async () => {} : undefined,
+            zip: pack, zipStored: pack, shouldAbort: () => abort,
+        });
+        await waiting; abort = true; release();
+        const result = await pending;
+        assert.equal(result.aborted, true);
+        assert.equal(result.blob, 'completed-zip');
+        assert.equal(result.done, 1);
+        assert.equal(storedOutput ? result.stored.length : result.files.length, 1);
+        assert.equal(calls, 1);
+    }
+});
+
 test('写进目录时不把字节留到最后，压缩只拿到文件名', async () => {
     const stored = [];
     let zipped = null;
