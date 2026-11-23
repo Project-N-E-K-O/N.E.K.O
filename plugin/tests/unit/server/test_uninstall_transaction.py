@@ -1591,6 +1591,58 @@ async def test_incomplete_uninstall_rollback_drops_remembered_grants_before_rest
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_complete_uninstall_rollback_keeps_remembered_grants_after_restoring_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _isolate_runtime_overrides: dict,
+) -> None:
+    """Counterpart of the incomplete case: the code was staged and the rollback
+    brought it back, so the original plugin restarts with its remembered grants."""
+    from plugin.server.application.plugins import permission_service
+    from plugin.server.infrastructure.plugin_permissions import PluginPermissionStore
+
+    granted = "plugin_sdk.main_agent.memory:read"
+    harness = _Harness(tmp_path)
+    harness.running.add("demo")
+    harness.install(monkeypatch)
+    _grant_demo()
+    assert permission_service.permission_snapshot("demo")["states"][granted]["status"] == "granted"
+
+    class _MovedManager:
+        def get_runtime_config_path(self, name: str) -> Path:
+            return tmp_path / "moved" / name
+
+    moved = tmp_path / "moved" / "plugin_permissions.json"
+    moved.parent.mkdir()
+    moved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        permission_service, "permission_store", PluginPermissionStore(_MovedManager())
+    )
+    monkeypatch.setattr(uninstall_module, "logger", _ErrorLog())
+
+    def _fail_clear(_plugin_id: str) -> None:
+        raise OSError("override disk full")
+
+    monkeypatch.setattr(uninstall_module, "clear_runtime_override", _fail_clear)
+    seen_at_start: list[str] = []
+
+    async def _start(_self, plugin_id: str, **_kwargs: object) -> dict[str, object]:
+        snapshot = permission_service.permission_snapshot(plugin_id)
+        seen_at_start.append(snapshot["states"][granted]["status"])
+        return {"success": True}
+
+    monkeypatch.setattr(lifecycle_module.PluginLifecycleService, "start_plugin", _start)
+
+    with pytest.raises(UninstallPluginError) as captured:
+        await uninstall_plugin("demo")
+
+    assert captured.value.filesystem_rollback == "completed"
+    assert harness.plugin_dir.is_dir()
+    assert seen_at_start == ["granted"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_uninstall_rollback_keeps_remembered_grants(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
