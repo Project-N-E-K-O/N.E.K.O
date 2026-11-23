@@ -1018,6 +1018,23 @@ class _ToolingMixin(_TurnContextMixin):
         self._reasoning_stream_seq = getattr(self, "_reasoning_stream_seq", 0) + 1
         return self._reasoning_stream_seq
 
+    def _notify_response_start(self) -> None:
+        """Tell the host a reply's LLM request is about to go out.
+
+        Called in both stream entry points (stream_text and prompt_ephemeral)
+        once a reply is sure to be attempted. Synchronous on purpose: it must
+        not open an await window in prompt_ephemeral between its decline check
+        and the reply begin. Best-effort: a callback failure must never disturb
+        the stream. getattr default guards ``__new__`` test stubs that bypass
+        ``__init__``."""
+        cb = getattr(self, "on_response_start", None)
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception as e:
+            logger.debug("on_response_start callback failed (ignored): %s", e)
+
     async def _notify_reasoning_done(self, owner_seq: Optional[int] = None) -> None:
         """Symmetric clear for ``_notify_reasoning_active``: push the bubble back to
         False when THIS stream still owns the active pulse. Required for callers

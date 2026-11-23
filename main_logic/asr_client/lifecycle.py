@@ -309,6 +309,21 @@ class VoiceInputLifecycleController:
     def peek_active_start_spans(self) -> tuple[AudioSampleSpan, ...]:
         return self._active_start_spans if self._state is VoiceLifecycleState.ACTIVE else ()
 
+    def earliest_retained_sample(self) -> int | None:
+        """Return the earliest sample index still held across all lifecycle audio buffers."""
+        starts = [
+            span.start
+            for spans in (
+                self._pre_roll.spans,
+                self._pending_turn.spans,
+                self._pending_connect.spans,
+                self._active_start_spans,
+            )
+            for span in spans
+            if span.start is not None and span.samples > 0
+        ]
+        return min(starts) if starts else None
+
     def __init__(
         self,
         *,

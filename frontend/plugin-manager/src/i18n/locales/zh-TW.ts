@@ -28,6 +28,7 @@ export default {
 
     loading: '載入中...',
     refresh: '重新整理',
+    retry: '重試',
     search: '搜尋',
     filter: '篩選',
     reset: '重設',
@@ -826,6 +827,22 @@ export default {
       verify: '校驗',
       install: '安裝',
       analyze: '分析'
+    },
+    messages: {
+      selectPluginToBuild: '請先選擇要建置的外掛',
+      bundleRequiresTwoPlugins: '整合包至少需要選擇兩個外掛',
+      bundleBuildFailedWithError: '整合包建置失敗：{error}',
+      bundleBuildCompleted: '整合包建置完成',
+      bundleBuildPartialFailed: '整合包建置失敗 {count} 個',
+      buildFailedWithError: '建置失敗：{error}',
+      buildCompletedWithFailures: '建置完成，成功 {built} 個，失敗 {failed} 個',
+      buildCompleted: '建置完成，成功 {built} 個',
+      inspectCompleted: '套件檢查完成',
+      verifyPassed: '套件校驗通過',
+      verifyFailed: '套件未通過校驗',
+      selectAtLeastOnePlugin: '請至少選擇一個外掛',
+      analyzeCompleted: '分析完成',
+      analyzeFailedWithError: '分析失敗：{error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics

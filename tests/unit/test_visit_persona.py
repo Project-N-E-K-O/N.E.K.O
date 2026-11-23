@@ -1467,3 +1467,56 @@ def test_reading_a_persona_is_refused_when_the_name_moves_meanwhile(env, monkeyp
     monkeypatch.setattr(persona._hooks, "resolve_char_uid", moved)
     resp = client.get("/api/visit/persona?catgirl=A", headers=GOOD)
     assert resp.status_code == 409 and resp.json()["code"] == "catgirl_changed"
+
+
+@pytest.mark.parametrize(
+    ("locale", "nickname_key", "nickname_val", "profile_name"),
+    [
+        ("en", "Nickname", "Human, Buddy", "Carbon"),
+        ("zh-TW", "暱稱", "人類, 夥伴", "碳基"),
+        ("ja", "ニックネーム", "ご近所さん, 相棒", "炭素"),
+        ("ko", "닉네임", "인간, 친구", "탄소 생물"),
+        ("ru", "Прозвище", "Человек, Друг", "Углерод"),
+        ("es", "Apodo", "Humano, Amigo", "Carbono"),
+        ("pt", "Apelido", "Humano, Amigo", "Carbono"),
+        ("case-lower", "nickname", "Alice, Ally", "Bob"),
+        ("case-upper", "APODO", "Carlos", "Elena"),
+    ],
+)
+def test_family_names_of_resolves_localized_master_nicknames_and_redacts_outbound(
+    locale, nickname_key, nickname_val, profile_name,
+):
+    from main_logic.visit.sanitize import redact_outbound
+    from main_routers.visit_router.local_context import family_names_of, protected_display_names
+
+    names = family_names_of({"档案名": profile_name, nickname_key: nickname_val})
+    first_nick = nickname_val.split(",")[0].strip()
+    second_nick = nickname_val.split(",")[1].strip() if "," in nickname_val else ""
+    assert names[0] == profile_name
+    assert first_nick in names
+    if second_nick:
+        assert second_nick in names
+
+    redacted = redact_outbound(f"Hello {first_nick} and {profile_name}!", family_names=names, replacement="[F]")
+    assert first_nick not in redacted
+    assert profile_name not in redacted
+    assert redacted == "Hello [F] and [F]!"
+
+    protected = protected_display_names("en" if locale not in ("zh-CN", "zh-TW") else locale, names, ("YUI",))
+    assert first_nick in protected
+    assert profile_name in protected
+
+
+@pytest.mark.parametrize("locale", ["zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_family_names_of_covers_all_character_locale_templates(locale):
+    from pathlib import Path
+
+    from config import get_character_nickname
+    from main_routers.visit_router.local_context import family_names_of
+
+    template_path = Path(__file__).resolve().parents[2] / "config" / "characters" / f"{locale}.json"
+    master = json.loads(template_path.read_text(encoding="utf-8"))["主人"]
+    names = family_names_of(master)
+    expected_nickname = get_character_nickname(master)
+    assert master["档案名"] in names
+    assert expected_nickname in names

@@ -32,6 +32,8 @@ from config import (
     CHARACTER_SYSTEM_RESERVED_FIELDS,
     CHARACTER_WORKSHOP_RESERVED_FIELDS,
     CHARACTER_RESERVED_FIELDS,
+    get_character_nickname,
+    resolve_master_display_name,
 )
 
 
@@ -56,15 +58,7 @@ PNGTUBER_EXTENSIONS = {'.png', '.gif', '.jpg', '.jpeg', '.webp'}
 
 
 def _resolve_master_display_name(master_basic_config: dict, fallback_name: str = "") -> str:
-    nickname = str(master_basic_config.get('昵称', '') or '').strip()
-    if nickname:
-        first_nickname = nickname.split(',')[0].split('，')[0].strip()
-        if first_nickname:
-            return first_nickname
-    profile_name = str(master_basic_config.get('档案名', '') or '').strip()
-    if profile_name:
-        return profile_name
-    return str(fallback_name or '').strip()
+    return resolve_master_display_name(master_basic_config, fallback_name)
 
 
 @router.get("/character_reserved_fields")
@@ -333,8 +327,8 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             "success": True,
             "lanlan_name": target_name,
             "master_name": master_name or "",
-            "master_profile_name": str(master_basic_config.get('档案名', '') or ''),
-            "master_nickname": str(master_basic_config.get('昵称', '') or ''),
+            "master_profile_name": str(master_basic_config.get('档案名', '') or '') if isinstance(master_basic_config, dict) else "",
+            "master_nickname": get_character_nickname(master_basic_config),
             "master_display_name": master_display_name or "",
             "autostart_csrf_token": AUTOSTART_CSRF_TOKEN,
             "model_path": model_path,

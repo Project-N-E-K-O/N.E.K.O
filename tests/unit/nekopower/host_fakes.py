@@ -111,7 +111,9 @@ def pick_plugin(plugin_id: str, entry_id: str, args: dict[str, Any] | None = Non
 
 
 async def fake_model() -> dict[str, Any]:
-    return {"model": "fake-model", "api_key": "test-key"}
+    # The built-in free key: requests go against the free daily quota, as a
+    # meter given to the host counts them (``role_models.is_free_key``).
+    return {"model": "fake-model", "api_key": "free-access"}
 
 
 async def no_model() -> None:

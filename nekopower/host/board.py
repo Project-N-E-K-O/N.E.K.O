@@ -24,7 +24,7 @@
     card = {"id", "name", "kind", "lanlan_name", "runtime", "workdir",
             "preset", "avatar", "label", "description",
             "title", "title_by", "duty", "duty_by", "summary", "summary_by",
-            "doing", "state", "leader", "parent", "team", "model",
+            "doing", "state", "leader", "parent", "team", "model", "model_fallback",
             "usage", "context_tokens", "last_active_at", "tree",
             "commission": {"id", "title", "status", "started_at", "ask"} | None}
 
@@ -248,8 +248,14 @@ def card_of(
         # Who started it, or of which session it is a copy.
         "parent": session.parent_id or session.forked_from,
         "team": None,
-        # The name of the model and nothing else of it: never its address or key.
-        "model": model,
+        # The name of the model it is sent to and nothing else of it: never
+        # its address or key. Its own, as it was settled (``role_models.py``);
+        # the task agent model's for one that was not settled yet.
+        "model": session.model_name or model,
+        # Why the model set for its preset could not be used, and its
+        # preset's default was (one of ``role_models.FALLBACK_REASONS``);
+        # None when it could.
+        "model_fallback": session.model_fallback or None,
         "usage": {**{name: getattr(session, name) for name in _USAGE}, "tokens": session.tokens},
         "context_tokens": session.context_tokens,
         "last_active_at": session.last_active_at,
@@ -267,7 +273,8 @@ def _day_start(now: float) -> float:
 class Board:
     """Puts the board together and says whether it changed; see the module docstring.
 
-    ``model`` returns the name of the model task agents use, or None.
+    ``model`` returns the name of the task agent model of the main app, or
+    None: shown for a session whose own was not settled yet.
     """
 
     def __init__(

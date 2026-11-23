@@ -202,8 +202,11 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
         )
     ),
     # The NekoPower host (task brain, task agents, gateway) reaches plugins over
-    # HTTP and needs ``plugin.settings`` only. Its task preferences stay apart
-    # from every memory: neither reads or writes the other.
+    # HTTP. Of the plugin package it reads ``plugin.settings`` and, for the
+    # model each preset's sessions are sent to, the slots of the model panel
+    # (``plugin.server.infrastructure.model_slot_resolver``, which needs no
+    # plugin server running). Its task preferences stay apart from every
+    # memory: neither reads or writes the other.
     *(
         ("nekopower/host/", package, reason)
         for package, reason in (
@@ -211,8 +214,8 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             ("knowledge", "the NekoPower host keeps apart from the knowledge subsystem"),
             ("main_logic", "the NekoPower host reaches the main dialogue through its outbox only"),
             ("main_routers", "the NekoPower host reaches the main dialogue through its outbox only"),
-            ("services", "the NekoPower host uses only config, utils, plugin.settings and its runtime"),
-            ("steamworks", "the NekoPower host uses only config, utils, plugin.settings and its runtime"),
+            ("services", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
+            ("steamworks", "the NekoPower host uses only config, utils, the plugin package and its runtime"),
         )
     ),
 ]
