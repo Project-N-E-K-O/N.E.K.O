@@ -70,6 +70,11 @@ FILES = {
     "app/pkgy/__init__.py": "",
     "app/pkgy/thing.py": "THING = 1\n",
     "app/pkgx/core.py": "VALUE = 13\n",
+    "starter.py": "VALUE = 16\n",
+    "app/starter.py": "VALUE = 17\n",
+    "tests/unit/test_starter_static.py": (
+        "from pathlib import Path\n\ndef test_starter():\n    assert Path('starter.py').name\n"
+    ),
     "tests/fixtures/policy.json": "{}\n",
     "tests/unit/fixtures/wire_samples/case_one.json": "{}\n",
     "tests/unit/sub/fixtures/sub_samples/one.json": "{}\n",
@@ -435,6 +440,11 @@ def test_fixture_data_named_test_star_still_scopes_like_any_other_file(index):
 def test_test_file_named_by_a_conftest_helper_only_selects_itself(index):
     # sub_helper.py lists test_unrelated.py by name (a skip list); its conftest's tests do not depend on it.
     assert _selected(index, "tests/unit/test_unrelated.py") == ["tests/unit/test_unrelated.py"]
+
+
+def test_shared_python_name_at_the_root_still_matches_by_name(index):
+    # starter.py also exists as app/starter.py; a test reading "starter.py" means the root one.
+    assert _selected(index, "starter.py") == ["tests/unit/test_starter_static.py"]
 
 
 def test_shared_file_names_need_their_directories(index):

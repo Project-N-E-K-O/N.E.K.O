@@ -823,7 +823,9 @@ def _literal_for(rel: str, common: frozenset[str] = frozenset()) -> tuple[str, .
         return None
     if path.name in GENERIC_BASENAMES or path.name in common:
         if not path.parent.name:
-            return None  # a bare "README.md" at the root names nothing in particular
+            # A bare "README.md" at the root names nothing in particular, but a
+            # root launcher.py is what a test reading "launcher.py" means.
+            return None if path.name in GENERIC_BASENAMES else (path.name,)
         # "templates/index.html" is often spelled ROOT / "templates" / "index.html",
         # so the parts are matched as separate tokens.
         return (*path.parent.parts[-2:], path.name)
