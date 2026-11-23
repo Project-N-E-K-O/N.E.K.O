@@ -652,7 +652,7 @@ async def publish_turn_check_reliably(
 
     Sent for a turn in which she called no task tool. The agent process decides
     whether the turn is worth a look at all and what follows (see
-    ``nekoclaw.host.task_brain.TaskBrain.check_turn``). A request sent again
+    ``nekopower.host.task_brain.TaskBrain.check_turn``). A request sent again
     after a slow acknowledgement carries the same ``event_id``, which the
     agent process uses to check the turn once.
 

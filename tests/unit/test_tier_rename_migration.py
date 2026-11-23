@@ -267,7 +267,7 @@ def test_model_list_reuses_a_key_saved_under_the_old_name(model_type):
 
 @pytest.mark.unit
 def test_production_code_uses_the_new_tier_names():
-    # The aliases exist for saved configs and for nekoclaw/host (left untouched on purpose);
+    # The aliases exist for saved configs and for nekopower/host (left untouched on purpose);
     # new code naming a tier the old way would keep them alive forever.
     import os
     import re
@@ -282,7 +282,7 @@ def test_production_code_uses_the_new_tier_names():
     offenders = []
     for dirpath, dirnames, filenames in os.walk(root):
         rel = Path(dirpath).relative_to(root).as_posix()
-        dirnames[:] = [d for d in dirnames if d not in pruned and f'{rel}/{d}'.lstrip('./') != 'nekoclaw/host']
+        dirnames[:] = [d for d in dirnames if d not in pruned and f'{rel}/{d}'.lstrip('./') != 'nekopower/host']
         for name in filenames:
             if name.endswith('.py'):
                 text = (Path(dirpath) / name).read_text(encoding='utf-8', errors='ignore')

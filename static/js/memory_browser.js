@@ -5956,9 +5956,23 @@
                 }
                 return true;
             } else {
-                const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                const code = data && typeof data.code === 'string' ? data.code : '';
+                let errorMsg;
+                if (code === 'RECENT_FILE_CONFLICT') {
+                    errorMsg = translate(
+                        'memory.recentFileConflict',
+                        data.error || '近期记忆已在其他任务中更新，请重新加载并合并后再保存'
+                    );
+                } else if (code === 'RECENT_FILE_THEATER_READONLY') {
+                    errorMsg = translate(
+                        'memory.recentFileTheaterReadonly',
+                        data.error || '小剧场记忆不能在记忆浏览器中编辑，请重新加载后再保存'
+                    );
+                } else {
+                    errorMsg = data.error || translate('common.unknownError', '未知错误');
+                }
                 if (stillTargetsSavedSelection()) {
-                    showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
+                    showSaveStatus(translate('memory.saveFailed', '保存失败：{{error}}', { error: errorMsg }), false);
                 }
                 return false;
             }

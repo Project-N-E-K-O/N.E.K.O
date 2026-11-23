@@ -114,7 +114,11 @@ def test_missing_tier_never_uses_other_provider_model(config_manager, monkeypatc
 @pytest.mark.unit
 @pytest.mark.parametrize('provider_mode', ['follow_core', 'openai'])
 @pytest.mark.parametrize('vision_model', ['vision-capable-model', ''])
-def test_missing_agent_prefers_vision_then_conversation(config_manager, monkeypatch, provider_mode, vision_model):
+# Both familiar slots (the settings page puts the advanced one on the agent tier too).
+@pytest.mark.parametrize('prefix, model_type', [('agent', 'agent'), ('agentAdvanced', 'agent_advanced')])
+def test_missing_agent_prefers_vision_then_conversation(
+    config_manager, monkeypatch, provider_mode, vision_model, prefix, model_type,
+):
     profiles = _profiles()
     profiles['openai']['AGENT_MODEL'] = ''
     profiles['openai']['VISION_MODEL'] = vision_model
@@ -122,10 +126,10 @@ def test_missing_agent_prefers_vision_then_conversation(config_manager, monkeypa
     _write_core_config(config_manager, {
         'coreApi': 'openai', 'assistApi': 'qwen', 'coreApiKey': 'sk-test',
         'enableCustomApi': True,
-        'agentModelProvider': provider_mode, 'agentModelId': '',
-        'agentModelUrl': profiles['openai']['OPENROUTER_URL'],
+        f'{prefix}ModelProvider': provider_mode, f'{prefix}ModelId': '',
+        f'{prefix}ModelUrl': profiles['openai']['OPENROUTER_URL'],
     })
-    assert config_manager.get_model_api_config('agent')['model'] == (
+    assert config_manager.get_model_api_config(model_type)['model'] == (
         vision_model or profiles['openai']['CONVERSATION_MODEL']
     )
 

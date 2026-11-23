@@ -153,6 +153,8 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 - `VISION_MODEL` - 视觉模型（已弃用：图片交给聊天模型；单独配置过的看图模型在正式版前继续优先使用并提示弃用）
 - `AGENT_MODEL` - Agent 模型（键鼠控制、浏览器控制等，见第 6 节）
 - `AGENT_SMALL_MODEL` - 使魔模型·小型（`get_model_api_config("agent_small")`）：默认就是识别模型（`recognition`）；开启自定义 API 后，`agentSmallModelProvider` 可选 `follow_recognition`（默认）、`follow_agent`（改用 Agent 模型）、`follow_core` / `follow_assist`（地址和 Key 跟随该提供商；模型名留空时取该提供商的识别模型，填了 `agentSmallModelId` 且该提供商不是固定模型时用填的模型名）、具体提供商或 `custom`。选 `custom` 或具体提供商时，地址和模型名都有才单独生效（具体提供商留空模型名时，只有地址属于该提供商才补上它的识别模型；地址改成别家又留空模型名，就算没填全）：具体提供商的 Key 依次取：API 账本里该提供商保存的 Key、这一格自己填的 Key、由核心 API Key 推出的该提供商 Key（`coreApi` / `assistApi` 就是这家时）；账本和推出的 Key 都只在地址属于该提供商时才用，`custom` 只用 `agentSmallModelApiKey`（留空即不带 Key）；地址或模型名缺一项，整格跟随识别模型（地址、模型名、Key、协议都用识别模型实际生效的那一套）
+- `AGENT_ADVANCED_MODEL` - 使魔模型·高级（`get_model_api_config("agent_advanced")`）：给最难的活留的一档，默认就是使魔模型·通用（`agent`）。`agentAdvancedModelProvider` 可选 `follow_agent`（默认）、`follow_core` / `follow_assist`、具体提供商或 `custom`；和使魔模型·小型一样，地址和模型名都有才单独生效，缺一项就整格跟随使魔模型·通用。
+- `GAME_RECOGNITION_MODEL` - 小游戏识别模型（`get_model_api_config("game_recognition")`）：小游戏里要快的判断（目前是足球的「消极防守」判断），默认就是识别模型（`recognition`）。`gameRecognitionModelProvider` 默认 `follow_recognition`，规则同上：没填全就整格跟随识别模型。
 
 补充说明：
 - `claude`、`kimi_code` 带 `provider_type: "anthropic"`，按 Anthropic Messages 协议调用。
@@ -162,11 +164,11 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 ### 6. 键鼠控制与浏览器控制（Agent 模型）配置
 
-键鼠控制和浏览器控制是猫爪（NekoClaw）的两组内置工具，代码在 `nekoclaw/builtin/`。使魔（代码里叫 task agent）在自己的循环里一步一步调用它们；工具本身不带循环，也不另外调用模型。键鼠是一个 `computer` 工具：每次做一个动作并返回动作之后的截图，坐标的横纵两个方向都是 0 到 999 的整数。浏览器是 15 个 `browser_*` 工具：把页面读成文字快照（页面的无障碍树，每个元素带一个 uid），再按 uid 操作元素。
+键鼠控制和浏览器控制是喵能力（NekoPower）的两组内置工具，代码在 `nekopower/builtin/`。使魔（代码里叫 task agent）在自己的循环里一步一步调用它们；工具本身不带循环，也不另外调用模型。键鼠是一个 `computer` 工具：每次做一个动作并返回动作之后的截图，坐标的横纵两个方向都是 0 到 999 的整数。浏览器是 15 个 `browser_*` 工具：把页面读成文字快照（页面的无障碍树，每个元素带一个 uid），再按 uid 操作元素。
 
 使魔用的是 **Agent 模型**槽位，通过 `get_model_api_config("agent")` 取模型、URL 和 API Key。键鼠工具和浏览器的截图工具要求模型能接收图片输入；模型不能看图时不提供这两个工具，浏览器的其余工具照常可用。
 
-浏览器控制操控的是机器上已经安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Chromium），走浏览器的调试协议。应用不随包附带浏览器，启动时也不下载；Playwright 只是测试依赖，`browser-use` 不在依赖里。找不到浏览器时，浏览器控制的可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。浏览器装在不常见的位置时，用环境变量 `NEKO_BROWSER_PATH` 指定可执行文件，或者写进 `<数据根>/nekoclaw/browser.json` 的 `executable`。
+浏览器控制操控的是机器上已经安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Chromium），走浏览器的调试协议。应用不随包附带浏览器，启动时也不下载；Playwright 只是测试依赖，`browser-use` 不在依赖里。找不到浏览器时，浏览器控制的可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。浏览器装在不常见的位置时，用环境变量 `NEKO_BROWSER_PATH` 指定可执行文件，或者写进 `<数据根>/nekopower/browser.json` 的 `executable`。
 
 > 旧版文档里的 `computerUseModel` / `computerUseModelUrl` / `computerUseModelApiKey` / `computerUseGroundModel` / `computerUseGroundUrl` / `computerUseGroundApiKey` 已没有任何代码读取，写进 `core_config.json` 不会生效。
 
@@ -236,7 +238,7 @@ Agent API Key 的取法：
 > **注意**：
 > - `enableCustomApi` 是各模型槽位自定义字段的总开关（GPT-SoVITS 和豆包语音除外，见第 7 节），打开后其它槽位里已保存的自定义值也会一起生效。
 > - 手工打开 `enableCustomApi` 但不想改 Agent 时，请把 `agentModelProvider` 设为 `follow_assist`。不设置时，`agentModelApiKey`（默认是空串）会把默认的 Agent Key 覆盖掉，Agent 可用性检查会报「Agent API Key 未配置或不可用」（设置页显示为「使魔模型的 API Key 未配置或不可用」）。
-> - 「使魔模型·小型」的字段 `agentSmallModelProvider` / `agentSmallModelUrl` / `agentSmallModelId` / `agentSmallModelApiKey` 与上表同构，多两个跟随值：默认的 `follow_recognition`（地址、模型名、Key 都跟随识别模型）和 `follow_agent`（都跟随 Agent 模型）。
+> - 「使魔模型·小型」的字段 `agentSmallModelProvider` / `agentSmallModelUrl` / `agentSmallModelId` / `agentSmallModelApiKey` 与上表同构，多两个跟随值：默认的 `follow_recognition`（地址、模型名、Key 都跟随识别模型）和 `follow_agent`（都跟随 Agent 模型）。「使魔模型·高级」（`agentAdvanced*`，默认 `follow_agent`）和「小游戏识别模型」（`gameRecognition*`，默认 `follow_recognition`）同理。
 > - 选具体提供商时地址不会自动切换：`agentModelUrl` 留空时请求仍发往默认地址（`assistApi` 提供商的地址）。所选提供商与 `assistApi` 不同时，要把 `agentModelUrl` 填成所选提供商的地址，请求才会发往它，也才会取用它的 `assistApiKey*`。
 
 > **Docker 部署**：
@@ -261,10 +263,12 @@ Agent API Key 的取法：
 | 记忆整理 | `memory` | `MEMORY_MODEL` | `memory` | 辅助 API |
 | 游戏主模型 | `gameMain` | `GAME_MAIN_MODEL` | `game_main` | 对话槽 |
 | 游戏摘要 | `gameSummary` | `GAME_SUMMARY_MODEL` | `game_summary` | 记忆整理槽 |
+| 小游戏识别 | `gameRecognition` | `GAME_RECOGNITION_MODEL` | `game_recognition` | 识别槽（整格，含地址、Key、协议） |
 | 识别 | `recognition` | `RECOGNITION_MODEL` | `recognition` | 辅助 API |
 | 视觉（已弃用） | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
 | Agent | `agent` | `AGENT_MODEL` | `agent` | 辅助 API |
 | 使魔模型·小型 | `agentSmall` | `AGENT_SMALL_MODEL` | `agent_small` | 识别槽（整格，含地址、Key、协议） |
+| 使魔模型·高级 | `agentAdvanced` | `AGENT_ADVANCED_MODEL` | `agent_advanced` | Agent 槽（整格，含地址、Key、协议） |
 | 实时语音 | `omni` | `REALTIME_MODEL` | `realtime` | 核心 API |
 | TTS | `tts` | `TTS_MODEL` | `tts_default` / `tts_custom` | 核心 API / 辅助 API |
 | 图像生成 | `image` | `IMAGE_GENERATION_CONFIG`（单个字典，无 `_URL` / `_API_KEY`） | `image` | 不回退，视为关闭 |
@@ -279,7 +283,7 @@ Agent API Key 的取法：
 - `<前缀>ModelProvider` 的取值：
   - `follow_core` / `follow_assist`：跟随核心 / 辅助 API 提供商的地址与 Key。实时语音和 TTS 两个槽例外：选 `follow_*` 时不写入地址，槽位保持未配置，直接按上表回退（`tts_default` 走核心 API，`tts_custom` 先试已保存的 Qwen Key、再走辅助 API），与选的是 `follow_core` 还是 `follow_assist` 无关（启用 GPT-SoVITS 时除外）；
   - `follow_conversation` / `follow_memory`：照搬对话 / 摘要槽，是两个游戏槽的默认值；
-  - `custom`：使用本槽填写的地址、模型和 Key。地址或模型 ID 留空时不会置空，而是沿用快照里原有的值：模型名照旧（对话、摘要等用途来自辅助 profile），地址除 Agent 槽外原本为空，于是整个槽回退。所以两项都要填。使魔模型·小型例外：地址或模型名缺一项时，这一格自己的模型名、地址、Key 一起清空，不沿用快照原值，整格交给识别槽；
+  - `custom`：使用本槽填写的地址、模型和 Key。地址或模型 ID 留空时不会置空，而是沿用快照里原有的值：模型名照旧（对话、摘要等用途来自辅助 profile），地址除 Agent 槽外原本为空，于是整个槽回退。所以两项都要填。使魔模型·小型、使魔模型·高级、小游戏识别例外：地址或模型名缺一项时，这一格自己的模型名、地址、Key 一起清空，不沿用快照原值，整格交给它跟随的那一档（小型、小游戏识别交给识别槽，高级交给 Agent 槽）；
   - 具名提供商（如 `qwen`、`openai`）：本槽 URL 属于该提供商时，优先用 API 管理簿里该提供商的 Key（`assistApiKey*`），否则用本槽的 `<前缀>ModelApiKey`。TTS 槽始终用本槽的 Key。
 - 实时语音槽只能跟随核心 API，或选 `custom` 自填端点。选具名提供商或 `follow_assist`，都会按 `follow_core` 处理。
 - 图像生成槽同样要求 `enableCustomApi` 为 `true`，且 `imageModelProvider` 不能为空，也不能是 `disabled`（可选 `openai`、`qwen`、`qwen_intl`、`custom`）。具名提供商用 API 管理簿里该提供商的 Key，`custom` 用 `imageModelApiKey`；不会借用对话模型或其他槽的配置。

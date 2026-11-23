@@ -564,8 +564,103 @@ def test_rapidocr_pillow_update_parameters_strips_module_prefixes_consistently()
 
     assert global_dict["text_score"] == 0.6
     assert det_dict == {"box_thresh": 0.7, "use_dilation": False}
-    assert cls_dict == {"batch_num": 8, "label_list": ["0", "180"]}
-    assert rec_dict == {"batch_num": 12, "img_shape": [3, 48, 320]}
+    assert cls_dict == {"cls_batch_num": 8, "cls_label_list": ["0", "180"]}
+    assert rec_dict == {"rec_batch_num": 12, "rec_img_shape": [3, 48, 320]}
+
+
+def test_rapidocr_pillow_update_parameters_preserves_cls_and_rec_runtime_keys() -> None:
+    import importlib.util
+    import types
+    import yaml
+
+    fork_root = ROOT / "deps" / "rapidocr_pillow" / "rapidocr_onnxruntime"
+    parse_path = fork_root / "utils" / "parse_parameters.py"
+    spec = importlib.util.spec_from_file_location("_test_rapidocr_parse_parameters", parse_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # Provide lightweight stub for rapidocr_onnxruntime.utils.load_image when pyclipper is absent.
+    stub_pkg = types.ModuleType("rapidocr_onnxruntime")
+    stub_utils = types.ModuleType("rapidocr_onnxruntime.utils")
+    stub_load = types.ModuleType("rapidocr_onnxruntime.utils.load_image")
+    stub_load.LoadImageError = RuntimeError
+    orig_modules = {
+        k: sys.modules.get(k)
+        for k in (
+            "rapidocr_onnxruntime",
+            "rapidocr_onnxruntime.utils",
+            "rapidocr_onnxruntime.utils.load_image",
+        )
+    }
+    sys.modules["rapidocr_onnxruntime"] = stub_pkg
+    sys.modules["rapidocr_onnxruntime.utils"] = stub_utils
+    sys.modules["rapidocr_onnxruntime.utils.load_image"] = stub_load
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        for k, prev in orig_modules.items():
+            if prev is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = prev
+
+    config = yaml.safe_load((fork_root / "config.yaml").read_text(encoding="utf-8"))
+    updated = module.UpdateParameters()(
+        config,
+        cls_image_shape=[3, 80, 160],
+        cls_batch_num=2,
+        cls_thresh=0.5,
+        cls_label_list=["0", "180"],
+        cls_model_path="/tmp/cls.onnx",
+        rec_img_shape=[3, 32, 320],
+        rec_batch_num=3,
+        rec_keys_path="/tmp/dict.txt",
+        rec_model_path="/tmp/rec.onnx",
+    )
+
+    assert updated["Cls"]["cls_image_shape"] == [3, 80, 160]
+    assert updated["Cls"]["cls_batch_num"] == 2
+    assert updated["Cls"]["cls_thresh"] == 0.5
+    assert updated["Cls"]["label_list"] == ["0", "180"]
+    assert updated["Cls"]["model_path"] == "/tmp/cls.onnx"
+    assert updated["Rec"]["rec_img_shape"] == [3, 32, 320]
+    assert updated["Rec"]["rec_batch_num"] == 3
+    assert updated["Rec"]["rec_keys_path"] == "/tmp/dict.txt"
+    assert updated["Rec"]["model_path"] == "/tmp/rec.onnx"
+
+
+@pytest.mark.skipif(not _HAS_PYCLIPPER, reason="pyclipper missing (galgame group not installed)")
+def test_rapidocr_pillow_constructor_applies_cls_and_rec_runtime_overrides(monkeypatch) -> None:
+    import rapidocr_onnxruntime.ch_ppocr_cls.text_cls as text_cls_mod
+    import rapidocr_onnxruntime.ch_ppocr_det.text_detect as text_det_mod
+    import rapidocr_onnxruntime.ch_ppocr_rec.text_recognize as text_rec_mod
+    from rapidocr_onnxruntime import RapidOCR
+
+    class _FakeInferSession:
+        def __init__(self, _config):
+            pass
+
+        def get_character_list(self, key="character"):
+            return ["a", "b"]
+
+        def have_key(self, key="character"):
+            return True
+
+    monkeypatch.setattr(text_det_mod, "OrtInferSession", _FakeInferSession)
+    monkeypatch.setattr(text_cls_mod, "OrtInferSession", _FakeInferSession)
+    monkeypatch.setattr(text_rec_mod, "OrtInferSession", _FakeInferSession)
+
+    ocr = RapidOCR(
+        cls_image_shape=[3, 80, 160],
+        cls_batch_num=2,
+        cls_thresh=0.5,
+        rec_img_shape=[3, 32, 320],
+        rec_batch_num=3,
+    )
+    assert ocr.text_cls.cls_image_shape == [3, 80, 160]
+    assert ocr.text_cls.cls_batch_num == 2
+    assert ocr.text_cls.cls_thresh == 0.5
+    assert ocr.text_rec.rec_image_shape == [3, 32, 320]
+    assert ocr.text_rec.rec_batch_num == 3
 
 
 def test_every_fork_importing_test_carries_the_dependency_guard():

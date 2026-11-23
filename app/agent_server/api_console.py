@@ -244,7 +244,7 @@ def build_console_router(
     # -- permissions ------------------------------------------------------
 
     async def permissions_view(host: Any) -> dict[str, Any]:
-        from nekoclaw.host.permissions import AUTO_POLICY, MODES
+        from nekopower.host.permissions import AUTO_POLICY, MODES
 
         store = host.permission_store
         snapshot = await store.snapshot()
@@ -272,7 +272,7 @@ def build_console_router(
     @router.post("/permissions")
     async def set_permission(payload: dict[str, Any]) -> dict[str, Any]:
         """Set the mode of one category. ``expected_version`` refuses a change made on an older view."""
-        from nekoclaw.host.permissions import MODES, PermissionFileError
+        from nekopower.host.permissions import MODES, PermissionFileError
 
         payload = payload or {}
         category, mode = payload.get("category"), payload.get("mode")
@@ -409,7 +409,7 @@ def build_console_router(
 
     async def space_call(work: Awaitable[Any]) -> Any:
         """Await a call into the space; what it refuses is told with a code."""
-        from nekoclaw.host.space import SpaceError
+        from nekopower.host.space import SpaceError
 
         try:
             return await work
@@ -532,7 +532,7 @@ def build_console_router(
     @router.post("/space/entries")
     async def file_entry(payload: dict[str, Any]) -> dict[str, Any]:
         """Keep an entry the user wrote."""
-        from nekoclaw.host.space import ENTRY_TYPES
+        from nekopower.host.space import ENTRY_TYPES
 
         payload = payload or {}
         project, _ = scope(payload.get("project"))
@@ -563,7 +563,7 @@ def build_console_router(
     @router.patch("/space/entries/{entry_id}")
     async def edit_entry(entry_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Change an entry: each of ``title``, ``description``, ``kind``, ``content`` that is given."""
-        from nekoclaw.host.space import ENTRY_TYPES
+        from nekopower.host.space import ENTRY_TYPES
 
         payload = payload or {}
         project, archive_year = scope(payload.get("project"), payload.get("archive_year"))

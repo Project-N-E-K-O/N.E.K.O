@@ -35,6 +35,7 @@ from .notify import (
     release_memory_server_character,
     send_reload_page_notice,
 )
+from config import CHARACTER_GENDER_FIELD_KEYS, CHARACTER_NICKNAME_FIELD_KEYS
 from .voice_registry import _is_current_catgirl_voice_session_starting, _voice_session_starting_response
 
 import functools
@@ -1035,7 +1036,7 @@ async def get_characters(request: Request):
             characters_data['主人'] = await translation_service.translate_dict(
                 characters_data['主人'],
                 user_language,
-                fields_to_translate=['昵称']
+                fields_to_translate=list(CHARACTER_NICKNAME_FIELD_KEYS)
             )
 
         # Translate neko data concurrently for performance.
@@ -1044,7 +1045,7 @@ async def get_characters(request: Request):
                 if isinstance(data, dict):
                     return name, await translation_service.translate_dict(
                         data, user_language,
-                        fields_to_translate=['昵称', '性别']  # Do not translate profile names or system_prompt.
+                        fields_to_translate=list(CHARACTER_NICKNAME_FIELD_KEYS + CHARACTER_GENDER_FIELD_KEYS)  # Do not translate profile names or system_prompt.
                     )
                 return name, data
 

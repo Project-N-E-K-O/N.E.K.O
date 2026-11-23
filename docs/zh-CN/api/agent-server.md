@@ -23,9 +23,9 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 | `POST` | `/builtin/stop` | 叫停占着键鼠或浏览器的那件委托 |
 | `GET` | `/builtin/browser/settings` | 浏览器工具用哪个浏览器、怎么用，以及本机找到的浏览器 |
 | `POST` | `/builtin/browser/settings` | 修改上述设置 |
-| `POST` | `/nekoclaw/dispatch` | 把主对话的一句话交给任务大脑，返回第一轮的回执 |
-| `POST` | `/nekoclaw/query` | 问在办什么、某件事能不能办；不调模型 |
-| `GET` | `/nekoclaw/brief` | 在办的任务，每件一行，供新对话会话的开场提示使用 |
+| `POST` | `/nekopower/dispatch` | 把主对话的一句话交给任务大脑，返回第一轮的回执 |
+| `POST` | `/nekopower/query` | 问在办什么、某件事能不能办；不调模型 |
+| `GET` | `/nekopower/brief` | 在办的任务，每件一行，供新对话会话的开场提示使用 |
 | `GET` | `/tasks` | 列出在办的任务和最近五分钟内结束的任务 |
 | `GET` | `/tasks/{task_id}` | 读取一个任务；不存在时返回 `404` |
 | `POST` | `/tasks/{task_id}/cancel` | 叫停一个任务；不存在时返回 `404`，已经结束的返回 `success: false` 和它的 `status` |
@@ -35,23 +35,23 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 
 `/tasks` 返回的任务对象见 [Agent API](/zh-CN/api/rest/agent) 的「任务对象」一节，以后可能增加字段。
 
-`/api/agent/tasks/{task_id}/complete` 和 `/notify_config_changed` 属于进程内部。不得把 `/admin/control` 和 `/nekoclaw/*` 路由暴露到不可信网络。
+`/api/agent/tasks/{task_id}/complete` 和 `/notify_config_changed` 属于进程内部。不得把 `/admin/control` 和 `/nekopower/*` 路由暴露到不可信网络。
 
 ## 喵能力路由
 
 这三个路由由同一台机器上的主服务器调用，替主对话模型办事；不代理给浏览器。
 
-### `POST /nekoclaw/dispatch`
+### `POST /nekopower/dispatch`
 
 请求体：`{"text":"...","lanlan_name":"...","user_text":"...","conversation_id":"...","language":"..."}`。`text` 是模型传给 `dispatch_task` 工具的那句话，`lanlan_name` 是角色名，两者必填（否则 `400`）。`user_text` 是这一轮的用户原话，插件入口会在 `_ctx.latest_user_request` 里收到它。
 
 响应是 `{"success":true,"kind":"...","reason":"...","text":"...","commission_id":"...","model_calls":0}`。`text` 是给模型看的回执。`kind` 是 `accepted`（受理）、`received`（第一轮超过 1 秒，结论随后作为汇报送达）、`duplicate`、`no_capability`、`stopped`、`told`、`answered`、`ambiguous`、`nothing_active`、`unclear_answer` 之一。`kind` 为 `no_capability` 时，`reason` 是 `disabled`、`not_installed`、`not_enabled`、`denied`、`no_match` 之一。这个调用只等第一轮；事情本身在后台继续办。
 
-### `POST /nekoclaw/query`
+### `POST /nekopower/query`
 
 请求体：`{"text":"...","lanlan_name":"...","language":"..."}`，`lanlan_name` 必填。响应是 `{"success":true,"text":"...","can_do":true|false|null}`。问的是进展，或者不调模型就答不了时，`can_do` 为 `null`。
 
-### `GET /nekoclaw/brief`
+### `GET /nekopower/brief`
 
 查询参数：`lanlan_name`，可选 `language`。返回 `{"success":true,"lines":[...]}`：该角色名下排队中、在办、等用户回话的委托，每件一行。总开关关闭时列表为空。
 
@@ -61,7 +61,7 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 
 ### `GET /computer_use/availability` 与 `GET /browser_use/availability`
 
-两者都返回 `{"enabled":true,"ready":true|false,"reasons":[...],"provider":"nekoclaw"}`，键鼠的响应另带 `model`。agent 模型还没配置好时，只返回 `{"ready":false,"reasons":[...]}`。
+两者都返回 `{"enabled":true,"ready":true|false,"reasons":[...],"provider":"nekopower"}`，键鼠的响应另带 `model`。agent 模型还没配置好时，只返回 `{"ready":false,"reasons":[...]}`。
 
 - 键鼠就绪的条件：agent 模型的连通性探测通过，并且本机能发出键鼠输入。发不了输入时，`reasons` 里是某个 `AGENT_PYAUTOGUI_*` 原因码，例如没有显示环境的机器上是 `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE`。
 - 浏览器就绪的条件：本机装有可用的浏览器，并且 agent 模型的连通性探测通过。应用不自带浏览器；找不到 Chrome、Edge、Brave、Chromium 中的任何一个时，`reasons` 是 `["AGENT_BROWSER_NOT_FOUND"]`。查找只是几次文件检查，结果缓存 30 秒。
@@ -78,11 +78,11 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 
 ### `GET /builtin/browser/settings`
 
-返回 `{"settings":{"mode":"own_profile","executable":null,"headless":false},"modes":["own_profile","attach"],"browsers":[{"kind":"chrome","name":"Google Chrome","executable":"..."}]}`。`settings` 是 `<数据根>/nekoclaw/browser.json` 的内容，文件不存在时是默认值。`browsers` 是本机找到的浏览器，优先使用的排在最前。
+返回 `{"settings":{"mode":"own_profile","executable":null,"headless":false},"modes":["own_profile","attach"],"browsers":[{"kind":"chrome","name":"Google Chrome","executable":"..."}]}`。`settings` 是 `<数据根>/nekopower/browser.json` 的内容，文件不存在时是默认值。`browsers` 是本机找到的浏览器，优先使用的排在最前。
 
 | 字段 | 含义 |
 |---|---|
-| `mode` | `own_profile`（默认）：用用户的浏览器，配一份独立的资料目录 `<数据根>/nekoclaw/browser_profile`。`attach`：直接操控用户正在用的浏览器，要求 Chrome 144 以上，并在 `chrome://inspect/#remote-debugging` 打开远程调试 |
+| `mode` | `own_profile`（默认）：用用户的浏览器，配一份独立的资料目录 `<数据根>/nekopower/browser_profile`。`attach`：直接操控用户正在用的浏览器，要求 Chrome 144 以上，并在 `chrome://inspect/#remote-debugging` 打开远程调试 |
 | `executable` | 指定要用的浏览器路径，代替自动找到的那个；`null` 表示自动查找 |
 | `headless` | 启动浏览器时不开窗口；只对 `own_profile` 有效 |
 
@@ -107,9 +107,9 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 | 部分 | 当前职责 |
 |---|---|
 | 插件入口 | 一个入口就能办完的事，由任务大脑经插件服务的 `/runs` 协议直达调用 |
-| task agent | 办多步任务的执行会话（界面上叫「使魔」），跑在内置的 agent runtime（`nekoclaw/runtime/`）里 |
+| task agent | 办多步任务的执行会话（界面上叫「使魔」），跑在内置的 agent runtime（`nekopower/runtime/`）里 |
 | 能力网关 | 回环地址上的 MCP 服务，task agent 经它调用插件入口、MCP 工具和内置工具 |
-| 键鼠、浏览器 | 两组内置工具（`nekoclaw/builtin/`），task agent 在自己的循环里一步一步调用：键鼠是一个 `computer` 工具，浏览器是 15 个 `browser_*` 工具，经调试协议操控本机已安装的浏览器。只有 task agent 能调用 |
+| 键鼠、浏览器 | 两组内置工具（`nekopower/builtin/`），task agent 在自己的循环里一步一步调用：键鼠是一个 `computer` 工具，浏览器是 15 个 `browser_*` 工具，经调试协议操控本机已安装的浏览器。只有 task agent 能调用 |
 
 MCP 服务在 `plugin/plugins/mcp_adapter/` 下的 `mcp_adapter` 插件里配置，网关把它们的工具提供给 task agent。
 

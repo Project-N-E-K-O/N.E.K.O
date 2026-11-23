@@ -85,7 +85,7 @@ Router は `main_routers/shared_state.py` の getter から長寿命 manager を
 main dialogue model
         │ dispatch_task / query_tasks (tool call)
         ▼
-tool_calling.py ── HTTP :48915 /nekoclaw/* ──> NekoPower host ──> receipt back to the model
+tool_calling.py ── HTTP :48915 /nekopower/* ──> NekoPower host ──> receipt back to the model
 
 cross_server turn end without a tool call that acts
         │ user's words + the character's reply

@@ -2143,7 +2143,7 @@ _HOST_INTERNAL_ROOTS = frozenset(
         "main_logic",
         "main_routers",
         "memory",
-        "nekoclaw",
+        "nekopower",
         "services",
         "steamworks",
         "utils",

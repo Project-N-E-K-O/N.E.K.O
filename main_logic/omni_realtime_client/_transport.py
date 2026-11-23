@@ -34,12 +34,12 @@ from ._shared import (
     asyncio,
     base64,
     calculate_text_similarity,
-    canonical_realtime_dialect,
     get_stepfun_tts_default_voice,
     json,
     logger,
     np,
     parse_arguments_json,
+    resolve_realtime_dialect,
     time,
     uuid,
     websockets,
@@ -661,7 +661,8 @@ class _TransportMixin:
             self._has_server_vad = False
         self._modalities = ["text", "audio"] if native_audio else ["text"]
 
-        if 'glm' in self._model_lower:
+        dialect = self._resolved_realtime_dialect()
+        if dialect == "glm":
             # GLM: server_vad payload in SERVER_VAD; turn_detection=null in MANUAL.
             # Best-effort — provider may reject; if so we degrade to local-suppression-only.
             glm_session = {
@@ -685,7 +686,7 @@ class _TransportMixin:
             if self.has_tools() and 'audio' in self._modalities:
                 glm_session["tools"] = self._tools_for_openai_realtime()
             await self.update_session(glm_session)
-        elif "qwen" in self._model_lower:
+        elif dialect == "qwen":
             qwen_session: Dict[str, Any] = {
                 "instructions": instructions,
                 "modalities": self._modalities ,
@@ -715,7 +716,7 @@ class _TransportMixin:
                 qwen_session["tools"] = self._tools_for_qwen()
                 qwen_session["enable_search"] = False
             await self.update_session(qwen_session)
-        elif "gpt" in self._model_lower:
+        elif dialect == "gpt":
             gpt_session = {
                 "type": "realtime",
                 "model": self.model,
@@ -746,7 +747,7 @@ class _TransportMixin:
                 gpt_session["tools"] = self._tools_for_openai_realtime()
                 gpt_session["tool_choice"] = "auto"
             await self.update_session(gpt_session)
-        elif "step" in self._model_lower:
+        elif dialect == "step":
             default_voice = get_stepfun_tts_default_voice('step')
             step_session = {
                 "instructions": instructions,
@@ -763,7 +764,7 @@ class _TransportMixin:
                 step_tools.extend(self._tools_for_step())
             step_session["tools"] = step_tools
             await self.update_session(step_session)
-        elif "free" in self._model_lower:
+        elif dialect == "free":
             # NOTE: lanlan.tech (China free) backs onto StepFun and
             # supports the StepFun custom-function protocol — the
             # server-side tool stripping the user mentioned will be
@@ -805,7 +806,7 @@ class _TransportMixin:
                 free_tools.extend(self._tools_for_step())
             free_session["tools"] = free_tools
             await self.update_session(free_session)
-        elif "grok" in self._model_lower:
+        elif dialect == "grok":
             # xAI Grok Voice: flat OpenAI Realtime 1.0 schema.
             # Built-in voices from GET /v1/tts/voices: eve/ara/leo/rex/sal, default eve.
             # Tools use OpenAI-compatible functions through response.function_call_arguments.done.
@@ -1178,11 +1179,20 @@ class _TransportMixin:
 
                 raise
 
+    def _resolved_realtime_dialect(self) -> str:
+        cached = getattr(self, "_realtime_dialect", None)
+        if cached is not None:
+            return cached
+        return resolve_realtime_dialect(
+            getattr(self, "_api_type", ""),
+            getattr(self, "model", None) or getattr(self, "_model_lower", ""),
+            base_url=getattr(self, "base_url", None),
+            livestream_mode=bool(getattr(self, "_livestream_mode", False)),
+        )
+
     def _is_glm_realtime(self) -> bool:
         """True when this socket speaks the GLM Realtime session dialect."""
-        if canonical_realtime_dialect(getattr(self, "_api_type", "")) == "glm":
-            return True
-        return "glm" in str(getattr(self, "_model_lower", "") or "")
+        return self._resolved_realtime_dialect() == "glm"
 
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
@@ -2187,17 +2197,18 @@ class _TransportMixin:
                 )
 
             if self._audio_in_buffer or bypass_rate_limit:
-                if "qwen" in self._model_lower:
+                dialect = self._resolved_realtime_dialect()
+                if dialect == "qwen":
                     append_event = {
                         "type": "input_image_buffer.append" ,
                         "image": image_b64
                     }
-                elif "glm" in self._model_lower:
+                elif dialect == "glm":
                     append_event = {
                         "type": "input_audio_buffer.append_video_frame",
                         "video_frame": image_b64
                     }
-                elif "gpt" in self._model_lower:
+                elif dialect == "gpt":
                     append_event = {
                         "type": "conversation.item.create",
                         "item": {
@@ -3931,7 +3942,7 @@ class _TransportMixin:
                 if not self._skip_until_next_response and not self._interrupted:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
-                            if "glm" not in self._model_lower:
+                            if self._resolved_realtime_dialect() != "glm":
                                 self._ai_recent_activity_time = time.time()
                                 await self._observed_text_callback(self.on_text_delta, event["delta"], self._is_first_text_chunk)
                                 if await retire_if_replaced():

@@ -347,6 +347,8 @@ def _render_pending_extra_replies_by_origin(
     if not entries:
         return ""
 
+    lang = normalize_sys_prompt_locale(lang)
+
     task_entries: list[dict] = []
     event_entries: list[dict] = []
     for entry in entries:

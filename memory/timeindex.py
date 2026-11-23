@@ -1266,10 +1266,16 @@ class TimeIndexedMemory:
 
     def get_original_source_evidence(self, lanlan_name: str, source_ids: list[str]) -> dict[str, tuple[str, int | float]]:
         """Read original role/time evidence by identity, without interpreting message text."""
+        if not source_ids:
+            return {}
         from memory.long_term_sync import original_message_source
         from memory.message_sources import is_theater_memory_message
         import re
-        wanted = {value for value in source_ids if re.fullmatch(r'(?:sync:[0-9a-f]{32}|desktop:[0-9a-f]{64})', value)}
+        wanted = {
+            value
+            for value in source_ids
+            if isinstance(value, str) and re.fullmatch(r'(?:sync:[0-9a-f]{32}|desktop:[0-9a-f]{64})', value)
+        }
         if not wanted:
             return {}
         table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
@@ -1289,12 +1295,16 @@ class TimeIndexedMemory:
                     for original_time, session_id, serialized in rows:
                         try:
                             stored = json.loads(serialized)
-                        except (json.JSONDecodeError, TypeError):
+                        except (ValueError, TypeError):
+                            # JSONDecodeError subclasses ValueError; this also catches Python 3.11+ int-digit limit ValueError.
                             continue
                         if (not isinstance(stored, dict) or stored.get('type') not in ('human', 'ai')
                                 or is_theater_memory_message(stored)):
                             continue
-                        identity, at = original_message_source(stored, session_id, original_time)
+                        try:
+                            identity, at = original_message_source(stored, session_id, original_time)
+                        except (TypeError, ValueError):
+                            continue
                         if identity in wanted and at is not None:
                             found.setdefault(identity, set()).add((stored['type'], at))
         return {identity: next(iter(times)) for identity, times in found.items() if len(times) == 1}
