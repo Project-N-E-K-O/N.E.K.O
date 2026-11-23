@@ -187,6 +187,9 @@ function cancel(event?: PointerEvent) {
   if (moved) {
     if (from) placed[id] = from
     else delete placed[id]
+    // Where another one was put with the keys meanwhile was kept with where this one was
+    // dragged to: kept again, without that.
+    keep()
   }
   letGo()
 }

@@ -460,6 +460,19 @@ describe('a territory of the colony', () => {
     cat('kid')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
     await flush()
     expect(keptSpots('project:Blog').other).toEqual({ x: 0.4, y: 0.5 })
+
+    // Another one is put with the keys while this one is held, which keeps where they all are;
+    // the drag is called off afterwards: what is kept is without where it was dragged to.
+    const kid = keptSpots('project:Blog').kid
+    pointer(cat('other'), 'pointerdown', 160, 150)
+    pointer(cat('other'), 'pointermove', 390, 10)
+    cat('kid')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await flush()
+    pointer(cat('other'), 'pointercancel', 390, 10)
+    await flush()
+    expect(keptSpots('project:Blog').other).toEqual({ x: 0.4, y: 0.5 })
+    // What the keys did stays.
+    expect(keptSpots('project:Blog').kid.x).toBeCloseTo(kid.x + 0.03)
   })
 
   it('is moved only by the pointer that picked it up, whatever another finger does meanwhile', async () => {
