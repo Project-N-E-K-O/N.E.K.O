@@ -172,7 +172,8 @@ async def test_a_switch_goes_to_the_main_server_as_the_command_it_is(app, agent,
     assert request.url.path == "/api/agent/command" and request.url.port == config.MAIN_SERVER_PORT
     assert request.url.host == "127.0.0.1"
     assert request.headers["X-CSRF-Token"] == mutation_auth.AUTOSTART_CSRF_TOKEN
-    assert request.headers["Origin"] == f"http://127.0.0.1:{config.MAIN_SERVER_PORT}"
+    assert "origin" not in request.headers
+    assert request.headers["Referer"] == f"http://127.0.0.1:{config.MAIN_SERVER_PORT}/"
     assert json.loads(request.content) == command
 
 
@@ -276,3 +277,76 @@ def test_the_router_is_part_of_the_plugin_server():
     assert "console_proxy_router" in source
     # Awaited where the server shuts down, not only imported.
     assert "await close_console_proxy()" in source
+
+
+async def test_switch_succeeds_through_full_main_middleware_stack_behind_proxy(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+):
+    import config
+    from main_routers import agent_router
+    from main_routers.system_router import _shared as system_shared
+    from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
+    from utils.instance_access import InstanceAccessMiddleware
+
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.setattr(system_shared, "AUTOSTART_CSRF_TOKEN", mutation_auth.AUTOSTART_CSRF_TOKEN)
+    monkeypatch.setattr(console_proxy, "_remote", lambda: False)
+    monkeypatch.setattr(agent_router, "get_session_manager", dict)
+
+    class _StubCfg:
+        @staticmethod
+        def get_character_data():
+            return ("", "", "", "", "", "", "", "", "")
+
+        @staticmethod
+        def is_agent_free():
+            return False
+
+    monkeypatch.setattr(agent_router, "get_config_manager", _StubCfg)
+
+    tool_requests: list[httpx.Request] = []
+
+    def _tool_handler(request: httpx.Request) -> httpx.Response:
+        tool_requests.append(request)
+        return httpx.Response(200, json={"success": True})
+
+    tool_client = httpx.AsyncClient(transport=httpx.MockTransport(_tool_handler))
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: tool_client)
+
+    main_app = FastAPI()
+    main_app.include_router(agent_router.router)
+    main_app.add_middleware(InboundBodySizeLimitMiddleware)
+    main_app.add_middleware(InstanceAccessMiddleware)
+    main_app.add_middleware(HostOriginGuardMiddleware)
+
+    main_base = f"http://127.0.0.1:{config.MAIN_SERVER_PORT}"
+    main_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main_app, client=("127.0.0.1", 54321)),
+        base_url=main_base,
+    )
+    monkeypatch.setattr(console_proxy, "_http", lambda: main_client)
+
+    try:
+        async with _client(app, _page_changes()) as client:
+            answer = await client.post("/console/switch", json={"enabled": True})
+        assert answer.status_code == 200 and answer.json() == {"success": True}
+        assert len(tool_requests) == 1
+        assert json.loads(tool_requests[0].content) == {
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "lanlan_name": "",
+        }
+
+        # Control: sending an Origin header under NEKO_BEHIND_PROXY=true trips InstanceAccessMiddleware (401).
+        rejected = await main_client.post(
+            "/api/agent/command",
+            json={"command": "set_agent_enabled", "enabled": True},
+            headers={"Origin": main_base, "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
+        )
+        assert rejected.status_code == 401
+        assert "instance_authorization_required" in rejected.text
+    finally:
+        await main_client.aclose()
+        await tool_client.aclose()

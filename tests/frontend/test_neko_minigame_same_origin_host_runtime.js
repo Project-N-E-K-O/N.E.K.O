@@ -834,6 +834,7 @@ async function main() {
   assert(retrySizeError?.code === 'invalid_payload' && calls.length === beforeCsrfRetry + 1,
     'a longer refreshed CSRF token escaped the command budget on retry');
   csrfToken = 'test-token';
+  await host.refreshMutationHeaders();
   let oversizedCommandError = null;
   const commandCallsBeforeOversize = calls.filter(
     (call) => call.url.endsWith('/round/input'),
@@ -2183,8 +2184,8 @@ async function main() {
       `expected concurrent getMutationHeaders calls to dedup, saw ${pageConfigRequests} fetches`);
     force403OnNextChat = true;
     await unloadHost.requestDialogue({ event: { kind: 'turn_3' } });
-    assert(pageConfigRequests === 3,
-      `expected 403 csrf_validation_failed to refresh token once, saw ${pageConfigRequests} fetches`);
+    assert(pageConfigRequests === 2,
+      `expected cached token reuse plus 1 refresh after 403 csrf_validation_failed, saw ${pageConfigRequests} fetches`);
 
     // Synchronous page-exit: sendBeacon returns false, then dispose runs synchronously.
     const endPromise = unloadHost.end({ reason: 'pagehide' }, { useBeacon: true });
@@ -2269,6 +2270,149 @@ async function main() {
     const healthyResp = await healthyHeartbeat;
     assert(healthyResp.ok === true, 'cancelling one caller broke shared page_config waiter');
     abortWaitHost.dispose();
+  }
+
+  // Thread #35: Without nekoLocalMutationSecurity, sequential drain/heartbeat polling
+  // reuses the cached CSRF token and fetches /api/config/page_config only once until 403 refresh.
+  {
+    let pageConfigFetches = 0;
+    let activeToken = 'cache-token-1';
+    let failNextDrainWith403 = false;
+    const mutationHeadersSeen = [];
+    const pollingFetch = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        pageConfigFetches += 1;
+        return jsonResponse({ autostart_csrf_token: activeToken });
+      }
+      if (pathName.includes('/route/drain') && failNextDrainWith403) {
+        failNextDrainWith403 = false;
+        activeToken = 'cache-token-2';
+        return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+      }
+      mutationHeadersSeen.push(init.headers?.['X-CSRF-Token'] || '');
+      return jsonResponse({ ok: true, outputs: [] });
+    };
+    const pollingHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'csrf-cache-reuse-session',
+      fetchImpl: pollingFetch,
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    pollingHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime'], optionalCapabilities: [],
+      },
+    });
+    await pollingHost.drain({ tick: 1 });
+    await pollingHost.heartbeat({ tick: 2 });
+    await pollingHost.drain({ tick: 3 });
+    await pollingHost.heartbeat({ tick: 4 });
+    await pollingHost.drain({ tick: 5 });
+    assert(pageConfigFetches === 1,
+      `expected sequential drain/heartbeat polling to reuse cached CSRF token (1 page_config fetch), saw ${pageConfigFetches}`);
+    assert(mutationHeadersSeen.length === 5 && mutationHeadersSeen.every((t) => t === 'cache-token-1'),
+      `expected all 5 polling calls to reuse cache-token-1, saw ${JSON.stringify(mutationHeadersSeen)}`);
+
+    // Forced refresh on 403 fetches page_config a second time and caches the new token.
+    failNextDrainWith403 = true;
+    await pollingHost.drain({ tick: 6 });
+    await pollingHost.drain({ tick: 7 });
+    assert(pageConfigFetches === 2,
+      `expected single refresh on 403 plus cached reuse afterward (2 fetches), saw ${pageConfigFetches}`);
+    assert(mutationHeadersSeen.slice(-2).every((t) => t === 'cache-token-2'),
+      `expected refreshed polling calls to reuse cache-token-2, saw ${JSON.stringify(mutationHeadersSeen.slice(-2))}`);
+    pollingHost.dispose();
+  }
+
+  // Thread #30: cancelPendingRequests() without external signal must cancel pending CSRF waits
+  // before initial submit and during 403 refresh retry, while preserveOperations keeps shared waiters alive.
+  {
+    let pageConfigGate = null;
+    let releasePageConfig = null;
+    let pageConfigCount = 0;
+    let chatPostCount = 0;
+    let endPostCount = 0;
+    let chat403First = false;
+    const cancelCsrfFetch = async (url) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        pageConfigCount += 1;
+        pageConfigGate = new Promise((resolve) => { releasePageConfig = resolve; });
+        await pageConfigGate;
+        return jsonResponse({ autostart_csrf_token: `cancel-test-token-${pageConfigCount}` });
+      }
+      if (pathName.endsWith('/chat')) {
+        chatPostCount += 1;
+        if (chat403First) {
+          chat403First = false;
+          return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+        }
+        return jsonResponse({ ok: true, accepted: true });
+      }
+      if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+        endPostCount += 1;
+        return jsonResponse(RAW_END_RESPONSE);
+      }
+      return jsonResponse({ ok: true });
+    };
+    const cancelHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'cancel-pending-csrf-session',
+      fetchImpl: cancelCsrfFetch,
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    cancelHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime', 'dialogue'], optionalCapabilities: [],
+      },
+    });
+
+    // 1) cancelPendingRequests() during initial page_config wait cancels requestDialogue (0 /chat POSTs).
+    const initialCancelPromise = cancelHost.requestDialogue({ event: { kind: 'cancelled_wait' } })
+      .then(() => null, (err) => err);
+    await new Promise((resolve) => setImmediate(resolve));
+    cancelHost.cancelPendingRequests();
+    releasePageConfig?.();
+    const initialErr = await initialCancelPromise;
+    assert(initialErr?.code === 'cancelled',
+      `expected cancelPendingRequests() to cancel requestDialogue during page_config wait, got ${initialErr?.code}`);
+    assert(chatPostCount === 0 && pageConfigCount === 1,
+      `expected 0 dialogue POSTs and no retry refresh, got chat=${chatPostCount}, page_config=${pageConfigCount}`);
+
+    // 2) Preserve shared page_config when cancelling requestDialogue while preserving route_end.
+    const sharedDialoguePromise = cancelHost.requestDialogue({ event: { kind: 'shared_cancel' } })
+      .then(() => null, (err) => err);
+    const sharedEndPromise = cancelHost.end({ reason: 'unload' }, { useBeacon: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    cancelHost.cancelPendingRequests('cancelled', { preserveOperations: ['route_end'] });
+    releasePageConfig?.();
+    const sharedDialogueErr = await sharedDialoguePromise;
+    const sharedEndResp = await sharedEndPromise;
+    assert(sharedDialogueErr?.code === 'cancelled',
+      `expected requestDialogue to cancel while route_end preserved, got ${sharedDialogueErr?.code}`);
+    assert(sharedEndResp?.ok === true && endPostCount === 1 && chatPostCount === 0,
+      `expected preserved route_end to share page_config and succeed, end=${endPostCount}, chat=${chatPostCount}`);
+
+    // 3) cancelPendingRequests() during 403 refresh wait aborts retry before second /chat POST.
+    chat403First = true;
+    const refreshCancelPromise = cancelHost.requestDialogue({ event: { kind: 'refresh_cancel' } })
+      .then(() => null, (err) => err);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert(chatPostCount === 1 && pageConfigCount === 3,
+      `expected 1 initial /chat attempt waiting on refresh page_config, got chat=${chatPostCount}, page_config=${pageConfigCount}`);
+    cancelHost.cancelPendingRequests();
+    releasePageConfig?.();
+    const refreshErr = await refreshCancelPromise;
+    assert(refreshErr?.code === 'cancelled' && chatPostCount === 1,
+      `expected 403 refresh cancel to stop retry /chat POST, err=${refreshErr?.code}, chat=${chatPostCount}`);
+    cancelHost.dispose();
   }
 
   // F0433: enableLoggerAfterRouteStart must POST /api/game/logs/enable even when a

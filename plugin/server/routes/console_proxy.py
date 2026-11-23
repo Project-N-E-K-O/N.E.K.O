@@ -175,7 +175,7 @@ async def set_switch(request: Request) -> JSONResponse:
             json=command,
             headers={
                 TOKEN_HEADER: csrf_token(),
-                "Origin": main_base,
+                "Referer": f"{main_base}/",
             },
         )
         content = answer.json()

@@ -674,3 +674,85 @@ def test_steam_proxy_image_enforces_bounded_read_on_post_stat_growth(tmp_path, m
         resp = client.get("/api/steam/proxy-image", params={"image_path": str(img_path)})
     assert resp.status_code == 413
     assert resp.json()["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_plugin_console_switch_passes_real_main_server_middleware_stack_behind_proxy(monkeypatch):
+    import json
+
+    import config
+    from app import main_server
+    from fastapi import FastAPI
+    from main_routers import agent_router
+    from main_routers.system_router import _shared as system_shared
+    from plugin.server.infrastructure import mutation_auth
+    from plugin.server.routes import console_proxy
+    from utils.host_origin_guard import HostOriginGuardMiddleware
+
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.setattr(system_shared, "AUTOSTART_CSRF_TOKEN", mutation_auth.AUTOSTART_CSRF_TOKEN)
+    monkeypatch.setattr(console_proxy, "_remote", lambda: False)
+    monkeypatch.setattr(agent_router, "get_session_manager", dict)
+
+    class _StubCfg:
+        @staticmethod
+        def get_character_data():
+            return ("", "", "", "", "", "", "", "", "")
+
+        @staticmethod
+        def is_agent_free():
+            return False
+
+    monkeypatch.setattr(agent_router, "get_config_manager", _StubCfg)
+
+    tool_requests: list[httpx.Request] = []
+
+    def _tool_handler(request: httpx.Request) -> httpx.Response:
+        tool_requests.append(request)
+        return httpx.Response(200, json={"success": True})
+
+    tool_client = httpx.AsyncClient(transport=httpx.MockTransport(_tool_handler))
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: tool_client)
+
+    main_base = f"http://127.0.0.1:{config.MAIN_SERVER_PORT}"
+    # Exercise real app.main_server.app without entering lifespan context to avoid leaking global hooks.
+    main_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main_server.app, client=("127.0.0.1", 54321)),
+        base_url=main_base,
+    )
+    monkeypatch.setattr(console_proxy, "_http", lambda: main_client)
+
+    plugin_app = FastAPI()
+    plugin_app.include_router(console_proxy.router)
+    plugin_app.add_middleware(HostOriginGuardMiddleware)
+    plugin_page = "http://127.0.0.1:48916"
+    plugin_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=plugin_app, client=("127.0.0.1", 1234)),
+        base_url=plugin_page,
+        headers={"Origin": plugin_page, "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
+    )
+
+    try:
+        resp = await plugin_client.post("/console/switch", json={"enabled": True})
+        assert resp.status_code == 200 and resp.json() == {"success": True}
+        assert len(tool_requests) == 1
+        assert json.loads(tool_requests[0].content) == {
+            "command": "set_agent_enabled",
+            "enabled": True,
+            "lanlan_name": "",
+        }
+
+        # Control check: Origin triggers InstanceAccessMiddleware 401 when NEKO_BEHIND_PROXY=true.
+        rejected = await main_client.post(
+            "/api/agent/command",
+            json={"command": "set_agent_enabled", "enabled": True},
+            headers={"Origin": main_base, "X-CSRF-Token": mutation_auth.AUTOSTART_CSRF_TOKEN},
+        )
+        assert rejected.status_code == 401
+        assert "instance_authorization_required" in rejected.text
+    finally:
+        await plugin_client.aclose()
+        await main_client.aclose()
+        await tool_client.aclose()

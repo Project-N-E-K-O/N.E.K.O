@@ -353,10 +353,48 @@ def test_beacon_shutdown_treats_non_ascii_csrf_token_as_invalid(beacon_client):
     assert r_no_origin.status_code == 403
     assert r_no_origin.json()["detail"]["error_code"] == "csrf_validation_failed"
 
+    r_surrogate_no_origin = client.post(
+        "/api/beacon/shutdown",
+        content=b'{"_csrf_token": "\\ud800"}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert r_surrogate_no_origin.status_code == 403
+    assert r_surrogate_no_origin.json()["detail"]["error_code"] == "csrf_validation_failed"
+
     r_same_origin = client.post(
         "/api/beacon/shutdown",
         json={"_csrf_token": "非ASCII令牌"},
         headers={"Origin": "http://127.0.0.1:48911", "Sec-Fetch-Site": "same-origin"},
     )
     assert r_same_origin.status_code == 200
-    assert shutdown_mock.await_count == 1
+
+    r_surrogate_same_origin = client.post(
+        "/api/beacon/shutdown",
+        content=b'{"_csrf_token": "\\ud800"}',
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "http://127.0.0.1:48911",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    )
+    assert r_surrogate_same_origin.status_code == 200
+    assert shutdown_mock.await_count == 2
+
+
+def test_local_mutation_guard_treats_lone_surrogate_csrf_token_as_403():
+    import json
+    from starlette.requests import Request
+    from main_routers.system_router._shared import _validate_local_mutation_request
+
+    req = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/config/core",
+        "scheme": "http",
+        "server": ("127.0.0.1", 48911),
+        "headers": [(b"origin", b"http://127.0.0.1:48911")],
+    })
+    rejected = _validate_local_mutation_request(req, payload={"_csrf_token": "\ud800"})
+    assert rejected is not None
+    assert rejected.status_code == 403
+    assert json.loads(rejected.body)["error_code"] == "csrf_validation_failed"

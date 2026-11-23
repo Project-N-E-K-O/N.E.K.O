@@ -632,7 +632,9 @@ async def _validate_beacon_shutdown_origin(request: Request) -> None:
     has_valid_csrf = bool(
         csrf_token
         and AUTOSTART_CSRF_TOKEN
-        and secrets.compare_digest(csrf_token.encode("utf-8"), AUTOSTART_CSRF_TOKEN.encode("utf-8"))
+        and csrf_token.isascii()
+        and AUTOSTART_CSRF_TOKEN.isascii()
+        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
     )
 
     origin_headers = request.headers.getlist("origin")

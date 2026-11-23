@@ -100,20 +100,24 @@ class InboundBodySizeLimitMiddleware:
             return
 
         content_length: bytes | None = None
-        content_type: bytes = b""
+        content_types: list[bytes] = []
         for key, value in scope.get("headers") or ():
             lowered = key.lower()
             if lowered == b"content-length":
                 content_length = value
             elif lowered == b"content-type":
-                content_type = value
+                content_types.append(value)
 
+        content_type = content_types[0] if content_types else b""
+        has_multipart_content_type = any(
+            value.strip().lower().startswith(b"multipart/") for value in content_types
+        )
         configured_route = self._matches_configured_route(scope)
         path_multipart_limit = self._multipart_path_limit(scope)
-        is_multipart = content_type.strip().lower().startswith(b"multipart/")
+        is_multipart = has_multipart_content_type
         bounded_multipart = (
             (configured_route and self.max_multipart_body_bytes is not None and is_multipart)
-            or (path_multipart_limit is not None and is_multipart)
+            or (path_multipart_limit is not None)
         )
         # Trigger preflight by route, not content-type: these route handlers declare
         # Form/File parameters, so FastAPI parses the body before entering the handler and its

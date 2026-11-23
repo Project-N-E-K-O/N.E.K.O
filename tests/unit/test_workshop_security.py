@@ -668,3 +668,118 @@ async def test_publish_continues_with_validated_preview_when_copy_fails_on_reado
     assert resp.status_code == 200
     assert captured["preview_image"] == str(staged_preview.resolve())
     assert staging_folder.exists()
+
+
+@pytest.mark.asyncio
+async def test_upload_jpeg_with_png_content_type_saves_jpg_and_publishes(tmp_path, monkeypatch):
+    from main_routers.workshop_router import preview_cards, publish as wr_publish
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color=(120, 40, 80)).save(buf, format="JPEG")
+    jpeg_bytes = buf.getvalue()
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_jpeg_as_png"
+    content_folder.mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(preview_cards, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+
+    # 1. Staged upload claiming image/png with JPEG payload must save as preview.jpg and publish cleanly.
+    staged_resp = await preview_cards.upload_preview_image(
+        _StubFormRequest(_StubUpload(jpeg_bytes, content_type="image/png"), content_folder=None)
+    )
+    assert staged_resp.status_code == 200
+    staged_data = json.loads(staged_resp.body)
+    assert staged_data["file_path"].endswith("preview.jpg")
+    assert Path(staged_data["file_path"]).is_file()
+
+    captured = {}
+
+    def _fake_preflight(_sw, _title, _desc, _cf, preview_arg, *_rest):
+        captured["preview_image"] = preview_arg
+        return "9991"
+
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", _fake_preflight)
+    publish_resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Jpeg Uploaded As Png",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": staged_data["file_path"],
+        })
+    )
+    assert publish_resp.status_code == 200
+    assert (content_folder / "preview.jpg").is_file()
+    assert not (content_folder / "preview.png").exists()
+    assert captured["preview_image"] == str((content_folder / "preview.jpg").resolve())
+
+    # 2. Direct upload into content_folder claiming image/png with JPEG payload also writes preview.jpg.
+    direct_folder = workshop / "WorkshopExport" / "item_direct"
+    direct_folder.mkdir(parents=True)
+    direct_resp = await preview_cards.upload_preview_image(
+        _StubFormRequest(_StubUpload(jpeg_bytes, content_type="image/png"), content_folder=str(direct_folder))
+    )
+    assert direct_resp.status_code == 200
+    direct_data = json.loads(direct_resp.body)
+    assert direct_data["file_path"].endswith("preview.jpg")
+    assert (direct_folder / "preview.jpg").is_file()
+    assert not (direct_folder / "preview.png").exists()
+
+
+@pytest.mark.asyncio
+async def test_publish_auto_discovers_mismatched_extension_thumbnail_and_copies_canonical_ext(tmp_path, monkeypatch):
+    from main_routers.workshop_router import publish as wr_publish
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color=(15, 90, 200)).save(buf, format="JPEG")
+    jpeg_bytes = buf.getvalue()
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_auto_mismatch"
+    content_folder.mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+    (content_folder / "thumbnail.png").write_bytes(jpeg_bytes)
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+
+    captured = {}
+
+    def _fake_preflight(_sw, _title, _desc, _cf, preview_arg, *_rest):
+        captured["preview_image"] = preview_arg
+        return "9992"
+
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", _fake_preflight)
+    resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Auto Discovered Mismatched Thumbnail",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+        })
+    )
+    assert resp.status_code == 200
+    assert (content_folder / "preview.jpg").is_file()
+    assert captured["preview_image"] == str((content_folder / "preview.jpg").resolve())
+
+    # Unsupported image formats (e.g. BMP disguised as thumbnail.png) must still return 400.
+    bmp_folder = workshop / "WorkshopExport" / "item_auto_bmp"
+    bmp_folder.mkdir(parents=True)
+    (bmp_folder / "card.json").write_text("{}", encoding="utf-8")
+    bmp_buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color=(1, 2, 3)).save(bmp_buf, format="BMP")
+    (bmp_folder / "thumbnail.png").write_bytes(bmp_buf.getvalue())
+
+    bad_resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Auto Discovered BMP",
+            "content_folder": str(bmp_folder),
+            "visibility": 0,
+        })
+    )
+    assert bad_resp.status_code == 400
+    assert json.loads(bad_resp.body)["success"] is False

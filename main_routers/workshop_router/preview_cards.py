@@ -20,6 +20,7 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 """
 
 from ._shared import logger, router
+from main_routers.system_router._shared import _extract_unc_share
 
 import asyncio
 import io
@@ -49,6 +50,11 @@ _PREVIEW_EXTENSION_TO_FORMATS = {
     ".png": {"PNG"},
     ".webp": {"WEBP"},
 }
+_PREVIEW_FORMAT_TO_EXTENSION = {
+    "JPEG": ".jpg",
+    "PNG": ".png",
+    "WEBP": ".webp",
+}
 
 
 async def _read_upload_bytes_bounded(
@@ -70,22 +76,6 @@ async def _read_upload_bytes_bounded(
         close_fn = getattr(file, "close", None)
         if callable(close_fn):
             await close_fn()
-
-
-def _extract_unc_share(raw_path: str) -> tuple[str, str] | None:
-    """Extract normalized ``(server, share)`` from a Windows UNC path, else ``None``."""
-    unified = raw_path.replace("/", "\\")
-    if unified.startswith(("\\??\\", "\\\\.\\", "\\\\?\\")):
-        return None
-    if not unified.startswith("\\\\"):
-        return None
-    remainder = unified[2:]
-    if not remainder or remainder.startswith("\\"):
-        return None
-    parts = remainder.split("\\")
-    if len(parts) < 2 or not parts[0] or not parts[1]:
-        return None
-    return parts[0].lower(), parts[1].lower()
 
 
 def _assert_workshop_path(path: str, base: str) -> str:
@@ -121,8 +111,8 @@ def _check_preview_image_dimensions(img) -> None:
         raise ValueError("Preview image dimensions exceed allowed limit")
 
 
-def _validate_preview_image_bytes(image_bytes: bytes) -> None:
-    """Verify uploaded preview bytes decode as a valid JPEG or PNG image."""
+def _validate_preview_image_bytes(image_bytes: bytes) -> str:
+    """Verify uploaded preview bytes decode as JPEG or PNG and return the PIL format."""
     from PIL import Image
 
     with Image.open(io.BytesIO(image_bytes)) as img:
@@ -130,19 +120,25 @@ def _validate_preview_image_bytes(image_bytes: bytes) -> None:
         img.verify()
     with Image.open(io.BytesIO(image_bytes)) as img:
         _check_preview_image_dimensions(img)
-        if (img.format or "").upper() not in {"JPEG", "PNG"}:
+        fmt = (img.format or "").upper()
+        if fmt not in {"JPEG", "PNG"}:
             raise ValueError("Unsupported preview image format")
         img.load()
+        return fmt
 
 
-def _verify_preview_image_file(file_path: str) -> None:
-    """Verify an on-disk preview image file decodes cleanly and matches its extension."""
+def _verify_preview_image_file(file_path: str, *, require_extension_match: bool = True) -> str:
+    """Verify an on-disk preview image file decodes cleanly and optionally matches its extension."""
     from PIL import Image
 
     ext = os.path.splitext(file_path)[1].lower()
-    allowed_formats = _PREVIEW_EXTENSION_TO_FORMATS.get(ext)
-    if not allowed_formats:
+    if ext not in _PREVIEW_EXTENSION_TO_FORMATS:
         raise ValueError("Unsupported preview image extension")
+    allowed_formats = (
+        _PREVIEW_EXTENSION_TO_FORMATS[ext]
+        if require_extension_match
+        else {"JPEG", "PNG", "WEBP"}
+    )
     with Image.open(file_path) as img:
         _check_preview_image_dimensions(img)
         if (img.format or "").upper() not in allowed_formats:
@@ -150,9 +146,11 @@ def _verify_preview_image_file(file_path: str) -> None:
         img.verify()
     with Image.open(file_path) as img:
         _check_preview_image_dimensions(img)
-        if (img.format or "").upper() not in allowed_formats:
+        fmt = (img.format or "").upper()
+        if fmt not in allowed_formats:
             raise ValueError("Preview image content does not match its file extension")
         img.load()
+        return fmt
 
 
 class _PreviewContentFolderMissing(RuntimeError):
@@ -744,11 +742,6 @@ async def upload_preview_image(request: Request):
                 "message": "只允许上传JPEG和PNG格式的图片"
             }, status_code=400)
 
-        content_type_to_ext = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png"}
-        file_extension = content_type_to_ext.get(file.content_type)
-        if not file_extension:
-            return JSONResponse({"success": False, "error": "文件类型不允许"}, status_code=400)
-
         workshop_base = await get_workshop_path_async()
         resolved_workshop_base = os.path.realpath(os.path.normpath(workshop_base))
 
@@ -783,11 +776,7 @@ async def upload_preview_image(request: Request):
                     "error": "目录不存在",
                     "message": "指定的内容文件夹不存在"
                 }, status_code=400)
-
-            preview_image_path = _assert_workshop_path(
-                os.path.join(content_folder, f'preview{file_extension}'),
-                content_folder,
-            )
+            staging_root = None
         else:
             content_folder = None
             staging_root = _resolve_preview_staging_root(resolved_workshop_base)
@@ -797,14 +786,6 @@ async def upload_preview_image(request: Request):
                     "error": "权限错误",
                     "message": "预览暂存目录不在允许的范围内"
                 }, status_code=403)
-            staging_dir = _assert_workshop_path(
-                os.path.join(staging_root, uuid.uuid4().hex),
-                staging_root,
-            )
-            preview_image_path = _assert_workshop_path(
-                os.path.join(staging_dir, f'preview{file_extension}'),
-                staging_dir,
-            )
 
         image_bytes = await _read_upload_bytes_bounded(file, MAX_PREVIEW_UPLOAD_BYTES)
         if not image_bytes or len(image_bytes) > MAX_PREVIEW_UPLOAD_BYTES:
@@ -815,13 +796,32 @@ async def upload_preview_image(request: Request):
             }, status_code=400)
 
         try:
-            await asyncio.to_thread(_validate_preview_image_bytes, image_bytes)
+            detected_format = await asyncio.to_thread(_validate_preview_image_bytes, image_bytes)
         except Exception:
             return JSONResponse({
                 "success": False,
                 "error": "无效的图片文件",
                 "message": "上传的文件不是有效的JPEG或PNG图片"
             }, status_code=400)
+
+        file_extension = _PREVIEW_FORMAT_TO_EXTENSION.get(detected_format)
+        if not file_extension:
+            return JSONResponse({"success": False, "error": "文件类型不允许"}, status_code=400)
+
+        if content_folder:
+            preview_image_path = _assert_workshop_path(
+                os.path.join(content_folder, f'preview{file_extension}'),
+                content_folder,
+            )
+        else:
+            staging_dir = _assert_workshop_path(
+                os.path.join(staging_root, uuid.uuid4().hex),
+                staging_root,
+            )
+            preview_image_path = _assert_workshop_path(
+                os.path.join(staging_dir, f'preview{file_extension}'),
+                staging_dir,
+            )
 
         await asyncio.to_thread(
             _write_preview_image,

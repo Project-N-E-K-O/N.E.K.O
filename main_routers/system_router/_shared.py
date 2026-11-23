@@ -157,7 +157,9 @@ def _validate_local_mutation_request(
     has_valid_csrf = bool(
         csrf_token
         and AUTOSTART_CSRF_TOKEN
-        and secrets.compare_digest(csrf_token.encode("utf-8"), AUTOSTART_CSRF_TOKEN.encode("utf-8"))
+        and csrf_token.isascii()
+        and AUTOSTART_CSRF_TOKEN.isascii()
+        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
     )
     request_origin = _get_request_origin(request)
     allowed_origins = _get_allowed_local_origins(request)

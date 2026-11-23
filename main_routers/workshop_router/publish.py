@@ -29,6 +29,8 @@ from .content_gate import (
 )
 from .meta import calculate_content_hash, read_workshop_meta, write_workshop_meta
 from .preview_cards import (
+    _PREVIEW_EXTENSION_TO_FORMATS,
+    _PREVIEW_FORMAT_TO_EXTENSION,
     WORKSHOP_STANDARD_PREVIEW_EXTENSIONS,
     _assert_workshop_path,
     _cleanup_consumed_preview_staging,
@@ -726,17 +728,31 @@ async def publish_to_workshop(request: Request):
                             "message": "预览图片格式不支持"
                         }, status_code=400)
                     try:
-                        await asyncio.to_thread(_verify_preview_image_file, preview_image)
+                        detected_format = await asyncio.to_thread(
+                            _verify_preview_image_file,
+                            preview_image,
+                            require_extension_match=False,
+                        )
                     except Exception:
                         return JSONResponse(content={
                             "success": False,
                             "error": "预览图片无效",
                             "message": "预览图片文件无效或已损坏"
                         }, status_code=400)
-                    if not os.path.basename(preview_image).startswith('preview.'):
+                    allowed_for_ext = _PREVIEW_EXTENSION_TO_FORMATS.get(file_extension, set())
+                    target_extension = (
+                        file_extension
+                        if detected_format in allowed_for_ext
+                        else _PREVIEW_FORMAT_TO_EXTENSION.get(detected_format, file_extension)
+                    )
+                    needs_canonical_copy = (
+                        not os.path.basename(preview_image).lower().startswith('preview.')
+                        or detected_format not in allowed_for_ext
+                    )
+                    if needs_canonical_copy:
                         try:
                             new_preview_path = _assert_workshop_path(
-                                os.path.join(content_folder, f'preview{file_extension}'),
+                                os.path.join(content_folder, f'preview{target_extension}'),
                                 content_folder,
                             )
                         except PermissionError:
