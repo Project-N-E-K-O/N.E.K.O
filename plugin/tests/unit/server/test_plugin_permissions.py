@@ -1503,6 +1503,13 @@ def test_holds_unbound_grant_does_not_save_for_a_plugin_without_a_record(manager
         store.holds_unbound_grant("x")
 
 
-@pytest.mark.parametrize("installed", [None, 3])
-def test_forget_installed_plugins_tolerates_a_malformed_install_result(installed):
-    assert permission_service.forget_installed_plugins({"installed_plugins": installed}) is True
+def test_forget_plugin_grants_drops_only_the_given_plugins(monkeypatch, manager):
+    store = PluginPermissionStore(manager, source_resolver=lambda _plugin_id: None)
+    monkeypatch.setattr(permission_service, "permission_store", store)
+    for plugin_id in ("demo", "other"):
+        store.decide(plugin_id, MEMORY_READ, "granted", source=None)
+
+    assert permission_service.forget_plugin_grants(("demo",)) is True
+
+    assert MEMORY_READ not in (store.read("demo") or {}).get("permissions", {})
+    assert store.read("other")["permissions"][MEMORY_READ]["state"] == "granted"

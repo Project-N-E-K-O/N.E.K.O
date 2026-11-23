@@ -239,6 +239,7 @@ class _Probe:
         self._pump: asyncio.Task | None = None
         self._by_response_id: dict[str, _Turn] = {}
         self._open: _Turn | None = None
+        self._open_response_id: str | None = None
         self._announced = asyncio.Event()
         self._terminal = asyncio.Event()
         self._first_delta = asyncio.Event()
@@ -366,6 +367,7 @@ class _Probe:
                 self._open.created_at = now
                 self._open.response_id = response_id
                 if response_id:
+                    self._open_response_id = response_id
                     self._by_response_id[response_id] = self._open
                 self._announced.set()
             return
@@ -457,9 +459,23 @@ class _Probe:
         return None
 
     def _resolve(self, response_id: str | None) -> _Turn | None:
-        if response_id and response_id in self._by_response_id:
-            return self._by_response_id[response_id]
-        return self._open
+        if response_id:
+            if response_id in self._by_response_id:
+                return self._by_response_id[response_id]
+            if (
+                self._open is not None
+                and self._open.done_at is None
+                and self._open_response_id is None
+            ):
+                self._open_response_id = response_id
+                if self._open.response_id is None:
+                    self._open.response_id = response_id
+                self._by_response_id[response_id] = self._open
+                return self._open
+            return None
+        if self._open is not None and self._open.done_at is None:
+            return self._open
+        return None
 
     # -- scenarios --------------------------------------------------------
 
@@ -490,6 +506,7 @@ class _Probe:
         assert self._client is not None
         turn = _Turn(label=label, sent_at=self._stamp())
         self._open = turn
+        self._open_response_id = None
         self._announced.clear()
         self._terminal.clear()
         self._first_delta.clear()
@@ -505,6 +522,7 @@ class _Probe:
             self._obs.teardown = f"{self._stamp():.2f}s {exc}"
             self._log(f"!! arbiter tore the transport down: {exc}")
             self._open = None
+            self._open_response_id = None
             self._obs.turns.append(turn)
             return turn
 
@@ -547,6 +565,7 @@ class _Probe:
                 # connection and report it as barge-in latency.
                 self._log("!! reply finished before the barge-in — not measured")
                 self._open = None
+                self._open_response_id = None
                 self._obs.turns.append(turn)
                 return turn
             # NOT stamped here: the outbound tap records the instant the
@@ -571,6 +590,7 @@ class _Probe:
             self._log("!! no terminal event")
 
         self._open = None
+        self._open_response_id = None
         self._obs.turns.append(turn)
         return turn
 

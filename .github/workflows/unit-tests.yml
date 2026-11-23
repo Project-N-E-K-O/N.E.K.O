@@ -47,8 +47,11 @@ permissions:
 
 concurrency:
   group: unit-tests-${{ github.ref }}
-  # A new push to a PR supersedes the old related run; on main every run is
-  # kept so the reporter can tell which commit turned it red.
+  # A new push to a PR supersedes the old related run. On main a running full
+  # suite is never cancelled, but GitHub keeps only one pending run per group:
+  # a later merge replaces the run still waiting, so when merges come faster
+  # than the suite runs, some commits get no full run of their own. That is
+  # why main-red-reporter.yml names every commit since the last green run.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

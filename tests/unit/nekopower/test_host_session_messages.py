@@ -38,6 +38,7 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say, usage
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     fake_model,
+    let_go,
     make_host,
     scripted_runtime,
     scripts_by_commission,
@@ -126,7 +127,8 @@ async def _events(host: Any, commission_id: str, kind: str | None = None) -> lis
 
 
 async def _let_go(host: Any) -> None:
-    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    """Wait until no commission holds a session any more (``host_fakes.let_go``)."""
+    await let_go(host)
 
 
 def _said(request: list[dict[str, Any]]) -> list[str]:

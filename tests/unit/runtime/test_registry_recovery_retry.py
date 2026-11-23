@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from dataclasses import replace
 
 import pytest
 
@@ -13,12 +14,31 @@ from main_logic.voice_input.interception import InterceptionInstallationState as
 from tests.unit.runtime.test_registry_registration_order import Manager
 from tests.unit.runtime.test_voice_identity_runtime import _profile
 from tests.unit.voice_identity_service.test_interception_lifecycle_regressions import (
-    RetiringTse, make_factory, process,
+    RetiringTse, process,
 )
-from tests.unit.voice_identity_service.test_interception_runtime import _Tse
+from tests.unit.voice_identity_service.test_interception_lifecycle_regressions import (
+    make_factory as _make_factory,
+)
+from tests.unit.voice_identity_service.test_interception_runtime import _Tse, _config
 from tests.unit.asr_runtime.test_active_session_interception import _frame
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
+
+# The interception runtime's own deadlines (1 s each by default) are not what
+# this file is about. On a busy runner the event loop can stall for longer than
+# that between two frames; the runtime then fails closed (prefix deadline
+# expired) and not one frame comes out, which read as a failed recovery here.
+_PATIENT = replace(
+    _config(),
+    prefix_deadline_seconds=60.0,
+    scoring_deadline_seconds=60.0,
+    scoring_close_timeout_seconds=60.0,
+    finish_timeout_seconds=60.0,
+)
+
+
+def make_factory(tse_factory):
+    return _make_factory(tse_factory, config=_PATIENT)
 
 
 class RetryManager(Manager):

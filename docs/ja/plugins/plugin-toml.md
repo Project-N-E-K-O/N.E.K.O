@@ -296,6 +296,13 @@ UI が不要なら、このセクションは書かなくてかまいません�
 - `ask` 項目をユーザーが使っていないときにも使う場合は、`background = true` と `background_reason` を書きます。
 - `hosts`（`system.network:connect` のみ）は参考としてユーザーに表示されます。
 
+`require` と `ask` の選び方：
+
+- `require` の権限はバックグラウンドでの使用も含むので、`require` の項目には `background` を書きません。
+- ユーザーの操作によらずに使う `ask` 項目（タイマー、起動時、リスナーやイベントのコールバック、バックグラウンドスレッドなど）には、必ず `background = true` と `background_reason` を書きます。
+- 環境変数から設定を読むこと、プラグインの環境変数を引き継ぐプログラムを起動することは、常に `system.env:read` として `require` に入れます。
+- `system.network:listen` は常に `require` です。
+
 権限 ID：
 
 | ID | 意味 |
