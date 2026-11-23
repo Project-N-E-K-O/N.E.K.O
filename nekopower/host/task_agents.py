@@ -1370,14 +1370,23 @@ class TaskAgentManager:
             return False, off
         try:
             if session is not None:
-                choice = await self.session_model(session, record=False)
+                config = (await self.session_model(session, record=False)).config
             else:
-                choice = await self._new_session_model()
-                if not choice.config or not choice.config.get("model"):
-                    choice = await self._new_session_model("boss")
-                if not choice.config or not choice.config.get("model"):
-                    choice = await self._settled_model() or choice
-            config = choice.config
+                config = None
+                for candidate in (
+                    self._new_session_model, lambda: self._new_session_model("boss"), self._settled_model
+                ):
+                    # One that cannot be read does not keep the others from being asked.
+                    try:
+                        found = await candidate()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - the next one is asked
+                        logger.warning("a model task agents could go to cannot be read: %s", type(exc).__name__)
+                        continue
+                    if found is not None and found.config and found.config.get("model"):
+                        config = found.config
+                        break
         except Exception as exc:  # noqa: BLE001 - no usable configuration
             logger.warning("the task agent model configuration cannot be read: %s", type(exc).__name__)
             return False, "not_enabled"
@@ -1398,12 +1407,16 @@ class TaskAgentManager:
         return ""
 
     async def _settled_model(self) -> Any:
-        """Return the model of a slot a session was settled on that has one now; None when there is none."""
+        """Return the model a session settled on a slot would be opened with now; None when there is none.
+
+        By the rule such a session is opened by (``RoleModels.again``): a
+        slot pointed elsewhere since does not count.
+        """
         from nekopower.host.role_models import SlotUnavailable
 
-        for slot in await self._ledger.settled_slots():
+        for slot, ident, tier in await self._ledger.settled_slots():
             try:
-                choice = await self.role_models.slot(slot)
+                choice = await self.role_models.again(slot, ident, tier)
             except SlotUnavailable:
                 continue
             if choice.config and choice.config.get("model"):
@@ -1738,6 +1751,13 @@ class TaskAgentManager:
             # waits: whether it is still wanted is asked again after it, and
             # a place that came free meanwhile is taken.
             await self._settle_for_the_queue(commission.id)
+            if not await self._still_queueable(commission.id):
+                # Over meanwhile (cancelled with everything else, say), when
+                # nothing could find it to stop it: not queued.
+                self._candidates.pop(commission.id, None)
+                self._excerpts.pop(commission.id, None)
+                self._session_of.pop(commission.id, None)
+                return False
             if self._closed:
                 # Shut down meanwhile: what was queued then has been seen to,
                 # and this would wait in the queue for nobody.
@@ -1939,9 +1959,25 @@ class TaskAgentManager:
         is not yet in the queue for whoever gives places to see: the caller
         tries again for one.
         """
-        queued_in = await self._ledger.get_session(self._session_of.get(commission_id))
+        try:
+            queued_in = await self._ledger.get_session(self._session_of.get(commission_id))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - queued all the same, and settled when it starts
+            logger.warning("the session of commission %s could not be read to settle its model", commission_id)
+            return
         if queued_in is not None:
             await self.settle_model(queued_in)
+
+    async def _still_queueable(self, commission_id: str) -> bool:
+        """Return whether a commission is still to be queued after a wait: not ended meanwhile. True when unknown."""
+        try:
+            current = await self._ledger.get(commission_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - queued, as it would have been
+            return True
+        return current is not None and current.status not in ENDED_STATUSES
 
     async def _preset_chosen(self, commission_id: str) -> str | None:
         """Return the preset a task agent was started with by the one that started it; None when that one named none.

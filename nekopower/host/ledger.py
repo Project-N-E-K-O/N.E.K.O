@@ -1839,18 +1839,19 @@ class Ledger:
             )
         )
 
-    async def settled_slots(self) -> list[str]:
-        """Return the slots sessions were settled on (``role_models.py``), the latest first, each once.
+    async def settled_slots(self) -> list[tuple[str, str, str]]:
+        """Return what sessions were settled on (``role_models.py``): slot, ident and tier, the latest first, each once.
 
         All of them: they are the few slots of the model panel, whatever
         the number of sessions.
         """
         return await self.run(
             lambda conn: [
-                str(row["model_slot"])
+                (str(row["model_slot"]), str(row["model_ident"]), str(row["model_tier"]))
                 for row in conn.execute(
-                    "SELECT model_slot, MAX(last_active_at) AS last FROM sessions WHERE model_slot != '' "
-                    "GROUP BY model_slot ORDER BY last DESC"
+                    "SELECT model_slot, model_ident, model_tier, MAX(last_active_at) AS last FROM sessions "
+                    "WHERE model_slot != '' AND model_ident != '' "
+                    "GROUP BY model_slot, model_ident, model_tier ORDER BY last DESC"
                 ).fetchall()
             ]
         )

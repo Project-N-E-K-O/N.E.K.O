@@ -1213,7 +1213,7 @@ async def test_a_note_or_a_question_goes_to_a_session_only_when_that_session_has
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
     await host.set_role_model("general", OWN_SLOT)
     writer = await _session_of_hers(host, "write", "writer")
-    await _session_of_hers(host, "read", "reader")
+    reader = await _session_of_hers(host, "read", "reader")
     await host.set_role_model("general", None)
     await _session_of_hers(host, "plain", "plain")
     manager.tiers["agent"] = {}
@@ -1231,11 +1231,15 @@ async def test_a_note_or_a_question_goes_to_a_session_only_when_that_session_has
     assert said == words.MESSAGE_REFUSALS["switched_off"]
     asked = await refusal(tasks._cb_session_ask(writer.id, {"session": "plain", "question": "Which photos?"}))
     assert asked == words.ASK_REFUSALS["switched_off"]
-    # To one with a model of its own: not refused for that.
+    # To one with a model of its own: the note is written down for it; a question gets as far as asking
+    # whether the other session is at work on something (it is not).
+    await host.ledger.transition(writer.id, "working")
     said = await refusal(tasks._cb_session_send(writer.id, {"to": "reader", "message": "hi"}))
-    assert said != words.MESSAGE_REFUSALS["switched_off"]
     asked = await refusal(tasks._cb_session_ask(writer.id, {"session": "reader", "question": "Which photos?"}))
-    assert asked != words.ASK_REFUSALS["switched_off"]
+    assert said == ""
+    assert [wake.session_id for wake in await host.ledger.wakes_pending(session_id=reader.id)] == [reader.id]
+    # (Past the gates: refused only as no copy of a session with nothing in it can be made.)
+    assert asked.startswith('Not asked: no copy of "reader" could be made')
 
 
 async def test_a_wake_is_counted_by_the_key_its_session_goes_with_now(hosts, tmp_path):
@@ -1693,7 +1697,13 @@ async def test_a_usable_slot_a_session_was_settled_on_is_found_behind_any_number
     manager.tiers["agent"] = {}
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
     usable = await host.ledger.create_session(lanlan_name="Lan", name="usable", kind="single")
-    await host.ledger.update_session(usable.id, model_slot=OWN_SLOT, model_name="own-model", model_ident="x")
+    await host.ledger.update_session(
+        usable.id,
+        model_slot=OWN_SLOT,
+        model_name="own-model",
+        model_ident=role_models.model_ident("http://own.test/v1", "own-model"),
+        model_tier="",
+    )
     for number in range(25):
         gone = await host.ledger.create_session(lanlan_name="Lan", name=f"gone {number}", kind="single")
         await host.ledger.update_session(
@@ -1920,3 +1930,150 @@ async def test_the_settling_lock_stays_while_another_waits_for_it_though_the_fir
     choice = await asyncio.wait_for(second, 10)
     assert choice.slot == AGENT_SLOT
     assert tasks._settle_locks == {}
+
+
+async def test_a_session_whose_slot_was_pointed_elsewhere_does_not_count_as_one_she_may_go_on_with(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    await host.set_role_model("general", OWN_SLOT)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    await host.task_agents.settle_model(session)
+    await host.set_role_model("general", None)
+    manager.tiers["agent"] = {}
+    assert await host.task_agents.available() == (True, "")
+
+    slots = _default_slots()
+    slots[OWN_SLOT] = _own(base_url="http://somewhere-else.test/v1")
+    _write_slots(manager, slots)
+
+    assert await host.task_agents.available() == (False, "not_enabled")
+
+
+async def test_one_model_that_cannot_be_read_does_not_keep_the_others_from_being_asked(hosts, tmp_path):
+    async def unreadable() -> dict[str, Any]:
+        raise OSError("the configuration is being written")
+
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager, task_agent_model=unreadable)
+    assert await host.task_agents.available() == (False, "not_enabled")
+
+    # The task agent model cannot be read; the leads of projects go to a slot of their own.
+    await host.task_agents.role_models.store.put("boss", OWN_SLOT)
+
+    assert await host.task_agents.available() == (True, "")
+
+
+async def test_a_commission_cancelled_while_it_is_settled_for_the_queue_is_not_queued(hosts, tmp_path):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first, settling, release_settling = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait_first, *_report()]]), manager, max_task_agents=1)
+    tasks = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the music", dispatch_text="sort the music", source="dispatch", route="task_agent"
+    )
+    settle = tasks.settle_model
+
+    async def held_settling(session: Any) -> None:
+        settling.set()
+        await release_settling.wait()
+        await settle(session)
+
+    tasks.settle_model = held_settling
+    handing = asyncio.ensure_future(tasks.submit(later))
+    await asyncio.wait_for(settling.wait(), 10)
+    # Cancelled while nothing that stops commissions can find it in the queue.
+    await host.ledger.transition(later.id, "cancelled", reason="everything was stopped")
+    release_settling.set()
+
+    assert await asyncio.wait_for(handing, 10) is False
+    assert later.id not in tasks._queue
+    release_first.set()
+    await wait_status(host, first, "done")
+
+
+async def test_a_commission_whose_session_cannot_be_read_to_settle_it_is_queued_all_the_same(
+    hosts, tmp_path, monkeypatch
+):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first = asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    specs: list[Any] = []
+    scripts = [ScriptedLLM([[wait_first, *_report()]]), ScriptedLLM([_report()])]
+    host = _host(
+        hosts, tmp_path, lambda spec: specs.append(spec) or scripts[len(specs) - 1], manager, max_task_agents=1
+    )
+    tasks = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the music", dispatch_text="sort the music", source="dispatch", route="task_agent"
+    )
+    get_session = host.ledger.get_session
+    failed: list[str] = []
+
+    async def unreadable_once(session_id: Any) -> Any:
+        if not failed:
+            failed.append(str(session_id))
+            raise OSError("the disk is busy")
+        return await get_session(session_id)
+
+    monkeypatch.setattr(host.ledger, "get_session", unreadable_once)
+
+    assert await tasks.submit(later) is True
+    assert failed and later.id in tasks._queue
+    monkeypatch.setattr(host.ledger, "get_session", get_session)
+    release_first.set()
+    await wait_status(host, later.id, "done")
+    assert len(specs) == 2
+
+
+async def test_a_commission_whose_record_cannot_be_read_after_it_is_settled_is_queued_all_the_same(
+    hosts, tmp_path, monkeypatch
+):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first = asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait_first, *_report()]]), manager, max_task_agents=1)
+    tasks = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the music", dispatch_text="sort the music", source="dispatch", route="task_agent"
+    )
+    settle = tasks.settle_model
+    get = host.ledger.get
+
+    async def unreadable(commission_id: str) -> Any:
+        if commission_id == later.id:
+            raise OSError("the disk is busy")
+        return await get(commission_id)
+
+    async def settling_then_unreadable(session: Any) -> None:
+        await settle(session)
+        monkeypatch.setattr(host.ledger, "get", unreadable)
+
+    tasks.settle_model = settling_then_unreadable
+
+    assert await tasks.submit(later) is True
+    assert later.id in tasks._queue
+    monkeypatch.setattr(host.ledger, "get", get)
+    release_first.set()
+    await wait_status(host, first, "done")
