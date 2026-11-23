@@ -470,6 +470,9 @@ class PromotionMergeMixin:
           | 'invalid_target' | 'noop' | 'no_longer_eligible'
 
         Throttling: backoff window before retry, max retries → dead-letter.
+        The dead-letter reason is ``target_changed`` when the last allowed
+        attempt lost its merge target to a concurrent edit, otherwise
+        ``llm_unavailable``. Nothing reads the reason to unblock an entry.
         LLM failures → skip_retry_pending (NOT promote_fresh — RFC §3.9.4
         explicitly forbids silent fresh-fallback because that breaks
         dedup semantics during outages).
@@ -891,6 +894,20 @@ class PromotionMergeMixin:
                     ),
                 )
             if merge_outcome == 'stale_target':
+                # current3 was read after this attempt was recorded. If it
+                # was the last allowed one, the next cycle would dead-letter
+                # the reflection without another model call and blame the
+                # model; do it now and record the real cause instead.
+                if self._exceeds_max_retries(current3):
+                    logger.info(
+                        f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                        f"{target_entry_id} changed during LLM await on the "
+                        f"last allowed attempt; promote_blocked"
+                    )
+                    await self._amark_promote_blocked(
+                        lanlan_name, current3, 'target_changed',
+                    )
+                    return 'blocked'
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: merge target "
                     f"{target_entry_id} changed during LLM await; discarding "
