@@ -55,7 +55,9 @@ _EXPECTED = {
 # their call sites (file, function, method), listed once per line the scan
 # reports (it keeps one finding per file and line), so a new call on another
 # line is not let through, not even in the same function:
-# writes inside the plugin's data directory, and a DNS-only socket import.
+# writes inside the plugin's data directory (claude_companion also moves a
+# legacy inbox out of its own install directory once), and a DNS-only socket
+# import.
 _ALLOWED_POSSIBLE = {
     "claude_companion": {
         _FS_WRITE: [
