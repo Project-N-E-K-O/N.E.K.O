@@ -45,7 +45,7 @@ class _FakeRequest:
     def __init__(self, payload):
         from types import SimpleNamespace
         from starlette.datastructures import Headers
-        from config import AUTOSTART_CSRF_TOKEN
+        from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
 
         self._payload = payload
         self.method = "POST"

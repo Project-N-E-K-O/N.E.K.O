@@ -2649,20 +2649,54 @@
       ? { 'Content-Type': 'application/json', 'X-CSRF-Token': token }
       : { 'Content-Type': 'application/json' };
   }
-  function _getBadmintonMutationHeaders(forceRefresh) {
+  function _badmintonCreateAbortError() {
+    var error = new Error('Aborted');
+    error.name = 'AbortError';
+    return error;
+  }
+  function _badmintonAwaitWithSignal(promise, signal) {
+    if (!signal) {
+      return promise;
+    }
+    if (signal.aborted) {
+      return Promise.reject(_badmintonCreateAbortError());
+    }
+    return new Promise(function (resolve, reject) {
+      function onAbort() {
+        reject(_badmintonCreateAbortError());
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve(promise).then(function (value) {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      }, function (error) {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      });
+    });
+  }
+  function _getBadmintonMutationHeaders(forceRefresh, signal) {
+    if (signal && signal.aborted) {
+      return Promise.reject(_badmintonCreateAbortError());
+    }
     try {
       var security = window.nekoLocalMutationSecurity;
       if (security && typeof security.getMutationHeaders === 'function') {
         var refreshP = (forceRefresh && typeof security.refreshToken === 'function')
           ? Promise.resolve(security.refreshToken())
           : Promise.resolve();
-        return refreshP.then(function () {
+        return _badmintonAwaitWithSignal(refreshP.then(function () {
           return security.getMutationHeaders();
         }).then(function (headers) {
           var token = headers && (headers['X-CSRF-Token'] || headers['x-csrf-token']);
           if (token) _badmintonCsrfToken = token;
           return headers || {};
-        }).catch(function () { return {}; });
+        }), signal).catch(function (error) {
+          if ((error && error.name === 'AbortError') || (signal && signal.aborted)) {
+            throw (error && error.name === 'AbortError') ? error : _badmintonCreateAbortError();
+          }
+          return {};
+        });
       }
     } catch (_) {}
     if (forceRefresh) {
@@ -2673,7 +2707,7 @@
       return Promise.resolve({ 'X-CSRF-Token': _badmintonCsrfToken });
     }
     if (_badmintonCsrfInflight) {
-      return _badmintonCsrfInflight;
+      return _badmintonAwaitWithSignal(_badmintonCsrfInflight, signal);
     }
     var inflight = fetch('/api/config/page_config', { cache: 'no-store', credentials: 'same-origin' })
       .then(function (r) { return r && r.ok ? r.json() : null; })
@@ -2691,11 +2725,11 @@
         return headers;
       });
     _badmintonCsrfInflight = inflight;
-    return inflight;
+    return _badmintonAwaitWithSignal(inflight, signal);
   }
-  function _badmintonFetchWithCsrf(url, buildInit) {
+  function _badmintonFetchWithCsrf(url, buildInit, signal) {
     function sendOnce(forceRefresh) {
-      return _getBadmintonMutationHeaders(forceRefresh).then(function (csrfHeaders) {
+      return _getBadmintonMutationHeaders(forceRefresh, signal).then(function (csrfHeaders) {
         var init = buildInit(csrfHeaders || {});
         return fetch(url, init);
       });
@@ -2723,14 +2757,15 @@
     var controller = window.AbortController ? new AbortController() : null;
     var timer = controller ? setTimeout(function () { controller.abort(); }, timeoutMs || 5000) : 0;
     var bodyJson = JSON.stringify(body || {});
+    var signal = controller ? controller.signal : undefined;
     return _badmintonFetchWithCsrf(api(path), function (csrfHeaders) {
       return {
         method: 'POST',
         headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
         body: bodyJson,
-        signal: controller ? controller.signal : undefined
+        signal: signal
       };
-    }).then(function (r) {
+    }, signal).then(function (r) {
       if (!r.ok) {
         return r.text().then(function (text) {
           return { ok: false, reason: 'http_error', status: r.status, statusText: r.statusText || '', body: text || '' };
@@ -9887,9 +9922,10 @@
       payloadObj.currentState.duel = payloadObj.duel;
     }
     Object.assign(payloadObj, getConversationLanguagePayload(), _badmintonGameMemoryPolicyPayload());
+    var initialRouteEndToken = _getCachedBadmintonCsrfToken();
     var payload = _badmintonBeaconPayload(payloadObj);
     var url = api('/route/end');
-    if (useBeacon && navigator.sendBeacon) {
+    if (useBeacon && navigator.sendBeacon && initialRouteEndToken) {
       try {
         if (navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }))) {
           if (!detached) {
@@ -9901,7 +9937,6 @@
         }
       } catch (_) {}
     }
-    var initialRouteEndToken = _getCachedBadmintonCsrfToken();
     if (!detached) routeEndFetchPending = true;
     var routeEndRequest = fetch(url, { method: 'POST', headers: _buildBadmintonJsonHeaders(initialRouteEndToken), body: payload, keepalive: true }).then(function (res) {
       if (res && res.status === 403 && typeof res.clone === 'function') {

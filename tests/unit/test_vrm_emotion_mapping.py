@@ -47,7 +47,7 @@ def vrm_api(tmp_path, monkeypatch):
     # Never resolve the real Workshop folder; tests that need one point it at tmp_path.
     monkeypatch.setattr(vrm_router, "_resolve_workshop_search_dir", lambda: None)
     monkeypatch.setattr(vrm_router, "get_steam_workshop_path", lambda: None)
-    from config import AUTOSTART_CSRF_TOKEN
+    from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
 
     app = FastAPI()
     app.include_router(vrm_router.router)
@@ -66,7 +66,7 @@ def vrm_api(tmp_path, monkeypatch):
 
 @pytest_asyncio.fixture
 async def vrm_async_api(vrm_api):
-    from config import AUTOSTART_CSRF_TOKEN
+    from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
 
     client, config = vrm_api
     # Starlette 1.3.1 TestClient unquotes HTTPX's already-decoded URL path.

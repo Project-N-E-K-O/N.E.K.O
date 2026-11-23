@@ -8,10 +8,14 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from config import AUTOSTART_CSRF_TOKEN
-
 
 pytestmark = pytest.mark.unit
+
+
+def _csrf_token() -> str:
+    from app.main_server import web_app
+
+    return web_app.AUTOSTART_CSRF_TOKEN
 
 
 @pytest.fixture
@@ -25,12 +29,17 @@ def beacon_client(monkeypatch):
         "get_start_config",
         lambda: {"browser_mode_enabled": True},
     )
-    with TestClient(
+    # Construct TestClient without entering its lifespan context so startup
+    # hooks (e.g. token_tracker.install_hooks) do not leak across xdist tests.
+    client = TestClient(
         web_app.app,
         base_url="http://127.0.0.1:48911",
         client=("127.0.0.1", 50000),
-    ) as client:
+    )
+    try:
         yield client, shutdown_mock
+    finally:
+        client.close()
 
 
 def test_beacon_shutdown_allows_exact_same_origin(beacon_client):
@@ -62,7 +71,7 @@ def test_beacon_shutdown_allows_headerless_with_valid_csrf(beacon_client):
     client, shutdown_mock = beacon_client
     resp = client.post(
         "/api/beacon/shutdown",
-        headers={"X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+        headers={"X-CSRF-Token": _csrf_token()},
     )
     assert resp.status_code == 200
     assert shutdown_mock.await_count == 1
@@ -72,7 +81,7 @@ def test_beacon_shutdown_allows_body_csrf_fallback(beacon_client):
     client, shutdown_mock = beacon_client
     resp = client.post(
         "/api/beacon/shutdown",
-        json={"_csrf_token": AUTOSTART_CSRF_TOKEN},
+        json={"_csrf_token": _csrf_token()},
     )
     assert resp.status_code == 200
     assert shutdown_mock.await_count == 1
@@ -190,11 +199,12 @@ def test_beacon_shutdown_with_remote_instance_identity(monkeypatch):
                 scope["neko.instance_identity"] = "remote-user"
             await self.app(scope, receive, send)
 
-    with TestClient(
+    client = TestClient(
         InstanceAccessMiddleware(web_app.app),
         base_url="http://127.0.0.1:48911",
         client=("127.0.0.1", 50000),
-    ) as client:
+    )
+    try:
         client.cookies.set(INSECURE_COOKIE, session_token)
         r_ok = client.post(
             "/api/beacon/shutdown",
@@ -217,17 +227,20 @@ def test_beacon_shutdown_with_remote_instance_identity(monkeypatch):
             "/api/beacon/shutdown",
             headers={
                 "Origin": "http://127.0.0.1:3000",
-                "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+                "X-CSRF-Token": _csrf_token(),
             },
         )
         assert r_cross_port_csrf.status_code == 403
+    finally:
+        client.close()
 
     monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
-    with TestClient(
+    wrapped_client = TestClient(
         _IdentityWrapper(web_app.app),
         base_url="http://127.0.0.1:48911",
         client=("127.0.0.1", 50000),
-    ) as wrapped_client:
+    )
+    try:
         r_referer_userinfo = wrapped_client.post(
             "/api/beacon/shutdown",
             headers={"Referer": "http://:@127.0.0.1:48911/p"},
@@ -239,10 +252,92 @@ def test_beacon_shutdown_with_remote_instance_identity(monkeypatch):
             "/api/beacon/shutdown",
             headers={
                 "Origin": "http://127.0.0.1:3000",
-                "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+                "X-CSRF-Token": _csrf_token(),
             },
         )
         assert r_wrapped_cross_port.status_code == 403
         assert r_wrapped_cross_port.json()["detail"]["error_code"] == "csrf_validation_failed"
+    finally:
+        wrapped_client.close()
 
     assert shutdown_mock.await_count == 1
+
+
+def test_beacon_shutdown_allows_authenticated_tls_proxy_origin_and_blocks_cross_port(monkeypatch):
+    from app.main_server import web_app
+    from utils import host_origin_guard
+
+    shutdown_mock = AsyncMock()
+    monkeypatch.setattr(web_app.runtime, "shutdown_server_async", shutdown_mock)
+    monkeypatch.setattr(
+        web_app.runtime,
+        "get_start_config",
+        lambda: {"browser_mode_enabled": True},
+    )
+    access_key = "k" * 40
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "1")
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", access_key)
+    monkeypatch.setattr(host_origin_guard, "saved_trusted_hosts", lambda: "neko.example")
+    auth = {"Authorization": f"Bearer {access_key}"}
+
+    client = TestClient(
+        web_app.app,
+        base_url="http://neko.example/",
+        client=("127.0.0.1", 50000),
+    )
+    try:
+        r_proxy_https = client.post(
+            "/api/beacon/shutdown",
+            headers={
+                **auth,
+                "Origin": "https://neko.example",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+        assert r_proxy_https.status_code == 200
+        assert shutdown_mock.await_count == 1
+
+        r_proxy_referer = client.post(
+            "/api/beacon/shutdown",
+            headers={
+                **auth,
+                "Referer": "https://neko.example/chat",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+        assert r_proxy_referer.status_code == 200
+        assert shutdown_mock.await_count == 2
+
+        r_cross_site = client.post(
+            "/api/beacon/shutdown",
+            headers={
+                **auth,
+                "Origin": "https://neko.example",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+        assert r_cross_site.status_code == 403
+
+        r_cross_port = client.post(
+            "/api/beacon/shutdown",
+            headers={
+                **auth,
+                "Origin": "https://neko.example:8443",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+        assert r_cross_port.status_code == 403
+
+        r_evil = client.post(
+            "/api/beacon/shutdown",
+            headers={
+                **auth,
+                "Origin": "https://evil.example",
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+        assert r_evil.status_code == 403
+    finally:
+        client.close()
+
+    assert shutdown_mock.await_count == 2

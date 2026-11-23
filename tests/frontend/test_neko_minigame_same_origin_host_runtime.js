@@ -2136,6 +2136,97 @@ async function main() {
     for (const peer of quotaPeers) peer.dispose();
   }
 
+  // Verify CSRF header caching, synchronous keepalive unload dispatch before
+  // dispose, and skipping tokenless sendBeacon.
+  {
+    let pageConfigRequests = 0;
+    let currentToken = 'cached-unload-token';
+    let force403OnNextChat = false;
+    let beaconSentCount = 0;
+    const endCalls = [];
+    const unloadFetchImpl = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        pageConfigRequests += 1;
+        return jsonResponse({ autostart_csrf_token: currentToken });
+      }
+      if (pathName.endsWith('/chat') && force403OnNextChat) {
+        force403OnNextChat = false;
+        currentToken = 'refreshed-unload-token';
+        return jsonResponse({ error_code: 'csrf_validation_failed' }, 403);
+      }
+      if (/\/api\/game\/[^/]+\/end$/.test(pathName)) {
+        endCalls.push({ url: pathName, init, body: init.body ? JSON.parse(init.body) : {} });
+        return jsonResponse(RAW_END_RESPONSE);
+      }
+      return jsonResponse({ ok: true, accepted: true });
+    };
+    const unloadHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'unload-sync-session',
+      fetchImpl: unloadFetchImpl,
+      windowImpl: windowMock,
+      navigatorImpl: { ...windowMock.navigator, sendBeacon: () => false },
+    });
+    unloadHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime', 'dialogue'], optionalCapabilities: [],
+      },
+    });
+    await Promise.all([
+      unloadHost.getMutationHeaders(),
+      unloadHost.getMutationHeaders(),
+    ]);
+    assert(pageConfigRequests === 1,
+      `expected concurrent getMutationHeaders calls to dedup, saw ${pageConfigRequests} fetches`);
+    force403OnNextChat = true;
+    await unloadHost.requestDialogue({ event: { kind: 'turn_3' } });
+    assert(pageConfigRequests === 3,
+      `expected 403 csrf_validation_failed to refresh token once, saw ${pageConfigRequests} fetches`);
+
+    // Synchronous page-exit: sendBeacon returns false, then dispose runs synchronously.
+    const endPromise = unloadHost.end({ reason: 'pagehide' }, { useBeacon: true });
+    unloadHost.dispose({ preservePendingOperations: ['route_end'] });
+    const endResult = await endPromise;
+    assert(endResult.ok === true, `synchronous unload fallback failed after dispose: ${JSON.stringify(endResult)}`);
+    assert(endCalls.length === 1, `expected 1 synchronous /end fetch, got ${endCalls.length}`);
+    assert(endCalls[0].init.keepalive === true, 'synchronous /end fallback dropped keepalive');
+    assert(endCalls[0].init.headers['X-CSRF-Token'] === 'refreshed-unload-token',
+      'synchronous /end fallback missed cached X-CSRF-Token header');
+    assert(endCalls[0].body._csrf_token === 'refreshed-unload-token',
+      'synchronous /end fallback missed cached _csrf_token body field');
+
+    // Empty cached token: never send a tokenless sendBeacon even if sendBeacon returns true.
+    const noTokenHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'unload-no-token-session',
+      fetchImpl: unloadFetchImpl,
+      windowImpl: windowMock,
+      navigatorImpl: {
+        ...windowMock.navigator,
+        sendBeacon: () => {
+          beaconSentCount += 1;
+          return true;
+        },
+      },
+    });
+    noTokenHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime'], optionalCapabilities: [],
+      },
+    });
+    const noTokenEndPromise = noTokenHost.end({ reason: 'pagehide' }, { useBeacon: true });
+    noTokenHost.dispose({ preservePendingOperations: ['route_end'] });
+    const noTokenResult = await noTokenEndPromise;
+    assert(beaconSentCount === 0, 'tokenless sendBeacon must not be invoked');
+    assert(noTokenResult.ok === true && endCalls.length === 2,
+      'tokenless unload did not fall back to synchronous keepalive fetch');
+  }
+
   process.stdout.write('mini-game same-origin host runtime test passed\n');
 }
 

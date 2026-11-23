@@ -231,6 +231,12 @@ def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
         return False
 
 
+def _is_unsafe_windows_unc_or_device_path(raw_path: str) -> bool:
+    """Reject Windows UNC network paths and device/NT-object paths without touching the filesystem."""
+    unified = raw_path.replace("/", "\\")
+    return unified.startswith("\\\\") or unified.startswith("\\??\\")
+
+
 def _get_app_root():
     """
     Get the application root directory, compatible with both dev environments and PyInstaller-packaged builds.

@@ -22,15 +22,18 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.main_server.web_app import CustomStaticFiles, StaticRootFiles
-from config import AUTOSTART_CSRF_TOKEN
 from main_routers import mmd_router, vrm_router
+from main_routers.system_router import _shared as system_shared
 
 
 pytestmark = pytest.mark.unit
-_VRM_UPLOAD_HEADERS = {
-    "Origin": "http://testserver",
-    "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
-}
+
+
+def _vrm_upload_headers():
+    return {
+        "Origin": "http://testserver",
+        "X-CSRF-Token": system_shared.AUTOSTART_CSRF_TOKEN,
+    }
 
 
 def _require_case_sensitive_fs(directory):
@@ -245,7 +248,7 @@ def test_vrm_uploaded_animation_with_any_extension_case_is_listed_and_played(vrm
     with TestClient(vrm_app.app) as client:
         for name in VRM_ANIMATION_NAMES:
             upload = client.post("/api/model/vrm/upload_animation",
-                                 headers=_VRM_UPLOAD_HEADERS,
+                                 headers=_vrm_upload_headers(),
                                  files={"file": (name, b"vrma-" + name.encode(), "application/octet-stream")})
             assert upload.status_code == 200, upload.text
             assert upload.json()["file_path"] == f"/user_vrm/animation/{name}"
@@ -592,7 +595,7 @@ def locked_vrm_link(vrm_app, tmp_path):
 def _upload_vrm(client, name):
     return client.post(
         "/api/model/vrm/upload",
-        headers=_VRM_UPLOAD_HEADERS,
+        headers=_vrm_upload_headers(),
         files={"file": (name, b"glTF-new", "application/octet-stream")},
     )
 

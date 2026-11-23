@@ -7,9 +7,9 @@ import pytest
 from fastapi import HTTPException
 from starlette.datastructures import Headers
 
-from config import AUTOSTART_CSRF_TOKEN
 from main_routers.game_router import author_prompt
 from main_routers.game_router import runtime
+from main_routers.system_router import _shared as system_shared
 from config.prompts.prompts_minigame_common import (
     get_author_managed_dialogue_host_prompt,
 )
@@ -19,11 +19,14 @@ class _AuthorizedRequestBase:
     method = "POST"
     base_url = "http://testserver/"
     url = SimpleNamespace(path="/api/game/test/chat")
-    headers = Headers({
-        "content-type": "application/json",
-        "origin": "http://testserver",
-        "x-csrf-token": AUTOSTART_CSRF_TOKEN,
-    })
+
+    @property
+    def headers(self):
+        return Headers({
+            "content-type": "application/json",
+            "origin": "http://testserver",
+            "x-csrf-token": system_shared.AUTOSTART_CSRF_TOKEN,
+        })
 
 
 def _prompt(messages=None):

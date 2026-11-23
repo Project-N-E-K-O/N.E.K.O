@@ -22,6 +22,7 @@ from ._shared import (
     _get_app_root,
     _get_system_config_manager,
     _is_path_within_base,
+    _is_unsafe_windows_unc_or_device_path,
     logger,
     router,
 )
@@ -90,6 +91,10 @@ async def check_file_exists(path: str = None):
         if ".." in re.split(r"[/\\]", decoded_path):
             logger.warning("Rejected path traversal attempt in file-exists")
             return JSONResponse(content={"exists": False}, status_code=400)
+
+        if _is_unsafe_windows_unc_or_device_path(decoded_path):
+            logger.warning("Rejected UNC/device path probe in file-exists")
+            return JSONResponse(content={"exists": False}, status_code=403)
 
         if os.name == 'nt':
             decoded_path = decoded_path.replace('/', '\\')

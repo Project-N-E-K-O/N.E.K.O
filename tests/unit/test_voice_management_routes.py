@@ -300,7 +300,7 @@ async def test_route_error_mapping_does_not_leak_exception_details(client, monke
 
 @pytest.mark.asyncio
 async def test_management_settings_get_save_masks_preserves_and_clears(config_manager, core_config_router):
-    from config import AUTOSTART_CSRF_TOKEN
+    from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
     from main_routers import config_router
     stored = {
         "coreApi": "qwen", "assistApi": "qwen", "coreApiKey": "core-key",
@@ -351,7 +351,7 @@ async def test_management_settings_get_save_masks_preserves_and_clears(config_ma
     ("doubaoVoiceManagementProjectName", "x" * 201),
 ])
 async def test_management_settings_reject_types_and_lengths_without_saving(config_manager, core_config_router, field, value):
-    from config import AUTOSTART_CSRF_TOKEN
+    from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
     from main_routers import config_router
     _write_core_config(config_manager, {"coreApi": "qwen", "coreApiKey": "original-key", "doubaoVoiceManagementAccessKey": "original-access"})
     before = config_manager.load_json_config("core_config.json")

@@ -18,7 +18,15 @@
 Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
-from ._shared import _get_app_root, _is_path_within_base, _validate_local_mutation_request, logger, router
+from ._shared import (
+    _get_app_root,
+    _is_path_within_base,
+    _is_unsafe_windows_unc_or_device_path,
+    _validate_local_mutation_request,
+    logger,
+    router,
+)
+import ntpath
 import os
 import asyncio
 import re
@@ -313,10 +321,13 @@ async def list_achievements():
 
 # Helper functions
 
-def _read_binary_file(path: str) -> bytes:
+def _read_binary_file(path: str, max_size: int | None = None) -> bytes | None:
     """Synchronous binary read, called via asyncio.to_thread."""
     with open(path, 'rb') as f:
-        return f.read()
+        if max_size is None:
+            return f.read()
+        data = f.read(max_size + 1)
+    return data if len(data) <= max_size else None
 
 
 @router.get('/steam/proxy-image')
@@ -333,7 +344,7 @@ async def proxy_image(image_path: str):
         if decoded_path.startswith(('http://', 'https://')):
             return JSONResponse(content={"success": False, "error": "暂不支持远程图片URL"}, status_code=400)
 
-        if decoded_path.startswith(('\\\\', '//')):
+        if _is_unsafe_windows_unc_or_device_path(decoded_path):
             return JSONResponse(content={"success": False, "error": "文件不存在或无访问权限"}, status_code=404)
 
         base_dir = _get_app_root()
@@ -372,8 +383,15 @@ async def proxy_image(image_path: str):
 
         if decoded_path.startswith('../static/') or decoded_path.startswith('..\\static\\'):
             relative_part = decoded_path[len('../static/'):]
-            if relative_part and '..' not in re.split(r"[/\\]", relative_part):
-                clean_rel = relative_part.replace('/', os.sep).replace('\\', os.sep)
+            clean_rel = relative_part.replace('/', os.sep).replace('\\', os.sep)
+            if (
+                relative_part
+                and '..' not in re.split(r"[/\\]", relative_part)
+                and not relative_part.startswith(('/', '\\'))
+                and not ntpath.splitdrive(relative_part)[0]
+                and not _is_unsafe_windows_unc_or_device_path(relative_part)
+                and not os.path.isabs(clean_rel)
+            ):
                 candidate = os.path.realpath(os.path.join(static_dir, clean_rel))
                 if _is_path_within_base(static_dir, candidate) and os.path.exists(candidate) and os.path.isfile(candidate):
                     final_path = candidate
@@ -398,7 +416,13 @@ async def proxy_image(image_path: str):
                         final_path = real_path
                         break
 
-            if final_path is None and workshop_roots and not os.path.isabs(normalized_input):
+            if (
+                final_path is None
+                and workshop_roots
+                and not os.path.isabs(normalized_input)
+                and not normalized_input.startswith(('/', '\\'))
+                and not ntpath.splitdrive(normalized_input)[0]
+            ):
                 for ws_root in workshop_roots:
                     rel_workshop = os.path.join(ws_root, normalized_input)
                     real_path = os.path.realpath(rel_workshop)
@@ -423,7 +447,10 @@ async def proxy_image(image_path: str):
             logger.warning(f"图片文件大小超过限制: {file_size / 1024 / 1024:.2f}MB > 50MB")
             return JSONResponse(content={"success": False, "error": f"图片文件大小超过50MB限制 ({file_size / 1024 / 1024:.2f}MB)"}, status_code=413)
 
-        image_data = await asyncio.to_thread(_read_binary_file, final_path)
+        image_data = await asyncio.to_thread(_read_binary_file, final_path, MAX_IMAGE_SIZE)
+        if image_data is None:
+            logger.warning("图片文件读取大小超过限制 (>50MB)")
+            return JSONResponse(content={"success": False, "error": "图片文件大小超过50MB限制"}, status_code=413)
 
         ext = os.path.splitext(final_path)[1].lower()
         mime_type = {

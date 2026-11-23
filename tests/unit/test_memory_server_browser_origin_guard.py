@@ -42,12 +42,17 @@ def memory_client(monkeypatch):
     monkeypatch.setattr(review, "correction_tasks", {})
     monkeypatch.setattr(runtime, "_memory_runtime_init_completed", True)
     monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", False)
-    with TestClient(
+    # Construct TestClient without entering its lifespan context so startup
+    # hooks (e.g. token_tracker.install_hooks) do not leak across xdist tests.
+    client = TestClient(
         runtime.app,
         base_url="http://127.0.0.1:48915",
         client=("127.0.0.1", 50000),
-    ) as client:
+    )
+    try:
         yield client, runtime, locale_state
+    finally:
+        client.close()
 
 
 @pytest.mark.parametrize(

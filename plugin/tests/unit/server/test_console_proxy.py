@@ -171,6 +171,8 @@ async def test_a_switch_goes_to_the_main_server_as_the_command_it_is(app, agent,
 
     assert request.url.path == "/api/agent/command" and request.url.port == config.MAIN_SERVER_PORT
     assert request.url.host == "127.0.0.1"
+    assert request.headers["X-CSRF-Token"] == mutation_auth.AUTOSTART_CSRF_TOKEN
+    assert request.headers["Origin"] == f"http://127.0.0.1:{config.MAIN_SERVER_PORT}"
     assert json.loads(request.content) == command
 
 

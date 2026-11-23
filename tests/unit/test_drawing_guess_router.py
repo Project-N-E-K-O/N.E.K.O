@@ -15,7 +15,7 @@ from utils.game_route_state import _game_route_states, _route_state_key
 class _FakeRequest:
     def __init__(self, payload):
         from starlette.datastructures import Headers
-        from config import AUTOSTART_CSRF_TOKEN
+        from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
 
         self._payload = payload
         self.method = "POST"

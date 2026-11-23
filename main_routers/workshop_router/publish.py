@@ -31,6 +31,7 @@ from .meta import calculate_content_hash, read_workshop_meta, write_workshop_met
 from .preview_cards import (
     WORKSHOP_STANDARD_PREVIEW_EXTENSIONS,
     _assert_workshop_path,
+    _cleanup_consumed_preview_staging,
     _verify_preview_image_file,
     find_preview_image_in_folder,
 )
@@ -541,6 +542,12 @@ async def publish_to_workshop(request: Request):
                 "error": "无效路径",
                 "message": "内容文件夹路径包含非法字符"
             }, status_code=400)
+        # Unify separators before containment validation so POSIX backslash segments cannot slip past.
+        if os.name == 'nt':
+            content_folder = content_folder.replace('/', '\\')
+        else:
+            content_folder = content_folder.replace('\\', '/')
+
         # Security: verify content_folder is in the allowed area.
         try:
             content_folder = _assert_workshop_path(content_folder, workshop_base)
@@ -550,12 +557,6 @@ async def publish_to_workshop(request: Request):
                 "error": "权限错误",
                 "message": "指定的内容文件夹不在允许的范围内"
             }, status_code=403)
-
-        # Use correct separators for Windows paths.
-        if os.name == 'nt':
-            content_folder = content_folder.replace('/', '\\')
-        else:
-            content_folder = content_folder.replace('\\', '/')
         
         # Verify the content folder exists and is a directory.
         if not os.path.exists(content_folder):
@@ -693,9 +694,10 @@ async def publish_to_workshop(request: Request):
                         "message": "预览图片路径不在允许的范围内"
                     }, status_code=403)
                 if os.path.normcase(os.path.realpath(preview_image)) != os.path.normcase(os.path.realpath(new_preview_path)):
+                    source_preview = preview_image
                     try:
                         import shutil
-                        await asyncio.to_thread(shutil.copy2, preview_image, new_preview_path)
+                        await asyncio.to_thread(shutil.copy2, source_preview, new_preview_path)
                         logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
                         preview_image = new_preview_path
                     except Exception as e:
@@ -705,6 +707,10 @@ async def publish_to_workshop(request: Request):
                             "error": "预览图片处理失败",
                             "message": "无法复制预览图片到内容文件夹"
                         }, status_code=500)
+                    try:
+                        await asyncio.to_thread(_cleanup_consumed_preview_staging, source_preview, workshop_base)
+                    except Exception:
+                        pass
         else:
             # If no preview is specified, try automatic discovery.
             auto_preview = find_preview_image_in_folder(content_folder)

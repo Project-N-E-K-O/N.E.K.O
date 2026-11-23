@@ -1,32 +1,69 @@
 
 let _modelManagerCardFaceCsrfToken = '';
 
-async function _getModelManagerCardFaceHeaders(forceRefresh) {
+function _createAbortError() {
+    const error = new Error('Aborted');
+    error.name = 'AbortError';
+    return error;
+}
+
+function _awaitWithAbortSignal(promise, signal) {
+    if (!signal) {
+        return promise;
+    }
+    if (signal.aborted) {
+        return Promise.reject(_createAbortError());
+    }
+    return new Promise((resolve, reject) => {
+        const onAbort = () => reject(_createAbortError());
+        signal.addEventListener('abort', onAbort, { once: true });
+        Promise.resolve(promise)
+            .then(resolve, reject)
+            .finally(() => {
+                signal.removeEventListener('abort', onAbort);
+            });
+    });
+}
+
+async function _getModelManagerCardFaceHeaders(forceRefresh, signal) {
+    if (signal?.aborted) {
+        throw _createAbortError();
+    }
     try {
         const security = window.nekoLocalMutationSecurity;
         if (security && typeof security.getMutationHeaders === 'function') {
             if (forceRefresh && typeof security.refreshToken === 'function') {
-                await security.refreshToken();
+                await _awaitWithAbortSignal(Promise.resolve(security.refreshToken()), signal);
             }
-            const headers = await security.getMutationHeaders();
+            const headers = await _awaitWithAbortSignal(Promise.resolve(security.getMutationHeaders()), signal);
             if (headers && typeof headers === 'object') {
                 return headers;
             }
         }
-    } catch (_) { /* fall back to page_config */ }
+    } catch (error) {
+        if (error?.name === 'AbortError' || signal?.aborted) {
+            throw error?.name === 'AbortError' ? error : _createAbortError();
+        }
+        /* fall back to page_config */
+    }
     if (forceRefresh) _modelManagerCardFaceCsrfToken = '';
     if (_modelManagerCardFaceCsrfToken) {
         return { 'X-CSRF-Token': _modelManagerCardFaceCsrfToken };
     }
     try {
-        const resp = await fetch('/api/config/page_config', { cache: 'no-store' });
-        const cfg = resp && resp.ok ? await resp.json() : null;
+        const resp = await fetch('/api/config/page_config', { cache: 'no-store', signal });
+        const cfg = resp && resp.ok ? await _awaitWithAbortSignal(resp.json(), signal) : null;
         const token = cfg && cfg.autostart_csrf_token;
         if (typeof token === 'string' && token) {
             _modelManagerCardFaceCsrfToken = token;
             return { 'X-CSRF-Token': token };
         }
-    } catch (_) { /* guarded PUT will surface rejection */ }
+    } catch (error) {
+        if (error?.name === 'AbortError' || signal?.aborted) {
+            throw error?.name === 'AbortError' ? error : _createAbortError();
+        }
+        /* guarded PUT will surface rejection */
+    }
     return {};
 }
 
@@ -438,7 +475,7 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
         try {
             throwIfCancelled();
             async function putCardFaceOnce(forceRefresh) {
-                const csrfHeaders = await _getModelManagerCardFaceHeaders(forceRefresh);
+                const csrfHeaders = await _getModelManagerCardFaceHeaders(forceRefresh, controller.signal);
                 return fetch(
                     `/api/characters/catgirl/${encodeURIComponent(lanlanName)}/card-face`,
                     { method: 'PUT', headers: csrfHeaders, body: formData, signal: controller.signal }

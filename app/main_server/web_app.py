@@ -33,7 +33,7 @@ from starlette.responses import RangeNotSatisfiable
 from starlette.staticfiles import NotModifiedResponse
 
 from config import AUTOSTART_ALLOWED_ORIGINS, AUTOSTART_CSRF_TOKEN
-from utils.instance_access import _same_origin
+from utils.instance_access import _pinned_origin, _same_origin, is_behind_proxy
 from utils.static_asset_aliases import LegacyStaticAssetAliasMixin
 
 from ._shared import runtime
@@ -684,6 +684,22 @@ async def _validate_beacon_shutdown_origin(request: Request) -> None:
             return
         if has_valid_csrf and any(entry[1] == origin_key[1] for entry in allowed_keys):
             return
+        if request.scope.get("neko.instance_identity"):
+            if raw_origin is not None and _same_origin(request):
+                return
+            if raw_origin is None:
+                pinned_key = _parse_beacon_origin_key(_pinned_origin())
+                if pinned_key is not None and pinned_key[:3] == origin_key[:3]:
+                    return
+                if (
+                    is_behind_proxy()
+                    and own_key is not None
+                    and own_key[0] == "http"
+                    and origin_key[0] == "https"
+                    and origin_key[1] == own_key[1]
+                    and origin_key[2] == (own_key[3] or 443)
+                ):
+                    return
         _reject()
 
     # Headerless requests (no Origin/Referer): allow only with Sec-Fetch-Site: same-origin or valid CSRF token.

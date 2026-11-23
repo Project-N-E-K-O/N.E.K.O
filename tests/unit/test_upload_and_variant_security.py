@@ -12,10 +12,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from config import AUTOSTART_CSRF_TOKEN
-
 
 pytestmark = pytest.mark.unit
+
+
+def _csrf_token() -> str:
+    from main_routers.system_router import _shared as system_shared
+
+    return system_shared.AUTOSTART_CSRF_TOKEN
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +49,7 @@ def test_cards_mutations_reject_unauthenticated_and_cross_origin(method, path, k
 
         r2 = getattr(client, method)(
             path,
-            headers={"Origin": "https://evil.example", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            headers={"Origin": "https://evil.example", "X-CSRF-Token": _csrf_token()},
             **kwargs,
         )
         assert r2.status_code == 403
@@ -69,7 +73,7 @@ def test_cards_json_mutations_reject_text_plain():
                 headers={
                     "Content-Type": "text/plain",
                     "Origin": "http://testserver",
-                    "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+                    "X-CSRF-Token": _csrf_token(),
                 },
             )
             assert resp.status_code == 415
@@ -96,7 +100,7 @@ def test_cards_json_mutations_reject_deeply_nested_json_with_400(method, path):
             headers={
                 "Content-Type": "application/json",
                 "Origin": "http://testserver",
-                "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+                "X-CSRF-Token": _csrf_token(),
             },
         )
     assert resp.status_code == 400
@@ -121,7 +125,7 @@ def test_cards_save_to_model_folder_rejects_dot_model_name_and_root_dir(tmp_path
     app.include_router(characters_router.router)
     with TestClient(
         app,
-        headers={"Origin": "http://testserver", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
     ) as client:
         resp = client.post(
             "/api/characters/catgirl/save-to-model-folder",
@@ -152,7 +156,7 @@ def test_live2d_uploads_require_csrf_and_origin():
         r2 = client.post(
             "/api/live2d/upload_file/ModelA",
             files={"file": ("a.motion3.json", b"{}", "application/json")},
-            headers={"Origin": "https://evil.example", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            headers={"Origin": "https://evil.example", "X-CSRF-Token": _csrf_token()},
         )
         assert r2.status_code == 403
         assert r2.json()["error_code"] == "csrf_validation_failed"
@@ -188,7 +192,7 @@ def test_live2d_upload_model_rejects_drive_letters_and_traversal(tmp_path, monke
     app.include_router(live2d_router.router)
     with TestClient(
         app,
-        headers={"Origin": "http://testserver", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
     ) as client:
         resp = client.post(
             "/api/live2d/upload_model",
@@ -214,7 +218,7 @@ def test_live2d_upload_model_succeeds_for_valid_model_directory(tmp_path, monkey
     app.include_router(live2d_router.router)
     with TestClient(
         app,
-        headers={"Origin": "http://testserver", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
     ) as client:
         resp = client.post(
             "/api/live2d/upload_model",
@@ -242,7 +246,7 @@ def test_live2d_upload_file_rejects_deeply_nested_json_with_400(tmp_path, monkey
     app.include_router(live2d_router.router)
     with TestClient(
         app,
-        headers={"Origin": "http://testserver", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
     ) as client:
         resp = client.post(
             "/api/live2d/upload_file/ModelA",
@@ -279,7 +283,7 @@ def test_live2d_upload_file_rejects_dot_and_invalid_model_names(tmp_path, monkey
     app.include_router(live2d_router.router)
     with TestClient(
         app,
-        headers={"Origin": "http://testserver", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
     ) as client:
         resp = client.post(
             f"/api/live2d/upload_file/{encoded_name}",
@@ -299,11 +303,14 @@ def test_live2d_upload_file_rejects_symlinked_subdir_and_target_file(tmp_path, m
     model_dir.mkdir(parents=True)
     outside_dir.mkdir(parents=True)
 
-    # Bypass #2a: symlinked motions subdirectory escaping model_dir
-    (model_dir / "motions").symlink_to(outside_dir, target_is_directory=True)
-    # Bypass #2b: symlinked file inside expressions subdirectory escaping model_dir
-    (model_dir / "expressions").mkdir()
-    (model_dir / "expressions" / "trap.exp3.json").symlink_to(outside_dir / "trap.exp3.json")
+    try:
+        # Bypass #2a: symlinked motions subdirectory escaping model_dir
+        (model_dir / "motions").symlink_to(outside_dir, target_is_directory=True)
+        # Bypass #2b: symlinked file inside expressions subdirectory escaping model_dir
+        (model_dir / "expressions").mkdir()
+        (model_dir / "expressions" / "trap.exp3.json").symlink_to(outside_dir / "trap.exp3.json")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlinks are not supported in this test environment: {exc}")
 
     monkeypatch.setattr(
         live2d_router,
@@ -324,7 +331,7 @@ def test_live2d_upload_file_rejects_symlinked_subdir_and_target_file(tmp_path, m
     app.include_router(live2d_router.router)
     with TestClient(
         app,
-        headers={"Origin": "http://testserver", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
     ) as client:
         r_sym_dir = client.post(
             "/api/live2d/upload_file/LegitModel",
@@ -379,7 +386,7 @@ def test_live2d_delete_and_save_parameters_reject_dot_model_name(tmp_path, monke
     app.include_router(live2d_router.router)
     with TestClient(
         app,
-        headers={"Origin": "http://testserver", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()},
     ) as client:
         r_del = client.delete("/api/live2d/model/%2e")
         assert 400 <= r_del.status_code < 500
@@ -436,6 +443,24 @@ def test_godot_variant_valid_packed_arrays_still_parse():
     assert GodotVariantReader(payload_empty).read_variant() == []
 
 
+def test_godot_variant_accepts_large_bytes_and_strings_when_backed_by_data():
+    from main_routers.pngtuber_importers.godot_variant import GodotVariantReader
+
+    large_len = 10_000_004
+    bytes_payload = struct.pack("<II", 29, large_len) + (b"A" * large_len)
+    parsed_bytes = GodotVariantReader(bytes_payload).read_variant()
+    assert isinstance(parsed_bytes, bytes) and len(parsed_bytes) == large_len
+
+    str_payload = struct.pack("<II", 4, large_len) + (b"x" * large_len)
+    parsed_str = GodotVariantReader(str_payload).read_variant()
+    assert isinstance(parsed_str, str) and len(parsed_str) == large_len
+
+    with pytest.raises(ValueError):
+        GodotVariantReader(struct.pack("<II", 29, large_len) + b"short").read_variant()
+    with pytest.raises(ValueError):
+        GodotVariantReader(struct.pack("<II", 4, large_len) + b"short").read_variant()
+
+
 # ---------------------------------------------------------------------------
 # F0223: main_routers/vrm_router.py
 # ---------------------------------------------------------------------------
@@ -468,7 +493,7 @@ def test_vrm_uploads_reject_unauthenticated_and_cross_origin(tmp_path, monkeypat
         r_evil = client.post(
             path,
             files={"file": (filename, b"glTF")},
-            headers={"Origin": "https://evil.example", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            headers={"Origin": "https://evil.example", "X-CSRF-Token": _csrf_token()},
         )
         assert r_evil.status_code == 403
         assert r_evil.json()["error_code"] == "csrf_validation_failed"

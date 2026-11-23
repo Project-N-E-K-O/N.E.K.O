@@ -23,8 +23,11 @@ from ._shared import logger, router
 
 import asyncio
 import io
-import os
 import json
+import os
+import shutil
+import tempfile
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +40,8 @@ from utils.workshop_utils import get_workshop_path_async
 from .content_gate import ContentFolderBusy, claim_partial_writer
 
 MAX_PREVIEW_UPLOAD_BYTES = 10 * 1024 * 1024
+_MAX_PREVIEW_IMAGE_PIXELS = 100_000_000
+_PREVIEW_STAGING_TTL_SECONDS = 24 * 60 * 60
 
 
 async def _read_upload_bytes_bounded(
@@ -62,6 +67,10 @@ async def _read_upload_bytes_bounded(
 
 def _assert_workshop_path(path: str, base: str) -> str:
     """Resolve ``path`` and verify containment inside ``base`` (case- and cross-drive-safe)."""
+    unified_path = path.replace("/", "\\")
+    unified_base = base.replace("/", "\\")
+    if (unified_path.startswith("\\\\") or unified_path.startswith("\\??\\")) and not unified_base.startswith("\\\\"):
+        raise PermissionError("path not allowed")
     try:
         resolved = os.path.realpath(os.path.normpath(path))
         norm_full = os.path.normcase(resolved)
@@ -73,14 +82,22 @@ def _assert_workshop_path(path: str, base: str) -> str:
         raise PermissionError("path not allowed") from exc
 
 
+def _check_preview_image_dimensions(img) -> None:
+    """Enforce pixel-count limit without mutating PIL's global Image.MAX_IMAGE_PIXELS."""
+    width, height = getattr(img, "size", (0, 0))
+    if width <= 0 or height <= 0 or (width * height) > _MAX_PREVIEW_IMAGE_PIXELS:
+        raise ValueError("Preview image dimensions exceed allowed limit")
+
+
 def _validate_preview_image_bytes(image_bytes: bytes) -> None:
     """Verify uploaded preview bytes decode as a valid JPEG or PNG image."""
     from PIL import Image
 
-    Image.MAX_IMAGE_PIXELS = 100_000_000
     with Image.open(io.BytesIO(image_bytes)) as img:
+        _check_preview_image_dimensions(img)
         img.verify()
     with Image.open(io.BytesIO(image_bytes)) as img:
+        _check_preview_image_dimensions(img)
         if (img.format or "").upper() not in {"JPEG", "PNG"}:
             raise ValueError("Unsupported preview image format")
         img.load()
@@ -90,10 +107,11 @@ def _verify_preview_image_file(file_path: str) -> None:
     """Verify an on-disk preview image file decodes cleanly with PIL."""
     from PIL import Image
 
-    Image.MAX_IMAGE_PIXELS = 100_000_000
     with Image.open(file_path) as img:
+        _check_preview_image_dimensions(img)
         img.verify()
     with Image.open(file_path) as img:
+        _check_preview_image_dimensions(img)
         img.load()
 
 
@@ -557,6 +575,54 @@ def _write_claimed_preview_image(
         atomic_write_bytes(preview_image_path, image_bytes)
 
 
+def _cleanup_stale_preview_staging(
+    staging_root: str,
+    *,
+    max_age_seconds: float = _PREVIEW_STAGING_TTL_SECONDS,
+) -> None:
+    """Best-effort pruning of abandoned preview staging directories older than TTL."""
+    if not staging_root or os.path.islink(staging_root) or not os.path.isdir(staging_root):
+        return
+    cutoff = time.time() - max_age_seconds
+    try:
+        with os.scandir(staging_root) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                        continue
+                    if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                        shutil.rmtree(entry.path, ignore_errors=True)
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def _cleanup_consumed_preview_staging(source_preview: str, workshop_base: str) -> None:
+    """Best-effort delete a consumed per-upload staging directory under _preview_staging."""
+    if not source_preview or not workshop_base:
+        return
+    staging_root = os.path.realpath(
+        os.path.normpath(os.path.join(workshop_base, "WorkshopExport", "_preview_staging"))
+    )
+    parent_raw = os.path.dirname(source_preview)
+    if not parent_raw or os.path.islink(parent_raw):
+        return
+    resolved_parent = os.path.realpath(os.path.normpath(parent_raw))
+    try:
+        common = os.path.commonpath([resolved_parent, staging_root])
+    except ValueError:
+        return
+    if os.path.normcase(common) != os.path.normcase(staging_root):
+        return
+    if os.path.normcase(resolved_parent) == os.path.normcase(staging_root):
+        return
+    if os.path.normcase(os.path.dirname(resolved_parent)) != os.path.normcase(staging_root):
+        return
+    if os.path.isdir(resolved_parent):
+        shutil.rmtree(resolved_parent, ignore_errors=True)
+
+
 def _write_preview_image(
     content_folder: str | None,
     preview_image_path: str,
@@ -568,6 +634,12 @@ def _write_preview_image(
             content_folder, preview_image_path, image_bytes
         )
     else:
+        try:
+            _cleanup_stale_preview_staging(
+                os.path.dirname(os.path.dirname(preview_image_path))
+            )
+        except Exception:
+            pass
         os.makedirs(os.path.dirname(preview_image_path), exist_ok=True)
         atomic_write_bytes(preview_image_path, image_bytes)
 
@@ -641,13 +713,18 @@ async def upload_preview_image(request: Request):
             )
         else:
             content_folder = None
-            staging_dir = os.path.join(
+            staging_root = _assert_workshop_path(
+                os.path.join(resolved_workshop_base, "WorkshopExport", "_preview_staging"),
                 resolved_workshop_base,
-                "WorkshopExport",
-                "_preview_staging",
-                uuid.uuid4().hex,
             )
-            preview_image_path = os.path.join(staging_dir, f'preview{file_extension}')
+            staging_dir = _assert_workshop_path(
+                os.path.join(staging_root, uuid.uuid4().hex),
+                staging_root,
+            )
+            preview_image_path = _assert_workshop_path(
+                os.path.join(staging_dir, f'preview{file_extension}'),
+                staging_dir,
+            )
 
         image_bytes = await _read_upload_bytes_bounded(file, MAX_PREVIEW_UPLOAD_BYTES)
         if not image_bytes or len(image_bytes) > MAX_PREVIEW_UPLOAD_BYTES:

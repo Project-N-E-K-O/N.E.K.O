@@ -453,6 +453,8 @@
           : null,
       }));
       this._disposed = false;
+      this._cachedCsrfToken = '';
+      this._csrfFetchPromise = null;
       this._activeCommandRouteIdentity = null;
       this._memoryConsentEnabled = false;
       this._controlBridge = {
@@ -2143,26 +2145,43 @@
       });
     }
 
-    getMutationHeaders() {
-      const headers = { 'Content-Type': 'application/json' };
+    getMutationHeaders(options = {}) {
+      const forceRefresh = options?.forceRefresh === true;
+      if (forceRefresh) {
+        this._cachedCsrfToken = '';
+        this._csrfFetchPromise = null;
+      }
       const loadFromPageConfig = () => {
+        if (!forceRefresh && this._csrfFetchPromise) {
+          return this._csrfFetchPromise.then((cached) => ({ ...cached }));
+        }
         const lanlanName = this._window.lanlan_config?.lanlan_name || '';
-        return this.getPageConfig(lanlanName)
-          .then((response) => response.ok ? response.json() : null)
+        const pending = this.getPageConfig(lanlanName)
+          .then((response) => (response.ok ? response.json() : null))
           .then((config) => {
+            const headers = { 'Content-Type': 'application/json' };
             if (config && typeof config.autostart_csrf_token === 'string' && config.autostart_csrf_token) {
               headers['X-CSRF-Token'] = config.autostart_csrf_token;
               this._cachedCsrfToken = config.autostart_csrf_token;
             }
             return headers;
           })
-          .catch(() => headers);
+          .catch(() => ({ 'Content-Type': 'application/json' }))
+          .finally(() => {
+            if (this._csrfFetchPromise === pending) {
+              this._csrfFetchPromise = null;
+            }
+          });
+        if (!forceRefresh) {
+          this._csrfFetchPromise = pending;
+        }
+        return pending.then((cached) => ({ ...cached }));
       };
       const security = this._window.nekoLocalMutationSecurity;
       if (security && typeof security.getMutationHeaders === 'function') {
         return Promise.resolve(security.getMutationHeaders())
           .then((mutationHeaders) => {
-            Object.assign(headers, mutationHeaders || {});
+            const headers = { 'Content-Type': 'application/json', ...(mutationHeaders || {}) };
             const resolvedToken = csrfTokenFromHeaders(headers);
             if (resolvedToken) {
               this._cachedCsrfToken = resolvedToken;
@@ -2179,10 +2198,10 @@
       const security = this._window.nekoLocalMutationSecurity;
       if (security && typeof security.refreshToken === 'function') {
         return Promise.resolve(security.refreshToken())
-          .then(() => this.getMutationHeaders())
-          .catch(() => this.getMutationHeaders());
+          .then(() => this.getMutationHeaders({ forceRefresh: true }))
+          .catch(() => this.getMutationHeaders({ forceRefresh: true }));
       }
-      return this.getMutationHeaders();
+      return this.getMutationHeaders({ forceRefresh: true });
     }
 
     async withCsrfRetry(requestWithHeaders) {
@@ -3643,7 +3662,7 @@
         });
       }
       const sendEndBeacon = () => {
-        if (!options.useBeacon || !this._navigator.sendBeacon) return false;
+        if (!options.useBeacon || !this._navigator.sendBeacon || !cachedCsrfToken) return false;
         try {
           return this._navigator.sendBeacon(
             this._gameEndpoint('end'),
@@ -3707,30 +3726,52 @@
       // postgame entirely until server-side expiry. Dropping keepalive costs
       // nothing on the awaited path and is strictly better than certain failure
       // on the unload path.
-      const response = await this._postWithCsrf(this._gameEndpoint('end'), fallbackPayloadObj, {
-        // Page-exit keeps keepalive unconditionally: the body was already shed
-        // above if it was oversized, and without keepalive an unloading document
-        // cancels the request outright. The awaited path drops keepalive instead,
-        // where the caller is still there to see the result and an oversized body
-        // would otherwise reject before leaving the page.
-        // Page exit keeps keepalive only once the body actually fits: the shed
-        // above guarantees that, and a keepalive request over the shared 64 KiB
-        // quota fails before it leaves the page -- the exact loss keepalive is
-        // there to prevent. The awaited path drops keepalive instead, where the
-        // caller is still around to see the result.
-        keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES,
-        operation: 'route_end',
-        // Honour a caller-supplied deadline, the way every other networked
-        // method here does via `...options`. This one enumerates explicitly on
-        // purpose (so `operation`/`keepalive`/`headers` cannot be overridden),
-        // which silently dropped the `timeoutMs` the SDK does forward and the
-        // .d.ts does advertise. Clamped rather than passed through: end carries
-        // keepalive and is deliberately preserved across dispose, so a game must
-        // not be able to stretch it to minutes. Any invalid value degrades to
-        // exactly today's 8000.
-        timeoutMs: boundedPositiveInteger(options.timeoutMs, 8000, 30000),
-        signal: options.signal,
-      });
+      const endTimeoutMs = boundedPositiveInteger(options.timeoutMs, 8000, 30000);
+      let response;
+      if (options.useBeacon) {
+        // Dispatch the unload fallback synchronously before any `await` so an
+        // immediate `dispose({ preservePendingOperations: ['route_end'] })`
+        // preserves this in-flight request instead of rejecting it.
+        const initialHeaders = cachedCsrfToken ? { 'X-CSRF-Token': cachedCsrfToken } : {};
+        const endRequestPromise = this._post(this._gameEndpoint('end'), body, {
+          headers: initialHeaders,
+          credentials: 'same-origin',
+          keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES,
+          operation: 'route_end',
+          timeoutMs: endTimeoutMs,
+          signal: options.signal,
+        });
+        response = await endRequestPromise;
+        if (!this._disposed && response.status === 403) {
+          const errPayload = await response.clone().json().catch(() => ({}));
+          if (errPayload?.error_code === 'csrf_validation_failed') {
+            const refreshedHeaders = await this.refreshMutationHeaders();
+            const refreshedToken = csrfTokenFromHeaders(refreshedHeaders);
+            const retryBody = JSON.stringify(
+              refreshedToken
+                ? { ...fallbackPayloadObj, _csrf_token: refreshedToken }
+                : fallbackPayloadObj
+            );
+            if (!this._disposed) {
+              response = await this._post(this._gameEndpoint('end'), retryBody, {
+                headers: refreshedHeaders,
+                credentials: 'same-origin',
+                keepalive: utf8ByteLength(retryBody) <= KEEPALIVE_BODY_BYTES,
+                operation: 'route_end',
+                timeoutMs: endTimeoutMs,
+                signal: options.signal,
+              });
+            }
+          }
+        }
+      } else {
+        response = await this._postWithCsrf(this._gameEndpoint('end'), fallbackPayloadObj, {
+          keepalive: utf8ByteLength(body) <= KEEPALIVE_BODY_BYTES,
+          operation: 'route_end',
+          timeoutMs: endTimeoutMs,
+          signal: options.signal,
+        });
+      }
       const data = await response.json().catch(() => ({ ok: response.ok, status: response.status }));
       const projected = this._projectRouteEndResponse(data);
       if (response.ok) {

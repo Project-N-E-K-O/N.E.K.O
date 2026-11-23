@@ -28,6 +28,13 @@ class GodotVariantReader:
                 f"Godot Variant count {count} requires more than {remaining} remaining bytes"
             )
 
+    def _validate_byte_length(self, length: int) -> None:
+        remaining = len(self.data) - self.offset
+        if length < 0 or length > max(0, remaining):
+            raise ValueError(
+                f"Godot Variant payload length {length} exceeds {remaining} remaining bytes"
+            )
+
     def _u32(self) -> int:
         value = struct.unpack_from("<I", self.data, self.offset)[0]
         self.offset += 4
@@ -58,7 +65,7 @@ class GodotVariantReader:
 
     def _string_payload(self) -> str:
         length = self._u32()
-        self._validate_count(length, 1)
+        self._validate_byte_length(length)
         raw = self.data[self.offset:self.offset + length]
         self.offset += length
         self._pad()
@@ -66,7 +73,7 @@ class GodotVariantReader:
 
     def _bytes_payload(self) -> bytes:
         length = self._u32()
-        self._validate_count(length, 1)
+        self._validate_byte_length(length)
         raw = self.data[self.offset:self.offset + length]
         self.offset += length
         self._pad()

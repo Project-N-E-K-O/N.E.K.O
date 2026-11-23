@@ -339,7 +339,7 @@ def agent(monkeypatch: pytest.MonkeyPatch) -> AgentProcess:
 
 @pytest.fixture
 def client() -> TestClient:
-    from config import AUTOSTART_CSRF_TOKEN
+    from main_routers.system_router._shared import AUTOSTART_CSRF_TOKEN
     from main_routers import agent_router
 
     app = FastAPI()

@@ -751,18 +751,50 @@
     }
 
     var _handoffCsrfToken = '';
-    function getHandoffMutationHeaders(forceRefresh) {
+    function createHandoffAbortError() {
+        var error = new Error('Aborted');
+        error.name = 'AbortError';
+        return error;
+    }
+    function awaitHandoffWithSignal(promise, signal) {
+        if (!signal) {
+            return promise;
+        }
+        if (signal.aborted) {
+            return Promise.reject(createHandoffAbortError());
+        }
+        return new Promise(function (resolve, reject) {
+            function onAbort() {
+                reject(createHandoffAbortError());
+            }
+            signal.addEventListener('abort', onAbort, { once: true });
+            Promise.resolve(promise).then(function (value) {
+                signal.removeEventListener('abort', onAbort);
+                resolve(value);
+            }, function (error) {
+                signal.removeEventListener('abort', onAbort);
+                reject(error);
+            });
+        });
+    }
+    function getHandoffMutationHeaders(forceRefresh, signal) {
+        if (signal && signal.aborted) {
+            return Promise.reject(createHandoffAbortError());
+        }
         try {
             var security = window.nekoLocalMutationSecurity;
             if (security && typeof security.getMutationHeaders === 'function') {
                 var refreshPromise = (forceRefresh && typeof security.refreshToken === 'function')
                     ? Promise.resolve(security.refreshToken())
                     : Promise.resolve();
-                return refreshPromise.then(function () {
+                return awaitHandoffWithSignal(refreshPromise.then(function () {
                     return security.getMutationHeaders();
                 }).then(function (headers) {
                     return (headers && typeof headers === 'object') ? headers : {};
-                }).catch(function () {
+                }), signal).catch(function (error) {
+                    if ((error && error.name === 'AbortError') || (signal && signal.aborted)) {
+                        throw (error && error.name === 'AbortError') ? error : createHandoffAbortError();
+                    }
                     return {};
                 });
             }
@@ -773,8 +805,8 @@
         if (_handoffCsrfToken) {
             return Promise.resolve({ 'X-CSRF-Token': _handoffCsrfToken });
         }
-        return fetch('/api/config/page_config', { cache: 'no-store' }).then(function (resp) {
-            return resp && resp.ok ? resp.json() : null;
+        return fetch('/api/config/page_config', { cache: 'no-store', signal: signal }).then(function (resp) {
+            return resp && resp.ok ? awaitHandoffWithSignal(resp.json(), signal) : null;
         }).then(function (cfg) {
             var token = cfg && cfg.autostart_csrf_token;
             if (typeof token === 'string' && token) {
@@ -782,7 +814,10 @@
                 return { 'X-CSRF-Token': token };
             }
             return {};
-        }).catch(function () {
+        }).catch(function (error) {
+            if ((error && error.name === 'AbortError') || (signal && signal.aborted)) {
+                throw (error && error.name === 'AbortError') ? error : createHandoffAbortError();
+            }
             return {};
         });
     }
@@ -800,13 +835,14 @@
             command: command
         }, payload || {}));
         function postOnce(forceRefresh) {
-            return getHandoffMutationHeaders(forceRefresh).then(function (csrfHeaders) {
+            var signal = controller ? controller.signal : undefined;
+            return getHandoffMutationHeaders(forceRefresh, signal).then(function (csrfHeaders) {
                 return fetch('/api/agent/command', {
                     method: 'POST',
                     headers: Object.assign({
                         'Content-Type': 'application/json'
                     }, csrfHeaders || {}),
-                    signal: controller ? controller.signal : undefined,
+                    signal: signal,
                     body: bodyJson
                 });
             });

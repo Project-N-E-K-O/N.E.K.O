@@ -9,7 +9,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from config import AUTOSTART_CSRF_TOKEN
+from main_routers.system_router import _shared as system_shared
+
+
+def _csrf_token() -> str:
+    return system_shared.AUTOSTART_CSRF_TOKEN
 
 
 pytestmark = pytest.mark.unit
@@ -78,7 +82,7 @@ def test_route_start_and_drawing_guess_round_start_reject_invalid_lanlan_name(ba
     app = FastAPI()
     app.include_router(game_router.router)
     app.include_router(dg_router.router)
-    headers = {"Origin": "http://testserver", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN}
+    headers = {"Origin": "http://testserver", "X-CSRF-Token": _csrf_token()}
     with TestClient(app, headers=headers) as client:
         r1 = client.post(
             "/api/game/soccer/route/start",
@@ -144,7 +148,7 @@ def test_all_game_mutation_endpoints_enforce_csrf_and_json_content_type(endpoint
         r_evil = client.post(
             endpoint,
             json={"session_id": "s1"},
-            headers={"Origin": "https://evil.example", "X-CSRF-Token": AUTOSTART_CSRF_TOKEN},
+            headers={"Origin": "https://evil.example", "X-CSRF-Token": _csrf_token()},
         )
         assert r_evil.status_code == 403
 
@@ -161,7 +165,7 @@ def test_all_game_mutation_endpoints_enforce_csrf_and_json_content_type(endpoint
             headers={
                 "Content-Type": "text/plain",
                 "Origin": "http://testserver",
-                "X-CSRF-Token": AUTOSTART_CSRF_TOKEN,
+                "X-CSRF-Token": _csrf_token(),
             },
         )
         assert r_plain.status_code == 415
@@ -181,7 +185,7 @@ def test_game_route_end_accepts_beacon_body_csrf_token_fallback(monkeypatch):
     with TestClient(app) as client:
         resp = client.post(
             "/api/game/soccer/route/end",
-            json={"session_id": "s1", "_csrf_token": AUTOSTART_CSRF_TOKEN},
+            json={"session_id": "s1", "_csrf_token": _csrf_token()},
             headers={"Origin": "http://testserver"},
         )
         assert resp.status_code == 200
