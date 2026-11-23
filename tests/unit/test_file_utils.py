@@ -1091,3 +1091,147 @@ def test_both_publishes_share_one_busy_backoff(tmp_path):
         "a destination that won the race was retried %d times instead of "
         "being taken as the answer" % first_only
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Directory fsync uses POSIX open/fsync")
+def test_atomic_write_text_and_bytes_fsync_parent_directory_after_replace(
+    tmp_path, monkeypatch
+):
+    """B21A-004: atomic_write_text and atomic_write_bytes fsync target.parent after os.replace."""
+    real_open = os.open
+    real_fsync = os.fsync
+    real_close = os.close
+    real_replace = os.replace
+
+    for writer, target_name, payload in (
+        (atomic_write_text, "text.txt", "hello"),
+        (file_utils.atomic_write_bytes, "bytes.bin", b"\x00\x01\x02"),
+    ):
+        target = tmp_path / target_name
+        dir_fds: set[int] = set()
+        events: list[tuple[str, str]] = []
+
+        def spy_open(path_arg, flags, *args, **kwargs):
+            fd = real_open(path_arg, flags, *args, **kwargs)
+            if os.fspath(path_arg) == str(tmp_path):
+                dir_fds.add(fd)
+                events.append(("open_dir", os.fspath(path_arg)))
+            return fd
+
+        def spy_replace(src, dst):
+            events.append(("replace", os.fspath(dst)))
+            return real_replace(src, dst)
+
+        def spy_fsync(fd):
+            if fd in dir_fds:
+                events.append(("fsync_dir", str(tmp_path)))
+            else:
+                events.append(("fsync_file", "temp"))
+            return real_fsync(fd)
+
+        def spy_close(fd):
+            if fd in dir_fds:
+                events.append(("close_dir", str(tmp_path)))
+                dir_fds.discard(fd)
+            return real_close(fd)
+
+        monkeypatch.setattr(file_utils.os, "open", spy_open)
+        monkeypatch.setattr(file_utils.os, "replace", spy_replace)
+        monkeypatch.setattr(file_utils.os, "fsync", spy_fsync)
+        monkeypatch.setattr(file_utils.os, "close", spy_close)
+
+        writer(target, payload)
+
+        assert ("replace", str(target)) in events
+        replace_idx = events.index(("replace", str(target)))
+        post_replace = events[replace_idx + 1 :]
+        assert ("open_dir", str(tmp_path)) in post_replace
+        assert ("fsync_dir", str(tmp_path)) in post_replace
+        assert ("close_dir", str(tmp_path)) in post_replace
+        assert post_replace.index(("open_dir", str(tmp_path))) < post_replace.index(("fsync_dir", str(tmp_path)))
+        assert post_replace.index(("fsync_dir", str(tmp_path))) < post_replace.index(("close_dir", str(tmp_path)))
+        assert dir_fds == set()
+
+
+@pytest.mark.parametrize("fail_stage", ["open", "fsync"])
+def test_fsync_directory_tolerates_oserror_and_windows_short_circuits(
+    tmp_path, monkeypatch, fail_stage
+):
+    """B21A-004: directory fsync is best-effort on OSError and no-ops on Windows."""
+    import errno
+    from types import SimpleNamespace
+
+    target = tmp_path / "resilient.txt"
+    real_open = os.open
+    real_fsync = os.fsync
+    real_close = os.close
+    closed_dir_fds: list[int] = []
+    dir_fds: set[int] = set()
+
+    def flaky_open(path_arg, flags, *args, **kwargs):
+        if os.fspath(path_arg) == str(tmp_path):
+            if fail_stage == "open":
+                raise OSError(errno.EINVAL, "directory sync unsupported")
+            fd = real_open(path_arg, flags, *args, **kwargs)
+            dir_fds.add(fd)
+            return fd
+        return real_open(path_arg, flags, *args, **kwargs)
+
+    def flaky_fsync(fd):
+        if fd in dir_fds:
+            raise OSError(errno.EOPNOTSUPP, "fsync unsupported on fs")
+        return real_fsync(fd)
+
+    def tracked_close(fd):
+        if fd in dir_fds:
+            closed_dir_fds.append(fd)
+            dir_fds.discard(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(file_utils.os, "open", flaky_open)
+    monkeypatch.setattr(file_utils.os, "fsync", flaky_fsync)
+    monkeypatch.setattr(file_utils.os, "close", tracked_close)
+
+    if os.name != "nt":
+        atomic_write_text(target, "persisted")
+        assert target.read_text(encoding="utf-8") == "persisted"
+        assert _tmp_siblings(target) == []
+        if fail_stage == "fsync":
+            assert len(closed_dir_fds) == 1
+
+    # Verify Windows early return never attempts os.open on the directory.
+    nt_os = SimpleNamespace(
+        name="nt",
+        open=lambda *a, **k: (_ for _ in ()).throw(AssertionError("os.open called on Windows")),
+    )
+    monkeypatch.setattr(file_utils, "os", nt_os)
+    file_utils._fsync_directory(tmp_path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync")
+@pytest.mark.parametrize("writer,payload", [(atomic_write_text, "new"), (file_utils.atomic_write_bytes, b"new")])
+def test_directory_io_error_identifies_published_target(tmp_path, monkeypatch, caplog, writer, payload):
+    import errno
+    import logging
+    import stat
+
+    target = tmp_path / "state"
+    target.write_bytes(b"old")
+    real_sync = os.fsync
+
+    def fail_directory_sync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(errno.EIO, "injected directory error")
+        real_sync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_directory_sync)
+    with caplog.at_level(logging.WARNING, logger=file_utils.__name__):
+        writer(target, payload)
+    assert target.read_bytes() == b"new"
+    assert "parent directory sync failed" in caplog.text
+
+    target.write_bytes(b"old")
+    with pytest.raises(file_utils.PublishedFileSyncError, match="File replaced") as exc:
+        writer(target, payload, strict_dir_sync=True)
+    assert exc.value.errno == errno.EIO
+    assert target.read_bytes() == b"new"

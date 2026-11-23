@@ -1312,6 +1312,7 @@
     function applyAudioSource(audioEl, rawUrl) {
       if (!audioEl) return;
       const sourceUrl = toPlayableUrl(rawUrl);
+      audioEl._sourceUrl = sourceUrl;
       if (!sourceUrl) {
         audioEl.removeAttribute("src");
         audioEl.innerHTML = "";
@@ -1324,6 +1325,33 @@
       if (mime) source.type = mime;
       audioEl.appendChild(source);
       audioEl.load();
+    }
+
+    function releasePreviewAudio(audioEl) {
+      if (!audioEl) return;
+      try {
+        audioEl.pause();
+      } catch (_err) {
+        // Ignore mock or detached media errors.
+      }
+      if (state.audioViz.activeElement === audioEl) {
+        state.audioViz.activeElement = null;
+      }
+      audioEl._sourceUrl = "";
+      audioEl.removeAttribute("src");
+      audioEl.innerHTML = "";
+      try {
+        audioEl.load();
+      } catch (_err) {
+        // Ignore mock media load errors during cleanup.
+      }
+    }
+
+    function musicItemKey(item, occurrence = 0) {
+      if (item && item.item_id) {
+        return "id:" + String(item.item_id);
+      }
+      return "url:" + String((item && item.url) || "") + "#" + occurrence;
     }
 
     async function playMediaElement(mediaEl) {
@@ -1520,129 +1548,211 @@
       };
     }
 
+    function buildMusicCard(item, key) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.dataset.itemKey = key;
+      card._item = item;
+
+      const title = document.createElement("strong");
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const link = document.createElement("div");
+      link.className = "meta";
+
+      const audio = document.createElement("audio");
+      audio.className = "audio-preview";
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.addEventListener("play", () => attachAudioToVisualizer(audio));
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+
+      const playBtn = document.createElement("button");
+      playBtn.className = "btn-primary";
+      playBtn.textContent = "播放";
+      playBtn.onclick = async () => {
+        try {
+          await playMediaElement(audio);
+          attachAudioToVisualizer(audio);
+          setChip("本地预览播放中");
+        } catch (err) {
+          toast(`播放失败: ${err.message || err}`, "error");
+        }
+      };
+
+      const addBtn = document.createElement("button");
+      addBtn.className = "btn-soft";
+      addBtn.textContent = "加入队列";
+      addBtn.onclick = () => {
+        state.draftQueue.push(makeDraftQueueItem(card._item));
+        renderDraftQueue();
+        toast("已加入队列", "info");
+      };
+
+      const pushBtn = document.createElement("button");
+      pushBtn.className = "btn-accent";
+      pushBtn.textContent = "立即推送";
+      pushBtn.onclick = async () => {
+        const current = card._item;
+        try {
+          pushBtn.disabled = true;
+          const result = await callEntry("push_music_url", {
+            url: current.url,
+            item_id: current.item_id,
+            title: current.title,
+            artist: current.artist,
+            auto_push: true,
+            add_to_library: false,
+            duration_sec: normalizeDuration(current.duration_sec),
+            attach_prompt_on_push: currentAttachPromptOnPush(),
+          });
+          startInstantPlayback(
+            result?.url || current.url,
+            result?.title || current.title,
+            normalizeDuration(result?.duration_sec || current.duration_sec)
+          );
+          toast("获取成功，已自动推送", "success");
+          setChip("获取成功，已自动推送");
+        } catch (err) {
+          toast(`推送失败: ${err.message || err}`, "error");
+        } finally {
+          pushBtn.disabled = false;
+        }
+      };
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "btn-danger";
+      delBtn.textContent = "删除";
+      delBtn.onclick = async () => {
+        const current = card._item;
+        try {
+          delBtn.disabled = true;
+          await callEntry("delete_music_item", { item_id: current.item_id });
+          const deletedId = String(current.item_id || "");
+          const deletedUrl = toPlayableUrl(current.url || "");
+          state.draftQueue = state.draftQueue.filter((queued) => {
+            const queuedId = String(queued.item_id || "");
+            const queuedUrl = toPlayableUrl(queued.url || "");
+            return !(
+              (deletedId && queuedId === deletedId) ||
+              (deletedUrl && queuedUrl === deletedUrl)
+            );
+          });
+          renderDraftQueue();
+          toast("素材已删除", "info");
+          await refreshAll();
+        } catch (err) {
+          toast(`删除失败: ${err.message || err}`, "error");
+        } finally {
+          delBtn.disabled = false;
+        }
+      };
+
+      actions.appendChild(playBtn);
+      actions.appendChild(addBtn);
+      actions.appendChild(pushBtn);
+      actions.appendChild(delBtn);
+
+      card.appendChild(title);
+      card.appendChild(meta);
+      card.appendChild(link);
+      card.appendChild(audio);
+      card.appendChild(actions);
+      card._refs = { title, meta, link, audio };
+      return card;
+    }
+
+    function updateMusicCard(card, item) {
+      card._item = item;
+      const refs = card._refs;
+      const nextTitle = item.title || "未命名音乐";
+      if (refs.title.textContent !== nextTitle) {
+        refs.title.textContent = nextTitle;
+      }
+      const lyricTag = item.lyric_bound ? ` | 歌词:${item.lyric_filename || "已绑定"}` : " | 歌词:无";
+      const nextMeta = `${item.artist || "未知"} | ${normalizeDuration(item.duration_sec)}s | ${item.source || "link"}${lyricTag}`;
+      if (refs.meta.textContent !== nextMeta) {
+        refs.meta.textContent = nextMeta;
+      }
+      const nextLink = item.url || "";
+      if (refs.link.textContent !== nextLink) {
+        refs.link.textContent = nextLink;
+      }
+      const nextSourceUrl = toPlayableUrl(item.url || "");
+      if (refs.audio._sourceUrl !== nextSourceUrl) {
+        applyAudioSource(refs.audio, item.url || "");
+      }
+    }
+
+    function releaseCardAudio(node) {
+      if (!node) return;
+      const audio = (node._refs && node._refs.audio)
+        || (typeof node.querySelector === "function" ? node.querySelector("audio") : null);
+      if (audio) releasePreviewAudio(audio);
+    }
+
     function renderMusicList() {
-      dom.musicList.innerHTML = "";
+      const existingByKey = new Map();
+      const nonCardChildren = [];
+      Array.from(dom.musicList.children).forEach((child) => {
+        const key = child.dataset && child.dataset.itemKey;
+        if (key && !existingByKey.has(key)) {
+          existingByKey.set(key, child);
+        } else {
+          nonCardChildren.push(child);
+        }
+      });
+
       if (!state.musicItems.length) {
+        existingByKey.forEach((card) => releaseCardAudio(card));
+        nonCardChildren.forEach((node) => releaseCardAudio(node));
         dom.musicList.innerHTML = '<div class="hint">暂无素材，请先上传或添加链接。</div>';
         return;
       }
 
-      state.musicItems.forEach((item) => {
-        const card = document.createElement("div");
-        card.className = "card";
+      nonCardChildren.forEach((node) => {
+        releaseCardAudio(node);
+        node.remove();
+      });
 
-        const title = document.createElement("strong");
-        title.textContent = item.title || "未命名音乐";
+      const urlOccurrences = new Map();
+      const nextEntries = state.musicItems.map((item) => {
+        let occurrence = 0;
+        if (!item || !item.item_id) {
+          const urlKey = String((item && item.url) || "");
+          occurrence = urlOccurrences.get(urlKey) || 0;
+          urlOccurrences.set(urlKey, occurrence + 1);
+        }
+        return { item, key: musicItemKey(item, occurrence) };
+      });
+      const nextKeys = new Set(nextEntries.map((entry) => entry.key));
 
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        const lyricTag = item.lyric_bound ? ` | 歌词:${item.lyric_filename || "已绑定"}` : " | 歌词:无";
-        meta.textContent = `${item.artist || "未知"} | ${normalizeDuration(item.duration_sec)}s | ${item.source || "link"}${lyricTag}`;
+      Array.from(existingByKey.entries()).forEach(([key, card]) => {
+        if (!nextKeys.has(key)) {
+          existingByKey.delete(key);
+          releaseCardAudio(card);
+          card.remove();
+        }
+      });
 
-        const link = document.createElement("div");
-        link.className = "meta";
-        link.textContent = item.url || "";
+      nextEntries.forEach(({ item, key }, idx) => {
+        let card = existingByKey.get(key);
+        if (card) {
+          existingByKey.delete(key);
+        } else {
+          card = buildMusicCard(item, key);
+        }
+        updateMusicCard(card, item);
+        if (dom.musicList.children[idx] !== card) {
+          dom.musicList.insertBefore(card, dom.musicList.children[idx] || null);
+        }
+      });
 
-        const audio = document.createElement("audio");
-        audio.className = "audio-preview";
-        audio.controls = true;
-        audio.preload = "metadata";
-        applyAudioSource(audio, item.url || "");
-        audio.addEventListener("play", () => attachAudioToVisualizer(audio));
-
-        const actions = document.createElement("div");
-        actions.className = "actions";
-
-        const playBtn = document.createElement("button");
-        playBtn.className = "btn-primary";
-        playBtn.textContent = "播放";
-        playBtn.onclick = async () => {
-          try {
-            await playMediaElement(audio);
-            attachAudioToVisualizer(audio);
-            setChip("本地预览播放中");
-          } catch (err) {
-            toast(`播放失败: ${err.message || err}`, "error");
-          }
-        };
-
-        const addBtn = document.createElement("button");
-        addBtn.className = "btn-soft";
-        addBtn.textContent = "加入队列";
-        addBtn.onclick = () => {
-          state.draftQueue.push(makeDraftQueueItem(item));
-          renderDraftQueue();
-          toast("已加入队列", "info");
-        };
-
-        const pushBtn = document.createElement("button");
-        pushBtn.className = "btn-accent";
-        pushBtn.textContent = "立即推送";
-        pushBtn.onclick = async () => {
-          try {
-            pushBtn.disabled = true;
-            const result = await callEntry("push_music_url", {
-              url: item.url,
-              item_id: item.item_id,
-              title: item.title,
-              artist: item.artist,
-              auto_push: true,
-              add_to_library: false,
-              duration_sec: normalizeDuration(item.duration_sec),
-              attach_prompt_on_push: currentAttachPromptOnPush(),
-            });
-            startInstantPlayback(
-              result?.url || item.url,
-              result?.title || item.title,
-              normalizeDuration(result?.duration_sec || item.duration_sec)
-            );
-            toast("获取成功，已自动推送", "success");
-            setChip("获取成功，已自动推送");
-          } catch (err) {
-            toast(`推送失败: ${err.message || err}`, "error");
-          } finally {
-            pushBtn.disabled = false;
-          }
-        };
-
-        const delBtn = document.createElement("button");
-        delBtn.className = "btn-danger";
-        delBtn.textContent = "删除";
-        delBtn.onclick = async () => {
-          try {
-            delBtn.disabled = true;
-            await callEntry("delete_music_item", { item_id: item.item_id });
-            const deletedId = String(item.item_id || "");
-            const deletedUrl = toPlayableUrl(item.url || "");
-            state.draftQueue = state.draftQueue.filter((queued) => {
-              const queuedId = String(queued.item_id || "");
-              const queuedUrl = toPlayableUrl(queued.url || "");
-              return !(
-                (deletedId && queuedId === deletedId) ||
-                (deletedUrl && queuedUrl === deletedUrl)
-              );
-            });
-            renderDraftQueue();
-            toast("素材已删除", "info");
-            await refreshAll();
-          } catch (err) {
-            toast(`删除失败: ${err.message || err}`, "error");
-          } finally {
-            delBtn.disabled = false;
-          }
-        };
-
-        actions.appendChild(playBtn);
-        actions.appendChild(addBtn);
-        actions.appendChild(pushBtn);
-        actions.appendChild(delBtn);
-
-        card.appendChild(title);
-        card.appendChild(meta);
-        card.appendChild(link);
-        card.appendChild(audio);
-        card.appendChild(actions);
-        dom.musicList.appendChild(card);
+      existingByKey.forEach((card) => {
+        releaseCardAudio(card);
+        card.remove();
       });
     }
 

@@ -563,12 +563,12 @@ async def _attempt_mini_game_invite_delivery(
         # ``state.delivered_at is None``, reset by PR-B later choices and process restarts.
         # Codex P1 review: without this, force-first treats previously invited users as new
         # and forces another invitation after every restart.
-        await _ensure_proactive_chat_totals_loaded(**state_storage_kwargs)
-        never_delivered = not _was_invite_ever_delivered(lanlan_name)
-        total_so_far = _get_proactive_chat_total(lanlan_name)
+        loaded = await _ensure_proactive_chat_totals_loaded(**state_storage_kwargs)
         force_first = (
-            never_delivered
-            and total_so_far >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
+            loaded
+            and not _was_invite_ever_delivered(lanlan_name, **state_storage_kwargs)
+            and _get_proactive_chat_total(lanlan_name, **state_storage_kwargs)
+            >= max(0, MINI_GAME_INVITE_NEW_USER_FORCE_AT - 1)
         )
 
         game_type = _pick_mini_game_type(

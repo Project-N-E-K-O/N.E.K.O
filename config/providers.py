@@ -194,9 +194,12 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V4.1-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_OPENAI,
-    # Silicon emotion preset (replaces delisted inclusionAI/Ling-mini-2.0); hybrid
-    # thinking defaults on, so the regular form must send enable_thinking=False.
+    # Former silicon recognition preset; hybrid thinking defaults on, so the regular
+    # form must send enable_thinking=False. Kept for configs that still name it.
     "Qwen/Qwen3.5-35B-A3B": EXTRA_BODY_OPENAI,
+    # The silicon recognition preset since 2026-11-23, Qwen/Qwen3-VL-30B-A3B-Instruct, is
+    # deliberately NOT listed: it never thinks (0 reasoning tokens) and SiliconFlow rejects
+    # enable_thinking for it with 400 code 20015 "does not support parameter".
     # Official DeepSeek (api.deepseek.com): V4 defaults thinking on, using thinking.type dialect,
     # matching GLM/Kimi/Doubao, so reuse EXTRA_BODY_CLAUDE. Reseller gateways use different
     # model keys (SiliconFlow deepseek-ai/…, OpenRouter deepseek/…) and their own dialects,

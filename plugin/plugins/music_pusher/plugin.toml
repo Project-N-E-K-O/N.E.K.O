@@ -18,3 +18,10 @@ auto_start = false
 
 [plugin.store]
 enabled = true
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."plugin_sdk.main_agent.messages:push"]
+reason = { zh-CN = "把你上传或填写链接的音乐推送到主对话。", zh-TW = "把你上傳或填寫連結的音樂推送到主對話。", en = "Send the music you upload or link to the main chat.", ja = "アップロードまたはリンクで指定した音楽をメインの会話に送ります。", ko = "업로드하거나 링크로 지정한 음악을 메인 대화로 보냅니다.", ru = "Отправлять загруженную или указанную ссылкой музыку в основной чат.", es = "Enviar al chat principal la música que subas o enlaces.", pt = "Enviar ao chat principal a música que você enviar ou indicar por link." }
+
+[permissions.require."system.env:read"]
+reason = { zh-CN = "从环境变量读取运行配置。", zh-TW = "從環境變數讀取執行設定。", en = "Read its runtime settings from environment variables.", ja = "環境変数から実行時の設定を読み取ります。", ko = "환경 변수에서 실행 설정을 읽습니다.", ru = "Читать настройки работы из переменных окружения.", es = "Leer su configuración de ejecución desde variables de entorno.", pt = "Ler as configurações de execução a partir de variáveis de ambiente." }

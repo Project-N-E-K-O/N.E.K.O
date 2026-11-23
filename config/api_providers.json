@@ -153,7 +153,7 @@
       "openrouter_url": "https://api.siliconflow.cn/v1",
       "conversation_model": "deepseek-ai/DeepSeek-V4.1-Flash",
       "memory_model": "deepseek-ai/DeepSeek-V4-Flash",
-      "recognition_model": "Qwen/Qwen3.5-35B-A3B",
+      "recognition_model": "Qwen/Qwen3-VL-30B-A3B-Instruct",
       "decision_model": "deepseek-ai/DeepSeek-V4-Flash",
       "decision_protocol": "chat_fallback",
       "vision_model": "deepseek-ai/DeepSeek-V4.1-Flash",

@@ -207,27 +207,20 @@ def reconcile_installed_plugins(result: dict) -> None:
         reconcile_permission_source(plugin_id)
 
 
-def forget_installed_plugins(result: dict, *, plugin_ids: tuple[str, ...] = ()) -> bool:
-    """Drop all grants of every plugin of an install result, plus ``plugin_ids``.
+def forget_plugin_grants(plugin_ids: tuple[str, ...]) -> bool:
+    """Drop all grants of ``plugin_ids``.
 
-    Used when a replacement committed new code but its install source could
-    not be recorded: the grants stay bound to the previous source, so they
-    are dropped and the plugin is asked again. Call under the plugin
-    operation lock. Never raises; returns whether every grant was dropped.
-    A damaged or newer-version store counts as dropped (see
-    ``UNUSABLE_STORE_CODES``), although its records stay on disk.
+    Used inside a replacement, before the plugin restarts, when the new
+    package's install source could not be recorded: the grants would stay
+    bound to the previous source, so they are dropped and the plugin is
+    asked again. A rollback of that replacement puts them back from its
+    snapshot. Call under the plugin operation lock. Never raises; returns
+    whether every grant was dropped. A damaged or newer-version store counts
+    as dropped (see ``UNUSABLE_STORE_CODES``), although its records stay on
+    disk.
     """
-    targets = set(plugin_ids)
     complete = True
-    for plugin_id in _installed_plugin_ids(result):
-        if plugin_id is None:
-            logger.warning(
-                "plugin permission grants not dropped: installed manifest id unavailable"
-            )
-            complete = False
-            continue
-        targets.add(plugin_id)
-    for plugin_id in sorted(targets):
+    for plugin_id in sorted(set(plugin_ids)):
         try:
             forget_permissions(plugin_id)
         except ServerDomainError as exc:

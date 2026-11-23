@@ -961,6 +961,105 @@ def _count_and_rmtree(path: Path) -> int:
     return count
 
 
+def _tree_has_model_named(root: Path, key: str, skip_top_dirs: frozenset[str] = frozenset()) -> bool:
+    """Whether root holds a model file whose normalised stem matches key.
+
+    Uses os.walk instead of Path.rglob: on Python 3.11 rglob silently skips
+    directories it cannot list, which would hide a same-named model. Raises
+    the first listing error when the scan was incomplete and no match was found.
+    """
+    errors: list[OSError] = []
+    wanted = key.casefold()
+    for dirpath, dirnames, filenames in os.walk(root, onerror=errors.append):
+        if skip_top_dirs and Path(dirpath) == root:
+            dirnames[:] = [name for name in dirnames if name.lower() not in skip_top_dirs]
+        for name in filenames:
+            candidate = Path(dirpath, name)
+            if (candidate.suffix.lower() in ALLOWED_MODEL_EXTENSIONS
+                    and candidate.stem.replace("..", "_").casefold() == wanted):
+                try:
+                    if candidate.is_file():
+                        return True
+                except OSError as exc:
+                    errors.append(exc)
+    if errors:
+        raise errors[0]
+    return False
+
+
+def _remove_unused_emotion_mapping(config_mgr, mmd_dir: Path, model_name: str) -> None:
+    key = model_name.replace("..", "_")
+    mapping_dir = mmd_dir / "emotion_config"
+    mapping = mapping_dir / f"{key}.json"
+    try:
+        if not mapping.is_file() or not mapping.resolve().is_relative_to(mapping_dir.resolve()):
+            return
+        roots = [mmd_dir, config_mgr.project_root / "static" / "mmd"]
+        for folder in (config_mgr.get_steam_workshop_path(), config_mgr.get_workshop_path()):
+            if folder:
+                roots.append(Path(folder))
+        for root in dict.fromkeys(roots):
+            if not root.is_dir():
+                continue
+            skip = frozenset(RESERVED_DIRS) if root == mmd_dir else frozenset()
+            if _tree_has_model_named(root, key, skip):
+                return
+        mapping.unlink(missing_ok=True)
+        logger.info("删除 MMD 情感映射配置: %s", mapping.name)
+    except (OSError, RuntimeError) as exc:
+        # Best-effort cleanup: an incomplete scan (or a symlink loop in resolve) keeps the mapping.
+        logger.warning("清理 MMD 情感映射配置失败，保留原文件 %s: %s", mapping.name, exc)
+
+
+def _is_other_model(candidate: Path, resolved_target: Path) -> bool:
+    try:
+        return candidate.resolve() != resolved_target
+    except (OSError, RuntimeError):
+        # Cannot confirm this model-extension entry aliases the deleted target; keep the folder.
+        return True
+
+
+def _tree_has_other_model(root: Path, resolved_target: Path) -> bool:
+    """Whether root contains another model file or cannot be scanned completely.
+
+    Uses os.walk instead of Path.rglob: on Python 3.11 rglob silently skips
+    unreadable subdirectories, which could hide a sibling model and cause rmtree
+    to destroy shared textures. Any listing error or unreadable model-extension
+    candidate conservatively returns True so the directory is preserved.
+    """
+    errors: list[OSError] = []
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=errors.append):
+        for name in filenames:
+            candidate = Path(dirpath, name)
+            if candidate.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
+                continue
+            if _file_check(candidate) is False:
+                continue
+            if _is_other_model(candidate, resolved_target):
+                return True
+    return bool(errors)
+
+
+def _delete_subdir_model_sync(safe_path: Path, top_subdir: Path) -> int:
+    """Delete an MMD model in a subdirectory, removing the directory only if no sibling model remains."""
+    resolved_target = safe_path.resolve()
+    resolved_top = top_subdir.resolve()
+    if not _tree_has_other_model(top_subdir, resolved_target):
+        return _count_and_rmtree(top_subdir)
+
+    safe_path.unlink()
+    cur = safe_path.parent.resolve()
+    while cur != resolved_top.parent and cur.is_relative_to(resolved_top):
+        try:
+            if any(cur.iterdir()):
+                break
+            cur.rmdir()
+        except OSError:
+            break
+        cur = cur.parent
+    return 1
+
+
 @router.delete('/model')
 async def delete_mmd_model(request: Request):
     """Delete an MMD model file (and the associated resources in its directory)."""
@@ -1031,8 +1130,8 @@ async def delete_mmd_model(request: Request):
                 return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
             if top_subdir.name.lower() in RESERVED_DIRS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "不能删除保留目录"})
-            deleted_files = await asyncio.to_thread(_count_and_rmtree, top_subdir)
-            logger.info(f"删除 MMD 模型目录: {top_subdir.name} ({deleted_files} 个文件)")
+            deleted_files = await asyncio.to_thread(_delete_subdir_model_sync, safe_path, top_subdir)
+            logger.info(f"删除 MMD 模型: {safe_path.name} ({deleted_files} 个文件)")
         else:
             # Top-level model: delete model file only.
             if safe_path.suffix.lower() not in ALLOWED_MODEL_EXTENSIONS:
@@ -1041,12 +1140,7 @@ async def delete_mmd_model(request: Request):
             deleted_files = 1
             logger.info(f"删除 MMD 模型文件: {safe_path.name}")
 
-        # Delete corresponding emotion map too, using same normalization as GET/POST.
-        safe_model_name = model_name.replace('..', '_')
-        emotion_config = mmd_dir / "emotion_config" / f"{safe_model_name}.json"
-        if emotion_config.exists() and emotion_config.resolve().is_relative_to((mmd_dir / "emotion_config").resolve()):
-            emotion_config.unlink()
-            logger.info(f"删除 MMD 情感映射配置: {emotion_config.name}")
+        await asyncio.to_thread(_remove_unused_emotion_mapping, config_mgr, mmd_dir, model_name)
 
         return JSONResponse(content={
             "success": True,

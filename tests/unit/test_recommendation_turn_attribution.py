@@ -177,10 +177,12 @@ async def test_cancelled_post_delivery_write_cannot_register_a_later_recommendat
             assert await asyncio.to_thread(f.entered.wait, 5)
             assert f.mgr.state.phase is ProactivePhase.COMMITTING
             request.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await request
+            await asyncio.sleep(0)
+            assert not request.done()
             await f.mgr.handle_new_message()
             f.release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
             assert await asyncio.to_thread(f.finished.wait, 5)
             assert json.loads(f.totals_path.read_text(encoding="utf-8"))["totals"] == {"Test": 1}
             assert not f.database.exists()

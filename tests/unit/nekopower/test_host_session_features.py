@@ -42,6 +42,7 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     fake_model,
+    let_go,
     make_host,
     outbox,
     scripted_runtime,
@@ -181,8 +182,8 @@ def _owed(manager: Any) -> dict[Any, Any]:
 
 
 async def _let_go(host: Any) -> None:
-    """Wait until no commission holds a session any more."""
-    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    """Wait until no commission holds a session any more (``host_fakes.let_go``)."""
+    await let_go(host)
 
 
 def _user_messages(request: list[dict[str, Any]]) -> list[str]:
@@ -1128,7 +1129,7 @@ async def _small_window() -> dict[str, Any]:
     # A window small enough that a few long answers are something to sum up, and large enough
     # that they are not summed up before the test asks for it: the session of a project is told
     # of its role and of the presets, some 500 tokens the window has to hold besides.
-    return {"model": "fake-model", "api_key": "test-key", "context_window": 17_000, "max_output_tokens": 2_000}
+    return {"model": "fake-model", "api_key": "free-access", "context_window": 17_000, "max_output_tokens": 2_000}
 
 
 def _long_work(summary: str, context: int = 9_000) -> list[list[Any]]:
@@ -1910,8 +1911,8 @@ async def test_the_time_a_session_is_idle_before_it_is_summed_up_is_what_the_use
     config = await _small_window()
     loop = asyncio.get_running_loop()
 
-    # Nothing set: the setting counts.
-    assert await manager._idle_after() == 30.0
+    # Nothing set: the setting counts (for a session not on record, as for a new one).
+    assert await manager._idle_after("not-yet") == 30.0
     first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
     await wait_status(host, first.id, "done")
     await _let_go(host)
@@ -1920,7 +1921,7 @@ async def test_the_time_a_session_is_idle_before_it_is_summed_up_is_what_the_use
 
     # Set for the model: the next session that is let go waits that long.
     assert await host.model_capabilities.set_idle_compact_after(config.get("base_url"), config["model"], 600) == 600.0
-    assert await manager._idle_after() == 600.0
+    assert await manager._idle_after(first.id) == 600.0
     await manager._schedule_idle_compact(first.id)
     assert 595 < manager._idle_timers[first.id].when() - loop.time() <= 600
     # And what is looked at when the time has come is the same time.
@@ -1966,7 +1967,7 @@ async def test_a_session_that_is_waiting_keeps_the_time_it_was_given_when_the_us
     assert (await host.ledger.get_session(first.id)).compacted_at is not None
     assert first.id not in manager._idle_timers
     # What is set after that is for the sessions that are let go from then on.
-    assert await manager._idle_after() == 30 * 86_400.0
+    assert await manager._idle_after(first.id) == 30 * 86_400.0
 
 
 async def test_a_session_that_waited_is_not_summed_up_when_the_task_model_is_another_by_then(
@@ -1980,7 +1981,7 @@ async def test_a_session_that_waited_is_not_summed_up_when_the_task_model_is_ano
     async def model() -> dict[str, Any] | None:
         if current["model"] is None:
             return None
-        return {"model": current["model"], "api_key": "test-key", "context_window": 16_000, "max_output_tokens": 2_000}
+        return {"model": current["model"], "api_key": "free-access", "context_window": 16_000, "max_output_tokens": 2_000}
 
     host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=model)
     await host.space.touch_project("Budget app")
@@ -2018,6 +2019,40 @@ async def test_a_session_that_waited_is_not_summed_up_when_the_task_model_is_ano
     await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
     await _idle_work_over(host)
     assert (await host.ledger.get_session(first.id)).compacted_at is not None
+
+
+async def test_a_session_whose_requests_go_with_a_key_of_the_users_own_is_summed_up_without_counting(
+    hosts, tmp_path, monkeypatch
+):
+    _idle_on(monkeypatch, after=30.0)
+    counted: list[str] = []
+
+    async def meter(commission_id: str) -> bool:
+        counted.append(commission_id)
+        return True
+
+    async def own_key() -> dict[str, Any]:
+        return {**await _small_window(), "api_key": "sk-users-own"}
+
+    summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    host = _host(
+        hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=own_key, task_agent_meter=meter
+    )
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+
+    assert await manager._idle_compact(first.id) is True
+
+    # Neither the commission's requests nor the one that summed it up went with the free key: none counted.
+    assert len(export.requests) == 6
+    assert counted == []
 
 
 async def test_a_length_that_was_owed_from_before_a_summary_does_not_come_back_after_it(hosts, tmp_path, monkeypatch):
@@ -2060,8 +2095,8 @@ async def test_a_session_a_commission_took_while_the_time_was_looked_up_gets_no_
     assert "session" in manager._idle_timers
     manager._drop_idle_timer("session")
 
-    async def taken_meanwhile() -> float:
-        manager._held_by["session"] = "a commission"
+    async def taken_meanwhile(session_id: str) -> float:
+        manager._held_by[session_id] = "a commission"
         return 30.0
 
     monkeypatch.setattr(manager, "_idle_after", taken_meanwhile)
@@ -2069,7 +2104,7 @@ async def test_a_session_a_commission_took_while_the_time_was_looked_up_gets_no_
     assert manager._idle_timers == {}
     del manager._held_by["session"]
 
-    async def stopped_meanwhile() -> float:
+    async def stopped_meanwhile(session_id: str) -> float:
         manager.drop_idle_work()
         return 30.0
 

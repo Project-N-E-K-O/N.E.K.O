@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -112,6 +113,755 @@ async def test_rename_without_visit_data_is_unchanged(env):
     status, body = await _rename(cm, "Old", "New")
     assert status == 200 and body["success"] is True and "partial_success" not in body
     assert not (config_dir / "visit_peers.json").exists()
+
+
+@pytest.mark.parametrize("existing,requested", [("Neko", "neko"), ("Cafe\u0301", "Café")])
+async def test_profile_name_collisions_are_handled_before_memory_mutation(tmp_path, existing, requested):
+    occupied_suffix = f"{existing}(1)"
+    cm, path = _backfilled_manager(tmp_path, {
+        "Old": {}, existing: {}, occupied_suffix: {},
+    })
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, reload) = _crud(cm)
+        before = path.read_bytes()
+        with release as release_memory, reload as reload_memory:
+            status, body = _result(await crud.rename_catgirl("Old", _DummyRequest({"new_name": requested})))
+            assert status == 400 and body["error"] == "新档案名已存在"
+            release_memory.assert_not_awaited()
+            reload_memory.assert_not_awaited()
+            assert path.read_bytes() == before
+
+        status, body = await _add(cm, requested)
+        assert status == 200 and body["character_name"] == f"{requested}(2)"
+        assert _uid(cm, body["character_name"]) != _uid(cm, existing)
+
+
+async def test_create_refuses_collision_suffix_exceeding_name_limit(tmp_path):
+    from utils.character_name import PROFILE_NAME_MAX_UNITS
+
+    name = "A" * PROFILE_NAME_MAX_UNITS
+    cm, path = _backfilled_manager(tmp_path, {name: {}})
+    before = path.read_bytes()
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _add(cm, name.lower())
+    assert status == 400 and "档案名长度" in body["error"]
+    assert path.read_bytes() == before
+
+
+async def test_case_only_rename_keeps_character_identity(env):
+    cm, _, _ = env
+    uid = _uid(cm, "Old")
+    status, body = await _rename(cm, "Old", "OLD")
+    assert status == 200 and body["success"]
+    assert _uid(cm, "OLD") == uid
+
+
+@pytest.mark.parametrize("mode", ["both", "meta_only"])
+async def test_case_only_rename_migrates_card_face_and_meta_without_conflict_backup(env, mode):
+    cm, _, _ = env
+    uid = _uid(cm, "Old")
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    old_meta = cm.card_face_meta_path("Old")
+    new_meta = cm.card_face_meta_path("OLD")
+    meta_bytes = b'{"author":"tester"}'
+    old_meta.write_bytes(meta_bytes)
+    case_insensitive_fs = new_meta.exists()
+
+    old_face = cm.card_faces_dir / "Old.png"
+    new_face = cm.card_faces_dir / "OLD.png"
+    face_bytes = b"fake-png-bytes"
+    if mode == "both":
+        old_face.write_bytes(face_bytes)
+
+    status, body = await _rename(cm, "Old", "OLD")
+    assert status == 200 and body["success"] is True
+    assert _uid(cm, "OLD") == uid
+
+    names = set(os.listdir(cm.card_faces_dir))
+    assert not any("conflict-" in name for name in names)
+    assert not any(name.startswith(".neko_rename_") for name in names)
+    assert new_meta.name in names
+    assert new_meta.read_bytes() == meta_bytes
+    if case_insensitive_fs:
+        assert old_meta.name not in names
+    if mode == "both":
+        assert new_face.name in names
+        assert new_face.read_bytes() == face_bytes
+        if case_insensitive_fs:
+            assert old_face.name not in names
+
+
+async def test_rename_keeps_conflict_backup_for_distinct_existing_card_face(env):
+    cm, _, _ = env
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    (cm.card_faces_dir / "Old.png").write_bytes(b"old-face")
+    (cm.card_faces_dir / "New.png").write_bytes(b"preexisting-new-face")
+
+    status, body = await _rename(cm, "Old", "New")
+    assert status == 200 and body["success"] is True
+    assert (cm.card_faces_dir / "New.png").read_bytes() == b"old-face"
+    assert not any(p.name.startswith(".neko_rename_") for p in cm.card_faces_dir.iterdir())
+    backups = [p for p in cm.card_faces_dir.iterdir() if p.name.startswith("New.png.conflict-") and p.name.endswith(".bak")]
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == b"preexisting-new-face"
+
+
+@pytest.mark.parametrize("asset_kind", ["face", "meta"])
+async def test_rename_rejects_source_symlink_targeting_destination_card_asset(env, asset_kind):
+    cm, path, _ = env
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    if asset_kind == "face":
+        old_asset = cm.card_faces_dir / "Old.png"
+        new_asset = cm.card_faces_dir / "New.png"
+    else:
+        old_asset = cm.card_face_meta_path("Old")
+        new_asset = cm.card_face_meta_path("New")
+
+    target_bytes = b"target-real-bytes"
+    new_asset.write_bytes(target_bytes)
+    try:
+        old_asset.symlink_to(new_asset.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    before = path.read_bytes()
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, reload) = _crud(cm)
+        with release as release_memory, reload as reload_memory:
+            status, body = _result(await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"})))
+            assert status == 400
+            assert "符号链接" in body["error"]
+            release_memory.assert_not_awaited()
+            reload_memory.assert_not_awaited()
+
+    assert path.read_bytes() == before
+    assert old_asset.is_symlink() and not new_asset.is_symlink()
+    assert new_asset.read_bytes() == target_bytes
+    names = os.listdir(cm.card_faces_dir)
+    assert not any(name.startswith(".neko_rename_") or "conflict-" in name for name in names)
+
+    backup_asset = cm.card_faces_dir / f"{new_asset.name}.conflict-test.bak"
+    with pytest.raises(ValueError, match="symlink"):
+        crud._migrate_renamed_card_file_sync(old_asset, new_asset, backup_asset)
+    assert old_asset.is_symlink() and not new_asset.is_symlink()
+    assert new_asset.read_bytes() == target_bytes
+
+
+@pytest.mark.parametrize("target_name", ["New", "OLD"])
+async def test_rename_hardlinked_card_assets_uses_conflict_backup_without_temp_residue(env, target_name):
+    cm, _, _ = env
+    uid = _uid(cm, "Old")
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    old_face = cm.card_faces_dir / "Old.png"
+    new_face = cm.card_faces_dir / f"{target_name}.png"
+    old_meta = cm.card_face_meta_path("Old")
+    new_meta = cm.card_face_meta_path(target_name)
+    face_bytes = b"hardlinked-face-bytes"
+    meta_bytes = b'{"author":"hardlink"}'
+    old_face.write_bytes(face_bytes)
+    old_meta.write_bytes(meta_bytes)
+    if target_name == "OLD" and new_meta.exists():
+        pytest.skip("case-only distinct hard links require case-sensitive filesystem")
+    try:
+        os.link(old_face, new_face)
+        os.link(old_meta, new_meta)
+    except OSError as exc:
+        pytest.skip(f"hard links unsupported on this platform: {exc}")
+
+    status, body = await _rename(cm, "Old", target_name)
+    assert status == 200 and body["success"] is True
+    assert _uid(cm, target_name) == uid
+
+    names = set(os.listdir(cm.card_faces_dir))
+    assert not any(name.startswith(".neko_rename_") for name in names)
+    assert old_face.name not in names
+    assert old_meta.name not in names
+    assert new_face.read_bytes() == face_bytes
+    assert new_meta.read_bytes() == meta_bytes
+    face_backups = [
+        p for p in cm.card_faces_dir.iterdir()
+        if p.name.startswith(f"{new_face.name}.conflict-") and p.name.endswith(".bak")
+    ]
+    meta_backups = [
+        p for p in cm.card_faces_dir.iterdir()
+        if p.name.startswith(f"{target_name}.conflict-") and p.name.endswith(".bak.json")
+    ]
+    assert len(face_backups) == 1 and face_backups[0].read_bytes() == face_bytes
+    assert len(meta_backups) == 1 and meta_backups[0].read_bytes() == meta_bytes
+
+
+async def test_rename_and_delete_refuse_corrupt_characters_json_without_overwriting_disk(tmp_path):
+    cm, path = _backfilled_manager(tmp_path / "entry", {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    assert cm.load_characters()["猫娘"]["Old"]
+    path.write_bytes(b"{corrupt")
+
+    with patch("utils.config_manager._config_manager", cm), patch.object(
+        cm, "save_characters", wraps=cm.save_characters
+    ) as save_spy:
+        crud, (release, reload) = _crud(cm)
+        with release, reload:
+            rename_status, _ = _result(await crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"})))
+            delete_status, _ = _result(await crud.delete_catgirl("Old"))
+            assert rename_status == 500
+            assert delete_status == 500
+            save_spy.assert_not_called()
+    assert path.read_bytes() == b"{corrupt"
+
+    cm2, path2 = _backfilled_manager(
+        tmp_path / "post_preflight_rename",
+        {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}},
+    )
+    (Path(cm2.memory_dir) / "Old").mkdir(parents=True, exist_ok=True)
+    (Path(cm2.memory_dir) / "Old" / "facts.json").write_text('["keep-me"]', encoding="utf-8")
+
+    async def corrupt_during_release(*_args, **_kwargs):
+        path2.write_bytes(b"{corrupt")
+        return True
+
+    with patch("utils.config_manager._config_manager", cm2), patch.object(
+        cm2, "save_characters", wraps=cm2.save_characters
+    ) as save_spy2:
+        crud2, (_, reload2) = _crud(cm2)
+        with patch.object(crud2, "release_memory_server_character", side_effect=corrupt_during_release), reload2:
+            status2, _ = _result(await crud2.rename_catgirl("Old", _DummyRequest({"new_name": "New"})))
+            assert status2 == 500
+            save_spy2.assert_not_called()
+    assert path2.read_bytes() == b"{corrupt"
+    assert (Path(cm2.memory_dir) / "Old" / "facts.json").read_text(encoding="utf-8") == '["keep-me"]'
+
+    cm3, path3 = _backfilled_manager(
+        tmp_path / "post_preflight_delete",
+        {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}},
+    )
+    (Path(cm3.memory_dir) / "Old").mkdir(parents=True, exist_ok=True)
+    (Path(cm3.memory_dir) / "Old" / "facts.json").write_text('["keep-delete"]', encoding="utf-8")
+
+    async def corrupt_during_delete_release(*_args, **_kwargs):
+        path3.write_bytes(b"{corrupt")
+        return True
+
+    with patch("utils.config_manager._config_manager", cm3), patch.object(
+        cm3, "save_characters", wraps=cm3.save_characters
+    ) as save_spy3:
+        crud3, (_, reload3) = _crud(cm3)
+        with patch.object(crud3, "release_memory_server_character", side_effect=corrupt_during_delete_release), reload3:
+            status3, _ = _result(await crud3.delete_catgirl("Old"))
+            assert status3 == 500
+            save_spy3.assert_not_called()
+    assert path3.read_bytes() == b"{corrupt"
+    assert (Path(cm3.memory_dir) / "Old" / "facts.json").read_text(encoding="utf-8") == '["keep-delete"]'
+
+
+async def test_delete_shared_memory_rollback_preserves_co_owner_concurrent_writes(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {"Current": {"昵称": "Current"}, "Neko": {"昵称": "Neko"}, "neko": {"昵称": "neko"}},
+    )
+    memory_root = Path(cm.memory_dir)
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True, exist_ok=True)
+    facts_file = neko_upper / "facts.json"
+    facts_file.write_text('["before"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        try:
+            neko_lower.symlink_to(neko_upper, target_is_directory=True)
+        except OSError as exc:
+            pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    upper_face = cm.card_faces_dir / "Neko.png"
+    upper_face.write_bytes(b"face-before")
+    lower_face = cm.card_faces_dir / "neko.png"
+    if not lower_face.exists():
+        lower_face.symlink_to(upper_face.name)
+    upper_meta = cm.card_face_meta_path("Neko")
+    upper_meta.write_bytes(b'{"v":1}')
+    lower_meta = cm.card_face_meta_path("neko")
+    if not lower_meta.exists():
+        lower_meta.symlink_to(upper_meta.name)
+
+    reload_calls = 0
+    observed_on_second_reload: tuple[str, bytes, bytes] | None = None
+
+    async def co_owner_writes_then_fail_reload(**_kwargs):
+        nonlocal reload_calls, observed_on_second_reload
+        reload_calls += 1
+        if reload_calls == 1:
+            facts_file.write_text('["before", "co-owner-write"]', encoding="utf-8")
+            upper_face.write_bytes(b"face-updated")
+            upper_meta.write_bytes(b'{"v":2}')
+            return False
+        observed_on_second_reload = (
+            facts_file.read_text(encoding="utf-8"),
+            upper_face.read_bytes(),
+            upper_meta.read_bytes(),
+        )
+        return True
+
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, _) = _crud(cm)
+        with release, patch.object(
+            crud, "notify_memory_server_reload", side_effect=co_owner_writes_then_fail_reload
+        ):
+            status, _ = _result(await crud.delete_catgirl("neko"))
+            assert status == 500
+
+    assert reload_calls == 2
+    assert observed_on_second_reload == (
+        '["before", "co-owner-write"]',
+        b"face-updated",
+        b'{"v":2}',
+    )
+    assert facts_file.read_text(encoding="utf-8") == '["before", "co-owner-write"]'
+    assert upper_face.read_bytes() == b"face-updated"
+    assert upper_meta.read_bytes() == b'{"v":2}'
+
+
+async def test_delete_late_unshared_card_asset_is_backed_up_and_restored_on_rollback(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {"Current": {"昵称": "Current"}, "Neko": {"昵称": "Neko"}, "Alias": {"昵称": "Alias"}},
+    )
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    neko_face = cm.card_faces_dir / "Neko.png"
+    neko_face.write_bytes(b"shared-face")
+    neko_meta = cm.card_face_meta_path("Neko")
+    neko_meta.write_bytes(b'{"owner":"Neko"}')
+
+    alias_face = cm.card_faces_dir / "Alias.png"
+    alias_meta = cm.card_face_meta_path("Alias")
+    try:
+        alias_face.symlink_to(neko_face.name)
+        alias_meta.symlink_to(neko_meta.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    real_delete = character_memory.delete_character_memory_storage
+    reload_calls = 0
+    observed_removed_before_rollback: tuple[bool, bool] | None = None
+    observed_restored_before_second_reload: tuple[bytes, bytes] | None = None
+
+    def delete_then_replace_shared_assets(*args, **kwargs):
+        result = real_delete(*args, **kwargs)
+        alias_face.unlink()
+        alias_face.write_bytes(b"replaced-alias-face")
+        alias_meta.unlink()
+        alias_meta.write_bytes(b'{"replaced":true}')
+        return result
+
+    async def reload_failing_after_unlink(**_kwargs):
+        nonlocal reload_calls, observed_removed_before_rollback, observed_restored_before_second_reload
+        reload_calls += 1
+        if reload_calls == 1:
+            observed_removed_before_rollback = (
+                os.path.lexists(alias_face),
+                os.path.lexists(alias_meta),
+            )
+            return False
+        observed_restored_before_second_reload = (
+            alias_face.read_bytes(),
+            alias_meta.read_bytes(),
+        )
+        return True
+
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, _) = _crud(cm)
+        with release, patch.object(
+            crud, "delete_character_memory_storage", side_effect=delete_then_replace_shared_assets
+        ), patch.object(
+            crud, "notify_memory_server_reload", side_effect=reload_failing_after_unlink
+        ):
+            status, _ = _result(await crud.delete_catgirl("Alias"))
+            assert status == 500
+
+    assert reload_calls == 2
+    assert observed_removed_before_rollback == (False, False)
+    assert observed_restored_before_second_reload == (
+        b"replaced-alias-face",
+        b'{"replaced":true}',
+    )
+    assert alias_face.read_bytes() == b"replaced-alias-face"
+    assert alias_meta.read_bytes() == b'{"replaced":true}'
+    assert neko_face.read_bytes() == b"shared-face"
+    assert neko_meta.read_bytes() == b'{"owner":"Neko"}'
+
+
+async def test_delete_late_unshared_memory_entry_is_backed_up_and_restored_on_rollback(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}, "Other": {"昵称": "Other"}},
+    )
+    memory_root = Path(cm.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    facts_other = memory_root / "facts_Other.json"
+    facts_other.write_text('["shared-facts"]', encoding="utf-8")
+    facts_old = memory_root / "facts_Old.json"
+    dir_other = memory_root / "Other"
+    dir_other.mkdir(parents=True, exist_ok=True)
+    (dir_other / "notes.json").write_text('["other-note"]', encoding="utf-8")
+    dir_old = memory_root / "Old"
+    try:
+        os.link(facts_other, facts_old)
+        dir_old.symlink_to(dir_other, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"hardlinks/symlinks unsupported on this platform: {exc}")
+
+    crud = _init_router_state(cm)
+    real_snapshot = crud._snapshot_existing_paths
+    reload_calls = 0
+    observed_removed_before_rollback: tuple[bool, bool] | None = None
+    observed_restored_before_second_reload: tuple[str, str] | None = None
+
+    async def release_then_unshare_hardlink(*_args, **_kwargs):
+        replacement = facts_other.with_name("facts_Other.json.tmp")
+        replacement.write_text('["other-updated"]', encoding="utf-8")
+        os.replace(replacement, facts_other)
+        return True
+
+    def snapshot_then_unshare_dir(targets, backup_root):
+        records = real_snapshot(targets, backup_root)
+        dir_old.unlink()
+        dir_old.mkdir(parents=True, exist_ok=True)
+        (dir_old / "facts.json").write_text('["exclusive-dir-fact"]', encoding="utf-8")
+        return records
+
+    async def reload_failing_after_memory_delete(**_kwargs):
+        nonlocal reload_calls, observed_removed_before_rollback, observed_restored_before_second_reload
+        reload_calls += 1
+        if reload_calls == 1:
+            observed_removed_before_rollback = (
+                os.path.lexists(facts_old),
+                os.path.lexists(dir_old),
+            )
+            return False
+        observed_restored_before_second_reload = (
+            facts_old.read_text(encoding="utf-8"),
+            (dir_old / "facts.json").read_text(encoding="utf-8"),
+        )
+        return True
+
+    with patch("utils.config_manager._config_manager", cm):
+        with patch.object(
+            crud, "release_memory_server_character", side_effect=release_then_unshare_hardlink
+        ), patch.object(
+            crud, "_snapshot_existing_paths", side_effect=snapshot_then_unshare_dir
+        ), patch.object(
+            crud, "notify_memory_server_reload", side_effect=reload_failing_after_memory_delete
+        ):
+            status, _ = _result(await crud.delete_catgirl("Old"))
+            assert status == 500
+
+    assert reload_calls == 2
+    assert observed_removed_before_rollback == (False, False)
+    assert observed_restored_before_second_reload == (
+        '["shared-facts"]',
+        '["exclusive-dir-fact"]',
+    )
+    assert facts_old.read_text(encoding="utf-8") == '["shared-facts"]'
+    assert (dir_old / "facts.json").read_text(encoding="utf-8") == '["exclusive-dir-fact"]'
+    assert facts_other.read_text(encoding="utf-8") == '["other-updated"]'
+    assert (dir_other / "notes.json").read_text(encoding="utf-8") == '["other-note"]'
+
+
+async def test_delete_card_asset_symlink_and_late_shared_skip_rollback(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {
+            "Current": {"昵称": "Current"},
+            "Target": {"昵称": "Target"},
+            "SymChar": {"昵称": "SymChar"},
+            "NewlyShared": {"昵称": "NewlyShared"},
+        },
+    )
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    shared_backing = cm.card_faces_dir / "Backing.png"
+    shared_backing.write_bytes(b"backing-v1")
+    sym_face = cm.card_faces_dir / "SymChar.png"
+    newly_shared_face = cm.card_faces_dir / "NewlyShared.png"
+    newly_shared_face.write_bytes(b"old-unshared")
+    target_face = cm.card_faces_dir / "Target.png"
+    try:
+        sym_face.symlink_to(shared_backing.name)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    # Part A: Deleting SymChar (unshared symlink) preserves symlink kind across rollback.
+    crud = _init_router_state(cm)
+    sym_reload_calls = 0
+
+    async def fail_once(**_kwargs):
+        nonlocal sym_reload_calls
+        sym_reload_calls += 1
+        return sym_reload_calls > 1
+
+    with patch("utils.config_manager._config_manager", cm):
+        with patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)), patch.object(
+            crud, "notify_memory_server_reload", side_effect=fail_once
+        ):
+            status_a, _ = _result(await crud.delete_catgirl("SymChar"))
+            assert status_a == 500
+
+    assert sym_face.is_symlink()
+    assert os.readlink(sym_face) == shared_backing.name
+
+    # Part B: Unshared at snapshot time -> becomes co-owned by Target before unlink ->
+    # skipped at unlink and its stale snapshot record is dropped so rollback keeps Target's update.
+    real_delete = character_memory.delete_character_memory_storage
+    shared_reload_calls = 0
+
+    def delete_then_share_and_update(*args, **kwargs):
+        result = real_delete(*args, **kwargs)
+        newly_shared_face.unlink()
+        target_face.write_bytes(b"target-co-owned-v2")
+        newly_shared_face.symlink_to(target_face.name)
+        return result
+
+    async def fail_once_shared(**_kwargs):
+        nonlocal shared_reload_calls
+        shared_reload_calls += 1
+        return shared_reload_calls > 1
+
+    with patch("utils.config_manager._config_manager", cm):
+        crud2 = _init_router_state(cm)
+        with patch.object(
+            crud2, "release_memory_server_character", AsyncMock(return_value=True)
+        ), patch.object(
+            crud2, "delete_character_memory_storage", side_effect=delete_then_share_and_update
+        ), patch.object(
+            crud2, "notify_memory_server_reload", side_effect=fail_once_shared
+        ):
+            status_b, _ = _result(await crud2.delete_catgirl("NewlyShared"))
+            assert status_b == 500
+
+    assert target_face.read_bytes() == b"target-co-owned-v2"
+    assert newly_shared_face.is_symlink()
+    assert newly_shared_face.samefile(target_face)
+    assert newly_shared_face.read_bytes() == b"target-co-owned-v2"
+
+
+async def test_delete_skips_shared_card_face_and_meta_but_deletes_unshared_assets(tmp_path):
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {
+            "Current": {"昵称": "Current"},
+            "Neko": {"昵称": "Neko"},
+            "neko": {"昵称": "neko"},
+            "Solo": {"昵称": "Solo"},
+        },
+    )
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    upper_face = cm.card_faces_dir / "Neko.png"
+    upper_face.write_bytes(b"shared-face")
+    lower_face = cm.card_faces_dir / "neko.png"
+    if not lower_face.exists():
+        try:
+            lower_face.symlink_to(upper_face.name)
+        except OSError as exc:
+            pytest.skip(f"symlinks unsupported on this platform: {exc}")
+    upper_meta = cm.card_face_meta_path("Neko")
+    upper_meta.write_bytes(b'{"owner":"Neko"}')
+    lower_meta = cm.card_face_meta_path("neko")
+    if not lower_meta.exists():
+        lower_meta.symlink_to(upper_meta.name)
+
+    solo_face = cm.card_faces_dir / "Solo.png"
+    solo_face.write_bytes(b"solo-face")
+    solo_meta = cm.card_face_meta_path("Solo")
+    solo_meta.write_bytes(b'{"owner":"Solo"}')
+
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _delete(cm, "neko")
+        assert status == 200 and body["success"] is True
+        assert upper_face.exists() and upper_face.read_bytes() == b"shared-face"
+        assert upper_meta.exists() and upper_meta.read_bytes() == b'{"owner":"Neko"}'
+        assert lower_face.samefile(upper_face)
+        assert lower_meta.samefile(upper_meta)
+
+        status2, body2 = await _delete(cm, "Solo")
+        assert status2 == 200 and body2["success"] is True
+        assert not solo_face.exists()
+        assert not solo_meta.exists()
+
+
+async def test_rename_refuses_symlinked_unregistered_memory_dir_before_mutation(tmp_path):
+    cm, path = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    memory_root = Path(cm.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    backing_dir = tmp_path / "external_backing"
+    backing_dir.mkdir(parents=True)
+    recent_file = backing_dir / "recent.json"
+    recent_file.write_text('[{"speaker":"Old","text":"hello"}]', encoding="utf-8")
+
+    old_dir = memory_root / "Old"
+    try:
+        old_dir.symlink_to(backing_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _rename(cm, "Old", "New")
+
+    assert status == 400 and body["success"] is False
+    assert old_dir.is_symlink()
+    assert not (memory_root / "New").exists()
+    assert recent_file.read_text(encoding="utf-8") == '[{"speaker":"Old","text":"hello"}]'
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+async def test_rename_refuses_dangling_legacy_memory_symlink_before_mutation(tmp_path):
+    cm, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    memory_root = Path(cm.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    dangling_legacy = memory_root / "recent_Old.json"
+    try:
+        dangling_legacy.symlink_to("nonexistent_recent.json")
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _rename(cm, "Old", "New")
+
+    assert status == 400 and body["success"] is False
+    assert dangling_legacy.is_symlink()
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+async def test_delete_refuses_real_directory_at_card_asset_path_without_deleting_it(tmp_path):
+    cm, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    dir_at_face_path = cm.card_faces_dir / "Old.png"
+    dir_at_face_path.mkdir(parents=True)
+    inner_file = dir_at_face_path / "keep.txt"
+    inner_file.write_text("must-survive", encoding="utf-8")
+
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _delete(cm, "Old")
+
+    assert status == 500 and body["success"] is False
+    assert dir_at_face_path.is_dir() and not dir_at_face_path.is_symlink()
+    assert inner_file.read_text(encoding="utf-8") == "must-survive"
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+async def test_delete_early_failure_before_card_unlink_preserves_concurrent_card_edit(tmp_path):
+    cm, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    memory_root = Path(cm.memory_dir)
+    old_mem = memory_root / "Old"
+    old_mem.mkdir(parents=True, exist_ok=True)
+    (old_mem / "facts.json").write_text('["old-fact"]', encoding="utf-8")
+
+    cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
+    old_face = cm.card_faces_dir / "Old.png"
+    old_face.write_bytes(b"original-face")
+    old_meta = cm.card_face_meta_path("Old")
+    old_meta.write_bytes(b'{"author":"original"}')
+
+    def edit_card_then_fail_memory(*_args, **_kwargs):
+        old_face.write_bytes(b"concurrent-face-edit")
+        old_meta.write_bytes(b'{"author":"concurrent"}')
+        raise OSError("memory removal aborted before card unlink")
+
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, reload_patch) = _crud(cm)
+        with release, reload_patch, patch.object(
+            crud, "delete_character_memory_storage", side_effect=edit_card_then_fail_memory
+        ):
+            status, body = _result(await crud.delete_catgirl("Old"))
+            assert status == 500 and body["success"] is False
+
+    assert old_face.read_bytes() == b"concurrent-face-edit"
+    assert old_meta.read_bytes() == b'{"author":"concurrent"}'
+    assert (old_mem / "facts.json").read_text(encoding="utf-8") == '["old-fact"]'
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
+async def test_delete_shared_memory_symlink_alias_fences_alias_registry_and_clears_pending(tmp_path):
+    from utils import recent_file
+
+    cm, _ = _backfilled_manager(
+        tmp_path,
+        {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}, "Other": {"昵称": "Other"}},
+    )
+    memory_root = Path(cm.memory_dir)
+    other_dir = memory_root / "Other"
+    other_dir.mkdir(parents=True, exist_ok=True)
+    other_recent = other_dir / "recent.json"
+    other_recent.write_text('[{"speaker":"Other","text":"keep"}]', encoding="utf-8")
+
+    old_dir = memory_root / "Old"
+    try:
+        old_dir.symlink_to(other_dir, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+    old_recent = old_dir / "recent.json"
+    assert old_dir.samefile(other_dir)
+
+    old_gen = recent_file.capture_recent_generation(old_recent)
+    other_gen = recent_file.capture_recent_generation(other_recent)
+    with recent_file.recent_file_lock(old_recent):
+        recent_file.set_recent_pending_unlocked(old_recent, [{"text": "stale-old-pending"}])
+    with recent_file.recent_file_lock(other_recent):
+        recent_file.set_recent_pending_unlocked(other_recent, [{"text": "live-other-pending"}])
+
+    try:
+        # Part A: failed delete rolls back and preserves alias access and pending queue.
+        with patch("utils.config_manager._config_manager", cm):
+            status_err, _ = await _delete(cm, "Old", reload_ok=False)
+            assert status_err == 500
+        with recent_file.recent_file_access(old_recent, expected_generation=old_gen):
+            assert recent_file.get_recent_pending_unlocked(old_recent) == [{"text": "stale-old-pending"}]
+        with recent_file.recent_file_access(other_recent, expected_generation=other_gen):
+            assert recent_file.get_recent_pending_unlocked(other_recent) == [{"text": "live-other-pending"}]
+
+        # Part B: committed delete fences Old's unique alias key and clears Old's pending queue,
+        # while keeping the shared disk file, Other's registry key, and Other's pending intact.
+        with patch("utils.config_manager._config_manager", cm):
+            status_ok, body_ok = await _delete(cm, "Old", reload_ok=True)
+            assert status_ok == 200 and body_ok["success"] is True
+
+        assert old_dir.samefile(other_dir)
+        assert other_recent.read_text(encoding="utf-8") == '[{"speaker":"Other","text":"keep"}]'
+        with pytest.raises(recent_file.RecentFileDeletedError):
+            with recent_file.recent_file_access(old_recent, expected_generation=old_gen):
+                pass
+        with recent_file.recent_file_lock(old_recent):
+            assert recent_file.get_recent_pending_unlocked(old_recent) == []
+        with recent_file.recent_file_access(other_recent, expected_generation=other_gen):
+            assert recent_file.get_recent_pending_unlocked(other_recent) == [{"text": "live-other-pending"}]
+    finally:
+        with recent_file.recent_file_lock(old_recent):
+            recent_file.set_recent_pending_unlocked(old_recent, [])
+        with recent_file.recent_file_lock(other_recent):
+            recent_file.set_recent_pending_unlocked(other_recent, [])
+        recent_file.clear_recent_deletions([old_recent])
+
+
+async def test_rename_refuses_shared_source_memory_before_release(tmp_path):
+    cm, path = _backfilled_manager(tmp_path, {
+        "Neko": {}, "neko": {},
+    })
+    memory_root = Path(cm.memory_dir)
+    neko_upper = memory_root / "Neko"
+    neko_upper.mkdir(parents=True)
+    (neko_upper / "facts.json").write_text('["shared-fact"]', encoding="utf-8")
+    neko_lower = memory_root / "neko"
+    if not neko_lower.exists():
+        neko_lower.symlink_to(neko_upper, target_is_directory=True)
+    assert neko_lower.samefile(neko_upper)
+
+    before = path.read_bytes()
+    with patch("utils.config_manager._config_manager", cm):
+        crud, (release, reload) = _crud(cm)
+        with release as release_memory, reload as reload_memory:
+            status, body = _result(await crud.rename_catgirl("neko", _DummyRequest({"new_name": "FreshName"})))
+            assert status == 400
+            assert "共享" in body["error"]
+            release_memory.assert_not_awaited()
+            reload_memory.assert_not_awaited()
+    assert path.read_bytes() == before
+    assert not (memory_root / "FreshName").exists()
+    assert (neko_upper / "facts.json").read_text(encoding="utf-8") == '["shared-fact"]'
 
 
 async def test_rename_migrates_roster_and_spools(env):

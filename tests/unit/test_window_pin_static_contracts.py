@@ -73,6 +73,7 @@ def test_shared_window_controls_bind_only_explicit_hidden_pin_buttons():
 
 def test_only_requested_top_level_templates_define_pin_controls():
     pin_templates = (
+        "templates/emote_maker.html",
         "templates/voice_clone.html",
         "templates/api_key_settings.html",
         "templates/memory_browser.html",
@@ -113,6 +114,7 @@ def test_only_requested_top_level_templates_define_pin_controls():
 
 def test_pin_templates_version_shared_window_control_and_locale_assets():
     for path in (
+        "templates/emote_maker.html",
         "templates/voice_clone.html",
         "templates/api_key_settings.html",
         "templates/character_card_manager.html",
