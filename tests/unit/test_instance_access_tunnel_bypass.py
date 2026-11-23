@@ -568,120 +568,310 @@ def _collect_httpx_import_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
     return mod_aliases, client_aliases
 
 
-def _expr_uses_hook_helper(node: ast.AST | None, source: str, hook_helpers: tuple[str, ...]) -> bool:
+_INTERNAL_HTTPX_CALLABLE_HOOK_HELPERS = frozenset(
+    {
+        "attach_internal_service_proof",
+        "attach_internal_service_proof_sync",
+    }
+)
+
+
+def _callee_name(func: ast.AST) -> str | None:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _expr_is_hook_callable(node: ast.AST | None, hook_helpers: tuple[str, ...]) -> bool:
     if node is None:
         return False
-    seg = ast.get_source_segment(source, node) or ""
-    return any(helper in seg for helper in hook_helpers)
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        name = node.id if isinstance(node, ast.Name) else node.attr
+        return name in hook_helpers and name in _INTERNAL_HTTPX_CALLABLE_HOOK_HELPERS
+    if isinstance(node, ast.IfExp):
+        return _expr_is_hook_callable(node.body, hook_helpers) and _expr_is_hook_callable(node.orelse, hook_helpers)
+    if isinstance(node, ast.NamedExpr):
+        return _expr_is_hook_callable(node.value, hook_helpers)
+    return False
 
 
-def _dict_expr_binds_event_hooks(node: ast.AST, source: str, hook_helpers: tuple[str, ...]) -> bool:
-    if not isinstance(node, ast.Dict):
+def _request_hook_seq_has_proof(node: ast.AST | None, hook_helpers: tuple[str, ...]) -> bool:
+    if node is None:
         return False
-    return any(
-        isinstance(k, ast.Constant)
-        and k.value == "event_hooks"
-        and _expr_uses_hook_helper(v, source, hook_helpers)
-        for k, v in zip(node.keys, node.values)
-    )
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return any(_expr_is_hook_callable(el, hook_helpers) for el in node.elts)
+    if isinstance(node, ast.IfExp):
+        return _request_hook_seq_has_proof(node.body, hook_helpers) and _request_hook_seq_has_proof(
+            node.orelse, hook_helpers
+        )
+    if isinstance(node, ast.NamedExpr):
+        return _request_hook_seq_has_proof(node.value, hook_helpers)
+    return False
+
+
+def _expr_uses_hook_helper(node: ast.AST | None, hook_helpers: tuple[str, ...]) -> bool:
+    if node is None:
+        return False
+    if isinstance(node, ast.Call):
+        name = _callee_name(node.func)
+        return name is not None and name in hook_helpers and name not in _INTERNAL_HTTPX_CALLABLE_HOOK_HELPERS
+    if isinstance(node, ast.Dict):
+        provides = False
+        for k, v in zip(node.keys, node.values):
+            if k is None:
+                provides = _expr_uses_hook_helper(v, hook_helpers)
+            elif isinstance(k, ast.Constant) and k.value == "request":
+                provides = _request_hook_seq_has_proof(v, hook_helpers)
+        return provides
+    if isinstance(node, ast.IfExp):
+        return _expr_uses_hook_helper(node.body, hook_helpers) and _expr_uses_hook_helper(node.orelse, hook_helpers)
+    if isinstance(node, ast.BoolOp):
+        return all(_expr_uses_hook_helper(val, hook_helpers) for val in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        if _expr_uses_hook_helper(node.right, hook_helpers):
+            return True
+        if isinstance(node.right, ast.Dict) and not any(
+            k is None or (isinstance(k, ast.Constant) and k.value == "request") for k in node.right.keys
+        ):
+            return _expr_uses_hook_helper(node.left, hook_helpers)
+        return False
+    if isinstance(node, ast.NamedExpr):
+        return _expr_uses_hook_helper(node.value, hook_helpers)
+    return False
+
+
+def _merge_dict_into_binding(dict_node: ast.Dict, bound: bool, hook_helpers: tuple[str, ...]) -> bool:
+    for k, v in zip(dict_node.keys, dict_node.values):
+        if k is None:
+            bound = _merge_dict_into_binding(v, bound, hook_helpers) if isinstance(v, ast.Dict) else False
+        elif isinstance(k, ast.Constant) and k.value == "event_hooks":
+            bound = _expr_uses_hook_helper(v, hook_helpers)
+    return bound
+
+
+def _dict_expr_binds_event_hooks(node: ast.AST, hook_helpers: tuple[str, ...]) -> bool:
+    return isinstance(node, ast.Dict) and _merge_dict_into_binding(node, False, hook_helpers)
 
 
 def _stmt_contains_node(stmt: ast.AST, target: ast.AST) -> bool:
     return any(node is target for node in ast.walk(stmt))
 
 
-def _stmt_mentions_name(stmt: ast.AST, var_name: str) -> bool:
-    return any(isinstance(node, ast.Name) and node.id == var_name for node in ast.walk(stmt))
+def _is_httpx_client_call(
+    node: ast.AST,
+    httpx_mod_aliases: set[str],
+    httpx_client_aliases: set[str],
+) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    if (
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in httpx_mod_aliases
+        and node.func.attr in ("AsyncClient", "Client")
+    ):
+        return True
+    return isinstance(node.func, ast.Name) and node.func.id in httpx_client_aliases
+
+
+def _stmt_mentions_name(
+    node: ast.AST,
+    var_name: str,
+    httpx_mod_aliases: set[str] | None = None,
+    httpx_client_aliases: set[str] | None = None,
+) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == var_name
+    if (
+        httpx_mod_aliases is not None
+        and httpx_client_aliases is not None
+        and _is_httpx_client_call(node, httpx_mod_aliases, httpx_client_aliases)
+    ):
+        assert isinstance(node, ast.Call)
+        if any(_stmt_mentions_name(arg, var_name, httpx_mod_aliases, httpx_client_aliases) for arg in node.args):
+            return True
+        for kw in node.keywords:
+            if kw.arg is None and isinstance(kw.value, ast.Name) and kw.value.id == var_name:
+                continue
+            if _stmt_mentions_name(kw.value, var_name, httpx_mod_aliases, httpx_client_aliases):
+                return True
+        return False
+    return any(
+        _stmt_mentions_name(child, var_name, httpx_mod_aliases, httpx_client_aliases)
+        for child in ast.iter_child_nodes(node)
+    )
+
+
+def _control_flow_node_types() -> tuple[type[ast.AST], ...]:
+    nodes: list[type[ast.AST]] = [ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try]
+    for attr in ("TryStar", "Match"):
+        cls = getattr(ast, attr, None)
+        if cls is not None:
+            nodes.append(cls)
+    return tuple(nodes)
+
+
+def _contains_direct_continue(node: ast.AST) -> bool:
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.Continue):
+            return True
+        if isinstance(child, (ast.For, ast.AsyncFor, ast.While, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if _contains_direct_continue(child):
+            return True
+    return False
+
+
+def _apply_expr_mutations(
+    node: ast.AST,
+    var_name: str,
+    bound: bool,
+    hook_helpers: tuple[str, ...],
+) -> bool:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return bound
+    for child in ast.iter_child_nodes(node):
+        bound = _apply_expr_mutations(child, var_name, bound, hook_helpers)
+    if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name) and node.target.id == var_name:
+        return _dict_expr_binds_event_hooks(node.value, hook_helpers)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == var_name
+    ):
+        attr = node.func.attr
+        if attr in ("clear", "popitem"):
+            return False
+        if attr == "pop":
+            if (
+                node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and node.args[0].value != "event_hooks"
+            ):
+                return bound
+            return False
+        if attr == "update":
+            if node.args:
+                first_arg = node.args[0]
+                bound = (
+                    _merge_dict_into_binding(first_arg, bound, hook_helpers)
+                    if isinstance(first_arg, ast.Dict)
+                    else False
+                )
+            for ukw in node.keywords:
+                if ukw.arg is None:
+                    bound = (
+                        _merge_dict_into_binding(ukw.value, bound, hook_helpers)
+                        if isinstance(ukw.value, ast.Dict)
+                        else False
+                    )
+                elif ukw.arg == "event_hooks":
+                    bound = _expr_uses_hook_helper(ukw.value, hook_helpers)
+            return bound
+    return bound
 
 
 def _update_event_hooks_binding_state(
     stmt: ast.stmt,
     var_name: str,
     bound: bool,
-    source: str,
     hook_helpers: tuple[str, ...],
 ) -> bool:
     if isinstance(stmt, ast.Assign):
+        bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers)
         for tgt in stmt.targets:
             if (
                 isinstance(tgt, ast.Subscript)
                 and isinstance(tgt.value, ast.Name)
                 and tgt.value.id == var_name
-                and isinstance(tgt.slice, ast.Constant)
-                and tgt.slice.value == "event_hooks"
             ):
-                bound = _expr_uses_hook_helper(stmt.value, source, hook_helpers)
+                if isinstance(tgt.slice, ast.Constant) and isinstance(tgt.slice.value, str):
+                    if tgt.slice.value == "event_hooks":
+                        bound = _expr_uses_hook_helper(stmt.value, hook_helpers)
+                else:
+                    bound = False
             elif isinstance(tgt, ast.Name) and tgt.id == var_name:
-                bound = _dict_expr_binds_event_hooks(stmt.value, source, hook_helpers)
+                bound = _dict_expr_binds_event_hooks(stmt.value, hook_helpers)
         return bound
 
-    if isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+    if isinstance(stmt, ast.AnnAssign):
+        if stmt.value is not None:
+            bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers)
         tgt = stmt.target
         if (
             isinstance(tgt, ast.Subscript)
             and isinstance(tgt.value, ast.Name)
             and tgt.value.id == var_name
-            and isinstance(tgt.slice, ast.Constant)
-            and tgt.slice.value == "event_hooks"
         ):
-            return _expr_uses_hook_helper(stmt.value, source, hook_helpers)
+            if isinstance(tgt.slice, ast.Constant) and isinstance(tgt.slice.value, str):
+                if tgt.slice.value == "event_hooks":
+                    return stmt.value is not None and _expr_uses_hook_helper(stmt.value, hook_helpers)
+                return bound
+            return False
         if isinstance(tgt, ast.Name) and tgt.id == var_name:
-            return _dict_expr_binds_event_hooks(stmt.value, source, hook_helpers)
+            return stmt.value is not None and _dict_expr_binds_event_hooks(stmt.value, hook_helpers)
         return bound
 
     if isinstance(stmt, ast.Delete):
         for tgt in stmt.targets:
-            if (isinstance(tgt, ast.Name) and tgt.id == var_name) or (
+            if isinstance(tgt, ast.Name) and tgt.id == var_name:
+                return False
+            if (
                 isinstance(tgt, ast.Subscript)
                 and isinstance(tgt.value, ast.Name)
                 and tgt.value.id == var_name
-                and isinstance(tgt.slice, ast.Constant)
-                and tgt.slice.value == "event_hooks"
+                and not (
+                    isinstance(tgt.slice, ast.Constant)
+                    and isinstance(tgt.slice.value, str)
+                    and tgt.slice.value != "event_hooks"
+                )
             ):
                 return False
         return bound
 
-    if (
-        isinstance(stmt, ast.Expr)
-        and isinstance(stmt.value, ast.Call)
-        and isinstance(stmt.value.func, ast.Attribute)
-        and isinstance(stmt.value.func.value, ast.Name)
-        and stmt.value.func.value.id == var_name
-    ):
-        call_expr = stmt.value
-        attr = call_expr.func.attr
-        if attr == "clear":
+    if isinstance(stmt, ast.AugAssign):
+        bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers)
+        if isinstance(stmt.target, ast.Name) and stmt.target.id == var_name:
+            if isinstance(stmt.op, ast.BitOr) and isinstance(stmt.value, ast.Dict):
+                return _merge_dict_into_binding(stmt.value, bound, hook_helpers)
             return False
-        if attr == "pop":
-            if call_expr.args and isinstance(call_expr.args[0], ast.Constant) and call_expr.args[0].value == "event_hooks":
-                return False
-            return bound
-        if attr == "update":
-            if call_expr.args:
-                first_arg = call_expr.args[0]
-                if isinstance(first_arg, ast.Dict):
-                    if any(k is None for k in first_arg.keys):
-                        bound = False
-                    elif any(isinstance(k, ast.Constant) and k.value == "event_hooks" for k in first_arg.keys):
-                        bound = _dict_expr_binds_event_hooks(first_arg, source, hook_helpers)
-                else:
-                    bound = False
-            if any(ukw.arg == "event_hooks" for ukw in call_expr.keywords):
-                bound = any(
-                    ukw.arg == "event_hooks" and _expr_uses_hook_helper(ukw.value, source, hook_helpers)
-                    for ukw in call_expr.keywords
-                )
-            return bound
-        # Note: setdefault("event_hooks", ...) does not overwrite a caller-supplied event_hooks={}.
-    if isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == var_name:
-        if isinstance(stmt.op, ast.BitOr) and isinstance(stmt.value, ast.Dict):
-            if any(k is None for k in stmt.value.keys):
-                return False
-            if any(isinstance(k, ast.Constant) and k.value == "event_hooks" for k in stmt.value.keys):
-                return _dict_expr_binds_event_hooks(stmt.value, source, hook_helpers)
-            return bound
+        return bound
+
+    return _apply_expr_mutations(stmt, var_name, bound, hook_helpers)
+
+
+def _loop_backedge_preserves_binding(
+    stmts: list[ast.stmt],
+    var_name: str,
+    initial_bound: bool,
+    hook_helpers: tuple[str, ...],
+    httpx_mod_aliases: set[str],
+    httpx_client_aliases: set[str],
+) -> bool:
+    if not initial_bound:
         return False
-    return bound
+    control_flow_nodes = _control_flow_node_types()
+    cur = True
+    cont_ok = True
+    for stmt in stmts:
+        if isinstance(stmt, ast.Continue):
+            return cont_ok and cur
+        if isinstance(stmt, (ast.Break, ast.Return, ast.Raise)):
+            return cont_ok
+        if isinstance(stmt, control_flow_nodes):
+            if _stmt_mentions_name(stmt, var_name, httpx_mod_aliases, httpx_client_aliases):
+                if not isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)) and _contains_direct_continue(stmt):
+                    cont_ok = False
+                cur = False
+            elif not isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)) and _contains_direct_continue(stmt):
+                cont_ok = cont_ok and cur
+            continue
+        cur = _update_event_hooks_binding_state(stmt, var_name, cur, hook_helpers)
+    return cur and cont_ok
 
 
 def _track_binding_in_block(
@@ -689,24 +879,35 @@ def _track_binding_in_block(
     target_call: ast.Call,
     var_name: str,
     bound: bool,
-    source: str,
     hook_helpers: tuple[str, ...],
+    httpx_mod_aliases: set[str],
+    httpx_client_aliases: set[str],
 ) -> tuple[bool, bool]:
-    control_flow_nodes = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try)
-    try_star = getattr(ast, "TryStar", None)
-    if try_star is not None:
-        control_flow_nodes = control_flow_nodes + (try_star,)
+    control_flow_nodes = _control_flow_node_types()
 
     for stmt in stmts:
         if _stmt_contains_node(stmt, target_call):
             child_blocks: list[tuple[list[ast.stmt], bool]] = []
-            if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+            loop_bound = bound
+            if isinstance(stmt, ast.If):
                 child_blocks.extend([(stmt.body, bound), (stmt.orelse, bound)])
+            elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+                loop_bound = bound and _loop_backedge_preserves_binding(
+                    stmt.body,
+                    var_name,
+                    bound,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    httpx_client_aliases,
+                )
+                child_blocks.extend([(stmt.body, loop_bound), (stmt.orelse, loop_bound)])
             elif isinstance(stmt, (ast.With, ast.AsyncWith)):
                 child_blocks.append((stmt.body, bound))
             elif isinstance(stmt, control_flow_nodes):
                 body_stmts = getattr(stmt, "body", [])
-                body_mentions = any(_stmt_mentions_name(s, var_name) for s in body_stmts)
+                body_mentions = any(
+                    _stmt_mentions_name(s, var_name, httpx_mod_aliases, httpx_client_aliases) for s in body_stmts
+                )
                 child_blocks.append((body_stmts, bound))
                 for handler in getattr(stmt, "handlers", []):
                     child_blocks.append((handler.body, bound and not body_mentions))
@@ -719,15 +920,23 @@ def _track_binding_in_block(
 
             for block, initial_bound in child_blocks:
                 if any(_stmt_contains_node(s, target_call) for s in block):
-                    return _track_binding_in_block(block, target_call, var_name, initial_bound, source, hook_helpers)
-            return True, bound
+                    return _track_binding_in_block(
+                        block,
+                        target_call,
+                        var_name,
+                        initial_bound,
+                        hook_helpers,
+                        httpx_mod_aliases,
+                        httpx_client_aliases,
+                    )
+            return True, (loop_bound if isinstance(stmt, ast.While) else bound)
 
         if isinstance(stmt, control_flow_nodes):
-            if _stmt_mentions_name(stmt, var_name):
+            if _stmt_mentions_name(stmt, var_name, httpx_mod_aliases, httpx_client_aliases):
                 bound = False
             continue
 
-        bound = _update_event_hooks_binding_state(stmt, var_name, bound, source, hook_helpers)
+        bound = _update_event_hooks_binding_state(stmt, var_name, bound, hook_helpers)
 
     return False, bound
 
@@ -735,13 +944,14 @@ def _track_binding_in_block(
 def _kw_splat_sets_event_hooks(
     call: ast.Call,
     func_node: ast.AST | None,
-    source: str,
     hook_helpers: tuple[str, ...],
+    httpx_mod_aliases: set[str],
+    httpx_client_aliases: set[str],
 ) -> bool:
     for kw in call.keywords:
         if kw.arg is not None:
             continue
-        if _dict_expr_binds_event_hooks(kw.value, source, hook_helpers):
+        if _dict_expr_binds_event_hooks(kw.value, hook_helpers):
             return True
         if isinstance(kw.value, ast.Name) and isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             found, bound = _track_binding_in_block(
@@ -749,12 +959,19 @@ def _kw_splat_sets_event_hooks(
                 call,
                 kw.value.id,
                 False,
-                source,
                 hook_helpers,
+                httpx_mod_aliases,
+                httpx_client_aliases,
             )
             if found and bound:
                 return True
     return False
+
+
+def _should_skip_internal_httpx_scan_path(path: Path, repo_root: Path) -> bool:
+    """Skip tests/ and __pycache__/ under repo_root (ignoring parent checkout path) plus test_*.py files."""
+    rel_obj = path.relative_to(repo_root)
+    return any(part in ("tests", "__pycache__") for part in rel_obj.parts[:-1]) or rel_obj.name.startswith("test_")
 
 
 def _scan_source_for_internal_httpx_clients(
@@ -778,17 +995,7 @@ def _scan_source_for_internal_httpx_clients(
     unhooked: list[str] = []
 
     for call, owners in _iter_ast_calls(tree):
-        is_httpx_client = False
-        if (
-            isinstance(call.func, ast.Attribute)
-            and isinstance(call.func.value, ast.Name)
-            and call.func.value.id in httpx_mod_aliases
-            and call.func.attr in ("AsyncClient", "Client")
-        ):
-            is_httpx_client = True
-        elif isinstance(call.func, ast.Name) and call.func.id in httpx_client_aliases:
-            is_httpx_client = True
-        if not is_httpx_client:
+        if not _is_httpx_client_call(call, httpx_mod_aliases, httpx_client_aliases):
             continue
 
         qualname = ".".join(getattr(o, "name", "") for o in owners) or "<module>"
@@ -801,11 +1008,17 @@ def _scan_source_for_internal_httpx_clients(
             continue
 
         has_hook = any(
-            kw.arg == "event_hooks" and _expr_uses_hook_helper(kw.value, source, hook_helpers)
+            kw.arg == "event_hooks" and _expr_uses_hook_helper(kw.value, hook_helpers)
             for kw in call.keywords
         )
         if not has_hook:
-            has_hook = _kw_splat_sets_event_hooks(call, func_node, source, hook_helpers)
+            has_hook = _kw_splat_sets_event_hooks(
+                call,
+                func_node,
+                hook_helpers,
+                httpx_mod_aliases,
+                httpx_client_aliases,
+            )
 
         site_key = (relpath, qualname)
         if has_hook:
@@ -828,7 +1041,7 @@ def test_ast_guard_all_internal_loopback_httpx_clients_sign_requests():
     for root_rel in _INTERNAL_HTTPX_SCAN_ROOTS:
         root_dir = repo_root / root_rel
         for path in sorted(root_dir.rglob("*.py")):
-            if any(part in ("tests", "__pycache__") for part in path.parts) or path.name.startswith("test_"):
+            if _should_skip_internal_httpx_scan_path(path, repo_root):
                 continue
             source = path.read_text(encoding="utf-8")
             relpath = path.relative_to(repo_root).as_posix()
@@ -953,6 +1166,276 @@ def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
     assert signed == 0
     assert unhooked == ["synthetic/augassign_splat.py:7 (make)"]
 
+    conditional_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(enable_signing: bool = False):\n"
+        "    return httpx.AsyncClient(event_hooks=internal_service_event_hooks() if enable_signing else {})\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        conditional_neg_src, "synthetic/conditional_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/conditional_neg.py:5 (make)"]
+
+    boolop_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(caller_hooks=None):\n"
+        "    return httpx.AsyncClient(event_hooks=caller_hooks or internal_service_event_hooks())\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        boolop_neg_src, "synthetic/boolop_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/boolop_neg.py:5 (make)"]
+
+    dict_callable_cond_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import attach_internal_service_proof\n"
+        "def noop(req): pass\n"
+        "def make(enable: bool = False):\n"
+        "    return httpx.AsyncClient(event_hooks={'request': [attach_internal_service_proof if enable else noop]})\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        dict_callable_cond_neg_src, "synthetic/dict_callable_cond_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/dict_callable_cond_neg.py:6 (make)"]
+
+    conditional_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(is_sync: bool = False):\n"
+        "    return httpx.AsyncClient(event_hooks=internal_service_event_hooks(sync=True) if is_sync else internal_service_event_hooks())\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        conditional_pos_src, "synthetic/conditional_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    dict_callable_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import attach_internal_service_proof\n"
+        "def make():\n"
+        "    return httpx.AsyncClient(event_hooks={'request': [attach_internal_service_proof]})\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        dict_callable_pos_src, "synthetic/dict_callable_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    loop_clear_after_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(items, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    for _item in items:\n"
+        "        client = httpx.AsyncClient(**kwargs)\n"
+        "        kwargs.clear()\n"
+        "    return client\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        loop_clear_after_src, "synthetic/loop_clear_after.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/loop_clear_after.py:7 (make)"]
+
+    loop_continue_clear_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(items, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    for item in items:\n"
+        "        client = httpx.AsyncClient(**kwargs)\n"
+        "        if item:\n"
+        "            kwargs.clear()\n"
+        "            continue\n"
+        "        kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    return client\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        loop_continue_clear_src, "synthetic/loop_continue_clear.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/loop_continue_clear.py:7 (make)"]
+
+    loop_orelse_clear_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(items, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    for _item in items:\n"
+        "        kwargs.clear()\n"
+        "    else:\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        loop_orelse_clear_src, "synthetic/loop_orelse_clear.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/loop_orelse_clear.py:9 (make)"]
+
+    loop_rebind_before_construct_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(items, **kwargs):\n"
+        "    for _item in items:\n"
+        "        kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "        client = httpx.AsyncClient(**kwargs)\n"
+        "        kwargs.clear()\n"
+        "    return client\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        loop_rebind_before_construct_src, "synthetic/loop_rebind_before.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    loop_unmodified_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "async def make(urls, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    for url in urls:\n"
+        "        async with httpx.AsyncClient(**kwargs) as client:\n"
+        "            await client.get(url)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        loop_unmodified_src, "synthetic/loop_unmodified.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    assigned_pop_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _removed = kwargs.pop('event_hooks')\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        assigned_pop_neg_src, "synthetic/assigned_pop_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/assigned_pop_neg.py:7 (make)"]
+
+    dynamic_pop_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(k, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    kwargs.pop(k)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        dynamic_pop_neg_src, "synthetic/dynamic_pop_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/dynamic_pop_neg.py:7 (make)"]
+
+    popitem_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    kwargs.popitem()\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        popitem_neg_src, "synthetic/popitem_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/popitem_neg.py:7 (make)"]
+
+    walrus_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _ = (kwargs := {})\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        walrus_neg_src, "synthetic/walrus_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/walrus_neg.py:7 (make)"]
+
+    augassign_splat_override_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(base, **kwargs):\n"
+        "    kwargs |= {**base, 'event_hooks': internal_service_event_hooks()}\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        augassign_splat_override_pos_src, "synthetic/augassign_splat_override_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    augassign_splat_override_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(base, **kwargs):\n"
+        "    kwargs |= {'event_hooks': internal_service_event_hooks(), **base}\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        augassign_splat_override_neg_src, "synthetic/augassign_splat_override_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/augassign_splat_override_neg.py:6 (make)"]
+
+    pop_other_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _timeout = kwargs.pop('timeout', None)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        pop_other_pos_src, "synthetic/pop_other_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+
+def test_internal_httpx_scan_path_filter_uses_repo_relative_components(tmp_path: Path):
+    """Scanning must ignore 'tests'/'__pycache__' above repo_root while filtering test dirs/files inside repo_root."""
+    fake_checkout = tmp_path / "tests" / "neko"
+    source_file = fake_checkout / "utils" / "client.py"
+    in_repo_test_dir = fake_checkout / "plugin" / "tests" / "helper.py"
+    in_repo_pycache = fake_checkout / "utils" / "__pycache__" / "mod.py"
+    in_repo_test_file = fake_checkout / "utils" / "test_client.py"
+
+    assert _should_skip_internal_httpx_scan_path(source_file, fake_checkout) is False
+    assert _should_skip_internal_httpx_scan_path(in_repo_test_dir, fake_checkout) is True
+    assert _should_skip_internal_httpx_scan_path(in_repo_pycache, fake_checkout) is True
+    assert _should_skip_internal_httpx_scan_path(in_repo_test_file, fake_checkout) is True
+
 
 async def test_untrusted_loopback_ports_do_not_receive_proof_while_dynamic_plugin_port_is_trusted(
     monkeypatch: pytest.MonkeyPatch,
@@ -1067,10 +1550,18 @@ async def test_signing_failure_raises_request_error_and_agent_router_rolls_back_
     assert manager_timeout.agent_flags == {"agent_enabled": True, "user_plugin_enabled": True}
 
 
-@pytest.mark.parametrize("bad_server", [None, ("127.0.0.1", None), ("127.0.0.1", True)])
+@pytest.mark.parametrize(
+    ("bad_server", "proof_port"),
+    [
+        (None, MAIN_SERVER_PORT),
+        (("127.0.0.1", None), MAIN_SERVER_PORT),
+        (("127.0.0.1", True), 1),
+    ],
+)
 async def test_internal_service_proof_fails_closed_when_asgi_server_port_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     bad_server,
+    proof_port: int,
 ):
     """_request_signing_port must fail closed when ASGI scope['server'] lacks an int port, never falling back to Host header."""
     _clear_deployment_mode_env(monkeypatch)
@@ -1078,9 +1569,14 @@ async def test_internal_service_proof_fails_closed_when_asgi_server_port_unavail
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
 
     app = _build_guarded_app()
-    valid_proof = internal_service_proof(KEY, "GET", "/private", port=MAIN_SERVER_PORT)
+    valid_proof = internal_service_proof(KEY, "GET", "/private", port=proof_port)
 
-    async def _send_with_server(server_value) -> int:
+    async def _send_with_server(
+        server_value,
+        *,
+        proof: str = valid_proof,
+        host_port: int = proof_port,
+    ) -> int:
         scope = {
             "type": "http",
             "asgi": {"version": "3.0"},
@@ -1091,8 +1587,8 @@ async def test_internal_service_proof_fails_closed_when_asgi_server_port_unavail
             "raw_path": b"/private",
             "query_string": b"",
             "headers": [
-                (b"host", f"127.0.0.1:{MAIN_SERVER_PORT}".encode()),
-                (INTERNAL_SERVICE_HEADER.lower().encode(), valid_proof.encode()),
+                (b"host", f"127.0.0.1:{host_port}".encode()),
+                (INTERNAL_SERVICE_HEADER.lower().encode(), proof.encode()),
             ],
             "client": ("127.0.0.1", 50000),
         }
@@ -1111,7 +1607,9 @@ async def test_internal_service_proof_fails_closed_when_asgi_server_port_unavail
         start_msg = next(m for m in messages if m["type"] == "http.response.start")
         return start_msg["status"]
 
-    assert await _send_with_server(("127.0.0.1", MAIN_SERVER_PORT)) == 200
+    main_proof = internal_service_proof(KEY, "GET", "/private", port=MAIN_SERVER_PORT)
+    assert await _send_with_server(("127.0.0.1", MAIN_SERVER_PORT), proof=main_proof, host_port=MAIN_SERVER_PORT) == 200
+    assert await _send_with_server(("127.0.0.1", proof_port)) == 200
     assert await _send_with_server(bad_server) == 401
 
 

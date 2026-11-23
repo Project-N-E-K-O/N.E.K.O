@@ -134,18 +134,21 @@ def _open_log_file_nofollow(
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
     flags |= getattr(os, "O_BINARY", 0)
 
-    fd = os.open(os.fspath(target), flags, 0o666)
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise OSError(f"Refusing non-regular log target: {target}")
-        return os.fdopen(fd, mode, encoding=encoding, errors=errors)
-    except Exception:
+    def _opener(file_path: str, _default_flags: int) -> int:
+        fd = os.open(file_path, flags, 0o666)
         try:
-            os.close(fd)
-        except OSError:
-            pass
-        raise
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Refusing non-regular log target: {target}")
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        return fd
+
+    return open(os.fspath(target), mode, encoding=encoding, errors=errors, opener=_opener)
 
 
 class _SafeRotatingFileHandler(_StdlibRotatingFileHandler):
@@ -386,6 +389,7 @@ class RobustLoggerConfig:
         # Get the base log directory, then route to the log_subdir subdirectory.
         self.log_dir = self._get_log_directory()
         self._log_root = self.log_dir
+        root_is_link = _is_symlink_or_reparse_point(self._log_root)
         if log_subdir is not None:
             raw_subdir = str(log_subdir)
             if "\x00" in raw_subdir:
@@ -398,20 +402,27 @@ class RobustLoggerConfig:
                 if any(part in ("", ".", "..") for part in parts):
                     raise ValueError(f"log_subdir must not contain traversal segments: {log_subdir!r}")
                 candidate_dir = self.log_dir.joinpath(*parts)
-                log_root_real = os.path.normcase(os.path.realpath(str(self._log_root)))
-                candidate_real = os.path.normcase(os.path.realpath(str(candidate_dir)))
-                if os.path.commonpath([log_root_real, candidate_real]) != log_root_real or candidate_real == log_root_real:
-                    raise ValueError(f"log_subdir escapes log root: {log_subdir!r}")
+                if not root_is_link:
+                    prefix = self._log_root
+                    for part in parts:
+                        prefix = prefix / part
+                        if _is_symlink_or_reparse_point(prefix):
+                            raise ValueError(f"log_subdir must not traverse symlinks: {log_subdir!r}")
+                    log_root_real = os.path.normcase(os.path.realpath(str(self._log_root)))
+                    candidate_real = os.path.normcase(os.path.realpath(str(candidate_dir)))
+                    if os.path.commonpath([log_root_real, candidate_real]) != log_root_real or candidate_real == log_root_real:
+                        raise ValueError(f"log_subdir escapes log root: {log_subdir!r}")
                 self.log_dir = candidate_dir
 
         # Log filename includes service_name when present; otherwise use only app_name.
         self.log_file = self.log_dir / log_filename(self.service_name, app_name=self.app_name)
         
-        # Ensure the log directory exists.
-        self._ensure_log_directory()
-        
-        # Clean up old logs.
-        self._cleanup_old_logs()
+        if not root_is_link:
+            # Ensure the log directory exists.
+            self._ensure_log_directory()
+            
+            # Clean up old logs.
+            self._cleanup_old_logs()
     
     def _get_log_directory(self):
         """Probe the shared candidates in the historical fallback order."""
@@ -479,7 +490,8 @@ class RobustLoggerConfig:
     def _ensure_log_directory(self):
         """Ensure the log directory exists"""
         try:
-            if _is_symlink_or_reparse_point(self.log_dir):
+            log_root = getattr(self, "_log_root", None)
+            if (log_root is not None and _is_symlink_or_reparse_point(log_root)) or _is_symlink_or_reparse_point(self.log_dir):
                 return
             RobustLoggerConfig._create_directory_incrementally(self.log_dir)
         except Exception as e:
@@ -493,6 +505,9 @@ class RobustLoggerConfig:
         directory (``<repo>/logs/``), so daily-rolled ``*_debug_YYYYMMDD.log`` files
         don't pile up forever.
         """
+        log_root = getattr(self, "_log_root", None)
+        if log_root is not None and _is_symlink_or_reparse_point(log_root):
+            return
         cutoff_date = datetime.now() - timedelta(days=self.retention_days)
         dirs_to_scan = [self.log_dir]
         if not getattr(sys, "frozen", False):

@@ -397,7 +397,7 @@ def main():
         assert len(session_dur_rows) >= 1, (
             "P2 regression: session_duration_sec histogram missing"
         )
-        # Reenable the URL for [5/5] dashboard testing below.
+        # Reenable the URL for [5/5] admin stats testing below.
         tt_mod._TELEMETRY_SERVER_URL = SERVER_URL
         print("  ✓ session_end counter + duration histogram both reached server")
 

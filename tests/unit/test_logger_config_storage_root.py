@@ -820,3 +820,155 @@ def test_safe_rotating_file_handler_binds_relative_allowed_root_as_absolute_acro
             delay=True,
             encoding="utf-8",
         )
+
+
+@pytest.mark.unit
+def test_open_log_file_nofollow_single_owner_fd_cleanup_on_errors(tmp_path, monkeypatch):
+    """_open_log_file_nofollow must close fd once before FileIO handoff and never double-close on post-handoff failure."""
+    import errno
+    import os
+    from utils import logger_config
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    target = logs_dir / "fd_ownership.log"
+
+    orig_open = os.open
+    orig_close = os.close
+    orig_fstat = os.fstat
+    opened_fds: list[int] = []
+    close_calls: list[int] = []
+
+    def _spy_open(path, flags, mode=0o777, *args, **kwargs):
+        fd = orig_open(path, flags, mode, *args, **kwargs)
+        opened_fds.append(fd)
+        return fd
+
+    def _spy_close(fd: int):
+        close_calls.append(fd)
+        return orig_close(fd)
+
+    monkeypatch.setattr(logger_config.os, "open", _spy_open)
+    monkeypatch.setattr(logger_config.os, "close", _spy_close)
+
+    # Case A: Post-handoff failure (unknown encoding in TextIOWrapper after opener returned fd).
+    # CPython's FileIO owns and closes the fd; our code must NOT call os.close(fd).
+    with pytest.raises(LookupError):
+        logger_config._open_log_file_nofollow(target, "a", "nonexistent-encoding-xyz", None, logs_dir)
+    assert len(opened_fds) == 1
+    assert close_calls == []
+    with pytest.raises(OSError) as ebadf_exc:
+        orig_fstat(opened_fds[0])
+    assert ebadf_exc.value.errno == errno.EBADF
+
+    # Case B: Pre-handoff failure inside _opener (fstat raises before opener returns fd).
+    opened_fds.clear()
+    close_calls.clear()
+    monkeypatch.setattr(
+        logger_config.os,
+        "fstat",
+        lambda _fd: (_ for _ in ()).throw(OSError("fstat boom")),
+    )
+    with pytest.raises(OSError, match="fstat boom"):
+        logger_config._open_log_file_nofollow(target, "a", "utf-8", None, logs_dir)
+    assert len(opened_fds) == 1
+    assert close_calls == [opened_fds[0]]
+    with pytest.raises(OSError) as ebadf_exc2:
+        orig_fstat(opened_fds[0])
+    assert ebadf_exc2.value.errno == errno.EBADF
+
+    # Case C: Pre-open argument validation failure inside open() before _opener runs.
+    monkeypatch.setattr(logger_config.os, "fstat", orig_fstat)
+    opened_fds.clear()
+    close_calls.clear()
+    with pytest.raises(TypeError):
+        logger_config._open_log_file_nofollow(target, "a", "utf-8", 123, logs_dir)
+    with pytest.raises(ValueError):
+        logger_config._open_log_file_nofollow(target, "ab", "utf-8", None, logs_dir)
+    assert opened_fds == []
+    assert close_calls == []
+
+
+@pytest.mark.unit
+def test_symlinked_last_resort_log_root_skips_plugin_subdir_creation_and_cleanup(tmp_path, monkeypatch):
+    """When last-resort fallback logs/ is a symlink, log_subdir='plugin' skips mkdir/cleanup while keeping console fallback."""
+    import logging
+    import os
+    import time
+    from utils import logger_config as backend
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    fallback_logs = app_dir / "logs"
+    try:
+        fallback_logs.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    orig_candidates = backend.log_directory_candidates
+    monkeypatch.setattr(backend, "log_directory_candidates", lambda *args, **kwargs: iter([]))
+    monkeypatch.setattr(backend, "_get_writable_application_directory", lambda: app_dir)
+    monkeypatch.setattr(backend, "_get_development_log_directory", lambda: tmp_path / "dev_logs")
+
+    # Malformed log_subdir still raises ValueError even when fallback root is a symlink.
+    with pytest.raises(ValueError):
+        backend.RobustLoggerConfig(service_name="Plugin_demo", log_subdir="../escape")
+
+    # Subcase 1: outside/plugin does not exist -> must NOT be created, and iter_handlers degrades to console only.
+    cfg_absent = backend.RobustLoggerConfig(
+        app_name="TestNeko",
+        service_name="Plugin_demo",
+        log_subdir="plugin",
+        log_level=logging.INFO,
+    )
+    assert not (outside / "plugin").exists()
+    for delay in (False, True):
+        handlers = list(cfg_absent.iter_handlers(delay=delay))
+        try:
+            assert [h for h in handlers if isinstance(h, logging.FileHandler)] == []
+            assert len([h for h in handlers if isinstance(h, logging.StreamHandler)]) >= 1
+        finally:
+            for handler in handlers:
+                handler.close()
+    assert not (outside / "plugin").exists()
+
+    # Subcase 2: outside/plugin already contains an expired log -> must NOT be deleted on init or direct call.
+    outside_plugin = outside / "plugin"
+    outside_plugin.mkdir()
+    expired_log = outside_plugin / "TestNeko_Plugin_demo_20200101.log"
+    expired_log.write_text("old outside plugin log\n", encoding="utf-8")
+    old_mtime = time.time() - (60 * 86400)
+    os.utime(expired_log, (old_mtime, old_mtime))
+
+    cfg_existing = backend.RobustLoggerConfig(
+        app_name="TestNeko",
+        service_name="Plugin_demo",
+        log_subdir="plugin",
+        retention_days=30,
+        log_level=logging.INFO,
+    )
+    cfg_existing._ensure_log_directory()
+    cfg_existing._cleanup_old_logs()
+    assert expired_log.exists()
+
+    # Subcase 3: Real root continues creating plugin/ and opening main+error FileHandlers normally.
+    real_root = tmp_path / "real-storage"
+    monkeypatch.setattr(backend, "log_directory_candidates", orig_candidates)
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(real_root))
+    cfg_real = backend.RobustLoggerConfig(
+        app_name="TestNeko",
+        service_name="Plugin_demo",
+        log_subdir="plugin",
+        log_level=logging.INFO,
+    )
+    assert (real_root / "logs" / "plugin").is_dir()
+    handlers = list(cfg_real.iter_handlers(delay=False))
+    try:
+        file_handlers = [h for h in handlers if isinstance(h, logging.FileHandler)]
+        assert len(file_handlers) == 2
+        assert all(Path(h.baseFilename).parent == real_root / "logs" / "plugin" for h in file_handlers)
+    finally:
+        for handler in handlers:
+            handler.close()
