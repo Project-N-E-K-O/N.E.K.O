@@ -89,7 +89,7 @@ test('PR3981 #68: stalled eager CSRF bootstrap times out, aborts socket, clears 
     // First route start joins stalled bootstrap -> hits 4s (25ms compressed) deadline before 22s post timeout.
     await assert.rejects(
         () => context.post('/route/start', { session_id: 's1' }, 22000),
-        (err) => err && err.name === 'AbortError' && err.code === 'csrf_bootstrap_timeout'
+        (err) => err && err.name === 'TimeoutError' && err.code === 'csrf_bootstrap_timeout'
     );
     assert.equal(firstBootstrapAborted, true, 'expected stalled bootstrap AbortController to abort socket');
     assert.equal(pageConfigCalls, 1);
@@ -139,7 +139,7 @@ test('PR3981 #68: stalled r.json() ignoring AbortSignal still triggers bootstrap
 
     await assert.rejects(
         () => context.post('/route/start', { session_id: 's-json-hang' }, 22000),
-        (err) => err && err.name === 'AbortError' && err.code === 'csrf_bootstrap_timeout'
+        (err) => err && err.name === 'TimeoutError' && err.code === 'csrf_bootstrap_timeout'
     );
     assert.equal(pageConfigCalls, 1);
     assert.equal(postCalls.length, 0);

@@ -2656,6 +2656,12 @@
     error.name = 'AbortError';
     return error;
   }
+  function _badmintonCreateTimeoutError() {
+    var error = new Error('CSRF bootstrap timed out');
+    error.name = 'TimeoutError';
+    error.code = 'csrf_bootstrap_timeout';
+    return error;
+  }
   function _badmintonAwaitWithSignal(promise, signal) {
     if (!signal) {
       return promise;
@@ -2713,8 +2719,10 @@
           if (token) _badmintonCsrfToken = token;
           return headers || {};
         }), signal).catch(function (error) {
-          if ((error && error.name === 'AbortError') || (signal && signal.aborted)) {
-            throw (error && error.name === 'AbortError') ? error : _badmintonCreateAbortError();
+          if ((error && (error.name === 'AbortError' || error.name === 'TimeoutError')) || (signal && signal.aborted)) {
+            throw (error && (error.name === 'AbortError' || error.name === 'TimeoutError'))
+              ? error
+              : _badmintonCreateAbortError();
           }
           if (requestSeq !== _badmintonCsrfSeq) {
             return _badmintonCsrfToken
@@ -2745,9 +2753,7 @@
         if (bootstrapController) {
           try { bootstrapController.abort(); } catch (_) {}
         }
-        var timeoutError = _badmintonCreateAbortError();
-        timeoutError.code = 'csrf_bootstrap_timeout';
-        reject(timeoutError);
+        reject(_badmintonCreateTimeoutError());
       }, _BADMINTON_CSRF_BOOTSTRAP_TIMEOUT_MS);
       fetch('/api/config/page_config', fetchInit)
         .then(function (r) { return r && r.ok ? r.json() : null; })
