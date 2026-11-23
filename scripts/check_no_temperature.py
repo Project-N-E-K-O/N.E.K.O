@@ -205,7 +205,7 @@ def _exc_matches_names(exc_name: str | None, handled_names: set[str]) -> bool:
     if "BaseException" in handled_names:
         return True
     if exc_name is None:
-        return False
+        return "Exception" in handled_names
     if exc_name in handled_names:
         return True
     exc_cls = getattr(builtins, exc_name, None)
@@ -218,7 +218,8 @@ def _exc_matches_names(exc_name: str | None, handled_names: set[str]) -> bool:
                 and issubclass(exc_cls, h_cls)
             ):
                 return True
-    return False
+        return False
+    return "Exception" in handled_names
 
 
 def _handler_catches_exc(
@@ -231,8 +232,16 @@ def _handler_catches_exc(
         return True
     handled = _handler_exc_names(handler.type)
     if is_try_star:
-        return "BaseException" in handled
+        if exc_name == "BaseExceptionGroup":
+            return "BaseException" in handled
+        if exc_name == "ExceptionGroup":
+            return "BaseException" in handled or "Exception" in handled
+        return _exc_matches_names(exc_name, handled)
     return _exc_matches_names(exc_name, handled)
+
+
+def _is_const_truthy(expr: ast.expr | None) -> bool:
+    return isinstance(expr, ast.Constant) and bool(expr.value)
 
 
 def _suppress_exc_names(expr: ast.expr) -> set[str] | None:
@@ -295,6 +304,7 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         self._cf_stacks: list[
             list[_LoopFrame | _TryBodyFrame | _TryFinallyFrame | _WithSuppressFrame]
         ] = [[]]
+        self._active_exc_names: list[list[set[str] | None]] = [[]]
 
     def _push_scope(
         self,
@@ -305,11 +315,13 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         self.scopes.append(dict(initial) if initial else {})
         self._scope_is_class.append(is_class)
         self._cf_stacks.append([])
+        self._active_exc_names.append([])
 
     def _pop_scope(self) -> None:
         self.scopes.pop()
         self._scope_is_class.pop()
         self._cf_stacks.pop()
+        self._active_exc_names.pop()
 
     def _record_jump(
         self,
@@ -456,11 +468,18 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             self.visit(node.exc)
         if node.cause is not None:
             self.visit(node.cause)
-        self._record_jump(
-            "raise",
-            dict(self.scopes[-1]),
-            exc_name=_raised_exc_name(node.exc),
-        )
+        snap = dict(self.scopes[-1])
+        if node.exc is not None:
+            self._record_jump("raise", snap, exc_name=_raised_exc_name(node.exc))
+        else:
+            active = (
+                self._active_exc_names[-1][-1] if self._active_exc_names[-1] else None
+            )
+            if active:
+                for exc_name in sorted(active):
+                    self._record_jump("raise", snap, exc_name=exc_name)
+            else:
+                self._record_jump("raise", snap, exc_name=None)
         return False
 
     def visit_Break(self, node: ast.Break) -> bool:
@@ -761,22 +780,31 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         return merged
 
     def visit_If(self, node: ast.If) -> bool:
-        self.visit(node.test)
-        before = dict(self.scopes[-1])
-        body_falls = self._visit_stmt_list(node.body)
-        after_body = dict(self.scopes[-1])
-        self.scopes[-1] = dict(before)
-        else_falls = self._visit_stmt_list(node.orelse)
-        after_else = dict(self.scopes[-1])
         fallthrough: list[dict[str, bool]] = []
-        if body_falls:
-            fallthrough.append(after_body)
-        if else_falls:
-            fallthrough.append(after_else)
+        all_exits: list[dict[str, bool]] = []
+        current = node
+        while True:
+            self.visit(current.test)
+            before = dict(self.scopes[-1])
+            body_falls = self._visit_stmt_list(current.body)
+            after_body = dict(self.scopes[-1])
+            all_exits.append(after_body)
+            if body_falls:
+                fallthrough.append(after_body)
+            self.scopes[-1] = dict(before)
+            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                current = current.orelse[0]
+                continue
+            else_falls = self._visit_stmt_list(current.orelse)
+            after_else = dict(self.scopes[-1])
+            all_exits.append(after_else)
+            if else_falls:
+                fallthrough.append(after_else)
+            break
         if fallthrough:
             self.scopes[-1] = self._merge_scopes(fallthrough)
             return True
-        self.scopes[-1] = self._merge_scopes([after_body, after_else])
+        self.scopes[-1] = self._merge_scopes(all_exits)
         return False
 
     def _run_finalbody_silenced(
@@ -838,7 +866,21 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                     self.visit(handler.type)
                 if handler.name:
                     self._set_local(handler.name, False)
-                handler_falls = self._visit_stmt_list(handler.body)
+                if is_try_star:
+                    active_exc: set[str] | None = (
+                        {"ExceptionGroup"} if handler.type is not None else None
+                    )
+                else:
+                    active_exc = (
+                        _handler_exc_names(handler.type) or None
+                        if handler.type is not None
+                        else None
+                    )
+                self._active_exc_names[-1].append(active_exc)
+                try:
+                    handler_falls = self._visit_stmt_list(handler.body)
+                finally:
+                    self._active_exc_names[-1].pop()
                 snap = dict(self.scopes[-1])
                 all_snapshots.append(snap)
                 if handler_falls:
@@ -975,6 +1017,21 @@ class TemperatureKwargChecker(ast.NodeVisitor):
                 normal_exit = after_test if after_test is not None else next_state
                 break
             state = next_state
+        if _is_const_truthy(test):
+            if orelse:
+                saved_scope = self.scopes[-1]
+                self.scopes[-1] = dict(normal_exit)
+                self._cf_stacks.append([])
+                try:
+                    self._visit_stmt_list(orelse)
+                finally:
+                    self._cf_stacks.pop()
+                    self.scopes[-1] = saved_scope
+            if merged_breaks is not None:
+                self.scopes[-1] = dict(merged_breaks)
+                return True
+            self.scopes[-1] = dict(normal_exit)
+            return False
         self.scopes[-1] = dict(normal_exit)
         if orelse:
             orelse_falls = self._visit_stmt_list(orelse)

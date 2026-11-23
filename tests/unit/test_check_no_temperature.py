@@ -90,6 +90,10 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "def f(flag):\n    opts = {}\n    if flag:\n        with suppress(Exception):\n            opts = {'temperature': 0.2}\n            raise ValueError\n    create_chat_llm(**opts)\n",
         "def f():\n    head, *[opts, meta] = None, {'temperature': 0.2}, None\n    create_chat_llm(**opts)\n",
         "def f():\n    opts = {'temperature': 0.2}\n    while ((saved := opts.copy()), opts.clear())[0]:\n        break\n    else:\n        saved = {}\n    create_chat_llm(**saved)\n",
+        "def f(flag):\n    opts = {}\n    if flag:\n        try:\n            raise ValueError\n        except ValueError:\n            with contextlib.suppress(ValueError):\n                raise\n            opts = {'temperature': 0.2}\n    create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        opts = {'temperature': 0.2}\n        raise ExceptionGroup('g', [ValueError(), KeyError()])\n    except* ValueError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        opts = {'temperature': 0.2}\n        raise KeyboardInterrupt\n    except Exception:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f(flag):\n    opts = {}\n    while True:\n        if flag:\n            opts = {'temperature': 0.2}\n            break\n    create_chat_llm(**opts)\n",
     ],
 )
 def test_flags_direct_and_unpacked_temperature_kwargs(snippet: str):
@@ -161,6 +165,12 @@ def test_flags_unpacked_dict_kwarg_call():
         "def f():\n    head, *rest = None, {'temperature': 0.2}\n    create_chat_llm(**rest)\n",
         "def f(items):\n    opts = {}\n    for _ in items:\n        try:\n            break\n        except ValueError:\n            pass\n        else:\n            opts = {'temperature': 0.2}\n            break\n    create_chat_llm(**opts)\n",
         "def f(start):\n    opts = {}\n    while opts.pop('temperature', start):\n        opts['temperature'] = 0\n    create_chat_llm(**opts)\n",
+        "class MyErr(Exception):\n    pass\n\ndef f():\n    opts = {'temperature': 1}\n    try:\n        try:\n            raise MyErr()\n        except Exception:\n            pass\n        opts.pop('temperature')\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 1}\n    try:\n        try:\n            raise httpx.HTTPError('x')\n        except Exception:\n            pass\n        opts.pop('temperature')\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {}\n    try:\n        opts = {'temperature': 0.2}\n        raise ValueError\n    except* ValueError:\n        opts.clear()\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 1}\n    try:\n        try:\n            raise ValueError\n        except* ValueError:\n            pass\n        opts = {}\n    finally:\n        create_chat_llm(**opts)\n",
+        "def f(flag):\n    opts = {}\n    if flag:\n        try:\n            raise ValueError\n        except ValueError:\n            with contextlib.suppress(KeyError):\n                raise\n            opts = {'temperature': 0.2}\n    create_chat_llm(**opts)\n",
+        "def f():\n    opts = {'temperature': 0.2}\n    while True:\n        opts.pop('temperature')\n        break\n    create_chat_llm(**opts)\n",
     ],
 )
 def test_allows_legitimate_forwarding_and_cleared_dicts(snippet: str):
@@ -222,6 +232,21 @@ def test_exclude_files_behavior_and_ancestor_build_dir_not_excluded(
     capsys.readouterr()
     assert MOD.main([str(loop_dir)]) == 1
     assert "z.py" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_deep_elif_chain_does_not_hit_recursion_error():
+    """Iterative elif traversal handles deep chains without hitting RecursionError."""
+    lines = ["def f(n):", "    opts = {}", "    if n == 0:", "        opts = {'a': 0}"]
+    for idx in range(1, 400):
+        lines.append(f"    elif n == {idx}:")
+        lines.append(f"        opts = {{'a': {idx}}}")
+    lines.append("    create_chat_llm(**opts)")
+    safe_src = "\n".join(lines) + "\n"
+    assert _check(safe_src) == []
+
+    bad_src = safe_src.replace("opts = {'a': 399}", "opts = {'temperature': 0.2}")
+    assert len(_check(bad_src)) == 1
 
 
 @pytest.mark.unit
