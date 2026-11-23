@@ -287,6 +287,41 @@
         }
     }
 
+    // 把「总开关已发出 / 已打开」写进持久化快照。恢复分两步（先总开关、后子开关），
+    // 两步之间切换角色或关掉页面时，下次恢复要知道总开关是我们自己开的，
+    // 否则会把它当成用户手动开的、清掉快照，子开关就再也补不回来。
+    function markPersistedAgentRestoreProgress(token, field) {
+        if (token === undefined || token === null) {
+            return;
+        }
+        try {
+            const raw = localStorage.getItem(HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY);
+            if (!raw) {
+                return;
+            }
+            const payload = JSON.parse(raw);
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload) || payload.token !== token) {
+                return;
+            }
+            if (payload[field] === true) {
+                return;
+            }
+            payload[field] = true;
+            localStorage.setItem(HOME_TUTORIAL_AGENT_RESTORE_STORAGE_KEY, JSON.stringify(payload));
+        } catch (error) {
+            console.warn('[HomeTutorialRuntime] failed to persist agent restore progress:', error);
+        }
+    }
+
+    function createAgentRestoreAttemptState(snapshotToken, persisted) {
+        const masterApplied = !!(persisted && persisted.masterApplied === true);
+        return {
+            snapshotToken: snapshotToken,
+            masterAttempted: masterApplied || !!(persisted && persisted.masterAttempted === true),
+            masterApplied: masterApplied,
+        };
+    }
+
     function buildAgentChildFlags(values) {
         const flags = {};
         HOME_TUTORIAL_AGENT_FLAG_KEYS.forEach(function (key) {
@@ -337,12 +372,14 @@
         if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')) {
             if (attemptState && flags.agent_enabled) {
                 attemptState.masterAttempted = true;
+                markPersistedAgentRestoreProgress(attemptState.snapshotToken, 'masterAttempted');
             }
             await postAgentCommand('set_agent_enabled', {
                 enabled: !!flags.agent_enabled,
             });
             if (attemptState && flags.agent_enabled) {
                 attemptState.masterApplied = true;
+                markPersistedAgentRestoreProgress(attemptState.snapshotToken, 'masterApplied');
             }
         }
         if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken, expectedOwner)) {
@@ -401,7 +438,7 @@
                     return;
                 }
                 try {
-                    const restored = await restoreAgentSnapshot(flags, restoreToken);
+                    const restored = await restoreAgentSnapshot(flags, restoreToken, createAgentRestoreAttemptState(token));
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
                         clearPersistedAgentRestoreSnapshot(token);
                         syncAgentFlagsUi();
@@ -418,7 +455,7 @@
                     return;
                 }
                 try {
-                    const restored = await restoreAgentSnapshot(flags, restoreToken);
+                    const restored = await restoreAgentSnapshot(flags, restoreToken, createAgentRestoreAttemptState(token));
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
                         clearPersistedAgentRestoreSnapshot(token);
                         syncAgentFlagsUi();
@@ -553,7 +590,11 @@
         // 情境弹窗模块负责重放暂存提示。头像重载层若仍持有运行时 hold，
         // 触发闸门会继续拦截到模型恢复完成，并由它自己的释放事件再补一轮。
         if (snapshot.agentFlags) {
-            void restoreAgentSnapshot(snapshot.agentFlags, restoreToken)
+            void restoreAgentSnapshot(
+                snapshot.agentFlags,
+                restoreToken,
+                createAgentRestoreAttemptState(snapshot.agentRestoreToken)
+            )
                 .then(function (restored) {
                     if (restored && canRestoreAgentSnapshot(restoreToken)) {
                         clearPersistedAgentRestoreSnapshot(snapshot.agentRestoreToken);
@@ -608,7 +649,7 @@
             return true;
         }
 
-        const attemptState = { masterAttempted: false, masterApplied: false };
+        const attemptState = createAgentRestoreAttemptState(persisted.token, persisted);
 
         async function runRestoreAttempt(retryIndex) {
             if (!canRestoreAgentSnapshot(restoreToken)) {

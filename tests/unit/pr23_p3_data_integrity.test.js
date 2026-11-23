@@ -900,5 +900,118 @@ test('PR3976 4661235259: character switch mid-restore aborts cleanly without wri
     const commandPostsB = rtB.fetchCalls.filter(c => c.url === '/api/agent/command' && c.method === 'POST');
     assert.equal(flagsPostsB.length, 0, 'owner switch during master command must abort before POST /api/agent/flags');
     assert.equal(commandPostsB.length, 1, 'owner switch must NOT trigger re-disable POST /api/agent/command on new character');
-    assert.equal(storageB.getItem(HOME_TUTORIAL_KEY), snapshotB, 'CatA snapshot must remain untouched when aborted after command');
+    const persistedB = JSON.parse(storageB.getItem(HOME_TUTORIAL_KEY));
+    const originalB = JSON.parse(snapshotB);
+    assert.equal(persistedB.token, originalB.token, 'CatA snapshot must keep its token when aborted after command');
+    assert.equal(persistedB.lanlanName, 'CatA');
+    assert.deepEqual(persistedB.agentFlags, originalB.agentFlags, 'CatA snapshot flags must remain untouched when aborted after command');
+    assert.equal(persistedB.masterApplied, true, 'snapshot must remember that the master switch was turned on by the restore');
+});
+
+function makeAgentServer() {
+    const server = {
+        master: false,
+        child: { computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false },
+        hangChildPost: false,
+        onCommand: null,
+    };
+    server.handler = async (url, init, body) => {
+        if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET') {
+            return {
+                ok: true,
+                json: async () => ({ success: true, analyzer_enabled: server.master, agent_flags: Object.assign({}, server.child) }),
+            };
+        }
+        if (url === '/api/agent/command' && init.method === 'POST') {
+            server.master = !!body.enabled;
+            if (server.onCommand) {
+                await server.onCommand(body);
+            }
+            return { ok: true, json: async () => ({ success: true }) };
+        }
+        if (url === '/api/agent/flags' && init.method === 'POST') {
+            if (server.hangChildPost) {
+                return await new Promise(() => {});
+            }
+            server.child = Object.assign({}, server.child, body.flags);
+            return { ok: true, json: async () => ({ success: true }) };
+        }
+        return { ok: true, json: async () => ({ success: true }) };
+    };
+    return server;
+}
+
+async function flushMicrotasks(rounds = 6) {
+    for (let i = 0; i < rounds; i += 1) {
+        await new Promise(r => setImmediate(r));
+    }
+}
+
+test('PR3976 master-on persisted: child flags still restore on next load after owner switch or page close between the two POSTs', async () => {
+    const snapshotFlags = {
+        agent_enabled: true,
+        computer_use_enabled: true,
+        browser_use_enabled: false,
+        user_plugin_enabled: false,
+    };
+
+    // Case A: master POST lands, user switches CatA -> CatB before the child POST.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 601, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: snapshotFlags,
+        }));
+        const server = makeAgentServer();
+        let rt1;
+        server.onCommand = async () => {
+            rt1.win.lanlan_config.lanlan_name = 'CatB';
+        };
+        rt1 = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        assert.equal(server.master, true);
+        assert.equal(server.child.computer_use_enabled, false, 'child POST must not run under the new owner');
+        assert.equal(JSON.parse(storage.getItem(HOME_TUTORIAL_KEY)).masterApplied, true);
+
+        // Next page load back on CatA: master is ON (from our restore), must not be mistaken for a user change.
+        server.onCommand = null;
+        const rt2 = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        assert.equal(server.child.computer_use_enabled, true, 'child flags must be restored on the next load');
+        assert.equal(server.child.user_plugin_enabled, false);
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null, 'snapshot clears only after child restore completes');
+        assert.ok(rt2.fetchCalls.some(c => c.url === '/api/agent/flags' && c.method === 'POST'));
+    }
+
+    // Case B: master POST lands, page is closed while the child POST is still pending.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 602, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: snapshotFlags,
+        }));
+        const server = makeAgentServer();
+        server.hangChildPost = true;
+        loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        assert.equal(server.master, true);
+        assert.equal(JSON.parse(storage.getItem(HOME_TUTORIAL_KEY)).masterApplied, true);
+
+        server.hangChildPost = false;
+        loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        assert.equal(server.child.computer_use_enabled, true, 'child flags must be restored after reopening the page');
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
+
+    // Case C: user turned master OFF themselves after the interrupted restore -> respect it, do not re-enable.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 603, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: snapshotFlags, masterApplied: true,
+        }));
+        const server = makeAgentServer();
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0, 'must not re-enable a master switch the user turned off');
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
 });
