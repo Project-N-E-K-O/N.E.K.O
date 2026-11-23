@@ -937,6 +937,7 @@ class _LifecycleMixin:
         # own pulse, never for a newer user stream_text that interleaved and
         # re-pulsed under a fresher seq (Codex P2).
         _reasoning_owner_seq = self._begin_reasoning_stream()
+        self._notify_response_start()
         _completion_kind = (
             "agent_callback"
             if completion_mode != "response" and getattr(self, "on_proactive_done", None)

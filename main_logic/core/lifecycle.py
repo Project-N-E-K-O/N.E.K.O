@@ -1709,6 +1709,8 @@ class LifecycleMixin:
         session.on_response_displaced = self._close_displaced_offline_turn
         session.on_idle = self._on_offline_session_idle
         session.on_thinking_active = self._make_thinking_active_callback(session)
+        # Open the TTS socket while the model is still producing its first text.
+        session.on_response_start = self.request_tts_preconnect
         # Match both realtime construction sites: bind the handle to this client itself, rather than
         # construction-time self.session. Before promotion, a handoff candidate is neither
         # self.session nor pending_session and _sync_tools_to_active_session

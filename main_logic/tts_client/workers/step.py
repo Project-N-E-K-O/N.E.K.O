@@ -52,6 +52,11 @@ def step_realtime_tts_worker(
     )
 
 
+# Recognizes TTS_PRECONNECT_SENTINEL (see _step_protocol._start_spare_socket);
+# the free_mode compatibility branch delegates to the same protocol loop.
+step_realtime_tts_worker.supports_preconnect = True
+
+
 register_tts_worker_resolver(
     "step",
     make_native_tts_resolver(step_realtime_tts_worker, "tts_default_api_key"),
