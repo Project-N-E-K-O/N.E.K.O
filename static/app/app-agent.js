@@ -15,6 +15,8 @@
  *   window.startAgentTaskPolling
  *   window.stopAgentTaskPolling
  *   window.checkAndToggleTaskHUD
+ *   window.setFloatingAgentStatus
+ *   window.maybeShowContentFilterModal
  *   window.appAgent  (module namespace)
  */
 (function () {
@@ -248,6 +250,7 @@
         });
     }
     mod.setFloatingAgentStatus = setFloatingAgentStatus;
+    window.setFloatingAgentStatus = setFloatingAgentStatus;
 
     // ====================================================================
     // Content filter modal
@@ -291,6 +294,7 @@
             });
     }
     mod.maybeShowContentFilterModal = maybeShowContentFilterModal;
+    window.maybeShowContentFilterModal = maybeShowContentFilterModal;
 
     // ====================================================================
     // Health check

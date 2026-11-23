@@ -28,6 +28,7 @@ export default {
 
     loading: 'Загрузка...',
     refresh: 'Обновить',
+    retry: 'Повторить',
     search: 'Поиск',
     filter: 'Фильтр',
     reset: 'Сброс',
@@ -826,6 +827,22 @@ export default {
       verify: 'Верификация',
       install: 'Установка',
       analyze: 'Анализ'
+    },
+    messages: {
+      selectPluginToBuild: 'Сначала выберите плагины для сборки.',
+      bundleRequiresTwoPlugins: 'Для бандла нужно выбрать не менее двух плагинов.',
+      bundleBuildFailedWithError: 'Ошибка сборки бандла: {error}',
+      bundleBuildCompleted: 'Сборка бандла завершена.',
+      bundleBuildPartialFailed: 'Сборка бандла: ошибок {count}.',
+      buildFailedWithError: 'Ошибка сборки: {error}',
+      buildCompletedWithFailures: 'Сборка завершена: успешно {built}, с ошибками {failed}.',
+      buildCompleted: 'Сборка завершена: успешно {built}.',
+      inspectCompleted: 'Проверка содержимого пакета завершена.',
+      verifyPassed: 'Пакет прошёл верификацию.',
+      verifyFailed: 'Пакет не прошёл верификацию.',
+      selectAtLeastOnePlugin: 'Выберите хотя бы один плагин.',
+      analyzeCompleted: 'Анализ завершён.',
+      analyzeFailedWithError: 'Ошибка анализа: {error}'
     },
     summary: {
       // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
