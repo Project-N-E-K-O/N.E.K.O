@@ -39,7 +39,6 @@ _EXPECTED = {
         _PUSH: ("require", False),
         _ENV: ("require", False),
         _LISTEN: ("require", False),
-        _FS_WRITE: ("require", False),
     },
     "game_agent_minecraft": {_NET: ("require", False), _ENV: ("require", False), _PUSH: ("ask", True)},
     "jukebox_controller": {_PUSH: ("require", False)},
@@ -58,6 +57,14 @@ _EXPECTED = {
 # line is not let through, not even in the same function:
 # writes inside the plugin's data directory, and a DNS-only socket import.
 _ALLOWED_POSSIBLE = {
+    "claude_companion": {
+        _FS_WRITE: [
+            ("__init__.py", "InboxQueue._save", "open"),
+            ("__init__.py", "_migrate_legacy_inbox", "os.replace"),
+            ("__init__.py", "_migrate_legacy_inbox", "shutil.copyfile"),
+            ("__init__.py", "_migrate_legacy_inbox", "os.replace"),
+        ],
+    },
     "music_pusher": {
         _FS_WRITE: [
             ("__init__.py", "MusicPusherPlugin._copy_static_ui_assets", "shutil.copy2"),

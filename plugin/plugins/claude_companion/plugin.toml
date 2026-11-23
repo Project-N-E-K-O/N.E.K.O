@@ -30,6 +30,3 @@ reason = { zh-CN = "如果设置里没有填访问令牌，就从环境变量读
 
 [permissions.require."system.network:listen"]
 reason = { zh-CN = "在本机开一个端口，接收 Claude Code 发来的工作通知。", zh-TW = "在本機開一個連接埠，接收 Claude Code 傳來的工作通知。", en = "Open a port on this computer to receive work notifications from Claude Code.", ja = "このパソコンでポートを開き、Claude Code からの作業通知を受け取ります。", ko = "이 컴퓨터에서 포트를 열어 Claude Code가 보내는 작업 알림을 받습니다.", ru = "Открыть порт на этом компьютере, чтобы получать уведомления о работе от Claude Code.", es = "Abrir un puerto en este equipo para recibir avisos de trabajo de Claude Code.", pt = "Abrir uma porta neste computador para receber avisos de trabalho do Claude Code." }
-
-[permissions.require."system.fs:write"]
-reason = { zh-CN = "在插件安装目录里保存待发给 Claude Code 的消息（inbox.json）。", zh-TW = "在外掛安裝目錄裡保存待發給 Claude Code 的訊息（inbox.json）。", en = "Save messages waiting for Claude Code (inbox.json) in the plugin's install folder.", ja = "Claude Code に送る待機中のメッセージ（inbox.json）をプラグインのインストールフォルダーに保存します。", ko = "Claude Code에 보낼 대기 중인 메시지(inbox.json)를 플러그인 설치 폴더에 저장합니다.", ru = "Сохранять сообщения, ожидающие отправки в Claude Code (inbox.json), в папке установки плагина.", es = "Guardar los mensajes pendientes para Claude Code (inbox.json) en la carpeta de instalación del plugin.", pt = "Salvar as mensagens que aguardam o Claude Code (inbox.json) na pasta de instalação do plugin." }
