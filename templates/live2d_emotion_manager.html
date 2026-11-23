@@ -1292,46 +1292,6 @@
             });
         }
 
-        function safeDecodePercent(value) {
-            return String(value).replace(/(%[0-9a-fA-F]{2})+/g, seq => {
-                try {
-                    return decodeURIComponent(seq);
-                } catch (_) {
-                    return seq;
-                }
-            });
-        }
-
-        function isSafeRelativeModelRef(filePath) {
-            if (typeof filePath !== 'string' || !filePath) {
-                return false;
-            }
-            const decoded = safeDecodePercent(filePath);
-            const candidates = Array.from(new Set([
-                filePath,
-                decoded,
-                filePath.replace(/^ +| +$/g, ''),
-                decoded.replace(/^ +| +$/g, '')
-            ]));
-            for (const candidate of candidates) {
-                if (!candidate || /[:?#\x00-\x1f\x7f]/.test(candidate)) {
-                    return false;
-                }
-                const normalized = candidate.replace(/\\/g, '/');
-                if (normalized.startsWith('/')) {
-                    return false;
-                }
-                const parts = normalized.split('/');
-                if (parts.some(part => part === '..')) {
-                    return false;
-                }
-                if (parts.filter(part => part !== '' && part !== '.').length === 0) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
         function normalizePreservedFileList(rawFiles) {
             const list = typeof rawFiles === 'string'
                 ? [rawFiles]
@@ -1343,40 +1303,10 @@
                     return '';
                 })
                 .map(path => path.replace(/\\/g, '/').trim())
-                .filter(path => path && isSafeRelativeModelRef(path));
+                .filter(Boolean);
         }
 
-        function hasLossyExpressionRebuild(rawExpressions, groupName, files) {
-            if (!Array.isArray(rawExpressions) || rawExpressions.length === 0) {
-                return false;
-            }
-            const prefix = `${groupName}_`;
-            const expectedFiles = new Set(files);
-            return rawExpressions.some(item => {
-                if (!item || typeof item !== 'object') {
-                    return false;
-                }
-                const itemName = typeof item.Name === 'string' ? item.Name : '';
-                if (!itemName.startsWith(prefix)) {
-                    return false;
-                }
-                const extraKeys = Object.keys(item).filter(key => key !== 'Name' && key !== 'File');
-                if (extraKeys.length > 0) {
-                    return true;
-                }
-                const normalizedFile = typeof item.File === 'string'
-                    ? item.File.replace(/\\/g, '/').trim()
-                    : '';
-                if (!normalizedFile || !expectedFiles.has(normalizedFile)) {
-                    return true;
-                }
-                const base = normalizedFile.split('/').pop() || '';
-                const baseNoExt = base.replace(/\.exp3\.json$/, '');
-                return itemName !== `${groupName}_${baseNoExt}`;
-            });
-        }
-
-        async function fetchPreservedModelConfig(modelName, modelInfo, signal) {
+        async function fetchPreservedModelConfig(modelName, signal) {
             const mappingResp = await fetch(
                 `/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`,
                 signal ? { signal } : undefined
@@ -1389,26 +1319,7 @@
                 throw new Error((mappingData && mappingData.error) || t('common.unknownError'));
             }
 
-            const modelConfigUrl = (modelInfo && modelInfo.source !== 'user_mods' && modelInfo.item_id)
-                ? `/api/live2d/model_config_by_id/${modelInfo.item_id}`
-                : `/api/live2d/model_config/${encodeURIComponent(modelName)}`;
-            const cfgResp = await fetch(modelConfigUrl, signal ? { signal } : undefined);
-            if (!cfgResp.ok) {
-                throw new Error(`HTTP ${cfgResp.status}: ${cfgResp.statusText}`);
-            }
-            const cfgData = await cfgResp.json();
-            if (!cfgData || !cfgData.success || !cfgData.config || typeof cfgData.config !== 'object') {
-                throw new Error((cfgData && cfgData.error) || t('common.unknownError'));
-            }
-
             const existingConfig = mappingData.config;
-            const rawModelConfig = cfgData.config;
-            const fileRefs = rawModelConfig.FileReferences && typeof rawModelConfig.FileReferences === 'object'
-                ? rawModelConfig.FileReferences
-                : {};
-            const rawEmotionMapping = rawModelConfig.EmotionMapping && typeof rawModelConfig.EmotionMapping === 'object'
-                ? rawModelConfig.EmotionMapping
-                : null;
             const preservedMotions = {};
             const preservedExpressions = {};
 
@@ -1421,146 +1332,22 @@
                 });
             }
 
-            const rawMotions = fileRefs.Motions;
-            if (rawMotions && typeof rawMotions === 'object') {
-                Object.entries(rawMotions).forEach(([groupName, items]) => {
-                    if (emotions.includes(groupName) || groupName === '常驻') {
-                        return;
-                    }
-                    const sanitizedFiles = normalizePreservedFileList(items);
-                    if (!Object.prototype.hasOwnProperty.call(preservedMotions, groupName)
-                        || preservedMotions[groupName].length === 0) {
-                        if (sanitizedFiles.length > 0 || (Array.isArray(items) && items.length === 0)) {
-                            preservedMotions[groupName] = sanitizedFiles;
-                        }
-                    }
-                });
-            }
-
-            const rawExpressions = Array.isArray(fileRefs.Expressions) ? fileRefs.Expressions : [];
-            const explicitStoredExpressions = rawEmotionMapping && rawEmotionMapping.expressions && typeof rawEmotionMapping.expressions === 'object'
-                ? rawEmotionMapping.expressions
-                : null;
-            const lossyExpressionGroups = [];
-            if (explicitStoredExpressions) {
-                Object.entries(explicitStoredExpressions).forEach(([groupName, rawGroupFiles]) => {
+            if (existingConfig.expressions && typeof existingConfig.expressions === 'object') {
+                Object.entries(existingConfig.expressions).forEach(([groupName, files]) => {
                     if (emotions.includes(groupName)) {
                         return;
                     }
-                    const sanitizedFromMapping = existingConfig.expressions && typeof existingConfig.expressions === 'object'
-                        && Object.prototype.hasOwnProperty.call(existingConfig.expressions, groupName)
-                        ? normalizePreservedFileList(existingConfig.expressions[groupName])
-                        : normalizePreservedFileList(rawGroupFiles);
-                    if (sanitizedFromMapping.length === 0) {
-                        return;
-                    }
-                    preservedExpressions[groupName] = sanitizedFromMapping;
-                    if (hasLossyExpressionRebuild(rawExpressions, groupName, sanitizedFromMapping)) {
-                        lossyExpressionGroups.push(groupName);
+                    const sanitizedFiles = normalizePreservedFileList(files);
+                    if (sanitizedFiles.length > 0) {
+                        preservedExpressions[groupName] = sanitizedFiles;
                     }
                 });
             }
 
             return {
                 motions: preservedMotions,
-                expressions: preservedExpressions,
-                modelConfigUrl,
-                rawExpressions,
-                lossyExpressionGroups
+                expressions: preservedExpressions
             };
-        }
-
-        function mergeRestoredLossyExpressions(postSaveExpressions, originalRawExpressions, lossyGroupNames) {
-            const lossySet = new Set(Array.isArray(lossyGroupNames) ? lossyGroupNames : []);
-            const merged = [];
-
-            (Array.isArray(postSaveExpressions) ? postSaveExpressions : []).forEach(item => {
-                if (!item || typeof item !== 'object') {
-                    return;
-                }
-                const itemName = typeof item.Name === 'string' ? item.Name : '';
-                const underscoreIdx = itemName.indexOf('_');
-                const prefix = underscoreIdx >= 0 ? itemName.slice(0, underscoreIdx) : '';
-                if (!prefix || !lossySet.has(prefix)) {
-                    merged.push(Object.assign({}, item));
-                }
-            });
-
-            lossySet.forEach(groupName => {
-                const prefix = `${groupName}_`;
-                const coveredFiles = new Set();
-
-                (Array.isArray(originalRawExpressions) ? originalRawExpressions : []).forEach(item => {
-                    if (!item || typeof item !== 'object') {
-                        return;
-                    }
-                    const itemName = typeof item.Name === 'string' ? item.Name : '';
-                    if (!itemName.startsWith(prefix)) {
-                        return;
-                    }
-                    const rawFile = typeof item.File === 'string' ? item.File.replace(/\\/g, '/').trim() : '';
-                    if (!rawFile || !isSafeRelativeModelRef(rawFile)) {
-                        return;
-                    }
-                    merged.push(Object.assign({}, item));
-                    coveredFiles.add(rawFile);
-                });
-
-                (Array.isArray(postSaveExpressions) ? postSaveExpressions : []).forEach(item => {
-                    if (!item || typeof item !== 'object') {
-                        return;
-                    }
-                    const itemName = typeof item.Name === 'string' ? item.Name : '';
-                    if (!itemName.startsWith(prefix)) {
-                        return;
-                    }
-                    const normFile = typeof item.File === 'string' ? item.File.replace(/\\/g, '/').trim() : '';
-                    if (normFile && !coveredFiles.has(normFile)) {
-                        merged.push(Object.assign({}, item));
-                        coveredFiles.add(normFile);
-                    }
-                });
-            });
-
-            return merged;
-        }
-
-        async function restoreLossyExpressionMetadata(preservedConfig) {
-            const cfgResp = await fetch(preservedConfig.modelConfigUrl);
-            if (!cfgResp.ok) {
-                throw new Error(`HTTP ${cfgResp.status}: ${cfgResp.statusText}`);
-            }
-            const cfgData = await cfgResp.json();
-            if (!cfgData || !cfgData.success || !cfgData.config || typeof cfgData.config !== 'object') {
-                throw new Error((cfgData && cfgData.error) || t('common.unknownError'));
-            }
-            const postSaveExpressions = Array.isArray(cfgData.config?.FileReferences?.Expressions)
-                ? cfgData.config.FileReferences.Expressions
-                : [];
-            const mergedExpressions = mergeRestoredLossyExpressions(
-                postSaveExpressions,
-                preservedConfig.rawExpressions,
-                preservedConfig.lossyExpressionGroups
-            );
-
-            const restoreResp = await fetch(preservedConfig.modelConfigUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    FileReferences: {
-                        Expressions: mergedExpressions
-                    }
-                })
-            });
-            if (!restoreResp.ok) {
-                throw new Error(`HTTP ${restoreResp.status}: ${restoreResp.statusText}`);
-            }
-            const restoreData = await restoreResp.json();
-            if (!restoreData || !restoreData.success) {
-                throw new Error((restoreData && restoreData.error) || t('common.unknownError'));
-            }
         }
 
         // 加载情感映射配置
@@ -1696,7 +1483,7 @@
 
             saveBtn.disabled = true;
             try {
-                const preservedConfig = await fetchPreservedModelConfig(savingModelInfo.name, savingModelInfo);
+                const preservedConfig = await fetchPreservedModelConfig(savingModelInfo.name);
                 if (savingSelectionId !== currentSelectionId) {
                     return;
                 }
@@ -1726,12 +1513,6 @@
                 }
 
                 if (data.success) {
-                    if (Array.isArray(preservedConfig.lossyExpressionGroups) && preservedConfig.lossyExpressionGroups.length > 0) {
-                        await restoreLossyExpressionMetadata(preservedConfig);
-                    }
-                    if (savingSelectionId !== currentSelectionId) {
-                        return;
-                    }
                     showStatus(t('emotionManager.configSaveSuccess'), 'success');
                 } else {
                     showStatus(t('emotionManager.saveFailed') + ': ' + (data.error || t('common.unknownError')), 'error');

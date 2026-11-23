@@ -245,7 +245,12 @@ async function touchPage_open(){
 
         const modelName = live2dManager.modelName || ''
         if (!hasLoadedTouchSetForModel(live2dManager, modelName)) {
-            const loaded = await InitializationTouchSet(undefined, { allowLive2DReload: true })
+            const loaded = await InitializationTouchSet(undefined, {
+                allowLive2DReload: true,
+                expectedManager: live2dManager,
+                expectedModelName: modelName,
+                expectedModel: model,
+            })
             if (window.live2dManager !== live2dManager
                 || (live2dManager.modelName || '') !== modelName
                 || live2dManager.getCurrentModel() !== model
@@ -367,6 +372,18 @@ async function InitializationTouchSet(characterJson, options = {}) {
     // 递增会丢弃新调用的在途结果）。
     if (initializationGeneration !== touchSetInitializationGeneration) {
         console.log('[TouchSet] 有更新的触摸配置刷新在途，丢弃本次过期结果')
+        return 'superseded';
+    }
+    if (options.expectedManager && window.live2dManager !== options.expectedManager) {
+        console.log('[TouchSet] Live2DManager 实例已变更，丢弃本次过期结果')
+        return 'superseded';
+    }
+    if (options.expectedModelName !== undefined && modelName !== options.expectedModelName) {
+        console.log('[TouchSet] 当前模型已切换，丢弃本次过期触摸配置结果')
+        return 'superseded';
+    }
+    if (options.expectedModel && model !== options.expectedModel) {
+        console.log('[TouchSet] 当前模型实例已切换，丢弃本次过期触摸配置结果')
         return 'superseded';
     }
 

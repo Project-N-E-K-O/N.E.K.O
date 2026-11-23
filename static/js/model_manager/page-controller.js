@@ -2344,6 +2344,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (typeof window.vrmManager.dispose === 'function') {
                         await window.vrmManager.dispose();
                     }
+                    if (switchGeneration !== modelDisplaySwitchGeneration || currentModelType !== 'live2d') {
+                        return false;
+                    }
 
                     // 清理Three.js渲染器（但不移除canvas，因为后续可能还要用）
                     if (window.vrmManager.renderer) {
@@ -5064,6 +5067,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // MMD 模型选择事件
+    let mmdModelLoadGeneration = 0;
     if (mmdModelSelect) {
         mmdModelSelect.addEventListener('change', async (e) => {
             const modelPath = e.target.value;
@@ -5072,11 +5076,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!isSuppressedModelManagerChangeEvent(e)) {
                 userModelSelectionGeneration += 1;
             }
+            const mmdLoadGen = ++mmdModelLoadGeneration;
             const mmdLoadSwitchGen = modelDisplaySwitchGeneration;
+            const mmdLoadSelectionGen = userModelSelectionGeneration;
             const isMmdLoadSuperseded = (requireManager) => (
                 currentModelType !== 'live3d'
                 || currentLive3dSubType !== 'mmd'
+                || mmdLoadGen !== mmdModelLoadGeneration
                 || mmdLoadSwitchGen !== modelDisplaySwitchGeneration
+                || mmdLoadSelectionGen !== userModelSelectionGeneration
                 || (requireManager && !window.mmdManager)
             );
             const mmdCanvas = document.getElementById('mmd-canvas');
@@ -9195,24 +9203,33 @@ document.addEventListener('DOMContentLoaded', async () => {
             const selectionGenAtSnapshot = getSelectionGen();
             const prevVrmValue = vrmModelSelect ? vrmModelSelect.value : '';
             const prevMmdValue = mmdModelSelect ? mmdModelSelect.value : '';
-            const restoreSelectSelection = (selectEl, prevValue, allowMmdFallback, selectionChanged) => {
+            const restoreSelectSelection = (selectEl, prevValue, modelKind, selectionChanged) => {
                 if (!selectEl || !selectEl.options) return false;
                 const options = Array.from(selectEl.options);
                 let matched = (!selectionChanged && prevValue)
                     ? (options.find(opt => opt.value === prevValue) || null)
                     : null;
-                const activeLoadUrl = (typeof vrmAdmittedSelectionLoad !== 'undefined' && vrmAdmittedSelectionLoad?.modelUrl)
-                    || (typeof vrmSelectionLoad !== 'undefined' && vrmSelectionLoad?.modelUrl)
-                    || '';
-                const infoCandidates = (currentModelInfo && (currentModelInfo.type === 'vrm' || (allowMmdFallback && currentModelInfo.type === 'mmd')))
+                const activeLoadUrl = modelKind === 'vrm'
+                    ? ((typeof vrmSelectionLoad !== 'undefined' && vrmSelectionLoad?.modelUrl)
+                        || (typeof vrmAdmittedSelectionLoad !== 'undefined' && vrmAdmittedSelectionLoad?.modelUrl)
+                        || '')
+                    : '';
+                const infoCandidates = (currentModelInfo && (
+                    modelKind === 'vrm'
+                        ? (currentModelInfo.type === 'vrm' || currentModelInfo.type === 'mmd')
+                        : currentModelInfo.type === 'mmd'
+                ))
                     ? [currentModelInfo.url, currentModelInfo.path]
                     : [];
                 const activeCandidates = [activeLoadUrl, ...infoCandidates].filter(Boolean);
                 if (!matched && activeCandidates.length > 0) {
-                    matched = options.find(opt => {
-                        const dataPath = typeof opt.getAttribute === 'function' ? opt.getAttribute('data-path') : '';
-                        return activeCandidates.includes(opt.value) || (dataPath && activeCandidates.includes(dataPath));
-                    }) || null;
+                    for (const candidate of activeCandidates) {
+                        matched = options.find(opt => {
+                            const dataPath = typeof opt.getAttribute === 'function' ? opt.getAttribute('data-path') : '';
+                            return opt.value === candidate || (dataPath && dataPath === candidate);
+                        }) || null;
+                        if (matched) break;
+                    }
                 }
                 if (matched) {
                     selectEl.value = matched.value;
@@ -9225,16 +9242,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                     await loadLive3DModels();
                     const vrmSelectionChanged = getSelectionGen() !== selectionGenAtSnapshot
                         || (typeof vrmSelectionLoad !== 'undefined' && !!(vrmSelectionLoad?.modelUrl && vrmSelectionLoad.modelUrl !== prevVrmValue));
-                    if (restoreSelectSelection(vrmModelSelect, prevVrmValue, true, vrmSelectionChanged)
+                    if (restoreSelectSelection(vrmModelSelect, prevVrmValue, 'vrm', vrmSelectionChanged)
                         && typeof updateVRMModelSelectButtonText === 'function') {
                         updateVRMModelSelectButtonText();
                     }
                 }
                 if (typeof loadMMDModels === 'function') {
                     await loadMMDModels();
-                    const mmdSelectionChanged = getSelectionGen() !== selectionGenAtSnapshot
-                        || (typeof vrmSelectionLoad !== 'undefined' && !!(vrmSelectionLoad?.modelUrl && vrmSelectionLoad.modelUrl !== prevMmdValue));
-                    if (restoreSelectSelection(mmdModelSelect, prevMmdValue, true, mmdSelectionChanged)
+                    const mmdSelectionChanged = getSelectionGen() !== selectionGenAtSnapshot;
+                    if (restoreSelectSelection(mmdModelSelect, prevMmdValue, 'mmd', mmdSelectionChanged)
                         && typeof updateMMDModelSelectButtonText === 'function') {
                         updateMMDModelSelectButtonText();
                     }

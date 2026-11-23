@@ -297,9 +297,10 @@ test('F0507: late loadEmotionMapping response from previous selection cannot clo
     );
 });
 
-test('F0063: saveEmotionMapping preserves non-UI FileReferences.Motions and persistent expressions, and aborts on pre-save GET failure', async () => {
+test('F0063: saveEmotionMapping uses single atomic POST preserving non-UI motions/expressions without touching /model_config', async () => {
     const postBodies = [];
-    let failPreSaveMappingGet = false;
+    const modelConfigCalls = [];
+    let failPreSaveMappingMode = null;
 
     const { w, doc } = createEmotionManagerDom(async (url, init = {}) => {
         const u = String(url);
@@ -321,13 +322,23 @@ test('F0063: saveEmotionMapping preserves non-UI FileReferences.Motions and pers
                 }),
             };
         }
+        if (u.startsWith('/api/live2d/model_config')) {
+            modelConfigCalls.push(u);
+            throw new Error(`Unexpected /model_config call: ${u}`);
+        }
         if (u === '/api/live2d/emotion_mapping/ModelRich') {
             if ((init.method || 'GET') === 'POST') {
                 postBodies.push(JSON.parse(init.body));
                 return { ok: true, status: 200, json: async () => ({ success: true }) };
             }
-            if (failPreSaveMappingGet) {
+            if (failPreSaveMappingMode === 'http500') {
                 return { ok: false, status: 500, statusText: 'Server Error', json: async () => ({}) };
+            }
+            if (failPreSaveMappingMode === 'biz_fail') {
+                return { ok: true, status: 200, json: async () => ({ success: false, error: 'boom' }) };
+            }
+            if (failPreSaveMappingMode === 'network') {
+                throw new Error('ECONNRESET');
             }
             return {
                 ok: true,
@@ -336,39 +347,15 @@ test('F0063: saveEmotionMapping preserves non-UI FileReferences.Motions and pers
                     success: true,
                     config: {
                         motions: {
+                            TapBody: ['motions/tap.motion3.json'],
+                            idle: ['motions/idle_lower.motion3.json'],
+                            empty_group: [],
                             happy: ['motions/happy1.motion3.json'],
                         },
                         expressions: {
-                            '常驻': ['expressions/perm.exp3.json'],
-                        },
-                    },
-                }),
-            };
-        }
-        if (u === '/api/live2d/model_config/ModelRich') {
-            return {
-                ok: true,
-                status: 200,
-                json: async () => ({
-                    success: true,
-                    config: {
-                        EmotionMapping: {
-                            motions: {
-                                happy: ['motions/happy1.motion3.json'],
-                            },
-                            expressions: {
-                                '常驻': ['expressions/perm.exp3.json'],
-                            },
-                        },
-                        FileReferences: {
-                            Motions: {
-                                TapBody: [{ File: 'motions/tap.motion3.json' }],
-                                idle: [{ File: 'motions/idle_lower.motion3.json' }],
-                                happy: [{ File: 'motions/happy1.motion3.json' }],
-                            },
-                            Expressions: [
-                                { Name: '常驻_perm', File: 'expressions/perm.exp3.json' },
-                            ],
+                            '常驻': ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
+                            custom_group: ['exp/cg.exp3.json'],
+                            legacy_empty: [],
                         },
                     },
                 }),
@@ -381,268 +368,131 @@ test('F0063: saveEmotionMapping preserves non-UI FileReferences.Motions and pers
     doc.querySelector('.singleselect-item').click();
     await flushMicrotasks(30);
 
-    // Save with happy checked -> TapBody, idle, and '常驻' must all be preserved
+    // Save with happy checked -> TapBody, idle, empty_group, multi-file '常驻', custom_group preserved; legacy_empty skipped; 0 /model_config calls
     await w.saveEmotionMapping();
     assert.equal(postBodies.length, 1);
+    assert.equal(modelConfigCalls.length, 0, 'Option A must not call /api/live2d/model_config*');
     assert.deepEqual(postBodies[0].motions, {
         TapBody: ['motions/tap.motion3.json'],
         idle: ['motions/idle_lower.motion3.json'],
+        empty_group: [],
         happy: ['motions/happy1.motion3.json'],
     });
     assert.deepEqual(postBodies[0].expressions, {
-        '常驻': ['expressions/perm.exp3.json'],
+        '常驻': ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
+        custom_group: ['exp/cg.exp3.json'],
     });
 
-    // Reset + Save -> clears UI emotion 'happy', still preserves TapBody, idle, and '常驻'
+    // Reset + Save -> clears UI emotion 'happy', still preserves non-UI motions & expressions
     doc.getElementById('reset-btn').click();
     await w.saveEmotionMapping();
     assert.equal(postBodies.length, 2);
     assert.deepEqual(postBodies[1].motions, {
         TapBody: ['motions/tap.motion3.json'],
         idle: ['motions/idle_lower.motion3.json'],
+        empty_group: [],
     });
     assert.deepEqual(postBodies[1].expressions, {
-        '常驻': ['expressions/perm.exp3.json'],
+        '常驻': ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
+        custom_group: ['exp/cg.exp3.json'],
     });
 
-    // Pre-save GET failure aborts POST rather than truncating unknown groups
-    failPreSaveMappingGet = true;
-    await w.saveEmotionMapping();
-    assert.equal(postBodies.length, 2, 'must abort POST when pre-save GET fails');
+    // Pre-save GET failure (HTTP/business/network) aborts POST and re-enables save button
+    for (const mode of ['http500', 'biz_fail', 'network']) {
+        failPreSaveMappingMode = mode;
+        await w.saveEmotionMapping();
+        assert.equal(postBodies.length, 2, `must abort POST when pre-save GET fails (${mode})`);
+        assert.equal(doc.getElementById('save-btn').disabled, false, 'save button must re-enable after aborted save');
+        assert.equal(doc.querySelector('.status-message').classList.contains('status-error'), true);
+    }
 });
 
-test('F0063: saveEmotionMapping aborts POST when /model_config supplemental read fails (HTTP/business/network)', async () => {
-    const postBodies = [];
-    let cfgFailureMode = 'http500';
+test('F0063 + F0507: model switch mid-save aborts cleanly without emitting stale POST or status', async () => {
+    const preSaveGetA = deferred();
+    const postCalls = [];
 
     const { w, doc } = createEmotionManagerDom(async (url, init = {}) => {
         const u = String(url);
         if (u === '/api/live2d/models') {
-            return { ok: true, status: 200, json: async () => ([{ name: 'ModelCfgFail', source: 'user_mods' }]) };
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ([
+                    { name: 'ModelA', source: 'user_mods' },
+                    { name: 'ModelB', source: 'user_mods' },
+                ]),
+            };
         }
-        if (u === '/api/live2d/model_files/ModelCfgFail') {
-            return { ok: true, status: 200, json: async () => ({ success: true, motion_files: ['motions/happy1.motion3.json'], expression_files: [] }) };
+        if (u === '/api/live2d/model_files/ModelA') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    success: true,
+                    motion_files: ['motions/a.motion3.json'],
+                    expression_files: [],
+                }),
+            };
         }
-        if (u === '/api/live2d/emotion_mapping/ModelCfgFail') {
+        if (u === '/api/live2d/model_files/ModelB') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    success: true,
+                    motion_files: ['motions/b.motion3.json'],
+                    expression_files: [],
+                }),
+            };
+        }
+        if (u === '/api/live2d/emotion_mapping/ModelA') {
             if ((init.method || 'GET') === 'POST') {
-                postBodies.push(JSON.parse(init.body));
+                postCalls.push({ url: u, body: JSON.parse(init.body) });
                 return { ok: true, status: 200, json: async () => ({ success: true }) };
+            }
+            if (!preSaveGetA.initialDone) {
+                preSaveGetA.initialDone = true;
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({ success: true, config: { motions: { happy: ['motions/a.motion3.json'] }, expressions: {} } }),
+                };
+            }
+            return await preSaveGetA.promise;
+        }
+        if (u === '/api/live2d/emotion_mapping/ModelB') {
+            if ((init.method || 'GET') === 'POST') {
+                postCalls.push({ url: u, body: JSON.parse(init.body) });
             }
             return {
                 ok: true,
                 status: 200,
-                json: async () => ({ success: true, config: { motions: { happy: ['motions/happy1.motion3.json'] }, expressions: {} } }),
+                json: async () => ({ success: true, config: { motions: { happy: ['motions/b.motion3.json'] }, expressions: {} } }),
             };
         }
-        if (u === '/api/live2d/model_config/ModelCfgFail') {
-            if (cfgFailureMode === 'http500') {
-                return { ok: false, status: 500, statusText: 'Server Error', json: async () => ({}) };
-            }
-            if (cfgFailureMode === 'biz_fail') {
-                return { ok: true, status: 200, json: async () => ({ success: false, error: 'boom' }) };
-            }
-            if (cfgFailureMode === 'network') {
-                throw new Error('ECONNRESET');
-            }
-        }
         throw new Error(`Unexpected fetch URL: ${u}`);
     });
 
     await flushMicrotasks();
-    doc.querySelector('.singleselect-item').click();
+    const items = Array.from(doc.querySelectorAll('.singleselect-item'));
+    items[0].click();
     await flushMicrotasks(30);
 
-    for (const mode of ['http500', 'biz_fail', 'network']) {
-        cfgFailureMode = mode;
-        await w.saveEmotionMapping();
-        assert.equal(postBodies.length, 0, `must abort POST on /model_config ${mode}`);
-        assert.equal(doc.getElementById('save-btn').disabled, false, 'save button must be re-enabled after aborted save');
-    }
-});
+    const savePromise = w.saveEmotionMapping();
+    await flushMicrotasks(5);
 
-test('F0063: preserves custom FileReferences.Expressions losslessly, keeps multi-file 常驻 group in EmotionMapping, strips unsafe refs, and surfaces follow-up /model_config failures', async () => {
-    const postBodies = [];
-    const modelConfigPosts = [];
-    let modelConfigOverride = null;
-    let mappingOverride = null;
-    let failFollowUpModelConfigPost = false;
-
-    function clone(obj) {
-        return JSON.parse(JSON.stringify(obj));
-    }
-
-    function simulateBackendEmotionMappingPost(data) {
-        const expressionsInput = data.expressions || {};
-        const emotionPrefixes = new Set(Object.keys(expressionsInput));
-        const existingExpressions = modelConfigOverride?.FileReferences?.Expressions || [];
-        const preservedExpressions = existingExpressions.filter(item => {
-            const name = (item && typeof item.Name === 'string') ? item.Name : '';
-            const prefix = name.includes('_') ? name.split('_', 1)[0] : '';
-            return !prefix || !emotionPrefixes.has(prefix);
-        });
-        const rebuiltExpressions = [];
-        for (const [emotion, files] of Object.entries(expressionsInput)) {
-            for (const filePath of files || []) {
-                const normalized = String(filePath).replace(/\\/g, '/');
-                const baseNoExt = normalized.split('/').pop().replace(/\.exp3\.json$/, '');
-                rebuiltExpressions.push({ Name: `${emotion}_${baseNoExt}`, File: normalized });
-            }
-        }
-        modelConfigOverride.EmotionMapping = clone(data);
-        modelConfigOverride.FileReferences.Expressions = preservedExpressions.concat(rebuiltExpressions);
-    }
-
-    const { w, doc } = createEmotionManagerDom(async (url, init = {}) => {
-        const u = String(url);
-        if (u === '/api/live2d/models') {
-            return { ok: true, status: 200, json: async () => ([{ name: 'ModelEdge', source: 'user_mods' }]) };
-        }
-        if (u === '/api/live2d/model_files/ModelEdge') {
-            return { ok: true, status: 200, json: async () => ({ success: true, motion_files: ['motions/happy1.motion3.json'], expression_files: ['expressions/happy.exp3.json'] }) };
-        }
-        if (u === '/api/live2d/emotion_mapping/ModelEdge') {
-            if ((init.method || 'GET') === 'POST') {
-                const body = JSON.parse(init.body);
-                postBodies.push(body);
-                simulateBackendEmotionMappingPost(body);
-                return { ok: true, status: 200, json: async () => ({ success: true }) };
-            }
-            return { ok: true, status: 200, json: async () => ({ success: true, config: clone(mappingOverride) }) };
-        }
-        if (u === '/api/live2d/model_config/ModelEdge') {
-            if ((init.method || 'GET') === 'POST') {
-                const body = JSON.parse(init.body);
-                modelConfigPosts.push(body);
-                if (failFollowUpModelConfigPost) {
-                    return { ok: false, status: 500, statusText: 'Server Error', json: async () => ({ success: false, error: 'restore failed' }) };
-                }
-                if (body.FileReferences && Array.isArray(body.FileReferences.Expressions)) {
-                    modelConfigOverride.FileReferences.Expressions = clone(body.FileReferences.Expressions);
-                }
-                return { ok: true, status: 200, json: async () => ({ success: true }) };
-            }
-            return { ok: true, status: 200, json: async () => ({ success: true, config: clone(modelConfigOverride) }) };
-        }
-        throw new Error(`Unexpected fetch URL: ${u}`);
-    });
-
-    // Case A: EmotionMapping absent -> derived 'custom' from FileReferences.Expressions must NOT be submitted to avoid stripping FadeInTime/Name
-    mappingOverride = {
-        motions: { happy: ['motions/happy1.motion3.json'] },
-        expressions: { custom: ['expressions/face.exp3.json'] },
-    };
-    modelConfigOverride = {
-        FileReferences: {
-            Motions: {
-                TapBody: [
-                    { File: '../shared/tap.motion3.json' },
-                    { File: 'http://evil/x.motion3.json' },
-                    { File: '%2e%2e/escape.motion3.json' },
-                    { File: 'motions/tap_ok.motion3.json' },
-                ],
-                happy: [{ File: 'motions/happy1.motion3.json' }],
-            },
-            Expressions: [
-                { Name: 'custom_keep', File: 'expressions/face.exp3.json', FadeInTime: 0.8 },
-            ],
-        },
-    };
-
-    await flushMicrotasks();
-    doc.querySelector('.singleselect-item').click();
+    // Switch to ModelB while pre-save GET for ModelA is in flight
+    items[1].click();
     await flushMicrotasks(30);
 
-    await w.saveEmotionMapping();
-    assert.equal(postBodies.length, 1);
-    assert.equal(modelConfigPosts.length, 0, 'no lossy groups when EmotionMapping is absent');
-    assert.deepEqual(postBodies[0].motions, {
-        TapBody: ['motions/tap_ok.motion3.json'],
-        happy: ['motions/happy1.motion3.json'],
+    preSaveGetA.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, config: { motions: { happy: ['motions/a.motion3.json'] }, expressions: {} } }),
     });
-    assert.deepEqual(postBodies[0].expressions, {}, 'derived custom expression group must not be rebuilt through POST');
+    await savePromise;
+    await flushMicrotasks(10);
 
-    // Case B (Greptile P1): multi-file '常驻' group (2 files, only 1 in FileReferences with FadeInTime + 1 unsafe ref),
-    // custom alias with FadeInTime, empty legacy group legacy_empty:[], and UI happy expression checked.
-    const happyExprCheckbox = doc.querySelector('.emotion-expression-select[data-emotion="happy"] input');
-    assert.ok(happyExprCheckbox);
-    happyExprCheckbox.checked = true;
-
-    mappingOverride = {
-        motions: { happy: ['motions/happy1.motion3.json'] },
-        expressions: {
-            '常驻': ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
-            custom: ['exp/custom_a.exp3.json'],
-            legacy_empty: [],
-        },
-    };
-    modelConfigOverride = {
-        EmotionMapping: clone(mappingOverride),
-        FileReferences: {
-            Motions: {
-                happy: [{ File: 'motions/happy1.motion3.json' }],
-            },
-            Expressions: [
-                { Name: '常驻_blush', File: 'exp/blush.exp3.json', FadeInTime: 0.5 },
-                { Name: '常驻_evil', File: '../evil.exp3.json', FadeInTime: 0.9 },
-                { Name: 'custom_alias', File: 'exp/custom_a.exp3.json', FadeInTime: 0.25 },
-                { Name: 'legacy_empty_keep', File: 'exp/keep.exp3.json', FadeInTime: 0.3 },
-            ],
-        },
-    };
-
-    await w.saveEmotionMapping();
-    assert.equal(postBodies.length, 2);
-    assert.deepEqual(
-        postBodies[1].expressions,
-        {
-            '常驻': ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
-            custom: ['exp/custom_a.exp3.json'],
-            happy: ['expressions/happy.exp3.json'],
-        },
-        'POST /emotion_mapping must preserve multi-file 常驻 and custom groups in EmotionMapping while skipping empty legacy_empty:[]'
-    );
-
-    assert.equal(modelConfigPosts.length, 1, 'must send follow-up POST /model_config to restore lossy expression metadata');
-    assert.deepEqual(
-        modelConfigOverride.EmotionMapping.expressions['常驻'],
-        ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
-        'stored EmotionMapping must retain BOTH 常驻 files'
-    );
-    assert.deepEqual(
-        modelConfigOverride.FileReferences.Expressions,
-        [
-            { Name: 'legacy_empty_keep', File: 'exp/keep.exp3.json', FadeInTime: 0.3 },
-            { Name: 'happy_happy', File: 'expressions/happy.exp3.json' },
-            { Name: '常驻_blush', File: 'exp/blush.exp3.json', FadeInTime: 0.5 },
-            { Name: '常驻_glasses', File: 'exp/glasses.exp3.json' },
-            { Name: 'custom_alias', File: 'exp/custom_a.exp3.json', FadeInTime: 0.25 },
-        ],
-        'merged FileReferences.Expressions must preserve FadeInTime/custom Name/empty-legacy/UI expressions/2nd 常驻 file and strip unsafe ../evil.exp3.json'
-    );
-    assert.equal(
-        doc.querySelector('.status-message').classList.contains('status-success'),
-        true,
-        'status must report success after follow-up metadata restore'
-    );
-
-    // Case C: follow-up POST /model_config fails (HTTP 500) -> saveEmotionMapping must surface error status, NOT success
-    failFollowUpModelConfigPost = true;
-    modelConfigOverride = {
-        EmotionMapping: clone(mappingOverride),
-        FileReferences: {
-            Motions: {
-                happy: [{ File: 'motions/happy1.motion3.json' }],
-            },
-            Expressions: [
-                { Name: '常驻_blush', File: 'exp/blush.exp3.json', FadeInTime: 0.5 },
-            ],
-        },
-    };
-    await w.saveEmotionMapping();
-    assert.equal(modelConfigPosts.length, 2);
-    assert.equal(
-        doc.querySelector('.status-message').classList.contains('status-error'),
-        true,
-        'failed follow-up POST /model_config must surface error status'
-    );
+    assert.equal(postCalls.length, 0, 'model switch during pre-save GET must abort stale POST');
+    assert.equal(doc.getElementById('save-btn').disabled, false, 'ModelB save button must remain enabled');
 });

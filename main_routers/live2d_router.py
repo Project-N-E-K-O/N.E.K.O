@@ -34,6 +34,7 @@ import os
 import json
 import pathlib
 import hashlib
+from collections import deque
 from copy import deepcopy
 from pathlib import Path
 from urllib.parse import unquote
@@ -845,6 +846,30 @@ def get_emotion_mapping(model_name: str):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+def _normalize_posix_model_ref(file_path: str) -> str:
+    """Normalize a relative Live2D model asset path to POSIX forward slashes."""
+    return str(pathlib.PurePosixPath(file_path.replace("\\", "/")))
+
+
+def _has_nonempty_mapping_files(value: object) -> bool:
+    """Return True when an emotion mapping group contains at least one file entry."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return any(isinstance(item, str) and bool(item.strip()) for item in value)
+    return False
+
+
+def _match_managed_expression_group(name: str, managed_prefixes: list[str]) -> str | None:
+    """Match an expression Name against managed group prefixes sorted longest-first."""
+    if not name:
+        return None
+    for group in managed_prefixes:
+        if name.startswith(f"{group}_"):
+            return group
+    return None
+
+
 @router.post('/emotion_mapping/{model_name}')
 async def update_emotion_mapping(model_name: str, request: Request):
     """
@@ -878,59 +903,122 @@ async def update_emotion_mapping(model_name: str, request: Request):
             logger.info("拒绝无效的情绪映射引用: %s", invalid_ref)
             return JSONResponse(status_code=400, content={"success": False, "error": "文件引用无效或超出模型目录"})
 
-        # Lock entire read/modify/write as update_model_config. Cubism transformation below is pure CPU
-        # with no await; enclosing it changes no logic (git diff -w shows indentation-only changes).
+        # Lock entire read/modify/write as update_model_config while atomically
+        # preserving existing Cubism entry metadata (FadeInTime, FadeOutTime, Sound, custom Name)
+        # and unmanaged groups.
         async with _model_config_write_lock(model_json_path):
             config_data = await read_json_async(model_json_path)
+
+            previous_emotion_mapping = config_data.get('EmotionMapping') if isinstance(config_data, dict) else None
+            previous_had_emotion_mapping = isinstance(previous_emotion_mapping, dict) and bool(previous_emotion_mapping)
+            prev_motions_map = (
+                previous_emotion_mapping.get('motions')
+                if previous_had_emotion_mapping and isinstance(previous_emotion_mapping.get('motions'), dict)
+                else {}
+            )
+            prev_expressions_map = (
+                previous_emotion_mapping.get('expressions')
+                if previous_had_emotion_mapping and isinstance(previous_emotion_mapping.get('expressions'), dict)
+                else {}
+            )
 
             # Write standard Cubism structure (FileReferences.Motions / FileReferences.Expressions).
             file_refs = config_data.setdefault('FileReferences', {})
 
             # Motions input: { motions: { emotion: ["motions/xxx.motion3.json", ...] }, expressions: {...} }.
             motions_input = (data.get('motions') if isinstance(data, dict) else None) or {}
+            existing_motions = file_refs.get('Motions') if isinstance(file_refs.get('Motions'), dict) else {}
             motions_output = {}
             for group_name, files in motions_input.items():
                 # Forbid motions in "常驻" group.
                 if group_name == '常驻':
                     logger.info("忽略常驻组中的motion配置（只允许expression）")
                     continue
+                existing_by_file: dict[str, deque[dict]] = {}
+                raw_group_items = existing_motions.get(group_name)
+                if isinstance(raw_group_items, list):
+                    for item in raw_group_items:
+                        if not isinstance(item, dict):
+                            continue
+                        raw_file = item.get('File')
+                        if isinstance(raw_file, str) and raw_file.strip():
+                            norm_file = _normalize_posix_model_ref(raw_file)
+                            existing_by_file.setdefault(norm_file, deque()).append(item)
+
+                files_iter = [files] if isinstance(files, str) else (files or [])
                 items = []
-                for file_path in files or []:
+                for file_path in files_iter:
                     if not isinstance(file_path, str):
                         continue
-                    normalized = str(pathlib.PurePosixPath(file_path.replace('\\', '/')))
-
-                    items.append({"File": normalized})
+                    normalized = _normalize_posix_model_ref(file_path)
+                    bucket = existing_by_file.get(normalized)
+                    if bucket:
+                        reused = deepcopy(bucket.popleft())
+                        reused['File'] = normalized
+                        items.append(reused)
+                    else:
+                        items.append({"File": normalized})
                 motions_output[group_name] = items
+
+            if previous_had_emotion_mapping:
+                prev_motion_keys = set(prev_motions_map.keys())
+                for group_name, orig_items in existing_motions.items():
+                    if group_name == '常驻' or group_name in motions_output or group_name in prev_motion_keys:
+                        continue
+                    motions_output[group_name] = deepcopy(orig_items)
+
             file_refs['Motions'] = motions_output
 
-            # Flatten expressions by emotion prefix, with Name convention "{emotion}_{basename}".
+            # Flatten expressions by emotion prefix, preserving metadata and unmanaged entries.
             expressions_input = (data.get('expressions') if isinstance(data, dict) else None) or {}
+            existing_expressions = file_refs.get('Expressions') if isinstance(file_refs.get('Expressions'), list) else []
 
-            # Preserve original expressions outside our emotion prefixes, avoiding custom-data overwrites.
-            existing_expressions = file_refs.get('Expressions', []) or []
-            emotion_prefixes = set(expressions_input.keys())
+            prev_nonempty_expr_groups = {
+                group_name
+                for group_name, files in prev_expressions_map.items()
+                if isinstance(group_name, str) and group_name and _has_nonempty_mapping_files(files)
+            }
+            input_nonempty_expr_groups = {
+                group_name
+                for group_name, files in expressions_input.items()
+                if isinstance(group_name, str) and group_name and _has_nonempty_mapping_files(files)
+            }
+            managed_expression_groups = prev_nonempty_expr_groups | input_nonempty_expr_groups
+            managed_prefixes = sorted(managed_expression_groups, key=len, reverse=True)
+
             preserved_expressions = []
+            existing_by_group_file: dict[tuple[str, str], deque[dict]] = {}
             for item in existing_expressions:
-                try:
-                    name = (item.get('Name') or '') if isinstance(item, dict) else ''
-                    prefix = name.split('_', 1)[0] if '_' in name else None
-                    if not prefix or prefix not in emotion_prefixes:
-                        preserved_expressions.append(item)
-                except Exception:
+                if not isinstance(item, dict):
                     preserved_expressions.append(item)
+                    continue
+                name = item.get('Name') if isinstance(item.get('Name'), str) else ''
+                matched_group = _match_managed_expression_group(name, managed_prefixes)
+                if matched_group is None:
+                    preserved_expressions.append(item)
+                    continue
+                raw_file = item.get('File')
+                if isinstance(raw_file, str) and raw_file.strip():
+                    norm_file = _normalize_posix_model_ref(raw_file)
+                    existing_by_group_file.setdefault((matched_group, norm_file), deque()).append(item)
 
             new_expressions = []
             for emotion, files in expressions_input.items():
-                for file_path in files or []:
+                files_iter = [files] if isinstance(files, str) else (files or [])
+                for file_path in files_iter:
                     if not isinstance(file_path, str):
                         continue
-                    normalized = str(pathlib.PurePosixPath(file_path.replace('\\', '/')))
-
-                    base = os.path.basename(normalized)
-                    base_no_ext = base.replace('.exp3.json', '')
-                    name = f"{emotion}_{base_no_ext}"
-                    new_expressions.append({"Name": name, "File": normalized})
+                    normalized = _normalize_posix_model_ref(file_path)
+                    bucket = existing_by_group_file.get((emotion, normalized))
+                    if bucket:
+                        reused = deepcopy(bucket.popleft())
+                        reused['File'] = normalized
+                        new_expressions.append(reused)
+                    else:
+                        base = os.path.basename(normalized)
+                        base_no_ext = base.replace('.exp3.json', '')
+                        name = f"{emotion}_{base_no_ext}"
+                        new_expressions.append({"Name": name, "File": normalized})
 
             file_refs['Expressions'] = preserved_expressions + new_expressions
 

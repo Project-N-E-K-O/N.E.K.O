@@ -886,6 +886,13 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
             motionSelect.value = matchingSavedMotion;
             initialMotionToPlay = matchingSavedMotion;
         } else {
+            const unresolvedOption = document.createElement('option');
+            unresolvedOption.value = savedIdleAnimation;
+            unresolvedOption.textContent = `${savedIdleAnimationBaseName} (?)`;
+            unresolvedOption.title = savedIdleAnimation;
+            unresolvedOption.dataset.unresolvedSavedIdle = 'true';
+            motionSelect.appendChild(unresolvedOption);
+            motionSelect.value = savedIdleAnimation;
             motionSelect.dataset.savedIdleMotionUnresolved = 'true';
         }
     }
@@ -1392,7 +1399,13 @@ function ensurePreviewPlaybackBindings() {
     if (motionSelect && motionSelect.dataset.previewMotionChangeBound !== 'true') {
         motionSelect.addEventListener('change', () => {
             motionSelect.dataset.userChanged = 'true';
-            motionSelect.dataset.savedIdleMotionUnresolved = 'false';
+            const selectedOption = (motionSelect.options
+                && motionSelect.selectedIndex >= 0
+                && motionSelect.options[motionSelect.selectedIndex])
+                || Array.from(motionSelect.options || []).find(opt => opt && opt.value === (motionSelect.value || ''));
+            motionSelect.dataset.savedIdleMotionUnresolved = selectedOption?.dataset?.unresolvedSavedIdle === 'true'
+                ? 'true'
+                : 'false';
         });
         motionSelect.dataset.previewMotionChangeBound = 'true';
     }

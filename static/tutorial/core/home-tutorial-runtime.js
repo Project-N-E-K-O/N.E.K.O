@@ -312,16 +312,14 @@
             && state.featureSuppression.token === token;
     }
 
-    async function restoreAgentSnapshot(flags, restoreToken, attemptState, options) {
+    async function restoreAgentSnapshot(flags, restoreToken, attemptState) {
         if (!flags) {
             return false;
         }
         if (restoreToken !== undefined && !canRestoreAgentSnapshot(restoreToken)) {
             return false;
         }
-        const skipMasterEnable = !!(options && options.skipMasterEnable);
-        if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')
-            && !(skipMasterEnable && flags.agent_enabled === true)) {
+        if (Object.prototype.hasOwnProperty.call(flags, 'agent_enabled')) {
             if (attemptState && flags.agent_enabled) {
                 attemptState.masterAttempted = true;
             }
@@ -615,7 +613,6 @@
                     return false;
                 }
                 const expectsMasterOn = persisted.agentFlags.agent_enabled === true;
-                let skipMasterEnable = false;
 
                 if (!attemptState.masterAttempted) {
                     if (hasAnyEnabledAgentFlag(currentFlags)) {
@@ -631,9 +628,6 @@
                         clearPersistedAgentRestoreSnapshot(persisted.token);
                         return false;
                     }
-                    if (expectsMasterOn && currentFlags.agent_enabled === true) {
-                        skipMasterEnable = true;
-                    }
                 } else {
                     if (currentFlags.agent_enabled === true) {
                         if (hasUnexpectedChildFlagEnabled(currentFlags, persisted.agentFlags, { allowMasterPluginSideEffect: expectsMasterOn })) {
@@ -641,7 +635,6 @@
                             return false;
                         }
                         attemptState.masterApplied = true;
-                        skipMasterEnable = true;
                     } else if (hasAnyEnabledAgentFlag(currentFlags)) {
                         clearPersistedAgentRestoreSnapshot(persisted.token);
                         return false;
@@ -651,8 +644,7 @@
                 const restored = await restoreAgentSnapshot(
                     persisted.agentFlags,
                     restoreToken,
-                    attemptState,
-                    { skipMasterEnable: skipMasterEnable }
+                    attemptState
                 );
                 if (restored && canRestoreAgentSnapshot(restoreToken)) {
                     clearPersistedAgentRestoreSnapshot(persisted.token);

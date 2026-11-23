@@ -716,6 +716,10 @@ test('F0585 & F0059: MMD->Live2D disposes mmdManager, allowLive2DReload bypasses
             }
             return { ok: true, json: async () => ({ success: true }) };
         });
+        win.live2dManager.touchSet = {
+            haru: { Body: { motions: ['existing_haru'], expressions: [] } },
+        };
+        win.live2dManager._touchSetLoadedAt = 12345;
         win.live2dManager.getCurrentModel = () => activeModel;
         const origCreateWindow = ctx.createTouchConfigFloatingWindow;
         ctx.createTouchConfigFloatingWindow = (opts) => {
@@ -750,6 +754,12 @@ test('F0585 & F0059: MMD->Live2D disposes mmdManager, allowLive2DReload bypasses
         assert.equal(doc.querySelector('.touch-config-overlay'), null, 'must NOT open config window for stale model after switch');
         assert.equal(floatingMessages.length, 0, 'must abort silently without error popup on switch');
         assert.equal(patchCalls.length, 0, 'must send 0 PATCHes');
+        assert.deepEqual(
+            win.live2dManager.touchSet,
+            { haru: { Body: { motions: ['existing_haru'], expressions: [] } } },
+            'stale InitializationTouchSet must NOT overwrite haru touchSet on model switch'
+        );
+        assert.equal(win.live2dManager._touchSetLoadedAt, 12345, 'stale InitializationTouchSet must NOT update _touchSetLoadedAt');
     }
 
     // Scenario G (wehos opt #5): InitializationTouchSet returns 'superseded' because a newer load already populated the same model -> opens cleanly
@@ -757,7 +767,7 @@ test('F0585 & F0059: MMD->Live2D disposes mmdManager, allowLive2DReload bypasses
         const floatingMessages = [];
         let resolveSlowFetch;
         let fetchCount = 0;
-        const { ctx, doc } = setupTouchConfig(async (url) => {
+        const { ctx, win, doc } = setupTouchConfig(async (url) => {
             if (String(url) === '/api/characters') {
                 fetchCount += 1;
                 if (fetchCount === 1) {
@@ -813,6 +823,11 @@ test('F0585 & F0059: MMD->Live2D disposes mmdManager, allowLive2DReload bypasses
         });
         await openPromise;
         assert.ok(doc.querySelector('.touch-config-overlay'), 'superseded result with loaded same-model touchSet must open cleanly');
+        assert.deepEqual(
+            Array.from(win.live2dManager.touchSet.mao_pro.Head.motions),
+            ['idle'],
+            'superseded empty fetch must NOT clobber newer touchSet data'
+        );
         assert.equal(floatingMessages.filter(m => m && m.content).length, 0, 'must not show modelDataNotReady error popup');
     }
 });
@@ -935,9 +950,10 @@ test('PR3976 #14 & #15: switchModelDisplay aborts stale live2d switch before MMD
     const vrmModelSelect = makeSelect([optDel, optA, optB], 1); // Starts on A
     const mmdModelSelect = makeSelect([], -1);
 
+    let resolveReloadLive3D;
     const deleteCtx = vm.createContext({
         userModelSelectionGeneration: 1,
-        vrmAdmittedSelectionLoad: null,
+        vrmAdmittedSelectionLoad: { modelUrl: '/user_vrm/A.vrm' },
         vrmSelectionLoad: { modelUrl: '/user_vrm/A.vrm' },
         selectedDeleteModels: new Set(['vrm:/user_vrm/Del.vrm']),
         selectedDeleteCount: null,
@@ -958,14 +974,13 @@ test('PR3976 #14 & #15: switchModelDisplay aborts stale live2d switch before MMD
         getBoundPNGTuberDeleteKeys: () => ({ committed: '', pending: '' }),
         RequestHelper: { async fetchJson() { return { success: true }; } },
         loadUserModels: async () => {},
-        loadLive3DModels: async () => {
-            // Simulate user selecting B while loadLive3DModels is awaiting server
-            deleteCtx.userModelSelectionGeneration += 1;
-            deleteCtx.vrmSelectionLoad = { modelUrl: '/user_vrm/B.vrm' };
-            deleteCtx.currentModelInfo = { type: 'vrm', path: '/user_vrm/B.vrm', url: '/user_vrm/B.vrm' };
-            vrmModelSelect.options = [optA, optB];
-            vrmModelSelect.selectedIndex = 0; // List rebuild resets selectedIndex to 0 (A)
-        },
+        loadLive3DModels: () => new Promise(resolve => {
+            resolveReloadLive3D = () => {
+                vrmModelSelect.options = [optA, optB];
+                vrmModelSelect.selectedIndex = 0; // List rebuild resets selectedIndex to 0 (A)
+                resolve();
+            };
+        }),
         loadMMDModels: async () => {},
         updateVRMModelSelectButtonText() {},
         updateMMDModelSelectButtonText() {},
@@ -973,7 +988,110 @@ test('PR3976 #14 & #15: switchModelDisplay aborts stale live2d switch before MMD
         encodeURIComponent,
     });
     vm.runInContext(deleteFnCode, deleteCtx);
-    await deleteCtx.deleteSelectedModels();
+    const deletePromise = deleteCtx.deleteSelectedModels();
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveReloadLive3D, 'function', 'deleteSelectedModels must suspend inside loadLive3DModels');
 
-    assert.equal(vrmModelSelect.value, '/user_vrm/B.vrm', 'deleteSelectedModels must restore newer user selection B instead of stale snapshot A');
+    // Strictly while loadLive3DModels is in flight: user selects B while admitted load & currentModelInfo are still A
+    deleteCtx.userModelSelectionGeneration += 1;
+    deleteCtx.vrmSelectionLoad = { modelUrl: '/user_vrm/B.vrm' };
+    resolveReloadLive3D();
+    await deletePromise;
+
+    assert.equal(vrmModelSelect.value, '/user_vrm/B.vrm', 'deleteSelectedModels must prefer newer user vrmSelectionLoad B over admitted load A');
+});
+
+test('PR3976 U8: rapid MMD model switch A -> B aborts stale A load before playing A animation', async () => {
+    const controllerCode = fs.readFileSync(
+        path.join(ROOT, 'static/js/model_manager/page-controller.js'),
+        'utf8'
+    );
+    const mmdChangeStart = controllerCode.indexOf('// MMD 模型选择事件');
+    const mmdChangeEnd = controllerCode.indexOf('    // MMD 动画选择事件', mmdChangeStart);
+    assert.ok(mmdChangeStart > 0 && mmdChangeEnd > mmdChangeStart, 'must locate MMD select change listener block');
+    const mmdChangeSnippet = controllerCode.slice(mmdChangeStart, mmdChangeEnd);
+
+    const changeListeners = [];
+    const mmdModelSelect = {
+        value: '',
+        addEventListener(type, fn) {
+            if (type === 'change') changeListeners.push(fn);
+        },
+    };
+    const mmdListeners = {
+        loadedModels: [],
+        loadedAnimations: [],
+        playedAnimations: 0,
+    };
+    let resolveModelA;
+    let resolveModelB;
+    const abortedSessions = [];
+
+    const mmdCtx = vm.createContext({
+        mmdModelSelect,
+        mmdContainer: { classList: { remove() {}, add() {} }, style: {} },
+        vrmContainer: { classList: { add() {} }, style: {} },
+        playMmdAnimationBtn: { disabled: false },
+        currentModelType: 'live3d',
+        currentLive3dSubType: 'mmd',
+        modelDisplaySwitchGeneration: 1,
+        userModelSelectionGeneration: 0,
+        isMmdAnimationPlaying: false,
+        isMmdIdlePlaying: false,
+        _mmdSettingsLoadPromise: null,
+        updateMMDModelSelectButtonText() {},
+        updateMMDAnimationPlayButtonIcon() {},
+        stopIdleRotation() {},
+        loadCharacterLighting: async () => {},
+        isSuppressedModelManagerChangeEvent: () => false,
+        markMMDCanvasLoadingSession() {},
+        showStatusForMMDLoadingSession() {},
+        restoreMMDCanvasForLoadingSession(_canvas, id) { abortedSessions.push(id); },
+        localStorage: { getItem: () => null },
+        t: (_k, fb) => fb,
+        document: { getElementById: () => ({ id: 'mmd-canvas' }) },
+        window: {
+            mmdModuleLoaded: true,
+            vrmManager: null,
+            _createMMDLoadingSessionId: (p) => `${p}-${Math.random().toString(16).slice(2)}`,
+            MMDLoadingOverlay: { begin() {}, update() {}, fail() {}, end(id) { abortedSessions.push(`end:${id}`); } },
+            mmdManager: {
+                scene: {},
+                stopAnimation() {},
+                loadModel(modelPath) {
+                    mmdListeners.loadedModels.push(modelPath);
+                    return new Promise(resolve => {
+                        if (modelPath === 'modelA.pmx') resolveModelA = resolve;
+                        else resolveModelB = resolve;
+                    });
+                },
+                async loadAnimation(anim) { mmdListeners.loadedAnimations.push(anim); },
+                playAnimation() { mmdListeners.playedAnimations += 1; },
+            },
+        },
+        console,
+    });
+    vm.runInContext(mmdChangeSnippet, mmdCtx);
+    assert.equal(changeListeners.length, 1);
+
+    const loadAPromise = changeListeners[0]({ target: { value: 'modelA.pmx' } });
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveModelA, 'function');
+
+    const loadBPromise = changeListeners[0]({ target: { value: 'modelB.pmx' } });
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveModelB, 'function');
+
+    // Now stale modelA finishes loading -> must abort without loading/playing A's animation
+    resolveModelA();
+    await loadAPromise;
+    assert.equal(mmdListeners.loadedAnimations.length, 0, 'superseded MMD load A must NOT call loadAnimation');
+    assert.equal(mmdListeners.playedAnimations, 0, 'superseded MMD load A must NOT call playAnimation');
+    assert.ok(abortedSessions.length >= 1, 'superseded MMD load A must clean up its loading session');
+
+    // Current modelB finishes loading -> proceeds normally
+    resolveModelB();
+    await loadBPromise;
+    assert.equal(mmdListeners.loadedAnimations.length, 1, 'latest MMD load B must load idle animation');
+    assert.equal(mmdListeners.playedAnimations, 1, 'latest MMD load B must play idle animation');
 });

@@ -1450,8 +1450,16 @@ test('PR3976 #11 & #12: overlapping _loadPanelVoices discards stale load and loc
     assert.equal(voiceSelect.value, 'custom123', '#12: localechange during load must preserve initialVoiceId');
     const optgroupCountAfterNew = voiceSelect.children.filter(c => c.tagName === 'OPTGROUP').length;
 
-    // Now the stale first /voices response resolves (simulating HTTP 500 or old catalog) -> MUST be ignored
-    resolveFirstVoices({ ok: false, status: 500, json: async () => ({}) });
+    // Now the stale first /voices response resolves (simulating HTTP 200 old catalog) -> MUST be ignored
+    resolveFirstVoices({
+        ok: true,
+        status: 200,
+        json: async () => ({
+            voices: { stale_voice_999: { prefix: 'StaleVoice', provider: 'cosyvoice' } },
+            free_voices: {},
+            native_voices: {},
+        }),
+    });
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));
 
@@ -1460,6 +1468,11 @@ test('PR3976 #11 & #12: overlapping _loadPanelVoices discards stale load and loc
         voiceSelect.children.filter(c => c.tagName === 'OPTGROUP').length,
         optgroupCountAfterNew,
         '#11: stale load must not append duplicate optgroups or fallback options'
+    );
+    assert.equal(
+        voiceSelect.options.some(o => o.value === 'stale_voice_999'),
+        false,
+        '#11: stale load options must not leak into voiceSelect'
     );
     assert.equal(voiceSelect.value, 'custom123');
 
@@ -1470,10 +1483,13 @@ test('PR3976 #11 & #12: overlapping _loadPanelVoices discards stale load and loc
 
 test('PR3976 #13: unresolved saved Live2D idle animation skips /l2d PUT until user explicitly clears it', async () => {
     const l2dCalls = [];
+    let savedIdleOnServer = 'motions/missing.motion3.json';
     const fetchImpl = async (url, init = {}) => {
         const u = String(url);
         if (u === '/api/characters/catgirl/l2d/NekoA' && init.method === 'PUT') {
-            l2dCalls.push(JSON.parse(init.body));
+            const payload = JSON.parse(init.body);
+            l2dCalls.push(payload);
+            savedIdleOnServer = payload.live2d_idle_animation;
             return { ok: true, status: 200, json: async () => ({ success: true }) };
         }
         if (u === '/api/characters/catgirl/NekoA' && (init.method || 'GET') === 'PUT') {
@@ -1492,6 +1508,16 @@ test('PR3976 #13: unresolved saved Live2D idle animation skips /l2d PUT until us
     };
 
     const { ctx, win, doc } = loadCardFormContext(fetchImpl);
+    ctx.loadCharacterData = async () => ({
+        '猫娘': {
+            NekoA: {
+                '档案名': 'NekoA',
+                model_type: 'live2d',
+                live2d: 'mao_pro',
+                live2d_idle_animation: savedIdleOnServer,
+            },
+        },
+    });
 
     // Mount preview DOM elements and run real model-previews.js helpers
     const placeholder = doc.createElement('div');
@@ -1542,7 +1568,9 @@ test('PR3976 #13: unresolved saved Live2D idle animation skips /l2d PUT until us
         expression_files: [],
     });
 
-    assert.equal(motionSelect.value, '');
+    assert.equal(motionSelect.value, 'motions/missing.motion3.json', 'unresolved saved motion placeholder must be selected');
+    const selectedOpt = motionSelect.options[motionSelect.selectedIndex];
+    assert.equal(selectedOpt.dataset.unresolvedSavedIdle, 'true');
     assert.equal(motionSelect.dataset.savedIdleMotionUnresolved, 'true');
     assert.equal(motionSelect.dataset.userChanged, 'false');
 
@@ -1562,17 +1590,198 @@ test('PR3976 #13: unresolved saved Live2D idle animation skips /l2d PUT until us
     let form = container.querySelector('form');
     await form._voicesLoadPromise;
 
-    // Auto-default '' for unresolved saved idle motion -> must NOT wipe via PUT /l2d
+    // Unresolved saved idle placeholder -> must NOT wipe via PUT /l2d and rebuild retains _previousLive2dIdleAnimation
     await ctx.saveCatgirlFromPanel(form, 'NekoA', false);
     assert.equal(l2dCalls.length, 0, 'unresolved saved idle motion must skip PUT /l2d clear');
     form = container.querySelector('form');
     await form._voicesLoadPromise;
+    assert.equal(form._previousLive2dIdleAnimation, 'motions/missing.motion3.json', 'rebuilt form must keep unresolved saved idle value');
 
-    // Now user explicitly selects '' (No Idle Motion) -> MUST send PUT /l2d with ''
+    // Now user explicitly selects '' (No Idle Motion) -> genuine value change fires change and MUST send PUT /l2d with ''
     motionSelect.value = '';
     motionSelect.dispatchEvent({ type: 'change' });
     assert.equal(motionSelect.dataset.userChanged, 'true');
+    assert.equal(motionSelect.dataset.savedIdleMotionUnresolved, 'false');
     await ctx.saveCatgirlFromPanel(form, 'NekoA', false);
     assert.equal(l2dCalls.length, 1, 'explicit user clear must send PUT /l2d');
     assert.deepEqual(l2dCalls[0], { live2d_idle_animation: '' });
+});
+
+test('PR3976 U5: in-flight DELETE completes side effects and reconciles if personality-updated arrived mid-flight', async () => {
+    let resolveDelete;
+    let resolveMidFlightGet;
+    let getCallCount = 0;
+    let afterSaveCount = 0;
+    const fetchImpl = async (url, init = {}) => {
+        const u = String(url);
+        if (u === '/api/characters/character/NekoA/persona-selection') {
+            if ((init.method || 'GET') === 'DELETE') {
+                return await new Promise(resolve => { resolveDelete = resolve; });
+            }
+            getCallCount += 1;
+            if (getCallCount === 1) {
+                return await new Promise(resolve => { resolveMidFlightGet = resolve; });
+            }
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({ success: true, selection: { mode: 'default', preset_id: '', profile: {} } }),
+            };
+        }
+        if (u === '/api/characters/voices') {
+            return { ok: true, status: 200, json: async () => ({ voices: {} }) };
+        }
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
+            return { ok: true, status: 200, json: async () => ({ success: true, voices: [] }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
+    };
+
+    const { ctx, win, doc, messages } = loadCardFormContext(fetchImpl);
+    win.nekoCharacterProfileSync.afterSave = async () => { afterSaveCount += 1; };
+
+    const overlay = doc.createElement('div');
+    overlay.className = 'catgirl-panel-overlay active';
+    const container = doc.createElement('div');
+    overlay.appendChild(container);
+    doc.body.appendChild(overlay);
+
+    ctx.buildCatgirlDetailForm('NekoA', {
+        '档案名': 'NekoA',
+        _reserved: { persona_override: { preset_id: 'initial_preset' } },
+    }, false, container);
+    const form = container.querySelector('form');
+    await form._voicesLoadPromise;
+    const clearBtn = form.querySelector('[data-testid="character-personality-clear"]');
+
+    // Click clear (DELETE is suspended), then dispatch personality-updated mid-flight
+    const deleteClickPromise = clearBtn.click();
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveDelete, 'function');
+
+    win.dispatchEvent(new ctx.CustomEvent('neko:character-personality-updated', {
+        detail: { characterName: 'NekoA' },
+    }));
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveMidFlightGet, 'function');
+
+    // DELETE finishes first -> must NOT bail out; must run toast, afterSave, update UI, and trigger authoritative reconciliation GET
+    resolveDelete({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, selection: { mode: 'default', preset_id: '', profile: {} } }),
+    });
+    await deleteClickPromise;
+    await new Promise(r => setImmediate(r));
+    assert.equal(afterSaveCount, 1, 'DELETE must still invoke afterSave even if GET started mid-flight');
+    assert.equal(messages.some(m => m.type === 'success'), true, 'DELETE must still show success toast');
+    assert.equal(clearBtn.disabled, true);
+    assert.equal(getCallCount, 2, 'DELETE must schedule authoritative re-fetch after mid-flight event');
+
+    // Stale mid-flight GET finally returns old override -> MUST be discarded
+    resolveMidFlightGet({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, selection: { mode: 'override', preset_id: 'stale_preset', profile: {} } }),
+    });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(clearBtn.disabled, true, 'stale mid-flight GET must not override cleared default state');
+});
+
+test('PR3976 U6: saveCatgirlFromPanel awaits localechange voice reload and preserves user-selected gsv voice', async () => {
+    let resolveFirstVoices;
+    let resolveLocaleGsv;
+    let voicesCallCount = 0;
+    const calls = [];
+
+    const fetchImpl = async (url, init = {}) => {
+        const u = String(url);
+        calls.push({ url: u, method: init.method || 'GET', body: init.body });
+        if (u === '/api/characters/voices') {
+            voicesCallCount += 1;
+            if (voicesCallCount === 1) {
+                return await new Promise(resolve => { resolveFirstVoices = resolve; });
+            }
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({ voices: {}, free_voices: {}, native_voices: {} }),
+            };
+        }
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
+            return await new Promise(resolve => { resolveLocaleGsv = resolve; });
+        }
+        if (u === '/api/characters/catgirl/NekoA' && (init.method || 'GET') === 'PUT') {
+            return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        }
+        if (u === '/api/characters/catgirl/voice_id/NekoA' && init.method === 'PUT') {
+            return { ok: true, status: 200, json: async () => ({ success: true }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
+    };
+
+    const { ctx, win, doc } = loadCardFormContext(fetchImpl);
+    const overlay = doc.createElement('div');
+    overlay.className = 'catgirl-panel-overlay active';
+    const container = doc.createElement('div');
+    overlay.appendChild(container);
+    doc.body.appendChild(overlay);
+
+    ctx.buildCatgirlDetailForm('NekoA', {
+        '档案名': 'NekoA',
+        '性格': '温柔',
+        voice_id: 'custom_old',
+        model_type: 'vrm',
+    }, false, container);
+    const form = container.querySelector('form');
+    const voiceSelect = form.querySelector('select[name="voice_id"]');
+
+    // Finish initial voices load with custom_old + gsv:new
+    resolveFirstVoices({
+        ok: true,
+        status: 200,
+        json: async () => ({ voices: { custom_old: { prefix: 'Old', provider: 'minimax' } }, free_voices: {}, native_voices: {} }),
+    });
+    await new Promise(r => setImmediate(r));
+    resolveLocaleGsv({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, voices: [{ voice_id: 'gsv:new', name: 'NewGSV' }] }),
+    });
+    await form._voicesLoadPromise;
+
+    // User picks gsv:new
+    voiceSelect.value = 'gsv:new';
+    voiceSelect.dispatchEvent({ type: 'change' });
+    assert.equal(voiceSelect.value, 'gsv:new');
+
+    // localechange starts refresh B whose GSV fetch is deferred (temporarily leaving voiceSelect.value == '')
+    win.i18n.language = 'en';
+    win.dispatchEvent(new ctx.Event('localechange'));
+    await new Promise(r => setImmediate(r));
+    assert.equal(voiceSelect.value, '');
+
+    // Trigger save while refresh B is in flight -> save must wait for refresh B & send gsv:new (never /unregister_voice)
+    const savePromise = ctx.saveCatgirlFromPanel(form, 'NekoA', false);
+    await new Promise(r => setImmediate(r));
+    assert.equal(calls.some(c => c.url.includes('/catgirl/NekoA')), false, 'save must wait for in-flight locale voices reload');
+
+    resolveLocaleGsv({
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, voices: [{ voice_id: 'gsv:new', name: 'NewGSV' }] }),
+    });
+    await savePromise;
+
+    const voicePut = calls.find(c => c.url === '/api/characters/catgirl/voice_id/NekoA' && c.method === 'PUT');
+    assert.ok(voicePut, 'must PUT user-selected gsv:new voice_id');
+    assert.deepEqual(JSON.parse(voicePut.body), { voice_id: 'gsv:new' });
+    assert.equal(calls.some(c => c.url.includes('/unregister_voice')), false, 'must never unregister when user chose gsv:new');
 });

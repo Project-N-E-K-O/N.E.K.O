@@ -302,7 +302,13 @@
                 }
 
                 const now = Date.now();
-                const rawElapsedSeconds = Math.max(0, Math.floor((now - prevTs) / 1000));
+                const deltaMs = now - prevTs;
+                if (deltaMs < 0) {
+                    // 系统时间回拨：重置基线，避免负差值长期卡死后续上报
+                    prevTs = now;
+                    return Promise.resolve();
+                }
+                const rawElapsedSeconds = Math.floor(deltaMs / 1000);
                 const elapsedSeconds = Math.min(3600, rawElapsedSeconds);
                 if (elapsedSeconds < 1) {
                     return Promise.resolve();
@@ -311,9 +317,15 @@
                 const run = (async () => {
 
                     const controller = typeof AbortController === 'function' ? new AbortController() : null;
-                    const timeoutId = controller
-                        ? setTimeout(() => { try { controller.abort(); } catch (_) { } }, REQUEST_TIMEOUT_MS)
-                        : null;
+                    let timedOut = false;
+                    let onTimeout = null;
+                    const timeoutId = setTimeout(() => {
+                        timedOut = true;
+                        try { controller?.abort(); } catch (_) { }
+                        if (typeof onTimeout === 'function') {
+                            try { onTimeout(); } catch (_) { }
+                        }
+                    }, REQUEST_TIMEOUT_MS);
                     try {
                         const playtimeHeaders = { 'Content-Type': 'application/json' };
                         const sec = window.nekoLocalMutationSecurity;
@@ -328,7 +340,30 @@
                             } catch (_) { }
                         }
                         if (!hasCachedToken && sec && typeof sec.getMutationHeaders === 'function') {
-                            try { Object.assign(playtimeHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                            const mutationHeaders = await new Promise((resolve) => {
+                                let settled = false;
+                                const finish = (value) => {
+                                    if (settled) return;
+                                    settled = true;
+                                    onTimeout = null;
+                                    resolve(value);
+                                };
+                                if (timedOut) {
+                                    finish(null);
+                                    return;
+                                }
+                                onTimeout = () => finish(null);
+                                Promise.resolve()
+                                    .then(() => sec.getMutationHeaders())
+                                    .then(headers => finish(headers || {}))
+                                    .catch(() => finish({}));
+                            });
+                            if (timedOut || mutationHeaders === null) {
+                                throw new Error('Playtime mutation header lookup timed out');
+                            }
+                            if (mutationHeaders && typeof mutationHeaders === 'object') {
+                                Object.assign(playtimeHeaders, mutationHeaders);
+                            }
                         }
                         const fetchOptions = {
                             method: 'POST',
@@ -357,9 +392,8 @@
                     } catch (error) {
                         console.debug('更新游戏时长进度失败:', error && error.message ? error.message : error);
                     } finally {
-                        if (timeoutId !== null) {
-                            clearTimeout(timeoutId);
-                        }
+                        onTimeout = null;
+                        clearTimeout(timeoutId);
                     }
                 })().finally(() => {
                     inFlightFlush = null;

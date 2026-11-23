@@ -842,6 +842,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span data-i18n="character.personalityClear">'
         + (window.t ? window.t('character.personalityClear') : '恢复默认') + '</span>';
     form._personalitySyncSequence = 0;
+    form._personalityUpdateEventSeq = 0;
     function refreshPersonalityDisplay() {
         const currentPersonality = readCharacterPersonalitySelection(cat);
         if (currentPersonality.hasOverride) {
@@ -860,8 +861,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         if (!name || personalityClearBtn.disabled) {
             return;
         }
-        const syncSequence = (form._personalitySyncSequence || 0) + 1;
-        form._personalitySyncSequence = syncSequence;
+        const updateEventSeqAtDeleteStart = form._personalityUpdateEventSeq || 0;
+        form._personalitySyncSequence = (form._personalitySyncSequence || 0) + 1;
         try {
             const response = await fetch(`/api/characters/character/${encodeURIComponent(name)}/persona-selection`, {
                 method: 'DELETE',
@@ -870,9 +871,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             if (!response.ok || !result.success) {
                 throw new Error(result && result.error ? result.error : `Request failed: ${response.status}`);
             }
-            if (form._personalitySyncSequence !== syncSequence) {
-                return;
-            }
+            const commitSeq = (form._personalitySyncSequence || 0) + 1;
+            form._personalitySyncSequence = commitSeq;
             applyCharacterPersonalitySelection(result.selection);
             if (isPersonalityPanelAlive() && form.isConnected) {
                 refreshPersonalityDisplay();
@@ -883,6 +883,13 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             showMessage(window.t ? window.t('character.personalityCleared') : '已恢复角色卡默认人格', 'success');
             // Clearing a preset is a separate persisted persona change.
             if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(name);
+            if ((form._personalityUpdateEventSeq || 0) > updateEventSeqAtDeleteStart
+                && form._personalitySyncSequence === commitSeq
+                && isPersonalityPanelAlive()
+                && form.isConnected
+                && typeof form._characterPersonalityUpdateHandler === 'function') {
+                void form._characterPersonalityUpdateHandler({ detail: { characterName: name } });
+            }
         } catch (e) {
             console.error('清除人格设定失败:', e);
             if (typeof showAlert === 'function') {
@@ -1103,6 +1110,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             if (String(detail.characterName || '').trim() !== name) {
                 return;
             }
+            form._personalityUpdateEventSeq = (form._personalityUpdateEventSeq || 0) + 1;
             const syncSequence = (form._personalitySyncSequence || 0) + 1;
             form._personalitySyncSequence = syncSequence;
             try {
@@ -1181,7 +1189,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         refreshPersonalityDisplay();
 
         const pendingVoiceId = voiceSelect.dataset.userChanged === 'true'
-            ? String(voiceSelect.value || '').trim()
+            ? String(voiceSelect._selectedVoiceId ?? form._selectedVoiceId ?? voiceSelect.value ?? '').trim()
             : String(form._selectedVoiceId ?? form._previousVoiceId ?? '').trim();
         form._voicesLoadPromise = refreshVoiceCatalog(pendingVoiceId);
     };
@@ -2140,9 +2148,13 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
     const syncEnabledAtSaveStart = syncChoice && !syncChoice.disabled ? syncChoice.checked : undefined;
 
     try {
-        // 等待音色加载完成
-        if (form._voicesLoadPromise) {
-            await form._voicesLoadPromise;
+        // 等待音色加载完成（含等待期间由 localechange 触发的最新刷新）
+        while (form._voicesLoadPromise) {
+            const activeVoicesLoad = form._voicesLoadPromise;
+            await activeVoicesLoad;
+            if (form._voicesLoadPromise === activeVoicesLoad) {
+                break;
+            }
         }
 
         // 收集表单数据
@@ -2160,9 +2172,11 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
         }
 
         const voiceSelect = form.querySelector('select[name="voice_id"]');
-        const selectedVoiceId = (voiceSelect?.value ?? '').trim();
-        const previousVoiceId = form._previousVoiceId || '';
         const canUnregisterVoice = !!(voiceSelect && voiceSelect.dataset?.userChanged === 'true');
+        const selectedVoiceId = canUnregisterVoice
+            ? String(voiceSelect._selectedVoiceId ?? form._selectedVoiceId ?? voiceSelect.value ?? '').trim()
+            : String(voiceSelect?.value || form._selectedVoiceId || '').trim();
+        const previousVoiceId = form._previousVoiceId || '';
         const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
             baseData: { '档案名': nameInput.value.trim() },
             excludeFieldNames: ['档案名', 'voice_id', 'chat_sync_enabled'],
@@ -2310,15 +2324,26 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     : '';
                 const motionUserChanged = motionSelect.dataset?.userChanged === 'true';
                 const savedIdleMotionUnresolved = motionSelect.dataset?.savedIdleMotionUnresolved === 'true';
+                const selectedMotionOption = (motionSelect.options
+                    && motionSelect.selectedIndex >= 0
+                    && motionSelect.options[motionSelect.selectedIndex])
+                    || Array.from(motionSelect.options || []).find(opt => opt && opt.value === idleAnimation);
+                const isUnresolvedPlaceholderSelected = !!(
+                    selectedMotionOption && selectedMotionOption.dataset?.unresolvedSavedIdle === 'true'
+                );
                 const hasSavedMotionInOptions = !!(previousIdleAnimation && Array.from(motionSelect.options || []).some(opt => {
+                    if (opt?.dataset?.unresolvedSavedIdle === 'true') {
+                        return false;
+                    }
                     const optVal = String(opt?.value || '');
                     return optVal === previousIdleAnimation
                         || (previousIdleBaseName && optVal.split('/').pop() === previousIdleBaseName);
                 }));
-                const shouldSkipUnresolvedIdleClear = !idleAnimation
-                    && !!previousIdleAnimation
-                    && !motionUserChanged
-                    && (savedIdleMotionUnresolved || !hasSavedMotionInOptions);
+                const shouldSkipUnresolvedIdleClear = isUnresolvedPlaceholderSelected
+                    || (!idleAnimation
+                        && !!previousIdleAnimation
+                        && !motionUserChanged
+                        && (savedIdleMotionUnresolved || !hasSavedMotionInOptions));
                 if (!shouldSkipUnresolvedIdleClear) {
                     try {
                         const l2dResp = await fetch('/api/characters/catgirl/l2d/' + encodeURIComponent(savedCatgirlName), {

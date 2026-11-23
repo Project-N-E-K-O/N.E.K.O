@@ -103,7 +103,8 @@ test('F0484: rejects & clears invalid/expired/skewed snapshots while preserving 
         lanlanName: 'CatOther',
         agentFlags: { agent_enabled: true, computer_use_enabled: true },
     };
-    mismatchStorage.setItem(HOME_TUTORIAL_KEY, JSON.stringify(mismatchPayload));
+    const mismatchRawJson = JSON.stringify(mismatchPayload);
+    mismatchStorage.setItem(HOME_TUTORIAL_KEY, mismatchRawJson);
     const mismatchRt = loadHomeTutorialRuntime({
         localStorage: mismatchStorage,
         lanlanName: 'CatCurrent',
@@ -112,10 +113,10 @@ test('F0484: rejects & clears invalid/expired/skewed snapshots while preserving 
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));
     assert.equal(mismatchRt.fetchCalls.length, 0, 'mismatched owner must NOT call agent endpoints');
-    assert.notEqual(
+    assert.equal(
         mismatchStorage.getItem(HOME_TUTORIAL_KEY),
-        null,
-        'mismatched-owner snapshot must be preserved in localStorage so switching back can restore'
+        mismatchRawJson,
+        'mismatched-owner snapshot must remain byte-for-byte identical in localStorage'
     );
 });
 
@@ -184,7 +185,8 @@ test('F0485: waits for storageLocationStartupBarrier, retries 502s with backoff,
 
     let flagsGetCount = 0;
     let flagsPostCount = 0;
-    let masterEnabledOnServer = false;
+    let toolServerMasterEnabled = false;
+    let mainServerMasterEnabled = false;
     let childFlagsOnServer = { computer_use_enabled: false, browser_use_enabled: false, user_plugin_enabled: false };
 
     const { win, fetchCalls, scheduledTimeouts } = loadHomeTutorialRuntime({
@@ -204,13 +206,14 @@ test('F0485: waits for storageLocationStartupBarrier, retries 502s with backoff,
                     ok: true,
                     json: async () => ({
                         success: true,
-                        analyzer_enabled: masterEnabledOnServer,
+                        analyzer_enabled: toolServerMasterEnabled,
                         agent_flags: childFlagsOnServer,
                     }),
                 };
             }
             if (url === '/api/agent/command' && init.method === 'POST') {
-                masterEnabledOnServer = !!body.enabled;
+                toolServerMasterEnabled = !!body.enabled;
+                mainServerMasterEnabled = !!body.enabled;
                 if (body.command === 'set_agent_enabled' && body.enabled === true) {
                     // Match real backend side effect (app/agent_server/api_routes.py): enabling master also turns user_plugin_enabled ON
                     childFlagsOnServer.user_plugin_enabled = true;
@@ -220,7 +223,8 @@ test('F0485: waits for storageLocationStartupBarrier, retries 502s with backoff,
             if (url === '/api/agent/flags' && init.method === 'POST') {
                 flagsPostCount += 1;
                 if (flagsPostCount === 1) {
-                    // Simulate partial failure after master was turned ON!
+                    // Simulate main_routers/agent_router.py rollback on 502: main_server turns OFF while tool_server remains ON
+                    mainServerMasterEnabled = false;
                     return { ok: false, status: 502, json: async () => ({}) };
                 }
                 childFlagsOnServer = Object.assign({}, childFlagsOnServer, body.flags);
@@ -242,23 +246,26 @@ test('F0485: waits for storageLocationStartupBarrier, retries 502s with backoff,
     const retry1 = scheduledTimeouts.find(t => !t.cleared);
     assert.ok(retry1 && retry1.ms === 1000, 'must schedule first bounded backoff retry');
 
-    // Fire retry 1 -> GET succeeds (all false), POST command(enabled=true) succeeds (also sets user_plugin_enabled=true), POST flags hits 502!
+    // Fire retry 1 -> GET succeeds (all false), POST command(enabled=true) succeeds, POST flags hits 502 (main_server resets agent_enabled=false while tool_server stays true)!
     retry1.fn();
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));
-    assert.equal(masterEnabledOnServer, true);
+    assert.equal(toolServerMasterEnabled, true);
+    assert.equal(mainServerMasterEnabled, false, 'simulated agent_router 502 rollback resets main_server session master');
     assert.equal(childFlagsOnServer.user_plugin_enabled, true);
     assert.equal(flagsPostCount, 1);
     assert.notEqual(storage.getItem(HOME_TUTORIAL_KEY), null, 'snapshot must remain until child flags succeed');
 
-    // Fire retry 2 -> GET sees masterEnabledOnServer=true and user_plugin_enabled=true (master side effect), skips re-running master, restores child flags (user_plugin_enabled back to false)!
+    // Fire retry 2 -> re-issues idempotent master ON (re-syncing main_server) AND restores child flags (user_plugin_enabled back to false)!
     const retry2 = scheduledTimeouts.filter(t => !t.cleared).at(-1);
     assert.ok(retry2 && retry2.ms === 2000);
     retry2.fn();
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));
     await new Promise(r => setImmediate(r));
+    assert.equal(toolServerMasterEnabled, true);
+    assert.equal(mainServerMasterEnabled, true, 'retry must re-sync main_server session master ON after prior 502 rollback');
     assert.equal(childFlagsOnServer.computer_use_enabled, true);
     assert.equal(childFlagsOnServer.user_plugin_enabled, false, 'snapshot user_plugin_enabled:false must be restored');
     assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null, 'snapshot must be cleared once restore succeeds');
@@ -354,7 +361,7 @@ test('F0485: handles ambiguous master-ON timeout and stops retrying if user manu
         await new Promise(r => setImmediate(r));
         await new Promise(r => setImmediate(r));
         await new Promise(r => setImmediate(r));
-        assert.equal(cmdCount, 1, 'retry must recognize master is already applied and not re-post master ON');
+        assert.equal(cmdCount, 2, 'retry must idempotently re-sync master across both services before restoring child flags');
         assert.equal(childOnServer.computer_use_enabled, true);
         assert.equal(childOnServer.user_plugin_enabled, false);
         assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null, 'snapshot must clear after child restore completes');
@@ -652,6 +659,100 @@ test('S-F10B-003: achievement playtime uses single-flight serialization, preserv
     assert.equal(playtimePosts[7].body.seconds, 90, 'prevTs preserved across timeout so 30s + 60s = 90s is reported');
     activeFetchResolve();
     await tick4Promise;
+
+    // U2: clock moves backward by 2 hours -> resets prevTs baseline cleanly so subsequent +10s tick still reports 10s
+    fakeNow -= 7200 * 1000;
+    await intervalTimers()[4].fn();
+    assert.equal(playtimePosts.length, 8, 'backward clock jump must not send POST');
+    fakeNow += 10000;
+    const tick5Promise = intervalTimers()[5].fn();
+    assert.equal(playtimePosts.length, 9, 'subsequent positive advance after clock jump must resume reporting');
+    assert.equal(playtimePosts[8].body.seconds, 10);
+    activeFetchResolve();
+    await tick5Promise;
+
     assert.equal(maxConcurrent, 1);
     assert.equal(typeof activeFetchReject, 'function');
+});
+
+test('PR3976 U3: hanging cold-cache getMutationHeaders times out at 15s and unblocks subsequent playtime ticks', async () => {
+    const code = fs.readFileSync(path.join(ROOT, 'static/achievement_manager.js'), 'utf8');
+    let fakeNow = 2000000;
+    const timers = [];
+    const playtimePosts = [];
+    let hangHeaders = true;
+
+    const doc = {
+        visibilityState: 'visible',
+        addEventListener() {},
+        getElementById: () => null,
+    };
+    const win = {
+        document: doc,
+        location: { pathname: '/' },
+        localStorage: createStorage(),
+        nekoLocalMutationSecurity: {
+            peekCachedToken: () => null,
+            getMutationHeaders: () => {
+                if (hangHeaders) return new Promise(() => {});
+                return Promise.resolve({ 'X-CSRF-Token': 'warm-csrf-token' });
+            },
+        },
+        addEventListener() {},
+    };
+    win.window = win;
+
+    let nextTimerId = 1;
+    const ctx = vm.createContext({
+        window: win,
+        document: doc,
+        location: win.location,
+        localStorage: win.localStorage,
+        AbortController,
+        fetch: async (url, init = {}) => {
+            if (String(url) === '/api/steam/update-playtime') {
+                playtimePosts.push({ body: JSON.parse(init.body), headers: init.headers });
+                return { ok: true, status: 200, json: async () => ({ success: true, progressUnlocked: [] }) };
+            }
+            return { ok: true, status: 200, json: async () => ({ success: true, stats: {} }) };
+        },
+        Date: class extends Date { static now() { return fakeNow; } },
+        setTimeout(fn, ms) {
+            const entry = { id: nextTimerId++, fn, ms, cleared: false };
+            timers.push(entry);
+            return entry.id;
+        },
+        clearTimeout(id) {
+            const t = timers.find(x => x.id === id);
+            if (t) t.cleared = true;
+        },
+        console: { log() {}, warn() {}, error() {}, debug() {} },
+    });
+
+    vm.runInContext(code, ctx);
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+
+    const intervalTimers = () => timers.filter(t => t.ms === 60000);
+    const timeoutTimers = () => timers.filter(t => t.ms === 15000);
+
+    // Tick 1: cold-cache getMutationHeaders hangs forever -> firing 15s timeout clears inFlightFlush and skips fetch
+    fakeNow += 60000;
+    const tick1Promise = intervalTimers()[0].fn();
+    await new Promise(r => setImmediate(r));
+    assert.equal(playtimePosts.length, 0, 'must not call fetch while header lookup hangs');
+    const activeHeaderTimeout = timeoutTimers().filter(t => !t.cleared).at(-1);
+    assert.ok(activeHeaderTimeout, 'must arm 15s timeout before awaiting cold-cache getMutationHeaders');
+    activeHeaderTimeout.fn();
+    await tick1Promise;
+    await new Promise(r => setImmediate(r));
+    assert.equal(playtimePosts.length, 0);
+
+    // Tick 2: header lookup recovers -> accumulated 120s flushes cleanly with warm-csrf-token
+    hangHeaders = false;
+    fakeNow += 60000;
+    await intervalTimers()[1].fn();
+    assert.equal(playtimePosts.length, 1, 'next tick must not stay wedged after header timeout');
+    assert.equal(playtimePosts[0].body.seconds, 120);
+    assert.equal(playtimePosts[0].headers['X-CSRF-Token'], 'warm-csrf-token');
 });
