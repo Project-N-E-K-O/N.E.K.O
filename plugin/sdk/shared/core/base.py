@@ -162,6 +162,38 @@ class NekoPluginBase:
             self._declared_permissions_cache = cached
         return cached  # type: ignore[return-value]
 
+    def _resolve_dynamic_entry_permissions(self, entry_id: str, narrowed: object) -> object:
+        """Registration check for an entry added at runtime; returns the permissions to record.
+
+        Same rules as ``collect_entries``: the narrowing must fit plugin.toml
+        and the entry hooks targeting the entry join it. Raises
+        ``PermissionDeniedError`` (reason ``not_declared``) when it does not fit.
+        """
+        hooks = static_entry_hooks(type(self))
+        if narrowed is None and all(hook.permissions is None for hook in hooks):
+            return None
+        component = Component(
+            label=component_label(PLUGIN_ENTRY, entry_id),
+            event_type=PLUGIN_ENTRY,
+            entry_id=entry_id,
+            permissions=narrowed,  # type: ignore[arg-type]
+        )
+        declared = self._declared_permission_ids()
+        resolution = resolve_component_permissions({entry_id: component}, hooks, declared)[entry_id]
+        if resolution.registered:
+            return resolution.permissions
+        from plugin.sdk.shared.models.exceptions import PermissionDeniedError
+
+        listed = list(narrowed or ()) + [
+            permission for hook in hooks if hook.applies_to(component) for permission in (hook.permissions or ())
+        ]
+        outside = [permission for permission in listed if declared is not None and permission not in declared]
+        denied = PermissionDeniedError(
+            "; ".join(resolution.errors), permission=outside[0] if outside else None, reason="not_declared",
+        )
+        self.logger.error("Entry not registered: {}", str(denied))
+        raise denied
+
     def include_router(self, router: RouterProtocol, *, prefix: str = "") -> None:
         # Bind first: binding can fail, and a failed include must not leave
         # the router with a changed prefix.
@@ -309,10 +341,12 @@ class NekoPluginBase:
         }
         resolved = resolve_component_permissions(components, hooks, self._declared_permission_ids())
         reported: set[object] = self.__dict__.setdefault("_narrowing_reported", set())
+        refused: set[tuple[str, str]] = self.__dict__.setdefault("_narrowing_refused", set())
         result: dict[str, EventHandler] = {}
         for entry_id, item in entries.items():
             resolution = resolved[entry_id]
             if not resolution.registered:
+                refused.add((components[entry_id].event_type, entry_id))
                 # Per handler: a refused router entry checked at include time
                 # must not hide a later refusal of the class entry that wins its id.
                 try:

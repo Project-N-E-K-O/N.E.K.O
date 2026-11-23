@@ -691,7 +691,22 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     # Use module-level logger.
     handlers_updated = False
     decorated_entries: dict[str, EventHandler] = {}
-    members = [(name, member, _member_event_meta(member)) for name, member in inspect.getmembers(cls)]
+    scanned = [(name, member, _member_event_meta(member)) for name, member in inspect.getmembers(cls)]
+    # Two class members declaring one id: the later one overwrites the
+    # earlier in the tables below, as in the plugin process. Only the winner
+    # takes part, so a refused winner closes the id and a refused loser
+    # changes nothing.
+    winners: dict[tuple[str, str], str] = {}
+    for name, _member, event_meta in scanned:
+        if event_meta:
+            winners[(getattr(event_meta, "event_type", None) or "plugin_entry", str(getattr(event_meta, "id", name)))] = name
+    members = [
+        (name, member, event_meta)
+        for name, member, event_meta in scanned
+        if not event_meta
+        or winners[(getattr(event_meta, "event_type", None) or "plugin_entry", str(getattr(event_meta, "id", name)))]
+        == name
+    ]
     try:
         router_items = list(_iter_router_plugin_entries(cls))
         router_error: Exception | None = None

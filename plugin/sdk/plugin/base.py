@@ -559,7 +559,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         ``permissions`` narrows the entry to part of plugin.toml's declared
         permissions; it must be a subset of them, otherwise
         ``PermissionDeniedError`` (reason ``not_declared``) is raised and
-        nothing is registered.
+        nothing is registered. Entry hooks targeting the entry join it.
         """
         if not callable(handler):
             raise TypeError("handler must be callable")
@@ -574,16 +574,9 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 raise TypeError("timeout must be a number or None")
             timeout = float(timeout)
         entry_id = entry_id.strip()
-        narrowed = normalize_narrowing(permissions, where=f"register_dynamic_entry({entry_id!r})")
-        if narrowed is not None:
-            declared = self._declared_permission_ids()
-            if declared is not None:
-                from plugin.sdk.shared.core.router import denied_narrowing
-
-                denied = denied_narrowing(declared, narrowed, f"entry {entry_id!r}")
-                if denied is not None:
-                    self.logger.error("Entry not registered: {}", str(denied))
-                    raise denied
+        narrowed = self._resolve_dynamic_entry_permissions(
+            entry_id, normalize_narrowing(permissions, where=f"register_dynamic_entry({entry_id!r})")
+        )
         existing_entries = self.collect_entries()
         if entry_id in existing_entries or entry_id in self._dynamic_entries:
             raise EntryConflictError(f"duplicate entry id: {entry_id!r}")

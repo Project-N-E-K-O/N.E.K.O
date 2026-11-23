@@ -1296,6 +1296,9 @@ def _check_permission_narrowing(
         except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
             issues.append(_permission_issue(PermissionIssue("info", "narrowing_unconfirmed", {"label": label})))
             return
+        if value is None:
+            # permissions=None is the default spelled out: inherits everything.
+            return
         issues.extend(_permission_issue(issue) for issue in narrowing_issues(value, declared, label))
 
 

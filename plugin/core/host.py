@@ -1309,9 +1309,11 @@ def _plugin_process_runner(
             ctx._entry_map = entry_map
 
         # Prefer collect_entries(), supporting Hook wrappers.
+        collected_ok = False
         if hasattr(instance, "collect_entries") and callable(instance.collect_entries):
             try:
                 collected = instance.collect_entries(wrap_with_hooks=True)
+                collected_ok = True
                 for eid, event_handler in collected.items():
                     entry_map[eid] = event_handler.handler
                     entry_meta_map[eid] = event_handler.meta
@@ -1326,10 +1328,13 @@ def _plugin_process_runner(
                 events_by_type.clear()
         
         # Fall back to method scanning if collect_entries is missing or fails.
-        if not entry_map:
-            # The same narrowing check collect_entries() runs: a component
-            # it refused (possibly every one, leaving entry_map empty) must
-            # not come back through this scan.
+        # A plugin whose components were all refused by the narrowing check
+        # collected nothing on purpose: scanning would bring them back, plus
+        # every public method as an entry.
+        refused_all = collected_ok and bool(getattr(instance, "_narrowing_refused", None))
+        if not entry_map and not refused_all:
+            # The same narrowing check collect_entries() runs, for the case
+            # collect_entries() failed.
             narrow = getattr(instance, "_apply_permission_narrowing", None)
             scanned: list[tuple[str, Any, Any]] = []
             for name, member in inspect.getmembers(instance, predicate=callable):

@@ -632,6 +632,8 @@ PARITY_CASES = [
     ("@custom_event(event_type='x', id='a', permissions=['system.env:read'])", False),
     ("@plugin.entry(id='a', permissions=['system.fs:read'])", True),
     ("@plugin.timer(id='a', seconds=5, permissions=['system.env:read'])", False),
+    # The default spelled out.
+    ("@plugin_entry(id='a', permissions=None)", True),
 ]
 
 
@@ -641,7 +643,7 @@ def test_check_and_registration_agree(tmp_path, decorator, accepted, toml_tail):
     toml = DECLARED_TOML if toml_tail == "" else '[plugin]\nid = "narrow_demo"\n'
     if toml_tail == "no_table":
         # Without a table nothing is declared: any non-empty narrowing fails.
-        accepted = "permissions=[]" in decorator
+        accepted = "permissions=[]" in decorator or "permissions=None" in decorator
     source = (
         "from plugin.sdk.plugin import NekoPluginBase, neko_plugin, plugin, plugin_entry, llm_tool, "
         "timer_interval, on_event, custom_event\n"
@@ -667,3 +669,93 @@ def test_check_and_registration_agree(tmp_path, decorator, accepted, toml_tail):
 
     assert (not static_errors) is accepted
     assert bool(registered) is accepted
+
+
+# --- review fixes ---------------------------------------------------------------------------------
+
+
+def test_a_plugin_whose_components_were_all_refused_is_marked_for_the_host_loader(tmp_path):
+    # The plugin process loader falls back to scanning methods only when
+    # collect_entries() returned nothing; this flag stops that fallback from
+    # bringing refused components back (plugin/core/host.py).
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="only", permissions=[ENV])
+        async def only(self, **_): ...
+
+    instance = P(_ctx(tmp_path))
+    assert instance.collect_entries() == {}
+    assert instance._narrowing_refused == {("plugin_entry", "only")}
+
+    @neko_plugin
+    class Empty(NekoPluginBase):
+        pass
+
+    empty = Empty(_ctx(tmp_path))
+    assert empty.collect_entries() == {}
+    assert not getattr(empty, "_narrowing_refused", None)
+
+
+@pytest.mark.parametrize("refused_wins", [True, False])
+def test_duplicate_ids_in_one_class_decide_on_the_winner_on_both_sides(tmp_path, refused_wins):
+    import tomllib
+
+    # getmembers order is by name: "z_..." is collected last and wins the id.
+    ok_perm, bad_perm = [NET], [ENV]
+    winner, loser = (bad_perm, ok_perm) if refused_wins else (ok_perm, bad_perm)
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="x1", permissions=loser)
+        async def a_first(self, **_): ...
+
+        @plugin_entry(id="x1", permissions=winner)
+        async def z_last(self, **_): ...
+
+    conf = tomllib.loads(DECLARED_TOML)
+    pid = "narrow_dup_demo"
+    try:
+        registry.scan_static_metadata(pid, P, conf, {})
+        with state.acquire_event_handlers_read_lock():
+            host = {key for key in state.event_handlers if key.startswith(f"{pid}.")}
+    finally:
+        with state.acquire_event_handlers_write_lock():
+            for key in [key for key in state.event_handlers if key.startswith((f"{pid}.", f"{pid}:"))]:
+                del state.event_handlers[key]
+    process = P(_ctx(tmp_path)).collect_entries()
+    if refused_wins:
+        assert host == set() and process == {}
+    else:
+        assert host == {f"{pid}.x1"} and set(process) == {"x1"}
+        assert process["x1"].meta.permissions == (NET,)
+
+
+def test_entry_hooks_join_dynamic_entries_and_llm_tools(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        @before_entry(target="*", permissions=[FS])
+        async def every(self, **_): ...
+
+        @llm_tool(name="tool", permissions=[NET])
+        async def tool(self, **_):
+            return 1
+
+    instance = P(_ctx(tmp_path))
+    assert instance.collect_entries()["__llm_tool__tool"].meta.permissions == (NET, FS)
+    instance.register_dynamic_entry("dyn", lambda **_: 1, permissions=[])
+    assert instance.collect_entries()["dyn"].meta.permissions == (FS,)
+
+    @neko_plugin
+    class Closing(NekoPluginBase):
+        @before_entry(target="dyn", permissions=[ENV])
+        async def bad(self, **_): ...
+
+    closing = Closing(_ctx(tmp_path))
+    with pytest.raises(PermissionDeniedError) as caught:
+        closing.register_dynamic_entry("dyn", lambda **_: 1)
+    assert caught.value.permission == ENV
+    assert "dyn" not in closing.collect_entries()
+    # Other ids are not targeted by that hook.
+    assert closing.register_dynamic_entry("other", lambda **_: 1)
+    assert closing.collect_entries()["other"].meta.permissions is None
+
