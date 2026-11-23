@@ -24,6 +24,13 @@ const api = vi.hoisted(() => ({
   setPackMaterialType: vi.fn(),
   setPackEnabled: vi.fn(),
   removePack: vi.fn(),
+  previewSource: vi.fn(),
+  commitSource: vi.fn(),
+  discardSourcePreview: vi.fn(),
+  sources: vi.fn(),
+  sourceVersions: vi.fn(),
+  restoreSource: vi.fn(),
+  removeSource: vi.fn(),
 }))
 
 vi.mock('@/api/knowledge', async (importOriginal) => ({
@@ -149,6 +156,17 @@ beforeEach(() => {
   api.entries.mockResolvedValue({ ok: true, total: 0, offset: 0, limit: 50, has_more: false, items: [] })
   api.diagnostics.mockResolvedValue({ ok: true, queries: [], index_batches: [] })
   api.setEnabled.mockResolvedValue({ ok: true, enabled: false })
+  api.previewSource.mockResolvedValue({ ok: true, pack_id: 'imp.source', preview: {
+    preview_id: 'preview-source', doc_id: 'doc-source', sha256: 'source-digest',
+    name: 'source.txt', chars: 12, content: 'Source notes.', sections: [],
+  } })
+  api.discardSourcePreview.mockResolvedValue({ ok: true, deleted: false })
+  api.sources.mockResolvedValue({ ok: true, sources: [
+    { doc_id: 'doc-source', name: 'source.txt', chars: 12, current_version: 2, versions_count: 2 },
+  ] })
+  api.sourceVersions.mockResolvedValue({ ok: true, versions: [
+    { version: 1, name: 'source.txt', chars: 10, sha256: 'old', created_at: '', current: false },
+  ] })
 })
 
 afterEach(() => {
@@ -191,6 +209,136 @@ describe('KnowledgeManager diagnostics', () => {
 })
 
 describe('KnowledgeManager overview', () => {
+  it.each([
+    { operation: 'new', outcome: 'active', staleFirst: false },
+    { operation: 'append', outcome: 'active', staleFirst: false },
+    { operation: 'restore', outcome: 'active', staleFirst: false },
+    { operation: 'remove', outcome: 'active', staleFirst: false },
+    { operation: 'new', outcome: 'failed', staleFirst: false },
+    { operation: 'new', outcome: 'active', staleFirst: true },
+  ] as const)('refreshes a fast source job after stale overview reads (%s)', async ({ operation, outcome, staleFirst }) => {
+    vi.useFakeTimers()
+    const targetId = operation === 'new' ? 'imp.source' : 'imp.test'
+    const initial = operation === 'new' ? [] : [{ ...pack(), sources_managed: true, chunks_total: 0, vector_state: 'disabled', local_embedding: false }]
+    api.packs.mockResolvedValue({ ok: true, packs: initial })
+    let finishJobs!: (value: object) => void
+    const admitted = { ok: true, pack_id: targetId, job_id: 'source-new', state: 'queued', entries_total: 1, chunks_total: 0 }
+    const admit = async () => {
+      // The mutation admits a job, then overview's packs/status reads still
+      // see the old catalog while its parallel jobs read waits for completion.
+      api.packJobs.mockReturnValueOnce(new Promise(resolve => { finishJobs = resolve }))
+      return admitted
+    }
+    api.commitSource.mockImplementation(admit)
+    api.restoreSource.mockImplementation(admit)
+    api.removeSource.mockImplementation(admit)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    const container = await mount()
+    await openTab('packs')
+    const clickButton = async (text: string) => {
+      const button = [...document.querySelectorAll<HTMLButtonElement>('button')].find(row => row.textContent?.trim() === text)
+      expect(button, text).toBeTruthy()
+      button!.click()
+      await flush()
+    }
+    if (operation !== 'new') await clickButton(enUS.knowledge.managePack)
+    if (operation === 'new' || operation === 'append') {
+      const inputs = [...document.querySelectorAll<HTMLInputElement>('input[type="file"]')]
+      const input = operation === 'new' ? inputs[0]! : inputs.at(-1)!
+      Object.defineProperty(input, 'files', { value: [new File(['Source notes.'], 'source.txt')], configurable: true })
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+      await flush()
+      await clickButton(enUS.knowledge.previewDocument)
+      await clickButton(enUS.knowledge.sourceCommit)
+    } else if (operation === 'restore') {
+      await clickButton(enUS.knowledge.sourceHistory)
+      await clickButton(enUS.knowledge.restoreSource)
+    } else {
+      const remove = [...document.querySelectorAll<HTMLButtonElement>('.el-drawer button')]
+        .find(row => row.textContent?.trim() === enUS.knowledge.remove)!
+      expect(remove).toBeTruthy()
+      remove.click()
+      await flush()
+    }
+    expect(finishJobs).toBeTypeOf('function')
+    const loadsBeforeCompletion = api.packs.mock.calls.length
+    expect(container.textContent).not.toContain(`${operation} finished`)
+    // No vectors or other running jobs can rescue this race with later polling.
+    api.packs.mockResolvedValue({ ok: true, packs: outcome === 'active' ? [{ ...pack(false, targetId), source: { name: `${operation} finished` },
+      chunks_total: 0, vector_state: 'disabled', local_embedding: false }] : initial })
+    const terminal = { ...job(outcome), job_id: 'source-new', pack_id: targetId, kind: 'import_commit',
+      reason: outcome === 'failed' ? 'source_confirmation_required' : '' }
+    if (staleFirst) {
+      finishJobs({ ok: true, jobs: [] })
+      await flush()
+      expect(container.querySelector('[data-job-id="source-new"]')?.textContent).toContain(enUS.knowledge.jobQueued)
+      api.packJobs.mockResolvedValue({ ok: true, jobs: [terminal] })
+      await vi.advanceTimersByTimeAsync(2_100)
+    } else finishJobs({ ok: true, jobs: [terminal] })
+    await flush()
+    expect(api.packs.mock.calls.length).toBeGreaterThan(loadsBeforeCompletion)
+    if (outcome === 'active') expect(container.textContent).toContain(`${operation} finished`)
+    else {
+      expect(container.textContent).not.toContain(`${operation} finished`)
+      expect(document.body.textContent).toContain(enUS.knowledge.reasons.source_confirmation_required)
+    }
+  })
+
+  it.each(['active', 'unchanged', 'failed', 'failed-with-empty-list'] as const)('does not invent queued work for a source response that is already %s', async result => {
+    vi.useFakeTimers()
+    const failed = result === 'failed' || result === 'failed-with-empty-list'
+    api.commitSource.mockImplementation(async () => {
+      if (result === 'failed') api.packJobs.mockRejectedValue(new KnowledgeApiError('knowledge_error'))
+      // The empty-list variant is a stale successful snapshot, rather than
+      // a rejected refresh; both must retain the admitted terminal reason.
+      return { ok: true, pack_id: 'imp.source', state: failed ? 'failed' : 'active',
+        ...(result === 'unchanged' ? { unchanged: true } : { job_id: 'source-terminal' }),
+        reason: failed ? 'knowledge_stopping' : '' }
+    })
+    const container = await mount()
+    await openTab('packs')
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!
+    Object.defineProperty(input, 'files', { value: [new File(['Source notes.'], 'source.txt')], configurable: true })
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    await flush()
+    for (const label of [enUS.knowledge.previewDocument, enUS.knowledge.sourceCommit]) {
+      const action = [...document.querySelectorAll<HTMLButtonElement>('button')].find(row => row.textContent?.trim() === label)!
+      action.click()
+      await flush()
+    }
+    expect(container.textContent).not.toContain(enUS.knowledge.jobQueued)
+    if (failed) {
+      expect(container.querySelector('[data-job-id="source-terminal"]')?.textContent).toContain(enUS.knowledge.reasons.knowledge_stopping)
+    } else expect(container.querySelector('[data-job-id="source-terminal"]')).toBeNull()
+    const loads = api.packJobs.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(api.packJobs).toHaveBeenCalledTimes(loads)
+  })
+
+  it('does not register or refresh a source admission after the manager unmounts', async () => {
+    let finish!: (value: object) => void
+    api.commitSource.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const container = await mount()
+    await openTab('packs')
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!
+    Object.defineProperty(input, 'files', { value: [new File(['Source notes.'], 'source.txt')], configurable: true })
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    await flush()
+    for (const label of [enUS.knowledge.previewDocument, enUS.knowledge.sourceCommit]) {
+      const action = [...document.querySelectorAll<HTMLButtonElement>('button')].find(row => row.textContent?.trim() === label)!
+      action.click()
+      await flush()
+    }
+    expect(api.commitSource).toHaveBeenCalledTimes(1)
+    const calls = [api.packs.mock.calls.length, api.packJobs.mock.calls.length]
+    cleanup?.()
+    cleanup = undefined
+    finish({ ok: true, pack_id: 'imp.source', job_id: 'late-admission', state: 'queued' })
+    await flush()
+    expect([api.packs.mock.calls.length, api.packJobs.mock.calls.length]).toEqual(calls)
+  })
+
   it('offers frozen retry only for failed or cancelled jobs, never a waiting job', async () => {
     api.packJobs.mockResolvedValue({ ok: true, jobs: [
       { ...job('failed'), reason: 'process_interrupted' },

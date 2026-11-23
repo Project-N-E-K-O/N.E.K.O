@@ -117,11 +117,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCheck, Clock, Document, Download, FolderOpened } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
-import { createKnowledgePublicationId, knowledgeApi, knowledgeFailureReason, type KnowledgeDocument, type KnowledgeDocumentVersion, type KnowledgePack, type KnowledgePackJob } from '@/api/knowledge'
+import { createKnowledgePublicationId, knowledgeApi, knowledgeFailureReason, type KnowledgeDocument, type KnowledgeDocumentVersion, type KnowledgeImportResponse, type KnowledgePack, type KnowledgePackJob } from '@/api/knowledge'
 import KnowledgeSourceImport from './KnowledgeSourceImport.vue'
 
 const props = defineProps<{ modelValue: boolean; pack: KnowledgePack | null; jobs: KnowledgePackJob[] }>()
-const emit = defineEmits<{ 'update:modelValue': [boolean]; updated: [] }>()
+const emit = defineEmits<{ 'update:modelValue': [boolean]; updated: [response?: KnowledgeImportResponse] }>()
 const { t, locale } = useI18n()
 const documents = ref<KnowledgeDocument[]>([])
 const loading = ref(false)
@@ -224,7 +224,11 @@ function selectSource(event: Event) {
   sourceDialog.value = Boolean(sourceFile.value)
 }
 
-function sourceCommitted() { emit('updated'); void loadDocuments() }
+function sourceCommitted(response: KnowledgeImportResponse) {
+  // Keep the real admitted task across both source-import and drawer actions.
+  emit('updated', response)
+  void loadDocuments()
+}
 
 async function showVersions(row: KnowledgeDocument) {
   if (!props.pack) return
@@ -254,8 +258,8 @@ async function removeSource(row: KnowledgeDocument) {
       ElMessage.error(t('knowledge.reasons.not_found'))
       return
     }
-    await knowledgeApi.removeSource({ pack_id: packId, doc_id: docId })
-    sourceCommitted()
+    const response = await knowledgeApi.removeSource({ pack_id: packId, doc_id: docId })
+    sourceCommitted(response)
   }
   catch (error) { failure(error) }
   finally { mutating.value = false }
@@ -268,12 +272,12 @@ async function restore(version: KnowledgeDocumentVersion) {
   try {
     // History can include versions rejected on activation. Restoring into an
     // enabled pack needs the same document consent as appending a source.
-    await knowledgeApi.restoreSource({ pack_id: props.pack.pack_id, doc_id: historySource.value.doc_id, version: version.version,
+    const response = await knowledgeApi.restoreSource({ pack_id: props.pack.pack_id, doc_id: historySource.value.doc_id, version: version.version,
       enabled_confirmed: requiresAcknowledgment.value && acknowledged.value })
     // A completed restore must not close another history opened in the meantime.
     if (request === historyGeneration) historyOpen.value = false
     ElMessage.success(t('knowledge.sourceQueued'))
-    sourceCommitted()
+    sourceCommitted(response)
   } catch (error) { failure(error) }
   finally { mutating.value = false }
 }

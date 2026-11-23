@@ -126,7 +126,9 @@ describe('pack documents, versions and publication', () => {
   })
 
   it('restores a historical document through the same pack without deleting versions', async () => {
-    await mount()
+    const response = { ok: true, pack_id: 'imp.test', job_id: 'restored-job', state: 'queued' }
+    api.restoreSource.mockResolvedValue(response)
+    const state = await mount()
     expect(api.sources).toHaveBeenCalledWith('imp.test')
     buttons('Version history')[0]!.click()
     await flush()
@@ -138,6 +140,7 @@ describe('pack documents, versions and publication', () => {
     restore[0]!.click()
     await flush()
     expect(api.restoreSource).toHaveBeenCalledWith({ pack_id: 'imp.test', doc_id: 'doc-1', version: 1, enabled_confirmed: false })
+    expect(state.onUpdated).toHaveBeenCalledExactlyOnceWith(response)
     await flushDialogTransition()
     expect(document.querySelector<HTMLElement>('.el-dialog')!.closest<HTMLElement>('.el-overlay')!.style.display).toBe('none')
   })

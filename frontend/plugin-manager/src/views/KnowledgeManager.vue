@@ -566,8 +566,8 @@
         </section>
       </div>
     </el-drawer>
-    <KnowledgePackDrawer v-model="packDrawerOpen" :pack="selectedPack" :jobs="packJobs" @updated="refreshAfterMutation" />
-    <KnowledgeSourceImport v-model="sourceDialogOpen" :file="sourceFile" :packs="packs" @committed="refreshAfterMutation" />
+    <KnowledgePackDrawer v-model="packDrawerOpen" :pack="selectedPack" :jobs="packJobs" @updated="sourceCommitted" />
+    <KnowledgeSourceImport v-model="sourceDialogOpen" :file="sourceFile" :packs="packs" @committed="sourceCommitted" />
   </div>
 </template>
 
@@ -588,6 +588,7 @@ import {
   type KnowledgeEntry,
   type KnowledgeEntryDetail,
   type KnowledgeIndexBatch,
+  type KnowledgeImportResponse,
   type KnowledgeMaterialType,
   type KnowledgePack,
   type KnowledgePackJob,
@@ -642,9 +643,9 @@ const packJobs = ref<KnowledgePackJob[]>([])
 const pendingJobs = reactive(new Set<string>())
 // A successful handoff consumes this row locally; a stale poll cannot reoffer it.
 const retriedJobs = reactive(new Set<string>())
-// Keep newly admitted retries visible until polling acknowledges their IDs.
+// Keep newly admitted jobs visible until polling acknowledges their IDs.
 // A snapshot captured before admission must not hide the only cancellable row.
-const unconfirmedRetries = new Map<string, KnowledgePackJob>()
+const unconfirmedJobs = new Map<string, KnowledgePackJob>()
 const importing = ref(false)
 const marketOpening = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -916,8 +917,8 @@ async function loadPacks(options: { silent?: boolean } = {}) {
 }
 
 function applyJobs(jobs: KnowledgePackJob[]) {
-  for (const job of jobs) unconfirmedRetries.delete(job.job_id)
-  jobs = [...unconfirmedRetries.values(), ...jobs]
+  for (const job of jobs) unconfirmedJobs.delete(job.job_id)
+  jobs = [...unconfirmedJobs.values(), ...jobs]
   const transitions = finishedJobTransitions(lastJobStates, jobs)
   for (const { job, outcome } of transitions) {
     const name = job.pack_id || job.job_id
@@ -970,6 +971,29 @@ function refreshAfterMutation() {
   loading.value = false
   packsLoading.value = false
   void refreshOverview({ silent: true })
+}
+
+function registerImportJob(response: KnowledgeImportResponse, kind: KnowledgePackJob['kind']) {
+  const jobId = response.job_id
+  if (disposed || response.unchanged || !jobId || packJobs.value.some(job => job.job_id === jobId)) return
+  // Observe the admitted state before reading the overview. Otherwise its
+  // first terminal snapshot cannot trigger the normal completion reload.
+  const admitted: KnowledgePackJob = {
+    job_id: jobId, pack_id: response.pack_id, kind, state: response.state, reason: response.reason ?? '',
+    entries_total: Number(response.entries_total) || 0, chunks_total: Number(response.chunks_total) || 0,
+    created_at: '', updated_at: '',
+  }
+  lastJobStates.set(jobId, admitted.state)
+  // Keep the admitted result until the server lists its ID, even if it has
+  // already failed. Its real terminal state never creates synthetic busy work.
+  unconfirmedJobs.set(jobId, admitted)
+  packJobs.value = [admitted, ...packJobs.value]
+}
+
+function sourceCommitted(response?: KnowledgeImportResponse) {
+  if (disposed) return
+  if (response) registerImportJob(response, 'import_commit')
+  refreshAfterMutation()
 }
 
 async function loadEntries(reset = false) {
@@ -1155,21 +1179,7 @@ async function importSelectedPack(event: Event) {
       ElMessage.info(t('knowledge.importUnchanged', { name: response.pack_id }))
     } else {
       ElMessage.success(t('knowledge.importQueued', { name: response.pack_id }))
-      const jobId = String(response.job_id || '')
-      if (jobId && !packJobs.value.some((job) => job.job_id === jobId)) {
-        const queued: KnowledgePackJob = {
-          job_id: jobId,
-          pack_id: response.pack_id,
-          state: 'queued',
-          reason: '',
-          entries_total: Number(response.entries_total) || 0,
-          chunks_total: Number(response.chunks_total) || 0,
-          created_at: '',
-          updated_at: '',
-        }
-        lastJobStates.set(jobId, 'queued')
-        packJobs.value = [queued, ...packJobs.value]
-      }
+      registerImportJob(response, 'pack_import')
     }
     refreshAfterMutation()
   } catch (error) {
@@ -1207,8 +1217,8 @@ async function discardJob(job: KnowledgePackJob) {
   try {
     await knowledgeApi.discardPackJob({ job_id: job.job_id })
     jobsGate.invalidate()
-    // A discarded retry must not be merged back from its unconfirmed local row.
-    unconfirmedRetries.delete(job.job_id)
+    // A discarded job must not be merged back from its unconfirmed local row.
+    unconfirmedJobs.delete(job.job_id)
     packJobs.value = packJobs.value.filter((item) => item.job_id !== job.job_id)
     lastJobStates.delete(job.job_id)
   } catch (error) {
@@ -1233,7 +1243,7 @@ async function retryJob(job: KnowledgePackJob) {
     if (response.job_id && !packJobs.value.some(item => item.job_id === response.job_id)) {
       // Admission may already finish with an actionable error before polling catches up.
       const retry = { ...job, ...response, job_id: response.job_id, reason: response.reason ?? '' }
-      unconfirmedRetries.set(retry.job_id, retry)
+      unconfirmedJobs.set(retry.job_id, retry)
       lastJobStates.set(retry.job_id, retry.state)
       packJobs.value = [retry, ...packJobs.value]
     }

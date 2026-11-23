@@ -37,10 +37,10 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import { knowledgeApi, knowledgeFailureReason, type KnowledgeDocumentPreview, type KnowledgePack } from '@/api/knowledge'
+import { knowledgeApi, knowledgeFailureReason, type KnowledgeDocumentPreview, type KnowledgeImportResponse, type KnowledgePack } from '@/api/knowledge'
 
 const props = defineProps<{ modelValue: boolean; file: File | null; pack?: KnowledgePack | null; docId?: string; packs?: KnowledgePack[] }>()
-const emit = defineEmits<{ 'update:modelValue': [boolean]; committed: [] }>()
+const emit = defineEmits<{ 'update:modelValue': [boolean]; committed: [KnowledgeImportResponse] }>()
 const { t } = useI18n()
 const targetId = ref('')
 const packName = ref('')
@@ -152,7 +152,7 @@ async function commit() {
   try {
     // Existing pack switches are preserved by the server; only a new pack may
     // opt into retrieval here, and that checkbox always starts unchecked.
-    await knowledgeApi.commitSource({
+    const response = await knowledgeApi.commitSource({
       preview_id: preview.value.preview_id, sha256: preview.value.sha256,
       enabled: targetPack.value ? targetPack.value.enabled !== false : enableAfterImport.value,
       // This is consent for this document, distinct from the pack's mutable switch.
@@ -161,7 +161,9 @@ async function commit() {
     // The committed preview is frozen server-side; closing must not discard it.
     if (preview.value?.preview_id === previewId) preview.value = null
     ElMessage.success(t('knowledge.sourceQueued'))
-    emit('committed')
+    // The parent must observe admission before its first overview refresh:
+    // a small document may already be active in that refresh's jobs snapshot.
+    emit('committed', response)
     if (generation === started) emit('update:modelValue', false)
   } catch (error) {
     ElMessage.error(t(`knowledge.reasons.${knowledgeFailureReason(error)}`))

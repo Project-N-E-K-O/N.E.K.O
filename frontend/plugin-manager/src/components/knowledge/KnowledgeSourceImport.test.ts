@@ -19,7 +19,7 @@ async function flush() { for (let index = 0; index < 10; index++) { await Promis
 async function mount(pack: KnowledgePack | null = null, packs: KnowledgePack[] = []) {
   const root = document.createElement('div')
   document.body.append(root)
-  const state = reactive({ modelValue: true, file: new File(['private text'], 'private.txt'), pack, packs })
+  const state = reactive({ modelValue: true, file: new File(['private text'], 'private.txt'), pack, packs, onCommitted: vi.fn() })
   const app = createApp({ render: () => h(KnowledgeSourceImport, { ...state, 'onUpdate:modelValue': value => { state.modelValue = value } }) })
   app.use(ElementPlus)
   app.use(createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': enUS } }))
@@ -164,6 +164,7 @@ describe('source import privacy and identity', () => {
     expect(api.commitSource).toHaveBeenCalledTimes(1)
     expect(state.modelValue).toBe(false)
     expect(api.discardSourcePreview).not.toHaveBeenCalled()
+    expect(state.onCommitted).toHaveBeenCalledExactlyOnceWith({ ok: true, pack_id: 'imp.test', job_id: 'job-1', state: 'queued' })
   })
 
   it('offers only packs with local source provenance as append destinations', async () => {
