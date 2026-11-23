@@ -1401,3 +1401,33 @@ test('PR3976 4662172063: a reused pending snapshot keeps its owner; tutorial end
     assert.equal(server.child.computer_use_enabled, false);
     assert.notEqual(storage.getItem(HOME_TUTORIAL_KEY), null, 'CatA snapshot stays for CatA');
 });
+
+test('PR3976 4662242339: waiting for the backend replay does not use up the retries for failed restore requests', async () => {
+    const storage = createStorage();
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+        version: 1, token: 1201, createdAt: Date.now(), lanlanName: 'CatA',
+        agentFlags: { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false },
+    }));
+    const server = makeAgentServer();
+    server.intentRestoreFinished = false;
+    let commandPosts = 0;
+    const handler = async (url, init, body) => {
+        if (url === '/api/agent/command' && init.method === 'POST' && ++commandPosts === 1) {
+            return { ok: false, status: 502, json: async () => ({}) };
+        }
+        return await server.handler(url, init, body);
+    };
+    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+    await flushMicrotasks();
+    for (let i = 0; i < 20; i += 1) {
+        const retry = rt.scheduledTimeouts.find(t => !t.cleared && !t.fired);
+        if (!retry) break;
+        retry.fired = true;
+        retry.fn();
+        await flushMicrotasks();
+    }
+    assert.equal(commandPosts, 2, 'the failed first restore request must still be retried');
+    assert.equal(server.master, true);
+    assert.equal(server.child.computer_use_enabled, true);
+    assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+});

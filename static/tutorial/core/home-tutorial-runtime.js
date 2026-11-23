@@ -729,6 +729,33 @@
 
         const attemptState = createAgentRestoreAttemptState(persisted.token, persisted);
 
+        // 等后端放回和请求失败重试各用一份额度：等待用完不能让之后真正发请求时没有重试机会。
+        let backendReplayWaits = 0;
+
+        function scheduleRestoreAttempt(nextRetryIndex, delayMs) {
+            return new Promise(function (resolve) {
+                let settled = false;
+                const finish = function (result) {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    if (interruptedRestoreRetryCancel === finish) {
+                        interruptedRestoreRetryCancel = null;
+                    }
+                    resolve(result);
+                };
+                interruptedRestoreRetryCancel = finish;
+                interruptedRestoreRetryTimer = setTimeout(function () {
+                    interruptedRestoreRetryTimer = null;
+                    if (interruptedRestoreRetryCancel === finish) {
+                        interruptedRestoreRetryCancel = null;
+                    }
+                    void runRestoreAttempt(nextRetryIndex).then(finish);
+                }, delayMs);
+            });
+        }
+
         async function runRestoreAttempt(retryIndex) {
             if (!canRestoreAgentSnapshot(restoreToken)) {
                 return false;
@@ -766,8 +793,10 @@
                 // 后端刚启动、还在按记录的意图放回开关时先不写：它的后台任务会晚于我们写入，
                 // 把刚恢复的值盖掉，而快照那时已删。最多等完重试窗口，之后仍按原来的方式恢复，
                 // 免得 greeting_check 迟迟不来时一直恢复不了。
-                if (currentState.intentRestorePending && retryIndex < HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS.length) {
-                    throw new Error('agent_restore_backend_replay_pending');
+                if (currentState.intentRestorePending && backendReplayWaits < HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS.length) {
+                    const waitMs = HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS[backendReplayWaits];
+                    backendReplayWaits += 1;
+                    return await scheduleRestoreAttempt(retryIndex, waitMs);
                 }
                 const expectsMasterOn = persisted.agentFlags.agent_enabled === true;
 
@@ -831,28 +860,10 @@
                     return false;
                 }
                 if (retryIndex < HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS.length) {
-                    const delayMs = HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS[retryIndex];
-                    return await new Promise(function (resolve) {
-                        let settled = false;
-                        const finish = function (result) {
-                            if (settled) {
-                                return;
-                            }
-                            settled = true;
-                            if (interruptedRestoreRetryCancel === finish) {
-                                interruptedRestoreRetryCancel = null;
-                            }
-                            resolve(result);
-                        };
-                        interruptedRestoreRetryCancel = finish;
-                        interruptedRestoreRetryTimer = setTimeout(function () {
-                            interruptedRestoreRetryTimer = null;
-                            if (interruptedRestoreRetryCancel === finish) {
-                                interruptedRestoreRetryCancel = null;
-                            }
-                            void runRestoreAttempt(retryIndex + 1).then(finish);
-                        }, delayMs);
-                    });
+                    return await scheduleRestoreAttempt(
+                        retryIndex + 1,
+                        HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS[retryIndex]
+                    );
                 }
                 console.warn('[HomeTutorialRuntime] failed to restore interrupted agent suppression:', reason || '', error);
                 return false;
