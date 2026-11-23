@@ -615,8 +615,10 @@ function _finishNekoIdleVisualActionTierTransition(profile) {
         !autoGoodbye || typeof autoGoodbye.demoteVisualTierToCat1 !== 'function') {
         return false;
     }
+    // The cat woke up on its own: the chat window must not treat this demotion
+    // as the user coming back, so it gets its own source.
     return autoGoodbye.demoteVisualTierToCat1(
-        profile.finishedReason,
+        'cat-sleep-wake-demotion',
         profile.finishedReason
     ) === true;
 }

@@ -48,6 +48,13 @@ TTS_AUDIO_DONE_SENTINEL = "__audio_done__"
 # audio finishes before sending done, leaving the final sentence stuck in CosyVoice until the user's next turn.
 TTS_SOFT_FLUSH_SENTINEL = "__soft_flush__"
 
+# Preconnect sentinel: core sends request_queue.put((TTS_PRECONNECT_SENTINEL, None)) when a reply's LLM request
+# starts, so a worker that opens one socket per speech can have that socket ready by the time the first text
+# arrives instead of connecting after it. The socket is not bound to any speech id: the next new speech adopts
+# it, and the worker closes it on its own if nothing adopts it in time. Like the soft flush, send it only to
+# workers whose callable carries ``supports_preconnect = True``; an unaware worker reads it as a speech id.
+TTS_PRECONNECT_SENTINEL = "__preconnect__"
+
 
 class AudioDoneEmitter:
     """One-shot per-speech "audio stream closed" signal for the frontend.
