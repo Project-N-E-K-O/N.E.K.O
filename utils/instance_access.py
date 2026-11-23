@@ -544,7 +544,13 @@ class InstanceAccessMiddleware:
                             and not request.headers.get("origin"))
         if not internal_identity and not oauth_callback and not entry_navigation and not _same_origin(request):
             return await self._deny(scope, receive, send, "origin_not_allowed", 403)
+        scope.pop("neko.internal_service_key_valid", None)
         scope["neko.instance_identity"] = identity
+        if not market_identity and service_identity == "internal":
+            # Record an admission-time key matcher without placing the raw secret in scope.
+            scope["neko.internal_service_key_valid"] = (
+                lambda candidate, expected=key: isinstance(candidate, str) and _equal(candidate, expected)
+            )
         if market_identity:
             scope["neko.market_public_origin"] = request.headers.get("x-neko-market-public-origin", "")
             # The signed purpose includes remote; changing the network hop to

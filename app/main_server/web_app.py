@@ -734,7 +734,6 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # retain Market's independent Authorization credential unchanged.
     from utils.instance_access import (
         INTERNAL_SERVICE_HEADER,
-        _internal_service_identity,
         instance_key,
         internal_service_proof,
         market_internal_proof,
@@ -763,7 +762,10 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
             signing_key = await asyncio.to_thread(instance_key)
         except (OSError, ValueError, FileLockTimeout):
             return JSONResponse(status_code=503, content={"detail": "instance_access_unavailable"})
-        if scope_identity == "internal" and _internal_service_identity(request, signing_key) == "internal":
+        internal_key_valid = request.scope.get("neko.internal_service_key_valid")
+        if scope_identity == "internal" and callable(internal_key_valid):
+            if not internal_key_valid(signing_key):
+                return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
             upstream_url = httpx.URL(target)
             upstream_raw_path = upstream_url.raw_path.split(b"?", 1)[0].decode("latin-1")
             upstream_port = upstream_url.port or (443 if upstream_url.scheme == "https" else 80)

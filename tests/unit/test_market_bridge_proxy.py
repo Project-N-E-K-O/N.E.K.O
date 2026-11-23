@@ -506,3 +506,129 @@ async def test_market_proxy_preserves_internal_service_installer_auth_and_blocks
             "token": "bridge-tok",
             "task_id": None,
         }
+
+
+@pytest.mark.asyncio
+async def test_market_proxy_slow_internal_upload_survives_proof_expiry_and_revokes_on_key_rotation(monkeypatch):
+    """Slow internal uploads must survive 60s inbound proof expiry while key rotation or missing admission grant fails closed."""
+    import time
+    import config as cfg
+    import utils.instance_access as access
+    from tests.fake_clock import patch_module_clock
+    from utils.http.internal_client import internal_service_event_hooks
+    from utils.instance_access import INTERNAL_SERVICE_HEADER, InstanceAccessMiddleware
+
+    key1 = "market-slow-upload-key-one-" + "a" * 40
+    key2 = "market-slow-upload-key-two-" + "b" * 40
+    current_key = [key1]
+    now = [time.time()]
+
+    for env_name in ("NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE", "NEKO_INSTANCE_ACCESS_KEY"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setattr(access, "instance_key", lambda: current_key[0])
+    patch_module_clock(monkeypatch, access, time=lambda: now[0])
+
+    main_port = int(cfg.MAIN_SERVER_PORT)
+    plugin_port = int(cfg.USER_PLUGIN_SERVER_PORT)
+    monkeypatch.setattr(cfg, "MAIN_SERVER_PORT", main_port, raising=False)
+    monkeypatch.setattr(cfg, "USER_PLUGIN_SERVER_PORT", plugin_port, raising=False)
+    monkeypatch.setattr(cfg, "USER_PLUGIN_BASE", f"http://127.0.0.1:{plugin_port}", raising=False)
+
+    real_client = httpx.AsyncClient
+    plugin_hits: list[str] = []
+    plugin = FastAPI()
+
+    @plugin.post("/market/install")
+    async def market_install(request: Request):
+        plugin_hits.append(request.url.path)
+        lowered = {k.lower() for k in request.headers.keys()}
+        return {
+            "identity": request.scope.get("neko.instance_identity"),
+            "market_remote": bool(request.scope.get("neko.market_remote_authorized")),
+            "has_internal_header": INTERNAL_SERVICE_HEADER in lowered,
+            "body_size": len(await request.body()),
+        }
+
+    plugin.add_middleware(InstanceAccessMiddleware)
+    plugin_hop = ProxyHeadersMiddleware(plugin, trusted_hosts="127.0.0.1,::1")
+
+    def upstream_client(**_kwargs):
+        return real_client(
+            transport=httpx.ASGITransport(app=plugin_hop, client=("127.0.0.1", 50000)),
+        )
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: f"http://127.0.0.1:{plugin_port}")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", upstream_client)
+
+    main = FastAPI()
+    main.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
+    main.add_middleware(InstanceAccessMiddleware)
+    main_hop = ProxyHeadersMiddleware(main, trusted_hosts="127.0.0.1,::1")
+
+    # 1. Slow upload exceeding 60s inbound proof TTL still succeeds with freshly signed second-hop proof.
+    async def slow_upload():
+        yield b'{"plugin_id":'
+        now[0] += 120.0
+        yield b'"demo"}'
+
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50001)),
+        base_url=f"http://127.0.0.1:{main_port}",
+        event_hooks=internal_service_event_hooks(),
+    ) as installer_client:
+        slow_resp = await installer_client.post(
+            f"http://127.0.0.1:{main_port}/market/install",
+            content=slow_upload(),
+            headers={"content-type": "application/json"},
+        )
+    assert slow_resp.status_code == 200
+    assert slow_resp.json() == {
+        "identity": "internal",
+        "market_remote": False,
+        "has_internal_header": True,
+        "body_size": len(b'{"plugin_id":"demo"}'),
+    }
+    assert plugin_hits == ["/market/install"]
+
+    # 2. Rotating the instance key during upload revokes admission and rejects with 401 before calling upstream.
+    plugin_hits.clear()
+
+    async def rotated_key_upload():
+        yield b'{"plugin_id":'
+        current_key[0] = key2
+        yield b'"demo"}'
+
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50002)),
+        base_url=f"http://127.0.0.1:{main_port}",
+        event_hooks=internal_service_event_hooks(),
+    ) as installer_client:
+        rotated_resp = await installer_client.post(
+            f"http://127.0.0.1:{main_port}/market/install",
+            content=rotated_key_upload(),
+            headers={"content-type": "application/json"},
+        )
+    assert rotated_resp.status_code == 401
+    assert rotated_resp.json() == {"detail": "instance_authorization_required"}
+    assert plugin_hits == []
+
+    # 3. Spoofed scope identity without middleware's neko.internal_service_key_valid callable fails closed.
+    plugin_hits.clear()
+    current_key[0] = key1
+    spoofed_app = FastAPI()
+
+    @spoofed_app.middleware("http")
+    async def inject_only_identity(request, call_next):
+        request.scope["neko.instance_identity"] = "internal"
+        return await call_next(request)
+
+    spoofed_app.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["POST"])
+    async with real_client(
+        transport=httpx.ASGITransport(app=spoofed_app, client=("127.0.0.1", 50003)),
+        base_url=f"http://127.0.0.1:{main_port}",
+    ) as spoofed_client:
+        spoofed_resp = await spoofed_client.post("/market/install", json={"plugin_id": "demo"})
+    assert spoofed_resp.status_code == 401
+    assert spoofed_resp.json() == {"detail": "instance_authorization_required"}
+    assert plugin_hits == []

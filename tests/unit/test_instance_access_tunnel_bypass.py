@@ -814,7 +814,50 @@ def _contains_direct_continue(node: ast.AST) -> bool:
 
 
 _SAFE_DICT_READ_METHODS = frozenset({"get", "keys", "values", "items", "copy", "setdefault"})
-_SAFE_READONLY_BUILTINS = frozenset({"dict", "len", "bool", "repr", "str"})
+_SAFE_READONLY_BUILTINS = frozenset({"dict", "len", "bool", "repr", "str", "isinstance", "type"})
+
+
+def _arg_exposes_var(expr: ast.AST, var_name: str) -> bool:
+    if isinstance(expr, ast.Name):
+        return expr.id == var_name
+    if isinstance(expr, ast.Starred):
+        return _arg_exposes_var(expr.value, var_name)
+    if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+        return any(_arg_exposes_var(el, var_name) for el in expr.elts)
+    if isinstance(expr, ast.Dict):
+        return any(
+            (k is not None and _arg_exposes_var(k, var_name)) or _arg_exposes_var(v, var_name)
+            for k, v in zip(expr.keys, expr.values)
+        )
+    if isinstance(expr, ast.IfExp):
+        return _arg_exposes_var(expr.body, var_name) or _arg_exposes_var(expr.orelse, var_name)
+    if isinstance(expr, ast.BoolOp):
+        return any(_arg_exposes_var(val, var_name) for val in expr.values)
+    if isinstance(expr, ast.NamedExpr):
+        return _arg_exposes_var(expr.value, var_name)
+    return False
+
+
+def _target_invalidates_binding(target: ast.AST | None, var_name: str) -> bool:
+    if target is None:
+        return False
+    if isinstance(target, ast.Name):
+        return target.id == var_name
+    if (
+        isinstance(target, ast.Subscript)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == var_name
+    ):
+        return not (
+            isinstance(target.slice, ast.Constant)
+            and isinstance(target.slice.value, str)
+            and target.slice.value != "event_hooks"
+        )
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_target_invalidates_binding(el, var_name) for el in target.elts)
+    if isinstance(target, ast.Starred):
+        return _target_invalidates_binding(target.value, var_name)
+    return False
 
 
 def _apply_comprehension_mutations(
@@ -822,28 +865,88 @@ def _apply_comprehension_mutations(
     var_name: str,
     bound: bool,
     hook_helpers: tuple[str, ...],
+    httpx_mod_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
 ) -> bool:
     cur = (
         _apply_expr_mutations(
-            node.generators[0].iter, var_name, bound, hook_helpers, expected_sync=expected_sync
+            node.generators[0].iter,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
         )
         if node.generators
         else bound
     )
+    result = cur
     after = cur
     for idx, comp in enumerate(node.generators):
         if idx > 0:
-            after = _apply_expr_mutations(comp.iter, var_name, after, hook_helpers, expected_sync=expected_sync)
+            after = _apply_expr_mutations(
+                comp.iter,
+                var_name,
+                after,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
+            result = result and after
+        if _target_invalidates_binding(comp.target, var_name):
+            after = False
         for cond in comp.ifs:
-            after = _apply_expr_mutations(cond, var_name, after, hook_helpers, expected_sync=expected_sync)
+            after = _apply_expr_mutations(
+                cond,
+                var_name,
+                after,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
+            result = result and after
     if isinstance(node, ast.DictComp):
-        after = _apply_expr_mutations(node.key, var_name, after, hook_helpers, expected_sync=expected_sync)
-        after = _apply_expr_mutations(node.value, var_name, after, hook_helpers, expected_sync=expected_sync)
+        after = _apply_expr_mutations(
+            node.key,
+            var_name,
+            after,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+        after = _apply_expr_mutations(
+            node.value,
+            var_name,
+            after,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
     else:
-        after = _apply_expr_mutations(node.elt, var_name, after, hook_helpers, expected_sync=expected_sync)
-    return cur and after
+        after = _apply_expr_mutations(
+            node.elt,
+            var_name,
+            after,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+    return result and after
 
 
 def _apply_expr_mutations(
@@ -851,116 +954,173 @@ def _apply_expr_mutations(
     var_name: str,
     bound: bool,
     hook_helpers: tuple[str, ...],
+    httpx_mod_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
 ) -> bool:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
         return bound
     if isinstance(node, ast.BoolOp):
-        cur = _apply_expr_mutations(node.values[0], var_name, bound, hook_helpers, expected_sync=expected_sync)
+        cur = _apply_expr_mutations(
+            node.values[0],
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
         for val in node.values[1:]:
-            after = _apply_expr_mutations(val, var_name, cur, hook_helpers, expected_sync=expected_sync)
+            after = _apply_expr_mutations(
+                val,
+                var_name,
+                cur,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
             cur = cur and after
         return cur
     if isinstance(node, ast.IfExp):
-        after_test = _apply_expr_mutations(node.test, var_name, bound, hook_helpers, expected_sync=expected_sync)
-        after_body = _apply_expr_mutations(node.body, var_name, after_test, hook_helpers, expected_sync=expected_sync)
-        after_else = _apply_expr_mutations(node.orelse, var_name, after_test, hook_helpers, expected_sync=expected_sync)
+        after_test = _apply_expr_mutations(
+            node.test,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+        after_body = _apply_expr_mutations(
+            node.body,
+            var_name,
+            after_test,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+        after_else = _apply_expr_mutations(
+            node.orelse,
+            var_name,
+            after_test,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
         return after_body and after_else
+    if isinstance(node, ast.Dict):
+        cur = bound
+        for k, v in zip(node.keys, node.values):
+            if k is not None:
+                cur = _apply_expr_mutations(
+                    k,
+                    var_name,
+                    cur,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                )
+            cur = _apply_expr_mutations(
+                v,
+                var_name,
+                cur,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
+        return cur
     if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return _apply_comprehension_mutations(node, var_name, bound, hook_helpers, expected_sync=expected_sync)
+        return _apply_comprehension_mutations(
+            node,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
 
     for child in ast.iter_child_nodes(node):
-        bound = _apply_expr_mutations(child, var_name, bound, hook_helpers, expected_sync=expected_sync)
+        bound = _apply_expr_mutations(
+            child,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
 
     if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name) and node.target.id == var_name:
         return _dict_expr_binds_event_hooks(node.value, hook_helpers, expected_sync=expected_sync)
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == var_name
-    ):
-        attr = node.func.attr
-        if attr in _SAFE_DICT_READ_METHODS:
-            return bound
-        if attr in ("clear", "popitem"):
-            return False
-        if attr == "pop":
-            if (
-                node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)
-                and node.args[0].value != "event_hooks"
-            ):
+    if isinstance(node, ast.Call):
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == var_name
+        ):
+            attr = node.func.attr
+            if attr in _SAFE_DICT_READ_METHODS:
                 return bound
-            return False
-        if attr == "update":
-            if node.args:
-                first_arg = node.args[0]
-                bound = (
-                    _merge_dict_into_binding(first_arg, bound, hook_helpers, expected_sync=expected_sync)
-                    if isinstance(first_arg, ast.Dict)
-                    else False
-                )
-            for ukw in node.keywords:
-                if ukw.arg is None:
+            if attr in ("clear", "popitem"):
+                return False
+            if attr == "pop":
+                if (
+                    node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                    and node.args[0].value != "event_hooks"
+                ):
+                    return bound
+                return False
+            if attr == "update":
+                if node.args:
+                    first_arg = node.args[0]
                     bound = (
-                        _merge_dict_into_binding(ukw.value, bound, hook_helpers, expected_sync=expected_sync)
-                        if isinstance(ukw.value, ast.Dict)
+                        _merge_dict_into_binding(first_arg, bound, hook_helpers, expected_sync=expected_sync)
+                        if isinstance(first_arg, ast.Dict)
                         else False
                     )
-                elif ukw.arg == "event_hooks":
-                    bound = _expr_uses_hook_helper(ukw.value, hook_helpers, expected_sync=expected_sync)
+                for ukw in node.keywords:
+                    if ukw.arg is None:
+                        bound = (
+                            _merge_dict_into_binding(ukw.value, bound, hook_helpers, expected_sync=expected_sync)
+                            if isinstance(ukw.value, ast.Dict)
+                            else False
+                        )
+                    elif ukw.arg == "event_hooks":
+                        bound = _expr_uses_hook_helper(ukw.value, hook_helpers, expected_sync=expected_sync)
+                return bound
+            return False
+        if _is_httpx_client_call(node, httpx_mod_aliases, async_client_aliases, sync_client_aliases):
+            if any(_arg_exposes_var(arg, var_name) for arg in node.args) or any(
+                kw.arg is not None and _arg_exposes_var(kw.value, var_name) for kw in node.keywords
+            ):
+                return False
             return bound
-        return False
-    return bound
-
-
-def _call_passes_var_to_unknown_helper(
-    node: ast.AST,
-    var_name: str,
-    httpx_mod_aliases: set[str],
-    async_client_aliases: set[str],
-    sync_client_aliases: set[str],
-) -> bool:
-    for sub in ast.walk(node):
-        if not isinstance(sub, ast.Call):
-            continue
-        if _is_httpx_client_call(sub, httpx_mod_aliases, async_client_aliases, sync_client_aliases):
-            continue
-        if (
-            isinstance(sub.func, ast.Attribute)
-            and isinstance(sub.func.value, ast.Name)
-            and sub.func.value.id == var_name
+        if isinstance(node.func, ast.Name) and node.func.id in _SAFE_READONLY_BUILTINS:
+            return bound
+        if any(_arg_exposes_var(arg, var_name) for arg in node.args) or any(
+            _arg_exposes_var(kw.value, var_name) for kw in node.keywords
         ):
-            continue
-        if isinstance(sub.func, ast.Name) and sub.func.id in _SAFE_READONLY_BUILTINS:
-            continue
-        if any(isinstance(a, ast.Name) and a.id == var_name for a in sub.args):
-            return True
-        if any(isinstance(kw.value, ast.Name) and kw.value.id == var_name for kw in sub.keywords):
-            return True
-    return False
-
-
-def _apply_while_test_state(
-    test_expr: ast.expr,
-    var_name: str,
-    bound: bool,
-    hook_helpers: tuple[str, ...],
-    httpx_mod_aliases: set[str],
-    async_client_aliases: set[str],
-    sync_client_aliases: set[str],
-    *,
-    expected_sync: bool = False,
-) -> bool:
-    after = _apply_expr_mutations(test_expr, var_name, bound, hook_helpers, expected_sync=expected_sync)
-    if _call_passes_var_to_unknown_helper(
-        test_expr, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases
-    ):
-        return False
-    return after
+            return False
+    return bound
 
 
 def _update_event_hooks_binding_state(
@@ -968,11 +1128,23 @@ def _update_event_hooks_binding_state(
     var_name: str,
     bound: bool,
     hook_helpers: tuple[str, ...],
+    httpx_mod_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
     *,
     expected_sync: bool = False,
 ) -> bool:
     if isinstance(stmt, ast.Assign):
-        bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers, expected_sync=expected_sync)
+        bound = _apply_expr_mutations(
+            stmt.value,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
         for tgt in stmt.targets:
             if (
                 isinstance(tgt, ast.Subscript)
@@ -986,11 +1158,22 @@ def _update_event_hooks_binding_state(
                     bound = False
             elif isinstance(tgt, ast.Name) and tgt.id == var_name:
                 bound = _dict_expr_binds_event_hooks(stmt.value, hook_helpers, expected_sync=expected_sync)
+            elif _target_invalidates_binding(tgt, var_name):
+                bound = False
         return bound
 
     if isinstance(stmt, ast.AnnAssign):
         if stmt.value is not None:
-            bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers, expected_sync=expected_sync)
+            bound = _apply_expr_mutations(
+                stmt.value,
+                var_name,
+                bound,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
         tgt = stmt.target
         if (
             isinstance(tgt, ast.Subscript)
@@ -1008,34 +1191,263 @@ def _update_event_hooks_binding_state(
             return stmt.value is not None and _dict_expr_binds_event_hooks(
                 stmt.value, hook_helpers, expected_sync=expected_sync
             )
+        if _target_invalidates_binding(tgt, var_name):
+            return False
         return bound
 
     if isinstance(stmt, ast.Delete):
         for tgt in stmt.targets:
-            if isinstance(tgt, ast.Name) and tgt.id == var_name:
-                return False
-            if (
-                isinstance(tgt, ast.Subscript)
-                and isinstance(tgt.value, ast.Name)
-                and tgt.value.id == var_name
-                and not (
-                    isinstance(tgt.slice, ast.Constant)
-                    and isinstance(tgt.slice.value, str)
-                    and tgt.slice.value != "event_hooks"
-                )
-            ):
+            if _target_invalidates_binding(tgt, var_name):
                 return False
         return bound
 
     if isinstance(stmt, ast.AugAssign):
-        bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers, expected_sync=expected_sync)
+        bound = _apply_expr_mutations(
+            stmt.value,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
         if isinstance(stmt.target, ast.Name) and stmt.target.id == var_name:
             if isinstance(stmt.op, ast.BitOr) and isinstance(stmt.value, ast.Dict):
                 return _merge_dict_into_binding(stmt.value, bound, hook_helpers, expected_sync=expected_sync)
             return False
         return bound
 
-    return _apply_expr_mutations(stmt, var_name, bound, hook_helpers, expected_sync=expected_sync)
+    return _apply_expr_mutations(
+        stmt,
+        var_name,
+        bound,
+        hook_helpers,
+        httpx_mod_aliases,
+        async_client_aliases,
+        sync_client_aliases,
+        expected_sync=expected_sync,
+    )
+
+
+def _eval_state_before_target(
+    node: ast.AST,
+    target: ast.AST,
+    var_name: str,
+    bound: bool,
+    hook_helpers: tuple[str, ...],
+    httpx_mod_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
+    *,
+    expected_sync: bool = False,
+) -> tuple[bool, bool]:
+    if node is target:
+        return True, bound
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return False, bound
+    if not _stmt_contains_node(node, target):
+        return False, _apply_expr_mutations(
+            node,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+
+    if isinstance(node, ast.IfExp):
+        if node.test is target or _stmt_contains_node(node.test, target):
+            return _eval_state_before_target(
+                node.test,
+                target,
+                var_name,
+                bound,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
+        after_test = _apply_expr_mutations(
+            node.test,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+        branch = node.body if _stmt_contains_node(node.body, target) else node.orelse
+        return _eval_state_before_target(
+            branch,
+            target,
+            var_name,
+            after_test,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        if node.generators and (
+            node.generators[0].iter is target or _stmt_contains_node(node.generators[0].iter, target)
+        ):
+            return _eval_state_before_target(
+                node.generators[0].iter,
+                target,
+                var_name,
+                bound,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
+        cur = _apply_comprehension_mutations(
+            node,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+        for idx, comp in enumerate(node.generators):
+            if idx > 0:
+                if comp.iter is target or _stmt_contains_node(comp.iter, target):
+                    return _eval_state_before_target(
+                        comp.iter,
+                        target,
+                        var_name,
+                        cur,
+                        hook_helpers,
+                        httpx_mod_aliases,
+                        async_client_aliases,
+                        sync_client_aliases,
+                        expected_sync=expected_sync,
+                    )
+                cur = _apply_expr_mutations(
+                    comp.iter,
+                    var_name,
+                    cur,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                )
+            if _stmt_contains_node(comp.target, target):
+                return True, False
+            if _target_invalidates_binding(comp.target, var_name):
+                cur = False
+            for cond in comp.ifs:
+                if cond is target or _stmt_contains_node(cond, target):
+                    return _eval_state_before_target(
+                        cond,
+                        target,
+                        var_name,
+                        cur,
+                        hook_helpers,
+                        httpx_mod_aliases,
+                        async_client_aliases,
+                        sync_client_aliases,
+                        expected_sync=expected_sync,
+                    )
+                cur = _apply_expr_mutations(
+                    cond,
+                    var_name,
+                    cur,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                )
+        elt_nodes = (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
+        for sub in elt_nodes:
+            if sub is target or _stmt_contains_node(sub, target):
+                return _eval_state_before_target(
+                    sub,
+                    target,
+                    var_name,
+                    cur,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                )
+            cur = _apply_expr_mutations(
+                sub,
+                var_name,
+                cur,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
+        return False, cur
+
+    if isinstance(node, ast.Call):
+        ordered_children: list[ast.AST] = [node.func, *node.args, *node.keywords]
+    elif isinstance(node, ast.keyword):
+        ordered_children = [node.value]
+    elif isinstance(node, ast.Assign):
+        ordered_children = [node.value, *node.targets]
+    elif isinstance(node, ast.AnnAssign):
+        ordered_children = ([node.value] if node.value is not None else []) + [node.target]
+    elif isinstance(node, ast.AugAssign):
+        ordered_children = [node.target, node.value]
+    elif isinstance(node, ast.Dict):
+        ordered_children = []
+        for k, v in zip(node.keys, node.values):
+            if k is not None:
+                ordered_children.append(k)
+            ordered_children.append(v)
+    elif isinstance(node, ast.NamedExpr):
+        ordered_children = [node.value, node.target]
+    elif isinstance(node, ast.Compare):
+        ordered_children = [node.left, *node.comparators]
+    elif isinstance(node, ast.BoolOp):
+        ordered_children = list(node.values)
+    else:
+        ordered_children = list(ast.iter_child_nodes(node))
+
+    cur = bound
+    for child in ordered_children:
+        if child is target:
+            return True, cur
+        if _stmt_contains_node(child, target):
+            return _eval_state_before_target(
+                child,
+                target,
+                var_name,
+                cur,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
+        cur = _apply_expr_mutations(
+            child,
+            var_name,
+            cur,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
+    return False, cur
 
 
 def _loop_backedge_preserves_binding(
@@ -1058,7 +1470,7 @@ def _loop_backedge_preserves_binding(
     for stmt in stmts:
         if isinstance(stmt, ast.Continue):
             at_cont = (
-                _apply_while_test_state(
+                _apply_expr_mutations(
                     while_test,
                     var_name,
                     cur,
@@ -1086,7 +1498,7 @@ def _loop_backedge_preserves_binding(
                 cur = False
             elif has_outer_continue:
                 at_cont = (
-                    _apply_while_test_state(
+                    _apply_expr_mutations(
                         while_test,
                         var_name,
                         cur,
@@ -1102,10 +1514,17 @@ def _loop_backedge_preserves_binding(
                 cont_ok = cont_ok and at_cont
             continue
         cur = _update_event_hooks_binding_state(
-            stmt, var_name, cur, hook_helpers, expected_sync=expected_sync
+            stmt,
+            var_name,
+            cur,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
         )
     if while_test is not None:
-        cur = _apply_while_test_state(
+        cur = _apply_expr_mutations(
             while_test,
             var_name,
             cur,
@@ -1120,7 +1539,7 @@ def _loop_backedge_preserves_binding(
 
 def _track_binding_in_block(
     stmts: list[ast.stmt],
-    target_call: ast.Call,
+    target_node: ast.AST,
     var_name: str,
     bound: bool,
     hook_helpers: tuple[str, ...],
@@ -1133,23 +1552,52 @@ def _track_binding_in_block(
     control_flow_nodes = _control_flow_node_types()
 
     for stmt in stmts:
-        if _stmt_contains_node(stmt, target_call):
+        if _stmt_contains_node(stmt, target_node):
             child_blocks: list[tuple[list[ast.stmt], bool]] = []
-            test_entry_bound = bound
+            expr_root: ast.AST | None = None
+            expr_entry_bound = bound
             if isinstance(stmt, ast.If):
                 after_test = _apply_expr_mutations(
-                    stmt.test, var_name, bound, hook_helpers, expected_sync=expected_sync
+                    stmt.test,
+                    var_name,
+                    bound,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
                 )
                 child_blocks.extend([(stmt.body, after_test), (stmt.orelse, after_test)])
-                test_entry_bound = bound
+                expr_root = stmt.test
+                expr_entry_bound = bound
             elif isinstance(stmt, (ast.For, ast.AsyncFor)):
                 iter_bound = _apply_expr_mutations(
-                    stmt.iter, var_name, bound, hook_helpers, expected_sync=expected_sync
+                    stmt.iter,
+                    var_name,
+                    bound,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
                 )
-                loop_bound = iter_bound and _loop_backedge_preserves_binding(
+                target_clobbers = _target_invalidates_binding(stmt.target, var_name)
+                if not target_clobbers:
+                    iter_bound = _apply_expr_mutations(
+                        stmt.target,
+                        var_name,
+                        iter_bound,
+                        hook_helpers,
+                        httpx_mod_aliases,
+                        async_client_aliases,
+                        sync_client_aliases,
+                        expected_sync=expected_sync,
+                    )
+                entry_body_bound = False if target_clobbers else iter_bound
+                loop_bound = entry_body_bound and _loop_backedge_preserves_binding(
                     stmt.body,
                     var_name,
-                    iter_bound,
+                    entry_body_bound,
                     hook_helpers,
                     httpx_mod_aliases,
                     async_client_aliases,
@@ -1157,9 +1605,11 @@ def _track_binding_in_block(
                     expected_sync=expected_sync,
                 )
                 child_blocks.extend([(stmt.body, loop_bound), (stmt.orelse, loop_bound)])
-                test_entry_bound = bound
+                if _stmt_contains_node(stmt.iter, target_node):
+                    expr_root = stmt.iter
+                    expr_entry_bound = bound
             elif isinstance(stmt, ast.While):
-                entry_after_test = _apply_while_test_state(
+                entry_after_test = _apply_expr_mutations(
                     stmt.test,
                     var_name,
                     bound,
@@ -1192,8 +1642,31 @@ def _track_binding_in_block(
                     expected_sync=expected_sync,
                 )
                 child_blocks.extend([(stmt.body, loop_bound), (stmt.orelse, loop_bound)])
+                expr_root = stmt.test
+                expr_entry_bound = test_entry_bound
             elif isinstance(stmt, (ast.With, ast.AsyncWith)):
-                child_blocks.append((stmt.body, bound))
+                with_bound = bound
+                for item in stmt.items:
+                    if _stmt_contains_node(item.context_expr, target_node):
+                        expr_root = item.context_expr
+                        expr_entry_bound = with_bound
+                        break
+                    with_bound = _apply_expr_mutations(
+                        item.context_expr,
+                        var_name,
+                        with_bound,
+                        hook_helpers,
+                        httpx_mod_aliases,
+                        async_client_aliases,
+                        sync_client_aliases,
+                        expected_sync=expected_sync,
+                    )
+                    if item.optional_vars is not None and _stmt_contains_node(item.optional_vars, target_node):
+                        break
+                    if _target_invalidates_binding(item.optional_vars, var_name):
+                        with_bound = False
+                else:
+                    child_blocks.append((stmt.body, with_bound))
             elif isinstance(stmt, control_flow_nodes):
                 body_stmts = getattr(stmt, "body", [])
                 body_mentions = any(
@@ -1204,19 +1677,22 @@ def _track_binding_in_block(
                 )
                 child_blocks.append((body_stmts, bound))
                 for handler in getattr(stmt, "handlers", []):
-                    child_blocks.append((handler.body, bound and not body_mentions))
+                    child_blocks.append((handler.body, bound and not body_mentions and handler.name != var_name))
                 orelse_stmts = getattr(stmt, "orelse", [])
                 child_blocks.append((orelse_stmts, bound and not body_mentions))
                 final_stmts = getattr(stmt, "finalbody", [])
                 child_blocks.append((final_stmts, bound and not body_mentions))
                 for case in getattr(stmt, "cases", []):
                     child_blocks.append((case.body, bound))
+            else:
+                expr_root = stmt
+                expr_entry_bound = bound
 
             for block, initial_bound in child_blocks:
-                if any(_stmt_contains_node(s, target_call) for s in block):
+                if any(_stmt_contains_node(s, target_node) for s in block):
                     return _track_binding_in_block(
                         block,
-                        target_call,
+                        target_node,
                         var_name,
                         initial_bound,
                         hook_helpers,
@@ -1225,7 +1701,20 @@ def _track_binding_in_block(
                         sync_client_aliases,
                         expected_sync=expected_sync,
                     )
-            return True, test_entry_bound
+            if expr_root is None:
+                return True, False
+            found_target, state_at_target = _eval_state_before_target(
+                expr_root,
+                target_node,
+                var_name,
+                expr_entry_bound,
+                hook_helpers,
+                httpx_mod_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
+            )
+            return True, (found_target and state_at_target)
 
         if isinstance(stmt, control_flow_nodes):
             if _stmt_mentions_name(stmt, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases):
@@ -1233,7 +1722,14 @@ def _track_binding_in_block(
             continue
 
         bound = _update_event_hooks_binding_state(
-            stmt, var_name, bound, hook_helpers, expected_sync=expected_sync
+            stmt,
+            var_name,
+            bound,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
         )
 
     return False, bound
@@ -1257,7 +1753,7 @@ def _kw_splat_sets_event_hooks(
         if isinstance(kw.value, ast.Name) and isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             found, bound = _track_binding_in_block(
                 func_node.body,
-                call,
+                kw,
                 kw.value.id,
                 False,
                 hook_helpers,
@@ -1932,6 +2428,157 @@ def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
     assert signed == 0
     assert seen == {("synthetic/double_exempt.py", "make")}
     assert unhooked == ["synthetic/double_exempt.py:5 (make)"]
+
+    comp_filter_skip_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _ = [kwargs.update(event_hooks=internal_service_event_hooks()) for _ in [1] if (kwargs.clear() or False)]\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        comp_filter_skip_neg_src, "synthetic/comp_filter_skip_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/comp_filter_skip_neg.py:7 (make)"]
+
+    comp_filter_readonly_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(items, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _seen = [x for x in items if x and kwargs.get('timeout')]\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        comp_filter_readonly_pos_src, "synthetic/comp_filter_readonly_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    for_target_overwrite_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    for kwargs in [{}]:\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        for_target_overwrite_neg_src, "synthetic/for_target_overwrite_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/for_target_overwrite_neg.py:7 (make)"]
+
+    with_target_overwrite_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(ctx, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    with ctx() as kwargs:\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        with_target_overwrite_neg_src, "synthetic/with_target_overwrite_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/with_target_overwrite_neg.py:7 (make)"]
+
+    call_arg_pop_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    return httpx.AsyncClient(timeout=kwargs.pop('event_hooks') and 5, **kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        call_arg_pop_neg_src, "synthetic/call_arg_pop_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/call_arg_pop_neg.py:6 (make)"]
+
+    call_arg_unknown_helper_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(reset_options, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    return httpx.AsyncClient(timeout=reset_options(kwargs), **kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        call_arg_unknown_helper_neg_src, "synthetic/call_arg_unknown_helper_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/call_arg_unknown_helper_neg.py:6 (make)"]
+
+    call_arg_readonly_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    return httpx.AsyncClient(timeout=kwargs.get('timeout', 5), **kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        call_arg_readonly_pos_src, "synthetic/call_arg_readonly_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    stmt_unknown_helper_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(reset_options, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    reset_options(kwargs)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        stmt_unknown_helper_neg_src, "synthetic/stmt_unknown_helper_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/stmt_unknown_helper_neg.py:7 (make)"]
+
+    loop_unknown_helper_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(items, reset_options, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    for _item in items:\n"
+        "        client = httpx.AsyncClient(**kwargs)\n"
+        "        reset_options(kwargs)\n"
+        "    return client\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        loop_unknown_helper_neg_src, "synthetic/loop_unknown_helper_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/loop_unknown_helper_neg.py:7 (make)"]
+
+    readonly_builtins_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    _n = len(kwargs)\n"
+        "    _snap = dict(kwargs)\n"
+        "    _t = kwargs.get('timeout', 5)\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        readonly_builtins_pos_src, "synthetic/readonly_builtins_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
 
 
 def test_internal_httpx_scan_path_filter_uses_repo_relative_components(tmp_path: Path):
