@@ -765,6 +765,7 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "aiohttp.web.TCPSite",
             "uvicorn.run",
             "uvicorn.Server",
+            "flask.Flask().run",
         ),
     ),
     (

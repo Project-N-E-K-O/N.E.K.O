@@ -244,6 +244,7 @@ CONNECT = "system.network:connect"
         "import aiohttp.web\naiohttp.web.TCPSite(object, '', 1)",
         "import uvicorn\nuvicorn.run(object)",
         "import uvicorn\nuvicorn.Server(object)",
+        "from flask import Flask\napp = Flask(__name__)\napp.run(port=1)",
     ],
 )
 def test_servers_are_direct_evidence_of_listen(tmp_path, source):
