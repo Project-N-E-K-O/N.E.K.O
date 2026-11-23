@@ -9,6 +9,7 @@ import {
   blindSpots,
   capabilityMessageKey,
   consentSaveErrorKey,
+  hasBlindSpots,
   needsPermissionReview,
   usedPermissions,
 } from './pluginCapabilities'
@@ -132,17 +133,19 @@ describe('permission findings of an analysis', () => {
   })
 })
 
-describe('needsPermissionReview', () => {
+describe('list marks', () => {
   it.each([
-    [undefined, false],
-    [{ state: 'clear', decision: 'approved', upgraded: false }, false],
-    [{ state: 'clear', decision: null, upgraded: false, blind_spots: 0 }, false],
-    [{ state: 'analyzing', decision: null, upgraded: false }, false],
-    [{ state: 'confirm', decision: null, upgraded: false }, true],
-    [{ state: 'confirm', decision: 'approved', upgraded: true }, true],
-    [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 2 }, true],
-  ] as const)('%o -> %s', (consent, expected) => {
-    expect(needsPermissionReview(consent)).toBe(expected)
+    [undefined, false, false],
+    [{ state: 'clear', decision: 'approved', upgraded: false }, false, false],
+    [{ state: 'clear', decision: null, upgraded: false, blind_spots: 0 }, false, false],
+    [{ state: 'analyzing', decision: null, upgraded: false }, false, false],
+    [{ state: 'confirm', decision: null, upgraded: false }, true, false],
+    [{ state: 'confirm', decision: 'approved', upgraded: true }, true, false],
+    [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 2 }, false, true],
+    [{ state: 'confirm', decision: null, upgraded: false, blind_spots: 1 }, true, true],
+  ] as const)('%o -> pending %s, blind spots %s', (consent, pending, partial) => {
+    expect(needsPermissionReview(consent)).toBe(pending)
+    expect(hasBlindSpots(consent)).toBe(partial)
   })
 })
 

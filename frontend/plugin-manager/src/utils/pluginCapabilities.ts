@@ -92,8 +92,12 @@ export function analysisFoundNothing(analysis: CapabilityAnalysis | null | undef
   )
 }
 
-/** The list's "pending review" mark: something to confirm, or blind spots. */
+/** The list's "pending confirmation" mark: something the user can confirm. */
 export function needsPermissionReview(consent: PluginConsentSummary | null | undefined): boolean {
-  if (!consent) return false
-  return consent.state === 'confirm' || (consent.blind_spots ?? 0) > 0
+  return consent?.state === 'confirm'
+}
+
+/** The list's "partly unconfirmable" mark: the analysis has blind spots. */
+export function hasBlindSpots(consent: PluginConsentSummary | null | undefined): boolean {
+  return (consent?.blind_spots ?? 0) > 0
 }

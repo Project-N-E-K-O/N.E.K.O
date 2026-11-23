@@ -274,22 +274,30 @@ describe('plugin list UI-action wiring contract', () => {
   })
 })
 
-describe('pending permission review mark', () => {
+describe('permission marks', () => {
   it.each([
     ['list row', PluginListRow],
     ['card', PluginCard],
-  ] as const)('%s marks pending confirmations and blind spots only', async (_, component) => {
-    const consents: Array<[PluginMeta['consent'], boolean]> = [
-      [undefined, false],
-      [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 0 }, false],
-      [{ state: 'confirm', decision: null, upgraded: false }, true],
-      [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 3 }, true],
+  ] as const)('%s marks pending confirmations and blind spots separately', async (_, component) => {
+    const consents: Array<[PluginMeta['consent'], boolean, boolean]> = [
+      [undefined, false, false],
+      [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 0 }, false, false],
+      [{ state: 'confirm', decision: null, upgraded: false }, true, false],
+      [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 3 }, false, true],
+      [{ state: 'confirm', decision: null, upgraded: false, blind_spots: 1 }, true, true],
     ]
-    for (const [consent, marked] of consents) {
+    for (const [consent, pending, partial] of consents) {
       const { container } = await mountEntry(component, { ...makePlugin(null), consent })
-      const tag = container.querySelector('[data-testid="plugin-permission-review"]')
-      expect(Boolean(tag), JSON.stringify(consent)).toBe(marked)
-      if (tag) expect(tag.textContent).toBe('pluginConsent.pending')
+      const label = JSON.stringify(consent)
+      const pendingTag = container.querySelector('[data-testid="plugin-permission-review"]')
+      expect(Boolean(pendingTag), label).toBe(pending)
+      if (pendingTag) expect(pendingTag.textContent).toBe('pluginConsent.pending')
+      const partialTag = container.querySelector('[data-testid="plugin-blind-spots"]')
+      expect(Boolean(partialTag), label).toBe(partial)
+      if (partialTag) {
+        expect(partialTag.textContent).toBe('pluginConsent.findings.partialTag')
+        expect(partialTag.getAttribute('title')).toBe('pluginConsent.findings.partialTagHint')
+      }
     }
   })
 })

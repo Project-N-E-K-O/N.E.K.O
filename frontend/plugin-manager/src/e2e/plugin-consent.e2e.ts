@@ -197,9 +197,10 @@ test('used permissions and blind spots are disclosed instead of nothing found', 
   await page.screenshot({ path: testInfo.outputPath('blind-spots-detail.png'), fullPage: true })
 
   await page.goto(`${PREVIEW_ORIGIN}/ui/plugins`)
-  await expect(page.locator('[data-testid="plugin-permission-review"]').first()).toHaveText(
-    'Pending confirmation',
+  await expect(page.locator('[data-testid="plugin-blind-spots"]').first()).toHaveText(
+    'Partly unconfirmable',
   )
+  await expect(page.locator('[data-testid="plugin-permission-review"]')).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('blind-spots-list.png'), fullPage: true })
 })
 
