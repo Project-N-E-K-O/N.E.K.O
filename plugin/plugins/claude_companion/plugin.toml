@@ -27,3 +27,6 @@ reason = { zh-CN = "把 Claude Code 的工作进展告诉 N.E.K.O。", zh-TW = "
 
 [permissions.require."system.env:read"]
 reason = { zh-CN = "从环境变量读取运行配置。", zh-TW = "從環境變數讀取執行設定。", en = "Read its runtime settings from environment variables.", ja = "環境変数から実行時の設定を読み取ります。", ko = "환경 변수에서 실행 설정을 읽습니다.", ru = "Читать настройки работы из переменных окружения.", es = "Leer su configuración de ejecución desde variables de entorno.", pt = "Ler as configurações de execução a partir de variáveis de ambiente." }
+
+[permissions.require."system.network:listen"]
+reason = { zh-CN = "在本机开一个端口，接收 Claude Code 发来的工作通知。", zh-TW = "在本機開一個連接埠，接收 Claude Code 傳來的工作通知。", en = "Open a port on this computer to receive work notifications from Claude Code.", ja = "このパソコンでポートを開き、Claude Code からの作業通知を受け取ります。", ko = "이 컴퓨터에서 포트를 열어 Claude Code가 보내는 작업 알림을 받습니다.", ru = "Открыть порт на этом компьютере, чтобы получать уведомления о работе от Claude Code.", es = "Abrir un puerto en este equipo para recibir avisos de trabajo de Claude Code.", pt = "Abrir uma porta neste computador para receber avisos de trabalho do Claude Code." }

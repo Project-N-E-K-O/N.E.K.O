@@ -10,6 +10,7 @@ import pytest
 from plugin.neko_plugin_cli.core.build_rules import load_build_rules
 from plugin.neko_plugin_cli.public.pack import PluginPacker
 from plugin.server.infrastructure.config_editor_schema import load_config_editor_schema
+from plugin.server.infrastructure.config_merge import strip_reserved_sections
 from plugin.server.infrastructure.packaged_metadata import read_packaged_metadata
 
 _PLUGINS = Path(__file__).resolve().parents[3] / "plugins"
@@ -54,9 +55,9 @@ def test_schema_covers_every_editable_manifest_and_example_field(plugin_id: str)
     plugin_dir = _PLUGINS / plugin_id
     manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
     manifest.pop("plugin")
-    # The top-level [permissions] table declares permissions; it is not
+    # Reserved tables such as [permissions] are manifest metadata, not
     # editable configuration (see test_builtin_plugin_permissions.py).
-    manifest.pop("permissions", None)
+    manifest = strip_reserved_sections(manifest)
     schema = _schema(plugin_id)
     # Claude companion consumes an optional section not shipped in plugin.toml.
     # Keep those existing runtime defaults documented without changing the manifest.

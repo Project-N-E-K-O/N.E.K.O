@@ -21,6 +21,7 @@ _BUILTIN = tuple(sorted(path.parent.name for path in _PLUGINS.glob("*/plugin.tom
 _LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
 
 _NET = "system.network:connect"
+_LISTEN = "system.network:listen"
 _SPAWN = "system.process:spawn"
 _ENV = "system.env:read"
 _FS_READ = "system.fs:read"
@@ -30,7 +31,12 @@ _PUSH = "plugin_sdk.main_agent.messages:push"
 # Reviewed classification: permission -> (level, background).
 _EXPECTED = {
     "app_launcher": {_SPAWN: ("require", False)},
-    "claude_companion": {_FS_READ: ("require", False), _PUSH: ("require", False), _ENV: ("require", False)},
+    "claude_companion": {
+        _FS_READ: ("require", False),
+        _PUSH: ("require", False),
+        _ENV: ("require", False),
+        _LISTEN: ("require", False),
+    },
     "game_agent_minecraft": {_NET: ("require", False), _ENV: ("require", False), _PUSH: ("ask", True)},
     "jukebox_controller": {_PUSH: ("require", False)},
     "lifekit": {_NET: ("require", False), _ENV: ("require", False), _FS_READ: ("require", False), _PUSH: ("ask", False)},
