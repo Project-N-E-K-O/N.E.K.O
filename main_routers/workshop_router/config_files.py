@@ -220,7 +220,14 @@ async def save_workshop_config_api(config_data: dict):
 def _assert_under_base(path: str, base: str) -> str:
     full = os.path.realpath(os.path.normpath(path))
     base_full = os.path.realpath(os.path.normpath(base))
-    if os.path.commonpath([full, base_full]) != base_full:
+    try:
+        common = os.path.commonpath([full, base_full])
+    except ValueError:
+        # On Windows, commonpath raises ValueError when the two paths are on
+        # different drives (e.g. a symlink resolving to another drive). Such a
+        # path cannot be under base, so report it like any other escape.
+        raise PermissionError("path not allowed") from None
+    if common != base_full:
         raise PermissionError("path not allowed")
     return full
 
