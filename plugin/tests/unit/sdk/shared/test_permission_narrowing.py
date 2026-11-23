@@ -994,3 +994,47 @@ def test_unknown_ids_under_a_closing_star_hook_are_not_logged(tmp_path):
     for index in range(20):
         assert instance._entry_state(f"nothing_{index}") == "closed"
     assert ctx.logger.errors == []
+
+
+# --- review round 4: decisions follow the current components ------------------------------------
+
+
+def test_excluding_the_router_that_was_refused_reopens_a_plain_entry(tmp_path):
+    class R(PluginRouter):
+        @plugin_entry(id="plain", permissions=[ENV])
+        async def plain(self, payload):
+            return Ok({})
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        async def plain(self, **_):
+            return "plain"
+
+    ctx = _ctx(tmp_path, DECLARED_TOML + '[[plugin.entries]]\nid = "plain"\n')
+    instance = P(ctx)
+    router = R(name="r")
+    instance.include_router(router)
+    executor = _executor_over(instance, ctx, {})
+    # The router's refused component holds the id: not run, not even by name.
+    assert executor._resolve("plugin_entry", "plain", registered_only=False) is None
+    assert instance.exclude_router(router)
+    # Gone now: the plain method is reachable again by its name.
+    assert executor._resolve("plugin_entry", "plain", registered_only=False) == instance.plain
+
+
+def test_a_refused_component_is_not_run_under_its_method_name(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="outside", permissions=[ENV])
+        async def run(self, **_): ...
+
+        async def helper(self, **_):
+            return "helper"
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    executor = _executor_over(instance, ctx, {})
+    assert executor._resolve("plugin_entry", "outside", registered_only=False) is None
+    assert executor._resolve("plugin_entry", "run", registered_only=False) is None
+    # Undecorated methods keep the attribute fallback they always had.
+    assert executor._resolve("plugin_entry", "helper", registered_only=False) == instance.helper

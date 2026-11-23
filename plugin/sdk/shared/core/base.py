@@ -181,16 +181,37 @@ class NekoPluginBase:
         ``"unchecked"``: nothing to say; a plugin that narrows nothing always
         gets this, without collecting anything.
         """
-        refused = getattr(self, "_narrowing_refused", None) or set()
         hooks = self._entry_hooks()
         narrowing_hooks = any(hook.permissions is not None for hook in hooks)
-        if not refused and not narrowing_hooks:
+        # ``_narrowing_refused`` is only a hint that something was refused at
+        # some point; the decision below is made on the components as they
+        # are now (a router may have been excluded, an id registered again).
+        if not getattr(self, "_narrowing_refused", None) and not narrowing_hooks:
             return "unchecked"
         current = self.collect_entries().get(entry_id)
         if current is not None and (getattr(current.meta, "event_type", None) or PLUGIN_ENTRY) == PLUGIN_ENTRY:
             return "registered"
-        if (PLUGIN_ENTRY, entry_id) in refused:
+        gathered = self._gather_entries()
+        kept = self._apply_permission_narrowing(dict(gathered))
+        refused_now = {
+            (str(getattr(item.meta, "event_type", None) or PLUGIN_ENTRY), key)
+            for key, item in gathered.items()
+            if key not in kept
+        }
+        if (PLUGIN_ENTRY, entry_id) in refused_now:
             return "closed"
+        # The executor's attribute fallback resolves a method by its name,
+        # which need not be its entry id: a refused component stays refused
+        # under its method name too.
+        for name in (entry_id, f"entry_{entry_id}"):
+            candidate = getattr(type(self), name, None)
+            target = candidate.__func__ if isinstance(candidate, (staticmethod, classmethod)) else candidate
+            meta = getattr(target, EVENT_META_ATTR, None)
+            if meta is not None and (
+                str(getattr(meta, "event_type", None) or PLUGIN_ENTRY),
+                str(getattr(meta, "id", "")),
+            ) in refused_now:
+                return "closed"
         if not narrowing_hooks:
             return "unchecked"
         component = Component(
@@ -330,6 +351,10 @@ class NekoPluginBase:
 
     def collect_entries(self, wrap_with_hooks: bool = True) -> dict[str, EventHandler]:
         del wrap_with_hooks
+        return self._apply_permission_narrowing(self._gather_entries())
+
+    def _gather_entries(self) -> dict[str, EventHandler]:
+        """Class and router components with id conflicts settled, before the narrowing check."""
         entries: dict[str, EventHandler] = {}
         getmembers_static = getattr(inspect, "getmembers_static", inspect.getmembers)
         for attr_name, class_value in getmembers_static(type(self)):
@@ -362,7 +387,7 @@ class NekoPluginBase:
                     continue
                 entries[str(key)] = router_handler
                 class_entry_ids.discard(str(key))
-        return self._apply_permission_narrowing(entries)
+        return entries
 
     def _apply_permission_narrowing(self, entries: dict[str, EventHandler]) -> dict[str, EventHandler]:
         """Registration check for component narrowing (``permissions=``).
