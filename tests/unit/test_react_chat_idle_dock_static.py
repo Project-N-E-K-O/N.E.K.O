@@ -728,3 +728,13 @@ def test_close_window_drops_both_owed_reopens_after_cat_woke_alone():
     close_block = _between(source, "function closeWindow() {", "neko:main-ui-hidden-by-model-manager-changed")
     assert "idleDockParkedRestore = null;" in close_block
     assert "electronIdleDockParkedRestoreBounds = null;" in close_block
+
+
+def test_any_real_surface_change_drops_the_web_owed_reopen():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    set_mode_block = _between(source, "function setChatSurfaceMode(nextMode) {", "clearCompactMinimizePressTimer();")
+    # Unconditional: a later manual minimize after the chat was opened some
+    # other way (e.g. the theater) must not inherit the reopen.
+    before_clear = _between(set_mode_block, "return previousMode;", "idleDockParkedRestore = null;")
+    assert "if (" not in before_clear

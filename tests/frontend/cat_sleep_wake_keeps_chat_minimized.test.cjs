@@ -282,6 +282,19 @@ test('Electron: a user who opens the ball themselves is not reopened again on re
   assert.deepEqual(h.expandCalls, []);
 });
 
+test('Electron: a ball the user just opened (before the next poll) is not moved on return', async () => {
+  const h = await electronDockedAsleep();
+  await h.petState({ tier: 'cat1', reason: 'cat-sleep-wake-demotion' });
+
+  // Opened by hand; the minimized-state poll has not run yet.
+  h.setCollapsed(false);
+  assert.ok(h.parts.electronIdleDockParkedRestoreBounds);
+  await h.petState({ visible: false, tier: 'none', screenRect: null, reason: 'return-ball-hide' });
+  assert.deepEqual(h.expandCalls, []);
+  assert.deepEqual(h.setBoundsCalls, []);
+  assert.equal(h.parts.electronIdleDockParkedRestoreBounds, null);
+});
+
 test('Electron: bringing her back while still asleep reopens the chat as before', async () => {
   const h = await electronDockedAsleep();
   await h.petState({ visible: false, tier: 'none', screenRect: null, reason: 'return-ball-hide' });

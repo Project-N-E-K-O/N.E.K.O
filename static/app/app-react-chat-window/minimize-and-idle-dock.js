@@ -883,7 +883,9 @@
 
         if (!bridge) return;
         if (!wasActive) {
-            if (parkedRestoreBounds && !preserveCurrentPosition) {
+            // Only reopen a window that is still collapsed: the user may have
+            // opened it between two minimized-state polls.
+            if (parkedRestoreBounds && !preserveCurrentPosition && isElectronChatWindowCollapsed(bridge)) {
                 await restoreElectronIdleDockSavedBounds(bridge, parkedRestoreBounds, true);
             }
             return;
@@ -1443,10 +1445,10 @@
             return previousMode;
         }
         I.pendingChatSurfaceMode = null;
-        if (!nextMinimized) {
-            // The chat is open again; nothing is owed on return.
-            I.idleDockParkedRestore = null;
-        }
+        // The owed reopen only holds while the chat has stayed minimized since the
+        // cat woke up. Any real surface change ends that, including a later manual
+        // minimize after the chat was opened some other way (e.g. the theater).
+        I.idleDockParkedRestore = null;
 
         // 任何真实的 surface mode 变更都取消挂起的「按下挤压→延时折叠」：否则 full→compact 之类
         // 快速跳变会让 280ms 内的陈旧折叠回调在 mode 又回到 compact 时误折叠刚恢复的表面（Codex P2，
