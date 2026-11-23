@@ -331,6 +331,11 @@ class PluginRouter:
             self._deferred_inference[id(fn)] = (fn, inferred)
         return inferred
 
+    def _notify_components_changed(self) -> None:
+        changed = getattr(self._main_plugin, "_components_changed", None)
+        if callable(changed):
+            changed()
+
     def _declared_permissions(self) -> frozenset[str] | None:
         reader = getattr(self._main_plugin, "_declared_permission_ids", None)
         return reader() if callable(reader) else None
@@ -406,12 +411,14 @@ class PluginRouter:
             permissions=effective,
         )
         self._entries[full_entry_id] = _EntryRecord(meta=meta, handler=handler)
+        self._notify_components_changed()
         return Ok(True)
 
     async def remove_entry(self, entry_id: str) -> Result[bool, RouterErrorLike]:
         full_entry_id = self._resolve_entry_id(entry_id.strip())
         if full_entry_id in self._entries:
             del self._entries[full_entry_id]
+            self._notify_components_changed()
             return Ok(True)
         return Ok(False)
 

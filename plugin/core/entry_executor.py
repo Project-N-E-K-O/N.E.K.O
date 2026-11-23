@@ -66,6 +66,9 @@ class EntryExecutor:
         self.plugin_id = plugin_id
         self._context, self._instance = context, instance
         self._entries, self._metadata, self._events = entries, metadata, events
+        # Components generation the maps reflect (see _resolve).
+        seen = getattr(instance, "_components_generation", None)
+        self._seen_generation = seen if isinstance(seen, int) else None
         self._default_timeout = default_timeout
         self._refresh, self._should_persist, self._persist = (
             refresh,
@@ -195,7 +198,20 @@ class EntryExecutor:
         # map (the loader's fallback scan maps plain methods) or would come
         # from the attribute fallback. An id registered again with a valid
         # narrowing is "registered" and is picked up by a refresh.
-        if method is not None and event_id in self._metadata:
+        generation = getattr(self._instance, "_components_generation", None)
+        if isinstance(generation, int) and generation != self._seen_generation:
+            # Components changed since the map was built (a router included
+            # or excluded, a runtime entry added or removed): rebuild it once
+            # so a stale handler is not served from it.
+            self._seen_generation = generation
+            try:
+                self._refresh()
+            except Exception:
+                # Keep serving, but not from a map that may be stale: the
+                # state check below decides instead.
+                self._seen_generation = None
+            method = self._entries.get(event_id)
+        if method is not None and event_id in self._metadata and self._seen_generation == generation:
             # Mapped from collect_entries() (it carries metadata), which
             # already ran the check: no per-call cost for registered entries.
             return method

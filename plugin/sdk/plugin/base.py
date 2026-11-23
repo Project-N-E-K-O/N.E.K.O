@@ -607,12 +607,14 @@ class NekoPluginBase(_SharedNekoPluginBase):
             if entry_id in self._dynamic_entries:
                 raise EntryConflictError(f"duplicate entry id: {entry_id!r}")
             self._dynamic_entries[entry_id] = {"meta": meta, "handler": handler, "enabled": True}
+        self._components_changed()
         self._notify_host_comm(registration)
         return True
 
     def unregister_dynamic_entry(self, entry_id: str) -> bool:
         removed = self._dynamic_entries.pop(entry_id, None) is not None
         if removed:
+            self._components_changed()
             self._notify_dynamic_entry_unregistered(entry_id)
         return removed
 
@@ -621,6 +623,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         if item is None:
             return False
         item["enabled"] = True
+        self._components_changed()
         meta = item.get("meta")
         if meta is not None:
             current = dict(getattr(meta, "metadata", None) or {})
@@ -634,6 +637,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         if item is None:
             return False
         item["enabled"] = False
+        self._components_changed()
         meta = item.get("meta")
         if meta is not None:
             current = dict(getattr(meta, "metadata", None) or {})

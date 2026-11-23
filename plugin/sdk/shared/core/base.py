@@ -192,29 +192,30 @@ class NekoPluginBase:
             current = self.collect_entries().get(entry_id)
             gathered = self._gather_entries()
         except Exception:
-            # Collecting fails (e.g. an id clash inside a router): fall back to
-            # what the last successful check refused.
-            return "closed" if (PLUGIN_ENTRY, entry_id) in getattr(self, "_narrowing_refused", set()) else "unchecked"
-        if current is not None and (getattr(current.meta, "event_type", None) or PLUGIN_ENTRY) == PLUGIN_ENTRY:
-            return "registered"
-        kept = self._apply_permission_narrowing(dict(gathered))
-        refused_now = {
-            (str(getattr(item.meta, "event_type", None) or PLUGIN_ENTRY), key)
-            for key, item in gathered.items()
-            if key not in kept
-        }
+            # Collecting fails (e.g. an id clash inside a router): what the
+            # last successful check refused stands in for the components, and
+            # the entry hook check below, which needs no collection, still runs.
+            refused_now = set(getattr(self, "_narrowing_refused", None) or ())
+        else:
+            if current is not None and (getattr(current.meta, "event_type", None) or PLUGIN_ENTRY) == PLUGIN_ENTRY:
+                return "registered"
+            kept = self._apply_permission_narrowing(dict(gathered))
+            refused_now = {
+                (str(getattr(item.meta, "event_type", None) or PLUGIN_ENTRY), key)
+                for key, item in gathered.items()
+                if key not in kept
+            }
         if (PLUGIN_ENTRY, entry_id) in refused_now:
             return "closed"
         # The executor's attribute fallback resolves a method by its name,
         # which need not be its entry id: a refused component stays refused
-        # under its method name too.
-        # Only the candidate the executor would pick (the first that exists).
+        # under its method name too. Same selection as the executor
+        # (``getattr(id) or getattr(entry_<id>)``): the first truthy one.
         for name in (entry_id, f"entry_{entry_id}"):
-            candidate = getattr(type(self), name, None)
-            if candidate is None:
+            candidate = getattr(self, name, None)
+            if not candidate:
                 continue
-            target = candidate.__func__ if isinstance(candidate, (staticmethod, classmethod)) else candidate
-            meta = getattr(target, EVENT_META_ATTR, None)
+            meta = getattr(candidate, EVENT_META_ATTR, None)
             if meta is not None and (
                 str(getattr(meta, "event_type", None) or PLUGIN_ENTRY),
                 str(getattr(meta, "id", "")),
@@ -273,6 +274,19 @@ class NekoPluginBase:
         self.logger.error("Entry not registered: {}", str(denied))
         raise denied
 
+    @property
+    def _components_generation(self) -> int:
+        """Grows whenever the registered components may have changed.
+
+        The executor maps entries once and serves later calls from that map;
+        a change it did not cause (a router included or excluded, an entry
+        added or removed at runtime) makes it rebuild the map first.
+        """
+        return int(self.__dict__.get("_components_generation_value", 0))
+
+    def _components_changed(self) -> None:
+        self.__dict__["_components_generation_value"] = self._components_generation + 1
+
     def include_router(self, router: RouterProtocol, *, prefix: str = "") -> None:
         # Bind first: binding can fail, and a failed include must not leave
         # the router with a changed prefix.
@@ -282,6 +296,7 @@ class NekoPluginBase:
         if prefix != "":
             router.set_prefix(prefix)
         self._routers.append(router)
+        self._components_changed()
         self._check_router_narrowing(router)
 
     def _check_router_narrowing(self, router: RouterProtocol) -> None:
@@ -312,6 +327,7 @@ class NekoPluginBase:
                     unbind = getattr(item, "_unbind", None)
                     if callable(unbind):
                         unbind()
+                    self._components_changed()
                     return True
             return False
         if router in self._routers:
@@ -319,6 +335,7 @@ class NekoPluginBase:
             unbind = getattr(router, "_unbind", None)
             if callable(unbind):
                 unbind()
+            self._components_changed()
             return True
         return False
 

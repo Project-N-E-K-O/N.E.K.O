@@ -1131,3 +1131,125 @@ def test_add_entry_records_its_own_narrowing_not_the_hooks(tmp_path):
     # its hooks when it collects.
     assert own.permissions == (NET,)
     assert instance.collect_entries()["x"].meta.permissions == (NET, FS)
+
+
+# --- review round 5: the map follows component changes --------------------------------------------
+
+
+def _loader_like_executor(instance, ctx):
+    """Executor over maps built and refreshed like the plugin process does (with metadata)."""
+    from plugin.core.entry_executor import EntryExecutor
+
+    entries: dict = {}
+    metadata: dict = {}
+
+    def refresh():
+        collected = instance.collect_entries()
+        entries.clear()
+        metadata.clear()
+        entries.update({eid: item.handler for eid, item in collected.items()})
+        metadata.update({eid: item.meta for eid, item in collected.items()})
+
+    refresh()
+    return EntryExecutor(
+        plugin_id="p", context=ctx, instance=instance, entries=entries, metadata=metadata, events={},
+        default_timeout=5.0, refresh=refresh, should_persist=lambda method: False,
+        persist=lambda: None, logger=ctx.logger,
+    )
+
+
+def test_excluding_the_valid_router_does_not_leave_its_handler_callable(tmp_path):
+    class Refused(PluginRouter):
+        @plugin_entry(id="x", permissions=[ENV])
+        async def x(self, payload):
+            return Ok({})
+
+    class Allowed(PluginRouter):
+        @plugin_entry(id="x", permissions=[FS])
+        async def x(self, payload):
+            return Ok({})
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        pass
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    instance.include_router(Refused(name="refused"))
+    allowed = Allowed(name="allowed")
+    instance.include_router(allowed)
+    executor = _loader_like_executor(instance, ctx)
+    assert executor._resolve("plugin_entry", "x", registered_only=False) == allowed.x
+    assert instance.exclude_router(allowed)
+    # The refused router's entry holds the id again: the mapped handler of the
+    # excluded router is not served.
+    assert executor._resolve("plugin_entry", "x", registered_only=False) is None
+
+
+def test_disabling_a_dynamic_entry_takes_it_out_of_the_executor(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        pass
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    instance.register_dynamic_entry("dyn", lambda **_: 1)
+    executor = _loader_like_executor(instance, ctx)
+    assert executor._resolve("plugin_entry", "dyn", registered_only=False) is not None
+    assert instance.disable_entry("dyn")
+    assert executor._resolve("plugin_entry", "dyn", registered_only=False) is None
+
+
+def test_registered_entries_rebuild_the_map_once_per_change(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="ok", permissions=[NET])
+        async def ok(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    executor = _loader_like_executor(instance, ctx)
+    refreshes: list[int] = []
+    original = executor._refresh
+    executor._refresh = lambda: refreshes.append(1) or original()
+    for _ in range(3):
+        assert executor._resolve("plugin_entry", "ok", registered_only=False) == instance.ok
+    assert refreshes == []
+    instance.include_router(PluginRouter(name="extra"))
+    for _ in range(3):
+        assert executor._resolve("plugin_entry", "ok", registered_only=False) == instance.ok
+    assert refreshes == [1]
+
+
+def test_a_failing_collection_still_applies_entry_hooks(tmp_path, monkeypatch):
+    @neko_plugin
+    class P(NekoPluginBase):
+        async def plain(self, **_):
+            return "plain"
+
+        @before_entry(target="plain", permissions=[ENV])
+        async def guard(self, **_): ...
+
+    instance = P(_ctx(tmp_path))
+
+    def broken(**_kwargs):
+        raise RuntimeError("collect failed")
+
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    assert instance._entry_state("plain") == "closed"
+
+
+def test_candidate_selection_follows_the_executor_truthiness(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        run = False
+
+        @plugin_entry(id="outside", permissions=[ENV])
+        async def entry_run(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    instance.collect_entries()
+    executor = _executor_over(instance, ctx, {})
+    # getattr(instance, "run") is falsy, so the executor would pick entry_run.
+    assert executor._resolve("plugin_entry", "run", registered_only=False) is None
