@@ -349,13 +349,12 @@ async def test_a_manifest_method_sharing_a_timer_id_runs_without_the_timer_metad
 
 @neko_plugin
 class _Budgets(NekoPluginBase):
-    @plugin_entry(id="shared", timeout=0.01)
+    @plugin_entry(id="shared", timeout=7)
     async def as_entry(self, **_: Any) -> str:
         return "entry"
 
     @timer_interval(id="shared", seconds=3600, auto_start=False, metadata={"timeout": 30})
     async def as_timer(self, **_: Any) -> str:
-        await asyncio.sleep(0.05)
         return "timer"
 
 
@@ -365,13 +364,17 @@ async def test_a_handler_sharing_an_id_keeps_its_own_budget(tmp_path, monkeypatc
     def broken(**_kwargs: object):
         raise RuntimeError("collect failed")
 
-    # Fallback scan: the id-keyed metadata is the entry's (0.01 s).
+    # Fallback scan: the id-keyed metadata is the entry's (7 s).
     monkeypatch.setattr(instance, "collect_entries", broken)
     executor, _instance, _logger = _runtime(tmp_path, instance=instance)
     assert executor._metadata["shared"].event_type == "plugin_entry"
     timer_meta = executor._call_meta("timer", "shared", instance.as_timer)
-    assert timer_meta is not None and timer_meta.event_type == "timer"
-    # The timer runs with its own 30 s budget, not the entry's 0.01 s.
+    entry_meta = executor._call_meta("plugin_entry", "shared", instance.as_entry)
+    # Budgets compared as values (no timing): each handler keeps its own,
+    # neither the other's nor the executor default (5 s).
+    unset = entry_executor_module.UNSET_TIMEOUT
+    assert executor._timeout(timer_meta, unset) == 30
+    assert executor._timeout(entry_meta, unset) == 7
     assert await executor.invoke("timer", "shared", {}, registered_only=True) == "timer"
     assert await executor.invoke("plugin_entry", "shared", {}) == "entry"
 
