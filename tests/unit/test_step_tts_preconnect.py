@@ -260,6 +260,18 @@ def test_spare_still_handshaking_gets_only_the_normal_confirm_window(monkeypatch
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 
 
+class _ConfirmWaitSocket(_StatefulSocket):
+    """Reports when the spare starts reading it for tts.connection.done."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.confirm_wait_started = threading.Event()
+
+    async def __anext__(self):
+        self.confirm_wait_started.set()
+        return await super().__anext__()
+
+
 def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeypatch):
     # The spare connected well before the speech arrived and is still
     # waiting for tts.connection.done: a fresh socket's window would already
@@ -271,10 +283,11 @@ def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeyp
     _route_to_lanlan_app(monkeypatch)
     monkeypatch.setattr(_step_protocol, "_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS", 5.0)
     monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.4)
-    stuck = _StatefulSocket()  # connects at once, never confirms
+    stuck = _ConfirmWaitSocket()  # connects at once, never confirms
     fresh = _socket("fresh", final_events=_app_round_end("fresh"))
-    connects = _install_sockets(monkeypatch, _warmup_socket(), stuck, fresh)
+    _install_sockets(monkeypatch, _warmup_socket(), stuck, fresh)
     granted = []
+    observations = {}
     real_wait = asyncio.wait
 
     async def recording_wait(aws, *args, timeout=None, **kwargs):
@@ -287,7 +300,8 @@ def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeyp
     _run(
         _Requests(
             _PRECONNECT,
-            _wait(lambda: len(connects) == 2),
+            # Read only after connected_at is set: the window is running.
+            _observe(observations, "confirm_wait_started", stuck.confirm_wait_started.is_set),
             _pause(0.6),  # connected 0.6s ago, past the 0.4s window
             ("speech-1", _OPENING),
             (None, None),
@@ -295,6 +309,7 @@ def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeyp
         queue.Queue(),
     )
 
+    assert observations == {"confirm_wait_started": True}
     assert granted == [0.0], f"granted the stuck spare more confirmation time: {granted}"
     assert stuck.closed.is_set()
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
