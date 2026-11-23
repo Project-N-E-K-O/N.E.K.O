@@ -172,6 +172,11 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 if not await spare.await_cleanup():
                     return None
                 new_ws = await _connect_socket()
+            if _defer_control():
+                # An interrupt/shutdown queued while connecting owns this
+                # boundary: nothing goes out on this socket.
+                spare.close_tracked(new_ws)
+                return None
             logger.info(
                 "[voice-chain] stage=tts_socket speech_id=%s host=%s preconnected=%s wait_ms=%d",
                 speech_id,
@@ -209,6 +214,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
             old_ws = ws
             ws = None
             if receive_task and not receive_task.done():
+                # Released as the next speech used to before replacing it.
+                audio_jitter.flush()
                 receive_task.cancel()
                 try:
                     await receive_task
@@ -402,6 +409,12 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                     logger.info("flush pending_text 重连重试成功")
                                 except Exception as e2:
                                     logger.warning(f"flush pending_text 重连重试仍失败，pending 丢失: {e2}")
+                        if ws is None:
+                            # The retry was preempted or failed; a queued
+                            # interrupt/shutdown or the next speech takes over.
+                            pending_text.clear()
+                            pending_text_sid = None
+                            continue
                         try:
                             await ws.send(json.dumps({"type": "text.done"}))
                             text_done_sent = True

@@ -244,6 +244,14 @@ class SpareSocket:
         task.add_done_callback(self._cleanup_done)
 
     def _cleanup_done(self, task) -> None:
+        if not task.cancelled() and task.exception() is None:
+            result = task.result()
+            if isinstance(result, tuple):
+                # A retired spare that finished despite its cancellation
+                # (wait_for can return a result that raced the cancel):
+                # nobody adopts its socket, so close it, tracked before this
+                # task leaves the set so the slot is never seen free.
+                self.close_tracked(result[0])
         self._cleanup.discard(task)
         if self._cleanup or self._deferred_blocked is None:
             return
@@ -260,9 +268,12 @@ class SpareSocket:
         cannot abandon a close half way (websockets does not abort the
         transport when the wait for the close is cancelled) and drop it from
         the tracking that keeps the next connect from overlapping it. A socket
-        that is already closed has nothing left to wait for.
+        that is known to be closed has nothing left to wait for; one whose
+        state cannot be read is closed anyway.
         """
-        if not ws_may_hold_connection(ws_conn):
+        if ws_conn is None:
+            return
+        if getattr(getattr(ws_conn, "state", None), "name", None) == "CLOSED":
             return
         self._keep_until_done(asyncio.create_task(_close_best_effort(ws_conn)))
 
@@ -406,8 +417,10 @@ class SpareSocket:
                     )
             except asyncio.CancelledError:
                 # Nothing references the spare any more; do not leave its
-                # socket open behind a cancelled worker.
-                task.cancel()
+                # socket open behind a cancelled worker. Retired like any
+                # other spare: a finished one has its socket closed, an
+                # unfinished one is cancelled and tracked until it is.
+                self._retire_task(task)
                 raise
             if not task.done():
                 self._retire_task(task)

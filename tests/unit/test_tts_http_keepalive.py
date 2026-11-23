@@ -229,6 +229,8 @@ def test_tts_client_keeps_idle_connections_longer_than_httpx_default():
 def test_environment_proxies_still_apply_and_are_covered(monkeypatch):
     # A custom transport would make httpx ignore HTTP(S)_PROXY; the retry is
     # installed on the transports httpx built, proxy mounts included.
+    for bypass in ("NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(bypass, raising=False)
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
 
     async def scenario():

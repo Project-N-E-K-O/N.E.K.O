@@ -267,7 +267,9 @@ def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeyp
     # whole new window.
     _route_to_lanlan_app(monkeypatch)
     monkeypatch.setattr(_step_protocol, "_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS", 5.0)
-    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.4)
+    # Wide margins: a fresh window (the defect) costs 1.5s, the remainder of
+    # an expired one costs nothing, and a stalled CI thread gets 0.75s.
+    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 1.5)
     stuck = _StatefulSocket()  # connects at once, never confirms
     fresh = _socket("fresh", final_events=_app_round_end("fresh"))
     marks = {}
@@ -282,7 +284,7 @@ def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeyp
         _Requests(
             _PRECONNECT,
             _wait(lambda: len(connects) == 2),
-            _pause(0.6),  # connected 0.6s ago, past the 0.4s window
+            _pause(1.7),  # connected 1.7s ago, past the 1.5s window
             lambda: marks.setdefault("speech", time.monotonic()),
             ("speech-1", _OPENING),
             (None, None),
@@ -291,7 +293,7 @@ def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeyp
     )
 
     waited = marks["fresh_connect"] - marks["speech"]
-    assert waited < 0.25, f"granted the stuck spare a new window ({waited:.2f}s)"
+    assert waited < 0.75, f"granted the stuck spare a new window ({waited:.2f}s)"
     assert stuck.closed.is_set()
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 

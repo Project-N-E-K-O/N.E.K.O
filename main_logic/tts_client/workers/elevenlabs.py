@@ -218,6 +218,9 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             old_ws = ws
             ws = None
             if receive_task and not receive_task.done():
+                # Released as _close_ws does before replacing a socket.
+                _flush_resampler_tail()
+                audio_jitter.flush()
                 receive_task.cancel()
                 try:
                     await receive_task
@@ -318,6 +321,12 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                 if not await spare.await_cleanup():
                     raise _ConnectPreempted()
                 ws = await _connect_socket()
+            if _defer_control():
+                # An interrupt/shutdown queued while connecting owns this
+                # boundary: no init or text goes out on this socket.
+                spare.close_tracked(ws)
+                ws = None
+                raise _ConnectPreempted()
             logger.info(
                 "[voice-chain] stage=tts_socket speech_id=%s host=%s preconnected=%s wait_ms=%d",
                 speech_id,

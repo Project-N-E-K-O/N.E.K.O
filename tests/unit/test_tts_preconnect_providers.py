@@ -216,6 +216,9 @@ class _Connects:
             socket = self._remaining.pop(0)
             socket.connect_kwargs = kwargs
             self.sockets.append(socket)
+            gate = getattr(socket, "connect_gate", None)
+            while gate is not None and not gate.is_set():
+                await asyncio.sleep(0.005)
             return socket
 
         monkeypatch.setattr(websockets, "connect", connect)
@@ -261,11 +264,12 @@ def test_first_speech_adopts_the_preconnected_socket(provider, monkeypatch):
     warmups = _warmups(provider)
     connects = _Connects(monkeypatch, [*warmups, spare])
     responses = queue.Queue()
+    observations = {}
 
     provider.run(
         _Requests(
             _PRECONNECT,
-            _wait(lambda: len(connects) == len(warmups) + 1),
+            _observe(observations, "spare_open_before_text", lambda: len(connects) == len(warmups) + 1),
             ("speech-1", _OPENING),
             (None, None),
             _wait(_audio_done(responses, "speech-1")),
@@ -273,6 +277,7 @@ def test_first_speech_adopts_the_preconnected_socket(provider, monkeypatch):
         responses,
     )
 
+    assert observations == {"spare_open_before_text": True}
     assert connects.names() == [s.name for s in warmups] + ["spare"], (
         "the speech must not open a socket of its own"
     )
@@ -335,6 +340,54 @@ def test_unfinished_round_keeps_its_socket_and_gets_no_spare(provider, monkeypat
 
     assert observations == {"connects": len(warmups) + 1, "first_open": True}
     assert provider.spoken(second) == [_OPENING]
+    connects.assert_one_connection_at_a_time()
+
+
+def test_retiring_a_round_still_releases_its_buffered_tail(provider, monkeypatch):
+    if not provider.quiet_guard:
+        pytest.skip("the session-final event ends this provider's receive loop")
+    # A short chunk after the done event stays below the jitter buffer's
+    # threshold; the next speech used to release it before replacing the
+    # socket, and retiring the socket early must too.
+    # Real-sized chunks: the streaming resampler keeps a few ms back, so a
+    # tiny chunk would never reach the buffer at all.
+    body = base64.b64encode(b"\x01\x00" * 12000).decode("ascii")  # 0.5s at 24 kHz
+    tail = base64.b64encode(b"\x02\x00" * 2400).decode("ascii")  # 0.1s, below the 0.2s release step
+    first = provider.make_socket("first")
+    terminal = "input_text_buffer.commit" if provider.name == "qwen" else "text.done"
+    audio_type = "response.audio.delta" if provider.name == "qwen" else "audio.delta"
+    done_type = "response.done" if provider.name == "qwen" else "audio.done"
+    first._replies[terminal] = [
+        {"type": audio_type, "delta": body},
+        {"type": done_type},
+        {"type": audio_type, "delta": tail},
+    ]
+    spare = provider.make_socket("spare")
+    warmups = _warmups(provider)
+    connects = _Connects(monkeypatch, [*warmups, first, spare])
+    responses = queue.Queue()
+    observations = {}
+
+    def audio_after_done():
+        items = list(responses.queue)
+        done_at = items.index((TTS_AUDIO_DONE_SENTINEL, "speech-1"))
+        return [i for i in items[done_at + 1:] if isinstance(i, (bytes, bytearray))]
+
+    provider.run(
+        _Requests(
+            ("speech-1", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-1")),
+            _pause(0.2),  # the tail chunk is in, below the release threshold
+            _observe(observations, "tail_held", lambda: not audio_after_done(), timeout=0),
+            _PRECONNECT,
+            _wait(lambda: len(connects) == len(warmups) + 2),
+            _observe(observations, "tail_released", lambda: bool(audio_after_done()), timeout=0.5),
+        ),
+        responses,
+    )
+
+    assert observations == {"tail_held": True, "tail_released": True}
     connects.assert_one_connection_at_a_time()
 
 
@@ -521,6 +574,92 @@ def test_interrupt_during_the_wait_for_a_retired_close_drops_the_connect(provide
 
     assert fresh not in connects.sockets, "the interrupted speech still connected"
     assert first.closed.is_set()
+
+
+def test_interrupt_queued_while_the_spare_connects_sends_nothing_on_it(provider, monkeypatch):
+    # The speech waits for a spare still connecting; an interrupt queued in
+    # that wait owns the boundary, so nothing for the cancelled speech goes
+    # out once the spare connects.
+    spare = provider.make_socket("spare")
+    spare.connect_gate = threading.Event()
+    warmups = _warmups(provider)
+    connects = _Connects(monkeypatch, [*warmups, spare])
+    requests = queue.Queue()
+
+    def drive():
+        requests.put(_PRECONNECT)
+        _wait(lambda: len(connects) == len(warmups) + 1)()
+        requests.put(("speech-1", _OPENING))
+        time.sleep(0.2)  # speech-1 now waits on the spare's connect
+        requests.put(("__interrupt__", None))
+        time.sleep(0.05)
+        spare.connect_gate.set()
+        time.sleep(0.3)
+        requests.put((TTS_SHUTDOWN_SENTINEL, None))
+
+    driver = threading.Thread(target=drive, daemon=True)
+    driver.start()
+    backstop = threading.Timer(5.0, lambda: spare.connect_gate.set())
+    backstop.start()
+    try:
+        provider.run(requests, queue.Queue())
+    finally:
+        backstop.cancel()
+        driver.join(timeout=5)
+
+    assert spare.sent == [], f"sent for an interrupted speech: {spare.sent}"
+    assert spare.closed.is_set()
+
+
+def test_qwen_socket_closing_after_session_expiry_holds_the_spare(monkeypatch):
+    # The receive task drops ``ws`` when the server expires the session and
+    # closes the socket itself; a preconnect meanwhile must still see it.
+    monkeypatch.setattr(qwen_mod, "_resolve_qwen_realtime_tts_url", lambda: "wss://dashscope.test/realtime")
+    monkeypatch.setattr(qwen_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    first = _Sock(
+        "first",
+        _type_kind,
+        replies={
+            "session.update": [{"type": "session.updated"}],
+            "input_text_buffer.commit": [
+                {"type": "response.audio.delta", "delta": _PCM_B64},
+                {"type": "response.done"},
+                {"type": "error", "error": {"message": "session_expired"}},
+            ],
+        },
+        slow_close=True,
+    )
+    spare = _qwen_socket("spare")
+    connects = _Connects(monkeypatch, [_qwen_socket("warmup"), first, spare])
+    responses = queue.Queue()
+    observations = {}
+    backstop = threading.Timer(3.0, first.release.set)
+    backstop.start()
+    try:
+        qwen_mod.qwen_realtime_tts_worker(
+            _Requests(
+                ("speech-1", _OPENING),
+                (None, None),
+                _wait(lambda: first.closing),
+                _PRECONNECT,
+                _pause(0.1),
+                _observe(observations, "connects_while_closing", lambda: len(connects), timeout=0),
+                first.release.set,
+                _wait(lambda: len(connects) == 3),
+                ("speech-2", _OPENING),
+                (None, None),
+                _wait(_audio_done(responses, "speech-2")),
+            ),
+            responses,
+            "sk-test",
+            "Momo",
+        )
+    finally:
+        backstop.cancel()
+
+    assert observations == {"connects_while_closing": 2}
+    assert _PROVIDERS[0].spoken(spare) == [_OPENING]
+    connects.assert_one_connection_at_a_time()
 
 
 # ──────────────────────────── declaration ────────────────────────────

@@ -284,6 +284,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             session_ready.clear()
             session_configured = False
             if receive_task and not receive_task.done():
+                # Released as the next speech used to before replacing it.
+                qwen_audio_jitter.flush()
                 receive_task.cancel()
                 try:
                     await receive_task
@@ -659,8 +661,13 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         )
                         session_ready.clear()
 
-                        if not is_new_speech and _defer_queued_work_until_control():
-                            # The control branch owns socket teardown.
+                        if _defer_queued_work_until_control():
+                            # An interrupt/shutdown queued while connecting (or
+                            # while waiting on the spare) owns this boundary:
+                            # nothing goes out on this socket. Closed in the
+                            # background, tracked so the next connect waits.
+                            spare.close_tracked(ws)
+                            ws = None
                             continue
 
                         # Start a new receive task that also observes session.updated
@@ -718,10 +725,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 if ws is bound_ws:
                                     ws = None
                                     session_ready.clear()
-                                    try:
-                                        await bound_ws.close()
-                                    except Exception:
-                                        pass
+                                    # Tracked in the same step that drops ``ws``:
+                                    # a preconnect or connect meanwhile must see
+                                    # this socket as still closing.
+                                    spare.close_tracked(bound_ws)
 
                         receive_task = asyncio.create_task(receive_messages(current_speech_id, ws))
 
