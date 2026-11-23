@@ -1253,7 +1253,7 @@ Rules:
 - rest is only for opening gameStance=withdrawn. If the player speaks gently or comfortingly enough to improve that state, output cancel_candidate.
 - For rest at stage >= 8: if NEKO's recent lines are still persistently low, tired, or unwilling to move, with no sign of re-engaging, output rest_needed + prepare_exit_prompt + rest. Do not stall with send_rescue_hint; offering rest is itself the way to look after her.
 - Teaching should not use surrender/rest prompts; if the input is teaching, prefer cancel_candidate.
-- reasonForDebug is one sentence of at most 25 words; evidenceTags has at most 4 short tags; counterAction is at most 12 words.
+- reasonForDebug is one sentence of at most 25 words; evidenceTags has at most 4 short tags; counterAction is at most 70 characters.
 
 Output schema:
 {
