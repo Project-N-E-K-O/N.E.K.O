@@ -22,6 +22,7 @@ import httpx
 import numpy as np
 import soxr
 
+from .._http_pool import install_stale_connection_retry, tts_http_limits
 from .._infra import (
     TTS_SHUTDOWN_SENTINEL,
     _resample_audio,
@@ -44,6 +45,10 @@ from utils.openai_tts import (
 )
 
 logger = get_module_logger(__name__, "Main")
+
+# The SDK's default pool size (openai DEFAULT_CONNECTION_LIMITS), kept as is.
+_OPENAI_SDK_MAX_CONNECTIONS = 1000
+_OPENAI_SDK_MAX_KEEPALIVE_CONNECTIONS = 100
 
 def _openai_auth_client_kwargs(client_type, audio_api_key):
     """Build SDK credentials for authenticated and auth-free endpoints."""
@@ -133,17 +138,30 @@ def openai_tts_worker(
 
     async def setup(response_queue):
         client_kwargs = _openai_auth_client_kwargs(AsyncOpenAI, audio_api_key)
+        # The SDK's own client and pool size, with the TTS keep-alive window
+        # and the one-time retry on a connection the server already dropped.
+        http_client_type = partial(
+            DefaultAsyncHttpxClient,
+            limits=tts_http_limits(
+                max_connections=_OPENAI_SDK_MAX_CONNECTIONS,
+                max_keepalive_connections=_OPENAI_SDK_MAX_KEEPALIVE_CONNECTIONS,
+            ),
+        )
+        endpoint_query = None
         if base_url:
             # Validate/normalize inside setup so configuration failures travel
             # through the shared worker skeleton's normal __ready__ channel.
             # Configuration errors must use the unified not-ready signal rather than silently exiting outside the thread.
             sdk_base_url, endpoint_query = openai_tts_sdk_options(base_url)
             client_kwargs["base_url"] = sdk_base_url
-            if endpoint_query:
-                client_kwargs["http_client"] = _openai_endpoint_query_http_client(
-                    DefaultAsyncHttpxClient,
-                    endpoint_query,
-                )
+        if endpoint_query:
+            http_client = _openai_endpoint_query_http_client(
+                http_client_type,
+                endpoint_query,
+            )
+        else:
+            http_client = http_client_type()
+        client_kwargs["http_client"] = install_stale_connection_retry(http_client)
         client = AsyncOpenAI(**client_kwargs)
         # Derive vendor extensions and the log host from the URL the SDK will
         # actually call: without ``base_url`` the SDK honors ``OPENAI_BASE_URL``.

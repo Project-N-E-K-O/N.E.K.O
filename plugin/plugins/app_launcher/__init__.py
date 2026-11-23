@@ -64,6 +64,11 @@ def _is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def _is_darwin() -> bool:
+    """Check whether the platform is macOS"""
+    return sys.platform == "darwin"
+
+
 def _is_valid_path(path: str) -> bool:
     """Check whether a path looks valid"""
     if not path or not isinstance(path, str):
@@ -106,9 +111,13 @@ def _get_file_type(path: str) -> str:
 
 
 def _file_exists(path: str) -> bool:
-    """Check whether a file exists"""
+    """Check whether a launch target exists"""
     try:
-        return os.path.isfile(path)
+        if os.path.isfile(path):
+            return True
+        if _is_darwin() and os.path.isdir(path) and Path(path).suffix.lower() == ".app":
+            return True
+        return False
     except Exception:
         return False
 
@@ -142,6 +151,8 @@ def _launch_file(path: str) -> tuple[bool, str]:
         else:
             if hasattr(os, 'startfile'):
                 os.startfile(path)
+            elif _is_darwin():
+                subprocess.Popen(["open", path])
             else:
                 subprocess.Popen(["xdg-open", path])
 

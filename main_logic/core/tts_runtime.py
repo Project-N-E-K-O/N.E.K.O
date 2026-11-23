@@ -54,6 +54,7 @@ from main_logic.tts_client import (
     TTS_PRECONNECT_SENTINEL,
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
+    worker_supports_preconnect,
     VLLM_OMNI_DEFAULT_MODEL,
 )
 from main_logic.tts_client.workers.gptsovits import GPTSOVITS_END_TIMEOUT_SECONDS
@@ -1646,7 +1647,8 @@ class TtsRuntimeMixin:
         self._tts_soft_flush_supported = bool(meta and meta.soft_flush)
         # Read off the worker callable rather than the registry: 'free' runs the
         # Step protocol but is deliberately absent from TTS_PROVIDER_REGISTRY.
-        self._tts_preconnect_supported = bool(getattr(tts_worker, "supports_preconnect", False))
+        # Unwraps functools.partial (ElevenLabs binds its base URL that way).
+        self._tts_preconnect_supported = worker_supports_preconnect(tts_worker)
         self._cancel_tts_soft_flush()
         self._tts_replay_progress_supported = bool(
             meta and meta.category == "http_sentence"
