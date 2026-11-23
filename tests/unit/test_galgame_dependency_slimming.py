@@ -730,6 +730,25 @@ def test_real_corpus_manifest_handles_cyclic_symlink_without_crashing(tmp_path):
     assert len(missing_cov) == 1 and missing_cov[0].status == "FAIL"
 
 
+def test_real_corpus_manifest_rejects_nul_byte_path_cleanly(tmp_path):
+    """Manifest paths containing NUL bytes must fail during loading rather than raising later in resolve()."""
+    verifier = _load_verifier()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps([{"path": "bad\x00.png", "category": "zh"}]),
+        encoding="utf-8",
+    )
+    ocr_json = tmp_path / "ocr.json"
+    ocr_json.write_text(json.dumps({}), encoding="utf-8")
+
+    results = []
+    verifier.check_real_corpus_manifest(results, manifest_path, [ocr_json])
+    assert len(results) == 1
+    assert results[0].name == "real_corpus_manifest"
+    assert results[0].status == "FAIL"
+    assert "NUL" in results[0].detail
+
+
 def test_fork_isolation_restores_sys_path_and_installed_modules(tmp_path, monkeypatch):
     """F0339: check_helper_parity and run_ocr('fork') must not leak FORK_ROOT or fork modules."""
     import importlib

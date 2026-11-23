@@ -66,7 +66,12 @@ It intentionally does NOT perform points-to alias analysis (e.g.
 (``self.opts[...]``), ``copy.copy`` / ``copy.deepcopy``, forward-declared
 module dicts defined after a referencing function, mid-``try`` exception
 states before a later ``.clear()``, ``continue`` before an unreachable
-``.clear()``, or conditionally-bound class-body fallback to globals.
+``.clear()``, conditionally-bound class-body fallback to globals,
+short-circuit / conditional expression mutations (e.g.
+``flag and opts.clear()``, ``opts.clear() if flag else None``), inline
+dict-literal side effects mutating a source dict while unpacking it
+(``{**opts, 'max_tokens': (opts.clear() or 100)}``), ``match``/``case``
+branch isolation, or comprehension walrus bindings (``[o := {...} for ...]``).
 
 Output
 ------
@@ -183,6 +188,18 @@ def _extract_target_names(target: ast.AST) -> list[str]:
     if isinstance(target, ast.Starred):
         return _extract_target_names(target.value)
     return []
+
+
+def _stmts_always_terminate(stmts: list[ast.stmt]) -> bool:
+    """True if ``stmts`` ends with a direct exit that cannot fall through."""
+    if not stmts:
+        return False
+    last = stmts[-1]
+    if isinstance(last, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
+        return True
+    if isinstance(last, ast.If) and last.orelse:
+        return _stmts_always_terminate(last.body) and _stmts_always_terminate(last.orelse)
+    return False
 
 
 class TemperatureKwargChecker(ast.NodeVisitor):
@@ -504,13 +521,19 @@ class TemperatureKwargChecker(ast.NodeVisitor):
         self.scopes[-1] = dict(before)
         self._visit_stmt_list(node.orelse)
         after_else = dict(self.scopes[-1])
-        self.scopes[-1] = self._merge_scopes([after_body, after_else])
+        fallthrough: list[dict[str, bool]] = []
+        if not _stmts_always_terminate(node.body):
+            fallthrough.append(after_body)
+        if not _stmts_always_terminate(node.orelse):
+            fallthrough.append(after_else)
+        self.scopes[-1] = self._merge_scopes(fallthrough or [after_body, after_else])
 
     def _visit_try_node(self, node: ast.Try) -> None:
         before = dict(self.scopes[-1])
         self._visit_stmt_list(node.body)
         after_body = dict(self.scopes[-1])
-        snapshots: list[dict[str, bool]] = []
+        all_snapshots: list[dict[str, bool]] = []
+        fallthrough: list[dict[str, bool]] = []
         for handler in node.handlers:
             self.scopes[-1] = self._merge_scopes([before, after_body])
             if handler.type is not None:
@@ -518,14 +541,22 @@ class TemperatureKwargChecker(ast.NodeVisitor):
             if handler.name:
                 self._set_local(handler.name, False)
             self._visit_stmt_list(handler.body)
-            snapshots.append(dict(self.scopes[-1]))
+            snap = dict(self.scopes[-1])
+            all_snapshots.append(snap)
+            if not _stmts_always_terminate(handler.body):
+                fallthrough.append(snap)
         if node.orelse:
             self.scopes[-1] = dict(after_body)
             self._visit_stmt_list(node.orelse)
-            snapshots.append(dict(self.scopes[-1]))
+            snap = dict(self.scopes[-1])
+            all_snapshots.append(snap)
+            if not _stmts_always_terminate(node.body) and not _stmts_always_terminate(node.orelse):
+                fallthrough.append(snap)
         else:
-            snapshots.append(after_body)
-        self.scopes[-1] = self._merge_scopes(snapshots)
+            all_snapshots.append(after_body)
+            if not _stmts_always_terminate(node.body):
+                fallthrough.append(after_body)
+        self.scopes[-1] = self._merge_scopes(fallthrough or all_snapshots)
         self._visit_stmt_list(node.finalbody)
 
     def visit_Try(self, node: ast.Try) -> None:

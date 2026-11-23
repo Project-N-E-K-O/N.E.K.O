@@ -298,6 +298,8 @@ def _using_fork_rapidocr() -> Iterator[None]:
 
 
 def _resolve_manifest_path(raw_path: str, manifest_dir: Path) -> Path:
+    if "\x00" in raw_path:
+        raise ValueError(f"manifest path contains NUL byte: {raw_path!r}")
     path = Path(raw_path)
     if path.is_absolute():
         return path
@@ -367,7 +369,7 @@ def _ocr_key_candidates(item: CorpusItem) -> set[str]:
     }
     try:
         resolved = item.path.resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return candidates
     candidates.add(resolved.as_posix())
     candidates.add(_repo_relative(resolved))
@@ -451,7 +453,7 @@ def check_real_corpus_manifest(
                 try:
                     if candidate.exists():
                         resolved_ocr_paths.add(candidate.resolve())
-                except (OSError, RuntimeError):
+                except (OSError, RuntimeError, ValueError):
                     continue
 
         def _item_covered(item: CorpusItem) -> bool:
@@ -459,7 +461,7 @@ def check_real_corpus_manifest(
                 return True
             try:
                 return item.path.resolve() in resolved_ocr_paths
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, ValueError):
                 return False
 
         missing_json_items = [item for item in items if not _item_covered(item)]

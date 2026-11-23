@@ -20,19 +20,19 @@ def _is_positive_number(value: object) -> bool:
 
 
 def _read_pdf_dimensions(pdf_path: str) -> dict[int, tuple[float, float]]:
-    """Return 1-based page_number -> (pdf_width, pdf_height) in PDF points."""
+    """Return 1-based page_number -> (pdf_width, pdf_height) in PDF points.
+
+    Uses ``page.mediabox`` without swapping rotated dimensions so scale
+    factors match ``convert_pdf_to_images.py`` and
+    ``fill_pdf_form_with_annotations.py``.
+    """
     from pypdf import PdfReader
 
     reader = PdfReader(pdf_path)
-    dims: dict[int, tuple[float, float]] = {}
-    for i, page in enumerate(reader.pages):
-        box = page.cropbox
-        width, height = float(box.width), float(box.height)
-        rotation = int(getattr(page, "rotation", 0) or 0) % 360
-        if rotation in (90, 270):
-            width, height = height, width
-        dims[i + 1] = (width, height)
-    return dims
+    return {
+        i + 1: (float(page.mediabox.width), float(page.mediabox.height))
+        for i, page in enumerate(reader.pages)
+    }
 
 
 def _compute_page_scales(

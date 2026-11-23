@@ -68,6 +68,7 @@ def _check(src: str) -> list[tuple[int, int, str]]:
         "def f():\n    opts = {}\n    opts['temperature']: float = 0.2\n    return create_chat_llm(**opts)\n",
         "def f():\n    opts = {}\n    (opts := {'temperature': 0.2})\n    return create_chat_llm(**opts)\n",
         "opts = {}\ncreate_chat_llm(**{'max_tokens': (opts := {'temperature': 0.2}) and 100}, **opts)\n",
+        "def f(flag):\n    opts = {'temperature': 0.2}\n    if flag:\n        opts.pop('temperature', None)\n        return None\n    return create_chat_llm(**opts)\n",
     ],
 )
 def test_flags_direct_and_unpacked_temperature_kwargs(snippet: str):
@@ -113,6 +114,10 @@ def test_flags_unpacked_dict_kwarg_call():
         "def make(opts={}):\n    return create_chat_llm(**opts)\n",
         "def f():\n    opts = {}\n    opts['temperature']: float\n    return create_chat_llm(**opts)\n",
         "def f():\n    try:\n        opts = {'temperature': 0.2}\n    except Exception:\n        opts = {}\n    else:\n        opts.clear()\n    return create_chat_llm(**opts)\n",
+        "def f(flag):\n    opts = {'model': 'x', 'temperature': 0.2}\n    if flag:\n        opts.pop('temperature', None)\n    else:\n        raise ValueError\n    return create_chat_llm(**opts)\n",
+        "def g():\n    opts = {'temperature': 0.2}\n    try:\n        opts.pop('temperature')\n    except KeyError:\n        raise\n    return create_chat_llm(**opts)\n",
+        "def h(items, cond):\n    opts = {'temperature': 0.2}\n    for _ in items:\n        if cond:\n            opts.clear()\n        else:\n            continue\n        create_chat_llm(**opts)\n",
+        "def k(flag):\n    opts = {}\n    if flag:\n        opts = {'temperature': 0.2}\n        return None\n    return create_chat_llm(**opts)\n",
     ],
 )
 def test_allows_legitimate_forwarding_and_cleared_dicts(snippet: str):

@@ -1,7 +1,7 @@
 import unittest
 import json
 import io
-from check_bounding_boxes import get_bounding_box_messages
+from check_bounding_boxes import _read_pdf_dimensions, get_bounding_box_messages
 
 
 # Currently this is not run automatically in CI; it's just for documentation and manual checking.
@@ -319,11 +319,62 @@ class TestGetBoundingBoxMessages(unittest.TestCase):
         messages = get_bounding_box_messages(self.create_json_stream(payload))
         self.assertTrue(any("SUCCESS" in msg for msg in messages), messages)
 
-    def test_entry_height_accounts_for_page_rotation_and_cropbox(self):
-        """Rotated / cropbox pages must swap/use rendered dimensions so short entry boxes are caught."""
+    def test_entry_height_uses_mediabox_when_cropbox_differs(self):
+        """CropBox differing from MediaBox must still use MediaBox scale matching convert/fill scripts."""
         import tempfile
         from pathlib import Path
         from pypdf import PdfWriter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_file = Path(tmpdir) / "cropped.pdf"
+            writer = PdfWriter()
+            page = writer.add_blank_page(width=612, height=792)
+            page.cropbox.upper_right = (612, 396)
+            with pdf_file.open("wb") as fh:
+                writer.write(fh)
+
+            # MediaBox 612x792 with 1000px image => 14pt needs ~17.68px (CropBox 396 would ask ~35.35px).
+            valid_payload = {
+                "pages": [{"page_number": 1, "image_width": 773, "image_height": 1000}],
+                "form_fields": [
+                    {
+                        "description": "CroppedValid20px",
+                        "page_number": 1,
+                        "label_bounding_box": [10, 10, 50, 30],
+                        "entry_bounding_box": [60, 10, 150, 30],  # 20px >= 17.68px
+                        "entry_text": {"font_size": 14},
+                    }
+                ],
+            }
+            msgs_valid = get_bounding_box_messages(
+                self.create_json_stream(valid_payload),
+                pdf_path=str(pdf_file),
+            )
+            self.assertTrue(any("SUCCESS" in msg for msg in msgs_valid), msgs_valid)
+
+            short_payload = {
+                "pages": [{"page_number": 1, "image_width": 773, "image_height": 1000}],
+                "form_fields": [
+                    {
+                        "description": "CroppedTooShort16px",
+                        "page_number": 1,
+                        "label_bounding_box": [10, 10, 50, 26],
+                        "entry_bounding_box": [60, 10, 150, 26],  # 16px < 17.68px
+                        "entry_text": {"font_size": 14},
+                    }
+                ],
+            }
+            msgs_short = get_bounding_box_messages(
+                self.create_json_stream(short_payload),
+                pdf_path=str(pdf_file),
+            )
+            self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in msgs_short), msgs_short)
+
+    def test_pdf_dimensions_match_fill_script_unswapped_mediabox_on_rotated_page(self):
+        """_read_pdf_dimensions must match fill_pdf_form_with_annotations.py's unswapped MediaBox sizes."""
+        import tempfile
+        from pathlib import Path
+        from pypdf import PdfReader, PdfWriter
 
         with tempfile.TemporaryDirectory() as tmpdir:
             pdf_file = Path(tmpdir) / "rotated.pdf"
@@ -333,25 +384,13 @@ class TestGetBoundingBoxMessages(unittest.TestCase):
             with pdf_file.open("wb") as fh:
                 writer.write(fh)
 
-            # After 90-deg rotation, rendered page height is 612pt -> 1000/612 = 1.634 px/pt.
-            # 14pt needs 22.88px, so 20px must fail (whereas unrotated 1000/792 would allow >=17.68px).
-            payload = {
-                "pages": [{"page_number": 1, "image_width": 1294, "image_height": 1000}],
-                "form_fields": [
-                    {
-                        "description": "RotatedTooShort",
-                        "page_number": 1,
-                        "label_bounding_box": [10, 10, 50, 30],
-                        "entry_bounding_box": [60, 10, 150, 30],
-                        "entry_text": {"font_size": 14},
-                    }
-                ],
+            reader = PdfReader(str(pdf_file))
+            fill_dims = {
+                i + 1: (float(p.mediabox.width), float(p.mediabox.height))
+                for i, p in enumerate(reader.pages)
             }
-            messages = get_bounding_box_messages(
-                self.create_json_stream(payload),
-                pdf_path=str(pdf_file),
-            )
-            self.assertTrue(any("FAILURE" in msg and "height" in msg for msg in messages), messages)
+            self.assertEqual(_read_pdf_dimensions(str(pdf_file)), fill_dims)
+            self.assertEqual(fill_dims, {1: (612.0, 792.0)})
     
 
 if __name__ == '__main__':

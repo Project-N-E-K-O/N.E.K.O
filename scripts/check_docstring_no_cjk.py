@@ -178,7 +178,7 @@ def _git(*args: str) -> str:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        errors="replace",
+        errors="surrogateescape",
         check=False,
     )
     if result.returncode != 0:
@@ -210,8 +210,8 @@ def _changed_py_entries(base: str) -> list[tuple[str, str | None]]:
         if kind in ("R", "C"):
             if idx + 2 >= len(tokens):
                 break
-            old_path = tokens[idx + 1].replace("\\", "/")
-            new_path = tokens[idx + 2].replace("\\", "/")
+            old_path = tokens[idx + 1]
+            new_path = tokens[idx + 2]
             idx += 3
             if new_path.endswith(".py"):
                 if (
@@ -224,7 +224,7 @@ def _changed_py_entries(base: str) -> list[tuple[str, str | None]]:
         else:
             if idx + 1 >= len(tokens):
                 break
-            path = tokens[idx + 1].replace("\\", "/")
+            path = tokens[idx + 1]
             idx += 2
             if kind == "D":
                 continue
