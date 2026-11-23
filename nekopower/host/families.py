@@ -25,7 +25,8 @@ tell, and then writes down what follows:
   family): a project is made with a directory of its own, and they are its
   members from then on, each where it worked;
 * a project gets a leader: when it is in a git repository, when a third
-  member would be opened, when its one member has too much waiting for it,
+  member would be opened, when the member its work goes to has too much
+  waiting for it,
   or when the user asks for one. From then on the project's commissions
   come to the leader, which hands them out and does none of the work.
 
@@ -46,7 +47,7 @@ from typing import Any
 
 from config import nekopower_settings as settings
 from nekopower.host import orchestrator as orch
-from nekopower.host.ledger import PROJECT_KINDS, UNDER_WAY_STATUSES, Commission, Ledger, Session
+from nekopower.host.ledger import PRESET_OF_KIND, PROJECT_KINDS, UNDER_WAY_STATUSES, Commission, Ledger, Session
 from nekopower.host.orchestrator import Agent, Bars, Done, ProjectView, Standing, Verdict
 from nekopower.host.paths import DEFAULT_PROJECT
 
@@ -129,7 +130,8 @@ class Families:
             commissions_each=settings.ORCHESTRATOR_COMMISSIONS_EACH,
         )
         now = self._clock()
-        leaders: dict[str, str] = {}
+        # Asked on their own: a leader that was not in use for long is not among the sessions looked at.
+        leaders = await self._ledger.leaders(commission.lanlan_name)
         agents: list[Agent] = []
         for row in rows:
             session = row.session
@@ -137,9 +139,7 @@ class Families:
             if in_project and session.project not in known and session.project != commission.project:
                 # Its project is archived: only naming it brings it back.
                 continue
-            if session.kind == "project" and in_project:
-                leaders.setdefault(str(session.project), session.id)
-            elif session.status == "cleared":
+            if session.status == "cleared" and not (session.kind == "project" and in_project):
                 # What was said in it was removed, being old: nothing to go on with.
                 continue
             theirs = [item for item in row.commissions if item.id != commission.id and item.parent_id is None]
@@ -148,7 +148,13 @@ class Families:
                 Agent(
                     id=session.id,
                     project=session.project if in_project else None,
-                    preset=session.preset,
+                    # (The one session a project had before there were leaders has the
+                    # leader's preset, and is the member that works there.)
+                    preset=(
+                        orch.WORKING_PRESET
+                        if session.kind == "line" and session.preset == PRESET_OF_KIND["project"]
+                        else session.preset
+                    ),
                     title=session.title,
                     duty=session.duty,
                     summary=session.summary,
@@ -291,17 +297,26 @@ class Families:
         What is made: a project and its members, for a family; a leader,
         for a project that is to have one; a new member, or a new loose
         task agent. The decision and what was made are put on record with
-        the commission.
+        the commission; where it went elsewhere than was decided (the task
+        agent was gone, the project got a leader meanwhile or is to have
+        one now), the record says where as well (``placed``).
+
+        What was decided is looked at once more as it is carried out: a
+        project that has a leader by now has its commissions go to the
+        leader, whatever was there when the decision was made.
         """
-        events: list[tuple[str, dict[str, Any]]] = [("orchestrated", orch.as_record(verdict))]
+        events: list[tuple[str, dict[str, Any]]] = []
+        decided = orch.as_record(verdict)
         action, project, agent = verdict.action, verdict.project, verdict.agent
         known = await self._projects()
         session: Session | None = None
+        # Whether it goes elsewhere than was decided.
+        moved = False
 
         if action == orch.FORM_FAMILY:
             made = await self._form_family(verdict.members)
             if made is None:
-                action = orch.CONTINUE if agent else orch.SUMMON_STRAY
+                action, moved = (orch.CONTINUE if agent else orch.SUMMON_STRAY), True
             else:
                 project = made.name
                 known[project] = made
@@ -312,10 +327,17 @@ class Families:
             session = await self._ledger.get_session(agent)
             if session is None or not await self._ledger.session_alive(session):
                 # Gone, or over since it was read: a new one in its stead.
-                session, action = None, (orch.SUMMON_IN_PROJECT if project else orch.SUMMON_STRAY)
+                session, action, moved = None, (orch.SUMMON_IN_PROJECT if project else orch.SUMMON_STRAY), True
+            elif (
+                session.kind == "line"
+                and session.project
+                and await self._ledger.lead_session(commission.lanlan_name, session.project) is not None
+            ):
+                # Its project got a leader since it was looked at: the commission is the leader's.
+                session, project, action, moved = None, session.project, orch.TO_LEADER, True
             elif session.kind == "line" and session.project and await self._busy(session):
-                # Its project's one member has too much waiting: the project gets a leader.
-                session, project, action = None, session.project, orch.TO_LEADER
+                # The member it would go on in has too much waiting: the project gets a leader.
+                session, project, action, moved = None, session.project, orch.TO_LEADER, True
                 verdict = replace(verdict, reason=LEADER_BUSY)
             else:
                 in_project = session.project if session.kind in PROJECT_KINDS else None
@@ -323,9 +345,12 @@ class Families:
 
         if action == orch.SUMMON_IN_PROJECT and project:
             members = await self._ledger.members(commission.lanlan_name, project)
-            if len(members) + 1 >= settings.LEADER_AT_MEMBERS:
+            if await self._ledger.lead_session(commission.lanlan_name, project) is not None:
+                # The project got a leader since it was looked at.
+                action, moved = orch.TO_LEADER, True
+            elif len(members) + 1 >= settings.LEADER_AT_MEMBERS:
                 # The third task agent of a project is its leader's to start.
-                action = orch.TO_LEADER
+                action, moved = orch.TO_LEADER, True
                 verdict = replace(verdict, reason=LEADER_THIRD)
             else:
                 commission = await self._file(commission, project, known)
@@ -353,6 +378,8 @@ class Families:
         if session is None:
             from utils.tokenize import truncate_to_tokens
 
+            moved = moved or action != orch.SUMMON_STRAY
+            action = orch.SUMMON_STRAY
             commission, session = await self._ledger.give_session(
                 commission.id,
                 kind="single",
@@ -362,7 +389,9 @@ class Families:
         try:
             if commission.relation != verdict.relation:
                 commission = await self._ledger.update(commission.id, relation=verdict.relation) or commission
-            await self._ledger.append_events(commission.id, events)
+            if moved:
+                decided["placed"] = {"action": action, "session": session.id}
+            await self._ledger.append_events(commission.id, [("orchestrated", decided), *events])
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - the notes are for the record; it has its session
@@ -416,7 +445,10 @@ class Families:
         if self._space is None:
             return None
         members = [item for item in [await self._ledger.get_session(one) for one in member_ids] if item is not None]
-        members = [item for item in members if item.kind == "single"]
+        # (One filed under a project by an earlier build stays that project's.)
+        members = [
+            item for item in members if item.kind == "single" and (not item.project or item.project == DEFAULT_PROJECT)
+        ]
         if not members:
             return None
         members.sort(key=lambda item: item.last_active_at, reverse=True)
@@ -445,8 +477,8 @@ class Families:
 
         suggested: tuple[str, str] | None = None
         for member in members:
-            last = await self._ledger.last_commission(member.id)
-            payload = await self._ledger.last_event(last.id, "project_suggested") if last is not None else None
+            # The latest a review of any of its commissions suggested: what followed one up was not reviewed for a name.
+            payload = await self._ledger.last_event_in(member.id, "project_suggested")
             if payload and str(payload.get("name") or "").strip():
                 suggested = (str(payload["name"]), str(payload.get("description") or ""))
                 break

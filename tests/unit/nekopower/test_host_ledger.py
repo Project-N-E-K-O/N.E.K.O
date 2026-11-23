@@ -1540,9 +1540,10 @@ async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_a
     try:
         kept = await second.get_session(session.id)
         # The one session of a project did the project's work: a member of it from here on, with
-        # the preset of one that works. (``project`` is the kind of a leader now, which does none.)
+        # the preset it was given by its kind then. (``project`` is the kind of a leader now, which
+        # does none; what a member with the leader's preset is opened as: ``test_host_families.py``.)
         assert (kept.name, kept.kind, kept.project, kept.status) == ("photos", "line", "photos", "closed")
-        assert kept.preset == "general"
+        assert kept.preset == "boss"
         assert (kept.requests, kept.tokens, kept.context_tokens, kept.forked_at) == (0, 0, 0, None)
         old = await second.get(commission.id)
         assert (old.session_id, old.requests, old.tokens, old.usage_allowed) == (session.id, 0, 0, None)

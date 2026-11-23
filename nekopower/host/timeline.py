@@ -358,6 +358,10 @@ def _event_entry(
     elif kind == "orchestrated":
         # Where it went, and how that was found: no sentence is kept with it.
         chosen = payload.get("agent") if isinstance(payload.get("agent"), str) else None
+        # Where it went, when that is elsewhere than was decided: the session it is in.
+        placed = payload.get("placed") if isinstance(payload.get("placed"), dict) else None
+        if placed is not None and isinstance(placed.get("session"), str):
+            chosen = placed["session"]
         peer = _session(chosen) if chosen else None
         detail = {
             "action": _text(payload.get("action")),
@@ -367,6 +371,8 @@ def _event_entry(
             "model_calls": _number(payload.get("model_calls")),
             "seconds": payload.get("seconds") if isinstance(payload.get("seconds"), (int, float)) else None,
         }
+        if placed is not None:
+            detail["placed"] = _text(placed.get("action"))
     elif kind == "family_formed":
         members = payload.get("members") if isinstance(payload.get("members"), list) else []
         text = _text(payload.get("project"))

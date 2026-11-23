@@ -196,10 +196,14 @@ async def test_another_characters_commission_of_the_project_has_a_session_of_its
     await wait_status(host, first.commission_id, "working")
     second = await _dispatch(host, "add a chart to the budget app", lanlan_name="Mio")
 
-    done = await wait_status(host, second.commission_id, "done")
-    assert done.session_id == second.commission_id != first.commission_id
+    # A session of its own. The project and its directory are the one the other writes in: it waits its turn.
+    await wait_until(lambda: host.task_agents.queued == [second.commission_id], what="the other character's waiting")
+    waiting = await host.ledger.get(second.commission_id)
+    assert waiting.session_id == second.commission_id != first.commission_id
+    assert scripts["add a chart"].requests == []
     release.set()
     await wait_status(host, first.commission_id, "done")
+    await wait_status(host, second.commission_id, "done")
 
 
 async def test_a_commission_waiting_for_the_user_keeps_its_session_and_the_next_one_waits(hosts, tmp_path):

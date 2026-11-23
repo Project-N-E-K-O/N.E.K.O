@@ -190,7 +190,10 @@ _SCHEMA_VERSION = 8
 # The first version in which the session of kind ``project`` is a project's
 # leader, which hands work out and does none. In a ledger of an earlier one
 # it was the project's one session, which did the work: those are members
-# from here on (``line``), with the preset of one that works.
+# from here on (``line``). Each keeps the preset it has, the leader's
+# included: what a session of it is opened as is told from the template
+# that stands for it (``TaskAgentManager._template_of``), which the ledger
+# cannot read, and which may be one of the user's that withholds tools.
 _LEADERS_SINCE_VERSION = 8
 # The first version in which a session has a preset: the sessions of a ledger
 # of an earlier one are given theirs by their kind.
@@ -1076,10 +1079,10 @@ class Ledger:
                     conn.execute("UPDATE sessions SET preset = ? WHERE kind = ? AND preset = ''", (preset, kind))
             if version < _LEADERS_SINCE_VERSION:
                 # The sessions of projects a build without leaders made: each
-                # did its project's work, and goes on doing it as a member.
-                # (One statement: done, or not at all.)
+                # did its project's work, and goes on doing it as a member,
+                # with the preset it has. (One statement: done, or not at all.)
                 conn.execute(
-                    "UPDATE sessions SET kind = 'line', preset = CASE WHEN preset IN ('', 'boss') THEN 'general' "
+                    "UPDATE sessions SET kind = 'line', preset = CASE WHEN preset = '' THEN 'general' "
                     "ELSE preset END WHERE kind = 'project'"
                 )
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
@@ -1875,6 +1878,26 @@ class Ledger:
             )
         )
 
+    async def leaders(self, lanlan_name: str) -> dict[str, str]:
+        """Return the leader of every project that has one for one character: its session's id, by project.
+
+        All of them, however long ago one was in use: a leader does not
+        end (``session_alive``). The one ``lead_session`` returns, for
+        each project.
+        """
+
+        def read(conn: sqlite3.Connection) -> dict[str, str]:
+            found: dict[str, str] = {}
+            for row in conn.execute(
+                "SELECT id, project FROM sessions WHERE lanlan_name = ? AND kind = 'project' AND project IS NOT NULL "
+                "ORDER BY created_at DESC, rowid DESC",
+                (lanlan_name,),
+            ).fetchall():
+                found.setdefault(str(row["project"]), str(row["id"]))
+            return found
+
+        return await self.run(read)
+
     async def settled_slots(self) -> list[tuple[str, str, str]]:
         """Return what sessions were settled on (``role_models.py``): slot, ident and tier, the latest first, each once.
 
@@ -1997,14 +2020,17 @@ class Ledger:
         or is no session of one commission, is left alone. One
         transaction: all of them, or none.
         """
+        from nekopower.host.paths import DEFAULT_PROJECT
+
         wanted = [str(item) for item in session_ids]
 
         def work(conn: sqlite3.Connection) -> list[Session]:
             made: list[Session] = []
             for session_id in wanted:
                 done = conn.execute(
-                    "UPDATE sessions SET kind = 'line', project = ? WHERE id = ? AND kind = 'single'",
-                    (project, session_id),
+                    "UPDATE sessions SET kind = 'line', project = ? WHERE id = ? AND kind = 'single' "
+                    "AND (project IS NULL OR project = '' OR project = ?)",
+                    (project, session_id, DEFAULT_PROJECT),
                 )
                 if done.rowcount:
                     found = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
@@ -2017,16 +2043,18 @@ class Ledger:
     async def handed_work(self, session_id: str, *, limit: int) -> list[Commission]:
         """Return the commissions a leader handed over that are over and that it was not told of yet, the most recent first.
 
-        Done, stuck or failed, with what came of them. One the leader was
-        told of has a ``told_to_session`` event, as what a copy finished
-        has (``forked_work``).
+        Done, stuck, failed or stopped by the user, with what came of
+        them. One the leader was told of has a ``told_to_leader`` event: a
+        name of its own, so that one a copy of the member's session then
+        worked on, of which that session was told (``told_to_session``,
+        ``forked_work``), is still one the leader is to hear of.
         """
 
         def work(conn: sqlite3.Connection) -> list[Commission]:
             rows = conn.execute(
-                "SELECT * FROM commissions WHERE handed_by = ? AND status IN ('done', 'blocked', 'failed') "
+                "SELECT * FROM commissions WHERE handed_by = ? AND status IN ('done', 'blocked', 'failed', 'cancelled') "
                 "AND NOT EXISTS (SELECT 1 FROM events WHERE events.commission_id = commissions.id "
-                "AND events.type = 'told_to_session') ORDER BY updated_at DESC LIMIT ?",
+                "AND events.type = 'told_to_leader') ORDER BY updated_at DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
             return [item for item in (_commission(row) for row in rows) if item is not None]
@@ -3836,13 +3864,14 @@ class Ledger:
         """Return whether a commission has an event of a kind."""
         return await self.first_event_at(commission_id, kind) is not None
 
-    async def last_event(self, commission_id: str, kind: str) -> dict[str, Any] | None:
-        """Return what a commission's latest event of a kind says; None when it has none."""
+    async def last_event_in(self, session_id: str, kind: str) -> dict[str, Any] | None:
+        """Return what the latest event of a kind says among the commissions of a session; None when there is none."""
 
         def work(conn: sqlite3.Connection) -> dict[str, Any] | None:
             row = conn.execute(
-                "SELECT payload FROM events WHERE commission_id = ? AND type = ? ORDER BY seq DESC LIMIT 1",
-                (commission_id, kind),
+                "SELECT events.payload FROM events JOIN commissions ON commissions.id = events.commission_id "
+                "WHERE commissions.session_id = ? AND events.type = ? ORDER BY events.rowid DESC LIMIT 1",
+                (session_id, kind),
             ).fetchone()
             return _load(row["payload"]) if row is not None else None
 

@@ -958,9 +958,10 @@ async def test_the_sessions_of_a_ledger_made_before_presets_are_given_theirs_by_
         named = await second.create_session(lanlan_name="Lan", name="named", kind="child", preset="scout")
         kept = {kind: await second.get_session(session.id) for kind, session in made.items()}
 
-        # (The one session a project had before it could have a leader did its work: a member now, that works.)
+        # (The one session a project had before it could have a leader did its work: a member now, with the
+        # preset of its kind then, which the template that stands for it says how to open.)
         assert {kind: (session.kind, session.preset) for kind, session in kept.items()} == {
-            "project": ("line", "general"), "single": ("single", "general"), "child": ("child", "worker"),
+            "project": ("line", "boss"), "single": ("single", "general"), "child": ("child", "worker"),
             "fork": ("fork", "shadow"),
         }
         assert all((session.title, session.duty, session.summary, session.duty_by) == ("", "", "", "") for session in kept.values())

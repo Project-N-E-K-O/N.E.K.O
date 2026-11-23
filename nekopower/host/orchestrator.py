@@ -474,8 +474,11 @@ def read_answer(raw: str, keys: Sequence[str]) -> tuple[str | None, str] | None:
 def read_choice(answer: dict[str, Any], keys: Sequence[str]) -> tuple[str | None, str] | None:
     """Read ``goes_to`` and ``relation`` out of an answer that was parsed already."""
     number = answer.get("goes_to")
-    if isinstance(number, str) and number.strip().lstrip("-").isdigit():
-        number = int(number.strip())
+    if isinstance(number, str):
+        try:
+            number = int(number.strip())
+        except ValueError:
+            return None
     if not isinstance(number, int) or isinstance(number, bool):
         return None
     if number <= 0:

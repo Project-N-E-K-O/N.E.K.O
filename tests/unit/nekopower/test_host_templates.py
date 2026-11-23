@@ -121,6 +121,14 @@ def test_what_a_template_withholds_from_itself_only_its_task_agents_keep():
     plain = _parse("withhold: [bash]\n")
     assert plain.withhold_own == () and worker.under(plain).withheld() == frozenset({"bash"})
     assert _parse("withhold_own: [bash]\n").needs_builtin
+    # What is handed down to a preset that withholds the same tool from itself only is handed down by it in turn.
+    hands_out = _parse("withhold_own: [web_fetch, bash]\n")
+    assert hands_out.handed_down() == frozenset()
+    under = hands_out.under(both)
+    assert under.handed_down() == frozenset({"web_fetch"}) and under.withheld() == frozenset({"web_fetch", "bash"})
+    assert (under.withhold, under.withhold_own) == (("web_fetch",), ("bash",))
+    assert worker.under(under).withheld() == frozenset({"web_fetch"})
+    assert worker.under(hands_out).withheld() == frozenset()
     for wrong, why in (
         ("withhold_own: 3\n", "withhold_own is a list of tool names"),
         ("withhold_own: [no_such_tool]\n", "withhold_own names no tool: no_such_tool"),

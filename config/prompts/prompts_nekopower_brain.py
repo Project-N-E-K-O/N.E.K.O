@@ -1596,6 +1596,14 @@ HAND_OVER_NOT_ALLOWED = (
 # What a tool that would go on with a commission is refused with once the
 # commission was handed over.
 HANDED_OVER_ALREADY = "this commission was handed over to another task agent; end your turn"
+# What a leader's subagent call is refused with when the task agent it would
+# start could change files; filled with str.format (preset, names: the
+# presets of this project that only read).
+LEADER_SUBAGENT_WRITES = (
+    "a task agent you start with subagent only reads, and {preset} can change files. To have "
+    "files changed, hand the commission over with hand_over; for a part whose result you need "
+    "back, name a preset that only reads: {names}"
+)
 
 # Added to the message that opens a commission worked on in a copy of a
 # project's session, the session itself being at another commission.

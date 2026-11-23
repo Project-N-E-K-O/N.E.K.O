@@ -487,6 +487,10 @@ class _Session:
     # nothing from then on; the session is closed once its run is over, and
     # the commission goes on in the other one (``_handed_over``).
     handing_over: tuple[str, str, str] | None = None
+    # What the user said to the commission while it was being handed over:
+    # said to the task agent it goes to, once it is there. (The leader's
+    # session, which is being closed, is told nothing more.)
+    said_meanwhile: list[str] = field(default_factory=list)
 
 
 # How many ends of runs a session keeps at the most (``_Session.ends``):
@@ -1280,6 +1284,11 @@ class TaskAgentManager:
         # For a commission whose opening message tells its session what
         # copies of it finished: those commissions (``_copies_said``).
         self._forks_said: dict[str, list[str]] = {}
+        # What the message that opens a commission in a leader's session
+        # tells of the commissions the leader handed over, by the commission
+        # it opens: on record as told once the session took the message
+        # (``_note_opened``), under a name of its own (``told_to_leader``).
+        self._handed_said: dict[str, list[str]] = {}
         # What tells whether a commission is a side question
         # (``LexicalDecisionModel.side_question``), and, for a commission it
         # was asked of, what it was asked about and what it said: asked once
@@ -1291,7 +1300,7 @@ class TaskAgentManager:
         self.families = Families(ledger, space, paths, clock=ledger._clock)
         # By session: the project (for which character) it writes files in.
         # One such session works in a project at a time (``_session_free_for``).
-        self._writes_in: dict[str, tuple[str, str]] = {}
+        self._writes_in: dict[str, str] = {}
         self._side_said: dict[str, tuple[str, tuple[str, ...], bool]] = {}
         # Project sessions that copies of them have news for (a commission
         # they finished, or handed back), to be told while at work
@@ -2061,7 +2070,8 @@ class TaskAgentManager:
         except Exception:  # noqa: BLE001 - not told: held to the rule
             writes = True
         if writes:
-            self._writes_in[session_id] = (kept.lanlan_name, kept.project)
+            # By project alone: every character's members work in its one directory.
+            self._writes_in[session_id] = kept.project
         else:
             self._writes_in.pop(session_id, None)
 
@@ -2132,7 +2142,8 @@ class TaskAgentManager:
             PRESET_OF_STARTER_UNUSABLE,
             PRESET_UNUSABLE,
         )
-        from nekopower.host.templates import SHADOW, TemplateError, builtin_templates
+        from nekopower.host.ledger import PRESET_OF_KIND
+        from nekopower.host.templates import LEADER_WITHHELD, SHADOW, SOURCE_BUILTIN, TemplateError, builtin_templates
 
         source = kept
         for _ in range(_COPY_CHAIN_MAX):
@@ -2156,6 +2167,22 @@ class TaskAgentManager:
             template = await asyncio.to_thread(self.templates.resolve, source.preset, source.project)
         except TemplateError as exc:
             raise RuntimeError(PRESET_UNUSABLE.format(name=source.preset, reason=exc)) from exc
+        if source.kind == "line" and source.preset == PRESET_OF_KIND["project"] and template.source == SOURCE_BUILTIN:
+            # The one session a project had in a build without leaders: it
+            # did the work under the leader's preset, and goes on doing it
+            # as one that works. Under a template of the user's that stands
+            # in the leader's place it keeps that one, and what it withholds.
+            try:
+                template = await asyncio.to_thread(self.templates.resolve, PRESET_OF_KIND["line"], source.project)
+            except TemplateError as exc:
+                raise RuntimeError(PRESET_UNUSABLE.format(name=PRESET_OF_KIND["line"], reason=exc)) from exc
+        if source.kind == "project":
+            # A leader does none of the work, whatever template stands in
+            # the built-in one's place: what it hands out is done by those
+            # it hands it to.
+            missing = tuple(tool for tool in LEADER_WITHHELD if tool not in template.withheld())
+            if missing:
+                template = dataclasses.replace(template, withhold_own=(*template.withhold_own, *missing))
         if source.kind in ("child", "line") and source.parent_id:
             # (A member a leader handed a commission to keeps what the
             # leader is without itself only: ``Template.under``.)
@@ -2702,6 +2729,7 @@ class TaskAgentManager:
         worked (``Families.member_notes``). Put together by the host; no
         model is asked.
         """
+        self._handed_said.pop(commission.id, None)
         said = await self._copies_of_session(commission)
         if not commission.session_id or commission.parent_id is not None or commission.source == "ask":
             return said
@@ -2712,7 +2740,7 @@ class TaskAgentManager:
                 more, told = await self.families.leader_notes(place, commission.id)
                 if told:
                     # On record as told once the session took the message (``_note_opened``).
-                    self._forks_said[commission.id] = [*self._forks_said.get(commission.id, []), *told]
+                    self._handed_said[commission.id] = list(told)
             elif place is not None and place.kind == "line":
                 more = await self.families.member_notes(place)
         except asyncio.CancelledError:
@@ -3497,6 +3525,7 @@ class TaskAgentManager:
             except Exception:  # noqa: BLE001 - it starts all the same; what copies did is told with the next
                 logger.warning("reading what copies of a session finished failed", exc_info=True)
                 self._forks_said.pop(commission.id, None)
+                self._handed_said.pop(commission.id, None)
                 copies = ""
 
             async def worded(*, cleared: bool, back: bool = False, excerpt: str = "") -> str:
@@ -4157,6 +4186,7 @@ class TaskAgentManager:
         # What its opening message was to tell of copies: said with the next
         # one, should this one's not have been taken.
         self._forks_said.pop(commission_id, None)
+        self._handed_said.pop(commission_id, None)
         self._drop_search_ruling(commission_id)
         if self._gateway is not None:
             self._gateway.revoke(commission_id)
@@ -4610,6 +4640,13 @@ class TaskAgentManager:
             except Exception:  # noqa: BLE001 - told again with the next commission, which does little harm
                 logger.warning("noting that a session was told of what a copy of it did failed", exc_info=True)
         self._forks_said.pop(session.commission_id, None)
+        # And what its leader handed over, said with the same message.
+        for told in list(self._handed_said.get(session.commission_id, ())):
+            try:
+                await self._ledger.append_event(told, "told_to_leader", {"commission_id": session.commission_id})
+            except Exception:  # noqa: BLE001 - told again with the next commission, which does little harm
+                logger.warning("noting that a leader was told what came of a commission it handed over failed", exc_info=True)
+        self._handed_said.pop(session.commission_id, None)
 
     def _summary(self, text: str) -> str:
         from config.nekopower_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
@@ -4885,12 +4922,11 @@ class TaskAgentManager:
                     await self._close_session(session)
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
-                    logger.warning("closing a leader's session to hand its commission over failed", exc_info=True)
-                    session.handing_over = None
-                    await self._fail(
-                        commission_id, f"the lead's session could not be closed to hand it over: {exc}", said="run"
+                except Exception:  # noqa: BLE001 - asked again by a task of its own
+                    logger.warning(
+                        "closing a leader's session to hand its commission over failed; asked again", exc_info=True
                     )
+                    self._spawn(self._close_leader_later(session))
             return
         if reason == "closed":
             # An answer kept for a run that never came is not lost with the
@@ -5860,6 +5896,11 @@ class TaskAgentManager:
                 # is as good as closed (``_handed_back``).
                 await self._handed_back(session)
                 return
+            if session.handing_over is not None and not self._closed:
+                # A leader that was closed to hand its commission over:
+                # likewise (``_handed_over``).
+                await self._handed_over(session)
+                return
             await self._release(commission_id)
 
     async def _close_session(self, session: _Session) -> None:
@@ -6184,6 +6225,13 @@ class TaskAgentManager:
         if commission is None or commission.route != "task_agent" or self._closed:
             return False
         session = self._sessions.get(commission_id)
+        if session is not None and session.handing_over is not None:
+            # Its leader is handing it over: said to the task agent it goes
+            # to, once it is there (``_handed_over``). The leader's session
+            # is being closed, and the other one sees nothing of it.
+            session.said_meanwhile.append(text)
+            await self._ledger.append_event(commission_id, "told", {"text": text, "queued": True})
+            return True
         if session is not None and self._runtime_of(session) is not None and session.awaiting_prompt:
             return await self.answer(commission_id, text)
         if session is None and commission.status == "waiting_user":
@@ -7374,6 +7422,32 @@ class TaskAgentManager:
             logger.warning("noting that a leader handed its commission over failed", exc_info=True)
         return {"message": texts.HAND_OVER_DONE.format(name=target.name)}
 
+    async def _close_leader_later(self, session: _Session) -> None:
+        """Ask again to close a leader that hands its commission over, as for a copy that hands one back.
+
+        Its close could not be asked for. Nothing comes by to ask again
+        once its run is over, so the close is asked a few more times, a
+        while apart; given up on, the commission fails as one whose run
+        failed and lets its place go.
+        """
+        from config.nekopower_settings import REST_LOOK_RETRY_DELAYS
+
+        commission_id = session.commission_id
+        for delay in REST_LOOK_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            if self._closed or self._sessions.get(commission_id) is not session or session.closing:
+                # Gone, or closing after all: its end takes it from there.
+                return
+            try:
+                await self._close_session(session)
+                return
+            except Exception:  # noqa: BLE001 - asked again, and given up after the last
+                logger.warning("closing a leader's session to hand its commission over failed again", exc_info=True)
+        if self._sessions.get(commission_id) is session and not session.closing and not self._closed:
+            session.handing_over = None
+            await self._fail(commission_id, "the lead's session could not be closed to hand it over", said="run")
+            self._discard(commission_id)
+
     async def _handed_over(self, session: _Session) -> None:
         """Go on, in the task agent it was handed to, with a commission its project's leader handed over, the leader's session being closed.
 
@@ -7394,6 +7468,7 @@ class TaskAgentManager:
         commission_id, leader_id = session.commission_id, session.session_id
         assert session.handing_over is not None
         to, _name, brief = session.handing_over
+        said_meanwhile = list(session.said_meanwhile)
         candidates = self._candidates.get(commission_id)
         excerpt = self._excerpts.get(commission_id)
         self._discard(commission_id)
@@ -7420,7 +7495,10 @@ class TaskAgentManager:
                 await self._note_writer(to)
                 nonce = secrets.token_hex(8)
                 message = _Found(frame(texts.TASK_AGENT_HANDED_OVER.format(nonce=nonce), brief, nonce))
-                await self._wake_working(commission_id, message, reason="handed over by the lead of its project")
+                if await self._wake_working(commission_id, message, reason="handed over by the lead of its project"):
+                    for text in said_meanwhile:
+                        # What the user said to it meanwhile, in the user's own words, after the brief.
+                        await self._wake_working(commission_id, text, reason="said while it was handed over")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
@@ -7447,6 +7525,9 @@ class TaskAgentManager:
             raise RuntimeError("a child task agent cannot start further task agents")
         workdir = await self._child_workdir(parent, payload.get("cwd"))
         preset = await self._preset_wanted(parent, payload.get("preset"))
+        place = await self._ledger.get_session(parent.session_id) if parent.session_id else None
+        if place is not None and place.kind == "project":
+            await self._leader_starts_readers(place, preset)
         async with self._naming_members:
             # Read and filed with no other member of the team named between
             # (a question it asks is named under the same hold): one started
@@ -7495,6 +7576,34 @@ class TaskAgentManager:
         if not await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False):
             raise RuntimeError(f"{_NO_PLACE_REASON}; do this part yourself")
         return {"name": name}
+
+    async def _leader_starts_readers(self, leader: Session, preset: str | None) -> None:
+        """Raise unless the task agent a leader starts is of a preset that changes no file.
+
+        A leader does none of the work, and not through a task agent it
+        starts either: work that writes or edits files is a member's,
+        handed over, where one writes in the project at a time and the
+        user is asked about a new one (``_cb_hand_over``). What a leader
+        starts itself looks, plans or checks. Told by the preset as the
+        task agent would have it (``Template.under``); one that cannot be
+        read counts as one that writes.
+        """
+        from config.prompts.prompts_nekopower_brain import LEADER_SUBAGENT_WRITES
+        from nekopower.host.ledger import PRESET_OF_KIND
+        from nekopower.host.templates import NOT_FOR_CHILDREN, model_name
+
+        wanted = preset or PRESET_OF_KIND["child"]
+        over = await self._template_of(leader)
+        listed = await asyncio.to_thread(self.templates.listing, leader.project)
+        reads = [
+            item.name
+            for item in listed
+            if item.template is not None and item.name not in NOT_FOR_CHILDREN and not item.template.under(over).writes_files
+        ]
+        if wanted not in reads:
+            raise RuntimeError(
+                LEADER_SUBAGENT_WRITES.format(preset=model_name(wanted), names=", ".join(model_name(name) for name in reads))
+            )
 
     async def _preset_wanted(self, parent: Commission, named: Any) -> str | None:
         """Return the preset a task agent names for one it starts, or None when it names none; raises for one that cannot be used.

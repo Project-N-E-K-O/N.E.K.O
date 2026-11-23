@@ -219,13 +219,20 @@ class Template:
         without itself only (``withhold_own``): a preset that hands work
         out says so to keep its own hands off, and whoever it starts does
         the work. The role and the cap on requests are the task agent's
-        own preset's.
+        own preset's. What ``starter`` hands down is handed down by the
+        task agent in turn, also where its own preset withholds the same
+        tool from itself only: the task agents it starts are without it.
         """
-        more = starter.handed_down() - self.withheld()
+        more = starter.handed_down() - self.handed_down()
         memory = "none" if starter.memory == "none" else self.memory
         if not more and memory == self.memory:
             return self
-        return replace(self, withhold=tuple(sorted({*self.withhold, *more})), memory=memory)
+        return replace(
+            self,
+            withhold=tuple(sorted({*self.withhold, *more})),
+            withhold_own=tuple(tool for tool in self.withhold_own if tool not in more),
+            memory=memory,
+        )
 
     @property
     def calls_nothing(self) -> bool:
