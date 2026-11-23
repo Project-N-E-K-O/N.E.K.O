@@ -38,7 +38,11 @@ const names = computed(() => {
 })
 const nameOf = (sessionId: string | null | undefined) => names.value.get(sessionId ?? '') || t('power.activity.someone')
 
-/** The names are read with the board, again whenever something new happened: a familiar may have joined. */
+/**
+ * The names are read with the board, again whenever something new happened: a familiar may have
+ * joined. That is with every page that brought something, also once as many entries are held as
+ * are kept and their number stays the same: what is watched is made anew each time they change.
+ */
 async function readNames() {
   const mine = ++turn
   try {

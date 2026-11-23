@@ -106,16 +106,20 @@ const earlier = () => (before.value === null ? Promise.resolve() : read(before.v
 
 /** Read one entry whole and put it in the place of the cut one. */
 async function open(entry: TranscriptEntry) {
+  // Asked of this familiar: places are counted in each conversation from its own beginning, so
+  // an answer that comes after another familiar was opened has a place there too, and is not its.
+  const session = props.sessionId
   opening.value = entry.at
   try {
-    const page = await getTranscript(props.sessionId, { at: entry.at })
+    const page = await getTranscript(session, { at: entry.at })
+    if (session !== props.sessionId) return
     const whole = page.entries[0]
     if (whole) entries.value = entries.value.map(item => (item.at === entry.at ? whole : item))
     error.value = ''
   } catch (failure) {
-    error.value = describeConsoleError(failure, t, te)
+    if (session === props.sessionId) error.value = describeConsoleError(failure, t, te)
   } finally {
-    opening.value = null
+    if (session === props.sessionId) opening.value = null
   }
 }
 
@@ -123,6 +127,7 @@ watch(() => props.sessionId, () => {
   entries.value = []
   before.value = null
   loaded.value = false
+  opening.value = null
   void latest()
 }, { immediate: true })
 </script>

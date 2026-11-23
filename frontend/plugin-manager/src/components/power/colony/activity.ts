@@ -82,11 +82,18 @@ export function sceneAt(entries: TimelineEntry[], index: number): Map<string, Sc
   return cats
 }
 
-/** Return the sessions the entries name, each with where it was first named. */
-export function firstSeen(entries: TimelineEntry[]): Map<string, number> {
+/**
+ * Return the sessions that were not there before the entries came to them, each with where
+ * it came in.
+ *
+ * `whole` says the entries begin where the record begins: whoever they name was not there
+ * before it was first named. Where they begin later, only one that another started among
+ * them is known to be new; one that is merely named may have stood by all along.
+ */
+export function firstSeen(entries: TimelineEntry[], whole: boolean): Map<string, number> {
   const seen = new Map<string, number>()
   entries.forEach((entry, index) => {
-    for (const id of [entry.session_id, entry.kind === 'child_started' ? entry.peer?.session_id : null]) {
+    for (const id of [whole ? entry.session_id : null, entry.kind === 'child_started' ? entry.peer?.session_id : null]) {
       if (id && !seen.has(id)) seen.set(id, index)
     }
   })

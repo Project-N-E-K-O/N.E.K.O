@@ -154,7 +154,9 @@ describe('how the familiars stood at a moment of what happened', () => {
   })
 
   it('knows where each session is first named, and who is named that the board does not hold', () => {
-    expect([...firstSeen(story)]).toEqual([['lead', 0], ['scout', 2]])
+    expect([...firstSeen(story, true)]).toEqual([['lead', 0], ['scout', 2]])
+    // Entries that begin later than the record: only the one that was started among them is known to be new.
+    expect([...firstSeen(story, false)]).toEqual([['scout', 2]])
     expect(ghostsOf(story, new Set(['lead']))).toEqual([
       { id: 'scout', name: 'Find the templates', preset: 'scout', project: 'Blog', parent: 'lead' },
     ])
@@ -539,6 +541,25 @@ describe('the colony on the home page', () => {
     expect(cat('scout')?.getAttribute('data-look')).toBe('working')
   })
 
+  it('shows one that stood by before the entries begin, where they do not begin at the beginning', async () => {
+    // Only the last stretch was read: the first of it that names the leader is something it said.
+    api.getTimelineStart.mockResolvedValue({ after: 'e50.m2', latest: 'e99.m9' })
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e99.m9', more: false, latest: 'e99.m9' })
+    api.getTimeline.mockResolvedValueOnce({ next: 'e99.m9', more: false, latest: 'e99.m9', entries: [
+      entry('reported', { session_id: 'kid', at: 10, cursor: 'e60.m0', text: 'the template is in' }),
+      entry('reported', { at: 20, cursor: 'e61.m0', text: 'half way' }),
+    ] })
+    await mount(FamiliarColony)
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '0'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    // Not named yet at that moment, and there all the same.
+    expect(cat('lead')?.getAttribute('data-look')).toBe('idle')
+    expect(cat('kid')).toBeTruthy()
+  })
+
   it('answers a familiar that waits from the colony, with what it asks shown whole', async () => {
     api.answerCommission.mockResolvedValue({ success: true })
     await mount(FamiliarColony)
@@ -694,6 +715,21 @@ describe('the colony on the home page', () => {
     await mount(FamiliarColony)
     expect(byTest('board-empty')?.textContent).toContain(words.home.empty)
     expect(byTest('colony-field')).toBeNull()
+    // What happened before can still be looked at: those who took part stand there while it is replayed.
+    expect(document.querySelectorAll('.row').length).toBe(story.length)
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '4'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(cat('scout')?.getAttribute('data-look')).toBe('working')
+    expect(byTest('board-empty')).toBeNull()
+    cleanup?.()
+    // Nobody and nothing that happened: nothing to replay either.
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e0.m0', more: false, latest: 'e0.m0' })
+    await mount(FamiliarColony)
+    expect(byTest('board-empty')).toBeTruthy()
+    expect(byTest('colony-replay')).toBeNull()
     cleanup?.()
     api.getBoard.mockRejectedValue({ response: { status: 404 } })
     await mount(FamiliarColony)

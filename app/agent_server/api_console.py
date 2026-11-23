@@ -957,8 +957,9 @@ def build_console_router(
     async def set_mcp_permission(payload: dict[str, Any]) -> dict[str, Any]:
         """Set how one MCP server is treated, or all of them when ``server`` is not given.
 
-        A server set to ``auto`` has no setting of its own and goes by the
-        one all servers share.
+        A server set to ``auto`` is left without a setting of its own and
+        goes by the one all servers share, as one that was never set does
+        (``PermissionStore.clear_mcp_server``).
         """
         from nekopower.host.permissions import MCP_SERVER_CATEGORY, MODES, PermissionFileError
 
@@ -975,9 +976,12 @@ def build_console_router(
             raise _refuse(400, "bad_version")
         host = await get_host()
         try:
-            changed = await host.permission_store.set_mode(
-                MCP_SERVER_CATEGORY, mode, server.strip() if server is not None else None, expected_version=expected
-            )
+            if server is not None and mode == "auto":
+                changed = await host.permission_store.clear_mcp_server(server.strip(), expected_version=expected)
+            else:
+                changed = await host.permission_store.set_mode(
+                    MCP_SERVER_CATEGORY, mode, server.strip() if server is not None else None, expected_version=expected
+                )
         except PermissionFileError:
             raise _refuse(409, "permissions_unreadable") from None
         if not changed:

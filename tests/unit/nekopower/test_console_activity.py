@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -390,10 +391,8 @@ async def test_what_a_task_agent_and_a_commission_used_is_read_with_what_may_be_
     assert (of_session["session"]["requests"], of_session["session"]["tokens"]) == (2, 2_270)
     assert of_session["session"]["context_tokens"] == 1_220
     assert of_session["window"]["window"] == settings.TASK_AGENT_CONTEXT_WINDOW
-    in_hand = of_session["commission"]
-    assert (in_hand["id"], in_hand["status"], in_hand["used"], in_hand["limit"]) == (
-        done.id, "done", 2_270, settings.TASK_AGENT_USAGE_LIMIT_TOKENS,
-    )
+    # What it finished is not in its hands any more: nothing is held against the limit.
+    assert of_session["commission"] is None
     of_commission = (await console.get(f"/commissions/{done.id}/usage")).json()
     assert (of_commission["used"], of_commission["limit"], of_commission["commission"]["requests"]) == (
         2_270, settings.TASK_AGENT_USAGE_LIMIT_TOKENS, 2,
@@ -433,6 +432,9 @@ async def test_the_commissions_are_listed_newest_first_with_what_each_asks_and_k
     assert (done["session"]["kind"], done["session"]["preset"]) == ("single", "general")
     assert (waiting["status"], waiting["project"], waiting["session"]["kind"]) == ("waiting_user", "Garden", "project")
     assert waiting["ask"]["question"] == "Beans or peas?"
+    # The one that waits has its commission in hand, with what that may use.
+    in_hand = (await console.get(f"/familiars/{waiting['session_id']}/usage")).json()["commission"]
+    assert (in_hand["id"], in_hand["status"], in_hand["limit"]) == (second.id, "waiting_user", settings.TASK_AGENT_USAGE_LIMIT_TOKENS)
     assert set(done["usage"]) == {"requests", "tokens"}
 
     async def ids(**params: Any) -> list[str]:
@@ -510,6 +512,46 @@ async def test_what_is_kept_to_is_looked_for_before_the_listing_is_cut(consoles,
     assert await listing(project="Garden") == ([], True)
 
 
+async def test_one_that_rests_is_not_listed_as_at_work_and_one_stuck_long_ago_is_not_listed_as_under_way(consoles, tmp_path):
+    from tests.unit.nekopower.test_host_timeline import _file, _session
+
+    console = consoles(tmp_path)
+    ledger = console.host.ledger
+
+    async def at_work(title: str) -> str:
+        commission = await _file(ledger, await _session(ledger, title, project=None, kind="single"), title)
+        assert (await ledger.transition(commission.id, "working")).applied
+        return commission.id
+
+    working, resting, stuck = await at_work("at work"), await at_work("resting"), await at_work("stuck")
+    # It rests while something it asked for is still to wake it.
+    _wake, refusal = await ledger.wake_add(
+        session_id=(await ledger.get(resting)).session_id, commission_id=resting, note="look at the build again",
+        due_at=time.time() + 3600, pending_max=5, daily_max=5,
+    )
+    assert refusal == "" and await ledger.rest(resting) is not None
+    assert (await ledger.transition(stuck, "blocked")).applied
+
+    async def ids(**params: Any) -> list[str]:
+        return [item["id"] for item in (await console.get("/commissions", **params)).json()["commissions"]]
+
+    assert await ids() == [stuck, resting, working]
+    # By what each is shown as: the one that rests is not at work, and the other way round.
+    assert await ids(status="working") == [working]
+    assert await ids(status="resting") == [resting]
+    assert await ids(status="working,resting") == [resting, working]
+    assert await ids(status="blocked") == [stuck]
+
+    # Long ago, all three. Those under way are listed however long it has been; the one that
+    # is stuck is over, and listed only when asked however long ago.
+    def long_ago(conn: Any) -> None:
+        conn.execute("UPDATE commissions SET updated_at = updated_at - 30 * 86400")
+
+    await ledger.run(long_ago)
+    assert await ids() == [resting, working]
+    assert await ids(days="0") == [stuck, resting, working]
+
+
 # ---------------------------------------------------------------------------
 # The MCP tools
 # ---------------------------------------------------------------------------
@@ -567,6 +609,16 @@ async def test_the_mcp_tools_are_listed_by_server_and_each_server_is_set_on_its_
     # Back to no setting of its own.
     back = (await console.post("/mcp/permission", {"server": "notes", "mode": "auto"})).json()
     assert {item["server"]: item["effective"] for item in back["servers"]}["notes"] == "always_ask"
+    # Whatever the shared one is: allowed, it is allowed as the one that was never set is.
+    allowed = (await console.post("/mcp/permission", {"mode": "allow"})).json()
+    assert {item["server"]: (item["mode"], item["effective"]) for item in allowed["servers"]} == {
+        "calendar": ("auto", "allow"), "notes": ("auto", "allow"),
+    }
+    assert (await console.host.permission_store.snapshot())["mcp_servers"] == {}
+    # Taken away on an older view: refused, and it keeps what it has.
+    await console.post("/mcp/permission", {"server": "notes", "mode": "deny"})
+    assert _code(await console.post("/mcp/permission", {"server": "notes", "mode": "auto", "expected_version": allowed["version"]})) == (409, "stale")
+    assert await console.host.permission_store.mode("mcp_server", "notes") == "deny"
 
     for payload, code in (
         ({"server": "notes", "mode": "sometimes"}, "bad_mode"),
@@ -578,6 +630,32 @@ async def test_the_mcp_tools_are_listed_by_server_and_each_server_is_set_on_its_
         ({"server": "notes", "mode": "deny", "expected_version": True}, "bad_version"),
     ):
         assert _code(await console.post("/mcp/permission", payload)) == (400, code), payload
+
+
+async def test_taking_the_setting_of_a_server_away_ends_what_was_approved_only_where_it_is_held_more_strictly(tmp_path):
+    from nekopower.host.permissions import PermissionStore
+
+    store = PermissionStore(tmp_path / "permissions.json")
+    await store.set_mode("mcp_server", "always_ask")
+    await store.set_mode("mcp_server", "allow", "notes")
+    shared, own = store.revision("mcp_server"), store.revision("mcp_server", "notes")
+    version = store.version
+    # One that has none of its own: nothing changes, nothing is written.
+    assert await store.clear_mcp_server("calendar") and store.version == version
+    # From allowed to asked every time: what was approved for the servers that share the setting counts no more.
+    assert await store.clear_mcp_server("notes")
+    assert store.version == version + 1
+    assert await store.mode("mcp_server", "notes") == "always_ask"
+    assert store.revision("mcp_server", "notes") == store.revision("mcp_server") == store.version
+    assert store.revision("mcp_server") not in (shared, own)
+    # Kept on the disk as it is now.
+    assert (await PermissionStore(tmp_path / "permissions.json").snapshot())["mcp_servers"] == {}
+
+    # From forbidden to asked every time is no stricter: what was approved under the shared setting stays.
+    await store.set_mode("mcp_server", "deny", "notes")
+    shared = store.revision("mcp_server")
+    assert await store.clear_mcp_server("notes")
+    assert store.revision("mcp_server") == store.revision("mcp_server", "notes") == shared
 
 
 async def test_a_server_that_is_set_and_has_no_tool_now_is_still_listed_and_a_missing_adapter_is_said(consoles, tmp_path, monkeypatch):
@@ -652,10 +730,35 @@ async def test_a_limit_file_that_holds_no_such_number_is_read_as_nothing_set(con
     console = consoles(tmp_path)
     kept = console.host.paths.usage_limit_json()
     kept.parent.mkdir(parents=True, exist_ok=True)
+    from nekopower.host.usage_limit import UsageLimitStore
+
     for content in ("{not json", '{"tokens": 12}', '{"tokens": "many"}', '{"tokens": true}', "[]"):
         kept.write_text(content, encoding="utf-8")
-        view = (await console.get("/usage-limit")).json()
-        assert (view["set"], view["tokens"]) == (None, settings.TASK_AGENT_USAGE_LIMIT_TOKENS), content
+        # A store reads its file once: one that begins with this file each time.
+        assert await UsageLimitStore(kept).get() is None, content
+    view = (await console.get("/usage-limit")).json()
+    assert (view["set"], view["tokens"]) == (None, settings.TASK_AGENT_USAGE_LIMIT_TOKENS)
+
+
+async def test_the_limit_is_read_from_its_file_once_and_what_is_set_since_holds(tmp_path, monkeypatch):
+    from nekopower.host.usage_limit import UsageLimitStore
+
+    kept = tmp_path / "usage_limit.json"
+    kept.write_text('{"version": 1, "tokens": 2000000}', encoding="utf-8")
+    store = UsageLimitStore(kept)
+    reads = []
+    read = store._read
+    monkeypatch.setattr(store, "_read", lambda *args: (reads.append(1), read(*args))[1])
+    assert [await store.get() for _ in range(3)] == [2_000_000] * 3
+    assert len(reads) == 1
+    await store.put(3_000_000)
+    assert await store.get() == 3_000_000
+    await store.put(None)
+    assert await store.get() is None and not kept.exists()
+    assert len(reads) == 1
+    # What another store begins with is what was written.
+    await store.put(4_000_000)
+    assert await UsageLimitStore(kept).get() == 4_000_000
 
 
 async def test_the_limit_the_user_set_is_where_a_commission_stops_to_ask(consoles, tmp_path, monkeypatch):
@@ -752,3 +855,14 @@ async def test_a_project_whose_directory_cannot_be_moved_stays_and_the_page_is_t
 
     monkeypatch.setattr(console.host.space, "archive_project", not_moved)
     assert _code(await console.post("/space/projects/archive", {"project": "Garden"})) == (409, "archive_failed")
+
+    # Not moved because the host put it away by itself meanwhile: it is not there to put away.
+    read = console.host.space.read_project
+    looks = []
+
+    async def gone_at_the_second_look(name: str) -> Any:
+        looks.append(name)
+        return (None, True) if len(looks) > 1 else await read(name)
+
+    monkeypatch.setattr(console.host.space, "read_project", gone_at_the_second_look)
+    assert _code(await console.post("/space/projects/archive", {"project": "Garden"})) == (404, "no_project")

@@ -17,8 +17,9 @@
 The default is a setting of the build (``TASK_AGENT_USAGE_LIMIT_TOKENS``).
 A user who wants commissions stopped earlier, or let run longer, sets
 another number on the page about the runtime; it is kept in a file next to
-the ledger and read every time the limit is looked at, so a change holds
-from the next model request on, for commissions under way as well. What a
+the ledger. The limit is looked at before every model request, so a change
+holds from the next one on, for commissions under way as well; the file is
+read once for that and what it said is kept, with what is set since. What a
 commission was allowed beyond the limit (the user said "go on") stays as it
 was allowed.
 
@@ -64,6 +65,10 @@ class UsageLimitStore:
     def __init__(self, path: Path | Callable[[], Path]) -> None:
         self._path_source = path
         self._lock = asyncio.Lock()
+        # What the file said when it was read, and what was set since: asked for before
+        # every model request, which is no time to read a file.
+        self._kept: int | None = None
+        self._known = False
 
     def _path(self) -> Path:
         source = self._path_source
@@ -93,7 +98,13 @@ class UsageLimitStore:
 
     async def get(self) -> int | None:
         """Return the limit the user set, in tokens; None while the default holds."""
-        return await asyncio.to_thread(self._read)
+        if not self._known:
+            # Not beside a write: what it writes is what holds afterwards.
+            async with self._lock:
+                if not self._known:
+                    self._kept = await asyncio.to_thread(self._read)
+                    self._known = True
+        return self._kept
 
     async def put(self, value: int | None) -> None:
         """Set the limit; None goes back to the default. Raises ``ValueError`` for a number out of bounds.
@@ -112,3 +123,4 @@ class UsageLimitStore:
         async with self._lock:
             path = self._path()
             await asyncio.to_thread(self._write, value, path)
+            self._kept, self._known = value, True

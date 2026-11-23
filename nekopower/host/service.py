@@ -852,16 +852,20 @@ class NekoPowerHost:
         return {"readable": True, **page}
 
     async def session_usage(self, session_id: str) -> dict[str, Any] | None:
-        """Return what a session used over all its commissions, and what its commission in hand may; None for an unknown one.
+        """Return what a session used over all its commissions, and what the commission it has in hand may; None for an unknown one.
 
         ``{"session": {requests, input, output, cache_read, cache_write,
         tokens, context_tokens}, "window": ..., "commission": ...}``:
         ``window`` what sessions of its model are managed for
         (``ModelCapabilityStore.describe_window``; None when its model
-        cannot be told), ``commission`` what ``usage`` says of its latest
-        commission (``id``, ``used``, ``limit``, its own count), None for a
-        session that never had one.
+        cannot be told), ``commission`` what ``usage`` says of the
+        commission it has in hand (``id``, ``used``, ``limit``, its own
+        count): its latest, while that is under way
+        (``UNDER_WAY_STATUSES``). None for a session that has none in
+        hand: one that is over is not held against a limit any more.
         """
+        from nekopower.host.ledger import UNDER_WAY_STATUSES
+
         self._first_use()
         kept = await self.ledger.get_session(session_id)
         if kept is None:
@@ -873,6 +877,7 @@ class NekoPowerHost:
             usage = await self.usage(latest[0].id)
             if usage is not None:
                 window = usage.get("window")
+            if usage is not None and latest[0].status in UNDER_WAY_STATUSES:
                 in_hand = {
                     "id": latest[0].id,
                     "title": latest[0].title,
@@ -904,15 +909,19 @@ class NekoPowerHost:
     ) -> dict[str, Any]:
         """Return the commissions for a page that lists them, the newest first: ``{"commissions", "more"}``.
 
-        Those under way, and those that last changed within ``days`` days
+        Those under way (``UNDER_WAY_STATUSES``; one that is stuck is
+        over), and those that last changed within ``days`` days
         (``CONSOLE_COMMISSIONS_DAYS`` when not given; 0 or less: however
         long ago). ``statuses`` keeps to those in one of them; ``project``
         to those of one project (``""`` for those of none). ``limit`` at
         most (``CONSOLE_COMMISSIONS_ROWS`` when not given, never more than
         ``CONSOLE_COMMISSIONS_MAX_ROWS``); ``more`` says some were left
-        out, or that so many were looked through for a project or a status
-        that the look stopped (``CONSOLE_COMMISSIONS_SCAN_ROWS``). Each is ``{"id", "title", "status", "reason", "result",
-        "source", "route", "project", "lanlan_name", "parent_id",
+        out, or that so many were looked through for a project that the
+        look stopped (``CONSOLE_COMMISSIONS_SCAN_ROWS``). A status
+        is the one a commission is shown with: one that rests is among
+        those that rest and not among those at work. Each is ``{"id",
+        "title", "status", "reason", "result", "source", "route",
+        "project", "lanlan_name", "parent_id",
         "session_id", "session", "runtime", "plugin_id", "entry_id",
         "created_at", "started_at", "ended_at", "updated_at", "usage",
         "ask"}``: ``status`` says ``resting`` for one that rests;
@@ -926,7 +935,7 @@ class NekoPowerHost:
         import time
 
         from config import nekopower_settings as settings
-        from nekopower.host.ledger import ACTIVE_STATUSES
+        from nekopower.host.ledger import UNDER_WAY_STATUSES
 
         rows = settings.CONSOLE_COMMISSIONS_ROWS if limit is None else int(limit)
         rows = max(1, min(rows, settings.CONSOLE_COMMISSIONS_MAX_ROWS))
@@ -934,25 +943,29 @@ class NekoPowerHost:
         wanted = None if statuses is None else frozenset(statuses)
 
         def kept(item: Commission) -> bool:
+            # By what the page shows it as: one that rests is not among those "at work".
             shown = "resting" if item.resting else item.status
-            if wanted is not None and shown not in wanted and item.status not in wanted:
+            if wanted is not None and shown not in wanted:
                 return False
             return project is None or (item.project or "") == project
 
         found: dict[str, Commission] = {}
-        under_way = await self.ledger.select(statuses=tuple(ACTIVE_STATUSES))
+        # Queued, at work, waiting for the user. One that is stuck is over until somebody takes
+        # it up again: it is listed like the others that are over, while it is recent enough.
+        under_way = await self.ledger.select(statuses=tuple(UNDER_WAY_STATUSES))
         criteria: dict[str, Any] = {}
         if span > 0:
             criteria["updated_since"] = time.time() - span * 86400.0
         if wanted is not None:
             # What the ledger can keep to by itself. It knows of none that "rests": those are at
-            # work as it has it, and so among the ones under way, which were read above.
+            # work as it has it, and so among the ones under way, which were all read above and
+            # are told apart here.
             criteria["statuses"] = tuple(sorted(wanted))
         # The ledger cuts off before anything is looked at here. So it is asked for as many as
-        # are wanted only when nothing is left to look at; kept to a project, or told apart by
-        # whether they rest, they are looked through first and cut afterwards: one of a project
-        # with hundreds of another's filed after it is found all the same.
-        looked_at_here = project is not None or (wanted is not None and bool(wanted & {"working", "resting"}))
+        # are wanted only when nothing is left to look at; kept to a project, they are looked
+        # through first and cut afterwards: one of a project with hundreds of another's filed
+        # after it is found all the same.
+        looked_at_here = project is not None
         reach = settings.CONSOLE_COMMISSIONS_SCAN_ROWS if looked_at_here else rows + 1 + len(under_way)
         read = await self.ledger.select(limit=reach, **criteria)
         for item in [*under_way, *read]:
@@ -1132,7 +1145,10 @@ class NekoPowerHost:
             archived = await self.space.archive_project(project, commissions=kept.commissions)
             if archived is None:
                 again, _readable = await self.space.read_project(project)
-                if again is not None and again.commissions != kept.commissions:
+                if again is None:
+                    # Put away meanwhile by the host itself, which does not wait for this lock.
+                    raise LookupError(project)
+                if again.commissions != kept.commissions:
                     raise ProjectBusy("at_work")
                 # Its directory could not be moved (on Windows, while a file in it is held open).
                 raise ProjectNotMoved(project)

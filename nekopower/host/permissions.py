@@ -377,6 +377,43 @@ class PermissionStore:
             await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
         return True
 
+    async def clear_mcp_server(self, key: str, *, expected_version: int | None = None) -> bool:
+        """Take away the setting one MCP server has of its own, and write the file.
+
+        The server goes by the setting all servers share from then on, as
+        one that was never set does. (A server set to ``auto`` is not
+        that: it is held to the automatic rule whatever the shared setting
+        allows.) One that has none of its own is left as it is. Refused as
+        ``set_mode`` refuses: False when the settings changed since
+        ``expected_version`` was read, ``PermissionFileError`` while an
+        existing file cannot be read.
+        """
+        from utils.asyncio_executor import to_thread_through_cancellation
+
+        await self._ensure_loaded()
+        name, slot = _slot(MCP_SERVER_CATEGORY, key)
+        async with self._lock:
+            if not self._loaded:
+                raise PermissionFileError("the permissions file cannot be read; repair or remove it first")
+            if expected_version is not None and expected_version != self._version:
+                return False
+            if slot not in self._mcp_servers:
+                return True
+            shared = self._categories.get(name, "auto")
+            previous = self._mcp_servers.pop(slot)
+            self._version += 1
+            # Nothing tells what was approved for it from what was approved for the servers
+            # that share the setting any more. Where it is held more strictly now than it
+            # was, what was approved under the looser rule must not count: the generation
+            # they share moves on. That ends the approvals of the others that go by the
+            # shared setting too; they are asked once more.
+            old_rule = _effective_mode(name, previous, category_mode=shared)
+            new_rule = _effective_mode(name, shared, category_mode=shared)
+            if _MODE_RANK[new_rule] < _MODE_RANK[old_rule]:
+                self._revisions[(name, None)] = self._version
+            await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
+        return True
+
     async def snapshot(self) -> dict[str, Any]:
         """Return every category with its current mode, for the console."""
         await self._ensure_loaded()

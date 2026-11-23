@@ -8658,7 +8658,8 @@ class TaskAgentManager:
         under way then, so nothing is cut off. What is looked at is what
         the commission no task agent started has used, the task agents it
         started counted in (``Ledger.usage_standing``), against what it
-        may: ``TASK_AGENT_USAGE_LIMIT_TOKENS``, or what the user allowed
+        may: the limit (``_usage_limit``: what the user set, else
+        ``TASK_AGENT_USAGE_LIMIT_TOKENS``), or what the user allowed
         since. Looked at once everything the session said before it asked
         is handled (``_caught_up``): what its last request used is written
         down by then, and a report that ended the commission has ended it.
@@ -8850,9 +8851,9 @@ class TaskAgentManager:
         """Return how many tokens the work on one commission may use before the user is asked; 0 for no limit.
 
         What the user set where they set something, else
-        ``TASK_AGENT_USAGE_LIMIT_TOKENS``. Read each time it is looked at:
-        a change holds from the next request on. A setting that cannot be
-        read is none, and the default holds.
+        ``TASK_AGENT_USAGE_LIMIT_TOKENS``. Asked for each time it is looked
+        at: a change holds from the next request on. A setting that cannot
+        be read is none, and the default holds.
         """
         from config.nekopower_settings import TASK_AGENT_USAGE_LIMIT_TOKENS
 

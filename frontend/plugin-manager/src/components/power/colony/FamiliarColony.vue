@@ -40,7 +40,10 @@
         <div class="gate" :class="{ on: holding && position === null }" data-colony-gate data-testid="colony-gate">{{ t('power.colony.gate') }}</div>
       </div>
       <p class="muted hint">{{ t('power.colony.hint') }}</p>
+    </template>
 
+    <!-- What happened can be looked at with nobody left as well: those who took part come back while it is replayed. -->
+    <template v-if="lands.length || entries.length">
       <div class="replay" data-testid="colony-replay">
         <el-button size="small" :disabled="!entries.length" data-testid="replay-play" @click="togglePlay">
           {{ playing ? t('power.colony.pause') : t('power.colony.replay') }}
@@ -124,7 +127,7 @@ const cards = computed<BoardCard[]>(() => [
 const byId = computed(() => new Map(cards.value.map(card => [card.id, card])))
 const ghosts = computed(() => ghostsOf(entries.value, new Set(byId.value.keys())))
 const ghostById = computed(() => new Map(ghosts.value.map(ghost => [ghost.id, ghost])))
-const seen = computed(() => firstSeen(entries.value))
+const seen = computed(() => firstSeen(entries.value, whole.value))
 const scene = computed(() => sceneAt(entries.value, position.value ?? entries.value.length - 1))
 
 const nameOfCard = (card: BoardCard) => familiarName(card, t, te)

@@ -860,9 +860,9 @@ CONSOLE_COMMISSIONS_MAX_ROWS = 1000
 
 CONSOLE_COMMISSIONS_SCAN_ROWS = 20_000
 """How many commissions, the newest first, are looked through for a listing
-that keeps to one project or tells those at work from those that rest: the
-ledger cannot keep to those by itself, so they are read and looked at. A
-listing that reaches this says that there may be more."""
+that keeps to one project: the ledger cannot keep to that by itself, so
+they are read and looked at. A listing that reaches this says that there
+may be more."""
 
 CONSOLE_COMMISSIONS_DAYS = 7
 """How far back the listing of commissions goes when the page does not say:

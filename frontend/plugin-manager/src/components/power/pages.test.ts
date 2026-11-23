@@ -224,6 +224,23 @@ describe('what was said in a familiar', () => {
     expect(document.querySelectorAll('[data-entry]').length).toBe(2)
   })
 
+  it('does not put an entry that was read whole into the conversation of another familiar opened meanwhile', async () => {
+    api.getTranscript.mockResolvedValueOnce({ readable: true, before: null, entries: [said({ at: 0, text: 'the first of A…', cut: true })] })
+    const { state } = await mount(TranscriptPane, { sessionId: 's1' })
+    let answer: (page: unknown) => void = () => {}
+    api.getTranscript.mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+    await click(document.querySelector('[data-whole="0"]'))
+    // Another familiar is opened before the answer comes: its conversation begins at the same place.
+    api.getTranscript.mockResolvedValueOnce({ readable: true, before: null, entries: [said({ at: 0, text: 'the first of B' })] })
+    state.props = { sessionId: 's2' }
+    await flush()
+    expect(document.querySelector('[data-entry="0"]')?.textContent).toContain('the first of B')
+    answer({ readable: true, before: null, entries: [said({ at: 0, text: 'the first of A, all of it', cut: false })] })
+    await flush()
+    expect(document.querySelector('[data-entry="0"]')?.textContent).toContain('the first of B')
+    expect(document.body.textContent).not.toContain('the first of A')
+  })
+
   it('says why there is nothing to read of a session dsh holds, and of one nothing was said in', async () => {
     api.getTranscript.mockResolvedValueOnce({ readable: false, reason: 'dsh', entries: [], before: null })
     const { state } = await mount(TranscriptPane, { sessionId: 's1' })
@@ -741,6 +758,27 @@ describe('what happened in a project', () => {
     } finally {
       delete (document as unknown as { hidden?: boolean }).hidden
     }
+  })
+
+  it('reads the names again with every new entry, also once as many are held as are kept', async () => {
+    vi.useFakeTimers()
+    const step = (n: number) => ({
+      cursor: `e${n}.m0`, at: n, kind: 'reported', lanlan_name: 'Lan', project: 'Blog', session_id: 's1', commission_id: 'c1', peer: null, text: `step ${n}`, detail: {},
+    })
+    api.getProjectBoard.mockResolvedValue({ revision: 'r', projects: [], loose: [] })
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e9.m0', more: false, latest: 'e9.m0' })
+    // As many as are kept, then one more: the oldest is let go and their number stays.
+    api.getTimeline.mockResolvedValueOnce({ entries: Array.from({ length: 3000 }, (_, n) => step(n)), next: 'e9.m0', more: false, latest: 'e9.m0' })
+    await mount(ActivityPane, { project: 'Blog' })
+    const read = api.getProjectBoard.mock.calls.length
+    api.getTimeline.mockResolvedValueOnce({ entries: [step(3000)], next: 'e9.m0', more: false, latest: 'e9.m0' })
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(api.getProjectBoard.mock.calls.length).toBe(read + 1)
+    // Nothing new: not read again.
+    await vi.advanceTimersByTimeAsync(2100)
+    await flush()
+    expect(api.getProjectBoard.mock.calls.length).toBe(read + 1)
   })
 
   it('is read for that project and told with the names the board has', async () => {
