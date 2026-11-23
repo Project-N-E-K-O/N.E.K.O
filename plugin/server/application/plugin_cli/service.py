@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from dataclasses import asdict, dataclass, replace
 import hashlib
 import secrets
@@ -67,7 +68,7 @@ from plugin.server.application.plugins.operation_lock import serialized_plugin_o
 from plugin.server.application.plugins.permission_service import (
     bind_current_permission_source,
     bind_entry_permission_source,
-    forget_installed_plugins,
+    forget_plugin_grants,
 )
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
@@ -599,6 +600,17 @@ class PluginCliService:
         # it looked up. A failed save stops the replacement here, unchanged. A
         # replacement that records no source keeps the current one, so it
         # needs no binding.
+        current_entry: LockEntry | None = None
+        # The directory's exact lock row (also a soft-deleted one, or one
+        # naming another plugin id), put back if the replacement records a
+        # source and then rolls back; ``previous_lock_row_known`` tells "no
+        # row" apart from "could not be read".
+        previous_lock_row: LockEntry | None = None
+        previous_lock_row_known = False
+        if install_source is not None:
+            previous_lock_row, previous_lock_row_known = await asyncio.to_thread(
+                _lock_row_for_directory, install_source_manager, target_dir
+            )
         if install_source is not None or plan.reason == "manual_takeover":
             current_entry = await asyncio.to_thread(
                 _lock_entry_for_plugin,
@@ -717,9 +729,16 @@ class PluginCliService:
                 )
 
         source_write_attempted = False
+        requested_source_attempted = False
+        grants_dropped = False
+        requested_source_written = False
+        requested_source_warning: str | None = None
+        source_restored = True
 
         async def install_new() -> dict[str, object]:
-            nonlocal source_write_attempted
+            nonlocal source_write_attempted, requested_source_attempted
+            nonlocal requested_source_written, requested_source_warning
+            nonlocal grants_dropped
             install_result = await asyncio.to_thread(
                 self._install_sync,
                 package=package,
@@ -736,7 +755,96 @@ class PluginCliService:
                     install_result=install_result,
                     package_path=package_path,
                 )
+            elif install_source is not None:
+                # Recorded here, before the replacement restarts the plugin,
+                # so the new code starts under its own source and never
+                # under the previous package's grants.
+                requested_source_attempted = True
+                warning = await self._requested_install_source_warning(
+                    install_result=install_result,
+                    package=package,
+                )
+                requested_source_written = warning is None
+                if warning is not None:
+                    # The source still reads as the previous package's, so
+                    # its grants would carry over: drop them before the
+                    # restart; the plugin is asked again. Only the replaced
+                    # plugin's grants: the package is not validated yet, and
+                    # a rollback restores only this plugin's snapshot.
+                    grants_dropped = True
+                    if not await asyncio.to_thread(
+                        forget_plugin_grants, (plan.plugin_id,)
+                    ):
+                        # The new code must not start with them: fail this
+                        # stage so the replacement rolls back.
+                        logger.error(
+                            "replacement stopped: previous grants could not be dropped plugin_id={}",
+                            plan.plugin_id,
+                        )
+                        raise RuntimeError(
+                            "permission grants of the previous package could not be cleared"
+                        )
+                requested_source_warning = warning
             return install_result
+
+        async def restore_source_before_restart() -> bool:
+            # Runs on rollback once the previous code is back, before the
+            # previous plugin restarts, so it starts under its own source.
+            # Restoring an entry that was not changed is a no-op, so any
+            # attempted write is undone. Returns whether the source is back.
+            nonlocal source_restored
+            if manual_entry is not None and source_write_attempted:
+                try:
+                    assert manual_manager is not None
+                    await asyncio.to_thread(
+                        manual_manager.restore_entry_for_rollback,
+                        manual_entry,
+                    )
+                except Exception as restore_exc:
+                    source_restored = False
+                    logger.error(
+                        "manual takeover source rollback failed plugin_id={} err_type={}",
+                        plan.plugin_id,
+                        type(restore_exc).__name__,
+                    )
+            if not requested_source_attempted:
+                return source_restored
+            if install_source_manager is None:
+                # Without a manager nothing was recorded.
+                return source_restored
+            try:
+                if previous_lock_row is not None:
+                    await asyncio.to_thread(
+                        install_source_manager.restore_entry_for_rollback,
+                        previous_lock_row,
+                    )
+                elif previous_lock_row_known:
+                    # The directory had no row (manifest-less state): the
+                    # recorded one is soft-deleted, which reads as no row.
+                    await asyncio.to_thread(
+                        functools.partial(
+                            install_source_manager.mark_removed,
+                            directory_path=target_dir,
+                            reason="replace_rollback",
+                        )
+                    )
+                elif requested_source_written:
+                    # The previous row could not be read, so a recorded
+                    # source cannot be undone.
+                    source_restored = False
+            except Exception as restore_exc:
+                source_restored = False
+                logger.error(
+                    "requested install source rollback failed plugin_id={} err_type={}",
+                    plan.plugin_id,
+                    type(restore_exc).__name__,
+                )
+            if not source_restored:
+                logger.error(
+                    "requested install source not restored after rollback plugin_id={}",
+                    plan.plugin_id,
+                )
+            return source_restored
 
         try:
             result = await replacement_transaction.replace_plugin(
@@ -744,6 +852,8 @@ class PluginCliService:
                 install_new=install_new,
                 preserve_targets=((target_dir,) if plan.manifestless_state else ()),
                 initialize_runtime_config=not plan.manifestless_state,
+                install_changed_permissions=lambda: grants_dropped,
+                restore_source_before_restart=restore_source_before_restart,
                 validate_backup=(
                     validate_manual_takeover_backup
                     if manual_manager is not None
@@ -778,21 +888,6 @@ class PluginCliService:
                     "auto-start preference for plugin_id={}",
                     plan.plugin_id,
                 )
-            source_restored = True
-            if manual_entry is not None and source_write_attempted:
-                try:
-                    assert manual_manager is not None
-                    await asyncio.to_thread(
-                        manual_manager.restore_entry_for_rollback,
-                        manual_entry,
-                    )
-                except Exception as restore_exc:
-                    source_restored = False
-                    logger.error(
-                        "manual takeover source rollback failed plugin_id={} err_type={}",
-                        plan.plugin_id,
-                        type(restore_exc).__name__,
-                    )
             details = _replacement_error_details(exc)
             if not source_restored:
                 details["rollback_status"] = "incomplete"
@@ -814,22 +909,8 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
-        if manual_manager is None and install_source is not None:
-            warning = await self._requested_install_source_warning(
-                install_result=response,
-                package=package,
-            )
-            if warning is not None:
-                # The new package runs, but its source still reads as the
-                # previous package's, so the grants given to that package
-                # would carry over. Drop them; the plugin is asked again.
-                if not await asyncio.to_thread(
-                    forget_installed_plugins,
-                    response,
-                    plugin_ids=(plan.plugin_id,),
-                ):
-                    warning += "; permission grants of the previous package could not be cleared"
-                response = {**response, "install_source_warning": warning}
+        if requested_source_warning is not None:
+            response = {**response, "install_source_warning": requested_source_warning}
         if _analyze_after_commit:
             await notify_install_committed_async(response)
         return response
@@ -2778,6 +2859,23 @@ class PluginCliService:
             status_code=status_code,
             details={"action": action, "error_type": type(exc).__name__},
         )
+
+
+def _lock_row_for_directory(
+    manager: InstallSourceManager | None, target_dir: Path
+) -> tuple[LockEntry | None, bool]:
+    """The lock row of ``target_dir`` (soft-deleted rows included) and
+    whether it could be read; ``(None, False)`` without a usable, trusted
+    lock."""
+    if manager is None or getattr(manager, "is_degraded", False):
+        return None, False
+    finder = getattr(manager, "entry_for_directory", None)
+    if not callable(finder):
+        return None, False
+    try:
+        return finder(target_dir, include_removed=True), True
+    except (InstallSourceError, ValueError):
+        return None, False
 
 
 def _lock_entry_for_plugin(

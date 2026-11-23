@@ -71,3 +71,16 @@ enable_geoip = true
 amap_key = ""
 # 百度地图: https://lbsyun.baidu.com/apiconsole/key
 baidu_map_key = ""
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."system.network:connect"]
+reason = { zh-CN = "从在线服务查询天气、地图、路线、汇率等实时信息。", zh-TW = "從線上服務查詢天氣、地圖、路線、匯率等即時資訊。", en = "Look up weather, maps, routes, exchange rates and other live information from online services.", ja = "オンラインサービスから天気・地図・ルート・為替レートなどの最新情報を取得します。", ko = "온라인 서비스에서 날씨, 지도, 경로, 환율 등 실시간 정보를 조회합니다.", ru = "Получать из онлайн-сервисов погоду, карты, маршруты, курсы валют и другие актуальные данные.", es = "Consultar en servicios en línea el clima, mapas, rutas, tipos de cambio y otra información actual.", pt = "Consultar em serviços online o clima, mapas, rotas, câmbio e outras informações atualizadas." }
+
+[permissions.require."system.env:read"]
+reason = { zh-CN = "读取系统时区设置，用来显示当地时间。", zh-TW = "讀取系統時區設定，用來顯示當地時間。", en = "Read your system time zone setting to show local times.", ja = "現地時刻を表示するため、システムのタイムゾーン設定を読み取ります。", ko = "현지 시간을 표시하기 위해 시스템 시간대 설정을 읽습니다.", ru = "Читать системный часовой пояс, чтобы показывать местное время.", es = "Leer la zona horaria del sistema para mostrar la hora local.", pt = "Ler o fuso horário do sistema para mostrar o horário local." }
+
+[permissions.require."system.fs:read"]
+reason = { zh-CN = "读取系统的时区文件，用来显示当地时间。", zh-TW = "讀取系統的時區檔案，用來顯示當地時間。", en = "Read your system's time zone file to show local times.", ja = "現地時刻を表示するため、システムのタイムゾーンファイルを読み取ります。", ko = "현지 시간을 표시하기 위해 시스템의 시간대 파일을 읽습니다.", ru = "Читать системный файл часового пояса, чтобы показывать местное время.", es = "Leer el archivo de zona horaria del sistema para mostrar la hora local.", pt = "Ler o arquivo de fuso horário do sistema para mostrar o horário local." }
+
+[permissions.ask."plugin_sdk.main_agent.messages:push"]
+reason = { zh-CN = "把查询结果发到对话里。", zh-TW = "把查詢結果發到對話裡。", en = "Post the results in the chat.", ja = "調べた結果を会話に送ります。", ko = "조회 결과를 대화에 보냅니다.", ru = "Отправлять результаты в чат.", es = "Publicar los resultados en el chat.", pt = "Enviar os resultados para o chat." }

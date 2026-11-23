@@ -519,6 +519,8 @@ class TranscriptParser:
         tools_used = []
         files_touched = []
         found_assistant = False
+        saw_assistant = False
+        has_significant = False
 
         for line in reversed(lines):
             line = line.strip()
@@ -536,37 +538,49 @@ class TranscriptParser:
             role = msg.get("role", "") or entry.get("role", "")
             msg_type = entry.get("type", "")
 
-            # Find an assistant response (requires text content)
-            if (role == "assistant" or msg_type == "assistant") and not found_assistant:
+            # Collect tool_use blocks across all assistant records in the latest turn,
+            # while anchoring last_assistant_text on the latest text-bearing record.
+            if role == "assistant" or msg_type == "assistant":
+                saw_assistant = True
                 content = msg.get("content", "") or entry.get("content", "")
 
                 text_parts = []
                 if isinstance(content, str):
-                    text_parts = [content]
+                    if content:
+                        text_parts = [content]
                 elif isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict):
                             if block.get("type") == "text":
-                                text_parts.append(block.get("text", ""))
+                                text_val = block.get("text", "")
+                                if text_val:
+                                    text_parts.append(text_val)
                             elif block.get("type") == "tool_use":
                                 tool_name = block.get("name", "")
                                 tools_used.append(tool_name)
-                                # Extract file paths
-                                tool_input = block.get("input", {})
+                                raw_input = block.get("input")
+                                tool_input = raw_input if isinstance(raw_input, dict) else {}
                                 for key in ("file_path", "path", "command"):
                                     val = tool_input.get(key, "")
                                     if val and isinstance(val, str) and ("/" in val or "\\" in val):
                                         files_touched.append(val)
+                                if tool_name in ("Bash", "PowerShell"):
+                                    cmd = tool_input.get("command", "")
+                                    if isinstance(cmd, str) and cmd:
+                                        if any(kw in cmd.lower() for kw in ("rm ", "mv ", "cp ", "mkdir", "touch", "echo ", "cat ", "sed ", "pip ", "npm ", "cargo ")):
+                                            has_significant = True
+                                        file_matches = re.findall(r'[\w/\\.-]+\.\w+', cmd)
+                                        files_touched.extend(file_matches[:3])
 
                 # Count an assistant response only when it contains text
-                # A tool_use-only assistant message does not count; keep scanning backward
-                if text_parts:
+                # A tool_use-only assistant message does not set found_assistant
+                if text_parts and not found_assistant:
                     found_assistant = True
                     last_assistant_text = " ".join(text_parts)
 
             # Find the user message (first user message before the assistant response)
             # Skip tool_result messages; look only for actual user text
-            if (role == "user" or msg_type == "user") and found_assistant:
+            if (role == "user" or msg_type == "user") and (found_assistant or saw_assistant):
                 content = msg.get("content", "") or entry.get("content", "")
                 if isinstance(content, str):
                     last_user_msg = content
@@ -614,31 +628,7 @@ class TranscriptParser:
 
         # Check whether an important operation occurred
         significant_tools = _SIGNIFICANT_TOOLS | _TASK_COMPLETE_TOOLS
-        has_significant = bool(set(tools_used) & significant_tools)
-
-        # If there is a Bash or PowerShell command, parse it for file operations
-        if any(t in tools_used for t in ("Bash", "PowerShell")):
-            for line in reversed(lines):
-                try:
-                    entry = json.loads(line.strip())
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                msg = entry.get("message", {}) if isinstance(entry.get("message"), dict) else {}
-                role = msg.get("role", "") or entry.get("role", "")
-                msg_type = entry.get("type", "")
-                if role == "assistant" or msg_type == "assistant":
-                    content = msg.get("content", []) or entry.get("content", [])
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in ("Bash", "PowerShell"):
-                                cmd = block.get("input", {}).get("command", "")
-                                # Detect file-operation commands
-                                if any(kw in cmd.lower() for kw in ("rm ", "mv ", "cp ", "mkdir", "touch", "echo ", "cat ", "sed ", "pip ", "npm ", "cargo ")):
-                                    has_significant = True
-                                # Extract file paths from the command
-                                file_matches = re.findall(r'[\w/\\.-]+\.\w+', cmd)
-                                files_touched.extend(file_matches[:3])
-                    break
+        has_significant = has_significant or bool(set(tools_used) & significant_tools)
 
         result["user_message"] = last_user_msg
         result["assistant_message"] = last_assistant_text

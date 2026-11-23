@@ -761,21 +761,46 @@ async def _execute_run(
             else:
                 run_err = RunError(code="PLUGIN_ERROR", message="plugin returned failure")
 
-            term = _run_store.commit_terminal(
-                run_id,
-                status="failed",
-                error=run_err,
-                result_refs=[export_item_id],
-            )
+            latest = _run_store.get(run_id)
+            was_cancel_requested = bool(latest is not None and latest.cancel_requested)
+            is_cancel_code = run_err.code.upper() in ("CANCELED", "CANCELLED", "CANCELLED_BY_USER")
+            if was_cancel_requested or is_cancel_code:
+                cancel_msg = (
+                    latest.cancel_reason
+                    if (was_cancel_requested and latest is not None and latest.cancel_reason and not is_cancel_code)
+                    else run_err.message
+                )
+                term = _run_store.commit_terminal(
+                    run_id,
+                    status="canceled",
+                    error=RunError(code="CANCELED", message=cancel_msg, details=run_err.details),
+                    result_refs=[export_item_id],
+                )
+            else:
+                term = _run_store.commit_terminal(
+                    run_id,
+                    status="failed",
+                    error=run_err,
+                    result_refs=[export_item_id],
+                )
         if term is not None:
             _emit_runs("change", term)
     except Exception as e:
-        term = _run_store.commit_terminal(
-            run_id,
-            status="failed",
-            error=RunError(code="INTERNAL", message=str(e)),
-            result_refs=[],
-        )
+        latest = _run_store.get(run_id)
+        if latest is not None and latest.cancel_requested:
+            term = _run_store.commit_terminal(
+                run_id,
+                status="canceled",
+                error=RunError(code="CANCELED", message=latest.cancel_reason or str(e) or "canceled"),
+                result_refs=[],
+            )
+        else:
+            term = _run_store.commit_terminal(
+                run_id,
+                status="failed",
+                error=RunError(code="INTERNAL", message=str(e)),
+                result_refs=[],
+            )
         if term is not None:
             _emit_runs("change", term)
 
