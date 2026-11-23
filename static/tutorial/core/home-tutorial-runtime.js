@@ -5,6 +5,8 @@
     const HOME_TUTORIAL_AGENT_RESTORE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
     const HOME_TUTORIAL_AGENT_RESTORE_MAX_FUTURE_SKEW_MS = 60 * 1000;
     const HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 15000]);
+    // 等后端启动时放回开关：约 45 秒，长于后端电脑/浏览器控制探测的最长用时（约 32 秒）。
+    const HOME_TUTORIAL_AGENT_BACKEND_REPLAY_WAIT_DELAYS_MS = Object.freeze([1000, 2000, 4000, 8000, 15000, 15000]);
     const HOME_TUTORIAL_AGENT_FLAG_KEYS = Object.freeze([
         'agent_enabled',
         'computer_use_enabled',
@@ -791,10 +793,10 @@
                     return false;
                 }
                 // 后端刚启动、还在按记录的意图放回开关时先不写：它的后台任务会晚于我们写入，
-                // 把刚恢复的值盖掉，而快照那时已删。最多等完重试窗口，之后仍按原来的方式恢复，
+                // 把刚恢复的值盖掉，而快照那时已删。最多等约 45 秒（单独计数），之后仍按原来的方式恢复，
                 // 免得 greeting_check 迟迟不来时一直恢复不了。
-                if (currentState.intentRestorePending && backendReplayWaits < HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS.length) {
-                    const waitMs = HOME_TUTORIAL_AGENT_RESTORE_RETRY_DELAYS_MS[backendReplayWaits];
+                if (currentState.intentRestorePending && backendReplayWaits < HOME_TUTORIAL_AGENT_BACKEND_REPLAY_WAIT_DELAYS_MS.length) {
+                    const waitMs = HOME_TUTORIAL_AGENT_BACKEND_REPLAY_WAIT_DELAYS_MS[backendReplayWaits];
                     backendReplayWaits += 1;
                     return await scheduleRestoreAttempt(retryIndex, waitMs);
                 }

@@ -1431,3 +1431,27 @@ test('PR3976 4662242339: waiting for the backend replay does not use up the retr
     assert.equal(server.child.computer_use_enabled, true);
     assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
 });
+
+test('PR3976 4662251051: the backend-replay wait outlasts the backend CU/BU probe budget (~32s)', async () => {
+    const storage = createStorage();
+    storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+        version: 1, token: 1301, createdAt: Date.now(), lanlanName: 'CatA',
+        agentFlags: { agent_enabled: true, computer_use_enabled: true, browser_use_enabled: false, user_plugin_enabled: false },
+    }));
+    const server = makeAgentServer();
+    server.intentRestoreFinished = false;
+    const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+    await flushMicrotasks();
+    let waitedMs = 0;
+    for (let i = 0; i < 20; i += 1) {
+        if (rt.fetchCalls.some(c => c.method === 'POST')) break;
+        const retry = rt.scheduledTimeouts.find(t => !t.cleared && !t.fired);
+        if (!retry) break;
+        retry.fired = true;
+        waitedMs += retry.ms;
+        retry.fn();
+        await flushMicrotasks();
+    }
+    assert.ok(waitedMs > 32000, `waited ${waitedMs}ms before writing, must exceed the ~32s probe budget`);
+    assert.equal(server.master, true, 'still restores after the bounded wait');
+});
