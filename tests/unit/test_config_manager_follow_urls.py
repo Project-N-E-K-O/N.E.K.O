@@ -255,19 +255,21 @@ def test_named_slot_with_foreign_url_is_not_moved_by_pin():
 
 
 def test_named_slot_of_single_url_provider_unchanged():
-    """Providers with one URL have nothing to pin; their slot URL is untouched."""
+    """Providers with one URL have nothing to pin; their slot URL is untouched, even when a
+    (legacy) pin holding that very candidate exists and the slot spells it differently."""
     config_dir = _make_workspace_temp_dir()
     try:
         data = _named_qwen_intl_slots(_INTL_URL, None)
         data.update({
             "assistApiKeyDeepseek": "sk-deepseek",
             "memoryModelProvider": "deepseek",
-            "memoryModelUrl": "https://api.deepseek.com/v1",
-            "resolvedProviderUrls": {"assist:deepseek": "https://elsewhere.example.test/v1"},
+            # Same endpoint as the only candidate, spelled with a trailing slash.
+            "memoryModelUrl": "https://api.deepseek.com/v1/",
+            "resolvedProviderUrls": {"assist:deepseek": "https://api.deepseek.com/v1"},
         })
         cm = _manager_with_core_config(config_dir, data)
 
-        assert cm.get_core_config()["MEMORY_MODEL_URL"] == "https://api.deepseek.com/v1"
+        assert cm.get_core_config()["MEMORY_MODEL_URL"] == "https://api.deepseek.com/v1/"
     finally:
         shutil.rmtree(config_dir, ignore_errors=True)
 
