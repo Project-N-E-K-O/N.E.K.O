@@ -28,6 +28,12 @@ Manager's default column, but they still count against the system commit limit
 (RAM plus page file). The backend only does small matrix work with numpy --
 audio buffers and 256-dimension embedding similarity -- and embedding inference
 runs on onnxruntime's own pool, so one BLAS thread is enough.
+
+That reasoning holds for the backend's own processes, plugin processes
+included. It does not hold for a program run on the user's behalf, such as a
+command the agent runs in the user's project, which may well be heavy numpy
+work. So an injected default is marked, and ``env_for_user_programs`` hands
+such programs an environment without it.
 """
 
 from __future__ import annotations
@@ -48,7 +54,15 @@ THREAD_COUNT_ENVS = (
     "OMP_NUM_THREADS",
 )
 
+# Set next to an injected default, holding the injected value. A thread count
+# the user set carries no marker.
+INJECTED_THREADS_MARKER_ENV = "NEKO_INJECTED_OPENBLAS_THREADS"
+
 _ASCII_DIGITS = "0123456789"
+# What C ``isspace`` accepts in the "C" locale: space, tab, newline, vertical
+# tab, form feed, carriage return. ``str.lstrip()`` alone would also drop
+# Unicode spaces, which ``atoi`` does not skip.
+_C_WHITESPACE = "".join(map(chr, (32, 9, 10, 11, 12, 13)))
 
 
 def _sets_a_thread_count(value: str | None) -> bool:
@@ -60,7 +74,7 @@ def _sets_a_thread_count(value: str | None) -> bool:
     """
     if not value:
         return False
-    text = value.lstrip()
+    text = value.lstrip(_C_WHITESPACE)
     if text[:1] == "-":
         return False
     if text[:1] == "+":
@@ -80,9 +94,26 @@ def apply_native_runtime_defaults(environ: MutableMapping[str, str] | None = Non
     ``THREAD_COUNT_ENVS`` wins. A value OpenBLAS would ignore -- blank, zero,
     negative, not a number -- is treated as unset, because OpenBLAS then sizes
     the pool from the CPU count. Everything this process starts inherits the
-    result through the environment, external programs included.
+    result through the environment, along with the marker that says the
+    default was injected rather than chosen by the user.
     """
     env = os.environ if environ is None else environ
     if any(_sets_a_thread_count(env.get(name)) for name in THREAD_COUNT_ENVS):
         return
     env[OPENBLAS_THREADS_ENV] = DEFAULT_OPENBLAS_THREADS
+    env[INJECTED_THREADS_MARKER_ENV] = DEFAULT_OPENBLAS_THREADS
+
+
+def env_for_user_programs(environ: MutableMapping[str, str] | None = None) -> dict[str, str]:
+    """Return a copy of the environment for a program run on the user's behalf.
+
+    The injected default and its marker are left out, so the program gets the
+    thread count it would have had if the user had started it themselves. A
+    thread count the user set has no marker and is kept. So is one that no
+    longer equals the marker: something changed it on purpose after injection.
+    """
+    env = dict(os.environ if environ is None else environ)
+    injected = env.pop(INJECTED_THREADS_MARKER_ENV, None)
+    if injected is not None and env.get(OPENBLAS_THREADS_ENV) == injected:
+        del env[OPENBLAS_THREADS_ENV]
+    return env
