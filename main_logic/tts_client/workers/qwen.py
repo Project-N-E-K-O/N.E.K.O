@@ -255,11 +255,15 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             True for the warmup socket (bound to no speech; the first speech
             replaces it anyway) and for a round whose commit went out, whose
             end the core was already told about (audio_done), and that has
-            been quiet for FINISHED_ROUND_QUIET_SECONDS.
+            been quiet for FINISHED_ROUND_QUIET_SECONDS. A done event must
+            also have arrived on this connection: after a same-speech
+            reconnect (late text after a retire), audio_done and the last
+            audio time still describe the earlier connection, and only
+            ``response_done``, cleared by the reconnect, tells them apart.
             """
             if current_speech_id is None:
                 return True
-            if not buffer_committed or not (
+            if not buffer_committed or not response_done.is_set() or not (
                 audio_done.emitted(current_speech_id)
                 or audio_done.emitted(str(current_speech_id))
             ):

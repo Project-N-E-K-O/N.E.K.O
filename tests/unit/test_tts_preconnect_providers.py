@@ -732,3 +732,41 @@ def test_quiet_window_outlasts_qwens_gaps_between_sentences():
     # shorter than that could retire a round whose last sentence is coming.
     assert _preconnect.FINISHED_ROUND_QUIET_SECONDS > 2.0
     assert qwen_mod.FINISHED_ROUND_QUIET_SECONDS == _preconnect.FINISHED_ROUND_QUIET_SECONDS
+
+
+def test_qwen_late_text_after_a_retire_is_not_taken_for_a_finished_round(monkeypatch):
+    # speech-1 finished and its socket was retired; a late chunk of the same
+    # speech reconnects and commits again. Until a done event arrives on that
+    # new connection, the earlier audio_done must not make it look finished.
+    monkeypatch.setattr(qwen_mod, "_resolve_qwen_realtime_tts_url", lambda: "wss://dashscope.test/realtime")
+    monkeypatch.setattr(qwen_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    monkeypatch.setattr(qwen_mod, "FINISHED_ROUND_QUIET_SECONDS", 0.0)
+    first = _qwen_socket("first")
+    # Adopted by the late chunk; its audio for the new commit never arrives
+    # in this test, so the round on it is still running.
+    late = _Sock("late", _type_kind, replies={"session.update": [{"type": "session.updated"}]})
+    connects = _Connects(monkeypatch, [_qwen_socket("warmup"), first, late])
+    responses = queue.Queue()
+    observations = {}
+
+    qwen_mod.qwen_realtime_tts_worker(
+        _Requests(
+            ("speech-1", _OPENING),
+            (None, None),
+            _wait(_audio_done(responses, "speech-1")),
+            _PRECONNECT,  # retires first, opens late as the spare
+            _wait(lambda: len(connects) == 3),
+            ("speech-1", "A late chunk of the same speech, long enough to send."),
+            (None, None),
+            _wait(lambda: any(e.get("type") == "input_text_buffer.commit" for e in late.sent)),
+            _PRECONNECT,
+            _pause(0.1),
+            _observe(observations, "late_still_open", lambda: late.state is State.OPEN, timeout=0),
+        ),
+        responses,
+        "sk-test",
+        "Momo",
+    )
+
+    assert observations == {"late_still_open": True}, "retired a socket whose audio was still coming"
+    connects.assert_one_connection_at_a_time()
