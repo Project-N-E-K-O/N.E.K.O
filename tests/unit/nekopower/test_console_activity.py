@@ -687,6 +687,38 @@ async def test_an_approval_taken_back_by_forbidding_a_server_is_not_given_back_w
     assert not gate.grant_active(approved.grant_id)
 
 
+async def test_an_approval_for_the_session_is_asked_for_again_after_the_server_was_forbidden_and_set_back(tmp_path):
+    from nekopower.host.permissions import GrantScope, PermissionGate, PermissionStore
+
+    asked: list[Any] = []
+
+    async def for_the_session(commission_id: str, ask: Any) -> str:
+        asked.append(ask)
+        return "session"
+
+    store = PermissionStore(tmp_path / "permissions.json")
+    gate = PermissionGate(store, for_the_session)
+    scope = GrantScope("notes")
+
+    async def use() -> bool:
+        return (await gate.check("a", "mcp_server", key="notes", scope=scope)).allow
+
+    # Asked the first time and allowed for the session: not asked the second time.
+    assert await use() and await use()
+    assert len(asked) == 1
+    await store.set_mode("mcp_server", "deny", "notes")
+    assert not await use()
+    assert len(asked) == 1
+    # Set back to go by the shared setting: what was allowed for the session before it was
+    # forbidden does not count, the user is asked again.
+    assert await store.clear_mcp_server("notes")
+    assert await use()
+    assert len(asked) == 2
+    # And that answer holds for the session, as any does.
+    assert await use()
+    assert len(asked) == 2
+
+
 async def test_a_setting_that_could_not_be_taken_away_on_the_disk_is_still_there_to_take_away(tmp_path, monkeypatch):
     from nekopower.host.permissions import PermissionStore
 
