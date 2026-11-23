@@ -333,6 +333,12 @@ class Families:
         # Whether it goes elsewhere than was decided.
         moved = False
 
+        if action == orch.FORM_FAMILY and agent:
+            taker = await self._ledger.get_session(agent)
+            if taker is None or taker.kind != "single" or (taker.project and taker.project != DEFAULT_PROJECT):
+                # The one that was to take it became a project's since it was looked at (or is
+                # gone): it goes on there, and no other project is made beside that one.
+                action, moved = orch.CONTINUE, True
         if action == orch.FORM_FAMILY:
             formed = await self._form_family(verdict.members)
             if formed is None:
@@ -548,8 +554,8 @@ class Families:
         async with self.placing:
             return await self._ledger.project_session(lanlan_name, project, **card)
 
-    async def leader_notes(self, leader: Session, skip: str) -> tuple[str, list[tuple[str, float | None]]]:
-        """Return what a leader is told as a commission opens in it, and the commissions it is told the outcome of (with when each ended).
+    async def leader_notes(self, leader: Session, skip: str) -> tuple[str, list[tuple[str, int]]]:
+        """Return what a leader is told as a commission opens in it, and the commissions it is told the outcome of (with which ending of each).
 
         Put together from what is on record, with no model asked: what
         came of the commissions it handed over since it was last told,
@@ -570,13 +576,16 @@ class Families:
             commissions_each=settings.ORCHESTRATOR_COMMISSIONS_EACH,
         )
         lines: list[str] = []
+        # Whether anything is under way in a member is asked of all its commissions: the latest few
+        # read here may all be over while an earlier one still waits.
+        busy = await self._ledger.under_way_in([row.session.id for row in rows], skip=skip)
         for row in rows:
             member = row.session
             theirs = [item for item in row.commissions if item.id != skip and item.parent_id is None]
             under_way = [item for item in theirs if item.status in UNDER_WAY_STATUSES]
             if any(item.status == "waiting_user" for item in under_way):
                 state = "waiting"
-            elif under_way:
+            elif under_way or member.id in busy:
                 state = "working"
             elif await self._ledger.session_alive(member):
                 state = "idle"
@@ -614,14 +623,14 @@ class Families:
         parts.append(truncate_to_tokens(roster, cap))
 
         handed = [
-            item
-            for item in await self._ledger.handed_work(leader.id, limit=settings.LEADER_HANDED_WORK_MAX_ITEMS)
+            (item, ending)
+            for item, ending in await self._ledger.handed_work(leader.id, limit=settings.LEADER_HANDED_WORK_MAX_ITEMS)
             if item.id != skip
         ]
         if handed:
             names = {row.session.id: row.session.name for row in rows}
             items = []
-            for item in handed:
+            for item, _ending in handed:
                 result = truncate_to_tokens(
                     " ".join((item.result_summary or item.status_reason or item.status).split()),
                     settings.LEADER_HANDED_WORK_RESULT_MAX_TOKENS,
@@ -632,7 +641,7 @@ class Families:
                     )
                 )
             parts.insert(1 if first else 0, texts.LEADER_HANDED_WORK.format(items="\n".join(items)))
-        return "\n\n".join(parts), [(item.id, item.ended_at) for item in handed]
+        return "\n\n".join(parts), [(item.id, ending) for item, ending in handed]
 
     async def member_notes(self, member: Session) -> str:
         """Return what a member is told of where others of its project worked; empty when all work where it does.

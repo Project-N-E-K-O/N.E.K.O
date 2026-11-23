@@ -1285,7 +1285,7 @@ class TaskAgentManager:
         # tells of the commissions the leader handed over, by the commission
         # it opens: on record as told once the session took the message
         # (``_note_opened``), under a name of its own (``told_to_leader``).
-        self._handed_said: dict[str, list[tuple[str, float | None]]] = {}
+        self._handed_said: dict[str, list[tuple[str, int]]] = {}
         # What tells whether a commission is a side question
         # (``LexicalDecisionModel.side_question``), and, for a commission it
         # was asked of, what it was asked about and what it said: asked once
@@ -1304,6 +1304,9 @@ class TaskAgentManager:
         # told it then, in the user's words (``_handed_over``). Kept
         # apart from the leader's session, which is let go of in between.
         self._said_while_handed: dict[str, list[str]] = {}
+        # The commissions a ``hand_over`` call is at work on: a second call
+        # for one, made beside it, is refused before either awaits anything.
+        self._handing_claims: set[str] = set()
         self._side_said: dict[str, tuple[str, tuple[str, ...], bool]] = {}
         # Project sessions that copies of them have news for (a commission
         # they finished, or handed back), to be told while at work
@@ -1993,10 +1996,11 @@ class TaskAgentManager:
             commission, session = await self.families.place(commission, verdict)
             self._session_of[commission.id] = session.id
             await self._note_writer(session.id)
-            for member in verdict.members:
-                # Task agents that became a project's members with it: each may be at work.
-                if member != session.id:
-                    await self._note_writer(member)
+            if verdict.members:
+                # Task agents that became a project's members with it: each may be at work, and so
+                # may task agents they started, which were none of a project's when they began.
+                for other in {*verdict.members, *self._held_by} - {session.id}:
+                    await self._note_writer(other)
             return commission
         commission = await self._file_under_project(commission)
         # What the session takes, as the first line of its card says until
@@ -2096,7 +2100,7 @@ class TaskAgentManager:
             or not member.project
             or member.project == DEFAULT_PROJECT
         ):
-            self._writes_in.pop(session_id, None)
+            self._unnote_writer(session_id)
             return
         try:
             changes = (await self._template_of(kept)).changes_files
@@ -2107,6 +2111,17 @@ class TaskAgentManager:
         if changes:
             self._writes_in[session_id] = (member.project, member.id)
         else:
+            self._unnote_writer(session_id)
+
+    def _unnote_writer(self, session_id: str) -> None:
+        """Take a session off the ones that change files in a project, unless a run of it is under way.
+
+        One at work was opened with the tools its preset had then: a
+        template changed since, or a new commission filed for it, does
+        not make that run one that reads. It is looked at again with the
+        next commission, once this one let go of it.
+        """
+        if self._held_by.get(session_id) is None:
             self._writes_in.pop(session_id, None)
 
     async def _settle_for_the_queue(self, commission_id: str) -> None:
@@ -4675,11 +4690,11 @@ class TaskAgentManager:
                 logger.warning("noting that a session was told of what a copy of it did failed", exc_info=True)
         self._forks_said.pop(session.commission_id, None)
         # And what its leader handed over, said with the same message.
-        for told, ended_at in list(self._handed_said.get(session.commission_id, ())):
+        for told, ending in list(self._handed_said.get(session.commission_id, ())):
             try:
                 # With the ending it was told of: one that ended anew since is told once more.
                 await self._ledger.append_event(
-                    told, "told_to_leader", {"commission_id": session.commission_id, "ended_at": ended_at}
+                    told, "told_to_leader", {"commission_id": session.commission_id, "ending": ending}
                 )
             except Exception:  # noqa: BLE001 - told again with the next commission, which does little harm
                 logger.warning("noting that a leader was told what came of a commission it handed over failed", exc_info=True)
@@ -6145,8 +6160,13 @@ class TaskAgentManager:
             parent_id, message, reason="its idle session was closed; a result takes it up again"
         )
 
-    async def _wake_working(self, parent_id: str, message: str, *, reason: str) -> bool:
+    async def _wake_working(self, parent_id: str, message: str, *, reason: str, handed: bool = False) -> bool:
         """Take up again a commission that is ``working`` with no session open in a runtime, ``message`` its next work.
+
+        Not one its leader is handing over (``_said_while_handed``), but
+        for what hands it over itself (``handed``): until it is the other
+        task agent's, whatever else would take it up would start it where
+        it was. What a wake brings then waits, as below.
 
         Such a commission waits for something: for task agents it started
         (``_wake_closed_parent``), or, resting, for what it asked to be
@@ -6155,6 +6175,8 @@ class TaskAgentManager:
         Returns whether the message is on its way to it: handed over, or
         going along with the work it is about to be given.
         """
+        if parent_id in self._said_while_handed and not handed:
+            return False
         while not self._closed:
             current = self._sessions.get(parent_id)
             starting = parent_id in self._taking_up and (current is None or not current.ready and not current.closing)
@@ -7382,12 +7404,25 @@ class TaskAgentManager:
         closed and the commission goes on in the other one
         (``_handed_over``), which reports to her as any task agent does.
         """
+        from config.prompts import prompts_nekopower_brain as texts
+
+        commission_id = self._at_work_in(session_id)
+        if commission_id in self._handing_claims:
+            # Another call for it is at work beside this one (two in one turn): one hands it over.
+            raise RuntimeError(texts.HAND_OVER_TWICE)
+        self._handing_claims.add(commission_id)
+        try:
+            return await self._hand_over(session_id, commission_id, payload)
+        finally:
+            self._handing_claims.discard(commission_id)
+
+    async def _hand_over(self, session_id: str, commission_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Do what ``_cb_hand_over`` says, for the one call that is let in for a commission at a time."""
         from config.nekopower_settings import HAND_OVER_BRIEF_MAX_TOKENS
         from config.prompts import prompts_nekopower_brain as texts
         from nekopower.host.templates import TemplateError, model_name
         from utils.tokenize import truncate_to_tokens
 
-        commission_id = self._at_work_in(session_id)
         live = self._sessions.get(commission_id)
         commission = await self._ledger.get(commission_id)
         leader = await self._ledger.get_session(session_id)
@@ -7562,14 +7597,16 @@ class TaskAgentManager:
                 await self._note_writer(to)
                 nonce = secrets.token_hex(8)
                 message = _Found(frame(texts.TASK_AGENT_HANDED_OVER.format(nonce=nonce), brief, nonce))
-                if await self._wake_working(commission_id, message, reason="handed over by the lead of its project"):
+                if await self._wake_working(
+                    commission_id, message, reason="handed over by the lead of its project", handed=True
+                ):
                     while said_meanwhile:
                         # What the user said to it meanwhile, in the user's own words, after the brief:
                         # at once, with nothing awaited between, so that it goes along with the brief
                         # before the commission starts in the other task agent. (Whatever is said from
                         # here on finds it queued, and goes along with it.)
                         await self._wake_working(
-                            commission_id, said_meanwhile.pop(0), reason="said while it was handed over"
+                            commission_id, said_meanwhile.pop(0), reason="said while it was handed over", handed=True
                         )
                     # Nothing more is kept here from this moment, with nothing awaited since the last
                     # look: what is said while the record below is written finds the commission

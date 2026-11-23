@@ -2103,11 +2103,23 @@ class Ledger:
                     (project, session_id, DEFAULT_PROJECT),
                 )
                 if done.rowcount:
+                    theirs = [
+                        str(row["id"])
+                        for row in conn.execute(
+                            "SELECT id FROM commissions WHERE session_id = ? "
+                            "AND (project IS NULL OR project = '' OR project = ?)",
+                            (session_id, DEFAULT_PROJECT),
+                        ).fetchall()
+                    ]
                     conn.execute(
                         "UPDATE commissions SET project = ? WHERE session_id = ? "
                         "AND (project IS NULL OR project = '' OR project = ?)",
                         (project, session_id, DEFAULT_PROJECT),
                     )
+                    for commission_id in theirs:
+                        # Noted with each, as where one is filed under a project: whoever read
+                        # what happened and passed over it finds this after where it read up to.
+                        self._event(conn, commission_id, "filed_under_project", {"project": project})
                     found = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
                     if found is not None:
                         made.append(found)
@@ -2115,41 +2127,50 @@ class Ledger:
 
         return await self.run(work)
 
-    async def handed_work(self, session_id: str, *, limit: int) -> list[Commission]:
+    async def handed_work(self, session_id: str, *, limit: int) -> list[tuple[Commission, int]]:
         """Return the commissions a leader handed over that are over and that it was not told of yet, the most recent first.
+
+        Each with which ending this is: the number of the event that
+        wrote its status last, which is what ``told_to_leader`` says it
+        told of (``ending``).
 
         Done, stuck, failed or stopped by the user, with what came of
         them. One the leader was told of has a ``told_to_leader`` event: a
         name of its own, so that one a copy of the member's session then
         worked on, of which that session was told (``told_to_session``,
         ``forked_work``), is still one the leader is to hear of. Told of
-        how it ended: the event says which ending it told of
-        (``ended_at``), and one that got stuck, was taken up again and
-        ended anew is told once more, also where it ended anew between
-        the leader being told and that being put on record. All it handed
+        how it ended: the event says which ending it told of, by that
+        event's number and not by a time (two endings may bear the same
+        time, and a clock may be set back), and one that got stuck, was
+        taken up again and ended anew is told once more, also where it
+        ended anew between the leader being told and that being put on
+        record. All it handed
         over are looked through, the latest first, until ``limit`` are
         found: however many it was told of since, an earlier one it was
         not told of is still found.
         """
 
-        def work(conn: sqlite3.Connection) -> list[Commission]:
+        def work(conn: sqlite3.Connection) -> list[tuple[Commission, int]]:
             rows = conn.execute(
                 "SELECT commissions.*, (SELECT payload FROM events WHERE events.commission_id = commissions.id "
-                "AND events.type = 'told_to_leader' ORDER BY seq DESC LIMIT 1) AS told_of FROM commissions "
+                "AND events.type = 'told_to_leader' ORDER BY seq DESC LIMIT 1) AS told_of, "
+                "(SELECT COALESCE(MAX(seq), 0) FROM events WHERE events.commission_id = commissions.id "
+                "AND events.type = 'status') AS ending FROM commissions "
                 "WHERE handed_by = ? AND status IN ('done', 'blocked', 'failed', 'cancelled') ORDER BY updated_at DESC",
                 (session_id,),
             )
-            found: list[Commission] = []
+            found: list[tuple[Commission, int]] = []
             for row in rows:
                 item = _commission(row)
                 if item is None:
                     continue
+                ending = int(row["ending"])
                 if row["told_of"] is not None:
-                    of = _load(row["told_of"]).get("ended_at")
+                    of = _load(row["told_of"]).get("ending")
                     # (One that says no ending told of it as it stood when it was written.)
-                    if not isinstance(of, (int, float)) or item.ended_at is None or of >= item.ended_at:
+                    if not isinstance(of, int) or of >= ending:
                         continue
-                found.append(item)
+                found.append((item, ending))
                 if len(found) >= limit:
                     break
             return found

@@ -353,9 +353,13 @@ def test_doing_it_over_from_the_start_is_not_asking_for_another_task_agent():
     for text in ("с нуля перепиши отчёт, Report Writer", "Report Writer: rehaz el informe desde cero"):
         found = orch.by_rules(text, "", standing, bars)
         assert found is not None and (found.action, found.agent) == (orch.CONTINUE, "writer")
+    # Nor is a new part of what it did: "start a new" asks for another one only when it names one.
+    part = orch.by_rules("Ask Report Writer to start a new section in the report", "", standing, bars)
+    assert part is not None and (part.action, part.agent) == (orch.CONTINUE, "writer")
     # Asking for another one is still that, whoever is named.
-    other = orch.by_rules("start a new agent for what Report Writer did", "", standing, bars)
-    assert other is not None and (other.action, other.agent) == (orch.SUMMON_STRAY, None)
+    for text in ("start a new agent for what Report Writer did", "Report Writer is busy, start a new one for the report"):
+        other = orch.by_rules(text, "", standing, bars)
+        assert other is not None and (other.action, other.agent) == (orch.SUMMON_STRAY, None)
 
 
 def test_a_sentence_in_another_script_is_shown_what_shares_a_word_with_it_first():
@@ -380,3 +384,20 @@ def test_a_sentence_in_another_script_is_shown_what_shares_a_word_with_it_first(
     assert orch.shown_keys(orch.rank(nothing, standing), bars, nothing, standing) == [
         orch.AGENT_KEY + f"new{index}" for index in (1, 2, 3, 4)
     ]
+
+
+def test_a_project_named_goes_to_the_member_that_works_else_to_the_member_it_has():
+    project = orch.ProjectView(name="thesis", description="The master's thesis")
+    scout = orch.Agent(id="scout", project="thesis", preset="scout", idle_seconds=10.0)
+    general = orch.Agent(id="general", project="thesis", preset="general", idle_seconds=500.0)
+    over = orch.Agent(id="over", project="thesis", preset="scout", idle_seconds=10.0**9)
+    bars = orch.Bars()
+    key = orch.PROJECT_KEY + "thesis"
+
+    both = orch.settle(key, orch.FOLLOW_UP, orch.Standing(projects=(project,), agents=(scout, general)), bars)
+    assert (both.action, both.agent) == (orch.CONTINUE, "general")
+    only = orch.settle(key, orch.FOLLOW_UP, orch.Standing(projects=(project,), agents=(scout,)), bars)
+    assert (only.action, only.agent) == (orch.CONTINUE, "scout")
+    # One that takes no more work is not gone on with: a new member that works.
+    none = orch.settle(key, orch.FOLLOW_UP, orch.Standing(projects=(project,), agents=(over,)), bars)
+    assert (none.action, none.agent, none.preset) == (orch.SUMMON_IN_PROJECT, None, orch.WORKING_PRESET)

@@ -539,7 +539,10 @@ def settle(
         working = [member for member in standing.members(project.name) if _takes_work(member, bars)]
         if target is not None and target in working:
             return verdict(CONTINUE, agent=target.id, project=project.name, relation=relation)
-        at_work = [member for member in working if member.preset == WORKING_PRESET]
+        # The member that works; where the project has none of that preset, the member it has. (A
+        # project without a leader has members of another preset only where its user opened them
+        # so: the work is theirs, with what that preset allows, and no other is started beside them.)
+        at_work = [member for member in working if member.preset == WORKING_PRESET] or working
         if at_work:
             latest = min(at_work, key=lambda member: member.idle_seconds)
             return verdict(CONTINUE, agent=latest.id, project=project.name, relation=relation)
