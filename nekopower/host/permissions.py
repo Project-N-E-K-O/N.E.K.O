@@ -387,6 +387,10 @@ class PermissionStore:
         ``set_mode`` refuses: False when the settings changed since
         ``expected_version`` was read, ``PermissionFileError`` while an
         existing file cannot be read.
+
+        What was approved for the servers that go by the shared setting
+        counts no more afterwards, for this one and for the others: they
+        are asked once more.
         """
         from utils.asyncio_executor import to_thread_through_cancellation
 
@@ -399,18 +403,15 @@ class PermissionStore:
                 return False
             if slot not in self._mcp_servers:
                 return True
-            shared = self._categories.get(name, "auto")
-            previous = self._mcp_servers.pop(slot)
+            del self._mcp_servers[slot]
             self._version += 1
-            # Nothing tells what was approved for it from what was approved for the servers
-            # that share the setting any more. Where it is held more strictly now than it
-            # was, what was approved under the looser rule must not count: the generation
-            # they share moves on. That ends the approvals of the others that go by the
-            # shared setting too; they are asked once more.
-            old_rule = _effective_mode(name, previous, category_mode=shared)
-            new_rule = _effective_mode(name, shared, category_mode=shared)
-            if _MODE_RANK[new_rule] < _MODE_RANK[old_rule]:
-                self._revisions[(name, None)] = self._version
+            # From here on it has the generation the servers share, and nothing tells what
+            # was approved for it from what was approved for them. That generation moves on,
+            # whatever the two rules are: an approval given before the server had a setting
+            # of its own carries the generation they shared then, and would count again
+            # though the user took it back since by forbidding the server. It ends the
+            # approvals of the others that go by the shared setting as well.
+            self._revisions[(name, None)] = self._version
             await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
         return True
 

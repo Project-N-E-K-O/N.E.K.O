@@ -524,6 +524,13 @@ async def test_one_that_rests_is_not_listed_as_at_work_and_one_stuck_long_ago_is
         return commission.id
 
     working, resting, stuck = await at_work("at work"), await at_work("resting"), await at_work("stuck")
+
+    # Filed a while apart, so that the newest first is one order and not a matter of the clock.
+    def apart(conn: Any) -> None:
+        for age, commission_id in enumerate((stuck, resting, working)):
+            conn.execute("UPDATE commissions SET created_at = created_at - ? WHERE id = ?", (age * 10, commission_id))
+
+    await ledger.run(apart)
     # It rests while something it asked for is still to wake it.
     _wake, refusal = await ledger.wake_add(
         session_id=(await ledger.get(resting)).session_id, commission_id=resting, note="look at the build again",
@@ -632,7 +639,7 @@ async def test_the_mcp_tools_are_listed_by_server_and_each_server_is_set_on_its_
         assert _code(await console.post("/mcp/permission", payload)) == (400, code), payload
 
 
-async def test_taking_the_setting_of_a_server_away_ends_what_was_approved_only_where_it_is_held_more_strictly(tmp_path):
+async def test_taking_the_setting_of_a_server_away_ends_what_was_approved_for_those_that_share_the_setting(tmp_path):
     from nekopower.host.permissions import PermissionStore
 
     store = PermissionStore(tmp_path / "permissions.json")
@@ -642,7 +649,7 @@ async def test_taking_the_setting_of_a_server_away_ends_what_was_approved_only_w
     version = store.version
     # One that has none of its own: nothing changes, nothing is written.
     assert await store.clear_mcp_server("calendar") and store.version == version
-    # From allowed to asked every time: what was approved for the servers that share the setting counts no more.
+    # From allowed to asked every time: what was approved under the looser rule counts no more.
     assert await store.clear_mcp_server("notes")
     assert store.version == version + 1
     assert await store.mode("mcp_server", "notes") == "always_ask"
@@ -651,11 +658,14 @@ async def test_taking_the_setting_of_a_server_away_ends_what_was_approved_only_w
     # Kept on the disk as it is now.
     assert (await PermissionStore(tmp_path / "permissions.json").snapshot())["mcp_servers"] == {}
 
-    # From forbidden to asked every time is no stricter: what was approved under the shared setting stays.
+    # Approved while it went by the shared setting, then forbidden, then back to the shared
+    # setting: the approval carries the generation it was given in (an approval counts while
+    # the generation is the one it carries), and that must not be the generation again.
+    approved_in = store.revision("mcp_server", "notes")
     await store.set_mode("mcp_server", "deny", "notes")
-    shared = store.revision("mcp_server")
+    assert store.revision("mcp_server", "notes") != approved_in
     assert await store.clear_mcp_server("notes")
-    assert store.revision("mcp_server") == store.revision("mcp_server", "notes") == shared
+    assert store.revision("mcp_server", "notes") == store.version != approved_in
 
 
 async def test_a_server_that_is_set_and_has_no_tool_now_is_still_listed_and_a_missing_adapter_is_said(consoles, tmp_path, monkeypatch):
