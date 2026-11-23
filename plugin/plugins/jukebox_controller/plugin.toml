@@ -18,3 +18,7 @@ supported = ">=0.1.0,<0.3.0"
 [plugin_runtime]
 enabled = true
 auto_start = false
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."plugin_sdk.main_agent.messages:push"]
+reason = { zh-CN = "让 N.E.K.O 的点歌台播放、切换或停止歌曲。", zh-TW = "讓 N.E.K.O 的點歌台播放、切換或停止歌曲。", en = "Have N.E.K.O's jukebox play, skip or stop songs.", ja = "N.E.K.O のジュークボックスで曲を再生・スキップ・停止します。", ko = "N.E.K.O의 주크박스에서 곡을 재생하거나 넘기거나 멈춥니다.", ru = "Включать, переключать и останавливать песни в музыкальном автомате N.E.K.O.", es = "Hacer que la rocola de N.E.K.O reproduzca, salte o detenga canciones.", pt = "Fazer a jukebox do N.E.K.O tocar, pular ou parar músicas." }

@@ -54,6 +54,9 @@ def test_schema_covers_every_editable_manifest_and_example_field(plugin_id: str)
     plugin_dir = _PLUGINS / plugin_id
     manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
     manifest.pop("plugin")
+    # The top-level [permissions] table declares permissions; it is not
+    # editable configuration (see test_builtin_plugin_permissions.py).
+    manifest.pop("permissions", None)
     schema = _schema(plugin_id)
     # Claude companion consumes an optional section not shipped in plugin.toml.
     # Keep those existing runtime defaults documented without changing the manifest.
