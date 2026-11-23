@@ -133,7 +133,7 @@ def test_copy_fallback_when_move_fails(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(Path, "unlink", unlink)
     logger = _Logger()
 
-    _migrate_legacy_inbox(legacy, target, logger)
+    assert _migrate_legacy_inbox(legacy, target, logger) is True
 
     assert json.loads(target.read_text(encoding="utf-8")) == _legacy_payload()
     assert legacy.is_file()  # could not be removed, left in place
@@ -151,22 +151,28 @@ def test_failed_migration_does_not_block_startup(
     def fail(*_args: object, **_kwargs: object) -> None:
         raise PermissionError("denied")
 
-    monkeypatch.setattr(companion.os, "replace", fail)
-    monkeypatch.setattr(companion.shutil, "copyfile", fail)
-
-    plugin._init_inbox()
+    with monkeypatch.context() as patched:
+        patched.setattr(companion.os, "replace", fail)
+        patched.setattr(companion.shutil, "copyfile", fail)
+        plugin._init_inbox()
 
     assert plugin._inbox is not None
     assert plugin._inbox.pending() == []
     assert legacy.is_file()
-    # The fresh inbox is still saved in the data directory.
-    assert json.loads(plugin.data_path("inbox.json").read_text(encoding="utf-8")) == []
     warnings = [(msg, args) for level, msg, args in plugin.logger.lines if level == "warning"]
     assert len(warnings) == 1
     assert "migration failed" in warnings[0][0]
     assert warnings[0][1] == ("PermissionError",)
     assert _SECRET not in plugin.logger.text()
     assert str(legacy) not in plugin.logger.text()
+    # Nothing was written at the new location, so the next start retries.
+    assert not plugin.data_path("inbox.json").exists()
+
+    plugin._inbox = None
+    plugin._init_inbox()
+
+    assert not legacy.exists()
+    assert [m["id"] for m in plugin._inbox.pending()] == ["abc12345"]
 
 
 def test_inbox_queue_creates_missing_data_directory(tmp_path: Path) -> None:

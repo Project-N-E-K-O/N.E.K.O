@@ -194,31 +194,33 @@ class InboxQueue:
             self._save()
 
 
-def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> None:
+def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> bool:
     """Move an inbox left in the install directory into the plugin data directory.
 
     Runs only when the legacy file exists and the target does not. A plain move
     is tried first; if that fails (read-only install directory, another drive)
     the file is copied instead and the legacy copy removed when possible.
-    Never raises: a failed migration only costs the old pending messages.
+    Never raises. Returns False when a legacy file is left unmigrated, so the
+    caller can avoid creating the target and the next start tries again.
     Log lines carry the error type only, never paths or the file content.
     """
     try:
         if target_path.exists() or not legacy_path.is_file():
-            return
+            return True
     except OSError as e:
         logger.warning("Skipping legacy inbox migration, cannot inspect paths: {}", type(e).__name__)
-        return
+        return False
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         logger.warning("Legacy inbox migration failed, cannot create data directory: {}", type(e).__name__)
-        return
+        return False
     try:
         os.replace(legacy_path, target_path)
         logger.info("Moved legacy inbox into the plugin data directory")
-        return
+        return True
     except OSError:
+        # Typically another drive or a read-only install directory: copy instead.
         pass
     tmp_path = target_path.with_name(target_path.name + ".migrating")
     try:
@@ -230,7 +232,7 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
             tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
-        return
+        return False
     try:
         legacy_path.unlink()
         logger.info("Copied legacy inbox into the plugin data directory")
@@ -239,6 +241,7 @@ def _migrate_legacy_inbox(legacy_path: Path, target_path: Path, logger: Any) -> 
             "Copied legacy inbox into the plugin data directory; the old file could not be removed: {}",
             type(e).__name__,
         )
+    return True
 
 
 # ── Activity summary generator ─────────────────────────────────────────────
@@ -674,9 +677,12 @@ class ClaudeCompanionPlugin(NekoPluginBase):
         """Open the inbox in the plugin data directory, migrating a legacy file first."""
         try:
             inbox_path = self.data_path(_INBOX_FILE_NAME)
-            _migrate_legacy_inbox(_LEGACY_INBOX_PATH, inbox_path, self.logger)
+            migrated = _migrate_legacy_inbox(_LEGACY_INBOX_PATH, inbox_path, self.logger)
             self._inbox = InboxQueue(str(inbox_path))
-            self._inbox.cleanup()
+            if migrated:
+                # cleanup() saves the file; after a failed migration that would
+                # create an empty target and stop later starts from retrying.
+                self._inbox.cleanup()
             pending_count = len(self._inbox.pending())
             if pending_count:
                 self.logger.info("Inbox initialized with {} pending messages", pending_count)
