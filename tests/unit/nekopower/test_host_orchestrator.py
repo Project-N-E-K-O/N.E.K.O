@@ -157,6 +157,13 @@ def test_where_a_project_s_sentence_goes() -> None:
     # No leader: the member that works takes it, not the one that only reads.
     found = orch.settle("project:Recipe Box", orch.FOLLOW_UP, standing, bars)
     assert (found.action, found.agent, found.project) == (orch.CONTINUE, "cook", "Recipe Box")
+    # A member that is named takes it itself, though another worked later; one that takes no more work does not.
+    older = Agent(id="baker", project="Recipe Box", title="Bread baker", duty="Bakes", idle_seconds=50 * HOUR)
+    two = replace(standing, agents=(*standing.agents, older))
+    found = orch.settle("agent:baker", orch.FOLLOW_UP, two, bars)
+    assert (found.action, found.agent, found.project) == (orch.CONTINUE, "baker", "Recipe Box")
+    gone = replace(two, agents=(*standing.agents, replace(older, idle_seconds=999 * HOUR)))
+    assert orch.settle("agent:baker", orch.FOLLOW_UP, gone, bars).agent == "cook"
     # None that takes work is left: a new one, in the project.
     retired = replace(standing, agents=tuple(replace(agent, idle_seconds=999 * HOUR) for agent in standing.agents))
     found = orch.settle("project:Recipe Box", orch.FOLLOW_UP, retired, bars)

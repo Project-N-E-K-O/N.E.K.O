@@ -184,10 +184,11 @@ _USAGE_REASON = "it used as many tokens as one commission may, and the user allo
 # session has ended (``Ledger.session_alive``); said to nobody, kept on record.
 _SESSION_ENDED_REASON = "its session has ended"
 # The kinds of session the host sums up while they are idle: all that can be
-# handed a commission again (a session of one commission as well as a
-# project's). Those of a task agent another one started, and copies, are
-# never summed up: they are done with when their part is.
-_IDLE_COMPACT_KINDS = frozenset({"project", "single"})
+# handed a commission again (a session of one commission as well as the
+# leader and the members of a project). Those of a task agent another one
+# started, and copies, are never summed up: they are done with when their
+# part is.
+_IDLE_COMPACT_KINDS = frozenset({"project", "line", "single"})
 # Added to what is left of the idle time when a timer came due a moment
 # before the ledger had the session idle for long enough: more than the
 # steps of a wall clock, so that the next look is not early again.

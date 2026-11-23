@@ -960,14 +960,24 @@ async def test_changing_where_a_project_works_moves_its_leader_and_the_members_t
     child = await host.ledger.create_session(
         name="child", lanlan_name="Lan", kind="child", project="Budget app", parent_id=here.id, workdir=str(was)
     )
+    # One the host gave a directory of its own, as a session of this project; and one that got its
+    # directory as a session of no project, before it became this project's.
+    given = await host.ledger.create_session(name="given", lanlan_name="Lan", kind="line", project="Budget app")
+    await host.ledger.update_session(given.id, workdir=str(host.paths.work_dir(given.id, "Budget app")))
+    loose = await host.ledger.create_session(name="loose", lanlan_name="Lan", kind="line", project="Budget app")
+    await host.ledger.update_session(loose.id, workdir=str(host.paths.work_dir(loose.id, None)))
 
     await host.set_project_workdir("Budget app", str(wanted))
 
     async def works(session: Any) -> str | None:
         return (await host.ledger.get_session(session.id)).workdir
 
-    assert [await works(item) for item in (leader, here, unset)] == [str(wanted)] * 3
+    assert [await works(item) for item in (leader, here, unset, given)] == [str(wanted)] * 4
     assert await works(adopted) == str(elsewhere) and await works(child) == str(was)
+    assert await works(loose) == str(host.paths.work_dir(loose.id, None))
+    # By itself the ledger moves the leader and no member.
+    before = await host.ledger.move_project("Budget app", str(was))
+    assert before == {leader.id: str(wanted)} and await works(here) == str(wanted)
     assert (await host.space.get_project("Budget app")).workdir == str(wanted)
 
 
@@ -992,7 +1002,7 @@ async def test_a_project_is_at_work_while_one_of_its_members_is(hosts, tmp_path)
 
     # The leader is closed and holds nothing: it is its member that is at work.
     assert await host._project_busy("Shop site") == "at_work"
-    assert await host.ledger.move_project("Shop site", str(wanted), was=str(workdir)) is None
+    assert await host.ledger.move_project("Shop site", str(wanted), moves=lambda _id, _workdir: True) is None
     with pytest.raises(ProjectBusy):
         await host.set_project_workdir("Shop site", str(wanted))
 
@@ -1193,3 +1203,100 @@ async def test_a_family_shows_on_the_timeline(hosts, tmp_path):
     assert (formed["text"], formed["detail"]) == (project, {"project": project, "members": [first.commission_id]})
     (decided,) = [entry for entry in entries if entry["kind"] == "orchestrated"]
     assert decided["detail"]["action"] == "form_family" and decided["peer"]["session_id"] == first.commission_id
+
+
+async def test_what_a_template_of_the_leaders_name_withholds_its_members_are_without_as_well(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Shop site", tmp_path)
+    templates = host.paths.space().root / "projects" / "Shop site" / "templates"
+    templates.mkdir(parents=True)
+    (templates / "boss.md").write_text(
+        "---\nname: boss\ndescription: The lead of the shop site.\nwithhold: [web_fetch]\nwithhold_own: [write, edit, bash, pwsh]\n---\n"
+        "Hand everything out.\n",
+        encoding="utf-8",
+    )
+    leader, _made = await host.ledger.project_session("Lan", "Shop site")
+    member = await host.ledger.create_session(
+        name="worker", lanlan_name="Lan", kind="line", project="Shop site", parent_id=leader.id, preset="worker"
+    )
+    alone = await host.ledger.create_session(name="alone", lanlan_name="Lan", kind="line", project="Shop site", preset="worker")
+
+    # What the leader's template takes from its task agents, a member it started is without; what
+    # it takes from itself only, the member has.
+    assert (await host.task_agents._template_of(member)).withheld() == frozenset({"web_fetch"})
+    assert (await host.task_agents._template_of(leader)).withheld() == frozenset({"web_fetch", "write", "edit", "bash", "pwsh"})
+    # A member nobody started goes by its own preset alone.
+    assert (await host.task_agents._template_of(alone)).withheld() == frozenset()
+
+
+async def test_whether_a_directory_is_in_a_git_repository_is_remembered_for_a_while(hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    families = host.task_agents.families
+    asked: list[str] = []
+    answers = {"D:/site": True}
+
+    async def probe(directory: str) -> bool:
+        asked.append(directory)
+        return answers.get(directory, False)
+
+    families._probe = probe
+    now = {"at": 1000.0}
+    families._clock = lambda: now["at"]
+
+    assert await families.in_git("D:/site") and await families.in_git("D:/site") and not await families.in_git("D:/notes")
+    assert not await families.in_git(None) and not await families.in_git("")
+    assert asked == ["D:/site", "D:/notes"]
+    # Looked at anew once it is old: a directory can become a repository.
+    answers["D:/notes"] = True
+    now["at"] += settings.LEADER_GIT_PROBE_SECONDS + 1
+    assert await families.in_git("D:/notes") and asked == ["D:/site", "D:/notes", "D:/notes"]
+
+    async def broken(directory: str) -> bool:
+        raise OSError("git is gone")
+
+    families._probe = broken
+    now["at"] += settings.LEADER_GIT_PROBE_SECONDS + 1
+    assert not await families.in_git("D:/site")
+
+
+async def test_a_project_s_directory_is_looked_at_with_git_itself_when_nothing_else_says(hosts, tmp_path):
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    host.task_agents.families._probe = None
+    repository, plain = tmp_path / "repository", tmp_path / "plain"
+    (repository / "inside").mkdir(parents=True)
+    plain.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+
+    assert await host.task_agents.families.in_git(str(repository / "inside"))
+    assert not await host.task_agents.families.in_git(str(plain))
+    # Looked at only: nothing was made in either.
+    assert sorted(item.name for item in plain.iterdir()) == []
+    assert sorted(item.name for item in repository.iterdir()) == [".git", "inside"]
+
+
+async def test_sessions_whose_project_is_archived_or_whose_record_was_removed_are_no_candidates(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    await host.ledger.create_session(name="there", lanlan_name="Lan", kind="line", project="Budget app", duty="budget work")
+    await host.ledger.create_session(name="gone", lanlan_name="Lan", kind="line", project="Archived one", duty="old work")
+    await host.ledger.create_session(name="cleared", lanlan_name="Lan", kind="single", duty="desks", status="cleared")
+    kept = await host.ledger.create_session(name="kept", lanlan_name="Lan", kind="single", duty="chairs")
+    await host.ledger.create_session(name="hers", lanlan_name="Mia", kind="single", duty="another character's")
+    commission, _made = await host.ledger.create(lanlan_name="Lan", title="t", dispatch_text="t", source="dispatch")
+
+    standing = await host.task_agents.families.standing(commission)
+
+    assert [project.name for project in standing.projects] == ["Budget app"]
+    assert sorted((agent.duty, agent.project) for agent in standing.agents) == [("budget work", "Budget app"), ("chairs", None)]
+    assert standing.agent(kept.id).idle_seconds > 0
+    # One with a commission under way is at work, however long ago its session's status was written.
+    under_way, _made = await host.ledger.create(
+        lanlan_name="Lan", title="chairs", dispatch_text="chairs", source="dispatch", session_id=kept.id
+    )
+    assert under_way.status == "queued"
+    assert (await host.task_agents.families.standing(commission)).agent(kept.id).idle_seconds == 0.0

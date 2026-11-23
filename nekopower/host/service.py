@@ -1097,7 +1097,7 @@ class NekoPowerHost:
             # The project's own sessions of every character first, looked at once more and written in
             # one go: each starts from the directory it keeps, so a commission that begins from here
             # on begins in the new one, and one that began since the look above stops the change.
-            before = await self.ledger.move_project(project, str(wanted), was=kept.workdir)
+            before = await self.ledger.move_project(project, str(wanted), moves=self._moves_with(project, kept.workdir))
             if before is None:
                 raise ProjectBusy("at_work")
             # The record is written second: not written, the sessions go back, so that nothing is half changed.
@@ -1110,6 +1110,31 @@ class NekoPowerHost:
                 await self._undo_project_move(project, before, str(wanted))
                 raise LookupError(project)
             return changed.to_json()
+
+    def _moves_with(self, project: str, was: str | None) -> Callable[[str, str | None], bool]:
+        """Return what says whether a member of a project moves when the project is given another directory.
+
+        Given the member's id and where it works. It moves when it works
+        where the project did (``was``), in no directory of its own yet,
+        or in the one the host gave it as a session of this project,
+        having none to give it of the project's. It stays when it works
+        anywhere else: it was a session of its own before it became the
+        project's (a family is made of such), and its files are there.
+        """
+        import os
+
+        def same(first: str, second: str) -> bool:
+            return os.path.normcase(os.path.normpath(first)) == os.path.normcase(os.path.normpath(second))
+
+        def moves(session_id: str, workdir: str | None) -> bool:
+            if not workdir or (was and same(workdir, was)):
+                return True
+            try:
+                return same(workdir, str(self.paths.work_dir(session_id, project)))
+            except ValueError:
+                return False
+
+        return moves
 
     async def _undo_project_move(self, project: str, before: dict[str, str | None], wanted: str) -> None:
         """Put a project's sessions back where they worked, after its record could not be written.

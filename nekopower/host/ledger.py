@@ -937,17 +937,6 @@ _CARRIED_IN = (
 )
 
 
-def _same_place(first: Any, second: Any) -> bool:
-    """Whether two working directories on record are one; a session with none works where its project does."""
-    import os
-
-    if not second:
-        return not first
-    if not first:
-        return True
-    return os.path.normcase(os.path.normpath(str(first))) == os.path.normcase(os.path.normpath(str(second)))
-
-
 def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
@@ -2044,7 +2033,9 @@ class Ledger:
 
         return await self.run(work)
 
-    async def move_project(self, project: str, workdir: str, *, was: str | None = None) -> dict[str, str | None] | None:
+    async def move_project(
+        self, project: str, workdir: str, *, moves: Callable[[str, str | None], bool] | None = None
+    ) -> dict[str, str | None] | None:
         """Write where a project's own sessions work, unless something is under way in it.
 
         Returns where each of them worked before (by session), for
@@ -2058,11 +2049,12 @@ class Ledger:
         session of the project open with a run, waiting or being
         summed up, or a commission of it queued, at work or waiting.
         The sessions task agents started, and copies, work where they
-        were sent and are left as they are. So is a member that works
-        somewhere else than the project did (``was``, where the project
-        worked until now): one that was a session of its own before it
-        became the project's, and keeps its directory. A member that
-        works where the project does moves with it, like its leader.
+        were sent and are left as they are. The project's leader moves
+        with it. A member does when ``moves`` says so, given its id and
+        where it works: one that works where the project did does, one
+        that was a session of its own before it became the project's
+        keeps its directory (``NekoPowerHost`` tells which is which).
+        Without ``moves`` no member is moved.
         """
 
         def work(conn: sqlite3.Connection) -> dict[str, str | None] | None:
@@ -2081,7 +2073,8 @@ class Ledger:
             moved = [
                 row
                 for row in rows
-                if row["kind"] == "project" or (row["kind"] == "line" and _same_place(row["workdir"], was))
+                if row["kind"] == "project"
+                or (row["kind"] == "line" and moves is not None and moves(row["id"], row["workdir"]))
             ]
             for row in moved:
                 conn.execute("UPDATE sessions SET workdir = ? WHERE id = ?", (workdir, row["id"]))

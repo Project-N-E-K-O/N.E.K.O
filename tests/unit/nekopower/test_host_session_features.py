@@ -1251,7 +1251,7 @@ async def test_a_project_session_nothing_is_at_work_in_is_summed_up_and_the_next
     await _idle_work_over(host)
 
     session = await host.ledger.get_session(first.id)
-    assert session.kind == "project" and session.status == "closed" and session.compacted_at is not None
+    assert session.kind == "line" and session.status == "closed" and session.compacted_at is not None
     assert len(export.requests) == requests_before + 1
     summary = export.requests[-1]
     # It begins as the session's requests did, so that what a provider kept of them is used.
@@ -1578,7 +1578,7 @@ async def test_a_session_in_use_when_everything_was_stopped_is_left_alone_until_
 
     # Long enough to be summed up, and nothing at work in it: yet no timer is set, as nothing was asked since.
     kept = await host.ledger.get_session(first.id)
-    assert kept.kind == "project" and kept.status == "closed" and kept.context_tokens >= 5_000
+    assert kept.kind == "line" and kept.status == "closed" and kept.context_tokens >= 5_000
     assert manager._idle_timers == {} and first.id in manager._idle_stopped
     await asyncio.sleep(0.1)
     assert len(export.requests) == 5 and manager._compacting == {}
@@ -1781,8 +1781,8 @@ async def test_a_session_of_one_commission_is_summed_up_like_one_of_a_project_un
     monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
 
     # Eight days later the session of one commission has ended (the seventh day after its last commission
-    # ended is the last it is gone on with): it is not summed up, nor is anything counted against it. The
-    # session of the project is, the same age.
+    # ended is the last it is gone on with): it is not summed up, nor is anything counted against it. Nor
+    # is the member of the project, the same age: it ends the same way. Six days after, it is.
     real = host.ledger._clock
     monkeypatch.setattr(host.ledger, "_clock", lambda: real() + 8 * 86_400.0)
     assert await manager._idle_compact(single.id) is False
@@ -1793,6 +1793,9 @@ async def test_a_session_of_one_commission_is_summed_up_like_one_of_a_project_un
     assert await manager._idle_compact(single.id, manager._idle_stops) is False
     assert single.id not in manager._idle_timers
     monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    assert await manager._idle_compact(project.id) is False
+    assert len(export.requests) == 5 and manager._idle_compact_failures == {}
+    monkeypatch.setattr(host.ledger, "_clock", lambda: real() + 6 * 86_400.0)
     assert await manager._idle_compact(project.id) is True
     assert len(export.requests) == 6
 
