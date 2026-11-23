@@ -1011,3 +1011,103 @@ async def test_auto_mode_falls_back_immediately_when_primary_throttle_exceeds_bu
     assert baidu_called is False
     assert ddg_called is True
     assert results == [{"title": "ddg", "url": "https://duckduckgo.com", "snippet": ""}]
+
+
+@pytest.mark.asyncio
+async def test_coalesced_longer_budget_waiter_survives_short_budget_initiator() -> None:
+    """Short-budget initiator timing out on busy lock must not fail a longer coalesced waiter."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=0.0, queue_wait_seconds=2.0)
+    coordinator._loop = asyncio.get_running_loop()
+    state = resilience._BackendState(asyncio.Lock())
+    await state.lock.acquire()
+    coordinator._backends["duckduckgo"] = state
+
+    fetch_calls = 0
+
+    async def fetch() -> resilience.SearchResults:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return [{"title": "coalesced", "url": "https://example.com", "snippet": ""}]
+
+    try:
+        short_task = asyncio.create_task(
+            coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=0.08)
+        )
+        await asyncio.sleep(0.02)
+        long_task = asyncio.create_task(
+            coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=2.0)
+        )
+        with pytest.raises(resilience.SearchBusyError):
+            await asyncio.wait_for(short_task, timeout=0.4)
+        assert not long_task.done()
+    finally:
+        state.lock.release()
+
+    assert (await asyncio.wait_for(long_task, timeout=1.0))[0]["title"] == "coalesced"
+    assert fetch_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_coalesced_unbounded_waiter_survives_short_budget_initiator() -> None:
+    """Unbounded coalesced waiter completes even if short-budget initiator expires."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=0.0, queue_wait_seconds=2.0)
+    coordinator._loop = asyncio.get_running_loop()
+    state = resilience._BackendState(asyncio.Lock())
+    await state.lock.acquire()
+    coordinator._backends["duckduckgo"] = state
+
+    fetch_calls = 0
+
+    async def fetch() -> resilience.SearchResults:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return [{"title": "unbounded", "url": "https://example.com", "snippet": ""}]
+
+    try:
+        short_task = asyncio.create_task(
+            coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=0.05)
+        )
+        await asyncio.sleep(0.01)
+        unbounded_task = asyncio.create_task(
+            coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=None)
+        )
+        with pytest.raises(resilience.SearchBusyError):
+            await asyncio.wait_for(short_task, timeout=0.4)
+        assert not unbounded_task.done()
+    finally:
+        state.lock.release()
+
+    assert (await asyncio.wait_for(unbounded_task, timeout=1.0))[0]["title"] == "unbounded"
+    assert fetch_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_coalesced_short_waiter_fails_fast_during_throttle_sleep_without_breaking_long_waiter() -> None:
+    """A short-budget waiter joining a throttled sleep fails fast without aborting the long waiter."""
+    coordinator = resilience.SearchCoordinator(min_interval_seconds=0.0, queue_wait_seconds=2.0)
+    coordinator._loop = asyncio.get_running_loop()
+    coordinator._backends["duckduckgo"] = resilience._BackendState(
+        asyncio.Lock(),
+        next_allowed=resilience.time.monotonic() + 0.25,
+    )
+
+    fetch_calls = 0
+
+    async def fetch() -> resilience.SearchResults:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return [{"title": "throttled-ok", "url": "https://example.com", "snippet": ""}]
+
+    long_task = asyncio.create_task(
+        coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=2.0)
+    )
+    await asyncio.sleep(0.02)
+
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(resilience.SearchBusyError):
+        await coordinator.run(("duckduckgo", "neko", 3), fetch, max_wait_seconds=0.05)
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert elapsed < 0.1
+    assert (await asyncio.wait_for(long_task, timeout=1.0))[0]["title"] == "throttled-ok"
+    assert fetch_calls == 1

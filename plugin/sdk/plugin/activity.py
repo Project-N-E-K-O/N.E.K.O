@@ -27,6 +27,14 @@ class OsActivitySnapshot:
     privacy_state: PrivacyState = "unavailable"
 
 
+_PRIVATE_SNAPSHOT = OsActivitySnapshot(
+    os_signals_available=False,
+    foreground_category=None,
+    system_idle_seconds=None,
+    privacy_state="private",
+)
+
+
 _import_lock = threading.Lock()
 _helpers_imported = False
 _loop_locks: WeakValueDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = WeakValueDictionary()
@@ -95,6 +103,8 @@ async def _read_system_signal_snapshot_async() -> Any:
                 snap = collector.snapshot()
                 snap_ts = float(getattr(snap, "timestamp", 0.0) or 0.0)
                 if snap_ts <= 0.0 or (time.time() - snap_ts) >= poll_interval:
+                    if await asyncio.to_thread(_privacy_mode_enabled):
+                        return None
                     psutil_mod = getattr(collector, "_psutil", None)
                     if psutil_mod is not None and not getattr(collector, "_sdk_psutil_primed", False):
                         with suppress(Exception):
@@ -141,13 +151,10 @@ async def get_os_activity_snapshot(
     _ = (source, now)
     if _read_system_signal_snapshot is _DEFAULT_READ_SYSTEM_SIGNAL_SNAPSHOT:
         if await asyncio.to_thread(_privacy_mode_enabled):
-            return OsActivitySnapshot(
-                os_signals_available=False,
-                foreground_category=None,
-                system_idle_seconds=None,
-                privacy_state="private",
-            )
+            return _PRIVATE_SNAPSHOT
         system_snapshot = await _read_system_signal_snapshot_async()
+        if system_snapshot is None or await asyncio.to_thread(_privacy_mode_enabled):
+            return _PRIVATE_SNAPSHOT
     else:
         system_snapshot = _read_system_signal_snapshot()
     os_signals_available = bool(getattr(system_snapshot, "os_signals_available", True))

@@ -699,3 +699,102 @@ def test_os_activity_snapshot_loop_lock_does_not_leak_closed_loop() -> None:
 
     assert loop_ref() is None
     assert len(activity_api._loop_locks) == 0
+
+
+@pytest.mark.asyncio
+async def test_os_activity_snapshot_rechecks_privacy_after_lock_and_tick_wait(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    import main_logic.activity as activity_mod
+    import utils.preferences as prefs_mod
+
+    class _DynamicCollector:
+        os_signals_available = True
+        _task = None
+        _poll_interval = 5.0
+        _psutil = None
+
+        def __init__(self, *, revoke_in_tick: bool = False) -> None:
+            self.tick_calls = 0
+            self.revoke_in_tick = revoke_in_tick
+            self._latest = SimpleNamespace(
+                timestamp=0.0,
+                idle_seconds=None,
+                window_title=None,
+                process_name=None,
+                os_signals_available=False,
+            )
+
+        def snapshot(self):
+            return self._latest
+
+        async def _tick(self) -> None:
+            self.tick_calls += 1
+            if self.revoke_in_tick:
+                prefs_path.write_text(
+                    json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": False}]),
+                    encoding="utf-8",
+                )
+            self._latest = SimpleNamespace(
+                timestamp=100.0,
+                idle_seconds=9.0,
+                window_title="Steam",
+                process_name="steam.exe",
+                os_signals_available=True,
+            )
+
+    prefs_path = tmp_path / "user_preferences.json"
+    monkeypatch.setattr(prefs_mod, "PREFERENCES_FILE", str(prefs_path))
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda snap: SimpleNamespace(category="gaming")
+        if getattr(snap, "window_title", None) == "Steam"
+        else None,
+    )
+
+    # 1) Privacy revoked while caller is waiting for _get_loop_lock(): must skip _tick() and stay private.
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": True}]),
+        encoding="utf-8",
+    )
+    lock_wait_collector = _DynamicCollector(revoke_in_tick=False)
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: lock_wait_collector)
+    loop_lock = activity_api._get_loop_lock()
+    await loop_lock.acquire()
+    try:
+        call_task = asyncio.create_task(activity_api.get_os_activity_snapshot("study_companion"))
+        for _ in range(50):
+            await asyncio.sleep(0.005)
+            if getattr(loop_lock, "_waiters", None):
+                break
+        assert getattr(loop_lock, "_waiters", None)
+        prefs_path.write_text(
+            json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": False}]),
+            encoding="utf-8",
+        )
+    finally:
+        loop_lock.release()
+    snap_after_lock = await call_task
+    assert lock_wait_collector.tick_calls == 0
+    assert snap_after_lock.os_signals_available is False
+    assert snap_after_lock.foreground_category is None
+    assert snap_after_lock.system_idle_seconds is None
+    assert snap_after_lock.privacy_state == "private"
+
+    # 2) Privacy revoked while _tick() is in flight: must discard collected window data and return private.
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": True}]),
+        encoding="utf-8",
+    )
+    tick_revoke_collector = _DynamicCollector(revoke_in_tick=True)
+    monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: tick_revoke_collector)
+    snap_after_tick = await activity_api.get_os_activity_snapshot("study_companion")
+    assert tick_revoke_collector.tick_calls == 1
+    assert snap_after_tick.os_signals_available is False
+    assert snap_after_tick.foreground_category is None
+    assert snap_after_tick.system_idle_seconds is None
+    assert snap_after_tick.privacy_state == "private"
