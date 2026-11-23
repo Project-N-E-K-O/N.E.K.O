@@ -222,6 +222,8 @@ class SourceStore:
     def set_retained(self, pack_id: str, retained: bool) -> None:
         """Change history-row visibility without deleting originals or versions."""
         path = self.directory(pack_id) / "manifest.json"
+        # A temporary I/O error does not prove that no visibility flag exists.
+        # Let it propagate so removal cannot commit while retained=True survives.
         try:
             value = self.read(path)
         except KnowledgePackError as error:
@@ -236,8 +238,6 @@ class SourceStore:
             if not retained:
                 return
             raise
-        # A temporary I/O error does not prove that no visibility flag exists.
-        # Propagate it so removal cannot commit while retained=True survives.
         if not isinstance(value, dict):
             if not retained:
                 return

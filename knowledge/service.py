@@ -1228,7 +1228,8 @@ class KnowledgeService:
 
     async def _project_sources(
         self, pack_id: str, name: str, documents: list[dict], *, enabled: bool = False,
-        source_confirmation: bool | None = None, arrived_at: int | None = None,
+        source_confirmation: bool | None = None, source_target: tuple[str, int] | None = None,
+        arrived_at: int | None = None,
     ) -> dict[str, Any]:
         """Send a source projection through the one existing import runner."""
         pack = await self._thread(project_pack, pack_id, name, documents)
@@ -1243,6 +1244,10 @@ class KnowledgeService:
             # Consent is independent of the requested initial enabled flag;
             # another window can change that flag before this task activates.
             frozen.update(source_confirmation_required=True, enabled_confirmed=source_confirmation)
+            if source_target is not None:
+                # One acknowledgement covers this operation's selected version,
+                # not other documents retained in the frozen whole-pack input.
+                frozen["source_target"] = {"doc_id": source_target[0], "version": source_target[1]}
         return await self.import_pack(canonical, _options={"kind": "import_commit", "origin": "imported", "enabled": enabled,
                                                            "frozen_input": frozen}, _arrived_at=arrived_at)
 
@@ -1275,7 +1280,8 @@ class KnowledgeService:
             documents = await self._thread(self._sources.documents, pack, pack_id)
             documents = [row for row in documents if row["doc_id"] != value["doc_id"]] + [value]
             return await self._project_sources(pack_id, value["pack_name"], documents, enabled=enabled,
-                                               source_confirmation=enabled_confirmed, arrived_at=arrived_at)
+                                               source_confirmation=enabled_confirmed,
+                                               source_target=(value["doc_id"], value["version"]), arrived_at=arrived_at)
         return await self._locked(run)
 
     async def remove_source(self, pack_id: str, doc_id: str) -> dict[str, Any]:
@@ -1351,7 +1357,8 @@ class KnowledgeService:
             # Retained history can include never-activated, unconfirmed text.
             # Freeze consent for the existing activation-time enabled check.
             return await self._project_sources(pack_id, pack.source.name if pack else value["pack_name"], documents,
-                                               source_confirmation=enabled_confirmed, arrived_at=arrived_at)
+                                               source_confirmation=enabled_confirmed,
+                                               source_target=(value["doc_id"], value["version"]), arrived_at=arrived_at)
         return await self._locked(run)
 
     async def _import_archive_input(
@@ -2405,20 +2412,27 @@ class KnowledgeService:
                 # Input with the registered digest is that same pack: it may
                 # rewrite a missing or unreadable active file.
                 raise KnowledgePackError("pack_changed")
+            enabled_on_commit = previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True)
             if (job.frozen_input.get("source_confirmation_required")
-                    and (previous.enabled if previous else bool(job.initial_enabled))
+                    and enabled_on_commit
                     and not job.frozen_input.get("enabled_confirmed")):
                 raise KnowledgePackError("source_confirmation_required")
-            if (job.kind == "import_commit" and previous is not None and previous.enabled
-                    and sha != previous.pack_sha256 and not job.frozen_input.get("source_confirmation_required")):
-                # Removal jobs, including persisted legacy retries, carry no
-                # disclosure acknowledgement. A frozen deletion may now restore
-                # sources removed since it was queued. Only pure reductions of
-                # the currently verified selection may retain an enabled state.
+            if (job.kind == "import_commit" and enabled_on_commit
+                    and (previous is None or sha != previous.pack_sha256)):
+                # A whole-pack retry can resurrect other sources removed or
+                # changed after this task was confirmed. Permit only its one
+                # acknowledged version beyond today's verified active selection.
                 current = self._source_pack(job.pack_id)
                 selected = {(row["doc_id"], row["version"]) for row in self._source_documents(pack, job.pack_id)}
                 active = {(row["doc_id"], row["version"]) for row in self._sources.documents(current, job.pack_id)}
-                if not selected <= active:
+                target = job.frozen_input.get("source_target")
+                allowed = set()
+                if (job.frozen_input.get("enabled_confirmed") is True and isinstance(target, dict)
+                        and isinstance(target.get("doc_id"), str) and type(target.get("version")) is int):
+                    allowed.add((target["doc_id"], target["version"]))
+                # Missing scope in old records grants no new disclosure;
+                # users can still retry that exact input while the pack is off.
+                if not selected - active <= allowed:
                     raise KnowledgePackError("source_confirmation_required")
             # Assets may become available between admission and commit. Use
             # this single fit for capacity, registry metadata and SQLite.
