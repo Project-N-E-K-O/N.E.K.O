@@ -65,9 +65,9 @@ from .api_runtime import (  # noqa: F401
     complete_deferred_task,
     get_task,
     health,
-    nekoclaw_brief,
-    nekoclaw_dispatch,
-    nekoclaw_query,
+    nekopower_brief,
+    nekopower_dispatch,
+    nekopower_query,
     shutdown,
     startup,
 )
@@ -581,6 +581,30 @@ async def agent_command(payload: Dict[str, Any]):
         total_ms = round((time.perf_counter() - t0) * 1000, 2)
         logger.info("[AgentTiming] request_id=%s command=%s key=%s set_flags_ms=%s total_ms=%s", request_id, command, key, set_ms, total_ms)
         return {"success": True, "request_id": request_id, "timing": {"set_flags_ms": set_ms, "agent_total_ms": total_ms}}
+    if command == "set_task_hud_visible":
+        # Whether the main page shows the task HUD (``app.agent_task_hud``): one setting for every
+        # character, so every main page is told.
+        value = (payload or {}).get("value")
+        if not isinstance(value, bool):
+            raise HTTPException(400, "invalid task hud value")
+        # ``if_unset``: a main page handing in what its own storage said; kept only while nothing
+        # is set here yet, so it never overwrites a choice made in the meantime.
+        if_unset = (payload or {}).get("if_unset") is True
+        from app.agent_task_hud import get_visible as _task_hud_visible
+        from app.agent_task_hud import set_visible as _set_task_hud_visible
+
+        # The file is written off the event loop (it is shared with the main and memory servers).
+        try:
+            changed = await asyncio.to_thread(_set_task_hud_visible, value, only_if_unset=if_unset)
+        except Exception as exc:  # noqa: BLE001 - told as not taken; the setting is left as it was
+            logger.warning("[Agent] saving the task HUD setting failed (exc_type=%s)", type(exc).__name__)
+            raise HTTPException(500, "task hud setting not saved") from None
+        if changed:
+            _bump_state_revision()
+            await _emit_agent_status_update()
+        # What is kept now (memory only: the call above has read it).
+        kept = await asyncio.to_thread(_task_hud_visible)
+        return {"success": True, "request_id": request_id, "changed": changed, "task_hud_visible": kept}
     if command == "refresh_state":
         snapshot = _collect_agent_status_snapshot()
         await _emit_agent_status_update(lanlan_name=lanlan_name)
@@ -912,7 +936,7 @@ async def browser_use_availability():
     if not dependency_ready:
         # No browser comes with the application; one the user has is used.
         _set_capability("browser_use", False, dependency_error)
-        return {"enabled": True, "ready": False, "reasons": [dependency_error], "provider": "nekoclaw"}
+        return {"enabled": True, "ready": False, "reasons": [dependency_error], "provider": "nekopower"}
     # LLM connectivity — reuse the shared agent-LLM check
     probe = Modules.model_probe
     if probe and not getattr(probe, "init_ok", False):
@@ -926,7 +950,7 @@ async def browser_use_availability():
     # takes nothing from that task: see ``_probe_lost_a_race``.
     if ready or not _probe_lost_a_race():
         _set_capability("browser_use", ready, reasons[0] if reasons else "")
-    return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "nekoclaw"}
+    return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "nekopower"}
 
 
 @app.get("/tasks")
@@ -953,7 +977,7 @@ async def _close_browser_at_end_all() -> None:
     steps add up to
     more than the page waits for the request.
     """
-    from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
+    from config.nekopower_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
 
     # From before the closing begins until the kill, if it comes to one, is
     # on record: a browser call of a new task that waits its turn behind the
@@ -1028,7 +1052,7 @@ async def admin_control(payload: Dict[str, Any]):
         # the keys for the browser: the two go on side by side.
         async def _release_keys() -> None:
             try:
-                from nekoclaw.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
+                from nekopower.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
 
                 await builtin_provider.released(BUILTIN_GROUP_KEYBOARD_MOUSE, "")
             except Exception as e:

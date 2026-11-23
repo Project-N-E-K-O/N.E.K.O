@@ -26,6 +26,7 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 |---|---|---|
 | `set_agent_enabled` | `enabled`、任意の `profile` | マスタースイッチを切り替え。オフにすると進行中のタスクをすべて中止 |
 | `set_flag` | `key`、`value` | `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled` のいずれかを切り替え |
+| `set_task_hud_visible` | `value`（真偽値）、任意の `if_unset`（`true` のときは未設定の場合だけ保存。メイン画面が以前のローカル設定を引き渡すとき用） | メイン画面にタスクパネルを表示するか。Agent プロセスが保存し（`agent_task_hud.json`）、状態スナップショットの `task_hud_visible` で配る（未設定なら `null`） |
 | `refresh_state` | なし | 新しい状態を返し、ブロードキャスト |
 
 `request_id` と `lanlan_name` は任意です。不明なコマンド/flag key は Agent Server が拒否し、上流/プロキシ障害は `502` です。
@@ -117,7 +118,7 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 
 | 設定 | 意味 |
 |---|---|
-| `mode` | `own_profile`（既定）: ユーザーのブラウザーを、データルート配下の専用プロファイルディレクトリ（`nekoclaw/browser_profile`）で起動する。使うサイトには、そこで一度ログインすればよい。`attach`: ユーザーが今使っているブラウザーを操作する。Chrome 144 以降が必要で、ユーザー自身が `chrome://inspect/#remote-debugging` でリモートデバッグをオンにし、接続のたびにブラウザー側で許可する |
+| `mode` | `own_profile`（既定）: ユーザーのブラウザーを、データルート配下の専用プロファイルディレクトリ（`nekopower/browser_profile`）で起動する。使うサイトには、そこで一度ログインすればよい。`attach`: ユーザーが今使っているブラウザーを操作する。Chrome 144 以降が必要で、ユーザー自身が `chrome://inspect/#remote-debugging` でリモートデバッグをオンにし、接続のたびにブラウザー側で許可する |
 | `executable` | 自動で見つけたものの代わりに使うブラウザーのパス。`null` なら自動で探す |
 | `headless` | ウィンドウを出さずにブラウザーを起動する。`own_profile` のときだけ有効 |
 
@@ -131,4 +132,4 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 |---|---|---|
 | `GET` | `/api/agent/user_plugin/dashboard` | ローカルプラグイン dashboard へリダイレクト。検証済みの `v` とループバック `yui_opener_origin` を受理 |
 
-Dashboard はブラウザーヘルパーであり、タスク API ではありません。ブラウザーからタスクを送るルートはありません。タスクはメインの対話モデルが `dispatch_task` ツールで任せ、メインサーバーが Agent Server の内部ルート `/nekoclaw/dispatch` へ転送します。[Agent Server API](/ja/api/agent-server) を参照してください。
+Dashboard はブラウザーヘルパーであり、タスク API ではありません。ブラウザーからタスクを送るルートはありません。タスクはメインの対話モデルが `dispatch_task` ツールで任せ、メインサーバーが Agent Server の内部ルート `/nekopower/dispatch` へ転送します。[Agent Server API](/ja/api/agent-server) を参照してください。

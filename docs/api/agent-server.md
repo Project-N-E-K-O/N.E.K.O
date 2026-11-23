@@ -16,16 +16,16 @@ The agent server also exchanges asynchronous session and task events with the ma
 | `GET` | `/agent/flags` | Current master/sub-feature flags |
 | `POST` | `/agent/flags` | Partially update `computer_use_enabled`, `browser_use_enabled`, `user_plugin_enabled` |
 | `GET` | `/agent/state` | Authoritative revision, flags, capabilities, notification, and active tasks |
-| `POST` | `/agent/command` | `set_agent_enabled`, `set_flag`, or `refresh_state` command |
+| `POST` | `/agent/command` | `set_agent_enabled`, `set_flag`, `set_task_hud_visible`, or `refresh_state` command |
 | `GET` | `/computer_use/availability` | Keyboard-and-mouse readiness and reasons |
 | `GET` | `/browser_use/availability` | Browser readiness and reasons |
 | `GET` | `/builtin/activity` | Which commission occupies the keyboard and mouse, and which the browser, right now |
 | `POST` | `/builtin/stop` | Stop the commission that occupies the keyboard and mouse or the browser |
 | `GET` | `/builtin/browser/settings` | Which browser the browser tools use and how, with the browsers found on this machine |
 | `POST` | `/builtin/browser/settings` | Change those settings |
-| `POST` | `/nekoclaw/dispatch` | Hand one sentence of the main dialogue to the task brain; returns the receipt of its first round |
-| `POST` | `/nekoclaw/query` | Ask what is under way or whether something can be done; no model is called |
-| `GET` | `/nekoclaw/brief` | One line per task under way, for a new dialogue session's opening prompt |
+| `POST` | `/nekopower/dispatch` | Hand one sentence of the main dialogue to the task brain; returns the receipt of its first round |
+| `POST` | `/nekopower/query` | Ask what is under way or whether something can be done; no model is called |
+| `GET` | `/nekopower/brief` | One line per task under way, for a new dialogue session's opening prompt |
 | `GET` | `/tasks` | List tasks under way and those that ended in the last five minutes |
 | `GET` | `/tasks/{task_id}` | Read one task; unknown task returns `404` |
 | `POST` | `/tasks/{task_id}/cancel` | Stop one task; unknown task returns `404`, an already ended one returns `success: false` with its `status` |
@@ -35,23 +35,23 @@ The agent server also exchanges asynchronous session and task events with the ma
 
 The task object returned by `/tasks` is described under "Task object" in [Agent API](/api/rest/agent). Its fields may grow.
 
-`/api/agent/tasks/{task_id}/complete` and `/notify_config_changed` are process-internal. `/admin/control` and the `/nekoclaw/*` routes must not be exposed to an untrusted network.
+`/api/agent/tasks/{task_id}/complete` and `/notify_config_changed` are process-internal. `/admin/control` and the `/nekopower/*` routes must not be exposed to an untrusted network.
 
 ## NekoPower routes
 
 These three routes are called by the main server on the same machine, on behalf of the main dialogue model. They are not proxied to the browser.
 
-### `POST /nekoclaw/dispatch`
+### `POST /nekopower/dispatch`
 
 Body: `{"text":"...","lanlan_name":"...","user_text":"...","conversation_id":"...","language":"..."}`. `text` is the sentence the model passed to its `dispatch_task` tool and `lanlan_name` is the character; both are required (`400` otherwise). `user_text` is the user's own words of that turn, which plugin entries receive as `_ctx.latest_user_request`.
 
 The response is `{"success":true,"kind":"...","reason":"...","text":"...","commission_id":"...","model_calls":0}`. `text` is the receipt as the model reads it. `kind` is one of `accepted`, `received` (the first round outlasted one second; the conclusion follows as a report), `duplicate`, `no_capability`, `stopped`, `told`, `answered`, `ambiguous`, `nothing_active`, or `unclear_answer`. For `no_capability`, `reason` is `disabled`, `not_installed`, `not_enabled`, `denied`, or `no_match`. The call returns after the first round; the work itself continues in the background.
 
-### `POST /nekoclaw/query`
+### `POST /nekopower/query`
 
 Body: `{"text":"...","lanlan_name":"...","language":"..."}`; `lanlan_name` is required. The response is `{"success":true,"text":"...","can_do":true|false|null}`. `can_do` is `null` when the question was about progress, or when it cannot be answered without a model.
 
-### `GET /nekoclaw/brief`
+### `GET /nekopower/brief`
 
 Query: `lanlan_name`, optional `language`. Returns `{"success":true,"lines":[...]}`, one line per commission of that character that is queued, being worked on, or waiting for the user. The list is empty when the master switch is off.
 
@@ -61,7 +61,7 @@ These routes concern the keyboard-and-mouse tools and the browser tools that tas
 
 ### `GET /computer_use/availability` and `GET /browser_use/availability`
 
-Both answer `{"enabled":true,"ready":true|false,"reasons":[...],"provider":"nekoclaw"}`; the keyboard-and-mouse answer also carries `model`. While the agent model is not configured, the answer is only `{"ready":false,"reasons":[...]}`.
+Both answer `{"enabled":true,"ready":true|false,"reasons":[...],"provider":"nekopower"}`; the keyboard-and-mouse answer also carries `model`. While the agent model is not configured, the answer is only `{"ready":false,"reasons":[...]}`.
 
 - Keyboard and mouse are ready when the agent model's connectivity probe has passed and input can be sent on this machine. When input cannot be sent, `reasons` carries one of the `AGENT_PYAUTOGUI_*` codes, for example `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE` on a machine without a display.
 - The browser is ready when a usable browser is installed and the agent model's connectivity probe has passed. No browser comes with the application; when no Chrome, Edge, Brave, or Chromium is found, `reasons` is `["AGENT_BROWSER_NOT_FOUND"]`. The search is a few file checks and its answer is kept for 30 seconds.
@@ -78,11 +78,11 @@ The body may also carry `commission_id`, the commission the stop is meant for (t
 
 ### `GET /builtin/browser/settings`
 
-Returns `{"settings":{"mode":"own_profile","executable":null,"headless":false},"modes":["own_profile","attach"],"browsers":[{"kind":"chrome","name":"Google Chrome","executable":"..."}]}`. `settings` is the content of `<data root>/nekoclaw/browser.json`, or the defaults when there is no file. `browsers` lists the browsers found on this machine, the preferred one first.
+Returns `{"settings":{"mode":"own_profile","executable":null,"headless":false},"modes":["own_profile","attach"],"browsers":[{"kind":"chrome","name":"Google Chrome","executable":"..."}]}`. `settings` is the content of `<data root>/nekopower/browser.json`, or the defaults when there is no file. `browsers` lists the browsers found on this machine, the preferred one first.
 
 | Field | Meaning |
 |---|---|
-| `mode` | `own_profile` (default): start the user's browser with a profile directory of its own, `<data root>/nekoclaw/browser_profile`. `attach`: drive the browser the user is already using; needs Chrome 144 or later with remote debugging switched on at `chrome://inspect/#remote-debugging` |
+| `mode` | `own_profile` (default): start the user's browser with a profile directory of its own, `<data root>/nekopower/browser_profile`. `attach`: drive the browser the user is already using; needs Chrome 144 or later with remote debugging switched on at `chrome://inspect/#remote-debugging` |
 | `executable` | Path of a browser to use instead of the one found; `null` searches |
 | `headless` | Start the browser without a window; applies to `own_profile` only |
 
@@ -107,9 +107,9 @@ Events include session lifecycle/intent-restore signals, turn-check requests and
 | Part | Current role |
 |---|---|
 | Plugin entries | Called directly by the task brain when one entry can finish the task, through the plugin service's `/runs` protocol |
-| Task agents | Execution sessions for tasks that need several steps (shown to the user as familiars); they run in the built-in agent runtime (`nekoclaw/runtime/`) |
+| Task agents | Execution sessions for tasks that need several steps (shown to the user as familiars); they run in the built-in agent runtime (`nekopower/runtime/`) |
 | Capability gateway | Loopback MCP service through which task agents call plugin entries, MCP tools, and the built-in tools |
-| Keyboard-and-mouse, browser | Two groups of built-in tools (`nekoclaw/builtin/`) that a task agent calls one step at a time from its own loop: `computer` for the keyboard and mouse, and fifteen `browser_*` tools that drive a browser installed on this machine over its debugging protocol. Only task agents can call them |
+| Keyboard-and-mouse, browser | Two groups of built-in tools (`nekopower/builtin/`) that a task agent calls one step at a time from its own loop: `computer` for the keyboard and mouse, and fifteen `browser_*` tools that drive a browser installed on this machine over its debugging protocol. Only task agents can call them |
 
 MCP servers are configured in the `mcp_adapter` plugin under `plugin/plugins/mcp_adapter/`; the gateway serves their tools to task agents.
 

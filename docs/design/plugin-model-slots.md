@@ -87,7 +87,7 @@ providers resolve to the `anthropic_messages` protocol automatically.
 A host-follow OpenAI-protocol request is shaped the way the main app sends
 the same task agent model (`adapt_host_follow_request` in
 `plugin/server/infrastructure/host_model_slots.py`, mirroring
-`nekoclaw/dsh/forward.py:prepare_request`): the output budget moves to the
+`nekopower/dsh/forward.py:prepare_request`): the output budget moves to the
 field the endpoint honours (`config.providers.get_token_limit_field`, e.g.
 `max_tokens` for DeepSeek and GLM, value unchanged); the task agent
 `extra_body` (`get_agent_extra_body` + `rewrite_router_reasoning`, e.g.

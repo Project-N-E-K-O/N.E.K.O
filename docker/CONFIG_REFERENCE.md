@@ -110,7 +110,7 @@
 
 ### 4. 模型配置
 
-各用途用哪个模型，由当前选中提供商的 profile 决定：`coreApi` 决定实时语音模型（`get_core_config()` 快照里的 `CORE_MODEL`），`assistApi` 决定对话、记忆整理、情感、视觉和 Agent 模型（`CONVERSATION_MODEL`、`SUMMARY_MODEL`、`EMOTION_MODEL`、`VISION_MODEL`、`AGENT_MODEL`）。各提供商的 profile 来自 `config/api_providers.json`，来源和回退规则见第 5 节。
+各用途用哪个模型，由当前选中提供商的 profile 决定：`coreApi` 决定实时语音模型（`get_core_config()` 快照里的 `CORE_MODEL`），`assistApi` 决定对话、记忆整理、情感、视觉和 Agent 模型（`CONVERSATION_MODEL`、`MEMORY_MODEL`、`RECOGNITION_MODEL`、`VISION_MODEL`、`AGENT_MODEL`）。各提供商的 profile 来自 `config/api_providers.json`，来源和回退规则见第 5 节。
 
 - `config/model_defaults.py` 的 `DEFAULT_*` 常量是快照的初始值，会被选中提供商 profile 里的同名项覆盖；内置 profile 都带有上面这些模型项。`assistApi` 填了未知值时会先回退到 `qwen` 再覆盖，`coreApi` 没有这层回退：它不是 `core_api_providers` 的键时（例如拼错），`CORE_URL` / `CORE_MODEL` 会停在默认值（`wss://dashscope.aliyuncs.com/api-ws/v1/realtime`、`qwen3-omni-flash-realtime`）。
 - 没有能单独指定某个模型的环境变量。要给某个用途换模型或提供商，用第 7 节的自定义模型配置。
@@ -118,7 +118,7 @@
 > 历史上的 `ROUTER_MODEL` / `SEMANTIC_MODEL` / `RERANKER_MODEL` /
 > `SETTING_PROPOSER_MODEL` / `SETTING_VERIFIER_MODEL` 已于 2026-04 全部退环境
 > （见 `config/model_defaults.py` 中「模型配置常量」处的注释）。memory 子系统的 LLM 调用按 tier
-> （`summary` / `emotion`）走 `config_manager.get_model_api_config(<tier>)`，
+> （`memory` / `recognition`）走 `config_manager.get_model_api_config(<tier>)`，
 > 嵌入服务走本地 ONNX（`memory/embeddings.py` 的 `EmbeddingService`）。
 
 ### 5. API 提供商详细配置
@@ -148,11 +148,11 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 每个提供商有一个接口地址 `OPENROUTER_URL` 和 5 个模型槽位：
 - `CONVERSATION_MODEL` - 文本对话模型
-- `SUMMARY_MODEL` - 记忆整理模型（原来的摘要、纠错两档 2026-11 合并成这一档；老配置里的纠错字段在下次保存时丢弃）
-- `EMOTION_MODEL` - 情感模型
+- `MEMORY_MODEL` - 记忆整理模型（原来的摘要、纠错两档 2026-11 合并成这一档；老配置里的纠错字段在下次保存时丢弃）
+- `RECOGNITION_MODEL` - 识别模型（小模型，多数轻活用它）
 - `VISION_MODEL` - 视觉模型（已弃用：图片交给聊天模型；单独配置过的看图模型在正式版前继续优先使用并提示弃用）
 - `AGENT_MODEL` - Agent 模型（键鼠控制、浏览器控制等，见第 6 节）
-- `AGENT_SMALL_MODEL` - 使魔模型·小型（`get_model_api_config("agent_small")`）：默认就是识别模型（`emotion`）；开启自定义 API 后，`agentSmallModelProvider` 可选 `follow_emotion`（默认）、`follow_agent`（改用 Agent 模型）、`follow_core` / `follow_assist`（地址和 Key 跟随该提供商；模型名留空时取该提供商的识别模型，填了 `agentSmallModelId` 且该提供商不是固定模型时用填的模型名）、具体提供商或 `custom`。选 `custom` 或具体提供商时，地址和模型名都有才单独生效（具体提供商留空模型名时，只有地址属于该提供商才补上它的识别模型；地址改成别家又留空模型名，就算没填全）：具体提供商的 Key 依次取：API 账本里该提供商保存的 Key、这一格自己填的 Key、由核心 API Key 推出的该提供商 Key（`coreApi` / `assistApi` 就是这家时）；账本和推出的 Key 都只在地址属于该提供商时才用，`custom` 只用 `agentSmallModelApiKey`（留空即不带 Key）；地址或模型名缺一项，整格跟随识别模型（地址、模型名、Key、协议都用识别模型实际生效的那一套）
+- `AGENT_SMALL_MODEL` - 使魔模型·小型（`get_model_api_config("agent_small")`）：默认就是识别模型（`recognition`）；开启自定义 API 后，`agentSmallModelProvider` 可选 `follow_recognition`（默认）、`follow_agent`（改用 Agent 模型）、`follow_core` / `follow_assist`（地址和 Key 跟随该提供商；模型名留空时取该提供商的识别模型，填了 `agentSmallModelId` 且该提供商不是固定模型时用填的模型名）、具体提供商或 `custom`。选 `custom` 或具体提供商时，地址和模型名都有才单独生效（具体提供商留空模型名时，只有地址属于该提供商才补上它的识别模型；地址改成别家又留空模型名，就算没填全）：具体提供商的 Key 依次取：API 账本里该提供商保存的 Key、这一格自己填的 Key、由核心 API Key 推出的该提供商 Key（`coreApi` / `assistApi` 就是这家时）；账本和推出的 Key 都只在地址属于该提供商时才用，`custom` 只用 `agentSmallModelApiKey`（留空即不带 Key）；地址或模型名缺一项，整格跟随识别模型（地址、模型名、Key、协议都用识别模型实际生效的那一套）
 
 补充说明：
 - `claude`、`kimi_code` 带 `provider_type: "anthropic"`，按 Anthropic Messages 协议调用。
@@ -162,11 +162,11 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 ### 6. 键鼠控制与浏览器控制（Agent 模型）配置
 
-键鼠控制和浏览器控制是猫爪（NekoClaw）的两组内置工具，代码在 `nekoclaw/builtin/`。使魔（代码里叫 task agent）在自己的循环里一步一步调用它们；工具本身不带循环，也不另外调用模型。键鼠是一个 `computer` 工具：每次做一个动作并返回动作之后的截图，坐标的横纵两个方向都是 0 到 999 的整数。浏览器是 15 个 `browser_*` 工具：把页面读成文字快照（页面的无障碍树，每个元素带一个 uid），再按 uid 操作元素。
+键鼠控制和浏览器控制是喵能力（NekoPower）的两组内置工具，代码在 `nekopower/builtin/`。使魔（代码里叫 task agent）在自己的循环里一步一步调用它们；工具本身不带循环，也不另外调用模型。键鼠是一个 `computer` 工具：每次做一个动作并返回动作之后的截图，坐标的横纵两个方向都是 0 到 999 的整数。浏览器是 15 个 `browser_*` 工具：把页面读成文字快照（页面的无障碍树，每个元素带一个 uid），再按 uid 操作元素。
 
 使魔用的是 **Agent 模型**槽位，通过 `get_model_api_config("agent")` 取模型、URL 和 API Key。键鼠工具和浏览器的截图工具要求模型能接收图片输入；模型不能看图时不提供这两个工具，浏览器的其余工具照常可用。
 
-浏览器控制操控的是机器上已经安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Chromium），走浏览器的调试协议。应用不随包附带浏览器，启动时也不下载；Playwright 只是测试依赖，`browser-use` 不在依赖里。找不到浏览器时，浏览器控制的可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。浏览器装在不常见的位置时，用环境变量 `NEKO_BROWSER_PATH` 指定可执行文件，或者写进 `<数据根>/nekoclaw/browser.json` 的 `executable`。
+浏览器控制操控的是机器上已经安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Chromium），走浏览器的调试协议。应用不随包附带浏览器，启动时也不下载；Playwright 只是测试依赖，`browser-use` 不在依赖里。找不到浏览器时，浏览器控制的可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。浏览器装在不常见的位置时，用环境变量 `NEKO_BROWSER_PATH` 指定可执行文件，或者写进 `<数据根>/nekopower/browser.json` 的 `executable`。
 
 > 旧版文档里的 `computerUseModel` / `computerUseModelUrl` / `computerUseModelApiKey` / `computerUseGroundModel` / `computerUseGroundUrl` / `computerUseGroundApiKey` 已没有任何代码读取，写进 `core_config.json` 不会生效。
 
@@ -236,7 +236,7 @@ Agent API Key 的取法：
 > **注意**：
 > - `enableCustomApi` 是各模型槽位自定义字段的总开关（GPT-SoVITS 和豆包语音除外，见第 7 节），打开后其它槽位里已保存的自定义值也会一起生效。
 > - 手工打开 `enableCustomApi` 但不想改 Agent 时，请把 `agentModelProvider` 设为 `follow_assist`。不设置时，`agentModelApiKey`（默认是空串）会把默认的 Agent Key 覆盖掉，Agent 可用性检查会报「Agent API Key 未配置或不可用」（设置页显示为「使魔模型的 API Key 未配置或不可用」）。
-> - 「使魔模型·小型」的字段 `agentSmallModelProvider` / `agentSmallModelUrl` / `agentSmallModelId` / `agentSmallModelApiKey` 与上表同构，多两个跟随值：默认的 `follow_emotion`（地址、模型名、Key 都跟随识别模型）和 `follow_agent`（都跟随 Agent 模型）。
+> - 「使魔模型·小型」的字段 `agentSmallModelProvider` / `agentSmallModelUrl` / `agentSmallModelId` / `agentSmallModelApiKey` 与上表同构，多两个跟随值：默认的 `follow_recognition`（地址、模型名、Key 都跟随识别模型）和 `follow_agent`（都跟随 Agent 模型）。
 > - 选具体提供商时地址不会自动切换：`agentModelUrl` 留空时请求仍发往默认地址（`assistApi` 提供商的地址）。所选提供商与 `assistApi` 不同时，要把 `agentModelUrl` 填成所选提供商的地址，请求才会发往它，也才会取用它的 `assistApiKey*`。
 
 > **Docker 部署**：
@@ -249,17 +249,19 @@ Agent API Key 的取法：
 
 ### 7. 自定义模型配置（高级）
 
-在 Web UI 的 API 设置页（`/api_key`）开启「按功能单独指定模型」后，可以给每个用途单独指定提供商、地址、模型和 Key。这些设置保存在 `core_config.json` 中：总开关是 `enableCustomApi`（缺省为 `false`），每个用途（槽位）各有 4 个字段：`<前缀>ModelProvider`、`<前缀>ModelUrl`、`<前缀>ModelId`、`<前缀>ModelApiKey`。以摘要为例，就是 `summaryModelProvider`、`summaryModelUrl`、`summaryModelId`、`summaryModelApiKey`。
+在 Web UI 的 API 设置页（`/api_key`）开启「按功能单独指定模型」后，可以给每个用途单独指定提供商、地址、模型和 Key。这些设置保存在 `core_config.json` 中：总开关是 `enableCustomApi`（缺省为 `false`），每个用途（槽位）各有 4 个字段：`<前缀>ModelProvider`、`<前缀>ModelUrl`、`<前缀>ModelId`、`<前缀>ModelApiKey`。以摘要为例，就是 `memoryModelProvider`、`memoryModelUrl`、`memoryModelId`、`memoryModelApiKey`。
 
-> ⚠️ 下表「快照键」一列（如 `SUMMARY_MODEL`、`SUMMARY_MODEL_URL`、`SUMMARY_MODEL_API_KEY`）只是 `get_core_config()` 返回的内存字典里的键。它们既不是环境变量，也不是 `core_config.json` 的字段，写进环境变量或 JSON 都不会生效。
+> ⚠️ 下表「快照键」一列（如 `MEMORY_MODEL`、`MEMORY_MODEL_URL`、`MEMORY_MODEL_API_KEY`）只是 `get_core_config()` 返回的内存字典里的键。它们既不是环境变量，也不是 `core_config.json` 的字段，写进环境变量或 JSON 都不会生效。
+
+> 2026-11 起「识别模型」的代码名由 `emotion` 改为 `recognition`、「记忆整理」由 `summary` 改为 `memory`：字段 `emotionModel*` / `summaryModel*` 改为 `recognitionModel*` / `memoryModel*`，跟随值 `follow_emotion` / `follow_summary` 改为 `follow_recognition` / `follow_memory`，快照键 `EMOTION_MODEL*` / `SUMMARY_MODEL*` 改为 `RECOGNITION_MODEL*` / `MEMORY_MODEL*`，提供商字段 `emotion_model` / `summary_model` 改为 `recognition_model` / `memory_model`。老配置在启动时自动迁移，读取和保存时也认老名字；`get_model_api_config('emotion')` / `('summary')` 仍可用。
 
 | 用途 | 字段前缀 | 快照键（另有对应的 `_URL` / `_API_KEY`） | `get_model_api_config()` 的 `model_type` | 自定义未生效时回退到 |
 |------|---------|---------|---------|---------|
 | 对话 | `conversation` | `CONVERSATION_MODEL` | `conversation` | 辅助 API |
-| 记忆整理 | `summary` | `SUMMARY_MODEL` | `summary` | 辅助 API |
+| 记忆整理 | `memory` | `MEMORY_MODEL` | `memory` | 辅助 API |
 | 游戏主模型 | `gameMain` | `GAME_MAIN_MODEL` | `game_main` | 对话槽 |
-| 游戏摘要 | `gameSummary` | `GAME_SUMMARY_MODEL` | `game_summary` | 摘要槽 |
-| 情感 | `emotion` | `EMOTION_MODEL` | `emotion` | 辅助 API |
+| 游戏摘要 | `gameSummary` | `GAME_SUMMARY_MODEL` | `game_summary` | 记忆整理槽 |
+| 识别 | `recognition` | `RECOGNITION_MODEL` | `recognition` | 辅助 API |
 | 视觉（已弃用） | `vision` | `VISION_MODEL` | `vision` | 辅助 API |
 | Agent | `agent` | `AGENT_MODEL` | `agent` | 辅助 API |
 | 使魔模型·小型 | `agentSmall` | `AGENT_SMALL_MODEL` | `agent_small` | 识别槽（整格，含地址、Key、协议） |
@@ -276,7 +278,7 @@ Agent API Key 的取法：
 - Agent 槽是例外：没开 `enableCustomApi` 时，它也直接使用快照里的 `AGENT_MODEL` / `AGENT_MODEL_URL` / `AGENT_MODEL_API_KEY`。这几项默认取自辅助 API，此时 `is_custom` 为 `false`。
 - `<前缀>ModelProvider` 的取值：
   - `follow_core` / `follow_assist`：跟随核心 / 辅助 API 提供商的地址与 Key。实时语音和 TTS 两个槽例外：选 `follow_*` 时不写入地址，槽位保持未配置，直接按上表回退（`tts_default` 走核心 API，`tts_custom` 先试已保存的 Qwen Key、再走辅助 API），与选的是 `follow_core` 还是 `follow_assist` 无关（启用 GPT-SoVITS 时除外）；
-  - `follow_conversation` / `follow_summary`：照搬对话 / 摘要槽，是两个游戏槽的默认值；
+  - `follow_conversation` / `follow_memory`：照搬对话 / 摘要槽，是两个游戏槽的默认值；
   - `custom`：使用本槽填写的地址、模型和 Key。地址或模型 ID 留空时不会置空，而是沿用快照里原有的值：模型名照旧（对话、摘要等用途来自辅助 profile），地址除 Agent 槽外原本为空，于是整个槽回退。所以两项都要填。使魔模型·小型例外：地址或模型名缺一项时，这一格自己的模型名、地址、Key 一起清空，不沿用快照原值，整格交给识别槽；
   - 具名提供商（如 `qwen`、`openai`）：本槽 URL 属于该提供商时，优先用 API 管理簿里该提供商的 Key（`assistApiKey*`），否则用本槽的 `<前缀>ModelApiKey`。TTS 槽始终用本槽的 Key。
 - 实时语音槽只能跟随核心 API，或选 `custom` 自填端点。选具名提供商或 `follow_assist`，都会按 `follow_core` 处理。
@@ -287,10 +289,10 @@ Agent API Key 的取法：
 ```json
 {
   "enableCustomApi": true,
-  "summaryModelProvider": "custom",
-  "summaryModelUrl": "https://api.example.com/v1",
-  "summaryModelId": "your-model-id",
-  "summaryModelApiKey": "your-api-key",
+  "memoryModelProvider": "custom",
+  "memoryModelUrl": "https://api.example.com/v1",
+  "memoryModelId": "your-model-id",
+  "memoryModelApiKey": "your-api-key",
   "agentModelProvider": "follow_assist"
 }
 ```
@@ -314,7 +316,7 @@ Agent API Key 的取法：
 
 `get_core_config()` 定义在 `utils/config_manager/core_config.py` 的 `CoreConfigMixin` 中，通过 `get_config_manager()` 返回的单例调用。它每次被调用都会重新读取 `core_config.json`（不缓存），按以下顺序组装一份快照字典：
 
-1. 用 `config/model_defaults.py` 的 `DEFAULT_*` 常量，初始化 `CORE_URL`、`CORE_MODEL`、`SUMMARY_MODEL` 等大写键。
+1. 用 `config/model_defaults.py` 的 `DEFAULT_*` 常量，初始化 `CORE_URL`、`CORE_MODEL`、`MEMORY_MODEL` 等大写键。
 2. 以 `DEFAULT_CORE_CONFIG` 为模板，叠加 `core_config.json` 的内容；文件缺失、无法解析或内容不是 JSON 对象时，只用模板。
 3. 填入 Key：`coreApiKey` → `CORE_API_KEY`，`assistApiKey*` → `ASSIST_API_KEY_*`，`mcpToken` → `MCP_ROUTER_API_KEY`。某个提供商没有单独保存 Key、而它正是当前的 `coreApi` 或 `assistApi` 时，改用 `coreApiKey`。`coreApiKey` 是免费线路的占位值 `free-access` 时不做这种回退；只做辅助的提供商（不在 `core_api_providers` 里）以及 ElevenLabs、豆包语音的 Key 也从不回退。
 4. 按 `coreApi` 取核心 profile，按 `assistApi` 取辅助 profile，用 `config.update()` 覆盖前面的地址和模型。`free` 的 profile 还带占位 Key `free-access`：核心为 `free` 时覆盖 `CORE_API_KEY`，辅助为 `free` 时覆盖 `AUDIO_API_KEY` / `OPENROUTER_API_KEY`。文件里没写 `assistApi` 时，`coreApi` 为 `free` 则取 `free`，否则取 `qwen`；未知的 `assistApi` 回退到 `qwen`。`resolvedProviderUrls` 里如果存有连通性测试选定的地址，并且它属于该提供商的候选地址，就用它替换默认地址。
@@ -391,7 +393,7 @@ print(json.dumps(get_config_manager().get_core_config(), indent=2, ensure_ascii=
 
 - 用 `/app/.venv/bin/python`：依赖由 `uv sync` 装在 `/app/.venv`，entrypoint 启动服务用的也是这个解释器。
 - 加 `-u neko`：镜像没有设置 `USER`，`docker exec` 默认以 root 运行。而 `get_config_manager()` 默认会执行迁移，可能往数据目录写文件；以 root 身份运行，会留下 `neko` 无法修改的文件。
-- 把 `get_core_config()` 换成 `get_model_api_config('summary')` 这类调用，可以查看某个用途最终生效的 `model` / `base_url` / `api_key` / `is_custom`。
+- 把 `get_core_config()` 换成 `get_model_api_config('memory')` 这类调用，可以查看某个用途最终生效的 `model` / `base_url` / `api_key` / `is_custom`。
 - 这条命令是在一个新起的 Python 进程里重新组装一份快照，不是正在运行的服务内存里的那份。免费线路的区域判定由后台探测线程给出，这个一次性进程读快照时通常还没有结论，会按大陆线路组装。所以在海外网络下，这里显示的是 `lanlan.tech` 地址，而服务实际用的是 `lanlan.app`。
 
 ### 在开发环境中

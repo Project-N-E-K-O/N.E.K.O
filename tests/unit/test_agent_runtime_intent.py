@@ -6,7 +6,7 @@ Scope:
 2. ``app.agent_server.model_probe``: classification of a failed probe of the
    agent model into permanent vs transient reasons (the probe itself is
    covered in ``test_agent_model_probe.py``), and the reason codes for input
-   that cannot be sent (``nekoclaw.builtin.desktop``)
+   that cannot be sent (``nekopower.builtin.desktop``)
 3. Master-switch semantics: ``set_agent_enabled(False)`` no longer wipes
    sub flags (issue: cycling the master gate used to forget user intent
    for every sub feature)
@@ -180,12 +180,12 @@ def test_permanent_connectivity_reasons_set():
 
 
 # The reason the keyboard-and-mouse switch is refused with when input cannot
-# be sent comes from ``nekoclaw.builtin.desktop``: pyautogui is imported on
+# be sent comes from ``nekopower.builtin.desktop``: pyautogui is imported on
 # first use and a failed import is classified.
 
 
 def _pyautogui_failed_to_import(monkeypatch: pytest.MonkeyPatch, error: Exception):
-    from nekoclaw.builtin import desktop
+    from nekopower.builtin import desktop
 
     monkeypatch.setattr(desktop, "_pyautogui", None)
     monkeypatch.setattr(desktop, "_import_error", error)
@@ -251,7 +251,7 @@ def test_input_that_cannot_be_sent_is_reported_with_its_reason(monkeypatch: pyte
 
 
 def test_points_on_the_model_scale_stay_away_from_the_failsafe_corners():
-    from nekoclaw.builtin.desktop import COORDINATE_MAX, ScaledInput
+    from nekopower.builtin.desktop import COORDINATE_MAX, ScaledInput
 
     class FakeBackend:
         def __init__(self):
@@ -284,7 +284,7 @@ def test_points_on_the_model_scale_stay_away_from_the_failsafe_corners():
 
 
 class _Desktop:
-    """Stands in for ``nekoclaw.builtin.desktop.Desktop``: says whether input can be sent."""
+    """Stands in for ``nekopower.builtin.desktop.Desktop``: says whether input can be sent."""
 
     def __init__(self) -> None:
         self.input_ready: tuple[bool, str] = (True, "")
@@ -298,10 +298,10 @@ def desktop(monkeypatch: pytest.MonkeyPatch) -> _Desktop:
     """Whether the keyboard and mouse can be used is the probe of the agent
     model plus input that can be sent. The second half would import
     pyautogui; this answers in its place."""
-    from app.agent_server import nekoclaw_builtins
+    from app.agent_server import nekopower_builtins
 
     fake = _Desktop()
-    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", fake)
+    monkeypatch.setattr(nekopower_builtins.provider, "_desktop", fake)
     return fake
 
 

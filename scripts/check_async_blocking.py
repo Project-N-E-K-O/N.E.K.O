@@ -94,14 +94,14 @@ DEFAULT_PATHS = [
     # memory_server package + its import chain (memory/ package)
     "app/memory_server",
     "memory",
-    # agent_server package (its import chain, main_logic and nekoclaw, is
+    # agent_server package (its import chain, main_logic and nekopower, is
     # in scope above and below)
     "app/agent_server",
     # shared services (chat_sync / theater) running on the main server loop
     "services",
     # agent runtime: many sessions share one loop, in a child process or in
     # the host's own
-    "nekoclaw",
+    "nekopower",
 ]
 # NOTE: ``plugin/`` is intentionally NOT in the default scope. Plugin code uses
 # pyzmq sockets (``sock.connect`` / ``sock.recv`` via async zmq) and

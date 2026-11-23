@@ -99,8 +99,8 @@ if result_text.startswith("```"):
   "name": "Gemini（Google）",
   "description": "Google AI 辅助模型，国内无法使用",
   "openrouter_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-  "summary_model": "gemini-3.1-flash-lite",
-  "emotion_model": "gemini-2.5-flash",
+  "memory_model": "gemini-3.1-flash-lite",
+  "recognition_model": "gemini-2.5-flash",
   "vision_model": "gemini-3.8-flash"
 }
 ```

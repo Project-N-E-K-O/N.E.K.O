@@ -144,7 +144,7 @@ async def run_variant(emotion, sample, model_config, prompt, budget):
 
     class ReadOnlyConfig:
         async def aget_model_api_config(self, tier):
-            if tier != "emotion":
+            if tier != "recognition":
                 raise ValueError("Unexpected model tier")
             return dict(model_config)
 

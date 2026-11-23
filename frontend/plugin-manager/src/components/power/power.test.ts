@@ -407,4 +407,27 @@ describe('the built-in abilities tab', () => {
     expect(api.setBrowser).toHaveBeenCalledWith({ headless: true })
     expect((byTest('browser-headless')?.querySelector('input') as HTMLInputElement).checked).toBe(true)
   })
+
+  it('switches the task HUD of the main page, even while it is all switched off', async () => {
+    api.getSwitches.mockResolvedValueOnce(switches({ enabled: false, task_hud_visible: true }))
+    api.getBrowser.mockResolvedValue(browser())
+    const page = await mount(BuiltinTab)
+    expect(page.textContent).toContain(words.runtime.builtin.taskHudSwitch)
+    const box = () => byTest('switch-task-hud')?.querySelector('input') as HTMLInputElement
+    expect(box().checked).toBe(true)
+    expect(box().disabled).toBe(false)
+
+    api.setDeviceSwitch.mockResolvedValue({ success: true })
+    api.getSwitches.mockResolvedValueOnce(switches({ enabled: false, task_hud_visible: false }))
+    await click(box())
+    expect(api.setDeviceSwitch).toHaveBeenCalledWith('task_hud_visible', false)
+    expect(box().checked).toBe(false)
+  })
+
+  it('has no task HUD switch when an older agent process does not tell it', async () => {
+    api.getSwitches.mockResolvedValue(switches())
+    api.getBrowser.mockResolvedValue(browser())
+    await mount(BuiltinTab)
+    expect(byTest('switch-task-hud')).toBeNull()
+  })
 })

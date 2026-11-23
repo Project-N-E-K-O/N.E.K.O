@@ -167,6 +167,9 @@ const messages: PowerMessages = {
       headless: '창 없이 실행',
       headlessHint: '백그라운드에서 조작해서 무엇을 클릭하는지 보이지 않아요.',
       changeNote: '설정을 바꾸면 사역마가 열어 둔 브라우저가 닫히고, 다음 작업부터 새 설정으로 시작해요.',
+      taskHud: '작업 패널',
+      taskHudSwitch: '메인 화면에 작업 패널 표시',
+      taskHudHint: '그녀와 사역마가 하고 있는 일이 캐릭터 옆 패널에 표시되고, 진행 상황을 보거나 언제든 멈출 수 있어요. 꺼도 일은 그대로 진행되고 보이지만 않아요.',
     },
     plugins: {
       title: 'dsh 플러그인',

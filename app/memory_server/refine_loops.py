@@ -75,7 +75,7 @@ async def _run_tracked_refine_character(
 ):
     """Run one character refine pass registered by kind under spawn lock."""
     async with review._get_review_spawn_lock(name):
-        if name in review._retired_derived_task_names:
+        if not review.is_character_periodic_write_admitted(name):
             return False, None
         if verify_roster:
             try:
@@ -84,6 +84,8 @@ async def _run_tracked_refine_character(
                 logger.debug(f"[Refine] 重新加载角色列表失败: {e}")
                 return False, None
             if name not in (current_data.get('猫娘') or {}):
+                return False, None
+            if not review.is_character_periodic_write_admitted(name):
                 return False, None
         existing = registry.get(name)
         if existing is not None and not existing.done():
@@ -215,6 +217,8 @@ async def _periodic_persona_refine_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not await review.ais_character_periodic_write_admitted(name):
+                continue
             try:
                 ran, _ = await _run_tracked_refine_character(
                     name,
@@ -222,7 +226,7 @@ async def _periodic_persona_refine_loop():
                     registry=review.persona_refine_tasks,
                     verify_roster=True,
                 )
-                if ran and name not in review._retired_derived_task_names:
+                if ran and review.is_character_periodic_write_admitted(name):
                     from .long_term_sync import queue_capture
                     queue_capture(name)
             except Exception as e:
@@ -443,6 +447,8 @@ async def _periodic_reflection_refine_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not await review.ais_character_periodic_write_admitted(name):
+                continue
             try:
                 ran, _ = await _run_tracked_refine_character(
                     name,
@@ -450,7 +456,7 @@ async def _periodic_reflection_refine_loop():
                     registry=review.reflection_refine_tasks,
                     verify_roster=True,
                 )
-                if ran and name not in review._retired_derived_task_names:
+                if ran and review.is_character_periodic_write_admitted(name):
                     from .long_term_sync import queue_capture
                     queue_capture(name)
             except Exception as e:
@@ -556,6 +562,8 @@ async def _run_scoped_refine_round(
         start = (names.index(_scoped_refine_character_cursor) + 1) % len(names)
     rotation = names[start:] + names[:start]
     for name in rotation:
+        if not await review.ais_character_periodic_write_admitted(name):
+            continue
         try:
             ran, served = await _run_tracked_refine_character(
                 name,
@@ -1289,6 +1297,8 @@ async def _periodic_reflection_synthesis_loop():
             await asyncio.sleep(interval)
             continue
         for name in catgirl_names:
+            if not await review.ais_character_periodic_write_admitted(name):
+                continue
             try:
                 results = []
                 try:

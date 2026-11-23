@@ -67,7 +67,7 @@ def shutdown_fixture(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api_runtime, "threading", _ThreadingWith(Timer=timer))
     for name, label in [
-        ("shutdown_nekoclaw_host", "host"),
+        ("shutdown_nekopower_host", "host"),
         ("_ensure_plugin_lifecycle_stopped", "plugin"),
         ("_stop_embedded_user_plugin_server", "embedded"),
         ("_close_browser", "browser"),
@@ -161,7 +161,7 @@ async def test_file_lock_and_repeated_cancellation_preserve_cleanup_and_disk(shu
         await tracker.asave()
 
 
-@pytest.mark.parametrize("name", ["shutdown_nekoclaw_host", "_ensure_plugin_lifecycle_stopped", "_close_browser"])
+@pytest.mark.parametrize("name", ["shutdown_nekopower_host", "_ensure_plugin_lifecycle_stopped", "_close_browser"])
 @pytest.mark.asyncio
 async def test_cancellation_during_cleanup_still_runs_later_steps(shutdown_fixture, monkeypatch, name):
     fixture = shutdown_fixture
@@ -205,18 +205,18 @@ async def test_cancellation_during_cleanup_still_runs_later_steps(shutdown_fixtu
 
 @pytest.mark.asyncio
 async def test_browser_last_resort_survives_slow_host_cleanup(shutdown_fixture, monkeypatch):
-    from config import nekoclaw_settings
+    from config import nekopower_settings
 
     fixture = shutdown_fixture
     entered, release = asyncio.Event(), asyncio.Event()
-    monkeypatch.setattr(nekoclaw_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", .05)
+    monkeypatch.setattr(nekopower_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", .05)
 
     async def host():
         entered.set()
         await release.wait()
         fixture.events.append("host")
 
-    monkeypatch.setattr(fixture.api, "shutdown_nekoclaw_host", host)
+    monkeypatch.setattr(fixture.api, "shutdown_nekopower_host", host)
     task = asyncio.create_task(fixture.api.shutdown())
     try:
         await asyncio.wait_for(entered.wait(), 2)
@@ -242,14 +242,14 @@ async def test_browser_last_resort_fired_ahead_of_loop_clock_is_not_closed(shutd
     clock tick (~15.6 ms) before the loop's clock reaches the kill time. A
     browser the last resort has killed must not be asked to close because the
     loop still sees time left."""
-    from config import nekoclaw_settings
+    from config import nekopower_settings
 
     fixture = shutdown_fixture
     # The kill time is far past every wait below (2 s each), so when the
     # browser step runs the loop still sees time left: a runner slow enough
     # to use it all up fails a wait instead of passing without reaching the
     # check under test.
-    monkeypatch.setattr(nekoclaw_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", 30.0)
+    monkeypatch.setattr(nekopower_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", 30.0)
 
     def early_timer(seconds, callback):
         # Fires long before the loop's clock reaches the kill time.
@@ -265,7 +265,7 @@ async def test_browser_last_resort_fired_ahead_of_loop_clock_is_not_closed(shutd
         await release.wait()
         fixture.events.append("host")
 
-    monkeypatch.setattr(fixture.api, "shutdown_nekoclaw_host", host)
+    monkeypatch.setattr(fixture.api, "shutdown_nekopower_host", host)
     loop = asyncio.get_running_loop()
     killed_at = []  # By the loop's clock (monotonic, readable from any thread).
 
@@ -355,10 +355,10 @@ async def test_held_keys_are_tried_again_after_the_browser_only_when_left_held(s
 
 @pytest.mark.asyncio
 async def test_held_keys_are_not_tried_again_past_the_retry_deadline(shutdown_fixture, monkeypatch):
-    from config import nekoclaw_settings
+    from config import nekopower_settings
 
     fixture = shutdown_fixture
-    monkeypatch.setattr(nekoclaw_settings, "KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS", 0.0)
+    monkeypatch.setattr(nekopower_settings, "KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS", 0.0)
 
     async def release_keys():
         fixture.events.append("keys")
@@ -394,7 +394,7 @@ async def test_agent_submits_stats_after_cancel_budget_expires(shutdown_fixture,
         await release.wait()
 
     monkeypatch.setattr(fixture.tracker, "submit_save", submit)
-    monkeypatch.setattr(fixture.api, "shutdown_nekoclaw_host", host)
+    monkeypatch.setattr(fixture.api, "shutdown_nekopower_host", host)
     task = asyncio.create_task(fixture.api.shutdown())
     try:
         await asyncio.wait_for(entered.wait(), 2)

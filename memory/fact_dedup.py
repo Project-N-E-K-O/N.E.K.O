@@ -1085,7 +1085,7 @@ class FactDedupResolver:
 
         try:
             set_call_type("memory_fact_dedup")
-            api_config = await self._config_manager.aget_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('memory')
             # timeout=60 holds FactDedup locks but blocks only background embedding enqueue,
             # without affecting user paths.
             # max_retries=0 disables SDK retries; no business retries exist here, so one call is final.

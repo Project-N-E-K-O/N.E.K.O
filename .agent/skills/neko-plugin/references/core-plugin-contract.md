@@ -203,7 +203,7 @@ class SearchPlugin(NekoPluginBase):
 
 ### LLM-Facing Entries
 
-How the Agent finds an entry ([selection.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/nekoclaw/host/selection.py)):
+How the Agent finds an entry ([selection.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/nekopower/host/selection.py)):
 
 - It shortlists plugins by keyword search (BM25, top 10) over the plugin id,
   name, descriptions, and entry ids/descriptions, plus every plugin whose

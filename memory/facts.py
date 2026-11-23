@@ -6961,7 +6961,7 @@ class FactStore:
         try:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_fact")
-            api_config = await self._config_manager.aget_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('memory')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             # Disable thinking using factory-default extra_body: Stage-1 already annotates the same event_when
             # without thinking, despite harder input (whole conversations, multiple facts

@@ -77,6 +77,53 @@ SCOPE_ALL = "all"
 LEGACY_DENIED = "legacy_denied"
 
 
+ChangeListener = Callable[["frozenset[str] | None"], None]
+_change_listeners: list[ChangeListener] = []
+_listeners_lock = threading.Lock()
+
+
+def add_change_listener(listener: ChangeListener) -> None:
+    """Call ``listener`` after any store write that changed stored grants.
+
+    It receives the ids of the plugins whose records changed, or ``None``
+    when the whole document was (re)loaded and any plugin may differ. It runs
+    on the writing thread while the store lock is held, so it must only
+    schedule work and return.
+    """
+    with _listeners_lock:
+        if listener not in _change_listeners:
+            _change_listeners.append(listener)
+
+
+def remove_change_listener(listener: ChangeListener) -> None:
+    with _listeners_lock:
+        if listener in _change_listeners:
+            _change_listeners.remove(listener)
+
+
+def _notify_change(plugin_ids: "frozenset[str] | None") -> None:
+    if plugin_ids is not None and not plugin_ids:
+        return
+    with _listeners_lock:
+        listeners = list(_change_listeners)
+    for listener in listeners:
+        try:
+            listener(plugin_ids)
+        except Exception as exc:
+            logger.error(
+                "plugin permission change listener failed: error={}",
+                type(exc).__name__,
+            )
+
+
+def _changed_plugins(before: dict | None, after: dict) -> frozenset[str]:
+    old = (before or {}).get("plugins") or {}
+    new = after.get("plugins") or {}
+    return frozenset(
+        plugin_id for plugin_id in old.keys() | new.keys() if old.get(plugin_id) != new.get(plugin_id)
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -225,6 +272,8 @@ class PluginPermissionStore:
                 unsaved = True
         self._path, self._document = path, document
         self._unsaved = unsaved
+        # Anything read before (or under another path) may differ now.
+        _notify_change(None)
         return manager
 
     def _load_for_write(self):
@@ -361,8 +410,9 @@ class PluginPermissionStore:
     def _commit(self, manager, document: dict) -> None:
         # Persist first; the cache only moves once the disk has the change.
         self._save(manager, document)
-        self._document = document
+        before, self._document = self._document, document
         self._unsaved = False
+        _notify_change(_changed_plugins(before, document))
 
     # ------------------------------------------------------------------
     # Public API
@@ -437,6 +487,52 @@ class PluginPermissionStore:
             manager = self._load_for_write()
             self._commit(manager, document)
             return copy.deepcopy(record)
+
+    def bind_unbound_source(self, plugin_id: str, source: PluginSource) -> bool:
+        """Bind a record that has no source yet to ``source`` and save it.
+
+        For a caller that has confirmed the plugin's source by other means
+        before changing it. A record that already has a source, or no record,
+        is left alone. Unlike :meth:`sync_source`, a failed save raises; that
+        includes a first-use import still held in memory that holds this
+        plugin's record, so the record is on disk before the source changes.
+        Returns whether the record was bound.
+        """
+        with self._lock:
+            self._load()
+            cached = self._document["plugins"].get(plugin_id)
+            if cached is None:
+                return False
+            if PluginSource.from_dict(cached.get("source")) is not None:
+                self._load_for_write()
+                return False
+            document = copy.deepcopy(self._document)
+            self._apply_source(document["plugins"][plugin_id], source)
+            manager = self._load_for_write()
+            self._commit(manager, document)
+            return True
+
+    def holds_unbound_grant(self, plugin_id: str) -> bool:
+        """Whether the record has no source yet and still grants a permission.
+
+        For a caller about to change the plugin's source without knowing the
+        current one. As in :meth:`bind_unbound_source`, no record is left
+        alone, and for an existing record a first-use import still held in
+        memory is saved first, so a failed save raises.
+        """
+        with self._lock:
+            self._load()
+            if plugin_id not in self._document["plugins"]:
+                return False
+            self._load_for_write()
+            record = self._document["plugins"].get(plugin_id)
+            if not record or PluginSource.from_dict(record.get("source")) is not None:
+                return False
+            permissions = record.get("permissions") or {}
+            return any(
+                isinstance(entry, dict) and entry.get("state") == STATE_GRANTED
+                for entry in permissions.values()
+            )
 
     @staticmethod
     def _apply_source(record: dict, current: PluginSource | None) -> bool:

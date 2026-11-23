@@ -32,7 +32,7 @@ let _apiSaveInProgress = false;
 const _aliyunUsApiWarningShownKeys = new Set();
 
 // 所有模型类型
-const MODEL_TYPES = ['conversation', 'summary', 'emotion', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'decision'];
+const MODEL_TYPES = ['conversation', 'memory', 'recognition', 'omni', 'agent', 'agentSmall', 'tts', 'gameMain', 'gameSummary', 'decision'];
 // Model types that support connectivity testing.
 // All model types including TTS are testable — TTS follows the same
 // provider resolution logic (follow_core/follow_assist/custom).
@@ -55,21 +55,21 @@ const MIMO_TOKEN_PLAN_OPENROUTER_URLS = [
 const MODEL_DEFAULT_PROVIDER = {
     omni: 'follow_core',
     gameMain: 'follow_conversation',
-    gameSummary: 'follow_summary',
-    agentSmall: 'follow_emotion',
+    gameSummary: 'follow_memory',
+    agentSmall: 'follow_recognition',
 };
 // follow_<source> 下拉值 → 被跟随的槽位；照搬后端 get_core_config 的 follow_* 规则。
 const FOLLOW_SOURCE_BY_PROVIDER = Object.freeze({
     follow_conversation: 'conversation',
-    follow_summary: 'summary',
-    follow_emotion: 'emotion',
+    follow_memory: 'memory',
+    follow_recognition: 'recognition',
     follow_agent: 'agent',
 });
 // 被跟随的槽位 → 可以跟随它的槽位（源槽位改动时要同步刷新）。
 const MODEL_FOLLOWER_BY_SOURCE = Object.freeze({
     conversation: 'gameMain',
-    summary: 'gameSummary',
-    emotion: 'agentSmall',
+    memory: 'gameSummary',
+    recognition: 'agentSmall',
     agent: 'agentSmall',
 });
 function followedModelType(provider) {
@@ -85,16 +85,16 @@ function effectiveFollowSource(modelType) {
     if (modelType === 'agentSmall' && select.value === 'custom') {
         const url = document.getElementById('agentSmallModelUrl');
         const id = document.getElementById('agentSmallModelId');
-        if (!(url && url.value.trim() && id && id.value.trim())) return 'emotion';
+        if (!(url && url.value.trim() && id && id.value.trim())) return 'recognition';
     }
     return '';
 }
 const MODEL_CONFIG_EXPANSION_PATHS = {
     conversation: ['conversation'],
-    summary: ['summary'],
+    memory: ['memory'],
     gameMain: ['game', 'game-main'],
     gameSummary: ['game', 'game-summary'],
-    emotion: ['emotion'],
+    recognition: ['recognition'],
     decision: ['decision'],
     agent: ['agent'],
     agentSmall: ['agent-small'],
@@ -103,16 +103,16 @@ const MODEL_CONFIG_EXPANSION_PATHS = {
 };
 const MODEL_PROVIDER_FIELD_BY_TYPE = {
     conversation: 'conversation_model',
-    summary: 'summary_model',
+    memory: 'memory_model',
     gameMain: 'conversation_model',
-    gameSummary: 'summary_model',
-    emotion: 'emotion_model',
+    gameSummary: 'memory_model',
+    recognition: 'recognition_model',
     decision: 'decision_model',
     // No vision card any more; kept for getAssistDefaultTierModelId(), whose
     // agent default falls back to the provider's vision model (as the backend does).
     vision: 'vision_model',
     agent: 'agent_model',
-    agentSmall: 'emotion_model',
+    agentSmall: 'recognition_model',
     omni: 'core_model',
 };
 // 当前加载到页面中的 GPT-SoVITS 状态：none | enabled | disabled
@@ -1375,7 +1375,7 @@ function isStructuralTtsOnlyProvider(pk) {
     const p = _assistApiProviders[pk] || _keyBookApiProviders[pk];
     if (!p || typeof p !== 'object') return false;
     if (!p.tts_default_model && !p.tts_default_voice) return false;
-    // 任意 LLM 模型字段（conversation_model / summary_model / ...）非空 → 不是纯 TTS。
+    // 任意 LLM 模型字段（conversation_model / memory_model / ...）非空 → 不是纯 TTS。
     return !MODEL_TYPES.some(mt => {
         if (mt === 'tts' || mt === 'omni') return false;
         const v = p[`${mt}_model`];
@@ -1505,7 +1505,7 @@ function getProviderDefaultModelId(providerKey, modelType) {
     const field = MODEL_PROVIDER_FIELD_BY_TYPE[modelType];
     if (field && profile[field]) return String(profile[field]).trim();
     if (modelType === 'gameMain' && profile.conversation_model) return String(profile.conversation_model).trim();
-    if (modelType === 'gameSummary' && profile.summary_model) return String(profile.summary_model).trim();
+    if (modelType === 'gameSummary' && profile.memory_model) return String(profile.memory_model).trim();
     return '';
 }
 
@@ -1588,14 +1588,14 @@ function populateModelProviderDropdowns() {
         } else if (mt === 'gameSummary') {
             appendModelProviderOption(
                 sel,
-                'follow_summary',
+                'follow_memory',
                 'api.customModelProviderFollowSummary',
                 '跟随记忆整理模型'
             );
         } else if (mt === 'agentSmall') {
             appendModelProviderOption(
                 sel,
-                'follow_emotion',
+                'follow_recognition',
                 'api.customModelProviderFollowEmotion',
                 '跟随识别模型'
             );
@@ -2044,13 +2044,13 @@ function removeKeyBookLink(input) {
 
 const MODEL_TIER_BY_TYPE = {
     conversation: 'conversation',
-    summary: 'summary',
+    memory: 'memory',
     gameMain: 'conversation',
-    gameSummary: 'summary',
-    emotion: 'emotion',
+    gameSummary: 'memory',
+    recognition: 'recognition',
     decision: 'decision',
     agent: 'agent',
-    agentSmall: 'emotion',
+    agentSmall: 'recognition',
 };
 const MODEL_PICKER_UNAVAILABLE_TEXT = {
     noProvider: ['api.modelPicker.unavailable.noProvider', '请先选择服务商'],
@@ -2241,7 +2241,7 @@ function resolveSlotModelState(modelType, visited = new Set()) {
         // 小游戏槽跟随 API 时不采用输入值，直接取对应 API 的档位默认。
         if (provider === 'follow_assist') return {
             defaultModelId: getAssistTierModelId(tier)
-                || (tier === 'summary' ? getAssistTierModelId('conversation') : ''),
+                || (tier === 'memory' ? getAssistTierModelId('conversation') : ''),
             acceptsTypedModelId: false,
             fixedModelProvider: '',
         };
@@ -2275,7 +2275,7 @@ function resolveSlotModelState(modelType, visited = new Set()) {
     // 使魔模型·小那份是刚解析出的识别模型（后端在处理这一格前用识别模型补齐）
     if (modelType === 'agentSmall') {
         // 只镜像默认模型名：这一格是自定义输入框，不显示「免费版使用固定模型」这类提示
-        return { ...mirrorSlotModelState('emotion', visited), acceptsTypedModelId: true, fixedModelProvider: '' };
+        return { ...mirrorSlotModelState('recognition', visited), acceptsTypedModelId: true, fixedModelProvider: '' };
     }
     return {
         defaultModelId: isGameSlot ? '' : getAssistTierModelId(tier),
@@ -3058,9 +3058,9 @@ async function loadCurrentApiKey() {
             setInputValue('conversationModelId', data.conversationModelId);
             setSecretInputValue('conversationModelApiKey', data.conversationModelApiKey);
 
-            setInputValue('summaryModelUrl', data.summaryModelUrl);
-            setInputValue('summaryModelId', data.summaryModelId);
-            setSecretInputValue('summaryModelApiKey', data.summaryModelApiKey);
+            setInputValue('memoryModelUrl', data.memoryModelUrl);
+            setInputValue('memoryModelId', data.memoryModelId);
+            setSecretInputValue('memoryModelApiKey', data.memoryModelApiKey);
 
             setInputValue('gameMainModelUrl', data.gameMainModelUrl);
             setInputValue('gameMainModelId', data.gameMainModelId);
@@ -3070,9 +3070,9 @@ async function loadCurrentApiKey() {
             setInputValue('gameSummaryModelId', data.gameSummaryModelId);
             setSecretInputValue('gameSummaryModelApiKey', data.gameSummaryModelApiKey);
 
-            setInputValue('emotionModelUrl', data.emotionModelUrl);
-            setInputValue('emotionModelId', data.emotionModelId);
-            setSecretInputValue('emotionModelApiKey', data.emotionModelApiKey);
+            setInputValue('recognitionModelUrl', data.recognitionModelUrl);
+            setInputValue('recognitionModelId', data.recognitionModelId);
+            setSecretInputValue('recognitionModelApiKey', data.recognitionModelApiKey);
 
             loadImageSettings(data);
 
@@ -3555,7 +3555,7 @@ function closeClearCustomApiModal() {
 
 // 与后端 utils/legacy_vision.legacy_vision_differs 同一口径：开着自定义 API、
 // 看图档自己选了服务商（不是「跟随……」）并填过地址或模型。
-const LEGACY_VISION_FOLLOW_PROVIDERS = ['follow_assist', 'follow_core', 'follow_conversation', 'follow_summary'];
+const LEGACY_VISION_FOLLOW_PROVIDERS = ['follow_assist', 'follow_core', 'follow_conversation', 'follow_memory'];
 let _legacyVisionRoute = null;
 
 function legacyVisionRoute(data) {
@@ -3917,9 +3917,9 @@ async function save_button_down(e) {
     const conversationModelId = getVal('conversationModelId');
     const conversationModelApiKey = getKeyVal('conversationModelApiKey');
 
-    const summaryModelUrl = getVal('summaryModelUrl');
-    const summaryModelId = getVal('summaryModelId');
-    const summaryModelApiKey = getKeyVal('summaryModelApiKey');
+    const memoryModelUrl = getVal('memoryModelUrl');
+    const memoryModelId = getVal('memoryModelId');
+    const memoryModelApiKey = getKeyVal('memoryModelApiKey');
 
     const gameMainModelUrl = getVal('gameMainModelUrl');
     const gameMainModelId = getVal('gameMainModelId');
@@ -3929,9 +3929,9 @@ async function save_button_down(e) {
     const gameSummaryModelId = getVal('gameSummaryModelId');
     const gameSummaryModelApiKey = getKeyVal('gameSummaryModelApiKey');
 
-    const emotionModelUrl = getVal('emotionModelUrl');
-    const emotionModelId = getVal('emotionModelId');
-    const emotionModelApiKey = getKeyVal('emotionModelApiKey');
+    const recognitionModelUrl = getVal('recognitionModelUrl');
+    const recognitionModelId = getVal('recognitionModelId');
+    const recognitionModelApiKey = getKeyVal('recognitionModelApiKey');
 
     const decisionModelUrl = getVal('decisionModelUrl');
     const decisionModelId = getVal('decisionModelId');
@@ -4011,10 +4011,10 @@ async function save_button_down(e) {
         ...doubaoVoiceManagementSettingsPayload(),
         ...imageSettingsPayload(),
         conversationModelUrl, conversationModelId, conversationModelApiKey,
-        summaryModelUrl, summaryModelId, summaryModelApiKey,
+        memoryModelUrl, memoryModelId, memoryModelApiKey,
         gameMainModelUrl, gameMainModelId, gameMainModelApiKey,
         gameSummaryModelUrl, gameSummaryModelId, gameSummaryModelApiKey,
-        emotionModelUrl, emotionModelId, emotionModelApiKey,
+        recognitionModelUrl, recognitionModelId, recognitionModelApiKey,
         decisionModelUrl, decisionModelId, decisionModelApiKey,
         agentModelUrl, agentModelId, agentModelApiKey,
         agentSmallModelUrl, agentSmallModelId, agentSmallModelApiKey,
@@ -4128,11 +4128,11 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         if (providerMode === 'follow_conversation') {
             return params.conversationModelUrl || resolveUrl('conversation', params.conversationModelProvider, visited);
         }
-        if (providerMode === 'follow_summary') {
-            return params.summaryModelUrl || resolveUrl('summary', params.summaryModelProvider, visited);
+        if (providerMode === 'follow_memory') {
+            return params.memoryModelUrl || resolveUrl('memory', params.memoryModelProvider, visited);
         }
-        if (providerMode === 'follow_emotion') {
-            return params.emotionModelUrl || resolveUrl('emotion', params.emotionModelProvider, visited);
+        if (providerMode === 'follow_recognition') {
+            return params.recognitionModelUrl || resolveUrl('recognition', params.recognitionModelProvider, visited);
         }
         if (providerMode === 'follow_agent') {
             return params.agentModelUrl || resolveUrl('agent', params.agentModelProvider, visited);
@@ -4171,17 +4171,17 @@ function refreshAutoResolvedModelUrlsForSave(params) {
                 ? inherited
                 : resolveModel('conversation', params.conversationModelProvider, visited);
         }
-        if (providerMode === 'follow_summary') {
-            const inherited = snapshotModelId('summary');
+        if (providerMode === 'follow_memory') {
+            const inherited = snapshotModelId('memory');
             return inherited !== undefined && inherited !== null
                 ? inherited
-                : resolveModel('summary', params.summaryModelProvider, visited);
+                : resolveModel('memory', params.memoryModelProvider, visited);
         }
-        if (providerMode === 'follow_emotion') {
-            const inherited = snapshotModelId('emotion');
+        if (providerMode === 'follow_recognition') {
+            const inherited = snapshotModelId('recognition');
             return inherited !== undefined && inherited !== null
                 ? inherited
-                : resolveModel('emotion', params.emotionModelProvider, visited);
+                : resolveModel('recognition', params.recognitionModelProvider, visited);
         }
         if (providerMode === 'follow_agent') {
             const inherited = snapshotModelId('agent');
@@ -4608,10 +4608,10 @@ function positionTooltip(iconElement, tooltipElement) {
 }
 
 const MODEL_CONFIG_ROW_PAIRS = Object.freeze({
-    conversation: 'summary',
-    summary: 'conversation',
-    emotion: 'decision',
-    decision: 'emotion',
+    conversation: 'memory',
+    memory: 'conversation',
+    recognition: 'decision',
+    decision: 'recognition',
     omni: 'tts',
     tts: 'omni',
     agent: 'agent-small',
@@ -4741,7 +4741,7 @@ function navigateToCustomModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ["conversation", 'summary', 'game', 'game-main', 'game-summary', 'emotion', 'decision', 'image', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
+    const modelTypes = ["conversation", 'memory', 'game', 'game-main', 'game-summary', 'recognition', 'decision', 'image', 'agent', 'agent-small', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
@@ -4847,10 +4847,10 @@ const LightStatus = {
 function getCustomModelDisplayLabel(modelType) {
     const labelMap = {
         conversation: ['api.conversationModelConfig', '聊天模型'],
-        summary: ['api.summaryModelConfig', '记忆整理（大模型）'],
+        memory: ['api.summaryModelConfig', '记忆整理（大模型）'],
         gameMain: ['api.gameMainModelConfig', '小游戏聊天模型'],
         gameSummary: ['api.gameSummaryModelConfig', '小游戏记忆模型'],
-        emotion: ['api.emotionModelConfig', '识别模型（小模型）'],
+        recognition: ['api.emotionModelConfig', '识别模型（小模型）'],
         decision: ['api.decisionModelConfig', '决策模型（专用接口）'],
         agent: ['api.agentApiConfigTitle', '使魔模型·通用'],
         omni: ['api.realtimeModelConfig', '实时语音（本地）'],
@@ -5171,9 +5171,9 @@ const ConnectivityManager = {
             if (!providerSel) return result;
 
             const provider = providerSel.value;
-            if (provider === 'custom' && effectiveFollowSource(mt) === 'emotion') {
+            if (provider === 'custom' && effectiveFollowSource(mt) === 'recognition') {
                 // 与后端一致：使魔模型·小自定义时地址和模型名没填全，整格跟随识别模型
-                return this.resolveEffectiveKey({ type: 'custom', modelType: 'emotion' });
+                return this.resolveEffectiveKey({ type: 'custom', modelType: 'recognition' });
             }
             result.url = urlInput ? urlInput.value.trim() : '';
 
