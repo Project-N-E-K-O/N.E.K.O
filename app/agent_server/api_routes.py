@@ -640,7 +640,11 @@ async def agent_command(payload: Dict[str, Any]):
 _intent_restore_done = False
 _intent_restore_finished = False
 # Background replay tasks (CU/BU probe, user plugin) started by the current
-# restore; ``_intent_restore_finished`` turns True only after they end.
+# restore; ``_intent_restore_finished`` turns True only after they end. Work
+# those tasks hand off on their own is not tracked: the plugin start that
+# ``set_agent_flags`` schedules only switches the plugin off when the start
+# fails while its generation is still current, which reports a real failure
+# rather than replaying an older intent over a newer value.
 _intent_restore_background_tasks: List[asyncio.Task] = []
 _intent_restore_lock: Optional[asyncio.Lock] = None
 
