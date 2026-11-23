@@ -69,33 +69,51 @@ class _AgentMutationRoute(APIRoute):
                         "/admin/control",
                     )
                 )
-                raw_body = await request.body()
+                media_type = (
+                    request.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
                 parsed_payload: dict | None = None
-                if requires_json or raw_body:
-                    media_type = (
-                        request.headers.get("content-type", "")
-                        .split(";", 1)[0]
-                        .strip()
-                        .lower()
-                    )
+                if requires_json or media_type:
                     if media_type != "application/json":
                         return JSONResponse(
                             {"success": False, "error": "Content-Type must be application/json"},
                             status_code=415,
                         )
-                    try:
-                        decoded = json.loads(raw_body.decode("utf-8")) if raw_body else None
-                    except (UnicodeDecodeError, ValueError, RecursionError):
-                        return JSONResponse(
-                            {"success": False, "error": "Invalid JSON body"},
-                            status_code=400,
-                        )
-                    if not isinstance(decoded, dict):
-                        return JSONResponse(
-                            {"success": False, "error": "JSON body must be an object"},
-                            status_code=400,
-                        )
-                    parsed_payload = decoded
+                else:
+                    raw_content_length = request.headers.get("content-length")
+                    if raw_content_length is not None:
+                        try:
+                            content_length = int(raw_content_length)
+                        except ValueError:
+                            return JSONResponse(
+                                {"success": False, "error": "Content-Type must be application/json"},
+                                status_code=415,
+                            )
+                        if content_length != 0:
+                            return JSONResponse(
+                                {"success": False, "error": "Content-Type must be application/json"},
+                                status_code=415,
+                            )
+
+                if media_type == "application/json":
+                    raw_body = await request.body()
+                    if requires_json or raw_body:
+                        try:
+                            decoded = json.loads(raw_body.decode("utf-8")) if raw_body else None
+                        except (UnicodeDecodeError, ValueError, RecursionError):
+                            return JSONResponse(
+                                {"success": False, "error": "Invalid JSON body"},
+                                status_code=400,
+                            )
+                        if not isinstance(decoded, dict):
+                            return JSONResponse(
+                                {"success": False, "error": "JSON body must be an object"},
+                                status_code=400,
+                            )
+                        parsed_payload = decoded
 
                 rejected = _validate_local_mutation_request(
                     request,

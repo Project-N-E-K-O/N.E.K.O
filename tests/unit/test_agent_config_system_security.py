@@ -128,6 +128,89 @@ def test_agent_mutations_reject_deeply_nested_json_without_crash(monkeypatch, pa
 
 
 @pytest.mark.asyncio
+async def test_agent_mutations_reject_multipart_and_unsupported_media_types_before_reading_body(monkeypatch):
+    from types import SimpleNamespace
+    from main_routers import agent_router
+
+    monkeypatch.delenv("NEKO_ACTIVITY_TRACKER_REMOTE", raising=False)
+    monkeypatch.delenv("ACTIVITY_TRACKER_REMOTE", raising=False)
+
+    app = FastAPI()
+    app.include_router(agent_router.router)
+
+    async def _send_raw_asgi(path: str, headers: list[tuple[bytes, bytes]]) -> tuple[int, bool]:
+        body_read_called = False
+        status_code = 0
+
+        async def _bomb_receive():
+            nonlocal body_read_called
+            body_read_called = True
+            return {"type": "http.request", "body": b"should-never-be-read", "more_body": False}
+
+        async def _capture_send(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "headers": headers,
+            "client": ("127.0.0.1", 50000),
+            "server": ("127.0.0.1", 48911),
+        }
+        await app(scope, _bomb_receive, _capture_send)
+        return status_code, body_read_called
+
+    base_headers = [
+        (b"host", b"127.0.0.1:48911"),
+        (b"origin", b"http://127.0.0.1:48911"),
+        (b"x-csrf-token", _csrf_token().encode("ascii")),
+    ]
+    for path in (
+        "/api/agent/tasks/task-1/cancel",
+        "/api/agent/builtin/stop",
+        "/api/agent/command",
+    ):
+        status, read_called = await _send_raw_asgi(
+            path,
+            base_headers + [(b"content-type", b"multipart/form-data; boundary=---")],
+        )
+        assert status == 415
+        assert read_called is False
+
+    status_plain, read_plain = await _send_raw_asgi(
+        "/api/agent/tasks/task-1/cancel",
+        base_headers + [(b"content-type", b"text/plain")],
+    )
+    assert status_plain == 415
+    assert read_plain is False
+
+    status_cl, read_cl = await _send_raw_asgi(
+        "/api/agent/tasks/task-1/cancel",
+        base_headers + [(b"content-length", b"1024")],
+    )
+    assert status_cl == 415
+    assert read_cl is False
+
+    # Bodyless POST to /cancel with valid same-origin + CSRF passes the guard.
+    fake_client = SimpleNamespace(
+        post=AsyncMock(return_value=SimpleNamespace(is_success=True, status_code=200, json=lambda: {"success": True}))
+    )
+    monkeypatch.setattr(agent_router, "_get_http_client", lambda: fake_client)
+    status_ok, read_ok = await _send_raw_asgi("/api/agent/tasks/task-1/cancel", base_headers)
+    assert status_ok == 200
+    assert read_ok is False
+    assert fake_client.post.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_console_proxy_set_switch_passes_real_agent_router_csrf_guard(monkeypatch):
     """End-to-end unmocked CSRF check from plugin console_proxy to main agent_router."""
     from config.network import USER_PLUGIN_SERVER_PORT
