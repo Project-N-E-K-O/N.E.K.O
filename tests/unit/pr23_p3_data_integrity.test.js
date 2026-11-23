@@ -1015,3 +1015,75 @@ test('PR3976 master-on persisted: child flags still restore on next load after o
         assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
     }
 });
+
+test('PR3976 4661699788: plugin switch the user turned off after master-on is not re-enabled by the restore', async () => {
+    const snapshotFlags = {
+        agent_enabled: true,
+        computer_use_enabled: true,
+        browser_use_enabled: false,
+        user_plugin_enabled: true,
+    };
+
+    // Case A: in-session retry. Child POST fails, user turns plugins OFF during backoff.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 701, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: snapshotFlags,
+        }));
+        const server = makeAgentServer();
+        server.onCommand = async (body) => {
+            if (body.enabled) server.child.user_plugin_enabled = true;
+        };
+        let failChild = true;
+        const handler = async (url, init, body) => {
+            if (url === '/api/agent/flags' && init.method === 'POST' && failChild) {
+                return { ok: false, status: 502, json: async () => ({}) };
+            }
+            return await server.handler(url, init, body);
+        };
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: handler });
+        await flushMicrotasks();
+        assert.equal(server.master, true);
+        assert.equal(server.child.user_plugin_enabled, true);
+
+        server.child.user_plugin_enabled = false;
+        failChild = false;
+        const retry = rt.scheduledTimeouts.find(t => !t.cleared);
+        assert.ok(retry);
+        retry.fn();
+        await flushMicrotasks();
+        assert.equal(rt.fetchCalls.filter(c => c.url === '/api/agent/command').length, 1, 'must not re-send master-on (it re-enables plugins)');
+        assert.equal(server.child.user_plugin_enabled, false, 'user plugin OFF must be kept');
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
+
+    // Case B: next page load with persisted masterApplied; plugins were turned OFF by the user meanwhile.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 702, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: snapshotFlags, masterApplied: true,
+        }));
+        const server = makeAgentServer();
+        server.master = true;
+        const rt = loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        assert.equal(rt.fetchCalls.filter(c => c.method === 'POST').length, 0);
+        assert.equal(server.child.user_plugin_enabled, false);
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
+
+    // Case C: plugins still ON (the master side effect) -> restore continues normally.
+    {
+        const storage = createStorage();
+        storage.setItem(HOME_TUTORIAL_KEY, JSON.stringify({
+            version: 1, token: 703, createdAt: Date.now(), lanlanName: 'CatA', agentFlags: snapshotFlags, masterApplied: true,
+        }));
+        const server = makeAgentServer();
+        server.master = true;
+        server.child.user_plugin_enabled = true;
+        loadHomeTutorialRuntime({ localStorage: storage, lanlanName: 'CatA', fetchHandler: server.handler });
+        await flushMicrotasks();
+        assert.equal(server.child.computer_use_enabled, true);
+        assert.equal(storage.getItem(HOME_TUTORIAL_KEY), null);
+    }
+});
