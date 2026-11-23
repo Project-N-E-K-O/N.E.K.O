@@ -733,6 +733,8 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "aiohttp.request",
             "websockets.connect",
             "websockets.client.connect",
+            "websockets.asyncio.client.connect",
+            "websockets.sync.client.connect",
             "websocket.create_connection",
             "websocket.WebSocketApp",
             "urllib3.PoolManager",
@@ -766,8 +768,12 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "websockets.server.serve",
             "websockets.asyncio.server.serve",
             "websockets.sync.server.serve",
+            "websockets.asyncio.server.Server",
             "aiohttp.web.run_app",
             "aiohttp.web.TCPSite",
+            "aiohttp.web.SockSite",
+            "hypercorn.asyncio.serve",
+            "hypercorn.trio.serve",
             "uvicorn.run",
             "uvicorn.Server",
             "flask.Flask().run",
@@ -1056,17 +1062,32 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
     return results
 
 
-def _import_hints(node: ast.Import | ast.ImportFrom) -> set[str]:
+def _import_hints(node: ast.Import | ast.ImportFrom) -> dict[str, set[str]]:
+    """Permission -> the _IMPORT_HINTS prefixes the import matched."""
     if isinstance(node, ast.ImportFrom):
-        modules = [node.module] if node.module and not node.level else []
+        # The imported name may be a submodule (from http import server).
+        modules = (
+            [node.module, *(f"{node.module}.{item.name}" for item in node.names)]
+            if node.module and not node.level
+            else []
+        )
     else:
         modules = [item.name for item in node.names]
-    hints = set()
+    hints: dict[str, set[str]] = {}
     for module in modules:
         for prefix, permission in _IMPORT_HINTS.items():
             if module == prefix or module.startswith(prefix + "."):
-                hints.add(permission)
+                hints.setdefault(permission, set()).add(prefix)
     return hints
+
+
+def _explained_by_listen(prefixes: set[str], listen_rows) -> bool:
+    """Every hinted module already has direct listen evidence (a server-only
+    use of aiohttp or websockets), so the import says nothing about connecting."""
+    direct = [row["method"] for row in listen_rows if row["basis"] in DIRECT_BASES]
+    return bool(prefixes) and all(
+        any(method.startswith((prefix + ".", prefix + "(")) for method in direct) for prefix in prefixes
+    )
 
 
 def _reference_blind_spot(reference: _Reference) -> str | None:
@@ -1265,6 +1286,7 @@ class _PermissionCollector:
         # permission -> (file, line) -> evidence row
         self.findings: dict[str, dict[tuple[str, int], dict]] = {}
         self.import_hints: dict[str, dict] = {}
+        self.import_hint_prefixes: dict[str, set[str]] = {}
         self.blind_spots: dict[tuple[str, str | None, int | None], dict] = {}
 
     def add_finding(self, permission: str, basis: str, row: dict) -> None:
@@ -1294,7 +1316,8 @@ class _PermissionCollector:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             if isinstance(node, ast.ImportFrom) and any(item.name == "*" for item in node.names):
                 self.add_blind_spot("dynamic_import", relative, node.lineno, method="import *")
-            for permission in _import_hints(node):
+            for permission, prefixes in _import_hints(node).items():
+                self.import_hint_prefixes.setdefault(permission, set()).update(prefixes)
                 self.import_hints.setdefault(
                     permission,
                     {
@@ -1326,8 +1349,13 @@ class _PermissionCollector:
         for item in skipped:
             self.add_blind_spot("not_analyzed", item.get("file"), None, reason=item["reason"])
         for permission, row in self.import_hints.items():
-            if permission not in self.findings:
-                self.findings[permission] = {(row["file"], row["line"]): row}
+            if permission in self.findings:
+                continue
+            if permission == _NETWORK and _explained_by_listen(
+                self.import_hint_prefixes[permission], self.findings.get(_LISTEN, {}).values()
+            ):
+                continue
+            self.findings[permission] = {(row["file"], row["line"]): row}
         permissions: dict[str, dict] = {}
         for permission in sorted(set(self.findings) | declarations.ids()):
             rows = sorted(

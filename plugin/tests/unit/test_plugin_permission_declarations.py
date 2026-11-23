@@ -194,6 +194,8 @@ def _bases(report: dict) -> dict[str, str]:
         ("from urllib.request import urlopen\nurlopen('https://a')", "system.network:connect"),
         ("import httpx as h\nasync def f():\n    async with h.AsyncClient() as c:\n        pass", "system.network:connect"),
         ("import requests\nrequests.Session().get('x')", "system.network:connect"),
+        ("from websockets.asyncio.client import connect\nasync def f():\n    await connect('ws://a')", "system.network:connect"),
+        ("from websockets.sync.client import connect\nconnect('ws://a')", "system.network:connect"),
         ("import subprocess\nsubprocess.run(['ls'])", "system.process:spawn"),
         ("import os\nos.system('ls')", "system.process:spawn"),
         ("import asyncio\nasyncio.create_subprocess_exec('ls')", "system.process:spawn"),
@@ -242,6 +244,10 @@ CONNECT = "system.network:connect"
         "from websockets.server import serve\nserve(object, '', 1)",
         "from websockets.asyncio.server import serve\nasync def f(h):\n    await serve(h, '', 1)",
         "from websockets.sync.server import serve\nserve(object, '', 1)",
+        "from websockets.asyncio.server import Server\nServer(object)",
+        "from aiohttp import web\nweb.SockSite(object, object)",
+        "from hypercorn.asyncio import serve\nasync def f(app, config):\n    await serve(app, config)",
+        "import hypercorn.trio\nhypercorn.trio.serve(object, object)",
         "from aiohttp import web\nweb.run_app(web.Application())",
         "import aiohttp.web\naiohttp.web.TCPSite(object, '', 1)",
         "import uvicorn\nuvicorn.run(object)",
@@ -316,10 +322,55 @@ def test_listen_is_not_reported_for_lookalikes_and_clients(tmp_path, source):
 def test_server_subclass_and_import_are_weak_listen_evidence(tmp_path):
     named = _scan(tmp_path, "import socketserver\nclass S(socketserver.ThreadingMixIn, socketserver.TCPServer):\n    pass\n")
     assert named["permissions"][LISTEN]["basis"] == "resolved_name"
-    for module in ("http.server", "socketserver", "wsgiref.simple_server", "xmlrpc.server"):
-        imported = _scan(tmp_path, f"import {module}\n")
-        assert imported["permissions"][LISTEN]["basis"] == "import_only", module
-        assert CONNECT not in imported["permissions"], module
+    for statement in (
+        "import http.server",
+        "import socketserver",
+        "import wsgiref.simple_server",
+        "import xmlrpc.server",
+        # The imported name is the submodule.
+        "from http import server",
+        "from wsgiref import simple_server",
+        "from xmlrpc import server",
+    ):
+        imported = _scan(tmp_path, f"{statement}\n")
+        assert imported["permissions"][LISTEN]["basis"] == "import_only", statement
+        assert CONNECT not in imported["permissions"], statement
+
+
+def test_submodule_import_hints_apply_to_connect_too(tmp_path):
+    for statement in ("from http import client", "from urllib import request"):
+        assert _scan(tmp_path, f"{statement}\n")["permissions"][CONNECT]["basis"] == "import_only", statement
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from aiohttp import web\nweb.run_app(web.Application())",
+        "import aiohttp.web\naiohttp.web.run_app(object)",
+        "import websockets\nasync def f(h):\n    await websockets.serve(h, '', 1)",
+        "from websockets.asyncio.server import serve\nserve(object, '', 1)",
+        "import socket\nsocket.create_server(('', 1))",
+    ],
+)
+def test_a_server_only_import_gives_no_connect_hint(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_call"
+    assert CONNECT not in report["permissions"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Also imported for something else: the hint stays.
+        "import aiohttp\nfrom aiohttp import web\nimport requests\nweb.run_app(object)",
+        # Only weak listen evidence does not explain the import.
+        "import socket\nstart = socket.create_server",
+        # A listen call on a different module than the one imported.
+        "import aiohttp\nimport uvicorn\nuvicorn.run(object)",
+    ],
+)
+def test_connect_hint_stays_unless_every_hinted_module_is_explained(tmp_path, source):
+    assert CONNECT in _scan(tmp_path, source)["permissions"]
 
 
 def test_check_applies_the_same_rules_to_listen(tmp_path):
