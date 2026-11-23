@@ -1060,6 +1060,10 @@ class TaskAgentManager:
         # to read: then every session is sent to ``model_config``.
         from nekopower.host.role_models import RoleModels, RoleModelStore
 
+        # One settling of a session's model at a time (``_session_model``):
+        # the start of a queued commission and the settling as it was queued
+        # do not each write a model of their own.
+        self._settle_locks: dict[str, asyncio.Lock] = {}
         self.role_models = RoleModels(
             store=RoleModelStore(paths.role_models_json),
             slots=model_slots,
@@ -2052,10 +2056,32 @@ class TaskAgentManager:
                     # Perhaps only for now: sent to the default this time,
                     # and what it was settled on stays.
                     return choice
+        elif record:
+            return await self._settle_first(kept, depth=depth)
         else:
             choice = await self._choose_model(kept, record=record, depth=depth)
         await self._keep_model(kept, choice, record)
         return choice
+
+    async def _settle_first(self, kept: Session, *, depth: int) -> Any:
+        """Settle a session that was not settled, one settling of it at a time; see ``session_model``.
+
+        Whoever comes second finds it settled by the first, and goes by that.
+        """
+        from nekopower.host.role_models import recorded
+
+        lock = self._settle_locks.setdefault(kept.id, asyncio.Lock())
+        try:
+            async with lock:
+                fresh = await self._ledger.get_session(kept.id) or kept
+                if recorded(fresh):
+                    return await self._session_model(fresh, record=True, depth=depth)
+                choice = await self._choose_model(fresh, record=True, depth=depth)
+                await self._keep_model(fresh, choice, True)
+                return choice
+        finally:
+            if self._settle_locks.get(kept.id) is lock and not lock.locked():
+                del self._settle_locks[kept.id]
 
     async def _choose_model(
         self, kept: Session, *, record: bool, depth: int, use_setting: bool = True, fallback: str = ""

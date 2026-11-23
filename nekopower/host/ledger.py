@@ -1839,15 +1839,18 @@ class Ledger:
             )
         )
 
-    async def settled_slots(self, limit: int = 20) -> list[str]:
-        """Return the slots sessions were settled on (``role_models.py``), the latest first, each once."""
+    async def settled_slots(self) -> list[str]:
+        """Return the slots sessions were settled on (``role_models.py``), the latest first, each once.
+
+        All of them: they are the few slots of the model panel, whatever
+        the number of sessions.
+        """
         return await self.run(
             lambda conn: [
                 str(row["model_slot"])
                 for row in conn.execute(
                     "SELECT model_slot, MAX(last_active_at) AS last FROM sessions WHERE model_slot != '' "
-                    "GROUP BY model_slot ORDER BY last DESC LIMIT ?",
-                    (int(limit),),
+                    "GROUP BY model_slot ORDER BY last DESC"
                 ).fetchall()
             ]
         )

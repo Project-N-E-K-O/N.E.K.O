@@ -345,7 +345,7 @@ async def test_a_session_of_a_preset_set_to_a_slot_runs_in_the_built_in_runtime(
 
 
 async def test_a_session_begun_in_dsh_goes_on_there_with_the_task_agent_model(hosts, tmp_path, monkeypatch):
-    import nekopower.host.task_agents as task_agents_module
+    from nekopower.host import task_agents as task_agents_module
 
     manager = _manager(tmp_path, _default_slots())
     llm = ScriptedLLM([_report()])
@@ -1650,3 +1650,56 @@ async def test_an_open_session_is_not_woken_while_task_agents_are_switched_off(h
         host.task_agents._sessions.clear()
 
     assert held is not None and held.outcome == "held"
+
+
+async def test_two_settlings_of_one_session_at_once_settle_it_on_one_model(hosts, tmp_path):
+    import asyncio
+
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _manager(tmp_path, _default_slots(), agent_small=small)
+    slots = PluginModelSlots(manager)
+    resolve = slots.resolve
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls: list[str] = []
+
+    async def held_first(slot_id: str) -> Any:
+        calls.append(slot_id)
+        if len(calls) == 1:
+            entered.set()
+            await release.wait()
+        return await resolve(slot_id)
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager, model_slots=slots)
+    tasks = host.task_agents
+    await host.set_role_model("general", OWN_SLOT)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    # From here on the first slot to be resolved waits until it is released.
+    slots.resolve = held_first
+
+    # One settling reads the setting and waits in the slot; the user changes the setting; another begins.
+    first = asyncio.ensure_future(tasks.session_model(session))
+    await entered.wait()
+    await tasks.role_models.store.put("general", SMALL_SLOT)
+    second = asyncio.ensure_future(tasks.session_model(session))
+    await asyncio.sleep(0.05)
+    release.set()
+    one, other = await asyncio.gather(first, second)
+
+    assert one.slot == other.slot == OWN_SLOT
+    assert (await host.ledger.get_session(session.id)).model_slot == OWN_SLOT
+    assert tasks._settle_locks == {}
+
+
+async def test_a_usable_slot_a_session_was_settled_on_is_found_behind_any_number_of_gone_ones(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots())
+    manager.tiers["agent"] = {}
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    usable = await host.ledger.create_session(lanlan_name="Lan", name="usable", kind="single")
+    await host.ledger.update_session(usable.id, model_slot=OWN_SLOT, model_name="own-model", model_ident="x")
+    for number in range(25):
+        gone = await host.ledger.create_session(lanlan_name="Lan", name=f"gone {number}", kind="single")
+        await host.ledger.update_session(
+            gone.id, active=True, model_slot=f"slot_{number:032x}", model_name="m", model_ident="y"
+        )
+
+    assert await host.task_agents.available() == (True, "")
