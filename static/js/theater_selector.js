@@ -1024,8 +1024,15 @@
         function mark() {
             try { window.localStorage.setItem(key, JSON.stringify({url: window.location.href, timestamp: Date.now()})); } catch (_) {}
         }
+        var handledRequestIds = [];
         function focusSelf(data) {
             if (!data || data.windowName !== name || data.type !== 'neko:named-window-focus') return;
+            // The same request arrives over both BroadcastChannel and storage; handle it once.
+            if (data.requestId) {
+                if (handledRequestIds.indexOf(data.requestId) !== -1) return;
+                handledRequestIds.push(data.requestId);
+                if (handledRequestIds.length > 16) handledRequestIds.shift();
+            }
             var api = window.nekoWindowControl;
             var restored = api && typeof api.restore === 'function'
                 ? Promise.resolve().then(function () { return api.restore(); }).catch(function () {})

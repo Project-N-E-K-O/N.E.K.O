@@ -11,7 +11,8 @@
     var NAMED_WINDOW_CHANNEL = 'neko:named-window';
     var NAMED_WINDOW_TTL_MS = 5000;
     var NAMED_WINDOW_FOCUS_ACK = 'neko:named-window-focus-ack';
-    var NAMED_WINDOW_ACK_TIMEOUT_MS = 800;
+    // The selector acks after its window restore settles; leave room for a slow host restore.
+    var NAMED_WINDOW_ACK_TIMEOUT_MS = 2000;
     var connecting = false;
     // Set once the user chose to go back; a late connection result must not navigate away.
     var returning = false;
@@ -42,6 +43,7 @@
         var retry = document.getElementById('theater-market-retry-btn');
         var connection = document.getElementById('theater-market-connection');
         connecting = true;
+        var navigated = false;
         if (retry) retry.disabled = true;
         if (connection) connection.setAttribute('aria-busy', 'true');
         try {
@@ -66,6 +68,7 @@
             if (returning) return;
             if (!result.ok) throw new Error(result.reason);
             post({action: 'theater:market-opened', request_id: result.request_id});
+            navigated = true;
             window.location.replace(result.url);
         } catch (_) {
             if (status) {
@@ -74,9 +77,13 @@
             }
             if (retry) retry.hidden = false;
         } finally {
-            connecting = false;
-            if (retry) retry.disabled = false;
-            if (connection) connection.setAttribute('aria-busy', 'false');
+            // After a successful launch the page is leaving; keep retry locked so a late
+            // click cannot send a second launch request.
+            if (!navigated) {
+                connecting = false;
+                if (retry) retry.disabled = false;
+                if (connection) connection.setAttribute('aria-busy', 'false');
+            }
         }
     }
     // A market page in its own named window must not turn into a second selector;
@@ -183,6 +190,16 @@
             else window.location.assign('/theater');
         });
     }
+    // A page restored from the back/forward cache keeps its old flags; unlock back and retry again.
+    window.addEventListener('pageshow', function (event) {
+        if (!event.persisted) return;
+        returning = false;
+        connecting = false;
+        var retry = document.getElementById('theater-market-retry-btn');
+        if (retry) retry.disabled = false;
+        var connection = document.getElementById('theater-market-connection');
+        if (connection) connection.setAttribute('aria-busy', 'false');
+    });
     document.addEventListener('DOMContentLoaded', function () {
         var retry = document.getElementById('theater-market-retry-btn');
         if (retry) retry.addEventListener('click', redirectSelector);

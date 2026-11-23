@@ -527,3 +527,81 @@ def test_registered_selector_acknowledges_only_after_restore_settles(page, runni
     _click_and_expect_close(market, '#theater-market-back-link')
     page.wait_for_function('() => window.__focusAt !== undefined')
     assert page.evaluate('window.__focusAt >= window.__restoredAt')
+
+
+@pytest.mark.frontend
+def test_market_retry_stays_locked_after_a_successful_launch(page, running_server):
+    calls = []
+    def connect(route):
+        calls.append(route.request.post_data_json)
+        if len(calls) == 1:
+            route.fulfill(status=502, json={'ok': False})
+        else:
+            route.fulfill(json={'ok': True, 'request_id': 'ok', 'url': running_server + '/__market_success_204'})
+    landed = []
+    # A 204 response never commits, so the page stays put after location.replace like a slow market load.
+    page.route('**/__market_success_204', lambda route: (landed.append(1), route.fulfill(status=204)))
+    page.route('**/api/theater-market/launch', connect)
+    page.goto(running_server + '/theater?market=browse')
+    retry = page.locator('#theater-market-retry-btn')
+    expect(retry).to_be_visible()
+    retry.click()
+    for _ in range(100):
+        if landed:
+            break
+        page.wait_for_timeout(20)
+    assert landed, 'successful launch should navigate to the market url'
+    assert page.evaluate("document.getElementById('theater-market-retry-btn').disabled") is True
+    page.evaluate('window.nekoTheaterMarket.redirectSelector()')
+    page.wait_for_timeout(100)
+    assert len(calls) == 2
+
+
+@pytest.mark.frontend
+def test_market_page_restored_from_bfcache_unlocks_back_and_retry(page, running_server):
+    calls = []
+    page.route('**/api/theater-market/launch', lambda route: (calls.append(1), route.fulfill(status=502, json={'ok': False})))
+    page.goto(running_server + '/theater?market=browse')
+    retry = page.locator('#theater-market-retry-btn')
+    expect(retry).to_be_visible()
+    assert len(calls) == 1
+    # Cancel the in-place navigation so the page stays with returning already set.
+    page.evaluate("document.addEventListener('click', event => event.preventDefault())")
+    page.get_by_role('link', name='返回选择剧本').click()
+    page.wait_for_timeout(100)
+    page.evaluate('window.nekoTheaterMarket.redirectSelector()')
+    page.wait_for_timeout(100)
+    assert len(calls) == 1
+    page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+    with page.expect_request('**/api/theater-market/launch'):
+        retry.click()
+    assert len(calls) == 2
+
+
+@pytest.mark.frontend
+def test_registered_selector_handles_a_focus_request_once_across_both_channels(page, running_server):
+    _selector_api_stubs(page.context)
+    page.add_init_script("""
+        window.__restoreCalls = 0;
+        window.nekoWindowControl = {restore: () => { window.__restoreCalls += 1; return Promise.resolve({ok: true}); }};
+    """)
+    page.goto(running_server + '/theater')
+    page.evaluate("window.name = 'neko_theater'")
+    page.reload()
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    page.wait_for_function("() => !!localStorage.getItem('neko:named-window:neko_theater')")
+    other = page.context.new_page()
+    other.goto(running_server + '/theater?market=browse')
+    acks = other.evaluate("""() => new Promise(resolve => {
+        const channel = new BroadcastChannel('neko:named-window');
+        let count = 0;
+        channel.onmessage = event => {
+            if (event.data && event.data.type === 'neko:named-window-focus-ack' && event.data.requestId === 'dup-1') count += 1;
+        };
+        const message = {type: 'neko:named-window-focus', windowName: 'neko_theater', requestId: 'dup-1'};
+        channel.postMessage(message);
+        localStorage.setItem('neko:named-window-focus:neko_theater', JSON.stringify(message));
+        setTimeout(() => { channel.close(); resolve(count); }, 500);
+    })""")
+    assert acks == 1
+    assert page.evaluate('window.__restoreCalls') == 1
