@@ -817,12 +817,12 @@ async def test_total_timeout_includes_coordinator_wait(
     fetch_called = False
     coordinator = resilience.SearchCoordinator(
         min_interval_seconds=1.0,
-        queue_wait_seconds=1.0,
+        queue_wait_seconds=5.0,
     )
     coordinator._loop = asyncio.get_running_loop()
     coordinator._backends["duckduckgo"] = resilience._BackendState(
         asyncio.Lock(),
-        next_allowed=resilience.time.monotonic() + 60.0,
+        next_allowed=resilience.time.monotonic() + 1.5,
     )
 
     async def html(*_args: object, **_kwargs: object) -> resilience.SearchResults:
@@ -830,7 +830,7 @@ async def test_total_timeout_includes_coordinator_wait(
         fetch_called = True
         return []
 
-    plugin = _PluginStub(total_timeout=2.0)
+    plugin = _PluginStub(total_timeout=1.0)
     plugin._coordinator = coordinator
     monkeypatch.setattr(web_search, "_search_ddg_html", html)
 

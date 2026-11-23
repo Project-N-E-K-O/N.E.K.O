@@ -475,6 +475,7 @@ async def test_os_activity_snapshot_skips_tick_when_unavailable_or_running(
 
     unavailable = _UnavailableCollector()
     monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: unavailable)
+    monkeypatch.setattr(activity_api, "_privacy_mode_enabled", lambda: False)
     snap_unavail = await activity_api.get_os_activity_snapshot("study_companion")
     assert unavailable.tick_calls == 0
     assert snap_unavail.os_signals_available is False
@@ -560,66 +561,107 @@ async def test_os_activity_snapshot_skips_on_demand_tick_in_privacy_mode(
     import main_logic.activity as activity_mod
     import utils.preferences as prefs_mod
 
-    class _BlockedCollector:
+    class _RunningTask:
+        def done(self) -> bool:
+            return False
+
+    class _PopulatedCollector:
         os_signals_available = True
         _task = None
         _poll_interval = 5.0
         _psutil = None
         tick_calls = 0
 
-        def snapshot(self):
-            return SimpleNamespace(
+        def __init__(self) -> None:
+            self._latest = SimpleNamespace(
                 timestamp=0.0,
-                idle_seconds=None,
-                window_title=None,
-                process_name=None,
-                os_signals_available=False,
+                idle_seconds=5.0,
+                window_title="Steam",
+                process_name="steam.exe",
+                os_signals_available=True,
             )
+
+        def snapshot(self):
+            return self._latest
 
         async def _tick(self) -> None:
             self.tick_calls += 1
 
-    collector = _BlockedCollector()
+    def _assert_private(snap: activity_api.OsActivitySnapshot) -> None:
+        assert snap.os_signals_available is False
+        assert snap.foreground_category is None
+        assert snap.system_idle_seconds is None
+        assert snap.privacy_state == "private"
+
+    collector = _PopulatedCollector()
     monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: collector)
+    monkeypatch.setattr(
+        activity_api,
+        "_active_window_from_system_snapshot",
+        lambda snap: SimpleNamespace(category="gaming")
+        if getattr(snap, "window_title", None) == "Steam"
+        else None,
+    )
 
     prefs_path = tmp_path / "user_preferences.json"
     monkeypatch.setattr(prefs_mod, "PREFERENCES_FILE", str(prefs_path))
     monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
 
-    # 1) Persisted privacy mode enabled (proactiveVisionEnabled=False).
+    # 1) Missing preferences file must fail closed without ticking or leaking cached snapshot.
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 2) Present preferences entry missing proactiveVisionEnabled must fail closed (first-start overseas case).
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY}]),
+        encoding="utf-8",
+    )
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 3) Explicit False and non-bool string "false" must both block ticks and cached foreground data.
+    for value in (False, "false"):
+        prefs_path.write_text(
+            json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": value}]),
+            encoding="utf-8",
+        )
+        _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+        assert collector.tick_calls == 0
+
+    # 4) Corrupt JSON read failure triggers strict reload error -> fail-closed.
+    prefs_path.write_text("{corrupt json", encoding="utf-8")
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 5) Unreadable path (directory) raises OSError during open() -> fail-closed.
+    unreadable_dir = tmp_path / "unreadable_prefs"
+    unreadable_dir.mkdir()
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(unreadable_dir))
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
+    assert collector.tick_calls == 0
+
+    # 6) Running background collector still cannot expose cached window info under privacy mode.
     prefs_path.write_text(
         json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": False}]),
         encoding="utf-8",
     )
-    snap_private = await activity_api.get_os_activity_snapshot("study_companion")
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
+    collector._task = _RunningTask()
+    _assert_private(await activity_api.get_os_activity_snapshot("study_companion"))
     assert collector.tick_calls == 0
-    assert snap_private.os_signals_available is False
-    assert snap_private.privacy_state == "unavailable"
 
-    # 2) Corrupt JSON read failure triggers strict reload error -> fail-closed.
-    prefs_path.write_text("{corrupt json", encoding="utf-8")
-    snap_corrupt = await activity_api.get_os_activity_snapshot("study_companion")
-    assert collector.tick_calls == 0
-    assert snap_corrupt.os_signals_available is False
-    assert snap_corrupt.privacy_state == "unavailable"
-
-    # 3) Unreadable path (directory) raises OSError during open() -> fail-closed.
-    unreadable_dir = tmp_path / "unreadable_prefs"
-    unreadable_dir.mkdir()
-    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(unreadable_dir))
-    snap_unreadable = await activity_api.get_os_activity_snapshot("study_companion")
-    assert collector.tick_calls == 0
-    assert snap_unreadable.os_signals_available is False
-    assert snap_unreadable.privacy_state == "unavailable"
-
-    # 4) Control: persisted proactiveVisionEnabled=True permits on-demand tick.
+    # 7) Control: persisted proactiveVisionEnabled=True permits on-demand tick and visible category.
+    collector._task = None
     prefs_path.write_text(
         json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": True}]),
         encoding="utf-8",
     )
-    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
-    await activity_api.get_os_activity_snapshot("study_companion")
+    snap_visible = await activity_api.get_os_activity_snapshot("study_companion")
     assert collector.tick_calls == 1
+    assert snap_visible.os_signals_available is True
+    assert snap_visible.foreground_category == "gaming"
+    assert snap_visible.system_idle_seconds == 5.0
+    assert snap_visible.privacy_state == "visible"
 
 
 def test_os_activity_snapshot_loop_lock_does_not_leak_closed_loop() -> None:

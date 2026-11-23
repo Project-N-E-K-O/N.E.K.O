@@ -54,12 +54,12 @@ def _get_loop_lock() -> asyncio.Lock:
 
 
 def _privacy_mode_enabled() -> bool:
-    """Return True when privacy mode is active or cannot be read (fail-closed)."""
+    """Return True unless proactiveVisionEnabled is explicitly persisted as True."""
     try:
         from utils.preferences import load_global_conversation_settings
 
         settings = load_global_conversation_settings(strict=True)
-        return not settings.get("proactiveVisionEnabled", True)
+        return settings.get("proactiveVisionEnabled") is not True
     except Exception as exc:
         _logger.debug("Privacy mode check failed, defaulting to enabled: %s", exc)
         return True
@@ -95,8 +95,6 @@ async def _read_system_signal_snapshot_async() -> Any:
                 snap = collector.snapshot()
                 snap_ts = float(getattr(snap, "timestamp", 0.0) or 0.0)
                 if snap_ts <= 0.0 or (time.time() - snap_ts) >= poll_interval:
-                    if await asyncio.to_thread(_privacy_mode_enabled):
-                        return snap
                     psutil_mod = getattr(collector, "_psutil", None)
                     if psutil_mod is not None and not getattr(collector, "_sdk_psutil_primed", False):
                         with suppress(Exception):
@@ -142,6 +140,13 @@ async def get_os_activity_snapshot(
 
     _ = (source, now)
     if _read_system_signal_snapshot is _DEFAULT_READ_SYSTEM_SIGNAL_SNAPSHOT:
+        if await asyncio.to_thread(_privacy_mode_enabled):
+            return OsActivitySnapshot(
+                os_signals_available=False,
+                foreground_category=None,
+                system_idle_seconds=None,
+                privacy_state="private",
+            )
         system_snapshot = await _read_system_signal_snapshot_async()
     else:
         system_snapshot = _read_system_signal_snapshot()
