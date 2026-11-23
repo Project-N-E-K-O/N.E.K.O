@@ -861,13 +861,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
             response_queue.put(("__ready__", False))
         finally:
-            # Clean up resources
-            if spare is not None:
-                try:
-                    spare.discard()
-                    await spare.drain(2.5)
-                except Exception as e:
-                    logger.debug("关闭预建 TTS socket 失败: %s", e)
+            # Clean up resources. The receive task first: cancelling it may
+            # hand its socket to the spare's tracked close, which the drain
+            # at the end then waits for.
             if receive_task and not receive_task.done():
                 receive_task.cancel()
                 try:
@@ -880,7 +876,13 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     await ws.close()
                 except Exception:
                     pass
-    
+            if spare is not None:
+                try:
+                    spare.discard()
+                    await spare.drain(2.5)
+                except Exception as e:
+                    logger.debug("关闭预建 TTS socket 失败: %s", e)
+
     # Run the asynchronous worker
     try:
         asyncio.run(async_worker())

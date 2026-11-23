@@ -19,7 +19,7 @@ from websockets.frames import Close
 from websockets.protocol import State
 
 from main_logic.core import LLMSessionManager
-from main_logic.tts_client import TTS_PRECONNECT_SENTINEL
+from main_logic.tts_client import TTS_PRECONNECT_SENTINEL, _preconnect
 from main_logic.tts_client.workers import _step_protocol
 from tests.unit.test_free_tts_connection_lifetime import (
     _OPENING,
@@ -265,35 +265,37 @@ def test_confirm_window_counts_from_the_spares_connect_not_from_the_take(monkeyp
     # waiting for tts.connection.done: a fresh socket's window would already
     # be over, so the speech gives up on it at once instead of granting it a
     # whole new window.
+    # Checked on the window the take hands to its wait, not on wall time:
+    # the pause below is a real sleep, so by the take the spare has been
+    # connected for longer than the window however the threads are scheduled.
     _route_to_lanlan_app(monkeypatch)
     monkeypatch.setattr(_step_protocol, "_PRECONNECT_HANDSHAKE_TIMEOUT_SECONDS", 5.0)
-    # Wide margins: a fresh window (the defect) costs 1.5s, the remainder of
-    # an expired one costs nothing, and a stalled CI thread gets 0.75s.
-    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 1.5)
+    monkeypatch.setattr(_step_protocol, "_NEW_SOCKET_CONFIRM_TIMEOUT_SECONDS", 0.4)
     stuck = _StatefulSocket()  # connects at once, never confirms
     fresh = _socket("fresh", final_events=_app_round_end("fresh"))
-    marks = {}
+    connects = _install_sockets(monkeypatch, _warmup_socket(), stuck, fresh)
+    granted = []
+    real_wait = asyncio.wait
 
-    def on_connect(socket):
-        if socket is fresh:
-            marks["fresh_connect"] = time.monotonic()
+    async def recording_wait(aws, *args, timeout=None, **kwargs):
+        if timeout is not None and timeout != 0.05:  # 0.05: the cleanup poll
+            granted.append(timeout)
+        return await real_wait(aws, *args, timeout=timeout, **kwargs)
 
-    connects = _recording_connects(monkeypatch, [_warmup_socket(), stuck, fresh], on_connect)
+    monkeypatch.setattr(_preconnect.asyncio, "wait", recording_wait)
 
     _run(
         _Requests(
             _PRECONNECT,
             _wait(lambda: len(connects) == 2),
-            _pause(1.7),  # connected 1.7s ago, past the 1.5s window
-            lambda: marks.setdefault("speech", time.monotonic()),
+            _pause(0.6),  # connected 0.6s ago, past the 0.4s window
             ("speech-1", _OPENING),
             (None, None),
         ),
         queue.Queue(),
     )
 
-    waited = marks["fresh_connect"] - marks["speech"]
-    assert waited < 0.75, f"granted the stuck spare a new window ({waited:.2f}s)"
+    assert granted == [0.0], f"granted the stuck spare more confirmation time: {granted}"
     assert stuck.closed.is_set()
     assert _sent_types(fresh) == ["tts.create", "tts.text.delta", "tts.text.done"]
 

@@ -487,6 +487,24 @@ def test_shutdown_closes_an_unused_spare(provider, monkeypatch):
     assert spare.sent == []
 
 
+def test_shutdown_closes_the_speech_socket(provider, monkeypatch):
+    # A receive task cancelled at exit may hand its socket to the spare's
+    # tracked close; the exit must still wait for that close.
+    first = provider.make_socket("first")
+    warmups = _warmups(provider)
+    _Connects(monkeypatch, [*warmups, first])
+
+    provider.run(
+        _Requests(
+            ("speech-1", _OPENING),
+            _wait(lambda: provider.spoken(first) == [_OPENING]),
+        ),
+        queue.Queue(),
+    )
+
+    assert first.closed.is_set()
+
+
 def test_spare_socket_uses_a_short_close_timeout(provider, monkeypatch):
     spare = provider.make_socket("spare")
     warmups = _warmups(provider)
