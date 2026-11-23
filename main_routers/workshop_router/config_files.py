@@ -235,8 +235,8 @@ def _assert_under_base(path: str, base: str) -> str:
 def _path_not_allowed_response(action: str) -> JSONResponse:
     # Only the containment check is mapped to 403: a PermissionError raised
     # later (e.g. the OS denying open/listdir) is a server-side failure and
-    # stays on the generic 500 branch. The message is fixed; the requested
-    # path never goes into the response.
+    # stays on the generic 500 branch. This 403 message is fixed and carries
+    # no path (the generic 500 branch is unchanged).
     logger.warning(f"{action}: path not allowed")
     return JSONResponse(
         content={"success": False, "error": f"{action}: 路径不在允许的范围内"},

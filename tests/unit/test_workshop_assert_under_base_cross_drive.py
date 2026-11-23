@@ -141,7 +141,8 @@ async def test_os_permission_error_after_the_guard_stays_500(workshop, monkeypat
         raise PermissionError(13, 'Permission denied', str(workshop / 'secret'))
 
     if leaf:
-        monkeypatch.setattr('builtins.open', _denied)
+        # Shadow open() in the route's module only, not builtins.open globally.
+        monkeypatch.setattr(config_files, 'open', _denied, raising=False)
     else:
         monkeypatch.setattr(config_files.os, 'listdir', _denied)
 
