@@ -39,7 +39,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import type { PluginConsentNotice } from '@/api/pluginConsent'
-import { capabilityMessageKey, isConsentChanged } from '@/utils/pluginCapabilities'
+import { capabilityMessageKey, consentSaveErrorKey, isConsentChanged } from '@/utils/pluginCapabilities'
 import { usePluginConsentState } from '@/stores/pluginConsentState'
 import { usePluginStore } from '@/stores/plugin'
 
@@ -83,7 +83,7 @@ async function decide(plugin: PluginConsentNotice, approved: boolean) {
       await consentState.load(plugin.plugin_id).catch(() => undefined)
       emit('stale')
     }
-    ElMessage.error(t('pluginConsent.saveFailed'))
+    ElMessage.error(t(consentSaveErrorKey(error)))
   } finally {
     busy.value = null
   }

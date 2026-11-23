@@ -273,3 +273,23 @@ describe('plugin list UI-action wiring contract', () => {
     )
   })
 })
+
+describe('pending permission review mark', () => {
+  it.each([
+    ['list row', PluginListRow],
+    ['card', PluginCard],
+  ] as const)('%s marks pending confirmations and blind spots only', async (_, component) => {
+    const consents: Array<[PluginMeta['consent'], boolean]> = [
+      [undefined, false],
+      [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 0 }, false],
+      [{ state: 'confirm', decision: null, upgraded: false }, true],
+      [{ state: 'clear', decision: 'approved', upgraded: false, blind_spots: 3 }, true],
+    ]
+    for (const [consent, marked] of consents) {
+      const { container } = await mountEntry(component, { ...makePlugin(null), consent })
+      const tag = container.querySelector('[data-testid="plugin-permission-review"]')
+      expect(Boolean(tag), JSON.stringify(consent)).toBe(marked)
+      if (tag) expect(tag.textContent).toBe('pluginConsent.pending')
+    }
+  })
+})

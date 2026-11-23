@@ -22,6 +22,10 @@ const en = {
     title: 'Connect to the internet',
     description: 'May connect to network services.',
   },
+  system_network_listen: {
+    title: 'Accept network connections',
+    description: 'May open a port on this computer and accept connections from other devices.',
+  },
   system_fs_read: {
     title: 'Read files',
     description: 'May read files outside its own data folder.',
@@ -51,6 +55,10 @@ const zhCN: PermissionLabels = {
     title: '联网',
     description: '可能连接网络服务。',
   },
+  system_network_listen: {
+    title: '接受网络连接',
+    description: '可能在这台电脑上打开端口，接受其他设备的连接。',
+  },
   system_fs_read: {
     title: '读取文件',
     description: '可能读取自己数据目录以外的文件。',
@@ -77,6 +85,10 @@ const zhTW: PermissionLabels = {
   system_network_connect: {
     title: '連網',
     description: '可能連線到網路服務。',
+  },
+  system_network_listen: {
+    title: '接受網路連線',
+    description: '可能在這台電腦上開啟連接埠，接受其他裝置的連線。',
   },
   system_fs_read: {
     title: '讀取檔案',
@@ -105,6 +117,10 @@ const ja: PermissionLabels = {
     title: 'インターネットに接続',
     description: 'ネットワークサービスに接続することがあります。',
   },
+  system_network_listen: {
+    title: 'ネットワーク接続を受け付ける',
+    description: 'このコンピューターでポートを開き、他のデバイスからの接続を受け付ける可能性があります。',
+  },
   system_fs_read: {
     title: 'ファイルを読み取る',
     description: '自身のデータフォルダー以外のファイルを読み取ることがあります。',
@@ -131,6 +147,10 @@ const ko: PermissionLabels = {
   system_network_connect: {
     title: '인터넷 연결',
     description: '네트워크 서비스에 연결할 수 있습니다.',
+  },
+  system_network_listen: {
+    title: '네트워크 연결 수락',
+    description: '이 컴퓨터에서 포트를 열고 다른 기기의 연결을 받을 수 있습니다.',
   },
   system_fs_read: {
     title: '파일 읽기',
@@ -159,6 +179,10 @@ const ru: PermissionLabels = {
     title: 'Подключение к интернету',
     description: 'Может подключаться к сетевым сервисам.',
   },
+  system_network_listen: {
+    title: 'Принимать сетевые подключения',
+    description: 'Может открыть порт на этом компьютере и принимать подключения с других устройств.',
+  },
   system_fs_read: {
     title: 'Чтение файлов',
     description: 'Может читать файлы за пределами своей папки данных.',
@@ -186,6 +210,10 @@ const es: PermissionLabels = {
     title: 'Conectarse a internet',
     description: 'Puede conectarse a servicios de red.',
   },
+  system_network_listen: {
+    title: 'Aceptar conexiones de red',
+    description: 'Puede abrir un puerto en este equipo y aceptar conexiones de otros dispositivos.',
+  },
   system_fs_read: {
     title: 'Leer archivos',
     description: 'Puede leer archivos fuera de su propia carpeta de datos.',
@@ -212,6 +240,10 @@ const pt: PermissionLabels = {
   system_network_connect: {
     title: 'Conectar à internet',
     description: 'Pode se conectar a serviços de rede.',
+  },
+  system_network_listen: {
+    title: 'Aceitar conexões de rede',
+    description: 'Pode abrir uma porta neste computador e aceitar conexões de outros dispositivos.',
   },
   system_fs_read: {
     title: 'Ler arquivos',

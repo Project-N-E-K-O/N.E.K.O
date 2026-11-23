@@ -20,6 +20,12 @@
             </h3>
             <StatusIndicator :status="plugin.status || 'stopped'" />
             <PluginAutoStartBadge v-if="plugin.autoStart === true" />
+            <el-tag
+              v-if="needsPermissionReview(plugin.consent)"
+              size="small"
+              type="info"
+              data-testid="plugin-permission-review"
+            >{{ t('pluginConsent.pending') }}</el-tag>
             <SourceTag
               :source="plugin.install_source?.source"
               :registry-source="plugin.source"
@@ -82,6 +88,7 @@ import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { hasNewerVersion } from '@/utils/version'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
+import { needsPermissionReview } from '@/utils/pluginCapabilities'
 import type { PluginListAction, PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {

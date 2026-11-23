@@ -99,7 +99,7 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
             "id": "missing_plugin",
             "name": "Missing Plugin",
             "autostart_pending": False,
-            "consent": {"state": "analyzing", "decision": None, "upgraded": False},
+            "consent": {"state": "analyzing", "decision": None, "upgraded": False, "blind_spots": 0},
             "runtime_source_missing": True,
             "status": "source_missing",
             "i18n": {"messages": {}},

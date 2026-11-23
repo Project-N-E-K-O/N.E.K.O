@@ -42,6 +42,70 @@
         </div>
       </li>
     </ul>
+    <section v-if="permissions.length" class="finding-group" data-testid="used-permissions">
+      <h4 class="finding-group__title">{{ t('pluginConsent.findings.usedTitle') }}</h4>
+      <ul class="capability-list">
+        <li v-for="permission in permissions" :key="permission.id" class="capability">
+          <el-icon class="capability__icon" :size="20">
+            <component :is="iconFor(permission.id)" />
+          </el-icon>
+          <div class="capability__body">
+            <div class="capability__head">
+              <strong>{{ permissionTitle(permission.id) }}</strong>
+              <el-tag size="small" type="info">
+                {{
+                  t(
+                    permission.declared
+                      ? 'pluginConsent.findings.declared'
+                      : 'pluginConsent.findings.detected',
+                  )
+                }}
+              </el-tag>
+            </div>
+            <p v-if="permissionDescription(permission.id)" class="capability__desc">
+              {{ permissionDescription(permission.id) }}
+            </p>
+            <template v-if="permission.locations.length">
+              <button
+                type="button"
+                class="capability__toggle"
+                @click="toggle(`permission:${permission.id}`)"
+              >
+                {{ t('pluginConsent.evidenceToggle', { n: permission.locations.length }) }}
+                <el-icon :size="12">
+                  <ArrowDown v-if="!expanded.has(`permission:${permission.id}`)" />
+                  <ArrowUp v-else />
+                </el-icon>
+              </button>
+              <ul v-if="expanded.has(`permission:${permission.id}`)" class="evidence">
+                <li v-for="location in permission.locations" :key="location">
+                  <code>{{ location }}</code>
+                </li>
+              </ul>
+            </template>
+          </div>
+        </li>
+      </ul>
+    </section>
+    <section v-if="unconfirmed.length" class="blind-spots" data-testid="blind-spots">
+      <el-icon class="capability__icon blind-spots__icon" :size="20"><Warning /></el-icon>
+      <div class="capability__body">
+        <strong>{{ t('pluginConsent.findings.blindSpotsTitle', { n: unconfirmed.length }) }}</strong>
+        <p class="capability__desc">{{ t('pluginConsent.findings.blindSpotsDesc') }}</p>
+        <button type="button" class="capability__toggle" @click="toggle('blind-spots')">
+          {{ t('pluginConsent.evidenceToggle', { n: unconfirmed.length }) }}
+          <el-icon :size="12">
+            <ArrowDown v-if="!expanded.has('blind-spots')" />
+            <ArrowUp v-else />
+          </el-icon>
+        </button>
+        <ul v-if="expanded.has('blind-spots')" class="evidence">
+          <li v-for="(spot, index) in unconfirmed" :key="index">
+            <code>{{ blindSpotLocation(spot) }}</code>
+          </li>
+        </ul>
+      </div>
+    </section>
     <p v-if="report && !capabilities.length && report.analysis.status !== 'completed'">
       {{ t('pluginConsent.unknown') }}
     </p>
@@ -63,7 +127,12 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { capabilityMessageKey } from '@/utils/pluginCapabilities'
+import {
+  blindSpotLocation,
+  blindSpots,
+  capabilityMessageKey,
+  usedPermissions,
+} from '@/utils/pluginCapabilities'
 import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
 import {
@@ -71,8 +140,16 @@ import {
   ArrowUp,
   ChatLineRound,
   Collection,
+  Connection,
+  Document,
+  EditPen,
+  Key,
+  Lock,
+  MagicStick,
+  Monitor,
   Promotion,
   Refresh,
+  Warning,
 } from '@element-plus/icons-vue'
 import type { Component } from 'vue'
 import type { PluginConsent } from '@/api/pluginConsent'
@@ -80,7 +157,7 @@ import { usePluginConsentState } from '@/stores/pluginConsentState'
 
 const props = defineProps<{ pluginId: string; allowRetry?: boolean }>()
 const emit = defineEmits<{ loaded: [report: PluginConsent] }>()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const consentState = usePluginConsentState()
 const report = computed(() => consentState.details[props.pluginId] ?? null)
 const loading = ref(false)
@@ -88,12 +165,31 @@ const retrying = ref(false)
 const error = ref(false)
 const expanded = ref(new Set<string>())
 const capabilities = computed(() => report.value?.analysis.capabilities ?? [])
+const permissions = computed(() => usedPermissions(report.value?.analysis))
+const unconfirmed = computed(() => blindSpots(report.value?.analysis))
 const capabilityIcons: Record<string, Component> = {
   'conversations.read': ChatLineRound,
   'memory.read': Collection,
   'messages.push': Promotion,
+  'plugin_sdk.main_agent.conversations:read': ChatLineRound,
+  'plugin_sdk.main_agent.memory:read': Collection,
+  'plugin_sdk.main_agent.messages:push': Promotion,
+  'plugin_sdk.models:invoke': MagicStick,
+  'system.network:connect': Connection,
+  'system.network:listen': Connection,
+  'system.fs:read': Document,
+  'system.fs:write': EditPen,
+  'system.process:spawn': Monitor,
+  'system.env:read': Key,
 }
-const iconFor = (capability: string) => capabilityIcons[capability] ?? ChatLineRound
+const iconFor = (capability: string) =>
+  capabilityIcons[capability] ?? (capability.includes(':') ? Lock : ChatLineRound)
+// A permission id this build has no label for is still shown, by its id.
+const hasLabel = (id: string) => !te || te(capabilityMessageKey(id, 'title'))
+const permissionTitle = (id: string) =>
+  hasLabel(id) ? t(capabilityMessageKey(id, 'title')) : id
+const permissionDescription = (id: string) =>
+  hasLabel(id) ? t(capabilityMessageKey(id, 'description')) : ''
 function statusTag(capability: string): { type: 'success' | 'warning' | 'info'; label: string } {
   const record = report.value
   if (record?.approved_capabilities.includes(capability))
@@ -244,6 +340,26 @@ onBeforeUnmount(() => consentState.unwatchPlugin(props.pluginId))
   border-radius: var(--el-border-radius-small);
   background: var(--el-fill-color-light);
   font-size: 12px;
+}
+.finding-group {
+  display: grid;
+  gap: 8px;
+}
+.finding-group__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.blind-spots {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--el-color-warning-light-7);
+  border-radius: var(--el-border-radius-base);
+  background: var(--el-color-warning-light-9);
+}
+.blind-spots .blind-spots__icon {
+  color: var(--el-color-warning);
 }
 .analysis-warnings {
   display: grid;

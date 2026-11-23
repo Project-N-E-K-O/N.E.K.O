@@ -63,14 +63,18 @@ def consent_details(plugin_id: str, *, schedule_missing: bool = False) -> dict:
 
 def consent_summary(plugin_id: str, meta: dict | None = None) -> dict:
     try:
-        record, _, view, _ = _consent_view(plugin_id, meta, verify_revision=False)
+        record, report, view, _ = _consent_view(plugin_id, meta, verify_revision=False)
     except ServerDomainError:
         # A store or registry read failure must never force a confirmation.
-        return {"state": "analyzing", "decision": None, "upgraded": False}
+        return {"state": "analyzing", "decision": None, "upgraded": False, "blind_spots": 0}
+    blind_spots = report.get("blind_spots")
     return {
         "state": view.state,
         "decision": record.get("decision"),
         "upgraded": view.upgraded,
+        # Places the static analysis could not see through; the list marks
+        # such plugins for review.
+        "blind_spots": len(blind_spots) if isinstance(blind_spots, list) else 0,
     }
 
 
