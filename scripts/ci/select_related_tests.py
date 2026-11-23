@@ -436,7 +436,9 @@ def _package_exports(rel: str, tree: ast.Module | None, known: dict[str, str]) -
     return exports
 
 
-def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> RepoIndex:
+def build_index(
+    root: Path, extra_modules: dict[str, str] | None = None, extra_scripts: list[str] | None = None
+) -> RepoIndex:
     root = root.resolve()
     modules: dict[str, str] = {}
     trees: dict[str, ast.Module | None] = {}
@@ -525,6 +527,9 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
 
     test_tree_text = {rel: text for rel, text in texts.items() if rel.startswith("tests/")}
     script_tokens = {rel: _tokens(_read(root / rel)) for rel in scripts}
+    # A script the change deletes still has the wrappers that globbed for it.
+    for rel in extra_scripts or ():
+        script_tokens.setdefault(rel, frozenset())
     script_runners = _script_runners(test_tree_text, script_tokens)
     tests: dict[str, TestFile] = {}
     for rel, tree in trees.items():
@@ -938,7 +943,11 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
                 # (an exclusion list, say) does not make its conftest's tests depend on it.
                 scoped_literal_seeds |= hits
 
-    literal_seeds |= _script_wrappers(index, changed, common_names)
+    # A wrapper may be a conftest or a helper it loads (an autouse fixture running a
+    # script): then it scopes like any file such a conftest names.
+    wrappers = _script_wrappers(index, changed, common_names)
+    literal_seeds |= wrappers
+    scoped_literal_seeds |= wrappers
 
     # A file a conftest (or a helper it loads) reads by name matters to every
     # test in that conftest's directory, not only to the tests importing it.
@@ -1145,7 +1154,12 @@ def main(argv: list[str] | None = None) -> int:
         mod = module_name(rel)
         if mod:
             extra[mod] = rel  # deleted modules still resolve as import targets
-    index = build_index(root, extra_modules=extra)
+    deleted_scripts = [
+        rel
+        for rel in changed or []
+        if rel.startswith("tests/") and rel.endswith(SCRIPT_SUFFIXES) and not (root / rel).exists()
+    ]
+    index = build_index(root, extra_modules=extra, extra_scripts=deleted_scripts)
     if changed is None:
         candidates = sorted(p for p, t in index.tests.items() if not t.shard_marked)
         selection = Selection("full", fallback_reason, candidates, [])

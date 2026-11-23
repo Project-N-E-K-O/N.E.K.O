@@ -81,6 +81,8 @@ FILES = {
     "tests/frontend/panel_flow.test.cjs": "test('x', () => {});\n",
     "static/widget-board.mjs": "export const board = 1;\n",
     "static/widget-core.mjs": "export const core = 1;\n",
+    "static/sub-widget.mjs": "export const sub = 1;\n",
+    "tests/frontend/sub_setup.mjs": "import {sub} from '../../static/sub-widget.mjs';\n",
     "tests/frontend/test_widget_flow_board.mjs": "import {board} from '../../static/widget-board.mjs';\n",
     "tests/frontend/test_widget_flow_core.mjs": "import './widget_harness.mjs';\n",
     "tests/frontend/widget_harness.mjs": "import {core} from '../../static/widget-core.mjs';\n",
@@ -195,7 +197,8 @@ FILES = {
         "import pytest\nimport tests.unit.pkgb\nfrom tests.unit.sub.sub_helper import fixture_value\n"
         "from tests.unit.shared_helper import shared\n\nPOLICY = 'tests/fixtures/policy.json'\n"
         "PAYLOAD = 'tests/fixtures/test_payload.py'\n"
-        "SAMPLES = Path(__file__).parent / 'fixtures' / 'sub_samples'\n\n"
+        "SAMPLES = Path(__file__).parent / 'fixtures' / 'sub_samples'\n"
+        "SETUP_SCRIPT = 'tests/frontend/sub_setup.mjs'\n\n"
         "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n    import app.gone_backend\n\n"
         "@pytest.fixture\ndef boot_dep():\n    import app.sub_backend\n    return app.sub_backend\n\n"
         "@pytest.fixture\ndef sub_service():\n    from app import sub_service\n    return sub_service\n\n"
@@ -481,8 +484,16 @@ def test_node_scripts_run_by_a_python_wrapper_select_the_wrapper(index):
     assert _selected(index, "static/widget-core.mjs") == ["tests/unit/test_widget_frontend.py"]
     # A change to the script itself.
     assert _selected(index, "tests/frontend/test_widget_flow_board.mjs") == ["tests/unit/test_widget_frontend.py"]
+    # A conftest running a script brings its whole directory along.
+    assert _selected(index, "static/sub-widget.mjs") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
     # "*.mjs" next to "tests/frontend" is too broad to claim a script.
     assert "tests/unit/test_broad_glob.py" not in _selected(index, "static/widget-board.mjs")
+
+
+def test_deleting_a_globbed_script_selects_its_wrapper(repo):
+    gone = "tests/frontend/test_widget_flow_gone.mjs"
+    index = sel.build_index(repo, extra_scripts=[gone])
+    assert _selected(index, gone) == ["tests/unit/test_widget_frontend.py"]
 
 
 def test_shard_marked_files_are_left_to_the_shards(index):
@@ -666,6 +677,16 @@ def test_cli_balances_by_the_durations_report(git_repo, tmp_path):
     assert len(report["shards"]) == sel.MAX_SHARDS
     heaviest = max(report["shards"], key=lambda s: s["cost"])
     assert (out / f"shard-{heaviest['index']}.args").read_bytes().decode("utf-8").split() == ["tests/unit/test_core.py"]
+
+
+def test_cli_counts_a_deleted_script(git_repo, tmp_path):
+    changed = tmp_path / "changed.txt"
+    changed.write_bytes(b"tests/frontend/test_widget_flow_gone.mjs\n")
+    out = tmp_path / "out"
+    proc = _run_cli(git_repo, out, "--changed-files", str(changed))
+    assert proc.returncode == 0, proc.stderr
+    report = json.loads((out / "selection.json").read_bytes().decode("utf-8"))
+    assert report["selected_files"] == ["tests/unit/test_widget_frontend.py"]
 
 
 def test_cli_falls_back_to_the_full_suite_when_the_diff_fails(git_repo, tmp_path):
