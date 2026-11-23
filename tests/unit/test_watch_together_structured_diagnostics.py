@@ -6,6 +6,7 @@ import pytest
 
 from main_logic.mini_game_sdk.structured_output import StructuredOutputAttemptsExhausted
 from main_logic.watch_together.engine import structured_json_completion
+from utils.legacy_vision import ImageModelChoice
 
 
 @pytest.mark.asyncio
@@ -71,7 +72,9 @@ async def test_timeline_preserves_every_event_without_retry(tmp_path, monkeypatc
     factory = AsyncMock(return_value=client)
     monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
     instance = Engine(tmp_path, AsyncMock(), 'cat')
-    monkeypatch.setattr(instance, 'vision_config', AsyncMock(return_value={'model': 'test'}))
+    monkeypatch.setattr(instance, 'vision_choice', AsyncMock(return_value=ImageModelChoice(
+        conversation={'model': 'test'}, legacy=None,
+    )))
     result = await instance.llm([], {})
     assert result == {'events': events}
     factory.assert_awaited_once()
@@ -104,7 +107,9 @@ async def test_timeline_wrappers_in_event_arrays_retry_instead_of_losing_events(
     factory = AsyncMock(side_effect=clients)
     monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
     instance = Engine(tmp_path, AsyncMock(), 'cat')
-    monkeypatch.setattr(instance, 'vision_config', AsyncMock(return_value={'model': 'test'}))
+    monkeypatch.setattr(instance, 'vision_choice', AsyncMock(return_value=ImageModelChoice(
+        conversation={'model': 'test'}, legacy=None,
+    )))
     if recovers:
         assert await instance.llm([], {}) == {'events': events}
     else:
@@ -170,7 +175,9 @@ async def test_invalid_timeline_retries_with_a_fresh_client_and_keeps_the_answer
     factory = AsyncMock(side_effect=clients)
     monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
     instance = Engine(tmp_path, AsyncMock(), 'cat')
-    monkeypatch.setattr(instance, 'vision_config', AsyncMock(return_value={'model': 'test'}))
+    monkeypatch.setattr(instance, 'vision_choice', AsyncMock(return_value=ImageModelChoice(
+        conversation={'model': 'test'}, legacy=None,
+    )))
     job = {}
 
     assert await instance.llm([], job) == {'events': events}

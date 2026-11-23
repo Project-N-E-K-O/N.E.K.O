@@ -64,6 +64,7 @@ RESERVED_ROUTE_NAMES = frozenset({
     "agenthud",
     "toast",
     "card_maker",
+    "emote_maker",
     "theater",
     "chara_manager",
     "visit_persona",

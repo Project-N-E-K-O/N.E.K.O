@@ -109,6 +109,7 @@ def test_frontend_character_profile_reserved_route_names_match_backend():
     "name",
     [
         "theater",
+        "emote_maker",
         "chara_manager",
         "visit_persona",
         "social_hub",

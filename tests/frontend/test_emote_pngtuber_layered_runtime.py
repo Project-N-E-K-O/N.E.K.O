@@ -960,6 +960,75 @@ def test_speech_first_blocks_the_emotion_from_flat_mouth_beats(page, running_ser
         f"话说完没把攒下的情绪补上: {out['afterSpeech']}"
 
 
+@pytest.mark.parametrize("priority", ["emotion", "talking"])
+@pytest.mark.parametrize("clear_while_dragging", [False, True])
+def test_layered_emotion_priority_survives_speech_starting_during_drag(
+    page, running_server, priority, clear_while_dragging,
+):
+    folder = f"review-emotion-drag-{priority}-{clear_while_dragging}"
+    _upload_states(page, running_server, folder, SLOT_STATES, priority)
+    _runtime_page(page, running_server)
+    try:
+        result = page.evaluate("""async ([folder, clearWhileDragging]) => {
+            const div = document.createElement('div');
+            div.id = 'review-emotion-drag';
+            document.body.append(div);
+            const root = `/user_pngtuber/${encodeURIComponent(folder)}`;
+            const config = (await (await fetch(`${root}/model.json`)).json()).pngtuber;
+            config.layered_metadata = `${root}/metadata.json`;
+            config.idle_image = `${root}/idle.png`;
+            const manager = new PNGTuberManager(div.id);
+            await manager.load(config);
+            try {
+                const snapshot = () => ({index: manager.layeredStateIndex,
+                    slots: manager.layeredSlotStack().map(slot => slot.kind)});
+                manager.setEmotion('happy', {durationMs: 0});
+                manager.showDragImage();
+                const home = manager.layeredHomeStateIndex();
+                const visibleEmotion = manager.emotionIsActive();
+                manager.startSpeakingMouthAnimation();
+                const during = snapshot();
+                if (clearWhileDragging) manager.clearEmotion();
+                manager.restoreStateImage();
+                const released = snapshot();
+                // Subsequent mouth flaps must keep the same arbitration result.
+                for (let i = 0; i < 6; i += 1) {
+                    manager.setState(i % 2 ? 'idle' : 'talking', {restartLayeredAnimation: false});
+                }
+                const afterFlaps = snapshot();
+                manager.drawLayeredState();
+                const canvas = manager.canvasElement;
+                const pixels = canvas.getContext('2d')
+                    .getImageData(0, 0, canvas.width, canvas.height).data;
+                let rgb = null;
+                for (let i = 0; i < pixels.length; i += 4) {
+                    if (pixels[i + 3] === 255) { rgb = Array.from(pixels.slice(i, i + 3)); break; }
+                }
+                manager.setSpeaking(false);
+                return {home, visibleEmotion, during, released, afterFlaps, rgb,
+                    afterSpeech: snapshot()};
+            } finally { manager.dispose(); div.remove(); }
+        }""", [folder, clear_while_dragging])
+        emotion_wins = priority == "emotion" and not clear_while_dragging
+        slots = [] if emotion_wins else ["talking"]
+        assert result["home"] == 4 and result["visibleEmotion"] is False, result
+        assert result["during"] == {
+            "index": 2, "slots": ["drag"] if priority == "emotion" else ["talking", "drag"],
+        }, result
+        assert result["released"] == result["afterFlaps"] == {
+            "index": 4 if emotion_wins else 1, "slots": slots,
+        }, result
+        assert result["rgb"] in ([[255, 0, 255], [204, 0, 204]] if emotion_wins
+                                 else [[0, 255, 0], [0, 204, 0]]), result
+        assert result["afterSpeech"] == {
+            "index": 0 if clear_while_dragging else 4, "slots": [],
+        }, result
+    finally:
+        page.evaluate("""folder => fetch('/api/model/pngtuber/model', {
+            method: 'DELETE', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({folder})})""", folder)
+
+
 @pytest.mark.parametrize("mode", ["legacy-emotion", "drag-before-speech", "paused-end", "paused-no-emotion", "hidden-end"])
 def test_layered_speech_priority_lifecycle(page, running_server, mode):
     folder = "review-speech-" + mode

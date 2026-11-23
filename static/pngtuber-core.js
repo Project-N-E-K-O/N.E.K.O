@@ -4169,6 +4169,14 @@
                 && this.activeLayeredEmotionIndex !== 0;
         }
 
+        // 拖动等瞬时动作可以盖住情绪，但不会结束它；说话仲裁还要看被盖住的"家"。
+        layeredEmotionHeld() {
+            if (!this.isLayeredActive() || this.emotionBlockedBySpeech()) return false;
+            const index = this.activeLayeredEmotionIndex;
+            return Number.isFinite(index) && index !== 0
+                && (this.layeredStateIndex === index || this.layeredHomeStateIndex() === index);
+        }
+
         clearPendingEmotion() {
             this.pendingEmotion = null;
         }
@@ -4273,11 +4281,11 @@
             this.layeredSlotHomeIndex = null;
         }
 
-        // 说话该不该占状态槽：情绪优先且情绪正在显示时不抢（与平铺的仲裁同一条规则）。
+        // 情绪优先时，被瞬时动作盖住的情绪也保留优先级（与平铺的仲裁同一条规则）。
         syncLayeredSpeechSlot() {
             if (!this.isLayeredActive()) return false;
             if (!this.isSpeaking) return this.clearLayeredTransientSlot('talking');
-            if (this.statePriority() === 'emotion' && this.emotionIsActive()) {
+            if (this.statePriority() === 'emotion' && (this.emotionImage || this.layeredEmotionHeld())) {
                 return this.clearLayeredTransientSlot('talking');
             }
             return this.setLayeredTransientSlot('talking');
