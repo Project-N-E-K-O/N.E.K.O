@@ -53,8 +53,17 @@ class StartupReconciler:
     the ``load → reconcile`` sequence on an instance it is handed.
     """
 
-    def __init__(self, manager: "InstallSourceManager") -> None:
+    def __init__(
+        self,
+        manager: "InstallSourceManager",
+        *,
+        prune_uninstalled_grants: bool = False,
+    ) -> None:
         self.manager = manager
+        # Set only on the reconcile that follows the legacy layout
+        # migration: an earlier one may tombstone directories the migration
+        # then restores, so its removed entries are not yet final.
+        self.prune_uninstalled_grants = prune_uninstalled_grants
 
     async def run(self) -> None:
         """Drive the ``load → reconcile`` sequence; swallow all errors.
@@ -85,6 +94,15 @@ class StartupReconciler:
             async with plugin_operation_lock.hold():
                 await asyncio.to_thread(self.manager.load)
                 await asyncio.to_thread(self.manager.reconcile)
+                if self.prune_uninstalled_grants:
+                    from plugin.server.application.plugins.permission_service import (
+                        prune_uninstalled_plugin_grants,
+                    )
+
+                    # Never raises; skipped when the lock is degraded.
+                    await asyncio.to_thread(
+                        prune_uninstalled_plugin_grants, self.manager
+                    )
         except asyncio.CancelledError:
             # A cancellation of the lifespan task is not a subsystem
             # failure — let it bubble so the shutdown path sees it.

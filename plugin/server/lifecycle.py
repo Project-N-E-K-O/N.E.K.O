@@ -562,7 +562,9 @@ class ServerLifecycleService:
         try:
             install_source_manager = get_install_source_manager()
             if install_source_manager is not None:
-                await StartupReconciler(install_source_manager).run()
+                await StartupReconciler(
+                    install_source_manager, prune_uninstalled_grants=True
+                ).run()
         except Exception as exc:
             logger.error(
                 "install-source reconciliation after layout migration failed: "

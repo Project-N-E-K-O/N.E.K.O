@@ -207,7 +207,12 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             set_global_manager,
         )
         _install_source_mgr = build_install_source_manager()
-        await StartupReconciler(_install_source_mgr).run()
+        # With an owned lifecycle the layout migration already ran, so the
+        # removed entries are final; otherwise the lifecycle's own replay
+        # after its migration prunes.
+        await StartupReconciler(
+            _install_source_mgr, prune_uninstalled_grants=manage_lifecycle
+        ).run()
         set_global_manager(_install_source_mgr)
     except Exception as exc:
         logger.error(

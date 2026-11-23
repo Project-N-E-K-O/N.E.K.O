@@ -43,7 +43,7 @@ import copy
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from plugin.logging_config import get_logger
 from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES, normalize_permission
@@ -739,6 +739,33 @@ class PluginPermissionStore:
             removed = document["plugins"].pop(plugin_id)
             self._commit(manager, document)
             return removed
+
+    def forget_many(
+        self,
+        plugin_ids: Iterable[str],
+        *,
+        should_forget: Callable[[str, dict], bool] | None = None,
+    ) -> list[str]:
+        """Drop the records of several plugins in one write.
+
+        ``should_forget`` sees each existing record and may keep it. Returns
+        the dropped plugin ids; nothing is written when none is dropped.
+        """
+        with self._lock:
+            manager = self._load_for_write()
+            document = copy.deepcopy(self._document)
+            dropped = []
+            for plugin_id in sorted(set(plugin_ids)):
+                record = document["plugins"].get(plugin_id)
+                if record is None:
+                    continue
+                if should_forget is not None and not should_forget(plugin_id, record):
+                    continue
+                del document["plugins"][plugin_id]
+                dropped.append(plugin_id)
+            if dropped:
+                self._commit(manager, document)
+            return dropped
 
     def restore(self, plugin_id: str, record: dict | None) -> None:
         """Put back an earlier record (rollback only); ``None`` removes it."""

@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import itertools
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -366,6 +367,132 @@ def forget_permissions(plugin_id: str) -> dict | None:
     # The store's change notification drops the remembered record (see
     # _on_store_change), in order with any later write.
     return permission_store.forget(plugin_id)
+
+
+def _parse_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
+    """Plugins the install-source lock proves uninstalled, with their removal time.
+
+    A plugin counts only when it has a removed entry and no active entry in
+    any root; absence from the lock is never evidence (workbench projects and
+    other sources outside the managed roots are not in it). Returns ``None``
+    when the lock cannot be trusted for this.
+    """
+    if manager is None or manager.is_degraded:
+        return None
+    roots = {"builtin": manager.builtin_root, "user": manager.user_root}
+    active: set[str] = set()
+    removed_at: dict[str, datetime] = {}
+    for entry in manager.list_entries(include_removed=True):
+        if not entry.removed:
+            if not entry.plugin_id:
+                # A directory without plugin.toml is not a plugin. One whose
+                # plugin.toml was unreadable may be any of the removed
+                # plugins, so nothing is pruned this time.
+                root = roots.get(entry.root_id)
+                if root is None or (Path(root) / entry.directory_name / "plugin.toml").exists():
+                    return None
+                continue
+            active.add(entry.plugin_id)
+            continue
+        when = _parse_time(entry.removed_at)
+        if not entry.plugin_id or when is None:
+            continue
+        if entry.plugin_id not in removed_at or when > removed_at[entry.plugin_id]:
+            removed_at[entry.plugin_id] = when
+    return {pid: when for pid, when in removed_at.items() if pid not in active}
+
+
+def _plugin_ids_in_use() -> set[str] | None:
+    """Ids served from outside the lock: registered plugins and workbench projects.
+
+    Returns ``None`` when a workbench project cannot be read, since its
+    plugin id is then unknown.
+    """
+    from plugin.core.state import state
+    from plugin.server.application.plugins.project_sources import (
+        list_project_sources_sync,
+    )
+
+    with state.acquire_plugins_read_lock():
+        in_use = set(state.plugins)
+    try:
+        sources, failures = list_project_sources_sync()
+    except Exception as exc:
+        logger.warning(
+            "workbench projects unreadable, uninstalled plugin grants kept: err_type={}",
+            type(exc).__name__,
+        )
+        return None
+    if failures:
+        logger.info(
+            "workbench project unreadable, uninstalled plugin grants kept: failures={}",
+            len(failures),
+        )
+        return None
+    in_use.update(source.plugin_id for source in sources)
+    return in_use
+
+
+def prune_uninstalled_plugin_grants(manager) -> list[str]:
+    """Drop grant records left behind by plugins that were uninstalled.
+
+    An uninstall leaves the records in place when the permission store was
+    unusable at the time (see ``UNUSABLE_STORE_CODES``). Run once at startup,
+    after the install-source reconcile, under the plugin operation lock.
+
+    A record is dropped only when the lock proves the plugin uninstalled, no
+    registered plugin or workbench project uses the id, and the record was
+    last updated before the removal. A degraded lock or an unreadable store
+    skips the pass; the next startup tries again. Never raises; returns the
+    dropped plugin ids.
+    """
+    try:
+        cutoffs = _uninstalled_plugin_cutoffs(manager)
+        if not cutoffs:
+            return []
+        in_use = _plugin_ids_in_use()
+        if in_use is None:
+            return []
+        for plugin_id in in_use:
+            cutoffs.pop(plugin_id, None)
+        if not cutoffs:
+            return []
+
+        def _older_than_removal(plugin_id: str, record: dict) -> bool:
+            if "updated_at" not in record:
+                return True
+            updated = _parse_time(record.get("updated_at"))
+            # An unreadable timestamp is not evidence the record is stale.
+            return updated is not None and updated <= cutoffs[plugin_id]
+
+        dropped = permission_store.forget_many(
+            cutoffs, should_forget=_older_than_removal
+        )
+    except ServerDomainError as exc:
+        logger.warning(
+            "uninstalled plugin grants not pruned, retried next startup: code={}",
+            exc.code,
+        )
+        return []
+    except Exception as exc:
+        logger.warning(
+            "uninstalled plugin grants not pruned, retried next startup: err_type={}",
+            type(exc).__name__,
+        )
+        return []
+    if dropped:
+        logger.info("dropped grants of uninstalled plugins: plugin_ids={}", dropped)
+    return dropped
 
 
 class PermissionSnapshot:
