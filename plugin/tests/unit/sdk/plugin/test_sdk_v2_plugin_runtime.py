@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import fields
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -553,6 +555,7 @@ async def test_os_activity_snapshot_handles_on_demand_tick_failure(
 @pytest.mark.asyncio
 async def test_os_activity_snapshot_skips_on_demand_tick_in_privacy_mode(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     import main_logic.activity as activity_mod
     import utils.preferences as prefs_mod
@@ -579,20 +582,44 @@ async def test_os_activity_snapshot_skips_on_demand_tick_in_privacy_mode(
     collector = _BlockedCollector()
     monkeypatch.setattr(activity_mod, "get_system_signal_collector", lambda: collector)
 
-    monkeypatch.setattr(prefs_mod, "is_privacy_mode_enabled", lambda: True)
+    prefs_path = tmp_path / "user_preferences.json"
+    monkeypatch.setattr(prefs_mod, "PREFERENCES_FILE", str(prefs_path))
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
+
+    # 1) Persisted privacy mode enabled (proactiveVisionEnabled=False).
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": False}]),
+        encoding="utf-8",
+    )
     snap_private = await activity_api.get_os_activity_snapshot("study_companion")
     assert collector.tick_calls == 0
     assert snap_private.os_signals_available is False
     assert snap_private.privacy_state == "unavailable"
 
-    def _raise_read_error() -> bool:
-        raise OSError("preferences unavailable")
-
-    monkeypatch.setattr(prefs_mod, "is_privacy_mode_enabled", _raise_read_error)
-    snap_fail_closed = await activity_api.get_os_activity_snapshot("study_companion")
+    # 2) Corrupt JSON read failure triggers strict reload error -> fail-closed.
+    prefs_path.write_text("{corrupt json", encoding="utf-8")
+    snap_corrupt = await activity_api.get_os_activity_snapshot("study_companion")
     assert collector.tick_calls == 0
-    assert snap_fail_closed.os_signals_available is False
-    assert snap_fail_closed.privacy_state == "unavailable"
+    assert snap_corrupt.os_signals_available is False
+    assert snap_corrupt.privacy_state == "unavailable"
+
+    # 3) Unreadable path (directory) raises OSError during open() -> fail-closed.
+    unreadable_dir = tmp_path / "unreadable_prefs"
+    unreadable_dir.mkdir()
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(unreadable_dir))
+    snap_unreadable = await activity_api.get_os_activity_snapshot("study_companion")
+    assert collector.tick_calls == 0
+    assert snap_unreadable.os_signals_available is False
+    assert snap_unreadable.privacy_state == "unavailable"
+
+    # 4) Control: persisted proactiveVisionEnabled=True permits on-demand tick.
+    prefs_path.write_text(
+        json.dumps([{"model_path": prefs_mod.GLOBAL_CONVERSATION_KEY, "proactiveVisionEnabled": True}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(prefs_mod, "_get_active_preferences_path", lambda: str(prefs_path))
+    await activity_api.get_os_activity_snapshot("study_companion")
+    assert collector.tick_calls == 1
 
 
 def test_os_activity_snapshot_loop_lock_does_not_leak_closed_loop() -> None:

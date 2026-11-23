@@ -56,9 +56,10 @@ def _get_loop_lock() -> asyncio.Lock:
 def _privacy_mode_enabled() -> bool:
     """Return True when privacy mode is active or cannot be read (fail-closed)."""
     try:
-        from utils.preferences import is_privacy_mode_enabled
+        from utils.preferences import load_global_conversation_settings
 
-        return bool(is_privacy_mode_enabled())
+        settings = load_global_conversation_settings(strict=True)
+        return not settings.get("proactiveVisionEnabled", True)
     except Exception as exc:
         _logger.debug("Privacy mode check failed, defaulting to enabled: %s", exc)
         return True
