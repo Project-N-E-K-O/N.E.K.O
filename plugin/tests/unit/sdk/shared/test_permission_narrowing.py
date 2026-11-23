@@ -732,11 +732,13 @@ def test_duplicate_ids_in_one_class_decide_on_the_winner_on_both_sides(tmp_path,
             for key in [key for key in state.event_handlers if key.startswith((f"{pid}.", f"{pid}:"))]:
                 del state.event_handlers[key]
     process = P(ctx).collect_entries()
+    previews = registry._extract_entries_preview(pid, P, conf, {}, manifest_path=ctx.config_path)
     if refused_wins:
-        assert host == set() and process == {}
+        assert host == set() and process == {} and previews == []
     else:
         assert host == {f"{pid}.x1"} and set(process) == {"x1"}
         assert process["x1"].meta.permissions == (NET,)
+        assert [(item["id"], item["permissions"]) for item in previews] == [("x1", (NET,))]
 
 
 def test_entry_hooks_join_dynamic_entries_and_llm_tools(tmp_path):
@@ -768,3 +770,66 @@ def test_entry_hooks_join_dynamic_entries_and_llm_tools(tmp_path):
     assert closing.register_dynamic_entry("other", lambda **_: 1)
     assert closing.collect_entries()["other"].meta.permissions is None
 
+
+
+@pytest.mark.parametrize("hook_permissions,closed", [([ENV], True), ([FS], False), (None, False)])
+def test_entry_hooks_also_check_entries_only_the_manifest_declares(tmp_path, hook_permissions, closed):
+    import tomllib
+
+    from plugin.core.entry_executor import EntryExecutor
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        async def plain(self, **_):
+            return "ran"
+
+        @before_entry(target="plain", permissions=hook_permissions)
+        async def guard(self, **_): ...
+
+    toml = DECLARED_TOML + '[[plugin.entries]]\nid = "plain"\n'
+    ctx = _ctx(tmp_path, toml)
+    conf = tomllib.loads(toml)
+    pid = "narrow_manifest_demo"
+    try:
+        registry.scan_static_metadata(pid, P, conf, conf["plugin"], manifest_path=ctx.config_path)
+        with state.acquire_event_handlers_read_lock():
+            host = {key for key in state.event_handlers if key.startswith(f"{pid}.")}
+    finally:
+        with state.acquire_event_handlers_write_lock():
+            for key in [key for key in state.event_handlers if key.startswith((f"{pid}.", f"{pid}:"))]:
+                del state.event_handlers[key]
+    previews = registry._extract_entries_preview(pid, P, conf, conf["plugin"], manifest_path=ctx.config_path)
+    assert (host == set()) is closed
+    assert ([item["id"] for item in previews] == []) is closed
+
+    # The plugin process reaches such an entry through the executor's
+    # attribute fallback; a closed one is not resolved.
+    instance = P(ctx)
+    executor = EntryExecutor(
+        plugin_id=pid, context=ctx, instance=instance, entries={}, metadata={}, events={},
+        default_timeout=5.0, refresh=lambda: None, should_persist=lambda method: False,
+        persist=lambda: None, logger=ctx.logger,
+    )
+    resolved = executor._resolve("plugin_entry", "plain", registered_only=False)
+    assert (resolved is None) is closed
+    if closed:
+        assert any("entry 'plain' is closed by before hook 'guard'" in message for message in ctx.logger.errors)
+
+
+def test_the_executor_does_not_run_a_refused_entry_by_name(tmp_path):
+    from plugin.core.entry_executor import EntryExecutor
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="outside", permissions=[ENV])
+        async def outside(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    entries = {eid: item.handler for eid, item in instance.collect_entries().items()}
+    executor = EntryExecutor(
+        plugin_id="p", context=ctx, instance=instance, entries=entries, metadata={}, events={},
+        default_timeout=5.0, refresh=lambda: None, should_persist=lambda method: False,
+        persist=lambda: None, logger=ctx.logger,
+    )
+    assert executor._resolve("plugin_entry", "outside", registered_only=False) is None

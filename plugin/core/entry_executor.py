@@ -188,11 +188,15 @@ class EntryExecutor:
         # any public or private instance method by name.
         if registered_only or event_type != "plugin_entry":
             return self._events.get(event_type, {}).get(event_id)
-        method = (
-            self._entries.get(event_id)
-            or getattr(self._instance, event_id, None)
-            or getattr(self._instance, f"entry_{event_id}", None)
-        )
+        method = self._entries.get(event_id)
+        if method is None:
+            # The permission narrowing check closed the id (a refused
+            # component, or an entry hook listing an undeclared permission):
+            # the attribute fallback must not run it anyway.
+            closed = getattr(self._instance, "_entry_closed", None)
+            if callable(closed) and closed(event_id) is True:
+                return None
+            method = getattr(self._instance, event_id, None) or getattr(self._instance, f"entry_{event_id}", None)
         if method is None:
             self._refresh()
             method = self._entries.get(event_id)

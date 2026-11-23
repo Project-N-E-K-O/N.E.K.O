@@ -162,6 +162,34 @@ class NekoPluginBase:
             self._declared_permissions_cache = cached
         return cached  # type: ignore[return-value]
 
+    def _entry_closed(self, entry_id: str) -> bool:
+        """Whether the narrowing check keeps ``entry_id`` from being called.
+
+        For callers that resolve an entry outside ``collect_entries`` (the
+        executor's attribute fallback, used for entries only the manifest
+        declares): an entry the check refused, or one an entry hook with an
+        undeclared permission targets, is closed.
+        """
+        if (PLUGIN_ENTRY, entry_id) in getattr(self, "_narrowing_refused", ()):
+            return True
+        hooks = static_entry_hooks(type(self))
+        if all(hook.permissions is None for hook in hooks):
+            return False
+        component = Component(
+            label=component_label(PLUGIN_ENTRY, entry_id), event_type=PLUGIN_ENTRY, entry_id=entry_id, permissions=None,
+        )
+        resolution = resolve_component_permissions(
+            {entry_id: component}, hooks, self._declared_permission_ids()
+        )[entry_id]
+        if resolution.registered:
+            return False
+        reported: set[object] = self.__dict__.setdefault("_narrowing_reported", set())
+        if (PLUGIN_ENTRY, entry_id, "unlisted") not in reported:
+            reported.add((PLUGIN_ENTRY, entry_id, "unlisted"))
+            for message in resolution.errors:
+                self.logger.error("Component not registered: {}", message)
+        return True
+
     def _resolve_dynamic_entry_permissions(self, entry_id: str, narrowed: object) -> object:
         """Registration check for an entry added at runtime; returns the permissions to record.
 

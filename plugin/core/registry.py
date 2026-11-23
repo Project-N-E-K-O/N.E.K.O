@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
+from types import SimpleNamespace
 import inspect
 import os
 import re
@@ -635,6 +636,21 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
     yield from ((eid, meta, handler) for eid, (meta, handler) in router_entries.items())
 
 
+# Stand-in metadata for an entry only the manifest's ``entries`` table
+# declares (a plain method): no narrowing of its own, but entry hooks
+# targeting it are still checked.
+_MANIFEST_ONLY_ENTRY = SimpleNamespace(permissions=None)
+
+
+def _manifest_entry_ids(conf: dict, pdata: dict) -> List[str]:
+    ids: List[str] = []
+    for ent in _effective_entries(conf, pdata):
+        eid = ent.get("id") if isinstance(ent, dict) else str(ent)
+        if eid:
+            ids.append(str(eid))
+    return ids
+
+
 def _narrowed_components(
     pid: str,
     cls: type,
@@ -720,6 +736,11 @@ def scan_static_metadata(
         router_error: Exception | None = None
     except Exception as e:
         router_items, router_error = [], e
+    decorated_ids = {
+        str(getattr(event_meta, "id", name))
+        for name, _member, event_meta in members
+        if event_meta and (getattr(event_meta, "event_type", None) or "plugin_entry") == "plugin_entry"
+    } | {eid for eid, _meta, _handler in router_items}
     narrowed = _narrowed_components(
         pid,
         cls,
@@ -735,6 +756,11 @@ def scan_static_metadata(
                 if event_meta
             },
             **{("router", eid): ("plugin_entry", eid, event_meta) for eid, event_meta, _handler in router_items},
+            **{
+                ("manifest", eid): ("plugin_entry", eid, _MANIFEST_ONLY_ENTRY)
+                for eid in _manifest_entry_ids(conf, pdata)
+                if eid not in decorated_ids
+            },
         },
         report=True,
     )
@@ -789,6 +815,9 @@ def scan_static_metadata(
         try:
             eid = ent.get("id") if isinstance(ent, dict) else str(ent)
             if not eid or str(eid) in closed_entries:
+                continue
+            if narrowed.get(("manifest", str(eid)), _MANIFEST_ONLY_ENTRY) is None:
+                # An entry hook targeting it lists an undeclared permission.
                 continue
             decorated = decorated_entries.get(str(eid))
             try:
@@ -1133,6 +1162,7 @@ def _extract_entries_preview(
 
     # 1) Decorator-based metadata (@plugin_entry / EVENT_META_ATTR)
     class_items: list[tuple[str, Any]] = []
+    class_positions: dict[str, int] = {}
     try:
         for name, member in inspect.getmembers(cls):
             event_meta = _member_event_meta(member)
@@ -1144,9 +1174,15 @@ def _extract_entries_preview(
                 continue
 
             eid = str(getattr(event_meta, "id", None) or name)
-            if not eid or eid in seen:
+            if not eid:
+                continue
+            if eid in class_positions:
+                # Two members declare the id: the later one is what the
+                # registration scan and the plugin process keep.
+                class_items[class_positions[eid]] = (eid, event_meta)
                 continue
             seen.add(eid)
+            class_positions[eid] = len(class_items)
             class_items.append((eid, event_meta))
     except Exception:
         # Best-effort: preview must never break plugin listing.
@@ -1174,16 +1210,22 @@ def _extract_entries_preview(
     # there, not on every preview). A refused id stays in ``seen``: no other
     # declaration shows it, matching the registered tables.
     items = class_items + router_items
+    manifest_only = [eid for eid in _manifest_entry_ids(conf, pdata) if eid not in seen]
     try:
         narrowed = _narrowed_components(
             pid,
             cls,
             manifest_path,
-            {index: ("plugin_entry", eid, meta) for index, (eid, meta) in enumerate(items)},
+            {
+                **{index: ("plugin_entry", eid, meta) for index, (eid, meta) in enumerate(items)},
+                **{("manifest", eid): ("plugin_entry", eid, _MANIFEST_ONLY_ENTRY) for eid in manifest_only},
+            },
             report=False,
         )
     except Exception:
         narrowed = {index: meta for index, (_eid, meta) in enumerate(items)}
+    # Manifest-only ids an entry hook closes: shown nowhere.
+    seen.update(eid for eid in manifest_only if narrowed.get(("manifest", eid), _MANIFEST_ONLY_ENTRY) is None)
     for index, (eid, _meta) in enumerate(items):
         event_meta = narrowed[index]
         if event_meta is None:
