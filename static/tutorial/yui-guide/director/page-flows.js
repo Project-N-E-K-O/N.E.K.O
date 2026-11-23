@@ -18,59 +18,167 @@
         DESKTOP_PLUGIN_DASHBOARD_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT,
         TAKEOVER_CAPTURE_SELECTORS,
         wait,
-        fetchWithTimeout,
         resolveWithTimeout,
         clamp
     } = namespace;
 
+    function createDirectorTimeoutError(code) {
+        const error = new Error('Director command timed out');
+        error.name = 'TimeoutError';
+        error.code = code || 'director_command_timeout';
+        return error;
+    }
+
+    function awaitWithDeadline(promise, deadlineMs, code, onTimeout) {
+        const remainingMs = deadlineMs - Date.now();
+        if (!(remainingMs > 0)) {
+            Promise.resolve(promise).catch(() => {});
+            if (typeof onTimeout === 'function') {
+                try { onTimeout(); } catch (_) { /* ignore abort errors */ }
+            }
+            return Promise.reject(createDirectorTimeoutError(code));
+        }
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            let timerId = window.setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                timerId = null;
+                if (typeof onTimeout === 'function') {
+                    try { onTimeout(); } catch (_) { /* ignore abort errors */ }
+                }
+                reject(createDirectorTimeoutError(code));
+            }, remainingMs);
+            Promise.resolve(promise).then(
+                (value) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        window.clearTimeout(timerId);
+                        timerId = null;
+                    }
+                    resolve(value);
+                },
+                (err) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timerId !== null) {
+                        window.clearTimeout(timerId);
+                        timerId = null;
+                    }
+                    reject(err);
+                }
+            );
+        });
+    }
+
+    function fetchWithDeadline(url, init, deadlineMs, code) {
+        const remainingMs = deadlineMs - Date.now();
+        if (!(remainingMs > 0)) {
+            return Promise.reject(createDirectorTimeoutError(code));
+        }
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const fetchInit = controller
+            ? Object.assign({}, init || {}, { signal: controller.signal })
+            : Object.assign({}, init || {});
+        const onTimeout = controller ? () => controller.abort() : null;
+        return awaitWithDeadline(fetch(url, fetchInit), deadlineMs, code, onTimeout);
+    }
+
     let _directorPageFlowCsrfToken = '';
-    async function getDirectorMutationHeaders(forceRefresh) {
+    async function getDirectorMutationHeaders(forceRefresh, deadlineMs) {
+        const effectiveDeadlineMs = Number.isFinite(deadlineMs) ? deadlineMs : (Date.now() + 2000);
         try {
             const security = window.nekoLocalMutationSecurity;
             if (security && typeof security.getMutationHeaders === 'function') {
                 if (forceRefresh && typeof security.refreshToken === 'function') {
-                    await security.refreshToken();
+                    await awaitWithDeadline(
+                        security.refreshToken(),
+                        effectiveDeadlineMs,
+                        'director_csrf_timeout'
+                    );
                 }
-                const headers = await security.getMutationHeaders();
-                if (headers && typeof headers === 'object') {
+                const headers = await awaitWithDeadline(
+                    security.getMutationHeaders(),
+                    effectiveDeadlineMs,
+                    'director_csrf_timeout'
+                );
+                if (headers && typeof headers === 'object' && (headers['X-CSRF-Token'] || headers['x-csrf-token'])) {
                     return headers;
                 }
             }
-        } catch (_) { /* fall back to page_config */ }
+        } catch (err) {
+            if (err && err.name === 'TimeoutError') {
+                throw err;
+            }
+            /* fall back to page_config */
+        }
         if (forceRefresh) _directorPageFlowCsrfToken = '';
         if (_directorPageFlowCsrfToken) {
             return { 'X-CSRF-Token': _directorPageFlowCsrfToken };
         }
         try {
-            const resp = await fetchWithTimeout('/api/config/page_config', { cache: 'no-store' }, 2000);
-            const cfg = resp && resp.ok ? await resp.json() : null;
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            const fetchInit = controller
+                ? { cache: 'no-store', signal: controller.signal }
+                : { cache: 'no-store' };
+            const onTimeout = controller ? () => controller.abort() : null;
+            const resp = await awaitWithDeadline(
+                fetch('/api/config/page_config', fetchInit),
+                effectiveDeadlineMs,
+                'director_csrf_timeout',
+                onTimeout
+            );
+            const cfg = resp && resp.ok
+                ? await awaitWithDeadline(resp.json(), effectiveDeadlineMs, 'director_csrf_timeout', onTimeout)
+                : null;
             const token = cfg && cfg.autostart_csrf_token;
             if (typeof token === 'string' && token) {
                 _directorPageFlowCsrfToken = token;
                 return { 'X-CSRF-Token': token };
             }
-        } catch (_) { /* guarded POST will surface rejection */ }
+        } catch (err) {
+            if (err && err.name === 'TimeoutError') {
+                throw err;
+            }
+            /* guarded POST will surface rejection */
+        }
         return {};
     }
 
     async function postAgentCommandWithCsrf(bodyObj, timeoutMs) {
+        const normalizedTimeoutMs = Math.max(100, Math.round(Number.isFinite(timeoutMs) ? timeoutMs : 3600));
+        const deadlineMs = Date.now() + normalizedTimeoutMs;
         const bodyJson = JSON.stringify(bodyObj);
         async function sendOnce(forceRefresh) {
-            const csrfHeaders = await getDirectorMutationHeaders(forceRefresh);
-            return fetchWithTimeout('/api/agent/command', {
+            if (deadlineMs - Date.now() <= 0) {
+                throw createDirectorTimeoutError('director_command_timeout');
+            }
+            const csrfHeaders = await getDirectorMutationHeaders(forceRefresh, deadlineMs);
+            if (deadlineMs - Date.now() <= 0) {
+                throw createDirectorTimeoutError('director_command_timeout');
+            }
+            return fetchWithDeadline('/api/agent/command', {
                 method: 'POST',
                 headers: Object.assign({
                     'Content-Type': 'application/json'
                 }, csrfHeaders),
                 body: bodyJson
-            }, timeoutMs);
+            }, deadlineMs, 'director_command_timeout');
         }
         const response = await sendOnce(false);
         if (response.status !== 403 || typeof response.clone !== 'function') return response;
         try {
-            const payload = await response.clone().json();
+            const payload = await awaitWithDeadline(
+                response.clone().json(),
+                deadlineMs,
+                'director_command_timeout'
+            );
             if (!payload || payload.error_code !== 'csrf_validation_failed') return response;
-        } catch (_) {
+        } catch (err) {
+            if (err && err.name === 'TimeoutError') {
+                throw err;
+            }
             return response;
         }
         return sendOnce(true);
