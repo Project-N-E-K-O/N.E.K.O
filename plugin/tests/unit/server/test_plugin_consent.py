@@ -36,6 +36,12 @@ class ConfigManager:
         (self.root / name).write_text(json.dumps(data), encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_operation_file_lock(monkeypatch, tmp_path):
+    """Keep source reads and freshness checks off the user's real lock file."""
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
+
+
 @pytest.fixture
 def store(tmp_path):
     return PluginConsentStore(ConfigManager(tmp_path))

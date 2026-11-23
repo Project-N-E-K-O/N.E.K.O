@@ -219,6 +219,12 @@ _OPERATION_OWNER: ContextVar[asyncio.Task[Any] | None] = ContextVar(
     "plugin_operation_owner",
     default=None,
 )
+# The file-lock handle owned by the serialized operation whose context this is.
+# asyncio.to_thread copies contextvars, so a thread the owner awaits sees it too.
+_OPERATION_FILE_LOCK_HANDLE: ContextVar[Any | None] = ContextVar(
+    "plugin_operation_file_lock_handle",
+    default=None,
+)
 _FILE_LOCK_RETRY_INTERVAL_SECONDS = 0.05
 _ACTIVE_FILE_LOCK_HANDLE: Any | None = None
 _OPEN_FILE_LOCK_HANDLES: set[Any] = set()
@@ -371,10 +377,40 @@ def _release_file_lock_sync(handle: Any) -> None:
             _OPEN_FILE_LOCK_HANDLES.discard(handle)
 
 
+def _file_lock_held_by_current_context() -> bool:
+    """Whether this context belongs to the operation currently holding the file lock.
+
+    True in a thread started with asyncio.to_thread by a serialized operation:
+    the owner awaits that thread, so no other operation can move plugin files
+    until it returns, and taking the lock again would wait on ourselves (the
+    OS lock is per handle, not per process). Comparing against the active
+    handle keeps a context snapshot that outlived its operation from counting.
+    Threads started with an empty context (executors, threading.Thread) still
+    acquire normally.
+    Tasks created inside the operation inherit the context too, so they must
+    finish before the operation does (as awaited work always has).
+    """
+    handle = _OPERATION_FILE_LOCK_HANDLE.get()
+    return handle is not None and handle is _ACTIVE_FILE_LOCK_HANDLE
+
+
 @contextmanager
-def hold_plugin_operation_file_lock(stop: threading.Event) -> Iterator[None]:
-    """Serialize background source reads with operations that move plugin files."""
-    handle = _acquire_file_lock_sync(stop)
+def hold_plugin_operation_file_lock(
+    stop: threading.Event | None,
+    *,
+    timeout: float | None = None,
+) -> Iterator[None]:
+    """Serialize background source reads with operations that move plugin files.
+
+    ``timeout`` bounds the wait (raising PluginOperationBusy); when omitted the
+    caller's bounded_operation_wait budget applies, else the wait is unbounded.
+    Inside the owning operation's context the held lock is reused.
+    """
+    if _file_lock_held_by_current_context():
+        yield
+        return
+    deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+    handle = _acquire_file_lock_sync(stop, deadline)
     try:
         yield
     finally:
@@ -428,6 +464,7 @@ class _HeldPluginOperationLock:
     def __init__(self) -> None:
         self._depth_token: Token[int] | None = None
         self._owner_token: Token[asyncio.Task[Any] | None] | None = None
+        self._file_lock_token: Token[Any | None] | None = None
         self._acquired = False
         self._file_lock_handle: Any | None = None
         self._owner_loop: asyncio.AbstractEventLoop | None = None
@@ -459,6 +496,7 @@ class _HeldPluginOperationLock:
             _PROCESS_LOCK.release()
             raise
         self._owner_token = _OPERATION_OWNER.set(current_task)
+        self._file_lock_token = _OPERATION_FILE_LOCK_HANDLE.set(self._file_lock_handle)
         self._depth_token = _OPERATION_DEPTH.set(1)
         return self
 
@@ -486,6 +524,9 @@ class _HeldPluginOperationLock:
             return
         if self._owner_token is not None:
             _OPERATION_OWNER.reset(self._owner_token)
+        if self._file_lock_token is not None:
+            _OPERATION_FILE_LOCK_HANDLE.reset(self._file_lock_token)
+            self._file_lock_token = None
         if self._file_lock_handle is not None:
             _release_file_lock_sync(self._file_lock_handle)
         self._acquired = False

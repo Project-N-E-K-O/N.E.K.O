@@ -23,11 +23,19 @@ from plugin.core.capability_analysis import (
 )
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.server.application.plugins.operation_lock import hold_plugin_operation_file_lock
+from plugin.server.application.plugins.operation_lock import (
+    PluginOperationBusy,
+    hold_plugin_operation_file_lock,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.capability_reports import report_store
 
 logger = get_logger("server.plugins.capability_analysis")
+
+# How long a details request waits for the plugin operation file lock before
+# answering "not verified yet" instead of walking a tree that may be moving.
+# Kept short: it occupies a to_thread worker, and the details poller retries.
+_REPORT_LOCK_WAIT_SECONDS = 0.5
 
 
 def plugin_source(plugin_id: str) -> tuple[Path, str]:
@@ -272,9 +280,21 @@ class CapabilityAnalysisService:
             if not verify_revision:
                 return report
             try:
-                fresh = is_fresh(report, source_revision(root, version))
+                # The revision walks the plugin tree, which update/uninstall
+                # rename (WinError 5 on Windows while a handle is open). Wait
+                # briefly; if an operation keeps the lock, report "not
+                # verified" for now without evicting the cache: the details
+                # poller asks again. Inside a serialized operation the held
+                # lock is reused rather than waited on.
+                with hold_plugin_operation_file_lock(
+                    None, timeout=_REPORT_LOCK_WAIT_SECONDS
+                ):
+                    revision = source_revision(root, version)
+            except PluginOperationBusy:
+                return _report("unavailable", **analysis_scope)
             except OSError:
-                fresh = False
+                revision = None
+            fresh = is_fresh(report, revision)
             if fresh:
                 # A queued revision check can coexist with a valid cached report.
                 return {**report, **analysis_scope}
