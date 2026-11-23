@@ -326,11 +326,17 @@ async def test_a_member_that_takes_no_more_work_is_followed_by_a_new_one(hosts, 
 # ---------------------------------------------------------------------------
 
 
+def host_requests(host: Any) -> list[list[dict[str, Any]]]:
+    """The requests the one scripted model of a host was sent (``_weekly_reports``)."""
+    return host.scripted.requests
+
+
 async def _weekly_reports(hosts, tmp_path, llm: FakeDecisionLLM, more: int = 0) -> tuple[Any, list[Any]]:
     """Three commissions of the same job, the model asked about the second and the third saying so."""
     llm.belongs = [{"goes_to": 1, "relation": "recurrence"}]
     reports = ScriptedLLM([_report(f"week {week} written") for week in range(45, 48 + more)])
     host = _host(hosts, tmp_path, reports, decision_llm=llm)
+    host.scripted = reports
     receipts = []
     for week in (45, 46, 47):
         receipt = await _dispatch(host, f"write the weekly sales report for week {week}")
@@ -449,12 +455,14 @@ async def test_a_member_of_a_family_is_told_where_the_others_worked(hosts, tmp_p
     assert (new.id, new.kind, new.project) == (fourth.commission_id, "line", project)
     assert new.workdir == (await host.space.get_project(project)).workdir
     # It is told where the old files are, with the commission that opens in it.
-    request = host.task_agents._runtime_requests if hasattr(host.task_agents, "_runtime_requests") else None
-    assert request is None
+    opened = _user_messages(host_requests(host)[-1])[-1]
+    assert brain_texts.MEMBER_EARLIER_WORK.format(places=member.workdir) in opened
     notes = await host.task_agents.families.member_notes(new)
     assert notes == brain_texts.MEMBER_EARLIER_WORK.format(places=member.workdir)
     assert await host.task_agents.families.member_notes(member) == brain_texts.MEMBER_EARLIER_WORK.format(places=new.workdir)
     # One that works where every other member does is told nothing.
+    beside = await host.ledger.create_session(name="beside", lanlan_name="Lan", kind="line", project=project, workdir=new.workdir)
+    assert await host.task_agents.families.member_notes(beside) == brain_texts.MEMBER_EARLIER_WORK.format(places=member.workdir)
     alone = await host.ledger.create_session(name="alone", lanlan_name="Lan", kind="line", project="Elsewhere", workdir=new.workdir)
     assert await host.task_agents.families.member_notes(alone) == ""
 
@@ -540,6 +548,8 @@ async def test_the_leader_is_free_once_it_handed_over_and_is_told_later_what_cam
     await wait_until(lambda: len(leader_llm.requests) == 4, what="the leader handing the second one over")
     await wait_until(lambda: host.task_agents.queued == [second.commission_id], what="the second one waiting for the member")
     assert (await host.ledger.get(second.commission_id)).status == "queued"
+    # The leader that is there takes it: none is made, and none is noted as made.
+    assert await _events(host, second.commission_id, "leader_derived") == []
     # Handed to the member that is there, by its name: no new one is made.
     (handed,) = await _events(host, second.commission_id, "handed_over")
     assert (handed["new"], handed["name"]) == (False, "Shop site/worker")
@@ -693,8 +703,16 @@ async def test_what_a_leader_is_told_of_its_members_stays_within_its_caps(hosts,
         await host.ledger.update_session(member.id, last_active_at=1000.0 + number)
     leader, _made = await host.ledger.project_session("Lan", "Budget app")
 
+    await host.ledger.update_session(leader.id, workdir="D:/budget")
+    leader = await host.ledger.get_session(leader.id)
+    for name, workdir in (("member-13", "D:/an-old-place"), ("member-12", "D:/budget")):
+        (found,) = [item for item in await host.ledger.members("Lan", "Budget app") if item.name == name]
+        await host.ledger.update_session(found.id, workdir=workdir)
+
     first, told = await host.task_agents.families.leader_notes(leader, "")
     assert told == [] and first.startswith(brain_texts.LEADER_FIRST_OPENING)
+    # Where a member works is said when that is somewhere else than the leader does.
+    assert first.count("  works in ") == 1 and "  works in D:/an-old-place" in first
     # The ones last in use, and no more than are listed.
     assert first.count("\n- member-") == settings.LEADER_ROSTER_MEMBERS and "member-13 " in first and "member-0 " not in first
     monkeypatch.setattr(settings, "LEADER_FIRST_ROSTER_MAX_TOKENS", 200)
@@ -708,6 +726,7 @@ async def test_a_leader_cannot_report_or_start_task_agents_once_it_handed_over(h
         [
             [call("hand_over", {"description": "does the work", "brief": "Do it."}), finish("tool_calls")],
             [call("hand_over", {"description": "again", "brief": "Do it."}), finish("tool_calls")],
+            [call("hand_over", {"to": "Shop site/worker", "description": "again", "brief": "Do it."}), finish("tool_calls")],
             [call("subagent", {"description": "look", "prompt": "look around"}), finish("tool_calls")],
             [call("report", {"status": "ready", "summary": "the lead says it is done"}), finish("tool_calls")],
             [say("that is all"), finish("stop")],
@@ -727,7 +746,7 @@ async def test_a_leader_cannot_report_or_start_task_agents_once_it_handed_over(h
     assert await _events(host, receipt.commission_id, "subagent_started") == []
     assert len(await host.ledger.members("Lan", "Shop site")) == 1
     said = json.dumps(leader_llm.requests[-1], ensure_ascii=False)
-    assert brain_texts.HAND_OVER_TWICE in said and brain_texts.HANDED_OVER_ALREADY in said
+    assert said.count(brain_texts.HAND_OVER_TWICE) == 2 and brain_texts.HANDED_OVER_ALREADY in said
 
 
 async def test_only_a_leader_hands_over_and_only_to_a_member_that_takes_work(hosts, tmp_path):
@@ -1300,3 +1319,152 @@ async def test_sessions_whose_project_is_archived_or_whose_record_was_removed_ar
     )
     assert under_way.status == "queued"
     assert (await host.task_agents.families.standing(commission)).agent(kept.id).idle_seconds == 0.0
+
+
+async def test_a_task_agent_that_ended_between_the_look_and_the_write_is_followed_by_a_new_one(hosts, tmp_path):
+    from nekopower.host.orchestrator import Verdict
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    old = host.ledger._clock() - (settings.SESSION_SINGLE_LIFETIME_DAYS + 1) * 86400
+    loose = await host.ledger.create_session(name="loose", lanlan_name="Lan", kind="single")
+    member = await host.ledger.create_session(name="member", lanlan_name="Lan", kind="line", project="Budget app")
+    for session in (loose, member):
+        await host.ledger.update_session(session.id, last_active_at=old)
+    families = host.task_agents.families
+
+    async def filed(text: str) -> Any:
+        commission, _made = await host.ledger.create(lanlan_name="Lan", title=text, dispatch_text=text, source="dispatch")
+        return commission
+
+    # Where it was to go on took no more work by the time it is written down: a new one, of the same kind.
+    first = await filed("one")
+    commission, session = await families.place(first, Verdict(action=orch.CONTINUE, agent=loose.id, relation=orch.FOLLOW_UP))
+    assert (session.id, session.kind, commission.project) == (first.id, "single", None)
+    second = await filed("two")
+    commission, session = await families.place(
+        second, Verdict(action=orch.CONTINUE, agent=member.id, project="Budget app", relation=orch.FOLLOW_UP)
+    )
+    assert (session.id, session.kind, session.project, commission.project) == (second.id, "line", "Budget app", "Budget app")
+    # Nor is one that is not on record gone on with.
+    third = await filed("three")
+    _commission, session = await families.place(third, Verdict(action=orch.CONTINUE, agent="no-such-session"))
+    assert session.id == third.id
+
+
+async def test_only_sessions_of_one_commission_make_a_family(hosts, tmp_path):
+    from nekopower.host.orchestrator import Verdict
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    member = await host.ledger.create_session(name="member", lanlan_name="Lan", kind="line", project="Budget app", title="Budget")
+    families = host.task_agents.families
+    commission, _made = await host.ledger.create(lanlan_name="Lan", title="t", dispatch_text="t", source="dispatch")
+
+    # A member of a project is that project's: no second project is made of it.
+    assert await families._form_family((member.id, "no-such-session")) is None
+    assert [item.name for item in await host.space.list_projects() if not item.name.startswith("_")] == ["Budget app"]
+    # The commission goes on where the verdict said, as one of no family.
+    commission, session = await families.place(
+        commission, Verdict(action=orch.FORM_FAMILY, agent=member.id, members=(member.id,), relation=orch.RECURRENCE)
+    )
+    assert session.id == member.id
+    assert [event.type for event in await host.ledger.events(commission.id) if event.type == "family_formed"] == []
+
+
+async def test_without_a_small_model_a_clear_match_is_gone_on_with_and_no_project_is_made(hosts, tmp_path):
+    scripted = ScriptedLLM([_report("October done"), _report("November done"), _report("December done"), _report("x")])
+    host = _host(hosts, tmp_path, scripted)
+    host.task_agents.set_orchestrator_judge(None)
+    # (The same words each time: a word that is nowhere on record would make the match less than clear.)
+    texts = ["fill in the monthly invoice for the freelance client from the timesheet"] * 3
+    receipts = []
+    for text in texts:
+        receipt = await _dispatch(host, text)
+        await wait_status(host, receipt.commission_id, "done")
+        await _let_go(host)
+        receipts.append(receipt)
+
+    # All three in the one session: clear by their words, the third time would make a project, and
+    # nobody can say whether it is the same job once more.
+    done = [await host.ledger.get(receipt.commission_id) for receipt in receipts]
+    assert [item.session_id for item in done] == [receipts[0].commission_id] * 3
+    assert [item.relation for item in done] == [orch.NEW, orch.RECURRENCE, orch.FOLLOW_UP]
+    assert [item.name for item in await host.space.list_projects() if not item.name.startswith("_")] == []
+    (decided,) = await _events(host, receipts[2].commission_id, "orchestrated")
+    assert (decided["action"], decided["layer"], decided["model_calls"]) == ("continue", "retrieval", 0)
+    # What matches less clearly is a new one, there being nobody to ask.
+    other = await _dispatch(host, "what did the freelance client pay for the monthly invoice")
+    assert (await wait_status(host, other.commission_id, "done")).session_id == other.commission_id
+
+
+async def test_which_sessions_count_as_writing_in_a_project(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    agents = host.task_agents
+    leader, _made = await host.ledger.project_session("Lan", "Budget app")
+
+    async def made(name: str, **values: Any) -> Any:
+        return await host.ledger.create_session(name=name, lanlan_name="Lan", **values)
+
+    worker = await made("worker", kind="line", project="Budget app", preset="worker")
+    general = await made("general", kind="line", project="Budget app")
+    scout = await made("scout", kind="line", project="Budget app", preset="scout")
+    inspector = await made("inspector", kind="line", project="Budget app", preset="inspector")
+    child = await made("child", kind="child", project="Budget app", parent_id=worker.id)
+    single = await made("single", kind="single")
+    broken = await made("broken", kind="line", project="Budget app", preset="no-such-preset")
+    for session in (leader, worker, general, scout, inspector, child, single, broken):
+        await agents._note_writer(session.id)
+    await agents._note_writer(None)
+    await agents._note_writer("no-such-session")
+
+    # The members that have a tool that writes or edits a file; one whose preset cannot be read is held to the rule.
+    assert agents._writes_in == {item.id: ("Lan", "Budget app") for item in (worker, general, broken)}
+    # One that is no member any more is no writer any more.
+    await host.ledger.update_session(worker.id, project="_daily")
+    await agents._note_writer(worker.id)
+    assert worker.id not in agents._writes_in
+
+
+async def test_a_member_at_work_cannot_hand_its_commission_over(hosts, tmp_path):
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    host = _host(hosts, tmp_path, ScriptedLLM([[wait, *_report("export added")]]))
+    await _project(host, "Budget app", tmp_path)
+    await _allow_members(host)
+    receipt = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, receipt.commission_id, "working")
+    member = await _session_of(host, receipt.commission_id)
+
+    # At work, in a project, with its commission in hand: and no leader.
+    with pytest.raises(RuntimeError, match=brain_texts.HAND_OVER_NOT_A_LEADER):
+        await host.task_agents._cb_hand_over(member.id, {"description": "d", "brief": "b"})
+    assert await host.ledger.members("Lan", "Budget app") == [member]
+    release.set()
+    await wait_status(host, receipt.commission_id, "done")
+
+
+async def test_what_was_said_before_a_commission_goes_along_when_its_leader_hands_it_over(hosts, tmp_path):
+    from nekopower.host.conversation import ROLE_USER, RecentConversation
+
+    said = RecentConversation()
+    leader_llm = ScriptedLLM(_hand_over())
+    member_llm = ScriptedLLM([_report("header fixed")])
+    host = _host(hosts, tmp_path, _by_role(leader_llm, member_llm), conversation=said)
+    workdir = await _project(host, "Shop site", tmp_path)
+    _in_git(host, workdir)
+    await _allow_members(host)
+    said.note("Lan", ROLE_USER, "the logo overlaps the menu on my phone")
+
+    receipt = await _dispatch(host, "fix the header of the shop site")
+    await wait_status(host, receipt.commission_id, "done")
+
+    # The member's session holds nothing of the main dialogue: it is told what was said just before, as the leader was.
+    opened_leader = "\n".join(_user_messages(leader_llm.requests[0]))
+    opened_member = "\n".join(_user_messages(member_llm.requests[0]))
+    for opened in (opened_leader, opened_member):
+        assert brain_texts.TASK_AGENT_COMMISSION_EXCERPT_OPEN in opened and "the logo overlaps the menu on my phone" in opened

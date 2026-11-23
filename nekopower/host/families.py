@@ -394,9 +394,12 @@ class Families:
         return found.description if found is not None else ""
 
     async def _busy(self, session: Session) -> bool:
-        """Whether a member of a project without a leader has enough under way for the project to get one."""
-        if await self._ledger.lead_session(session.lanlan_name, session.project) is not None:
-            return False
+        """Whether a member of a project without a leader has enough under way for the project to get one.
+
+        (Asked of a member a commission would go on in, which is one of a
+        project without a leader: one that has a leader gets its
+        commissions itself.)
+        """
         under_way = await self._ledger.select(session_id=session.id, statuses=UNDER_WAY_STATUSES)
         return family_is_busy(len(under_way))
 

@@ -132,6 +132,9 @@ def test_a_project_is_named_by_its_name_and_a_task_agent_by_its_title() -> None:
     short = replace(standing, projects=(ProjectView(name="ab"),), agents=())
     assert orch.named("the ab test", short, bars) is None
     assert orch.named("the ab test", short, replace(bars, name_min_chars=2)) == "project:ab"
+    titled = Standing(agents=(Agent(id="one", title="ab"),))
+    assert orch.named("the ab test", titled, bars) is None
+    assert orch.named("the ab test", titled, replace(bars, name_min_chars=2)) == "agent:one"
 
 
 def test_the_longest_name_wins_and_two_task_agents_of_one_title_name_neither() -> None:
@@ -201,6 +204,12 @@ def test_loose_task_agents_that_did_the_same_thing_become_the_family_together() 
     # The one that takes work takes it, also when the other was the better match.
     found = orch.settle("agent:first", orch.RECURRENCE, standing, bars, matches=matches)
     assert (found.members, found.agent) == (("first", "second"), "second")
+    # None of them takes work any more: the family is made all the same, and a new one does it.
+    both_old = Standing(agents=(first, replace(second, idle_seconds=400 * HOUR), other))
+    found = orch.settle("agent:second", orch.RECURRENCE, both_old, bars, matches=orch.rank("write the changelog for 1.4", both_old))
+    assert (found.action, found.members, found.agent, found.preset) == (
+        orch.FORM_FAMILY, ("first", "second"), None, orch.WORKING_PRESET
+    )
     # One that scores too little of the match is no peer.
     strict = replace(bars, peer=1.5)
     assert orch.settle("agent:second", orch.RECURRENCE, standing, strict, matches=matches).action == orch.CONTINUE
@@ -213,6 +222,11 @@ def test_the_user_asking_for_a_new_one_gets_a_new_one() -> None:
     assert found is not None and found.action == orch.SUMMON_STRAY
     found = orch.by_rules("add a soup to Recipe Box", "", standing, bars)
     assert found is not None and (found.action, found.agent) == (orch.CONTINUE, "cook")
+    # A project that is named has it, whatever else the sentence says; a task agent that is named does not.
+    found = orch.by_rules("start a new one in Recipe Box for the soups", "", standing, bars)
+    assert found is not None and (found.action, found.project) == (orch.CONTINUE, "Recipe Box")
+    found = orch.by_rules("do not continue with the report writer, start a new one", "", standing, bars)
+    assert found is not None and found.action == orch.SUMMON_STRAY
     assert orch.by_rules("compare some standing desks", "", standing, bars) is None
 
 
@@ -221,6 +235,31 @@ def test_how_a_sentence_relates_to_its_matter_by_its_words() -> None:
     assert orch.relation_by_words("fix the typo in that one from last time") == orch.FOLLOW_UP
     assert orch.relation_by_words("also add a summary") == orch.FOLLOW_UP
     assert orch.relation_by_words("write this week's report", names_agent=True) == orch.FOLLOW_UP
+
+
+def test_a_clear_match_that_would_make_a_project_is_left_to_the_small_model() -> None:
+    bars = Bars()
+    done = (
+        Done(title="Fill in the monthly invoice for the freelance client from the timesheet", filed=orch.RECURRENCE),
+        Done(title="Fill in the monthly invoice for the freelance client", filed=orch.NEW),
+    )
+    standing = Standing(agents=(Agent(id="invoices", duty="Fill in the monthly invoice for the freelance client", done=done),))
+    sentence = "fill in the monthly invoice for the freelance client from the timesheet"
+
+    # Clear by its words, and the third time: not settled without a model.
+    assert orch.clear_match(orch.rank(sentence, standing), bars)[1] is not None
+    verdict, matches = orch.by_retrieval(sentence, "", standing, bars)
+    assert verdict is None and matches[0].key == "agent:invoices"
+    # The second time makes no project: it goes on there, and nobody is asked.
+    once = replace(standing, agents=(replace(standing.agents[0], done=done[1:]),))
+    verdict, _matches = orch.by_retrieval("fill in the monthly invoice for the freelance client", "", once, bars)
+    assert verdict is not None and (verdict.action, verdict.agent, verdict.relation) == (orch.CONTINUE, "invoices", orch.RECURRENCE)
+    # (A word that is nowhere there weighs much: with one, the same sentence is clear no longer.)
+    verdict, _matches = orch.by_retrieval(sentence, "", once, bars)
+    assert verdict is None
+    # Nor does one that follows the work up, however often the job came up.
+    verdict, _matches = orch.by_retrieval("also " + sentence, "", standing, bars)
+    assert verdict is not None and (verdict.action, verdict.relation) == (orch.CONTINUE, orch.FOLLOW_UP)
 
 
 def test_retrieval_settles_only_what_is_clear() -> None:
@@ -236,6 +275,23 @@ def test_retrieval_settles_only_what_is_clear() -> None:
     assert orch.clear_match([replace(clear, score=bars.attach - 0.01)], bars) == (False, None)
     # A lesser match with words enough keeps it from being nothing.
     assert orch.clear_match([Match("agent:a", 0.2, hits=1), Match("agent:b", 0.1, hits=2)], bars) == (False, None)
+
+
+def test_the_small_model_is_shown_the_few_best_matches_that_share_anything() -> None:
+    standing, bars = _standing(), Bars()
+    matches = orch.rank("compare the standing desks", standing)
+
+    assert orch.shown_keys(matches, bars) == ["agent:desks"]
+    assert orch.shown_keys(matches, replace(bars, shown=0)) == []
+    several = [Match(f"agent:{number}", 0.5, hits=2) for number in range(6)]
+    assert orch.shown_keys(several, bars) == [f"agent:{number}" for number in range(bars.shown)]
+    # A sentence in a script nothing there is written in shares nothing: those that worked last are shown.
+    korean = "다운로드 폴더 다시 정리해 줘"
+    unseen = orch.rank(korean, standing)
+    assert orch.shown_keys(unseen, bars) == [] and orch.unseen(korean, standing)
+    assert orch.shown_keys(unseen, bars, korean, standing) == ["project:shop", "project:Recipe Box", "agent:desks", "agent:weekly"]
+    assert not orch.unseen("compare the standing desks", standing) and not orch.unseen("", standing)
+    assert not orch.unseen(korean, Standing())
 
 
 def test_ranking_counts_words_that_say_something() -> None:
