@@ -992,16 +992,70 @@ test('PR3976 #14 & #15: switchModelDisplay aborts stale live2d switch before MMD
     await new Promise(r => setImmediate(r));
     assert.equal(typeof resolveReloadLive3D, 'function', 'deleteSelectedModels must suspend inside loadLive3DModels');
 
-    // Strictly while loadLive3DModels is in flight: user selects B while admitted load & currentModelInfo are still A
-    deleteCtx.userModelSelectionGeneration += 1;
-    deleteCtx.vrmSelectionLoad = { modelUrl: '/user_vrm/B.vrm' };
+    // Strictly while loadLive3DModels is in flight: user selects pending B while admitted load & currentModelInfo are still A (no userModelSelectionGeneration bump yet)
+    vrmModelSelect.value = '/user_vrm/B.vrm';
+    deleteCtx.vrmSelectionLoad = { modelUrl: '/user_vrm/B.vrm', admitted: false, vetoed: false };
     resolveReloadLive3D();
     await deletePromise;
 
-    assert.equal(vrmModelSelect.value, '/user_vrm/B.vrm', 'deleteSelectedModels must prefer newer user vrmSelectionLoad B over admitted load A');
+    assert.equal(vrmModelSelect.value, '/user_vrm/B.vrm', 'deleteSelectedModels must prefer pending user vrmSelectionLoad B over admitted load A even without generation bump');
+
+    // T6 subcase: pending B is vetoed by voice check during loadLive3DModels (vrmSelectionLoad cleared, vetoed=true, no gen bump) -> must restore A, NOT vetoed prevVrmValue B
+    const optDel2 = makeOption('/user_vrm/Del2.vrm');
+    vrmModelSelect.options = [optDel2, optA, optB];
+    vrmModelSelect.selectedIndex = 2; // Started on pending B before refresh
+    let resolveReload2;
+    const pendingBJob = { modelUrl: '/user_vrm/B.vrm', admitted: false, vetoed: false };
+    const vetoCtx = vm.createContext({
+        userModelSelectionGeneration: 1,
+        vrmAdmittedSelectionLoad: null,
+        vrmSelectionLoad: pendingBJob,
+        selectedDeleteModels: new Set(['vrm:/user_vrm/Del2.vrm']),
+        selectedDeleteCount: null,
+        deleteSelectedInfo: null,
+        confirmDeleteBtn: { disabled: false, textContent: '' },
+        currentModelType: 'live3d',
+        currentModelInfo: { type: 'vrm', path: '/user_vrm/A.vrm', url: '/user_vrm/A.vrm' },
+        vrmModelSelect,
+        mmdModelSelect,
+        modelSelect: null,
+        t: (_k, fb) => fb,
+        showStatus() {},
+        showConfirm: async () => true,
+        showAlert: async () => {},
+        hideDeleteModelModal() {},
+        updateConfirmDeleteButton() {},
+        isBoundPNGTuberDeleteKey: () => false,
+        getBoundPNGTuberDeleteKeys: () => ({ committed: '', pending: '' }),
+        RequestHelper: { async fetchJson() { return { success: true }; } },
+        loadUserModels: async () => {},
+        loadLive3DModels: () => new Promise(resolve => {
+            resolveReload2 = () => {
+                vrmModelSelect.options = [optA, optB];
+                vrmModelSelect.selectedIndex = 1;
+                resolve();
+            };
+        }),
+        loadMMDModels: async () => {},
+        updateVRMModelSelectButtonText() {},
+        updateMMDModelSelectButtonText() {},
+        console,
+        encodeURIComponent,
+    });
+    vm.runInContext(deleteFnCode, vetoCtx);
+    const vetoDeletePromise = vetoCtx.deleteSelectedModels();
+    await new Promise(r => setImmediate(r));
+
+    // Voice check vetoes pending B in-flight without incrementing userModelSelectionGeneration
+    pendingBJob.vetoed = true;
+    vetoCtx.vrmSelectionLoad = null;
+    resolveReload2();
+    await vetoDeletePromise;
+
+    assert.equal(vrmModelSelect.value, '/user_vrm/A.vrm', 'vetoed pending VRM selection B must fall back to admitted currentModelInfo A');
 });
 
-test('PR3976 U8: rapid MMD model switch A -> B aborts stale A load before playing A animation', async () => {
+test('PR3976 U8 + T12 + T13: rapid MMD model switch A -> B isolates session cleanup and aborts late loadCharacterLighting side effects', async () => {
     const controllerCode = fs.readFileSync(
         path.join(ROOT, 'static/js/model_manager/page-controller.js'),
         'utf8'
@@ -1025,7 +1079,9 @@ test('PR3976 U8: rapid MMD model switch A -> B aborts stale A load before playin
     };
     let resolveModelA;
     let resolveModelB;
-    const abortedSessions = [];
+    let sessionSeq = 0;
+    const endedOverlays = [];
+    const restoredCanvases = [];
 
     const mmdCtx = vm.createContext({
         mmdModelSelect,
@@ -1046,15 +1102,15 @@ test('PR3976 U8: rapid MMD model switch A -> B aborts stale A load before playin
         isSuppressedModelManagerChangeEvent: () => false,
         markMMDCanvasLoadingSession() {},
         showStatusForMMDLoadingSession() {},
-        restoreMMDCanvasForLoadingSession(_canvas, id) { abortedSessions.push(id); },
+        restoreMMDCanvasForLoadingSession(_canvas, id) { restoredCanvases.push(id); },
         localStorage: { getItem: () => null },
         t: (_k, fb) => fb,
         document: { getElementById: () => ({ id: 'mmd-canvas' }) },
         window: {
             mmdModuleLoaded: true,
             vrmManager: null,
-            _createMMDLoadingSessionId: (p) => `${p}-${Math.random().toString(16).slice(2)}`,
-            MMDLoadingOverlay: { begin() {}, update() {}, fail() {}, end(id) { abortedSessions.push(`end:${id}`); } },
+            _createMMDLoadingSessionId: (p) => `${p}-${++sessionSeq}`,
+            MMDLoadingOverlay: { begin() {}, update() {}, fail() {}, end(id) { endedOverlays.push(id); } },
             mmdManager: {
                 scene: {},
                 stopAnimation() {},
@@ -1082,16 +1138,74 @@ test('PR3976 U8: rapid MMD model switch A -> B aborts stale A load before playin
     await new Promise(r => setImmediate(r));
     assert.equal(typeof resolveModelB, 'function');
 
-    // Now stale modelA finishes loading -> must abort without loading/playing A's animation
+    // Now stale modelA finishes loading -> must abort ONLY session 1 and leave session 2 loading
     resolveModelA();
     await loadAPromise;
     assert.equal(mmdListeners.loadedAnimations.length, 0, 'superseded MMD load A must NOT call loadAnimation');
     assert.equal(mmdListeners.playedAnimations, 0, 'superseded MMD load A must NOT call playAnimation');
-    assert.ok(abortedSessions.length >= 1, 'superseded MMD load A must clean up its loading session');
+    assert.deepEqual(endedOverlays, ['mmd-manager-1'], 'only session A overlay must be ended before B finishes');
+    assert.deepEqual(restoredCanvases, ['mmd-manager-1'], 'only session A canvas may be restored while B is still loading');
 
-    // Current modelB finishes loading -> proceeds normally
+    // Current modelB finishes loading -> proceeds normally with session 2
     resolveModelB();
     await loadBPromise;
     assert.equal(mmdListeners.loadedAnimations.length, 1, 'latest MMD load B must load idle animation');
     assert.equal(mmdListeners.playedAnimations, 1, 'latest MMD load B must play idle animation');
+    assert.deepEqual(endedOverlays, ['mmd-manager-1', 'mmd-manager-2']);
+    assert.deepEqual(restoredCanvases, ['mmd-manager-1', 'mmd-manager-2']);
+
+    // T12: late /api/characters inside real loadCharacterLighting() must not overwrite MMD idle selections or startIdleRotation
+    const lightingStart = controllerCode.indexOf('    async function loadCharacterLighting(');
+    const lightingEnd = controllerCode.indexOf('    // 注意：VRM 模型列表已在', lightingStart);
+    assert.ok(lightingStart > 0 && lightingEnd > lightingStart);
+    const lightingSnippet = controllerCode.slice(lightingStart, lightingEnd);
+
+    let resolveCharsA;
+    let mmdGen = 1;
+    const mmdSelectedHistory = [];
+    const idleStarted = [];
+    const lightingCtx = vm.createContext({
+        getLanlanName: async () => 'CatA',
+        RequestHelper: {
+            async fetchJson(url) {
+                if (url === '/api/characters') {
+                    return await new Promise(resolve => { resolveCharsA = resolve; });
+                }
+                return {};
+            },
+        },
+        applyLightingValues() {},
+        loadIdleAnimationOptions: async () => {},
+        loadMmdIdleAnimationOptions: async () => {},
+        setSelectedIdleAnimations(id, list) { mmdSelectedHistory.push({ id, list }); },
+        startIdleRotation(type, list) { idleStarted.push({ type, list }); },
+        stopIdleRotation() {},
+        normalizeBundledVrmAnimationUrl: (u) => u,
+        document: { getElementById: () => null },
+        console,
+    });
+    vm.runInContext(lightingSnippet, lightingCtx);
+
+    const callGen = 1;
+    const staleLightingPromise = lightingCtx.loadCharacterLighting({
+        isMmdSuperseded: () => mmdGen !== callGen,
+    });
+    await new Promise(r => setImmediate(r));
+    assert.equal(typeof resolveCharsA, 'function');
+
+    // Newer MMD load supersedes while /api/characters is in flight
+    mmdGen = 2;
+    resolveCharsA({
+        '猫娘': {
+            CatA: {
+                model_type: 'live3d',
+                live3d_sub_type: 'mmd',
+                mmd: 'old.pmx',
+                mmd_idle_animations: ['/mmd/old_idle.vmd'],
+            },
+        },
+    });
+    await staleLightingPromise;
+    assert.equal(mmdSelectedHistory.length, 0, 'superseded loadCharacterLighting must NOT overwrite MMD idle checkboxes');
+    assert.equal(idleStarted.length, 0, 'superseded loadCharacterLighting must NOT start stale MMD idle rotation');
 });

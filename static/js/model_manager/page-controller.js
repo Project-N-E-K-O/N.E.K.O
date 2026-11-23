@@ -5273,7 +5273,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.warn('[MMD] 播放 wait03 待机动作失败:', e);
                 }
 
-                await loadCharacterLighting();
+                await loadCharacterLighting({ isMmdSuperseded: () => isMmdLoadSuperseded(true) });
                 if (isMmdLoadSuperseded(true)) {
                     abortSupersededMmdLoad();
                     return;
@@ -6916,13 +6916,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 加载角色的打光配置并应用
     // 【保留但简化】只加载角色的”直接打光配置”，去掉了预设逻辑
-    async function loadCharacterLighting() {
+    async function loadCharacterLighting(options = {}) {
+        const isMmdSuperseded = typeof options?.isMmdSuperseded === 'function' ? options.isMmdSuperseded : null;
         try {
             const lanlanName = await getLanlanName();
             if (!lanlanName) return;
+            if (isMmdSuperseded && isMmdSuperseded()) return;
 
             // 使用 RequestHelper 确保统一的错误处理和超时
             const data = await RequestHelper.fetchJson('/api/characters');
+            if (isMmdSuperseded && isMmdSuperseded()) return;
             const charData = data['猫娘']?.[lanlanName];
             const lighting = charData?.lighting;
 
@@ -6966,6 +6969,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : false;
             if (isMmdCharacter) {
                 await loadMmdIdleAnimationOptions();
+                if (isMmdSuperseded && isMmdSuperseded()) return;
                 let mmdIdleAnims = charData?.mmd_idle_animations ?? charData?.mmd_idle_animation;
                 if (mmdIdleAnims != null) {
                     // 向前兼容: string -> array
@@ -9203,6 +9207,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             const selectionGenAtSnapshot = getSelectionGen();
             const prevVrmValue = vrmModelSelect ? vrmModelSelect.value : '';
             const prevMmdValue = mmdModelSelect ? mmdModelSelect.value : '';
+            const loadJobAtSnapshot = (typeof vrmSelectionLoad !== 'undefined') ? vrmSelectionLoad : null;
+            const prevVrmWasPending = !!(loadJobAtSnapshot && prevVrmValue && loadJobAtSnapshot.modelUrl === prevVrmValue && !loadJobAtSnapshot.admitted);
             const restoreSelectSelection = (selectEl, prevValue, modelKind, selectionChanged) => {
                 if (!selectEl || !selectEl.options) return false;
                 const options = Array.from(selectEl.options);
@@ -9240,7 +9246,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 if (typeof loadLive3DModels === 'function') {
                     await loadLive3DModels();
+                    const prevVrmVetoed = !!(prevVrmWasPending && loadJobAtSnapshot.vetoed);
                     const vrmSelectionChanged = getSelectionGen() !== selectionGenAtSnapshot
+                        || prevVrmVetoed
                         || (typeof vrmSelectionLoad !== 'undefined' && !!(vrmSelectionLoad?.modelUrl && vrmSelectionLoad.modelUrl !== prevVrmValue));
                     if (restoreSelectSelection(vrmModelSelect, prevVrmValue, 'vrm', vrmSelectionChanged)
                         && typeof updateVRMModelSelectButtonText === 'function') {

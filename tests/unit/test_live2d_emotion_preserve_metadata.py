@@ -303,3 +303,113 @@ def test_empty_legacy_expression_group_does_not_wipe_existing_entries_and_untouc
         {"Name": "noUnderscore", "File": "exp/plain.exp3.json"},
         {"Name": "happy_new_happy", "File": "exp/new_happy.exp3.json"},
     ]
+
+
+@pytest.mark.unit
+def test_empty_known_group_prefix_protects_entries_from_shorter_managed_prefix(model_dir: Path) -> None:
+    model_json = model_dir / "m.model3.json"
+    _write(
+        model_json,
+        {
+            "Version": 3,
+            "EmotionMapping": {
+                "motions": {},
+                "expressions": {
+                    "custom": ["exp/a.exp3.json"],
+                    "custom_alt": [],
+                },
+            },
+            "FileReferences": {
+                "Motions": {},
+                "Expressions": [
+                    {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
+                    {"Name": "custom_alt_keep", "File": "exp/keep.exp3.json", "FadeInTime": 0.4},
+                ],
+            },
+        },
+    )
+
+    payload = {
+        "motions": {},
+        "expressions": {"custom": ["exp/a.exp3.json"]},
+    }
+    res = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res["success"] is True
+
+    saved = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved["FileReferences"]["Expressions"] == [
+        {"Name": "custom_alt_keep", "File": "exp/keep.exp3.json", "FadeInTime": 0.4},
+        {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
+    ]
+
+
+@pytest.mark.unit
+def test_newly_added_longer_prefix_does_not_hijack_existing_shorter_group_entry(model_dir: Path) -> None:
+    model_json = model_dir / "m.model3.json"
+    _write(
+        model_json,
+        {
+            "Version": 3,
+            "EmotionMapping": {
+                "motions": {},
+                "expressions": {
+                    "custom": ["exp/group_smile.exp3.json"],
+                },
+            },
+            "FileReferences": {
+                "Motions": {},
+                "Expressions": [
+                    {"Name": "custom_group_smile", "File": "exp/group_smile.exp3.json", "FadeInTime": 0.7},
+                ],
+            },
+        },
+    )
+
+    payload = {
+        "motions": {},
+        "expressions": {
+            "custom": ["exp/group_smile.exp3.json"],
+            "custom_group": ["exp/new.exp3.json"],
+        },
+    }
+    res = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res["success"] is True
+
+    saved = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved["FileReferences"]["Expressions"] == [
+        {"Name": "custom_group_smile", "File": "exp/group_smile.exp3.json", "FadeInTime": 0.7},
+        {"Name": "custom_group_new", "File": "exp/new.exp3.json"},
+    ]
+
+
+@pytest.mark.unit
+def test_initial_save_without_prior_mapping_allows_explicit_empty_group_to_clear(model_dir: Path) -> None:
+    model_json = model_dir / "m.model3.json"
+    _write(
+        model_json,
+        {
+            "Version": 3,
+            "FileReferences": {
+                "Motions": {},
+                "Expressions": [
+                    {"Name": "常驻_blush", "File": "exp/blush.exp3.json"},
+                    {"Name": "happy_smile", "File": "exp/smile.exp3.json"},
+                ],
+            },
+        },
+    )
+
+    payload = {
+        "motions": {},
+        "expressions": {
+            "常驻": [],
+            "happy": ["exp/smile.exp3.json"],
+        },
+    }
+    res = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res["success"] is True
+
+    saved = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved["FileReferences"]["Expressions"] == [
+        {"Name": "happy_smile", "File": "exp/smile.exp3.json"},
+    ]

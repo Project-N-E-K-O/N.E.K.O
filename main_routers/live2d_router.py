@@ -978,13 +978,39 @@ async def update_emotion_mapping(model_name: str, request: Request):
                 for group_name, files in prev_expressions_map.items()
                 if isinstance(group_name, str) and group_name and _has_nonempty_mapping_files(files)
             }
-            input_nonempty_expr_groups = {
+            input_expr_groups = {
                 group_name
                 for group_name, files in expressions_input.items()
-                if isinstance(group_name, str) and group_name and _has_nonempty_mapping_files(files)
+                if isinstance(group_name, str) and group_name and (
+                    not previous_had_emotion_mapping or _has_nonempty_mapping_files(files)
+                )
             }
-            managed_expression_groups = prev_nonempty_expr_groups | input_nonempty_expr_groups
-            managed_prefixes = sorted(managed_expression_groups, key=len, reverse=True)
+            managed_expression_groups = prev_nonempty_expr_groups | input_expr_groups
+
+            known_expression_groups = {
+                group_name
+                for group_name in (*prev_expressions_map.keys(), *expressions_input.keys())
+                if isinstance(group_name, str) and group_name
+            }
+            known_prefixes = sorted(known_expression_groups, key=len, reverse=True)
+
+            prev_group_files: dict[str, set[str]] = {}
+            for group_name, files in prev_expressions_map.items():
+                if not isinstance(group_name, str) or not group_name:
+                    continue
+                files_iter = [files] if isinstance(files, str) else (files if isinstance(files, list) else [])
+                norm_files = {
+                    _normalize_posix_model_ref(file_path)
+                    for file_path in files_iter
+                    if isinstance(file_path, str) and file_path.strip()
+                }
+                if norm_files:
+                    prev_group_files[group_name] = norm_files
+            prev_known_prefixes = sorted(
+                (group_name for group_name in prev_expressions_map.keys() if isinstance(group_name, str) and group_name),
+                key=len,
+                reverse=True,
+            )
 
             preserved_expressions = []
             existing_by_group_file: dict[tuple[str, str], deque[dict]] = {}
@@ -993,13 +1019,22 @@ async def update_emotion_mapping(model_name: str, request: Request):
                     preserved_expressions.append(item)
                     continue
                 name = item.get('Name') if isinstance(item.get('Name'), str) else ''
-                matched_group = _match_managed_expression_group(name, managed_prefixes)
+                raw_file = item.get('File')
+                norm_file = _normalize_posix_model_ref(raw_file) if isinstance(raw_file, str) and raw_file.strip() else ''
+
+                matched_group = None
+                if norm_file:
+                    for prev_group in prev_known_prefixes:
+                        if name.startswith(f"{prev_group}_") and norm_file in prev_group_files.get(prev_group, ()):
+                            matched_group = prev_group
+                            break
                 if matched_group is None:
+                    matched_group = _match_managed_expression_group(name, known_prefixes)
+
+                if matched_group is None or matched_group not in managed_expression_groups:
                     preserved_expressions.append(item)
                     continue
-                raw_file = item.get('File')
-                if isinstance(raw_file, str) and raw_file.strip():
-                    norm_file = _normalize_posix_model_ref(raw_file)
+                if norm_file:
                     existing_by_group_file.setdefault((matched_group, norm_file), deque()).append(item)
 
             new_expressions = []

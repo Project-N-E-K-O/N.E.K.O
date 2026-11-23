@@ -886,6 +886,14 @@ async function updatePreviewControlsAfterModelLoad(filesData) {
             motionSelect.value = matchingSavedMotion;
             initialMotionToPlay = matchingSavedMotion;
         } else {
+            if (availableMotionFiles.length === 0) {
+                const emptyOpt = motionSelect.options && motionSelect.options[0];
+                if (emptyOpt && emptyOpt.value === '') {
+                    emptyOpt.textContent = (window.t && window.t('character.noIdleMotion', '无动作')) || '无动作';
+                }
+                motionSelect.disabled = false;
+                if (playMotionBtn) playMotionBtn.disabled = true;
+            }
             const unresolvedOption = document.createElement('option');
             unresolvedOption.value = savedIdleAnimation;
             unresolvedOption.textContent = `${savedIdleAnimationBaseName} (?)`;

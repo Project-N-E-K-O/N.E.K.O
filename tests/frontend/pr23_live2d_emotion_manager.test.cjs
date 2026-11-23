@@ -355,6 +355,7 @@ test('F0063: saveEmotionMapping uses single atomic POST preserving non-UI motion
                         expressions: {
                             '常驻': ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
                             custom_group: ['exp/cg.exp3.json'],
+                            spaced_group: [' exp/face.exp3.json'],
                             legacy_empty: [],
                         },
                     },
@@ -381,6 +382,7 @@ test('F0063: saveEmotionMapping uses single atomic POST preserving non-UI motion
     assert.deepEqual(postBodies[0].expressions, {
         '常驻': ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
         custom_group: ['exp/cg.exp3.json'],
+        spaced_group: [' exp/face.exp3.json'],
     });
 
     // Reset + Save -> clears UI emotion 'happy', still preserves non-UI motions & expressions
@@ -395,19 +397,25 @@ test('F0063: saveEmotionMapping uses single atomic POST preserving non-UI motion
     assert.deepEqual(postBodies[1].expressions, {
         '常驻': ['exp/blush.exp3.json', 'exp/glasses.exp3.json'],
         custom_group: ['exp/cg.exp3.json'],
+        spaced_group: [' exp/face.exp3.json'],
     });
 
     // Pre-save GET failure (HTTP/business/network) aborts POST and re-enables save button
-    for (const mode of ['http500', 'biz_fail', 'network']) {
+    const statusEl = doc.querySelector('.status-message');
+    for (const [mode, expectedSnippet] of [['http500', '500'], ['biz_fail', 'boom'], ['network', 'ECONNRESET']]) {
+        statusEl.className = 'status-message';
+        statusEl.textContent = '';
         failPreSaveMappingMode = mode;
         await w.saveEmotionMapping();
         assert.equal(postBodies.length, 2, `must abort POST when pre-save GET fails (${mode})`);
         assert.equal(doc.getElementById('save-btn').disabled, false, 'save button must re-enable after aborted save');
-        assert.equal(doc.querySelector('.status-message').classList.contains('status-error'), true);
+        assert.equal(statusEl.classList.contains('status-error'), true);
+        assert.ok(statusEl.textContent.includes(expectedSnippet), `error status for ${mode} must include ${expectedSnippet}, got: ${statusEl.textContent}`);
     }
 });
 
 test('F0063 + F0507: model switch mid-save aborts cleanly without emitting stale POST or status', async () => {
+    const preSaveGetAStarted = deferred();
     const preSaveGetA = deferred();
     const postCalls = [];
 
@@ -458,6 +466,7 @@ test('F0063 + F0507: model switch mid-save aborts cleanly without emitting stale
                     json: async () => ({ success: true, config: { motions: { happy: ['motions/a.motion3.json'] }, expressions: {} } }),
                 };
             }
+            preSaveGetAStarted.resolve();
             return await preSaveGetA.promise;
         }
         if (u === '/api/live2d/emotion_mapping/ModelB') {
@@ -479,11 +488,14 @@ test('F0063 + F0507: model switch mid-save aborts cleanly without emitting stale
     await flushMicrotasks(30);
 
     const savePromise = w.saveEmotionMapping();
-    await flushMicrotasks(5);
+    await preSaveGetAStarted.promise;
 
-    // Switch to ModelB while pre-save GET for ModelA is in flight
+    // Switch to ModelB strictly after ModelA pre-save GET is in flight
     items[1].click();
     await flushMicrotasks(30);
+    const statusEl = doc.querySelector('.status-message');
+    const modelBStatusClass = statusEl.className;
+    const modelBStatusText = statusEl.textContent;
 
     preSaveGetA.resolve({
         ok: true,
@@ -495,4 +507,106 @@ test('F0063 + F0507: model switch mid-save aborts cleanly without emitting stale
 
     assert.equal(postCalls.length, 0, 'model switch during pre-save GET must abort stale POST');
     assert.equal(doc.getElementById('save-btn').disabled, false, 'ModelB save button must remain enabled');
+    assert.equal(statusEl.className, modelBStatusClass, 'late stale save must not alter ModelB status class');
+    assert.equal(statusEl.textContent, modelBStatusText, 'late stale save must not alter ModelB status message');
+});
+
+test('F0063: per-model save queue serializes overlapping saves for the same model across model switches', async () => {
+    const post1Gate = deferred();
+    const trace = [];
+    let postIndex = 0;
+
+    const { w, doc } = createEmotionManagerDom(async (url, init = {}) => {
+        const u = String(url);
+        if (u === '/api/live2d/models') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ([
+                    { name: 'ModelA', source: 'user_mods' },
+                    { name: 'ModelB', source: 'user_mods' },
+                ]),
+            };
+        }
+        if (u === '/api/live2d/model_files/ModelA') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    success: true,
+                    motion_files: ['motions/a1.motion3.json', 'motions/a2.motion3.json'],
+                    expression_files: [],
+                }),
+            };
+        }
+        if (u === '/api/live2d/model_files/ModelB') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    success: true,
+                    motion_files: ['motions/b.motion3.json'],
+                    expression_files: [],
+                }),
+            };
+        }
+        if (u === '/api/live2d/emotion_mapping/ModelA') {
+            if ((init.method || 'GET') === 'POST') {
+                postIndex += 1;
+                const idx = postIndex;
+                const body = JSON.parse(init.body);
+                trace.push(`post${idx}:start`);
+                if (idx === 1) {
+                    await post1Gate.promise;
+                }
+                trace.push(`post${idx}:end`);
+                return { ok: true, status: 200, json: async () => ({ success: true, body }) };
+            }
+            trace.push('getA');
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({ success: true, config: { motions: { happy: ['motions/a1.motion3.json'] }, expressions: {} } }),
+            };
+        }
+        if (u === '/api/live2d/emotion_mapping/ModelB') {
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({ success: true, config: { motions: { happy: ['motions/b.motion3.json'] }, expressions: {} } }),
+            };
+        }
+        throw new Error(`Unexpected fetch URL: ${u}`);
+    });
+
+    await flushMicrotasks();
+    const items = Array.from(doc.querySelectorAll('.singleselect-item'));
+    items[0].click();
+    await flushMicrotasks(30);
+
+    // Trigger Save #1 on ModelA and wait until its POST is suspended in flight
+    const save1Promise = w.saveEmotionMapping();
+    await flushMicrotasks(10);
+    assert.ok(trace.includes('post1:start'));
+
+    // Switch ModelA -> ModelB -> ModelA so save button re-enables on fresh selection, then trigger Save #2
+    items[1].click();
+    await flushMicrotasks(30);
+    items[0].click();
+    await flushMicrotasks(30);
+    const traceLenBeforeSave2 = trace.length;
+
+    const save2Promise = w.saveEmotionMapping();
+    await flushMicrotasks(10);
+    assert.equal(
+        trace.slice(traceLenBeforeSave2).includes('getA'),
+        false,
+        'Save #2 pre-save GET for ModelA must wait until Save #1 finishes'
+    );
+
+    post1Gate.resolve();
+    await Promise.all([save1Promise, save2Promise]);
+
+    const postEvents = trace.filter(ev => ev.startsWith('post'));
+    assert.deepEqual(postEvents, ['post1:start', 'post1:end', 'post2:start', 'post2:end']);
 });

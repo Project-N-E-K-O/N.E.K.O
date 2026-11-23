@@ -118,6 +118,52 @@ test('F0484: rejects & clears invalid/expired/skewed snapshots while preserving 
         mismatchRawJson,
         'mismatched-owner snapshot must remain byte-for-byte identical in localStorage'
     );
+
+    // Owner pending: lanlan_name not ready yet -> must NOT clear or apply CatOther snapshot; once ready, mismatch preserves or match restores
+    const pendingStorage = createStorage();
+    pendingStorage.setItem(HOME_TUTORIAL_KEY, mismatchRawJson);
+    const pendingRt1 = loadHomeTutorialRuntime({
+        localStorage: pendingStorage,
+        lanlanName: '',
+        fetchHandler: async () => ({ ok: true, json: async () => ({ success: true }) }),
+    });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(pendingRt1.fetchCalls.length, 0, 'owner_pending must NOT call agent endpoints before lanlan_name is ready');
+    assert.equal(pendingStorage.getItem(HOME_TUTORIAL_KEY), mismatchRawJson, 'owner_pending must preserve snapshot byte-for-byte');
+    const pendingRetry1 = pendingRt1.scheduledTimeouts.find(t => !t.cleared);
+    assert.ok(pendingRetry1, 'owner_pending must schedule retry while waiting for lanlan_name');
+    pendingRt1.win.lanlan_config.lanlan_name = 'CatCurrent';
+    pendingRetry1.fn();
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(pendingRt1.fetchCalls.length, 0, 'once resolved to CatCurrent, CatOther snapshot must NOT apply');
+    assert.equal(pendingStorage.getItem(HOME_TUTORIAL_KEY), mismatchRawJson, 'CatOther snapshot must remain intact for CatOther');
+
+    // Same owner_pending flow when lanlan_name resolves to matching CatOther -> restores and clears
+    const pendingStorage2 = createStorage();
+    pendingStorage2.setItem(HOME_TUTORIAL_KEY, mismatchRawJson);
+    const pendingRt2 = loadHomeTutorialRuntime({
+        localStorage: pendingStorage2,
+        lanlanName: '',
+        fetchHandler: async (url, init) => {
+            if (url === '/api/agent/flags' && (init.method || 'GET') === 'GET') {
+                return { ok: true, json: async () => ({ success: true, analyzer_enabled: false, agent_flags: {} }) };
+            }
+            return { ok: true, json: async () => ({ success: true }) };
+        },
+    });
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    const pendingRetry2 = pendingRt2.scheduledTimeouts.find(t => !t.cleared);
+    assert.ok(pendingRetry2);
+    pendingRt2.win.lanlan_config.lanlan_name = 'CatOther';
+    pendingRetry2.fn();
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.ok(pendingRt2.fetchCalls.some(c => c.url === '/api/agent/command' && c.method === 'POST'));
+    assert.equal(pendingStorage2.getItem(HOME_TUTORIAL_KEY), null, 'matched owner restore after owner_pending must clear snapshot');
 });
 
 test('F0484: checks GET /api/agent/flags before replaying and aborts/clears when flags are already enabled by user/backend', async () => {

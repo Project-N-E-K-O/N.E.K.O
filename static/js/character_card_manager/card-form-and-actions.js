@@ -881,8 +881,6 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 loadCharacterCards().catch(e => console.warn('刷新角色列表失败:', e));
             }
             showMessage(window.t ? window.t('character.personalityCleared') : '已恢复角色卡默认人格', 'success');
-            // Clearing a preset is a separate persisted persona change.
-            if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(name);
             if ((form._personalityUpdateEventSeq || 0) > updateEventSeqAtDeleteStart
                 && form._personalitySyncSequence === commitSeq
                 && isPersonalityPanelAlive()
@@ -890,6 +888,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
                 && typeof form._characterPersonalityUpdateHandler === 'function') {
                 void form._characterPersonalityUpdateHandler({ detail: { characterName: name } });
             }
+            // Clearing a preset is a separate persisted persona change.
+            if (window.nekoCharacterProfileSync) await window.nekoCharacterProfileSync.afterSave(name);
         } catch (e) {
             console.error('清除人格设定失败:', e);
             if (typeof showAlert === 'function') {

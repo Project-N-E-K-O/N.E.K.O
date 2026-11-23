@@ -235,8 +235,13 @@
             }
             const snapshotOwner = typeof payload.lanlanName === 'string' ? payload.lanlanName.trim() : '';
             const currentOwner = getCurrentLanlanName();
-            if (snapshotOwner && currentOwner && snapshotOwner !== currentOwner) {
-                return { status: 'owner_mismatch', payload: payload };
+            if (snapshotOwner) {
+                if (!currentOwner) {
+                    return { status: 'owner_pending', payload: payload };
+                }
+                if (snapshotOwner !== currentOwner) {
+                    return { status: 'owner_mismatch', payload: payload };
+                }
             }
             return { status: 'valid', payload: payload };
         } catch (error) {
@@ -578,7 +583,11 @@
         if (inspected.status === 'empty' || inspected.status === 'owner_mismatch') {
             return false;
         }
-        if (inspected.status !== 'valid' || !inspected.payload) {
+        if (inspected.status !== 'valid' && inspected.status !== 'owner_pending') {
+            clearPersistedAgentRestoreSnapshot();
+            return false;
+        }
+        if (!inspected.payload) {
             clearPersistedAgentRestoreSnapshot();
             return false;
         }
@@ -598,16 +607,19 @@
             if (latestInspected.status === 'owner_mismatch' || latestInspected.status === 'empty') {
                 return false;
             }
-            if (latestInspected.status !== 'valid' || !latestInspected.payload) {
+            if (latestInspected.status !== 'valid' && latestInspected.status !== 'owner_pending') {
                 clearPersistedAgentRestoreSnapshot();
                 return false;
             }
             const latestPersisted = latestInspected.payload;
-            if (latestPersisted.token !== persisted.token) {
+            if (!latestPersisted || latestPersisted.token !== persisted.token) {
                 return false;
             }
 
             try {
+                if (latestInspected.status === 'owner_pending') {
+                    throw new Error('agent_restore_owner_pending');
+                }
                 const currentFlags = await fetchAgentFlagSnapshot();
                 if (!canRestoreAgentSnapshot(restoreToken)) {
                     return false;

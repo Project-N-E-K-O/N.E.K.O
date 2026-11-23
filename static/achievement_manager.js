@@ -315,17 +315,7 @@
                 }
 
                 const run = (async () => {
-
-                    const controller = typeof AbortController === 'function' ? new AbortController() : null;
-                    let timedOut = false;
-                    let onTimeout = null;
-                    const timeoutId = setTimeout(() => {
-                        timedOut = true;
-                        try { controller?.abort(); } catch (_) { }
-                        if (typeof onTimeout === 'function') {
-                            try { onTimeout(); } catch (_) { }
-                        }
-                    }, REQUEST_TIMEOUT_MS);
+                    let fetchTimeoutId = null;
                     try {
                         const playtimeHeaders = { 'Content-Type': 'application/json' };
                         const sec = window.nekoLocalMutationSecurity;
@@ -340,31 +330,37 @@
                             } catch (_) { }
                         }
                         if (!hasCachedToken && sec && typeof sec.getMutationHeaders === 'function') {
-                            const mutationHeaders = await new Promise((resolve) => {
-                                let settled = false;
-                                const finish = (value) => {
-                                    if (settled) return;
-                                    settled = true;
-                                    onTimeout = null;
-                                    resolve(value);
-                                };
-                                if (timedOut) {
-                                    finish(null);
-                                    return;
+                            let headerTimeoutId = null;
+                            try {
+                                const mutationHeaders = await new Promise((resolve) => {
+                                    let settled = false;
+                                    const finish = (value) => {
+                                        if (settled) return;
+                                        settled = true;
+                                        resolve(value);
+                                    };
+                                    headerTimeoutId = setTimeout(() => finish(null), REQUEST_TIMEOUT_MS);
+                                    Promise.resolve()
+                                        .then(() => sec.getMutationHeaders())
+                                        .then(headers => finish(headers || {}))
+                                        .catch(() => finish({}));
+                                });
+                                if (mutationHeaders === null) {
+                                    throw new Error('Playtime mutation header lookup timed out');
                                 }
-                                onTimeout = () => finish(null);
-                                Promise.resolve()
-                                    .then(() => sec.getMutationHeaders())
-                                    .then(headers => finish(headers || {}))
-                                    .catch(() => finish({}));
-                            });
-                            if (timedOut || mutationHeaders === null) {
-                                throw new Error('Playtime mutation header lookup timed out');
-                            }
-                            if (mutationHeaders && typeof mutationHeaders === 'object') {
-                                Object.assign(playtimeHeaders, mutationHeaders);
+                                if (mutationHeaders && typeof mutationHeaders === 'object') {
+                                    Object.assign(playtimeHeaders, mutationHeaders);
+                                }
+                            } finally {
+                                if (headerTimeoutId !== null) {
+                                    clearTimeout(headerTimeoutId);
+                                }
                             }
                         }
+                        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+                        fetchTimeoutId = controller
+                            ? setTimeout(() => { try { controller.abort(); } catch (_) { } }, REQUEST_TIMEOUT_MS)
+                            : null;
                         const fetchOptions = {
                             method: 'POST',
                             headers: playtimeHeaders,
@@ -392,8 +388,9 @@
                     } catch (error) {
                         console.debug('更新游戏时长进度失败:', error && error.message ? error.message : error);
                     } finally {
-                        onTimeout = null;
-                        clearTimeout(timeoutId);
+                        if (fetchTimeoutId !== null) {
+                            clearTimeout(fetchTimeoutId);
+                        }
                     }
                 })().finally(() => {
                     inFlightFlush = null;

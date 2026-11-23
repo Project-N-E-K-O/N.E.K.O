@@ -1302,8 +1302,8 @@
                     if (entry && typeof entry === 'object' && typeof entry.File === 'string') return entry.File;
                     return '';
                 })
-                .map(path => path.replace(/\\/g, '/').trim())
-                .filter(Boolean);
+                .map(path => path.replace(/\\/g, '/'))
+                .filter(path => path.trim().length > 0);
         }
 
         async function fetchPreservedModelConfig(modelName, signal) {
@@ -1450,6 +1450,8 @@
             }
         }
 
+        const modelSaveChains = new Map();
+
         // 保存情感映射配置
         async function saveEmotionMapping() {
             if (!currentModelInfo
@@ -1462,6 +1464,7 @@
 
             const savingSelectionId = currentSelectionId;
             const savingModelInfo = currentModelInfo;
+            const modelSaveKey = savingModelInfo.name;
 
             const uiMotions = {};
             const uiExpressions = {};
@@ -1481,8 +1484,18 @@
                 }
             });
 
+            const previousModelSave = modelSaveChains.get(modelSaveKey) || Promise.resolve();
+            let releaseModelSave;
+            const currentModelSave = new Promise(resolve => { releaseModelSave = resolve; });
+            modelSaveChains.set(modelSaveKey, currentModelSave);
+
             saveBtn.disabled = true;
             try {
+                await previousModelSave.catch(() => {});
+                if (savingSelectionId !== currentSelectionId) {
+                    return;
+                }
+
                 const preservedConfig = await fetchPreservedModelConfig(savingModelInfo.name);
                 if (savingSelectionId !== currentSelectionId) {
                     return;
@@ -1524,6 +1537,12 @@
                 console.error('保存情感映射配置失败:', error);
                 showStatus(t('emotionManager.saveFailed') + ': ' + error.message, 'error');
             } finally {
+                if (typeof releaseModelSave === 'function') {
+                    releaseModelSave();
+                }
+                if (modelSaveChains.get(modelSaveKey) === currentModelSave) {
+                    modelSaveChains.delete(modelSaveKey);
+                }
                 if (savingSelectionId === currentSelectionId && isModelConfigReady) {
                     saveBtn.disabled = false;
                 }

@@ -1785,3 +1785,122 @@ test('PR3976 U6: saveCatgirlFromPanel awaits localechange voice reload and prese
     assert.deepEqual(JSON.parse(voicePut.body), { voice_id: 'gsv:new' });
     assert.equal(calls.some(c => c.url.includes('/unregister_voice')), false, 'must never unregister when user chose gsv:new');
 });
+
+test('PR3976 #13 follow-up: unresolved saved idle motion with empty motion_files keeps select enabled and play disabled', async () => {
+    const l2dCalls = [];
+    let savedIdleOnServer = 'motions/missing.motion3.json';
+    const fetchImpl = async (url, init = {}) => {
+        const u = String(url);
+        if (u === '/api/characters/catgirl/l2d/NekoA' && init.method === 'PUT') {
+            const payload = JSON.parse(init.body);
+            l2dCalls.push(payload);
+            savedIdleOnServer = payload.live2d_idle_animation;
+            return { ok: true, status: 200, json: async () => ({ success: true }) };
+        }
+        if (u === '/api/characters/catgirl/NekoA' && (init.method || 'GET') === 'PUT') {
+            return { ok: true, status: 200, json: async () => ({ success: true, character_name: 'NekoA' }) };
+        }
+        if (u === '/api/characters/voices') {
+            return { ok: true, status: 200, json: async () => ({ voices: {} }) };
+        }
+        if (u === '/api/characters/custom_tts_voices?provider=gptsovits') {
+            return { ok: true, status: 200, json: async () => ({ success: true, voices: [] }) };
+        }
+        if (u === '/api/characters/character/NekoA/language-preference') {
+            return { ok: true, status: 200, json: async () => ({ success: true, language: 'auto' }) };
+        }
+        throw new Error('Unexpected fetch URL: ' + u);
+    };
+
+    const { ctx, win, doc } = loadCardFormContext(fetchImpl);
+    ctx.loadCharacterData = async () => ({
+        '猫娘': {
+            NekoA: {
+                '档案名': 'NekoA',
+                model_type: 'live2d',
+                live2d: 'mao_pro',
+                live2d_idle_animation: savedIdleOnServer,
+            },
+        },
+    });
+
+    const placeholder = doc.createElement('div');
+    placeholder.className = 'preview-placeholder';
+    const controlsDiv = doc.createElement('div');
+    controlsDiv.id = 'live2d-preview-controls';
+    const motionSelect = doc.createElement('select');
+    motionSelect.id = 'preview-motion-select';
+    const exprSelect = doc.createElement('select');
+    exprSelect.id = 'preview-expression-select';
+    const playMotionBtn = doc.createElement('button');
+    playMotionBtn.id = 'preview-play-motion-btn';
+    const playExprBtn = doc.createElement('button');
+    playExprBtn.id = 'preview-play-expression-btn';
+    doc.body.append(placeholder, controlsDiv, motionSelect, exprSelect, playMotionBtn, playExprBtn);
+
+    const previewCode = fs.readFileSync(
+        path.join(ROOT, 'static/js/character_card_manager/model-previews.js'),
+        'utf8'
+    );
+    const fnStart = previewCode.indexOf('// 模型加载后更新预览控件');
+    const fnEnd = previewCode.indexOf('// 更新角色卡信息预览', fnStart);
+    const hideStart = previewCode.indexOf('// 隐藏预览控件');
+    const hideEnd = previewCode.indexOf('// 注意事项标签功能', hideStart);
+    const previewSnippet = previewCode.slice(fnStart, fnEnd) + '\n' + previewCode.slice(hideStart, hideEnd);
+
+    const previewCtx = vm.createContext({
+        window: Object.assign(win, {
+            _currentCardRawData: {
+                '档案名': 'NekoA',
+                model_type: 'live2d',
+                live2d: 'mao_pro',
+                live2d_idle_animation: 'motions/missing.motion3.json',
+            },
+            _previewMotionFiles: [],
+            t: (_k, fb) => fb,
+        }),
+        document: doc,
+        live2dPreviewManager: { _userIdleAnimations: [], currentModel: null },
+        currentPreviewModel: null,
+        requestAnimationFrame: () => 1,
+        console,
+    });
+    vm.runInContext(previewSnippet, previewCtx);
+
+    await previewCtx.updatePreviewControlsAfterModelLoad({
+        motion_files: [],
+        expression_files: [],
+    });
+
+    assert.equal(motionSelect.disabled, false, 'motionSelect must remain enabled when unresolved saved idle exists even if motion_files is empty');
+    assert.equal(playMotionBtn.disabled, true, 'playMotionBtn must stay disabled when motion_files is empty');
+    assert.equal(motionSelect.value, 'motions/missing.motion3.json');
+    assert.equal(motionSelect.options[0].textContent, '无动作');
+
+    const overlay = doc.createElement('div');
+    overlay.className = 'catgirl-panel-overlay active';
+    const container = doc.createElement('div');
+    overlay.appendChild(container);
+    doc.body.appendChild(overlay);
+
+    ctx.buildCatgirlDetailForm('NekoA', {
+        '档案名': 'NekoA',
+        '性格': '温柔',
+        model_type: 'live2d',
+        live2d: 'mao_pro',
+        live2d_idle_animation: 'motions/missing.motion3.json',
+    }, false, container);
+    let form = container.querySelector('form');
+    await form._voicesLoadPromise;
+
+    await ctx.saveCatgirlFromPanel(form, 'NekoA', false);
+    assert.equal(l2dCalls.length, 0, 'unedited unresolved placeholder with empty motion_files must skip PUT /l2d');
+    form = container.querySelector('form');
+    await form._voicesLoadPromise;
+
+    motionSelect.value = '';
+    motionSelect.dispatchEvent({ type: 'change' });
+    await ctx.saveCatgirlFromPanel(form, 'NekoA', false);
+    assert.equal(l2dCalls.length, 1, 'explicit user clear under empty motion_files must send PUT /l2d');
+    assert.deepEqual(l2dCalls[0], { live2d_idle_animation: '' });
+});
