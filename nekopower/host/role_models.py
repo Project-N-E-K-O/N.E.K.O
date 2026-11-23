@@ -72,7 +72,8 @@ HOST_API_NOT_CONFIGURED = "host_api_not_configured"
 HOST_API_UNSUPPORTED = "host_api_unsupported"
 CAPABILITY_MISSING = "capability_missing"
 # The host's own: a session's slot, which it was settled on, now sends it
-# to another address or model, and not by following a tier of the main app.
+# to another address or model, and not by following the tier of the main
+# app it followed then.
 # Slots can be rewritten by more than the user (a plugin's page is served
 # from the plugin server's origin), and what was said in the session is not
 # to go somewhere the user never chose for it.
@@ -200,11 +201,11 @@ class Choice:
 
     ``slot`` is the slot of the model panel ("" for the task agent model of
     the main app itself), ``agent`` whether it is that model (that slot, or
-    the slot that follows it), ``follows_host`` whether it is a tier of the
-    main app (that model, or a slot that follows a tier), ``fallback`` why
-    the setting of the preset could not be used. ``config`` is what the
-    session is opened with, its key included; None when no model is
-    configured.
+    the slot that follows it), ``tier`` the tier of the main app it is
+    (that model, or a slot that follows a tier; "" for a slot the user
+    filled in), ``fallback`` why the setting of the preset could not be
+    used. ``config`` is what the session is opened with, its key included;
+    None when no model is configured.
     """
 
     slot: str
@@ -214,7 +215,7 @@ class Choice:
     free: bool
     fallback: str = ""
     config: dict[str, Any] | None = field(default=None, repr=False, compare=False)
-    follows_host: bool = True
+    tier: str = AGENT_TIER
 
     def columns(self) -> dict[str, Any]:
         """Return what is kept of it on a session's row: no address, no key."""
@@ -224,16 +225,16 @@ class Choice:
             "model_ident": self.ident,
             "model_free": int(self.free),
             "model_fallback": self.fallback,
+            "model_tier": self.tier,
         }
 
 
 def _choice(
-    slot: str, agent: bool, config: dict[str, Any] | None, fallback: str = "", *, follows_host: bool = True
+    slot: str, agent: bool, config: dict[str, Any] | None, fallback: str = "", *, tier: str = AGENT_TIER
 ) -> Choice:
     if not config or not config.get("model"):
         return Choice(
-            slot=slot, agent=agent, name="", ident="", free=False, fallback=fallback, config=None,
-            follows_host=follows_host,
+            slot=slot, agent=agent, name="", ident="", free=False, fallback=fallback, config=None, tier=tier,
         )
     return Choice(
         slot=slot,
@@ -243,7 +244,7 @@ def _choice(
         free=is_free_key(config.get("api_key")),
         fallback=fallback,
         config=config,
-        follows_host=follows_host,
+        tier=tier,
     )
 
 
@@ -370,8 +371,8 @@ class RoleModels:
         if self.slots is None:
             raise SlotUnavailable(MODEL_CONFIG_UNREADABLE)
         resolved = await self.slots.resolve(slot_id)
-        follows_host = resolved.source == "host_follow"
-        if follows_host:
+        tier = str(resolved.host_api) if resolved.source == "host_follow" else ""
+        if tier:
             if resolved.host_api == AGENT_TIER:
                 # What every session was opened with before there were
                 # slots, read as it was: the same request goes out.
@@ -390,7 +391,7 @@ class RoleModels:
             agent = False
         if config is not None and IMAGE_INPUT not in tuple(resolved.capabilities):
             config = {**config, "supports_images": False}
-        return _choice(slot_id, agent, config, follows_host=follows_host)
+        return _choice(slot_id, agent, config, tier=tier)
 
     async def agent_slot(self) -> str | None:
         """Return the slot that follows the task agent model of the main app, None when there is none; raises ``SlotUnavailable``."""
@@ -474,18 +475,20 @@ class RoleModels:
             "fallback": choice.fallback or None,
         }
 
-    async def again(self, slot_id: str, ident: str) -> Choice:
+    async def again(self, slot_id: str, ident: str, tier: str) -> Choice:
         """Return the model a settled session is sent to now, by the slot it was settled on; raises ``SlotUnavailable``.
 
-        ``ident`` is what it was settled on (``Choice.ident``). A slot that
-        now sends it to another address or model is not followed there
-        (``SLOT_CHANGED``), unless it follows a tier of the main app: what
-        the user sets for the main app is taken as it always was.
+        ``ident`` and ``tier`` are what it was settled on (``Choice``). A
+        slot that now sends it to another address or model is not followed
+        there (``SLOT_CHANGED``), unless it still follows the tier of the
+        main app it followed then: what the user sets for the main app is
+        taken as it always was. A slot made to follow a tier since, or
+        another tier, is not: slots are written by more than the user.
         """
         if not slot_id:
             return await self.agent()
         found = await self.slot(slot_id)
-        if found.ident and found.ident != ident and not found.follows_host:
+        if found.ident and found.ident != ident and not (found.tier and found.tier == tier):
             raise SlotUnavailable(SLOT_CHANGED)
         return found
 

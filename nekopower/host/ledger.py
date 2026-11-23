@@ -277,7 +277,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     model_name TEXT NOT NULL DEFAULT '',
     model_ident TEXT NOT NULL DEFAULT '',
     model_free INTEGER NOT NULL DEFAULT 0,
-    model_fallback TEXT NOT NULL DEFAULT ''
+    model_fallback TEXT NOT NULL DEFAULT '',
+    model_tier TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_by_name ON sessions (lanlan_name, name);
 CREATE INDEX IF NOT EXISTS sessions_by_project ON sessions (lanlan_name, project, kind);
@@ -557,12 +558,15 @@ class Session:
     # kept), "" while nothing is settled; ``model_free`` whether what is
     # sent goes with the built-in free key; ``model_fallback`` why the
     # preset's setting could not be used and its default was ("" when it
-    # could). Never an address or a key.
+    # could); ``model_tier`` the tier of the main app it follows ("" for a
+    # slot the user filled in), the one it may follow to another provider.
+    # Never an address or a key.
     model_slot: str = ""
     model_name: str = ""
     model_ident: str = ""
     model_free: int = 0
     model_fallback: str = ""
+    model_tier: str = ""
 
     @property
     def tokens(self) -> int:
@@ -592,9 +596,10 @@ _ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
     ("model_ident", "TEXT NOT NULL DEFAULT ''"),
     ("model_free", "INTEGER NOT NULL DEFAULT 0"),
     ("model_fallback", "TEXT NOT NULL DEFAULT ''"),
+    ("model_tier", "TEXT NOT NULL DEFAULT ''"),
 )
 # The columns that say which model a session's task agent is sent to, other than whether it goes free.
-_MODEL_TEXT_COLUMNS: tuple[str, ...] = ("model_slot", "model_name", "model_ident", "model_fallback")
+_MODEL_TEXT_COLUMNS: tuple[str, ...] = ("model_slot", "model_name", "model_ident", "model_fallback", "model_tier")
 # The columns of a session's card: its lines, and who wrote each.
 _CARD_COLUMNS: frozenset[str] = frozenset(CARD_FIELDS) | {f"{name}_by" for name in CARD_FIELDS}
 # Columns ``update_session`` may write. What was used is written by

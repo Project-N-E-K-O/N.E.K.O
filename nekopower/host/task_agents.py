@@ -2009,7 +2009,8 @@ class TaskAgentManager:
         if recorded(kept):
             try:
                 choice = dataclass_replace(
-                    await self.role_models.again(kept.model_slot, kept.model_ident), fallback=kept.model_fallback
+                    await self.role_models.again(kept.model_slot, kept.model_ident, kept.model_tier),
+                    fallback=kept.model_fallback,
                 )
             except SlotUnavailable as exc:
                 logger.info(
@@ -9513,6 +9514,7 @@ class TaskAgentManager:
                 model_ident=source.model_ident,
                 model_free=source.model_free,
                 model_fallback=source.model_fallback,
+                model_tier=source.model_tier,
             )
         except Exception as exc:  # noqa: BLE001 - told as a copy that was not made
             # Written, and not on record: nothing would ever come by it to remove it.

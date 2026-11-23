@@ -419,7 +419,7 @@ async def test_a_copy_is_sent_where_the_session_it_was_copied_from_is_whatever_i
     again = await host.fork_session(copy.id)
 
     for row in (copy, again):
-        assert (row.model_slot, row.model_name) == (OWN_SLOT, "own-model")
+        assert (row.model_slot, row.model_name, row.model_tier) == (OWN_SLOT, "own-model", "")
         choice = await host.task_agents.session_model(row)
         assert (choice.slot, choice.name, choice.config["api_key"]) == (OWN_SLOT, "own-model", OWN_KEY)
     # One copied from a session not on record any more: the default of a session of no project.
@@ -1325,3 +1325,27 @@ async def test_a_setting_being_written_is_written_whole_when_whoever_asked_gives
     await store.put("scout", "inherit")
 
     assert await store.all() == {"boss": OWN_SLOT, "scout": "inherit"}
+
+
+@pytest.mark.parametrize("rewritten", ["own slot made to follow a tier", "agent slot made to follow another tier"])
+async def test_a_slot_made_to_follow_another_tier_since_is_not_followed_there(hosts, tmp_path, rewritten):
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _manager(tmp_path, _default_slots(), agent_small=small)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    chosen = OWN_SLOT if rewritten.startswith("own") else AGENT_SLOT
+    await host.set_role_model("general", chosen)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    await tasks.settle_model(session)
+    settled = await host.ledger.get_session(session.id)
+    assert settled.model_tier == ("" if chosen == OWN_SLOT else "agent")
+    await host.set_role_model("general", None)
+
+    slots = _default_slots()
+    slots[chosen] = _follow("agent_small")
+    _write_slots(manager, slots)
+    choice = await tasks.session_model(settled)
+
+    # The conversation stays away from a tier nobody chose for it: the preset's default, and why.
+    assert choice.name != "small-model"
+    assert choice.fallback == "slot_changed"
