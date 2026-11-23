@@ -2337,8 +2337,8 @@
                 // 同上：抓帧是异步的，源 ID 要跟这条流一起钉住，事后再读可能已经换人。
                 // 必须在 acquireOrReuseCachedStream 之后取——它自己就会改写这个字段。
                 var streamSourceId = S.selectedScreenSourceId;
-                var streamMaskSourceId = streamCaptureSourceId(stream, streamSourceId);
-                retargetScopeMaskSession(maskScope, streamMaskSourceId);
+                var streamMaskSourceId = streamCaptureSourceId(stream);
+                retargetScopeMaskSession(maskScope, streamMaskSourceId, 'stream', stream);
                 var frame = await captureFrameFromStream(stream, 0.8);
                 if (frame && frame.dataUrl) {
                     dataUrl = frame.dataUrl;
@@ -2784,23 +2784,31 @@
     // 截图前后两次取交集，所以这次取得越贴近抓帧越准；取早了，中途移动或新出现的
     // 区域会让交集变小。每次抓帧尝试都重取，结果记在 captureScope 上由外层使用。
     // 单张截图和语音心跳共用。via 'backend'：后端整屏兜底图，按 backend 口径取（sourceId 恒为 null）。
-    function retargetScopeMaskSession(captureScope, sourceId, via) {
+    function retargetScopeMaskSession(captureScope, sourceId, via, stream) {
         if (!captureScope) return;
         captureScope.maskSession = beginSelfUiMaskSession({
             sourceId: sourceId || null,
-            via: via === 'backend' ? 'backend' : 'stream'
+            via: via === 'backend' ? 'backend' : 'stream',
+            // The stream this attempt captures: a superseded getDisplayMedia
+            // stream is not queried (see appCaptureMask.requestDisplayMedia).
+            stream: stream || null
         });
     }
 
-    // 流实际截的源（#3474 遮罩查询用）：选中源失效、回退到第一个 screen: 源时，
-    // S.selectedScreenSourceId 已被清空，只有流自己记得。拿不到时用调用方钉住的选中源。
-    // 只用于遮罩查询的 sourceId；captureType（Avatar 标注口径）仍按钉住的选中源算，
-    // 回退场景下两者可能不一致（captureType 偏保守地判为 null），这是有意的。
-    function streamCaptureSourceId(stream, selectedSourceId) {
+    // The source a stream actually captures (#3474 mask queries only), or
+    // null when it was not recorded (e.g. a getDisplayMedia stream). Never the
+    // selection cache: it may name a different source (a stale selection that
+    // fell back to the first screen is cleared, and only the stream knows),
+    // and the shell then answers for the wrong frame or, on Linux with several
+    // displays, refuses. With null the shell uses its own record of what
+    // getDisplayMedia handed this window. captureType (Avatar annotation)
+    // still uses the pinned selected source; in the fallback case the two may
+    // differ (captureType conservatively becomes null), which is intended.
+    function streamCaptureSourceId(stream) {
         var screenMod = window.appScreen;
         var id = screenMod && typeof screenMod.getStreamCaptureSourceId === 'function'
             ? screenMod.getStreamCaptureSourceId(stream) : null;
-        return id || selectedSourceId || null;
+        return id || null;
     }
 
     async function captureProactiveChatScreenshotWithSourceInternal(captureScope) {
@@ -2840,8 +2848,8 @@
                 var cachedSourceId = S.selectedScreenSourceId;
                 var tracks = cachedStream.getVideoTracks();
                 if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                    var cachedMaskSourceId = streamCaptureSourceId(cachedStream, cachedSourceId);
-                    retargetScopeMaskSession(captureScope, cachedMaskSourceId);
+                    var cachedMaskSourceId = streamCaptureSourceId(cachedStream);
+                    retargetScopeMaskSession(captureScope, cachedMaskSourceId, 'stream', cachedStream);
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
                         if (discardSupersededRememberedFrame('缓存流截图')) {
@@ -2908,8 +2916,8 @@
         if (stream) {
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
             var streamSourceId = S.selectedScreenSourceId;
-            var streamMaskSourceId = streamCaptureSourceId(stream, streamSourceId);
-            retargetScopeMaskSession(captureScope, streamMaskSourceId);
+            var streamMaskSourceId = streamCaptureSourceId(stream);
+            retargetScopeMaskSession(captureScope, streamMaskSourceId, 'stream', stream);
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 if (discardSupersededRememberedFrame('前端流截图')) {
@@ -2941,8 +2949,8 @@
             }
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
-                var retryMaskSourceId = streamCaptureSourceId(stream, retrySourceId);
-                retargetScopeMaskSession(captureScope, retryMaskSourceId);
+                var retryMaskSourceId = streamCaptureSourceId(stream);
+                retargetScopeMaskSession(captureScope, retryMaskSourceId, 'stream', stream);
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
                     if (discardSupersededRememberedFrame('前端流重试截图')) {

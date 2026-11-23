@@ -198,12 +198,12 @@ async def force_disable_agent_for_character_switch(current_lanlan: str, previous
         if response.is_success:
             return True
         logger.warning(
-            "角色切换关闭猫爪失败: lanlan=%s status=%s",
+            "角色切换关闭喵能力失败: lanlan=%s status=%s",
             current_lanlan,
             response.status_code,
         )
     except Exception as exc:
-        logger.warning("角色切换关闭猫爪异常: lanlan=%s err=%s", current_lanlan, exc)
+        logger.warning("角色切换关闭喵能力异常: lanlan=%s err=%s", current_lanlan, exc)
     return False
 
 

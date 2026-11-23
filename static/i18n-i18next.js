@@ -29,9 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Keep main's key pruning and star-map cooldown hint with knowledge-manager
-    // copy; retire both prior cache versions for the merged locale structure.
-    const LOCALE_VERSION = '2026-11-22-knowledge-star-map-merge';
+    // Preserve knowledge-manager copy with main's model tiers and capture-mask
+    // settings; retire both prior cache versions for the merged locale keys.
+    const LOCALE_VERSION = '2026-11-23-knowledge-model-tiers-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

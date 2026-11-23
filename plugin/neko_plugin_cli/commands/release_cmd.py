@@ -200,8 +200,8 @@ def handle_release_check(args: argparse.Namespace) -> int:
     print(f"  payload_hash_verified={inspect_result.payload_hash_verified}")
     print(f"  tests={test_result}")
     for severity, message in issues:
-        if severity == "warning":
-            print(f"  [WARNING] {message}")
+        if severity in ("warning", "info"):
+            print(f"  [{severity.upper()}] {message}")
     return 0
 
 
@@ -689,6 +689,10 @@ _WINDOWS_SHELL = os.name == "nt"
 _WINDOWS_EXPANDING_CHARS = "%!$`\u201c\u201d\u201e"
 # Shown instead of a path no quoting keeps literal; the user fills it in.
 _PLUGIN_DIR_PLACEHOLDER = '"<plugin directory>"'
+# Likewise for the values of printed git commands; quoted so that pasting one
+# unreplaced passes a literal word rather than a < redirection.
+_BRANCH_PLACEHOLDER = '"<branch>"'
+_REMOTE_PLACEHOLDER = '"<repository-url>"'
 
 
 def _shell_quote(value: str) -> str | None:
@@ -696,12 +700,20 @@ def _shell_quote(value: str) -> str | None:
 
     None when no quoting keeps it literal for every Windows shell (see
     _WINDOWS_EXPANDING_CHARS), which could point the command at another
-    directory.
+    directory. A trailing backslash counts too: programs parse ``\\"`` at the
+    end of ``"C:\\repo\\"`` as a literal quote and receive ``C:\\repo"``. So does
+    a control character: cmd ends the command at a line break.
     """
     if not _WINDOWS_SHELL:
         # POSIX shells expand $ and ` inside double quotes.
         return shlex.quote(value)
-    return None if any(char in value for char in _WINDOWS_EXPANDING_CHARS) else f'"{value}"'
+    if (
+        value.endswith("\\")
+        or any(char in value for char in _WINDOWS_EXPANDING_CHARS)
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+    ):
+        return None
+    return f'"{value}"'
 
 
 def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
@@ -714,6 +726,46 @@ def _plugin_dir_argument(plugin_dir: Path | None, label: str) -> str:
         return label
     target = _shell_quote(str(plugin_dir))
     return _PLUGIN_DIR_PLACEHOLDER if target is None else target
+
+
+# Nothing a supported shell expands or splits: shlex's safe set without %
+# and "," (a PowerShell array), and no leading @ (PowerShell splatting) or
+# = (zsh expansion).
+_SHELL_PLAIN = re.compile(r"[\w+:./-][\w@+=:./-]*")
+
+
+def _push_refspec(branch: str, remote_branch: str | None = None) -> str:
+    """The ``git push`` refspec for exactly these branches.
+
+    A branch name may start with +, which git reads as "force" at the start of
+    a refspec (``git push origin +main`` force-pushes main), and no quoting
+    hides it from git. Such a side is spelled out as refs/heads/<name>.
+    """
+
+    def side(name: str) -> str:
+        return f"refs/heads/{name}" if name.startswith("+") else name
+
+    return side(branch) if remote_branch is None else f"{side(branch)}:{side(remote_branch)}"
+
+
+def _shell_argument(value: str, placeholder: str) -> str:
+    """``value`` as one argument of a printed command, or ``placeholder``.
+
+    Plain values (``main``, a GitHub URL) stay bare. The placeholder (already
+    quoted) stands in when no Windows quoting keeps ``value`` literal; see
+    _shell_quote. A path never holds ``"``, but a branch name may, and inside
+    double quotes it would end the quoting in cmd.
+    """
+    if _SHELL_PLAIN.fullmatch(value):
+        return value
+    if _WINDOWS_SHELL and '"' in value:
+        return placeholder
+    quoted = _shell_quote(value)
+    if quoted == value:
+        # shlex leaves a leading = bare, which zsh expands to a command path;
+        # the value holds only shlex-safe characters, so no ' to escape.
+        quoted = f"'{value}'"
+    return placeholder if quoted is None else quoted
 
 
 def _placeholder_path(plugin_dir: Path) -> str | None:
@@ -767,7 +819,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
         # Windows PowerShell 5).
         return f"git -C {_plugin_dir_argument(plugin_dir, '')} init"
     if message == "git remote 'origin' is not configured":
-        return "git remote add origin <repo-url>"
+        return f"git remote add origin {_REMOTE_PLACEHOLDER}"
     if message.startswith(_WORKTREE_NOT_COMMITTED):
         return _tri(
             "commit these files or add them to .gitignore; CI checks the pushed commit, not the working tree",

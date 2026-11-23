@@ -10,7 +10,7 @@ which keeps ``zh-TW`` and resolves every other input to the key the short code
 gave before.
 
 What is under way is no longer rendered here from a task list: the agent
-process answers ``/nekoclaw/brief`` with finished lines, written in the
+process answers ``/nekopower/brief`` with finished lines, written in the
 language the request names. So the session's language has to reach that
 request as it is -- folded on this side, the lines would come back Simplified
 under a Traditional header.
@@ -134,7 +134,7 @@ def _assert_brief_asked_in(requests, user_language, *, agent_enabled: bool) -> N
         return
     assert len(requests) == 1
     url, params = requests[0]
-    assert url.endswith("/nekoclaw/brief")
+    assert url.endswith("/nekopower/brief")
     assert params == {"lanlan_name": NAME, "language": user_language or ""}
 
 

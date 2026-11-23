@@ -99,6 +99,7 @@
         <template v-if="form.source === 'host_follow'">
           <el-form-item :label="t('modelApi.hostApiLabel')" required>
             <el-select v-model="form.host_api" data-testid="slot-host-api" :disabled="saving">
+              <el-option :label="t('modelApi.hostApi.agent_advanced')" value="agent_advanced" />
               <el-option :label="t('modelApi.hostApi.agent')" value="agent" />
               <el-option :label="t('modelApi.hostApi.agent_small')" value="agent_small" />
             </el-select>

@@ -80,9 +80,11 @@ function makeWindow(opts) {
         devicePixelRatio: 1,
     }, opts.geom || {});
     const imageSizes = Object.assign({}, opts.imageSizes || {});
-    const state = { elements: opts.elements || [] };
+    // focused: document.hasFocus() (browser window in front); default true.
+    const state = { elements: opts.elements || [], focused: opts.focused !== false };
     const document = {
         visibilityState: 'visible',
+        hasFocus() { return state.focused; },
         documentElement: makeElement({ x: 0, y: 0, w: 1, h: 1 }),
         querySelectorAll(selector) {
             assert.equal(selector, '[data-neko-capture-mask]');
@@ -380,6 +382,12 @@ test('browser: only what the samples before and after capture agree on is masked
 
 // ---------------------------------------------------------------- desktop shell (C2 stub)
 
+// A stream handed out by getDisplayMedia through the numbered request (as the
+// app does): a stream with no recorded source and no number is position unknown.
+function numberStream(env, stream) {
+    return env.w.appCaptureMask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(stream) }, {});
+}
+
 function shellStub(behaviour) {
     const calls = [];
     return {
@@ -617,6 +625,7 @@ test('voice-time vision heartbeat: the stream_data frame is masked before it is 
         Object.assign(S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
         const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
         const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+        await numberStream(env, stream);
         w.appScreen.acquireOrReuseCachedStream = async () => stream;
         w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
         w.document.getElementById = () => null;
@@ -643,6 +652,17 @@ test('native screen share: the stream_data frame is masked before it is sent', a
     assert.equal(sent.length, 1, 'first native frame sent');
     assert.deepEqual(fillsOf(sent[0].data), [[300, 200, 600, 400]], 'native frame must be masked');
     assert.deepEqual(shell.calls[0], { version: 1, sourceId: 'screen:3:0', surface: 'source' });
+    // Before and after capture: the id the shell actually captured.
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:3:0', 'screen:3:0']);
+});
+
+test('native paths pass the source the shell actually captured, even when the selection cache names another', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1200, 800] });
+    env.S.selectedScreenSourceId = 'screen:8:0';
+    env.w.captureDesktopSourceWithTimeout = async (_p, _m, id) => { assert.equal(id, 'screen:3:0'); return { success: true, dataUrl: RAW_FRAME }; };
+    await env.w.appScreen.startNativeScreenStreaming({ nativeFrameCapture: true, captureSourceAsDataUrl() {} }, 'screen:3:0', 'screen');
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:3:0', 'screen:3:0']);
 });
 
 // ---------------------------------------------------------------- C1 payload limits (shell validation)
@@ -764,6 +784,8 @@ test('single-shot entries pass the source they actually captured to the shell; b
     const cachedShell = shellStub(answer);
     const cached = bootProactive({ multiWindow: true, shell: cachedShell });
     cached.S.selectedScreenSourceId = 'screen:7:0';
+    // The cached stream records the source it was acquired with.
+    cached.w.appScreen.getStreamCaptureSourceId = (s) => (s === cached.S.screenCaptureStream ? 'screen:7:0' : null);
     const cachedShot = await cached.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(cachedShot.via, 'stream');
     assert.deepEqual(cachedShell.calls.map((c) => c.sourceId), ['screen:7:0', 'screen:7:0']);
@@ -823,6 +845,7 @@ test('single-shot: a remembered window that changes while the frame is being mas
     });
     const env = bootProactive({ multiWindow: true, shell });
     env.S.selectedScreenSourceId = 'window:42:0';
+    await numberStream(env, env.S.screenCaptureStream);
     env.w.prepareRememberedWindowCapture = async () => ({ required: true, allowed: true, isCurrent: () => current });
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(shot.dataUrl, null);
@@ -833,6 +856,7 @@ test('single-shot: a remembered window that changes while the frame is being mas
     const steadyShell = shellStub(async () => ({ ok: true, rects: [{ x: 0, y: 0, width: 0.1, height: 0.1 }] }));
     const steady = bootProactive({ multiWindow: true, shell: steadyShell });
     steady.S.selectedScreenSourceId = 'window:42:0';
+    await numberStream(steady, steady.S.screenCaptureStream);
     steady.w.prepareRememberedWindowCapture = async () => ({ required: true, allowed: true, isCurrent: () => true });
     const steadyShot = await steady.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.ok(steadyShot.dataUrl && fillsOf(steadyShot.dataUrl).length === 1);
@@ -851,6 +875,7 @@ test('screen share: a frame captured on one connection is not sent on a reconnec
     env.lateSent = [];
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    await numberStream(env, stream);
     env.S.screenCaptureStream = stream;
     env.w.startScreenVideoStreaming(stream, 'screen');
     for (let i = 0; i < 10 && env.intervals.length === 0; i++) await new Promise((r) => setImmediate(r));
@@ -1159,6 +1184,7 @@ test('voice heartbeat: a frame captured on one connection is not sent on a recon
     Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    await numberStream(env, stream);
     env.w.appScreen.acquireOrReuseCachedStream = async () => stream;
     env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     vm.runInContext(proactiveSource, env.w);
@@ -1223,6 +1249,7 @@ test('voice heartbeat: the pre-capture sample follows the source the stream actu
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.getStreamCaptureSourceId = (s) => (s === stream ? 'screen:1:0' : null);
     env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     vm.runInContext(proactiveSource, env.w);
     await env.w.appProactive.sendOneProactiveVisionFrame();
@@ -1238,6 +1265,7 @@ test('single-shot: the pre-capture sample follows the source the stream actually
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.getStreamCaptureSourceId = (s) => (s === stream ? 'screen:1:0' : null);
     env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
     const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
     assert.equal(shot.sourceId, 'screen:1:0');
@@ -1273,6 +1301,7 @@ test('voice heartbeat: every capture attempt samples right before it, for the so
     const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
     const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
     env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:1:0'; return stream; };
+    env.w.appScreen.getStreamCaptureSourceId = (s) => (s === stream ? 'screen:1:0' : null);
     env.w.appScreen.captureFrameFromStream = async () => { env.S.selectedScreenSourceId = 'screen:0:0'; return null; };
     env.w.getDesktopCaptureProvider = () => ({ nativeFrameCapture: true, captureSourceAsDataUrl() {} });
     env.w.captureDesktopSourceWithTimeout = async () => ({ success: true, dataUrl: RAW_FRAME });
@@ -1423,4 +1452,536 @@ test('reporter: scrolling (no DOM mutation) and text changes trigger a report', 
     docListeners.scroll.fn();
     await new Promise((r) => setTimeout(r, 300));
     assert.equal(reports.length, 2, 'scroll is reported without waiting for the 1 s recheck');
+});
+
+
+// ---------------------------------------------------------------- review round 9: focus + user switch
+
+const stateSource = fs.readFileSync(path.join(repo, 'static/app/app-state.js'), 'utf8');
+const settingsSource = fs.readFileSync(path.join(repo, 'static/app/app-settings.js'), 'utf8');
+
+function spyReasons(w) {
+    const src = maskSource.replace("    function decideWhenGeometryUnavailable(ctx, reason) {\n",
+        "    function decideWhenGeometryUnavailable(ctx, reason) {\n        globalThis.__reasons = (globalThis.__reasons || []).concat([reason]);\n");
+    assert.notEqual(src, maskSource);
+    vm.runInContext(src, w);
+}
+
+function screenEnv(opts) {
+    return makeWindow(Object.assign({
+        elements: chatElements({ galOpen: true }),
+        geom: { innerWidth: 1000, innerHeight: 1000, outerWidth: 1000, outerHeight: 1000, screenWidth: 1000, screenHeight: 1000 },
+        imageSizes: { [RAW_FRAME]: [1000, 1000] },
+    }, opts || {}));
+}
+
+test('browser whole-screen share: focused window before and after capture -> masked', async () => {
+    const env = screenEnv();
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('browser whole-screen share: window not focused before capture -> position unknown, sent unmasked', async () => {
+    const env = screenEnv({ focused: false });
+    spyReasons(env.w);
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    env.state.focused = true;
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.equal(out, RAW_FRAME);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+});
+
+test('browser whole-screen share: window loses focus during capture -> position unknown, sent unmasked', async () => {
+    const env = screenEnv();
+    spyReasons(env.w);
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    env.state.focused = false;
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }, session);
+    assert.equal(out, RAW_FRAME);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+    // Single sample (no pre-capture session) follows the same rule.
+    env.w.__reasons = [];
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+});
+
+test('browser tab share of this tab: still masked while the window is not focused', async () => {
+    const env = makeWindow({ focused: false, elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
+    const session = env.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: ownTab(env.w) }, session);
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('browser whole-screen share: not focused but nothing to mask -> known, untouched without the fallback', async () => {
+    const env = screenEnv({ focused: false, elements: [] });
+    spyReasons(env.w);
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
+    assert.equal(env.w.__reasons, undefined);
+});
+
+// Load the real app-state.js / app-settings.js into a mask test window; the
+// two windows of one test share `store` as their localStorage.
+function withSettings(env, store) {
+    const w = env.w;
+    const listeners = [];
+    w.addEventListener = (type, fn) => { listeners.push({ type, fn }); };
+    w.removeEventListener = () => {};
+    w.dispatchEvent = () => {};
+    w.CustomEvent = class { constructor(type) { this.type = type; } };
+    w.localStorage = {
+        getItem: (k) => (Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null),
+        setItem: (k, v) => { store[k] = String(v); },
+        removeItem: (k) => { delete store[k]; },
+    };
+    w.navigator = Object.assign({ userAgent: 'test' }, w.navigator || {});
+    w.location = Object.assign({ search: '' }, w.location || {});
+    w.matchMedia = () => ({ matches: false });
+    w.fetch = () => new Promise(() => {});
+    w.setTimeout = (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; };
+    w.document.getElementById = () => null;
+    w.document.querySelector = () => null;
+    vm.runInContext(stateSource, w);
+    vm.runInContext(settingsSource, w);
+    env.fireStorage = (newValue) => listeners
+        .filter((l) => l.type === 'storage')
+        .forEach((l) => l.fn({ key: 'project_neko_settings', newValue }));
+    return env;
+}
+
+test('switch: on by default (app state, saved settings, reset defaults)', async () => {
+    const env = withSettings(screenEnv(), {});
+    assert.equal(env.w.appState.captureSelfUiMaskEnabled, true);
+    assert.equal(env.w.captureSelfUiMaskEnabled, true);
+    const out = await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' });
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+    // A saved snapshot from before the switch existed has no key: stays on.
+    const old = withSettings(screenEnv(), { project_neko_settings: JSON.stringify({ slopFilterEnabled: true }) });
+    assert.equal(old.w.appState.captureSelfUiMaskEnabled, true);
+});
+
+test('switch off: the frame is returned as captured, no region read, no shell query', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0, y: 0, width: 0.5, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell });
+    env.w.appState = { captureSelfUiMaskEnabled: false };
+    assert.equal(env.w.appCaptureMask.beginMaskSession({ via: 'stream', sourceId: 'screen:0:0' }).switchedOff, true);
+    for (const via of ['stream', 'native', 'backend']) {
+        assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: 'screen:0:0', via }), RAW_FRAME);
+    }
+    assert.equal(shell.calls.length, 0);
+
+    const browser = screenEnv();
+    browser.w.appState = { captureSelfUiMaskEnabled: false };
+    let reads = 0;
+    browser.w.document.querySelectorAll = () => { reads += 1; return browser.state.elements; };
+    const offSession = browser.w.appCaptureMask.beginMaskSession({ via: 'stream' });
+    assert.equal(offSession.switchedOff, true);
+    assert.equal(offSession.local, undefined, 'no pre-capture sample while off');
+    assert.equal(await browser.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' }), RAW_FRAME);
+    assert.equal(reads, 0);
+    // Read on every frame: switching back on takes effect on the next frame.
+    browser.w.appState.captureSelfUiMaskEnabled = true;
+    const out = await browser.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', via: 'stream' });
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('switch: turned off in the chat window -> the next frame in the Pet window is not masked (and back on)', async () => {
+    const store = {};
+    const chat = withSettings(makeWindow({}), store);
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const pet = withSettings(makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } }), store);
+    const ctx = { captureType: 'screen', sourceId: 'screen:0:0', via: 'native' };
+    assert.deepEqual(fillsOf(await pet.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx)), [[800, 225, 400, 450]]);
+    assert.equal(shell.calls.length, 1);
+
+    // The settings popup handler: set the global, then save.
+    chat.w.captureSelfUiMaskEnabled = false;
+    chat.w.saveNEKOSettings();
+    assert.equal(JSON.parse(store.project_neko_settings).captureSelfUiMaskEnabled, false);
+    pet.fireStorage(store.project_neko_settings);
+    assert.equal(await pet.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx), RAW_FRAME);
+    assert.equal(shell.calls.length, 1, 'no shell query while switched off');
+
+    chat.w.captureSelfUiMaskEnabled = true;
+    chat.w.saveNEKOSettings();
+    pet.fireStorage(store.project_neko_settings);
+    assert.deepEqual(fillsOf(await pet.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx)), [[800, 225, 400, 450]]);
+    assert.equal(shell.calls.length, 2);
+});
+
+test('switch: wired through settings sync, the server allow-list, the popup and all 8 locales (text guard only)', () => {
+    const settings = settingsSource;
+    assert.match(settings, /'captureSelfUiMaskEnabled',\n/);
+    assert.match(settings, /captureSelfUiMaskEnabled: true,/);
+    assert.match(settings, /S\.captureSelfUiMaskEnabled = settings\.captureSelfUiMaskEnabled \?\? true;/);
+    const allowList = fs.readFileSync(path.join(repo, 'utils/conversation_settings_constants.py'), 'utf8');
+    assert.match(allowList, /"captureSelfUiMaskEnabled",/);
+    const popup = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup.js'), 'utf8');
+    assert.match(popup, /id: 'capture-self-ui-mask'.*storageKey: 'captureSelfUiMaskEnabled'/);
+    for (const locale of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es']) {
+        const toggles = JSON.parse(fs.readFileSync(path.join(repo, 'static/locales', locale + '.json'), 'utf8')).settings.toggles;
+        assert.ok(toggles.captureSelfUiMask && toggles.captureSelfUiMaskTooltip, locale);
+    }
+});
+
+test('settings popup re-sync: re-syncing mouse tracking also updates its switch state and the tracking-mode row', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup.js'), 'utf8');
+    const start = src.indexOf('function createAnimationSettingsSidePanel(manager, prefix)');
+    const fnSrc = '(' + src.slice(start, src.indexOf('\n}\n', start) + 2) + ')';
+    const created = [];
+    const el = (tag) => {
+        const node = {
+            tagName: tag, id: '', style: {}, attrs: {}, children: [],
+            setAttribute(k, v) { this.attrs[k] = String(v); },
+            getAttribute(k) { return this.attrs[k]; },
+            appendChild(c) { this.children.push(c); return c; },
+            listeners: {},
+            addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+            matches() { return false; },
+            querySelector() { return null; }, querySelectorAll() { return []; },
+            classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+        };
+        created.push(node);
+        return node;
+    };
+    const ctx = vm.createContext({
+        document: { createElement: el, body: el('body'), querySelector: () => null, getElementById: () => null },
+        window: { mouseTrackingEnabled: true },
+        requestAnimationFrame() {}, setTimeout() {}, clearTimeout() {}, console,
+    });
+    const manager = {
+        _createSidePanelContainer: () => el('div'),
+        _createCheckIndicator: () => ({ indicator: el('div'), updateStyle() {} }),
+        _getMouseTrackingState: () => true,
+    };
+    vm.runInContext(fnSrc, ctx)(manager, 'live2d');
+    const cb = created.find((n) => n.id === 'live2d-mouse-tracking-toggle');
+    const trackingSwitch = created.find((n) => n.attrs.role === 'switch' && n.children.includes(cb));
+    const modeSwitch = created.find((n) => n.attrs.role === 'switch'
+        && n.children.some((c) => c.attrs['data-i18n'] === 'settings.toggles.fullscreenTracking'));
+    assert.ok(cb && trackingSwitch && modeSwitch);
+    assert.equal(trackingSwitch.attrs['aria-checked'], 'true');
+    assert.equal(modeSwitch.style.pointerEvents, 'auto');
+    // Turned off in another window, then re-synced as the popup show does.
+    cb.checked = false;
+    cb.updateStyle();
+    assert.equal(trackingSwitch.attrs['aria-checked'], 'false');
+    assert.equal(modeSwitch.style.pointerEvents, 'none');
+    assert.equal(modeSwitch.tabIndex, -1);
+    cb.checked = true;
+    cb.updateStyle();
+    assert.equal(trackingSwitch.attrs['aria-checked'], 'true');
+    assert.equal(modeSwitch.style.pointerEvents, 'auto');
+    assert.equal(modeSwitch.tabIndex, 0);
+    // A change event on the checkbox goes through the same path.
+    cb.checked = false;
+    cb.listeners.change.forEach((fn) => fn());
+    assert.equal(trackingSwitch.attrs['aria-checked'], 'false');
+    assert.equal(modeSwitch.style.pointerEvents, 'none');
+});
+
+test('switch turned on while a frame is being captured: that frame is sent as captured, the next one is masked', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    env.w.appState = { captureSelfUiMaskEnabled: false };
+    const ctx = { captureType: 'screen', sourceId: 'screen:0:0', via: 'native' };
+    const session = env.w.appCaptureMask.beginMaskSession(ctx);
+    env.w.appState.captureSelfUiMaskEnabled = true;
+    assert.equal(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx, session), RAW_FRAME);
+    assert.equal(shell.calls.length, 0);
+    const next = env.w.appCaptureMask.beginMaskSession(ctx);
+    assert.deepEqual(fillsOf(await env.w.appCaptureMask.maskFrameForModel(RAW_FRAME, ctx, next)), [[800, 225, 400, 450]]);
+});
+
+test('settings popup re-sync reads the switch like the mask module (only false is off)', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup-config.js'), 'utf8');
+    const start = src.indexOf('function createSettingsPopupShowSync');
+    assert.ok(start >= 0);
+    for (const [value, expected] of [[true, true], [false, false], [null, true], [undefined, 'untouched']]) {
+        const cb = { checked: 'untouched' };
+        const query = (sel) => (sel === '#neko-capture-self-ui-mask' ? cb : null);
+        const ctx = { document: { querySelector: query }, window: { captureSelfUiMaskEnabled: value }, requestAnimationFrame() {} };
+        const sync = vm.runInNewContext('(' + src.slice(start, src.indexOf('\n}\n', start) + 2) + ')', ctx)('neko');
+        sync({ querySelector: query }, 'settings');
+        assert.equal(cb.checked, expected, String(value));
+    }
+});
+
+test('settings popup re-sync is installed for every avatar type (Live2D, VRM, MMD)', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup-config.js'), 'utf8');
+    for (const prefix of ['live2d', 'vrm', 'mmd']) {
+        assert.ok(src.includes(`_onPopupShow: createSettingsPopupShowSync('${prefix}')`), prefix);
+    }
+});
+
+test('stream frames pass only the source recorded for the stream; an unrecorded stream passes null, never the selection cache', async () => {
+    const answer = async () => ({ ok: true, rects: [] });
+    // Single-shot, cached stream: recorded -> that id; unrecorded -> null.
+    for (const [recorded, expected] of [['screen:7:0', 'screen:7:0'], [null, null]]) {
+        const shell = shellStub(answer);
+        const env = bootProactive({ multiWindow: true, shell });
+        env.S.selectedScreenSourceId = 'screen:3:0';
+        await numberStream(env, env.S.screenCaptureStream);
+        env.w.appScreen.getStreamCaptureSourceId = (st) => (st === env.S.screenCaptureStream ? recorded : null);
+        const shot = await env.w.appProactive.captureProactiveChatScreenshotWithSource();
+        assert.equal(shot.via, 'stream');
+        assert.deepEqual(shell.calls.map((c) => c.sourceId), [expected, expected], 'single-shot recorded=' + recorded);
+    }
+    // Voice heartbeat: same pair.
+    for (const [recorded, expected] of [['screen:1:0', 'screen:1:0'], [null, null]]) {
+        const shell = shellStub(answer);
+        const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+        Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+        const track = { readyState: 'live', kind: 'video', getSettings: () => ({ displaySurface: 'monitor' }) };
+        const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+        await numberStream(env, stream);
+        env.w.appScreen.acquireOrReuseCachedStream = async () => { env.S.selectedScreenSourceId = 'screen:3:0'; return stream; };
+        env.w.appScreen.getStreamCaptureSourceId = (st) => (st === stream ? recorded : null);
+        env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
+        vm.runInContext(proactiveSource, env.w);
+        await env.w.appProactive.sendOneProactiveVisionFrame();
+        assert.deepEqual(shell.calls.map((c) => c.sourceId), [expected, expected], 'heartbeat recorded=' + recorded);
+    }
+});
+
+test('manual screen share: both chromeMediaSourceId acquisitions record their source (text guard only)', () => {
+    assert.match(screenSource, /chromeMediaSourceId: selectedSourceId,[\s\S]{0,200}?\}\)\);\s*recordStreamCaptureSource\(captureStream, selectedSourceId\);/);
+    assert.match(screenSource, /chromeMediaSourceId: fallbackSources\[0\]\.id,[\s\S]{0,300}?\}\)\);\s*recordStreamCaptureSource\(captureStream, fallbackSources\[0\]\.id\);/);
+    assert.match(screenSource, /var frameSourceId = getStreamCaptureSourceId\(stream\);/);
+});
+
+test('manual screen share: a stream with no recorded source (getDisplayMedia) queries with null, not the selection cache', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    const track = { readyState: 'live', kind: 'video', addEventListener() {}, getSettings: () => ({ displaySurface: 'monitor' }), stop() {} };
+    const stream = { active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+    // A getDisplayMedia stream: current, but never recorded with a source.
+    await numberStream(env, stream);
+    env.S.screenCaptureStream = stream;
+    env.S.selectedScreenSourceId = 'screen:9:0';
+    env.w.getDesktopCaptureProvider = () => ({ getSources() {} });
+    env.w.startScreenVideoStreaming(stream, 'screen');
+    for (let i = 0; i < 10 && env.intervals.length === 0; i++) await new Promise((r) => setImmediate(r));
+    await env.intervals[0]();
+    assert.equal(env.sent.length, 1);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
+});
+
+// ---------------------------------------------------------------- superseded getDisplayMedia streams
+
+function displayStream(name) {
+    const track = { readyState: 'live', kind: 'video', label: name, getSettings: () => ({ displaySurface: 'monitor' }) };
+    return { name, active: true, getVideoTracks: () => [track], getTracks: () => [track] };
+}
+
+test('getDisplayMedia: the latest stream queries the shell with null; a superseded one is not queried and goes out as captured', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const A = displayStream('A');
+    const B = displayStream('B');
+    const queue = [A, B];
+    const md = { getDisplayMedia: () => Promise.resolve(queue.shift()) };
+    const mask = env.w.appCaptureMask;
+    const frame = async (stream) => {
+        const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream };
+        return mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession({ sourceId: null, via: 'stream', stream }));
+    };
+
+    assert.equal(await mask.requestDisplayMedia(md, { video: true }), A);
+    assert.deepEqual(fillsOf(await frame(A)), [[800, 225, 400, 450]], 'latest stream: masked');
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
+
+    assert.equal(await mask.requestDisplayMedia(md, { video: true }), B);
+    assert.equal(await frame(A), RAW_FRAME, 'superseded stream: sent as captured');
+    assert.equal(shell.calls.length, 2, 'superseded stream: no shell query');
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+
+    assert.deepEqual(fillsOf(await frame(B)), [[800, 225, 400, 450]], 'new latest stream: masked');
+    assert.equal(shell.calls.length, 4);
+});
+
+test('desktop: a stream with neither a recorded source nor a request number is position unknown; web paths are unaffected', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const mask = env.w.appCaptureMask;
+    const frame = (ctx) => mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(ctx));
+    const B = displayStream('B');
+    // Not handed out through requestDisplayMedia: no shell query before or after, sent as captured.
+    assert.equal(await frame({ captureType: 'screen', sourceId: null, via: 'stream', stream: B }), RAW_FRAME);
+    assert.equal(shell.calls.length, 0);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+    // The same stream with a recorded source names it: masked.
+    assert.deepEqual(fillsOf(await frame({ captureType: 'screen', sourceId: 'screen:1:0', via: 'stream', stream: B })), [[800, 225, 400, 450]]);
+    // Numbered through requestDisplayMedia: queried with null and masked.
+    await numberStream(env, B);
+    assert.deepEqual(fillsOf(await frame({ captureType: 'screen', sourceId: null, via: 'stream', stream: B })), [[800, 225, 400, 450]]);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:1:0', 'screen:1:0', null, null]);
+
+    // Web page: a tab share of this tab that never went through the numbered request is still masked.
+    const web = makeWindow({ captureHandle: true, elements: chatElements({ galOpen: true }), imageSizes: { [RAW_FRAME]: [1000, 800] } });
+    const own = tabStream(web.w.appCaptureMask.OWN_CAPTURE_HANDLE);
+    const session = web.w.appCaptureMask.beginMaskSession({ via: 'stream', stream: own });
+    const out = await web.w.appCaptureMask.maskFrameForModel(RAW_FRAME, { captureType: 'viewport', via: 'stream', stream: own }, session);
+    assert.deepEqual(fillsOf(out), [[592, 92, 316, 416], [592, 512, 316, 116]]);
+});
+
+test('getDisplayMedia: a cancelled newer request also supersedes the older stream; streams with a recorded source are not affected', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [] }));
+    const env = makeWindow({ multiWindow: true, shell });
+    const mask = env.w.appCaptureMask;
+    const A = displayStream('A');
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(A) }, {});
+    await assert.rejects(mask.requestDisplayMedia({ getDisplayMedia: () => Promise.reject(new Error('NotAllowedError')) }, {}));
+    assert.equal(await mask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: null, via: 'stream', stream: A }), RAW_FRAME);
+    assert.equal(shell.calls.length, 0);
+    // A stream opened by source id names that id: the shell does not use its hand-out record.
+    await mask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: 'screen:2:0', via: 'stream', stream: A });
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), ['screen:2:0']);
+});
+
+test('getDisplayMedia: requests are ordered by when they finish; while one is open no stream without a source is queried', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const mask = env.w.appCaptureMask;
+    const frame = (stream) => mask.maskFrameForModel(RAW_FRAME, { captureType: 'screen', sourceId: null, via: 'stream', stream },
+        mask.beginMaskSession({ sourceId: null, via: 'stream', stream }));
+    const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+    const A = displayStream('A');
+    const B = displayStream('B');
+    const a = deferred();
+    const b = deferred();
+    // A is started first (picker open), B is started next and finishes first.
+    const reqA = mask.requestDisplayMedia({ getDisplayMedia: () => a.promise }, {});
+    const reqB = mask.requestDisplayMedia({ getDisplayMedia: () => b.promise }, {});
+    b.resolve(B);
+    assert.equal(await reqB, B);
+    assert.equal(await frame(B), RAW_FRAME, 'A still open: B goes out as captured');
+    assert.equal(shell.calls.length, 0, 'A still open: no shell query');
+    // A finishes last: the shell record is now A's source, so B is superseded.
+    a.resolve(A);
+    assert.equal(await reqA, A);
+    assert.equal(await frame(B), RAW_FRAME, 'B finished before A: sent as captured');
+    assert.equal(shell.calls.length, 0, 'B finished before A: no shell query');
+    assert.deepEqual([...env.w.__reasons], ['position_unknown', 'position_unknown']);
+    // A, the last to finish, is masked as usual.
+    assert.deepEqual(fillsOf(await frame(A)), [[800, 225, 400, 450]]);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
+});
+
+test('getDisplayMedia: a request that throws synchronously neither stays open nor supersedes the current stream', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] }));
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    const mask = env.w.appCaptureMask;
+    const A = displayStream('A');
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(A) }, {});
+    // Thrown before reaching the shell: its hand-out record is unchanged.
+    assert.throws(() => mask.requestDisplayMedia({ getDisplayMedia: () => { throw new TypeError('bad constraints'); } }, {}));
+    const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream: A };
+    assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(ctx))), [[800, 225, 400, 450]]);
+    assert.deepEqual(shell.calls.map((c) => c.sourceId), [null, null]);
+});
+
+test('getDisplayMedia: a pre-capture query without a stream is not intersected once a request finished after it', async () => {
+    const answer = { ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] };
+    let during = null;
+    const shell = shellStub(async () => { const d = during; during = null; if (d) await d(); return answer; });
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const mask = env.w.appCaptureMask;
+    const hint = { sourceId: null, via: 'stream' };
+    const B = displayStream('B');
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(B) }, {});
+    const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream: B };
+    // No request in between: the pre-capture answer is intersected, masked.
+    assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(hint))), [[800, 225, 400, 450]]);
+    // A request finishes while the pre-capture query is answered; the frame comes from its stream.
+    const C = displayStream('C');
+    during = async () => { await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(C) }, {}); };
+    const session = mask.beginMaskSession(hint);
+    await session.pending;
+    const ctxC = { captureType: 'screen', sourceId: null, via: 'stream', stream: C };
+    assert.equal(await mask.maskFrameForModel(RAW_FRAME, ctxC, session), RAW_FRAME);
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+    // The next frame of the new stream is masked again.
+    assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctxC, mask.beginMaskSession(hint))), [[800, 225, 400, 450]]);
+});
+
+test('getDisplayMedia: a request that opens and finishes while the shell query is in flight voids that answer', async () => {
+    const answer = { ok: true, rects: [{ x: 0.5, y: 0.25, width: 0.25, height: 0.5 }] };
+    let during = null;
+    const shell = shellStub(async () => { if (during) await during(); return answer; });
+    const env = makeWindow({ multiWindow: true, shell, imageSizes: { [RAW_FRAME]: [1600, 900] } });
+    spyReasons(env.w);
+    const mask = env.w.appCaptureMask;
+    const A = displayStream('A');
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(A) }, {});
+    const ctx = { captureType: 'screen', sourceId: null, via: 'stream', stream: A };
+    // Nothing happens during the queries: masked.
+    assert.deepEqual(fillsOf(await mask.maskFrameForModel(RAW_FRAME, ctx, mask.beginMaskSession(ctx))), [[800, 225, 400, 450]]);
+    // The shell picks a source for a new request while answering the post-capture query.
+    const session = mask.beginMaskSession(ctx);
+    during = async () => { during = null; await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(displayStream('B')) }, {}); };
+    assert.equal(await mask.maskFrameForModel(RAW_FRAME, ctx, session), RAW_FRAME);
+    assert.equal(shell.calls.length, 4, 'both queries were made before the new request');
+    assert.deepEqual([...env.w.__reasons], ['position_unknown']);
+});
+
+test('voice heartbeat: a superseded getDisplayMedia stream is not queried before or after capture', async () => {
+    const shell = shellStub(async () => ({ ok: true, rects: [{ x: 0.5, y: 0.5, width: 0.25, height: 0.25 }] }));
+    const env = bootScreen({ multiWindow: true, shell, defaultImageSize: [1000, 800] });
+    Object.assign(env.S, { proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true });
+    const old = displayStream('old');
+    const mask = env.w.appCaptureMask;
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(old) }, {});
+    await mask.requestDisplayMedia({ getDisplayMedia: () => Promise.resolve(displayStream('new')) }, {});
+    env.w.appScreen.acquireOrReuseCachedStream = async () => old;
+    env.w.appScreen.captureFrameFromStream = async () => ({ dataUrl: RAW_FRAME });
+    vm.runInContext(proactiveSource, env.w);
+    await env.w.appProactive.sendOneProactiveVisionFrame();
+    assert.equal(env.sent.length, 1);
+    assert.equal(shell.calls.length, 0);
+    assert.equal(env.sent[0].data, RAW_FRAME);
+});
+
+test('every getDisplayMedia call in the app goes through the numbered request (text guard only)', () => {
+    const websocketSource = fs.readFileSync(path.join(repo, 'static/app/app-websocket.js'), 'utf8');
+    for (const [name, src] of [['app-screen.js', screenSource], ['app-proactive.js', proactiveSource], ['app-websocket.js', websocketSource]]) {
+        // Only the fallback branch of each wrapper may call it directly.
+        const raw = src.split('\n').filter((line) => /\.getDisplayMedia\(/.test(line)
+            && !/^\s*: navigator\.mediaDevices\.getDisplayMedia\((constraints|displayMediaOptions)\);\s*$/.test(line));
+        assert.deepEqual(raw, [], name);
+    }
+    assert.equal((screenSource.match(/await requestDisplayMediaStream\(/g) || []).length, 3);
+    assert.match(websocketSource, /captureMask\.requestDisplayMedia\(navigator\.mediaDevices, displayMediaOptions\)/);
+});
+
+test('settings popup re-sync: mouse tracking follows the avatar type own state (MMD cursorFollow), like at creation', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup-config.js'), 'utf8');
+    const start = src.indexOf('function createSettingsPopupShowSync');
+    const fnSrc = '(' + src.slice(start, src.indexOf('\n}\n', start) + 2) + ')';
+    for (const [own, global, expected] of [[false, true, false], [true, false, true]]) {
+        const cb = { checked: 'untouched' };
+        const query = (sel) => (sel === '#mmd-mouse-tracking-toggle' ? cb : null);
+        const ctx = { document: { querySelector: query }, window: { mouseTrackingEnabled: global }, requestAnimationFrame() {} };
+        const sync = vm.runInNewContext(fnSrc, ctx)('mmd');
+        // The switch is in the side panel appended to document.body: the popup does not contain it.
+        sync.call({ _getMouseTrackingState: () => own }, { querySelector: () => null }, 'settings');
+        assert.equal(cb.checked, expected, `own=${own} global=${global}`);
+    }
+});
+
+test('MMD mouse tracking state: before cursorFollow exists the saved global setting is shown, not "off"', () => {
+    const src = fs.readFileSync(path.join(repo, 'static/avatar/avatar-ui-popup-config.js'), 'utf8');
+    const start = src.indexOf('getMouseTrackingState: function()', src.indexOf("console.log(`[MMD] 跟踪鼠标"));
+    assert.ok(start > 0);
+    const fnSrc = '(' + src.slice(start + 'getMouseTrackingState: '.length, src.indexOf('\n    },', start) + 6) + ')';
+    for (const [global, expected] of [[undefined, true], [true, true], [false, false]]) {
+        const get = vm.runInNewContext(fnSrc, { window: { mouseTrackingEnabled: global } });
+        assert.equal(get.call({ cursorFollow: null }), expected, `no cursorFollow, global=${global}`);
+        assert.equal(get.call({ cursorFollow: { enabled: false } }), false, 'cursorFollow wins');
+        assert.equal(get.call({ cursorFollow: { enabled: true } }), true, 'cursorFollow wins');
+    }
 });

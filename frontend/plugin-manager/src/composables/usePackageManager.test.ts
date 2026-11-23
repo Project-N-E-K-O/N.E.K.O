@@ -214,6 +214,23 @@ describe('usePackageManager safe installation flow', () => {
     )
   })
 
+  it.each(['upgrade', 'reinstall', 'downgrade', 'install'] as const)(
+    'records a %s from the package page as a local import',
+    async (action) => {
+      const manager = usePackageManager()
+      manager.installForm.value.package = 'demo.neko-plugin'
+      vi.mocked(planPluginInstall).mockResolvedValue({ ...upgradePlan, action })
+      vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
+      vi.mocked(installPluginPackage).mockResolvedValue({ ...installResponse, operation: action })
+
+      await manager.handleInstall()
+
+      expect(installPluginPackage).toHaveBeenCalledWith(
+        expect.objectContaining({ install_source: 'imported' }),
+      )
+    },
+  )
+
   it.each([
     ['reinstall', 'package.install.reinstallSucceeded'],
     ['downgrade', 'package.install.downgradeSucceeded'],
@@ -224,7 +241,7 @@ describe('usePackageManager safe installation flow', () => {
       ...upgradePlan,
       action: operation,
     })
-    vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
+    vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as never)
     vi.mocked(installPluginPackage).mockResolvedValue({
       ...installResponse,
       operation,

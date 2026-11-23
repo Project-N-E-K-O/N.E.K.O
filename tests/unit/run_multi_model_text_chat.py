@@ -20,7 +20,7 @@ from utils.file_utils import atomic_write_json
 
 # Configure model targets here.
 # provider: assist provider key in api profiles (e.g. qwen/openai/glm/step/silicon/gemini)
-# model: optional override for SUMMARY_MODEL; set None to use provider default model.
+# model: optional override for MEMORY_MODEL; set None to use provider default model.
 TEST_TARGETS: List[Dict[str, Optional[str]]] = [
     {"provider": "qwen", "model": "qwen3.5-plus"},
     {"provider": "openai", "model":  "gpt-5-chat-latest"},

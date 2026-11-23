@@ -15,7 +15,7 @@ N.E.K.O/
 ├── main_logic/               # Conversation, clients, TTS, buses
 ├── main_routers/             # Main FastAPI route packages/modules
 ├── memory/                   # Facts, recall, persona, reflection, event/outbox
-├── nekoclaw/
+├── nekopower/
 │   ├── host/                 # Task brain, ledger, capability gateway, permissions
 │   ├── runtime/              # Agent runtime in which task agents run
 │   └── builtin/              # Keyboard-and-mouse and browser tools

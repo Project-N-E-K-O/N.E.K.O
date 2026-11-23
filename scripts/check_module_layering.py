@@ -27,7 +27,7 @@ stays acyclic). The hierarchy:
     L2  knowledge, memory, main_logic, services
     L3  main_routers
     L4  plugin                                ← high-level extension surface
-    L5  nekoclaw                              ← top-of-stack agent orchestration
+    L5  nekopower                              ← top-of-stack agent orchestration
     L6  app, local_server, launcher.py, launcher_core  ← entrypoints
 
 Violations are split into two categories, both forbidden:
@@ -112,7 +112,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # ``services`` holds Main-side domain services (chat sync, theater runtime)
 # used by main_logic, main_routers and app. ``services/theater_workshop`` is
 # the source-only author host, separate from the theater runtime. ``launcher_core``
-# is launcher.py's bootstrap and imports app directly. ``nekoclaw`` is the
+# is launcher.py's bootstrap and imports app directly. ``nekopower`` is the
 # base that runs task agents (it took over from the former ``brain`` package)
 # and sits at the top of the stack.
 
@@ -122,7 +122,7 @@ LAYERS: List[Tuple[int, Set[str]]] = [
     (2, {"knowledge", "memory", "main_logic", "services"}),
     (3, {"main_routers"}),
     (4, {"plugin"}),
-    (5, {"nekoclaw"}),
+    (5, {"nekopower"}),
     (6, {"app", "local_server", "launcher", "launcher_core"}),
 ]
 
@@ -174,7 +174,7 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     # it to config and utils, so the child stays small and never touches
     # another subsystem's data.
     *(
-        ("nekoclaw/runtime/", package, "the agent runtime uses only config and utils")
+        ("nekopower/runtime/", package, "the agent runtime uses only config and utils")
         for package in (
             "steamworks",
             "knowledge",
@@ -187,10 +187,10 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ),
     # The built-in tools (keyboard and mouse, browser) drive the desktop and
     # a browser and nothing of the application: like the runtime they stay
-    # with config and utils (plus the types of ``nekoclaw.host.capabilities``
+    # with config and utils (plus the types of ``nekopower.host.capabilities``
     # they are handed to the host in, which the layering allows).
     *(
-        ("nekoclaw/builtin/", package, "the built-in tools use only config, utils and the host's capability types")
+        ("nekopower/builtin/", package, "the built-in tools use only config, utils and the host's capability types")
         for package in (
             "steamworks",
             "knowledge",
@@ -201,18 +201,18 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "plugin",
         )
     ),
-    # The NekoClaw host (task brain, task agents, gateway) reaches plugins over
+    # The NekoPower host (task brain, task agents, gateway) reaches plugins over
     # HTTP and needs ``plugin.settings`` only. Its task preferences stay apart
     # from every memory: neither reads or writes the other.
     *(
-        ("nekoclaw/host/", package, reason)
+        ("nekopower/host/", package, reason)
         for package, reason in (
             ("memory", "task preferences and persona memory never read or write each other"),
-            ("knowledge", "the NekoClaw host keeps apart from the knowledge subsystem"),
-            ("main_logic", "the NekoClaw host reaches the main dialogue through its outbox only"),
-            ("main_routers", "the NekoClaw host reaches the main dialogue through its outbox only"),
-            ("services", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
-            ("steamworks", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
+            ("knowledge", "the NekoPower host keeps apart from the knowledge subsystem"),
+            ("main_logic", "the NekoPower host reaches the main dialogue through its outbox only"),
+            ("main_routers", "the NekoPower host reaches the main dialogue through its outbox only"),
+            ("services", "the NekoPower host uses only config, utils, plugin.settings and its runtime"),
+            ("steamworks", "the NekoPower host uses only config, utils, plugin.settings and its runtime"),
         )
     ),
 ]

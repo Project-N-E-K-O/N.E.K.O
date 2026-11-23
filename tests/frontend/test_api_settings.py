@@ -358,15 +358,16 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
             )).map(light => light.dataset.modelType),
             rowPairs: { ...MODEL_CONFIG_ROW_PAIRS },
             conversation: rect(cards[0]),
-            summary: rect(cards[1]),
-            emotion: rect(cards[2]),
+            memory: rect(cards[1]),
+            recognition: rect(cards[2]),
             decision: rect(cards[3]),
             omni: rect(cards[4]),
             tts: rect(cards[5]),
-            agent: rect(cards[6]),
-            agentSmall: rect(cards[7]),
-            game: rect(cards[8]),
-            image: rect(cards[9]),
+            agentAdvanced: rect(cards[6]),
+            agent: rect(cards[7]),
+            agentSmall: rect(cards[8]),
+            game: rect(cards[9]),
+            image: rect(cards[10]),
             cardCount: cards.length,
         };
     }""")
@@ -375,11 +376,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert desktop["columns"] == 2
     assert desktop["contentIds"] == [
         "conversation-model-content",
-        "summary-model-content",
-        "emotion-model-content",
+        "memory-model-content",
+        "recognition-model-content",
         "decision-model-content",
         "omni-model-content",
         "tts-model-content",
+        "agent-advanced-model-content",
         "agent-model-content",
         "agent-small-model-content",
         "game-model-content",
@@ -392,6 +394,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         "api.decisionModelConfig",
         "api.realtimeModelConfig",
         "api.ttsModelConfig",
+        "api.agentAdvancedApiConfigTitle",
         "api.agentApiConfigTitle",
         "api.agentSmallApiConfigTitle",
         "api.gameModelsConfig",
@@ -399,42 +402,47 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     ]
     assert desktop["summaryTypes"] == [
         "conversation",
-        "summary",
-        "emotion",
+        "memory",
+        "recognition",
         "omni",
         "agent",
+        "agentAdvanced",
         "agentSmall",
         "tts",
         "gameMain",
         "gameSummary",
+        "gameRecognition",
         "decision",
     ]
     assert desktop["rowPairs"] == {
-        "conversation": "summary",
-        "summary": "conversation",
-        "emotion": "decision",
-        "decision": "emotion",
+        "conversation": "memory",
+        "memory": "conversation",
+        "recognition": "decision",
+        "decision": "recognition",
         "omni": "tts",
         "tts": "omni",
-        "agent": "agent-small",
-        "agent-small": "agent",
-        "game": "image",
-        "image": "game",
+        "agent-advanced": "agent",
+        "agent": "agent-advanced",
+        "agent-small": "game",
+        "game": "agent-small",
     }
-    assert desktop["conversation"]["top"] == desktop["summary"]["top"]
-    assert desktop["conversation"]["left"] < desktop["summary"]["left"]
-    assert abs(desktop["conversation"]["width"] - desktop["summary"]["width"]) <= 1
-    assert desktop["emotion"]["top"] == desktop["decision"]["top"]
-    assert desktop["emotion"]["left"] < desktop["decision"]["left"]
-    assert abs(desktop["emotion"]["width"] - desktop["decision"]["width"]) <= 1
+    assert desktop["conversation"]["top"] == desktop["memory"]["top"]
+    assert desktop["conversation"]["left"] < desktop["memory"]["left"]
+    assert abs(desktop["conversation"]["width"] - desktop["memory"]["width"]) <= 1
+    assert desktop["recognition"]["top"] == desktop["decision"]["top"]
+    assert desktop["recognition"]["left"] < desktop["decision"]["left"]
+    assert abs(desktop["recognition"]["width"] - desktop["decision"]["width"]) <= 1
     assert desktop["omni"]["top"] == desktop["tts"]["top"]
-    assert desktop["agent"]["top"] == desktop["agentSmall"]["top"]
-    assert desktop["agent"]["left"] < desktop["agentSmall"]["left"]
-    assert desktop["agent"]["top"] > desktop["omni"]["top"]
-    assert desktop["game"]["top"] == desktop["image"]["top"]
-    assert desktop["game"]["left"] < desktop["image"]["left"]
-    # The retired vision slot has no card any more (stored settings are kept).
-    assert desktop["cardCount"] == 10
+    assert desktop["agentAdvanced"]["top"] == desktop["agent"]["top"]
+    assert desktop["agentAdvanced"]["left"] < desktop["agent"]["left"]
+    assert desktop["agentAdvanced"]["top"] > desktop["omni"]["top"]
+    assert desktop["agentSmall"]["top"] == desktop["game"]["top"]
+    assert desktop["agentSmall"]["left"] < desktop["game"]["left"]
+    # Image generation is the odd card out and sits alone on the last row.
+    assert desktop["image"]["top"] > desktop["game"]["top"]
+    # The retired vision slot has no card any more (stored settings are kept); the
+    # minigame recognition slot lives inside the minigame card.
+    assert desktop["cardCount"] == 11
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(350)
@@ -443,12 +451,12 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
         const content = document.getElementById('conversation-model-content');
         const card = content.closest('.model-config-container').getBoundingClientRect();
-        const partner = document.getElementById('summary-model-content')
+        const partner = document.getElementById('memory-model-content')
             .closest('.model-config-container').getBoundingClientRect();
         const contentRect = content.getBoundingClientRect();
         const header = content.previousElementSibling;
-        const partnerHeader = document.getElementById('summary-model-content').previousElementSibling;
-        const unpairedHeader = document.getElementById('emotion-model-content').previousElementSibling;
+        const partnerHeader = document.getElementById('memory-model-content').previousElementSibling;
+        const unpairedHeader = document.getElementById('recognition-model-content').previousElementSibling;
         const headerStyle = getComputedStyle(header);
         return {
             cardWidth: Math.round(card.width),
@@ -488,13 +496,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
 
     mock_page.evaluate("""() => {
         toggleModelConfig('conversation');
-        toggleModelConfig('summary');
+        toggleModelConfig('memory');
     }""")
     mock_page.wait_for_timeout(650)
 
     right_expanded = mock_page.evaluate("""() => {
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
-        const content = document.getElementById('summary-model-content').getBoundingClientRect();
+        const content = document.getElementById('memory-model-content').getBoundingClientRect();
         return {
             gridLeft: Math.round(grid.left),
             gridWidth: Math.round(grid.width),
@@ -510,7 +518,7 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     mock_page.wait_for_timeout(350)
     paired_expansion = mock_page.evaluate("""() => {
         const left = document.getElementById('conversation-model-content').getBoundingClientRect();
-        const right = document.getElementById('summary-model-content').getBoundingClientRect();
+        const right = document.getElementById('memory-model-content').getBoundingClientRect();
         return {
             leftWidth: Math.round(left.width),
             leftRight: Math.round(left.right),
@@ -520,14 +528,14 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     }""")
 
     assert abs(paired_expansion["leftWidth"] - desktop["conversation"]["width"]) <= 1
-    assert abs(paired_expansion["rightWidth"] - desktop["summary"]["width"]) <= 1
+    assert abs(paired_expansion["rightWidth"] - desktop["memory"]["width"]) <= 1
     assert paired_expansion["leftRight"] < paired_expansion["rightLeft"]
 
     mock_page.evaluate("toggleModelConfig('conversation')")
     mock_page.wait_for_timeout(80)
     collapsing_pair = mock_page.evaluate("""() => {
         const left = document.getElementById('conversation-model-content');
-        const right = document.getElementById('summary-model-content');
+        const right = document.getElementById('memory-model-content');
         const leftRect = left.getBoundingClientRect();
         const rightRect = right.getBoundingClientRect();
         return {
@@ -542,13 +550,13 @@ def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
     assert collapsing_pair["leftHeight"] > 0
     assert collapsing_pair["isCollapsing"] is True
     assert collapsing_pair["leftRight"] < collapsing_pair["rightLeft"]
-    assert abs(collapsing_pair["rightWidth"] - desktop["summary"]["width"]) <= 1
+    assert abs(collapsing_pair["rightWidth"] - desktop["memory"]["width"]) <= 1
 
     mock_page.wait_for_timeout(600)
     settled_pair = mock_page.evaluate("""() => {
         const grid = document.getElementById('custom-api-container').getBoundingClientRect();
         const left = document.getElementById('conversation-model-content');
-        const right = document.getElementById('summary-model-content');
+        const right = document.getElementById('memory-model-content');
         const rightRect = right.getBoundingClientRect();
         return {
             gridLeft: Math.round(grid.left),
@@ -1919,7 +1927,7 @@ def test_switching_tts_provider_to_vllm_replaces_readonly_url(mock_page: Page, r
     ("model_type", "follow_provider"),
     [
         ("gameMain", "follow_conversation"),
-        ("gameSummary", "follow_summary"),
+        ("gameSummary", "follow_memory"),
     ],
 )
 def test_switching_game_model_away_from_follow_clears_model_readonly(
@@ -2269,7 +2277,7 @@ def test_model_id_picker_closes_when_another_picker_input_is_clicked(mock_page: 
     mock_page.locator('#conversationModelId ~ button').click()
     menu = mock_page.locator('#conversationModelId-model-menu')
     expect(menu.locator('.api-provider-dropdown-option')).to_be_visible()
-    mock_page.evaluate("""() => document.getElementById('emotionModelId')
+    mock_page.evaluate("""() => document.getElementById('recognitionModelId')
         .dispatchEvent(new MouseEvent('click', {bubbles: true}))""")
     expect(menu).to_be_hidden()
 
