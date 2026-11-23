@@ -53,8 +53,9 @@ _EXPECTED = {
 }
 
 # Possible uses the scan reports that are deliberately not declared, pinned to
-# their call sites (file, function, method), each listed once per call, so a
-# new call is not let through, not even a second one in the same function:
+# their call sites (file, function, method), listed once per line the scan
+# reports (it keeps one finding per file and line), so a new call on another
+# line is not let through, not even in the same function:
 # writes inside the plugin's data directory, and a DNS-only socket import.
 _ALLOWED_POSSIBLE = {
     "music_pusher": {

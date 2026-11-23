@@ -300,7 +300,7 @@ Don't need UI? Just don't include this section. See [Hosted UI](./hosted-ui) for
 Choosing between `require` and `ask`:
 
 - A `require` permission covers background use as well, so `require` entries have no `background` key.
-- An `ask` entry the plugin uses from a timer or at startup must set `background = true` and a `background_reason`.
+- An `ask` entry the plugin also uses without the user triggering it (from a timer, at startup, in a listener or event callback, or on a background thread) must set `background = true` and a `background_reason`.
 - Reading environment variables for configuration, and starting programs that inherit the plugin's environment variables, are always `system.env:read` under `require`.
 - `system.network:listen` is always `require`.
 

@@ -295,7 +295,7 @@ permissions = ["state:read"]
 `require` 还是 `ask`：
 
 - `require` 权限也包括后台使用，所以 `require` 项不写 `background`。
-- 插件在定时器里或启动时会用到的 `ask` 项，必须写 `background = true` 和 `background_reason`。
+- 插件在不是用户触发时也会用到的 `ask` 项（定时器、启动时、监听或事件回调、后台线程等），必须写 `background = true` 和 `background_reason`。
 - 从环境变量读配置、启动会继承插件环境变量的程序，一律算 `system.env:read`，归 `require`。
 - `system.network:listen` 一律归 `require`。
 

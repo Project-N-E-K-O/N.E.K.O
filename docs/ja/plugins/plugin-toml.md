@@ -299,7 +299,7 @@ UI が不要なら、このセクションは書かなくてかまいません�
 `require` と `ask` の選び方：
 
 - `require` の権限はバックグラウンドでの使用も含むので、`require` の項目には `background` を書きません。
-- タイマーの中や起動時に使う `ask` 項目には、必ず `background = true` と `background_reason` を書きます。
+- ユーザーの操作によらずに使う `ask` 項目（タイマー、起動時、リスナーやイベントのコールバック、バックグラウンドスレッドなど）には、必ず `background = true` と `background_reason` を書きます。
 - 環境変数から設定を読むこと、プラグインの環境変数を引き継ぐプログラムを起動することは、常に `system.env:read` として `require` に入れます。
 - `system.network:listen` は常に `require` です。
 
