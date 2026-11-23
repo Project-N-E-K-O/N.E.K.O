@@ -2212,7 +2212,8 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     sidePanel._stopHoverPointerTracking = stopPointerTracking;
 
     const isHoveringAnchorOrPanel = () => {
-        return anchorEl.matches(':hover, :focus-within') || sidePanel.matches(':hover, :focus-within');
+        return anchorEl.matches(':hover, :focus-visible') || sidePanel.matches(':hover, :focus-visible')
+            || Boolean(sidePanel.querySelector(':focus-visible'));
     };
 
     const isPointerInTransferBridge = () => {

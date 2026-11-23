@@ -294,6 +294,46 @@ test('stopping without successful files never creates an empty ZIP', async () =>
     }
 });
 
+test('automatic cancellation can leave completed files unpacked in either output path', async () => {
+    for (const storedOutput of [false, true]) {
+        let aborted = false;
+        let archiveCalls = 0;
+        const result = await groups.runGroupExport({
+            plan: plan([{kind:'scene',name:'a',ext:'png'}]),
+            produce: async () => { aborted = true; return new Uint8Array([1]); },
+            store: storedOutput ? async () => {} : undefined,
+            zip: async () => { archiveCalls += 1; return 'unexpected'; },
+            zipStored: async () => { archiveCalls += 1; return 'unexpected'; },
+            shouldAbort: () => aborted,
+            shouldPackOnAbort: () => false,
+        });
+        assert.equal(result.aborted, true);
+        assert.equal(result.blob, undefined);
+        assert.equal(archiveCalls, 0);
+        assert.equal(result.files.length + result.stored.length, 1);
+    }
+});
+
+test('archive failure after stopping reports undelivered memory files and retains folder outputs', async () => {
+    for (const storedOutput of [false, true]) {
+        let aborted = false;
+        const result = await groups.runGroupExport({
+            plan: plan([{kind:'scene',name:'a',ext:'png'}]),
+            produce: async () => { aborted = true; return new Uint8Array([1]); },
+            store: storedOutput ? async () => {} : undefined,
+            zip: async () => { throw new Error('archive failed'); },
+            zipStored: async () => { throw new Error('archive failed'); },
+            shouldAbort: () => aborted,
+        });
+        assert.equal(result.aborted, true);
+        assert.equal(result.done, 1);
+        assert.equal(result.blob, undefined);
+        assert.equal(result.archiveError, 'archive failed');
+        assert.deepEqual(result.failed, storedOutput ? [] : [{file:'01_a.png',reason:'zip-failed'}]);
+        if (storedOutput) assert.deepEqual(result.stored, ['01_a.png']);
+    }
+});
+
 test('缺少注入就立刻报错，不要跑到一半才崩', async () => {
     await assert.rejects(() => groups.runGroupExport({ plan: plan([]), zip: async () => 'x' }), /produce/);
     await assert.rejects(() => groups.runGroupExport({ plan: plan([]), produce: async () => new Uint8Array([1]) }), /zip/);

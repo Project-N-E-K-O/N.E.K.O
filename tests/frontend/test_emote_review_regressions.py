@@ -835,6 +835,54 @@ def test_stopped_download_batch_keeps_completed_pngs_in_the_downloaded_zip(edito
         editor.evaluate('delete window.reviewCaptureHook')
 
 
+@pytest.mark.parametrize('mode', ['automatic', 'zip-failure'])
+def test_batch_cancellation_and_archive_failure_do_not_claim_success(editor, mode):
+    _import(editor, spine_zip(animations=3))
+    downloads = []
+    editor.on('download', lambda download: downloads.append(download))
+    result = editor.evaluate(r"""async mode => {
+        const q = reviewEditor;
+        Object.assign(q.state, {exportFormat:'png', exportResolution:32});
+        const messages = [];
+        const observer = new MutationObserver(records => {
+            records.forEach(record => record.addedNodes.forEach(node => {
+                if (node.textContent) messages.push(node.textContent);
+            }));
+        });
+        observer.observe(document.querySelector('#emote-toast'), {childList:true});
+        const original = window.fflate;
+        if (mode === 'zip-failure') {
+            window.fflate = {...original, zipSync() { throw Error('test archive failure'); }};
+        }
+        let captures = 0;
+        window.reviewCaptureHook = () => {
+            captures += 1;
+            if (captures !== 2) return;
+            if (mode === 'automatic') q.advanceGeneration();
+            else document.querySelector('#export-group-open-btn').click();
+        };
+        try {
+            const group = {id:'review-archive-errors', name:'cancelled', readOnly:true,
+                items:q.getImportedScenes().slice(0,3).map(scene=>({kind:'scene', ref:scene.id}))};
+            await q.exportGroup(group, document.querySelector('#export-group-open-btn'), Promise.resolve(null));
+            await Promise.resolve();
+            return {captures, messages, success:q.translate('emoteMaker.groupExportDone'),
+                stopped:q.translate('emoteMaker.groupExportCancelled'),
+                failed:q.translate('emoteMaker.exportPngFailed'),
+                lost:q.translate('emoteMaker.groupExportFailed').replace(/\{\{?count\}?\}/g, '2')};
+        } finally {
+            window.fflate = original; delete window.reviewCaptureHook; observer.disconnect();
+        }
+    }""", mode)
+    assert result['captures'] == 2, result
+    assert downloads == []
+    assert not any(result['success'] in message or result['stopped'] in message for message in result['messages']), result
+    if mode == 'zip-failure':
+        assert any(result['failed'] in message and result['lost'] in message for message in result['messages']), result
+    assert editor.locator('#export-group-open-btn').is_enabled()
+    assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
+
+
 def test_batch_stop_becomes_available_when_folder_preparation_overlaps_a_capture(editor):
     _import(editor, spine_zip())
     editor.evaluate("document.querySelector('#inspector-tab-export').click()")
@@ -1801,7 +1849,7 @@ def test_batch_restores_its_own_snapshot_after_directory_preparation_overlaps_a_
     }''', outcome)
     assert result['temporary']
     assert result['writes'] == (0 if outcome == 'failure' else 1 if outcome == 'cancel' else 2)
-    assert result['zipSaved'] is (outcome != 'failure')
+    assert result['zipSaved'] is (outcome in ('success', 'cancel'))
     if outcome == 'pagehide':
         assert result['savedScene'] == result['expectedScene']
         return

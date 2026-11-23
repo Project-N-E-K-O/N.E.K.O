@@ -261,7 +261,7 @@
      */
     async function runGroupExport(options) {
         const {
-            plan, produce, zip, store, zipStored, onProgress, shouldAbort,
+            plan, produce, zip, store, zipStored, onProgress, shouldAbort, shouldPackOnAbort,
         } = options || {};
         const items = (plan && Array.isArray(plan.items)) ? plan.items : [];
         const canStore = typeof store === 'function';
@@ -278,11 +278,19 @@
         }
 
         async function aborted(done) {
-            const blob = canStore
-                ? await packStored()
-                : files.length ? await zip(files) : undefined;
+            let blob;
+            let archiveError = '';
+            if (typeof shouldPackOnAbort !== 'function' || shouldPackOnAbort()) {
+                try {
+                    blob = canStore ? await packStored() : files.length ? await zip(files) : undefined;
+                } catch (error) {
+                    archiveError = (error && error.message) || 'zip-failed';
+                    // Folder outputs remain available; memory-only files could not be delivered.
+                    if (!canStore) files.forEach((file) => failed.push({ file: file.path, reason: 'zip-failed' }));
+                }
+            }
             return {
-                aborted: true, files, failed, stored, blob,
+                aborted: true, files, failed, stored, blob, archiveError,
                 savedToFolder: stored.length > 0 && typeof zipStored === 'function',
                 done, total: items.length,
             };

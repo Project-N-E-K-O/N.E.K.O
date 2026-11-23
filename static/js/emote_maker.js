@@ -4382,7 +4382,7 @@
             return await exportGroupNow(group, directoryPick, controller.signal);
         } catch (error) {
             if (!controller.signal.aborted) throw error;
-            showToast(t('emoteMaker.groupExportCancelled'));
+            if (groupExportAbort) showToast(t('emoteMaker.groupExportCancelled'));
         } finally {
             if (groupExportController === controller) groupExportController = null;
             groupExportBusy = false;
@@ -4417,6 +4417,7 @@
             savingToFolder ? groupLibrary.MAX_ITEMS_PER_GROUP : groupLibrary.MAX_BATCH,
         );
         const format = planned.format;
+        const exportFailureKey = format === 'png' ? 'emoteMaker.exportPngFailed' : 'emoteMaker.exportGifFailed';
         let plan = planned.plan;
         if (!plan.ready) {
             showToast(t('emoteMaker.groupExportEmpty'));
@@ -4505,6 +4506,7 @@
                             return new Blob([window.fflate.zipSync(entries, { level: 6 })], { type: 'application/zip' });
                         },
                         shouldAbort: () => signal.aborted || groupExportAbort || generation !== spineRendererGeneration,
+                        shouldPackOnAbort: () => groupExportAbort && generation === spineRendererGeneration,
                         onProgress: ({ done, total }) => setGroupExportStatus(
                             interpolate(t('emoteMaker.groupExporting'), { done, total })),
                     });
@@ -4523,23 +4525,28 @@
         } catch (error) {
             if (signal.aborted) throw error;
             console.warn('[emote-maker] 整组导出失败', error);
-            showToast(t(folder ? 'emoteMaker.groupExportZipFailed' : 'emoteMaker.exportGifFailed'));
+            showToast(t(folder ? 'emoteMaker.groupExportZipFailed' : exportFailureKey));
         } finally {
             signal.removeEventListener('abort', cancelQueuedCapture);
         }
         if (!result) return;
+        if (result.aborted && !groupExportAbort) return;
         if (result.blob) {
             fallbackDownload(
                 result.blob,
                 `${groupLibrary.sanitizeFileName(group.name, 'group')}.zip`,
-                'emoteMaker.groupExportDone', 'emoteMaker.exportGifFailed');
+                result.aborted ? '' : 'emoteMaker.groupExportDone', exportFailureKey);
         } else if (result.savedToFolder && !result.aborted) {
             showToast(t('emoteMaker.groupExportFolderDone'));
         }
-        if (result.aborted) showToast(t('emoteMaker.groupExportCancelled'));
+        const messages = [];
+        if (result.archiveError) {
+            messages.push(t(folder ? 'emoteMaker.groupExportZipFailed' : exportFailureKey));
+        } else if (result.aborted) messages.push(t('emoteMaker.groupExportCancelled'));
         const lost = result.failed.length + plan.skipped.length;
-        if (lost) showToast(interpolate(t('emoteMaker.groupExportFailed'), { count: lost }));
-        if (plan.truncated) showToast(interpolate(t('emoteMaker.groupExportTruncated'), { count: plan.limit }));
+        if (lost) messages.push(interpolate(t('emoteMaker.groupExportFailed'), { count: lost }));
+        if (plan.truncated) messages.push(interpolate(t('emoteMaker.groupExportTruncated'), { count: plan.limit }));
+        if (messages.length) showToast(messages.join(' '));
     }
 
     let animationCardsSignature = '';
@@ -8564,7 +8571,7 @@
             link.click();
             link.remove();
             window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-            showToast(t(successKey));
+            if (successKey) showToast(t(successKey));
         } catch (_) {
             if (url) URL.revokeObjectURL(url);
             showToast(t(failureKey));

@@ -637,7 +637,10 @@ def test_character_side_panel_supports_keyboard_navigation_and_emote_entry(page:
     parent.press(key)
     page.wait_for_function("document.activeElement?.id === 'live2d-sidepanel-general'")
     # Focus must keep the panel open after the hover-collapse interval.
+    parent.hover()
+    page.mouse.move(1350, 740)
     page.wait_for_timeout(500)
+    assert page.evaluate("getComputedStyle(window.__keyboardPanel).display") == 'flex'
     page.keyboard.press('Tab')
     assert page.evaluate('document.activeElement.id') == 'live2d-sidepanel-emote-maker'
     page.keyboard.press('Enter')
@@ -686,3 +689,32 @@ def test_side_panel_switch_keeps_its_activation_keys(page: Page, toggle_id, key)
     else:
         assert after['checked'] != before and after['saves'] == 1, after
         assert after['focused'] == 'review-side-switch' and after['panel'] == 'none', after
+
+
+@pytest.mark.parametrize('clicked', ['anchor', 'panel'])
+def test_mouse_focus_does_not_keep_a_side_panel_open_after_pointer_leaves(page: Page, clicked):
+    _install_toolbar(page, open_voice=False)
+    page.evaluate("""target => {
+        const manager = live2dManager;
+        window.saveNEKOSettings = () => {};
+        const anchor = target === 'anchor'
+            ? manager._createSettingsToggleItem({id:'visit-enabled',label:'Visit'})
+            : manager._createMenuItem({id:'review-hover',label:'Settings'});
+        anchor.id = 'review-hover-anchor';
+        anchor.style.cssText += ';position:fixed;left:40px;top:300px;pointer-events:auto';
+        document.body.append(anchor);
+        const panel = manager._createSidePanelContainer();
+        panel._anchorElement = anchor;
+        const control = manager._createSettingsToggleItem({id:'merge-messages',label:'Merge'});
+        control.id = 'review-hover-control'; panel.append(control);
+        document.body.append(panel);
+        manager._attachSidePanelHover(anchor, panel);
+        window.__reviewHoverPanel = panel;
+    }""", clicked)
+    page.locator('#review-hover-anchor').hover()
+    page.wait_for_function("getComputedStyle(window.__reviewHoverPanel).opacity === '1'")
+    control = page.locator('#review-hover-anchor' if clicked == 'anchor' else '#review-hover-control')
+    control.click()
+    assert control.evaluate('node => node === document.activeElement')
+    page.mouse.move(1350, 740)
+    page.wait_for_function("getComputedStyle(window.__reviewHoverPanel).display === 'none'", timeout=5000)
