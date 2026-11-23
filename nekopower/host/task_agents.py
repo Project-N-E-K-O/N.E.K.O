@@ -1997,12 +1997,7 @@ class TaskAgentManager:
                 duty=commission.title,
             )
         elif commission.project and commission.project != DEFAULT_PROJECT:
-            commission, session = await self._ledger.give_session(
-                commission.id,
-                kind="project",
-                name=commission.project,
-                duty=await self._project_about(commission.project) or commission.title,
-            )
+            commission, session = await self._project_home(commission)
         else:
             commission, session = await self._ledger.give_session(
                 commission.id,
@@ -2015,6 +2010,29 @@ class TaskAgentManager:
         # The model it is sent to is settled as the commission starts in it,
         # which is now unless it waits for a place (``_start``).
         return commission
+
+    async def _project_home(self, commission: Commission) -> tuple[Commission, Session]:
+        """Give a commission of a project that was not sent anywhere (``families.py``) its session; returns both.
+
+        One that was started before it had a session, or that names its
+        own directory. The leader of its project when that has one; else
+        the member last in use that can still be gone on with; else a new
+        member. No leader is made here: one that only hands work on is
+        made where a project is found to want one (``Families.place``).
+        """
+        from nekopower.host.orchestrator import WORKING_PRESET
+
+        project = str(commission.project)
+        about = await self._project_about(project) or commission.title
+        if await self._ledger.lead_session(commission.lanlan_name, project) is not None:
+            return await self._ledger.give_session(commission.id, kind="project", name=project, duty=about)
+        for member in await self._ledger.members(commission.lanlan_name, project):
+            if await self._ledger.session_alive(member):
+                moved = await self._ledger.update(commission.id, session_id=member.id)
+                return moved or commission, member
+        return await self._ledger.give_session(
+            commission.id, kind="line", name=project, preset=WORKING_PRESET, duty=about
+        )
 
     async def _note_writer(self, session_id: str | None) -> None:
         """Note whether a session writes files in a project, for one such to work there at a time (``_session_free_for``).

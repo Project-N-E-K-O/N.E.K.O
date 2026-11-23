@@ -1468,3 +1468,38 @@ async def test_what_was_said_before_a_commission_goes_along_when_its_leader_hand
     opened_member = "\n".join(_user_messages(member_llm.requests[0]))
     for opened in (opened_leader, opened_member):
         assert brain_texts.TASK_AGENT_COMMISSION_EXCERPT_OPEN in opened and "the logo overlaps the menu on my phone" in opened
+
+
+async def _unplaced(host: Any, project: str, title: str) -> Any:
+    """A commission of a project that is not sent anywhere by what it says: it names its own directory."""
+    commission, _made = await host.ledger.create(
+        lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", project=project, route="task_agent"
+    )
+    return await host.ledger.update(commission.id, session_dir=f"kept-{commission.id}")
+
+
+async def test_a_commission_of_a_project_that_is_not_sent_anywhere_goes_to_a_member_and_makes_no_leader(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+
+    first = await host.task_agents._give_session(await _unplaced(host, "Budget app", "add a chart"))
+    second = await host.task_agents._give_session(await _unplaced(host, "Budget app", "add a legend"))
+
+    # A member that works, not a leader that only hands work on; and the one that is there is gone on with.
+    member = await host.ledger.get_session(first.session_id)
+    assert (member.kind, member.preset, member.project) == ("line", "general", "Budget app")
+    assert second.session_id == first.session_id
+    assert await host.ledger.lead_session("Lan", "Budget app") is None
+    # One that is over is not gone on with: a new member.
+    for commission in (first, second):
+        await host.ledger.transition(commission.id, "working", reason="t")
+        await host.ledger.transition(commission.id, "done", reason="t", result_summary="done")
+    old = host.ledger._clock() - (settings.SESSION_SINGLE_LIFETIME_DAYS + 1) * 86400
+    await host.ledger.update_session(member.id, last_active_at=old)
+    third = await host.task_agents._give_session(await _unplaced(host, "Budget app", "add a title"))
+    assert third.session_id != first.session_id
+    assert (await host.ledger.get_session(third.session_id)).kind == "line"
+    # Once the project has a leader, it is the leader's.
+    leader = (await host.derive_leader("Budget app", "Lan"))["session_id"]
+    fourth = await host.task_agents._give_session(await _unplaced(host, "Budget app", "add a footer"))
+    assert fourth.session_id == leader

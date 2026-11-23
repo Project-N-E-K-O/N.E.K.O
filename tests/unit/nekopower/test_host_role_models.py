@@ -299,6 +299,7 @@ async def test_a_preset_set_to_a_slot_sends_its_new_sessions_there_and_leaves_th
     llms = [ScriptedLLM([_report("first")]), ScriptedLLM([_report("again")]), ScriptedLLM([_report("second")])]
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or llms[len(specs) - 1], manager)
     await host.space.touch_project("Budget app")
+    await host.derive_leader("Budget app", "Lan")
 
     first = await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
     view = await host.set_role_model("boss", OWN_SLOT)
@@ -311,6 +312,7 @@ async def test_a_preset_set_to_a_slot_sends_its_new_sessions_there_and_leaves_th
 
     # A new project's lead is sent to the slot: its address, its key, the provider type of its protocol.
     await host.space.touch_project("Garden")
+    await host.derive_leader("Garden", "Lan")
     specs.clear()
     llms[:] = [ScriptedLLM([_report("planted")])]
     garden = await wait_status(host, (await _dispatch(host, "plan the garden project")).commission_id, "done")
@@ -395,6 +397,7 @@ async def test_a_task_agent_no_session_started_follows_the_lead_of_its_project(h
     host = _host(hosts, tmp_path, lambda spec: llm, manager)
     await host.set_role_model("boss", OWN_SLOT)
     await host.space.touch_project("Budget app")
+    await host.derive_leader("Budget app", "Lan")
     await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
 
     # A worker the host opens itself in the project (as a branch will be): the lead's model.
@@ -480,6 +483,7 @@ async def test_a_session_whose_slot_cannot_be_used_any_more_goes_on_with_its_pre
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
     await host.set_role_model("boss", OWN_SLOT)
     await host.space.touch_project("Budget app")
+    await host.derive_leader("Budget app", "Lan")
     first = await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
     slots = _default_slots()
     del slots[OWN_SLOT]
@@ -795,6 +799,7 @@ async def test_a_session_whose_slot_breaks_goes_to_the_default_and_not_to_what_i
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
     await host.set_role_model("boss", OWN_SLOT)
     await host.space.touch_project("Budget app")
+    await host.derive_leader("Budget app", "Lan")
     first = await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
     await host.set_role_model("boss", SMALL_SLOT)
     slots = _default_slots()
@@ -1397,6 +1402,7 @@ async def test_a_session_settled_before_goes_on_when_its_model_cannot_be_written
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
     await host.set_role_model("boss", SMALL_SLOT)
     await host.space.touch_project("Budget app")
+    await host.derive_leader("Budget app", "Lan")
     await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
     manager.tiers["agent_small"] = {**small, "model": "small-model-2"}
     update = host.ledger.update_session
