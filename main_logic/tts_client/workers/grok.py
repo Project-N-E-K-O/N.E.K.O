@@ -220,6 +220,7 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                 try:
                     await receive_task
                 except asyncio.CancelledError:
+                    # Expected: this task was cancelled just above.
                     pass
                 except Exception as e:
                     logger.debug(f"xAI TTS retired receive task cleanup failed: {e}")
