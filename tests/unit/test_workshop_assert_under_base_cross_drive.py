@@ -219,3 +219,20 @@ def test_publish_preflight_rejects_reference_outside_the_folder(tmp_path, cross_
         publish._preflight_and_publish(
             object(), 'title', 'description', str(folder), '', 0, [], 'note'
         )
+
+
+@_CONFIG_FILE_ROUTES
+@pytest.mark.asyncio
+async def test_permission_error_resolving_the_root_stays_500(workshop, monkeypatch, route, leaf):
+    # Reading the Workshop config can itself be denied by the OS; that is a
+    # server-side failure, not a path outside the base.
+    async def _denied_root():
+        raise PermissionError(13, 'Permission denied', 'config')
+
+    monkeypatch.setattr(config_files, 'get_workshop_path_async', _denied_root)
+
+    inside = str(workshop / 'workshop' / 'item_aaa' / leaf) if leaf else str(workshop / 'workshop' / 'item_aaa')
+    status, payload = await _call(route, inside)
+    assert status == 500
+    assert payload['success'] is False
+    assert '路径不在允许的范围内' not in payload['error']
