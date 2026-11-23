@@ -144,8 +144,8 @@ async def test_sessions_are_grouped_by_project_with_every_field_of_a_card(host):
         "id": lead.id, "name": "Budget app", "kind": "project", "lanlan_name": "Lan", "runtime": "builtin",
         "workdir": "D:/budget",
         "preset": "boss", "avatar": "boss", "label": "",
-        "description": "The main session of a project: takes every commission filed under it, does the work or hands "
-        "parts of it out, and answers for the outcome.",
+        "description": "The leader of a project: every commission filed under it comes to it first; it decides who "
+        "does it and hands it out, and does none of the work itself.",
         "title": "记账管家", "title_by": "user", "duty": "add a chart", "duty_by": "creator",
         "summary": "Made the table.", "summary_by": "review",
         "doing": "add a chart", "state": "asleep", "leader": True, "parent": None, "team": None,
@@ -164,6 +164,36 @@ async def test_sessions_are_grouped_by_project_with_every_field_of_a_card(host):
     )
     # Nothing of the model but its name is on the board: not its key, not its address.
     assert "free-access" not in json.dumps(board) and "api_key" not in json.dumps(board)
+
+
+async def test_a_project_s_members_are_listed_with_it_and_only_its_leader_is_one(host):
+    await host.space.touch_project("Budget app", workdir="D:/budget")
+    await host.space.touch_project("Photo album")
+    _a, leader = await _lead(host, "Budget app", "add a chart")
+    made = await _commission(host, "draw a logo", project="Budget app")
+    _b, worker = await host.ledger.give_session(
+        made.id, kind="line", name="Budget app/worker", parent_id=leader.id, preset="worker", duty="draws"
+    )
+    alone = await _commission(host, "sort the photos", project="Photo album")
+    _c, member = await host.ledger.give_session(alone.id, kind="line", name="Photo album", duty="sorts")
+    await host.ledger.update_session(worker.id, last_active_at=leader.last_active_at + 100)
+
+    board = await host.board()
+
+    by_name = {project["name"]: project["members"] for project in board["projects"]}
+    # The leader first, whoever was last in use; its member after it, with who started it.
+    assert [(card["id"], card["kind"], card["preset"], card["leader"], card["parent"]) for card in by_name["Budget app"]] == [
+        (leader.id, "project", "boss", True, None),
+        (worker.id, "line", "worker", False, leader.id),
+    ]
+    # A project that has no leader has none: its one member is a member.
+    assert [(card["id"], card["kind"], card["preset"], card["leader"]) for card in by_name["Photo album"]] == [
+        (member.id, "line", "general", False)
+    ]
+    assert board["loose"] == []
+    # Of one project: its leader and its members.
+    only = await host.board(project="Budget app")
+    assert [card["id"] for card in only["projects"][0]["members"]] == [leader.id, worker.id]
 
 
 async def test_the_board_of_one_project_and_of_one_character(host):

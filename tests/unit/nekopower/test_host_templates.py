@@ -73,18 +73,61 @@ def test_the_six_built_in_presets_are_there_under_the_keys_the_interface_draws_t
     assert SHADOW == "shadow" and SHADOW not in builtin
 
 
-def test_the_lead_a_session_of_its_own_and_a_worker_are_opened_with_everything():
+def test_a_session_of_its_own_and_a_worker_are_opened_with_everything():
     builtin = builtin_templates()
 
-    for name in ("boss", "general", "worker"):
+    for name in ("general", "worker"):
         item = builtin[name]
-        assert item.withheld() == frozenset()
+        assert item.withheld() == frozenset() and item.writes_files
         assert (item.read_only, item.writes, item.memory) == (False, "inherit", "project")
         assert item.delegates and item.remembers and not item.calls_nothing and item.max_requests is None
     # A session of its own is told nothing of a role: it is as it always was.
     assert builtin["general"].body == ""
     # Whose model each uses by default: the task agents', or that of whoever started it.
     assert [builtin[name].model for name in PRESETS] == ["agent", "inherit", "inherit", "inherit", "inherit", "agent"]
+
+
+def test_the_lead_has_no_tool_to_do_the_work_with_and_whoever_it_starts_has():
+    builtin = builtin_templates()
+    boss = builtin["boss"]
+
+    # Nothing that writes or edits a file or runs a command; what reads, searches, reaches other
+    # sessions, starts task agents and remembers is its own as ever.
+    assert boss.withheld() == frozenset({"write", "edit", "bash", "pwsh"}) and not boss.writes_files
+    assert (boss.read_only, boss.writes, boss.memory) == (False, "inherit", "project")
+    assert boss.delegates and boss.remembers and not boss.calls_nothing and boss.max_requests is None
+    # Withheld from itself only: nothing of it is handed down to the task agents it starts.
+    assert boss.handed_down() == frozenset()
+    for name in ("worker", "scout", "inspector", "planner"):
+        assert builtin[name].under(boss) is builtin[name]
+    assert builtin["worker"].under(boss).writes_files
+
+
+def test_what_a_template_withholds_from_itself_only_its_task_agents_keep():
+    worker = builtin_templates()["worker"]
+    both = _parse("withhold: [web_fetch]\nwithhold_own: [bash, write]\n")
+
+    assert both.withhold == ("web_fetch",) and both.withhold_own == ("bash", "write")
+    assert both.withheld() == frozenset({"web_fetch", "bash", "write"})
+    assert both.handed_down() == frozenset({"web_fetch"})
+    # A task agent it starts is without what it withholds, and has what it withholds from itself only.
+    assert worker.under(both).withheld() == frozenset({"web_fetch"})
+    # Said in one line or as a list; a tool named both ways is withheld from its task agents too.
+    assert _parse("withhold_own: bash, edit\n").withhold_own == ("bash", "edit")
+    twice = _parse("withhold: [bash]\nwithhold_own: [bash, edit]\n")
+    assert (twice.withhold, twice.withhold_own) == (("bash",), ("edit",))
+    assert worker.under(twice).withheld() == frozenset({"bash"})
+    # A template that names nothing of the kind hands everything down, as before.
+    plain = _parse("withhold: [bash]\n")
+    assert plain.withhold_own == () and worker.under(plain).withheld() == frozenset({"bash"})
+    assert _parse("withhold_own: [bash]\n").needs_builtin
+    for wrong, why in (
+        ("withhold_own: 3\n", "withhold_own is a list of tool names"),
+        ("withhold_own: [no_such_tool]\n", "withhold_own names no tool: no_such_tool"),
+        ("withhold_own: [report]\n", "report cannot be withheld"),
+    ):
+        with pytest.raises(TemplateError, match=why):
+            _parse(wrong)
 
 
 @pytest.mark.parametrize("name", ["scout", "planner"])
@@ -116,7 +159,7 @@ def test_a_preset_that_takes_anything_away_is_held_to_in_the_built_in_runtime_on
 
     # dsh has file and command tools of its own, and makes its requests by itself.
     assert {name: item.needs_builtin for name, item in builtin.items()} == {
-        "boss": False, "worker": False, "general": False, "scout": True, "inspector": True, "planner": True,
+        "boss": True, "worker": False, "general": False, "scout": True, "inspector": True, "planner": True,
     }
     assert _parse("withhold: [web_fetch]\n").needs_builtin
     assert _parse("memory: none\n").needs_builtin
@@ -149,10 +192,14 @@ def test_each_role_says_what_it_is_for_what_it_hands_back_and_what_it_does_not_d
     inspector = bodies["inspector"]
     assert "what was to be done and what was changed" in inspector
     assert "run the checks yourself" in inspector and "do not repair" in inspector
-    # The lead is told when a part is worth handing out, and to whom.
+    # The lead is told that it does none of the work, how a commission is handed over whole and
+    # when a part is kept for a scout, a planner or an inspector, and what a brief has to say.
     boss = bodies["boss"]
-    for word in ("scout", "inspector", "planner", "truly independent", "change the same files"):
-        assert word in boss
+    for word in (
+        "you do none of the work yourself", "hand_over", "subagent", "scout", "planner", "inspector",
+        "what it covers", "what it must not touch", "how to tell that it is done", "one task agent that can change files",
+    ):
+        assert word in boss.replace("Only one", "one")
     # Nothing of teams yet.
     assert "team" not in boss
 

@@ -171,11 +171,11 @@ _PRESET_ON_RECORD_WITHIN = 8
 # How long what is to be handed to a session waits for that session's
 # runtime to have closed it, when it is closing this moment.
 _CLOSING_RETRY_SECONDS = 1.0
-# The kinds of session another session finds and writes to: the session of
-# a project, and that of a commission of no project. A session of any other
-# kind is somebody's helper (a task agent another one started), reached
-# through whoever it helps.
-_ADDRESSED_KINDS = ("project", "single")
+# The kinds of session another session finds and writes to: the leader and
+# the members of a project, and the session of a commission of no project.
+# A session of any other kind is somebody's helper (a task agent another one
+# started), reached through whoever it helps.
+_ADDRESSED_KINDS = ("project", "line", "single")
 # How many sessions' last requests are kept before those too old to matter
 # are let go of (``TaskAgentManager._last_request_at``).
 _LAST_REQUESTS_KEPT = 64

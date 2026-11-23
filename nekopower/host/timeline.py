@@ -358,7 +358,7 @@ def _event_entry(
     elif kind == "orchestrated":
         # Where it went, and how that was found: no sentence is kept with it.
         chosen = payload.get("agent") if isinstance(payload.get("agent"), str) else None
-        peer = _session(sessions.get(chosen), chosen) if chosen else None
+        peer = _session(chosen) if chosen else None
         detail = {
             "action": _text(payload.get("action")),
             "project": _text(payload.get("project")) or None,

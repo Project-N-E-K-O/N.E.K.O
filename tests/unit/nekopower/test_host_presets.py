@@ -33,7 +33,9 @@ from nekopower.host.templates import builtin_templates
 from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import FakeDecisionLLM, fake_model, make_host, scripted_runtime, wait_status
 
-CHILD_WITHHELD = ["ask_session", "message_session", "schedule_wake", "subagent"]
+# What every session but the leader of a project is opened without: the tool that hands a commission over.
+NOT_A_LEADER = ["hand_over"]
+CHILD_WITHHELD = ["ask_session", "hand_over", "message_session", "schedule_wake", "subagent"]
 # The tool that runs commands, as the runtime offers it here.
 SHELL = "pwsh" if sys.platform == "win32" else "bash"
 
@@ -139,8 +141,8 @@ async def test_a_session_of_one_commission_is_general_and_is_opened_as_it_always
 
     session = await host.ledger.get_session(done.session_id)
     assert (session.kind, session.preset) == ("single", "general")
-    # Nothing is withheld, its gateway token calls, and no run of it is cut short.
-    assert specs[0].disabled_tools == [] and specs[0].limits.max_turns is None
+    # Nothing is withheld but what only a leader has, its gateway token calls, and no run of it is cut short.
+    assert specs[0].disabled_tools == NOT_A_LEADER and specs[0].limits.max_turns is None
     assert issued == [(done.id, False)]
     assert {"write", "edit", SHELL, "subagent", "note_lesson", "capability_call"} <= set(_tools(llm))
     # What the host tells it is what it always told, word for word, and after that the presets
@@ -159,14 +161,15 @@ async def test_the_session_of_a_project_is_its_lead_and_is_opened_as_it_always_w
     done = await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
 
     session = await host.ledger.get_session(done.session_id)
-    assert (session.kind, session.project, session.preset) == ("project", "Budget app", "boss")
-    assert specs[0].disabled_tools == [] and specs[0].limits.max_turns is None
+    # A member that works and may start others: a project has no leader until something gives it one.
+    assert (session.kind, session.project, session.preset) == ("line", "Budget app", "general")
+    assert specs[0].disabled_tools == NOT_A_LEADER and specs[0].limits.max_turns is None
     assert {"write", "edit", SHELL, "subagent", "note_lesson", "capability_call"} <= set(_tools(llm))
-    # As before, then the presets, then what a lead is told of its role; what the space adds follows.
+    # As before, then the presets; it is told nothing of a role. What the space adds follows.
     own = brain.TASK_AGENT_BRIEF_GATEWAY_NOTE + "\n\n" + brain.TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan")
-    told = own + "\n\n" + _roster("worker", "scout", "inspector", "planner") + "\n\n" + builtin_templates()["boss"].body
+    told = own + "\n\n" + _roster("worker", "scout", "inspector", "planner")
     assert _system(llm).count(told + "\n\n") == 1
-    assert "Your role: lead of this project." in _system(llm)
+    assert "Your role:" not in _system(llm)
 
 
 async def test_the_list_of_presets_has_a_cap_of_its_own_and_never_cuts_off_the_sessions_role(hosts, tmp_path, monkeypatch):
@@ -185,8 +188,8 @@ async def test_the_list_of_presets_has_a_cap_of_its_own_and_never_cuts_off_the_s
     whole = _roster("worker", "scout", "inspector", "planner").split("\n")[1:]
     assert 0 < len(listed.split("\n")) < 4 and listed.split("\n") == whole[: len(listed.split("\n"))]
     assert count_tokens(presets.PRESET_ROSTER_INTRO + "\n" + listed) <= 130
-    # What the session is told of its own role comes after the list, and is all there.
-    assert builtin_templates()["boss"].body + "\n\n" in system
+    # (What a session is told of its own role comes after the list: the leader's tests look at that.)
+    assert "Your role:" not in system
     # A preset the list has no room for can still be named.
     assert await host.task_agents._preset_wanted(
         await host.ledger.get((await host.ledger.select(limit=1))[0].id), "planner"
@@ -203,7 +206,7 @@ async def test_nothing_is_said_of_the_presets_when_the_list_has_no_room_for_one(
 
     # Not the words that open the list with nothing after them.
     assert presets.PRESET_ROSTER_INTRO not in _system(llm)
-    assert builtin_templates()["boss"].body in _system(llm)
+    assert brain.TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan") in _system(llm)
 
 
 async def test_a_task_agent_is_not_opened_when_the_preset_of_the_session_that_started_it_cannot_be_used(hosts, tmp_path):
@@ -281,8 +284,8 @@ async def test_a_copy_has_a_preset_of_its_own_and_is_opened_as_the_session_it_wa
 
     assert (copy.kind, copy.preset, again.preset) == ("fork", "shadow", "shadow")
     # No template is called so; a copy goes by the one of the session it began with.
-    assert await host.task_agents._template_of(copy) == builtin_templates()["boss"]
-    assert await host.task_agents._template_of(again) == builtin_templates()["boss"]
+    assert await host.task_agents._template_of(copy) == builtin_templates()["general"]
+    assert await host.task_agents._template_of(again) == builtin_templates()["general"]
 
 
 async def test_a_copy_whose_origin_is_not_on_record_is_opened_with_what_every_copy_has(hosts, tmp_path):
@@ -598,7 +601,7 @@ async def test_a_template_of_the_users_narrows_a_built_in_preset(hosts, tmp_path
     done = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
 
     assert (await host.ledger.get_session(done.session_id)).preset == "general"
-    assert sorted(specs[0].disabled_tools) == ["bash", "note_lesson", "pwsh"]
+    assert sorted(specs[0].disabled_tools) == ["bash", "hand_over", "note_lesson", "pwsh"]
     assert _system(llm).count("Be brief.") == 1
 
 
@@ -637,7 +640,7 @@ async def test_a_project_whose_record_cannot_be_read_gives_its_session_what_its_
     host.space.get_project = get_project
 
     session = await host.ledger.get_session(done.session_id)
-    assert (session.kind, session.duty, session.duty_by) == ("project", "add a chart to the budget app", "creator")
+    assert (session.kind, session.duty, session.duty_by) == ("line", "add a chart to the budget app", "creator")
 
 
 async def test_a_session_is_made_with_what_it_takes_and_no_title(hosts, tmp_path):
@@ -898,12 +901,15 @@ async def test_every_session_has_the_preset_of_its_kind_unless_one_is_named(tmp_
     ledger = Ledger(tmp_path / "ledger.db")
     try:
         made = {
-            kind: await ledger.create_session(lanlan_name="Lan", name=kind, kind=kind, project="p" if kind == "project" else None)
-            for kind in ("project", "single", "child", "fork")
+            kind: await ledger.create_session(
+                lanlan_name="Lan", name=kind, kind=kind, project="p" if kind in ("project", "line") else None
+            )
+            for kind in ("project", "line", "single", "child", "fork")
         }
 
+        # The leader of a project is its lead; a member that nobody named a preset for works, like a session of its own.
         assert {kind: session.preset for kind, session in made.items()} == PRESET_OF_KIND == {
-            "project": "boss", "single": "general", "child": "worker", "fork": "shadow",
+            "project": "boss", "line": "general", "single": "general", "child": "worker", "fork": "shadow",
         }
         # The one a project has is found again, with the preset it was made with.
         found, created = await ledger.project_session("Lan", "p")
@@ -952,8 +958,10 @@ async def test_the_sessions_of_a_ledger_made_before_presets_are_given_theirs_by_
         named = await second.create_session(lanlan_name="Lan", name="named", kind="child", preset="scout")
         kept = {kind: await second.get_session(session.id) for kind, session in made.items()}
 
-        assert {kind: session.preset for kind, session in kept.items()} == {
-            "project": "boss", "single": "general", "child": "worker", "fork": "shadow",
+        # (The one session a project had before it could have a leader did its work: a member now, that works.)
+        assert {kind: (session.kind, session.preset) for kind, session in kept.items()} == {
+            "project": ("line", "general"), "single": ("single", "general"), "child": ("child", "worker"),
+            "fork": ("fork", "shadow"),
         }
         assert all((session.title, session.duty, session.summary, session.duty_by) == ("", "", "", "") for session in kept.values())
         # And is written like one that was made now.
@@ -963,7 +971,7 @@ async def test_the_sessions_of_a_ledger_made_before_presets_are_given_theirs_by_
         await second.close()
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
     finally:
         conn.close()
     # Opened again nothing is left to do, and a preset that was named since stays.
@@ -998,8 +1006,8 @@ async def test_a_row_of_the_list_of_sessions_says_which_preset_it_is_and_what_it
     mine = next(row for row in rows if "sort the photos" in row)
     assert " · no project · general, takes: sort the photos · " in mine
     theirs = next(row for row in rows if '"Budget app"' in row)
-    # A model reads the lead of a project as that; what it takes is cut to its cap, and the row to its own.
-    assert " · Budget app · lead, takes: the budget app: charts and exports, " in theirs
+    # A member of a project is found like any session; what it takes is cut to its cap, and the row to its own.
+    assert " · Budget app · general, takes: the budget app: charts and exports, " in theirs
     duty = theirs.split(", takes: ", 1)[1].split(" · ", 1)[0]
     assert count_tokens(duty) <= settings.CARD_DUTY_MAX_TOKENS
     assert " · latest: add a chart to the budget app · last in use " in theirs

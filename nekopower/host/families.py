@@ -334,7 +334,7 @@ class Families:
                     kind="line",
                     name=project,
                     preset=orch.WORKING_PRESET,
-                    duty=getattr(known.get(project), "description", "") or commission.title,
+                    duty=await self._about(project) or commission.title,
                 )
 
         if action == orch.TO_LEADER and project:
@@ -344,7 +344,7 @@ class Families:
                 commission.id,
                 kind="project",
                 name=project,
-                duty=getattr(known.get(project), "description", "") or commission.title,
+                duty=await self._about(project) or commission.title,
             )
             if had is None:
                 reason = verdict.reason if verdict.reason in LEADER_REASONS else LEADER_GIT
@@ -379,6 +379,19 @@ class Families:
         if not commission.workdir and workdir and await asyncio.to_thread(Path(workdir).is_dir):
             values.setdefault("workdir", workdir)
         return await self._ledger.file_under_project(commission.id, project, **values) or commission
+
+    async def _about(self, project: str) -> str:
+        """Return what a project is for, as its record says; empty when it says nothing or cannot be read."""
+        if self._space is None:
+            return ""
+        try:
+            found = await self._space.get_project(project)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the session is made all the same, with its first commission's title
+            logger.warning("reading what a project is for failed", exc_info=True)
+            return ""
+        return found.description if found is not None else ""
 
     async def _busy(self, session: Session) -> bool:
         """Whether a member of a project without a leader has enough under way for the project to get one."""

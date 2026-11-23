@@ -937,3 +937,259 @@ async def test_the_permission_to_open_another_is_a_category_of_the_settings_aske
     for lang, texts in brain_texts.PERMISSION_CATEGORY_TEXTS.items():
         assert "{detail}" in texts[OPEN_SESSION], lang
         assert "猫爪" not in texts[OPEN_SESSION] and "skill" not in texts[OPEN_SESSION].lower()
+
+
+# ---------------------------------------------------------------------------
+# Where a project works: its leader and the members that work there move with it
+# ---------------------------------------------------------------------------
+
+
+async def test_changing_where_a_project_works_moves_its_leader_and_the_members_that_work_there(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    was = await _project(host, "Budget app", tmp_path)
+    elsewhere, wanted = tmp_path / "an-old-one", tmp_path / "new-place"
+    elsewhere.mkdir()
+    wanted.mkdir()
+    leader, _made = await host.ledger.project_session("Lan", "Budget app", workdir=str(was))
+    here = await host.ledger.create_session(name="here", lanlan_name="Lan", kind="line", project="Budget app", workdir=str(was))
+    unset = await host.ledger.create_session(name="unset", lanlan_name="Lan", kind="line", project="Budget app")
+    # One that was a session of its own before it became the project's keeps its directory.
+    adopted = await host.ledger.create_session(
+        name="adopted", lanlan_name="Lan", kind="line", project="Budget app", workdir=str(elsewhere)
+    )
+    child = await host.ledger.create_session(
+        name="child", lanlan_name="Lan", kind="child", project="Budget app", parent_id=here.id, workdir=str(was)
+    )
+
+    await host.set_project_workdir("Budget app", str(wanted))
+
+    async def works(session: Any) -> str | None:
+        return (await host.ledger.get_session(session.id)).workdir
+
+    assert [await works(item) for item in (leader, here, unset)] == [str(wanted)] * 3
+    assert await works(adopted) == str(elsewhere) and await works(child) == str(was)
+    assert (await host.space.get_project("Budget app")).workdir == str(wanted)
+
+
+async def test_a_project_is_at_work_while_one_of_its_members_is(hosts, tmp_path):
+    from nekopower.host.service import ProjectBusy
+
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    member_llm = ScriptedLLM([[wait, *_report("header fixed")]])
+    host = _host(hosts, tmp_path, _by_role(ScriptedLLM(_hand_over()), member_llm))
+    workdir = await _project(host, "Shop site", tmp_path)
+    wanted = tmp_path / "new-place"
+    wanted.mkdir()
+    _in_git(host, workdir)
+    await _allow_members(host)
+    receipt = await _dispatch(host, "fix the header of the shop site")
+    await wait_until(lambda: len(member_llm.requests) == 1, what="the member being at work")
+    await _let_go_of(host, (await host.ledger.lead_session("Lan", "Shop site")).id)
+
+    # The leader is closed and holds nothing: it is its member that is at work.
+    assert await host._project_busy("Shop site") == "at_work"
+    assert await host.ledger.move_project("Shop site", str(wanted), was=str(workdir)) is None
+    with pytest.raises(ProjectBusy):
+        await host.set_project_workdir("Shop site", str(wanted))
+
+    release.set()
+    await wait_status(host, receipt.commission_id, "done")
+    await _let_go(host)
+    assert await host._project_busy("Shop site") is None
+    await host.set_project_workdir("Shop site", str(wanted))
+    member = await _session_of(host, receipt.commission_id)
+    assert member.workdir == str(wanted)
+
+
+async def _let_go_of(host: Any, session_id: str) -> None:
+    await wait_until(lambda: session_id not in host.task_agents._held_by, what="the session being let go")
+    await host.task_agents.settle()
+
+
+async def test_a_commission_taken_up_again_starts_where_its_project_works_by_then(hosts, tmp_path):
+    """A commission that failed is not under way until it is at work again: the directory changed meanwhile is the one it starts in."""
+    llm = ScriptedLLM([[call("report", {"status": "failed", "summary": "the file is missing"}), finish("tool_calls")],
+                       _report("export added")])
+    host = _host(hosts, tmp_path, llm)
+    was = await _project(host, "Budget app", tmp_path)
+    wanted = tmp_path / "new-place"
+    wanted.mkdir()
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, first.commission_id, "failed")
+    await _let_go(host)
+    agents = host.task_agents
+
+    # Taking it up reads where its session works, and then takes a while (the model is settled,
+    # its directory made ready). The user changes where the project works in between: nothing is
+    # under way in the project, so nothing keeps them from it.
+    reached, go_on = asyncio.Event(), asyncio.Event()
+    choose = agents._choose_runtime
+
+    async def slowly(*args: Any, **kwargs: Any) -> Any:
+        reached.set()
+        await go_on.wait()
+        return await choose(*args, **kwargs)
+
+    agents._choose_runtime = slowly
+    telling = asyncio.ensure_future(agents.tell(first.commission_id, "the file is there now"))
+    await asyncio.wait_for(reached.wait(), 10)
+    assert (await host.ledger.get_session(first.commission_id)).workdir == str(was)
+    await host.set_project_workdir("Budget app", str(wanted))
+    go_on.set()
+    assert await asyncio.wait_for(telling, 10) is True
+    done = await wait_status(host, first.commission_id, "done")
+
+    # It worked in the new directory, and that is what is on record: of the commission, and of its session.
+    assert Path(done.workdir) == wanted
+    assert Path((await host.ledger.get_session(first.commission_id)).workdir) == wanted
+    assert (await host.space.get_project("Budget app")).workdir == str(wanted)
+
+
+# ---------------------------------------------------------------------------
+# A task agent the user makes; what the ledger keeps
+# ---------------------------------------------------------------------------
+
+
+async def test_a_task_agent_the_user_makes_is_a_leader_only_with_the_leaders_preset(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+
+    led = await host.open_session("Lan", "Shop site", preset="boss", duty="runs the shop site")
+    worked = await host.open_session("Lan", "Photo album", preset="general", title="Photo cat")
+    looked = await host.open_session("Lan", "Reading list", preset="scout")
+
+    leader = await host.ledger.get_session(led["session_id"])
+    assert (leader.kind, leader.preset, leader.project, leader.duty_by) == ("project", "boss", "Shop site", "user")
+    assert (await host.ledger.lead_session("Lan", "Shop site")).id == leader.id
+    for made, preset, name in ((worked, "general", "Photo album"), (looked, "scout", "Reading list")):
+        member = await host.ledger.get_session(made["session_id"])
+        assert (member.kind, member.preset, member.project, member.name) == ("line", preset, name, name)
+        assert member.model_ident and await host.ledger.lead_session("Lan", name) is None
+    assert (await host.ledger.get_session(worked["session_id"])).title_by == "user"
+
+
+async def test_the_one_session_a_project_had_before_leaders_is_its_member_from_then_on(tmp_path):
+    import sqlite3
+
+    from nekopower.host.ledger import Ledger
+
+    path = tmp_path / "ledger.db"
+    first = Ledger(path)
+    old = await first.create_session(lanlan_name="Lan", name="Budget app", kind="project", project="Budget app")
+    named = await first.create_session(lanlan_name="Lan", name="Reader", kind="project", project="Reading", preset="scout")
+    single = await first.create_session(lanlan_name="Lan", name="errand", kind="single")
+    await first.close()
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA user_version=7")
+        conn.commit()
+    finally:
+        conn.close()
+
+    second = Ledger(path)
+    try:
+        kept = [await second.get_session(item.id) for item in (old, named, single)]
+        # It did its project's work, and goes on doing it; one that was made with another preset keeps that.
+        assert [(item.kind, item.preset) for item in kept] == [("line", "general"), ("line", "scout"), ("single", "general")]
+        # A leader made from here on stays one when the ledger is opened again.
+        leader, _made = await second.project_session("Lan", "Budget app")
+    finally:
+        await second.close()
+    third = Ledger(path)
+    try:
+        again = await third.get_session(leader.id)
+        assert (again.kind, again.preset) == ("project", "boss")
+        assert [item.id for item in await third.members("Lan", "Budget app")] == [old.id]
+    finally:
+        await third.close()
+
+
+async def test_sessions_of_one_commission_become_members_where_they_are(tmp_path):
+    from nekopower.host.ledger import Ledger
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    try:
+        loose = await ledger.create_session(lanlan_name="Lan", name="reports", kind="single", workdir="D:/reports", title="Reports")
+        theirs = await ledger.create_session(lanlan_name="Lan", name="other", kind="line", project="Other")
+        child = await ledger.create_session(lanlan_name="Lan", name="child", kind="child", parent_id=loose.id)
+
+        made = await ledger.adopt([loose.id, theirs.id, child.id, "no-such-session"], "Sales")
+
+        assert [item.id for item in made] == [loose.id]
+        kept = await ledger.get_session(loose.id)
+        assert (kept.kind, kept.project, kept.workdir, kept.title, kept.preset) == ("line", "Sales", "D:/reports", "Reports", "general")
+        assert (await ledger.get_session(theirs.id)).project == "Other" and (await ledger.get_session(child.id)).kind == "child"
+        assert [item.id for item in await ledger.members("Lan", "Sales")] == [loose.id]
+        assert await ledger.members("Mia", "Sales") == []
+    finally:
+        await ledger.close()
+
+
+async def test_a_member_ends_like_a_session_of_one_commission_and_a_leader_does_not(tmp_path):
+    from nekopower.host.ledger import Ledger
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    try:
+        old = ledger._clock() - (settings.SESSION_SINGLE_LIFETIME_DAYS + 1) * 86400
+        made = {
+            kind: await ledger.create_session(lanlan_name="Lan", name=kind, kind=kind, project="p" if kind != "single" else None)
+            for kind in ("project", "line", "single")
+        }
+        for session in made.values():
+            await ledger.update_session(session.id, last_active_at=old)
+
+        alive = {kind: await ledger.session_alive(await ledger.get_session(session.id)) for kind, session in made.items()}
+
+        assert alive == {"project": True, "line": False, "single": False}
+        await ledger.update_session(made["line"].id, last_active_at=ledger._clock())
+        assert await ledger.session_alive(await ledger.get_session(made["line"].id))
+    finally:
+        await ledger.close()
+
+
+async def test_the_timeline_tells_where_a_commission_went_and_what_was_made_for_it(hosts, tmp_path):
+    from nekopower.host.timeline import TIMELINE_KINDS
+
+    leader_llm = ScriptedLLM(_hand_over())
+    host = _host(hosts, tmp_path, _by_role(leader_llm, ScriptedLLM([_report("header fixed")])))
+    workdir = await _project(host, "Shop site", tmp_path)
+    _in_git(host, workdir)
+    await _allow_members(host)
+    receipt = await _dispatch(host, "fix the header of the shop site")
+    done = await wait_status(host, receipt.commission_id, "done")
+    await _let_go(host)
+    leader = await host.ledger.lead_session("Lan", "Shop site")
+
+    entries = (await host.timeline(project="Shop site"))["entries"]
+
+    by_kind = {entry["kind"]: entry for entry in entries}
+    assert {"orchestrated", "leader_derived", "handed_over"} <= set(by_kind) <= set(TIMELINE_KINDS)
+    decided = by_kind["orchestrated"]
+    assert (decided["text"], decided["peer"]) == ("", None)
+    assert decided["detail"] == {
+        "action": "to_leader", "project": "Shop site", "relation": "follow_up", "layer": "rules", "model_calls": 0,
+        "seconds": decided["detail"]["seconds"],
+    }
+    derived = by_kind["leader_derived"]
+    assert (derived["text"], derived["detail"]) == ("Shop site", {"project": "Shop site", "reason": "git"})
+    assert derived["peer"]["session_id"] == leader.id
+    handed = by_kind["handed_over"]
+    assert (handed["text"], handed["detail"]) == ("Shop site/worker", {"preset": "worker", "new": True})
+    assert handed["peer"]["session_id"] == done.session_id
+    assert "fix the header" not in json.dumps([decided, derived, handed])
+
+
+async def test_a_family_shows_on_the_timeline(hosts, tmp_path):
+    llm = FakeDecisionLLM()
+    host, (first, _second, third) = await _weekly_reports(hosts, tmp_path, llm)
+    project = (await host.ledger.get(third.commission_id)).project
+
+    entries = (await host.timeline(project=project))["entries"]
+
+    (formed,) = [entry for entry in entries if entry["kind"] == "family_formed"]
+    assert (formed["text"], formed["detail"]) == (project, {"project": project, "members": [first.commission_id]})
+    (decided,) = [entry for entry in entries if entry["kind"] == "orchestrated"]
+    assert decided["detail"]["action"] == "form_family" and decided["peer"]["session_id"] == first.commission_id

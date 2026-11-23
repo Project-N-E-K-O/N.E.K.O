@@ -164,7 +164,7 @@ async def test_commissions_of_a_project_are_worked_on_in_its_one_session_one_aft
     session = await host.ledger.get_session(done.session_id)
     # One session, named after the project, kept where the first commission opened it.
     assert done.session_id == former.session_id == first.commission_id
-    assert (session.kind, session.name, session.project, session.status) == ("project", "Budget app", "Budget app", "closed")
+    assert (session.kind, session.name, session.project, session.status) == ("line", "Budget app", "Budget app", "closed")
     assert done.session_dir == former.session_dir == session.session_dir
     assert Path(done.workdir) == Path(former.workdir) == Path(session.workdir) == workdir
     # The second went on from what the first left: it was asked with the first's

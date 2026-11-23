@@ -914,7 +914,7 @@ async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_op
         columns = [row[1] for row in conn.execute("PRAGMA table_info(commissions)")]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert columns.count("session_dir") == 1 and version == 7
+    assert columns.count("session_dir") == 1 and version == 8
     # It has every column a new ledger has. A column put into the table and the commission but left out of
     # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
     from nekopower.host.ledger import _COMMISSION_COLUMNS
@@ -1339,7 +1339,7 @@ async def test_commissions_of_an_earlier_build_are_given_the_sessions_they_had(t
         before = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert version == 7
+    assert version == 8
     again = Ledger(path)
     try:
         await again.open()
@@ -1539,7 +1539,10 @@ async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_a
     second = Ledger(path)
     try:
         kept = await second.get_session(session.id)
-        assert (kept.name, kept.kind, kept.project, kept.status) == ("photos", "project", "photos", "closed")
+        # The one session of a project did the project's work: a member of it from here on, with
+        # the preset of one that works. (``project`` is the kind of a leader now, which does none.)
+        assert (kept.name, kept.kind, kept.project, kept.status) == ("photos", "line", "photos", "closed")
+        assert kept.preset == "general"
         assert (kept.requests, kept.tokens, kept.context_tokens, kept.forked_at) == (0, 0, 0, None)
         old = await second.get(commission.id)
         assert (old.session_id, old.requests, old.tokens, old.usage_allowed) == (session.id, 0, 0, None)
@@ -1558,6 +1561,6 @@ async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_a
         await second.close()
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
     finally:
         conn.close()
