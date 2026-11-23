@@ -345,7 +345,14 @@ def collect_failure(gh: GitHub, run: dict, runs: list[dict]) -> FailureReport:
     repo = gh.repo
     # The jobs of the attempt this report is about, not of a re-run started since.
     attempt = run.get("run_attempt", 1)
-    jobs = gh.get(f"/repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs?per_page=100")["jobs"]
+    jobs: list[dict] = []
+    for page in range(1, MAX_PAGES + 1):
+        batch = gh.get(
+            f"/repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs?per_page={PAGE_SIZE}&page={page}"
+        )["jobs"]
+        jobs += batch
+        if len(batch) < PAGE_SIZE:
+            break
     failed_jobs = [j for j in jobs if j.get("conclusion") in ("failure", "timed_out")]
     tests: list[str] = []
     verdicts: list[str] = []

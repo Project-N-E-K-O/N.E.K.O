@@ -46,7 +46,14 @@ Selection rules (the "trans" strategy validated offline on 150 merged PRs):
   unit-test-shards.yml and are never selected here.
 * Global files force the full suite; a changed sub-directory conftest.py
   (or a test-tree helper it imports) selects every test under its directory.
-* docs/** and Markdown files never select anything.
+* docs/** and Markdown files stay out of the import graph; they select only
+  the tests that read them by name.
+* A data file under tests/ also matches through its nearest specific
+  directory name, for tests that glob a directory of samples.
+* Tests that scan the whole repository (layering, locale and template
+  sweeps) are only selected when what they name changes; the full run
+  after merge covers the rest, and the layering gate also runs in
+  analyze.yml on every PR.
 
 The selected files are split into at most ``MAX_SHARDS`` shards, each holding
 roughly ``SHARD_SHARE`` of the full suite's cost, balanced greedily. A file's
@@ -105,6 +112,14 @@ ROOT_CONFTESTS = ("tests/conftest.py", "tests/unit/conftest.py")
 SHARD_SHARE = 0.30
 MAX_SHARDS = 4
 MIN_LITERAL_LEN = 6
+VENDOR_ROOT = "deps"
+# Directory names too generic to stand for the data files in them.
+GENERIC_DIRS = frozenset(
+    {
+        "fixtures", "fixture", "data", "assets", "static", "resources", "testdata",
+        "files", "samples", "inputs", "outputs", "golden", "snapshots", "unit", "tests",
+    }
+)
 COMMON_NAME_COUNT = 2  # a Python file name shared by this many files needs its directories too
 MIN_FILE_SECONDS = 0.01  # a fully skipped file still costs its import
 # Base names too generic to identify a file on their own; they are matched
@@ -123,6 +138,9 @@ GENERIC_BASENAMES = frozenset(
         "config.json",
         "manifest.json",
         "plugin.toml",
+        "README.md",
+        "CHANGELOG.md",
+        "index.md",
     }
 )
 PRUNE_DIRS = frozenset({"node_modules", "__pycache__", "venv", "build", "dist", "site-packages"})
@@ -181,11 +199,10 @@ def is_test_module(rel: str) -> bool:
 
 
 def _walk(root: Path) -> tuple[list[str], list[str]]:
-    """Python files, and directories below the root that are packaged on their own.
+    """Python files, and vendored packages (under deps/, with their own pyproject.toml or setup.py).
 
-    A directory with its own pyproject.toml or setup.py (the vendored
-    deps/rapidocr_pillow) is put on sys.path by the code that uses it, so its
-    modules are imported by names relative to that directory.
+    A vendored package such as deps/rapidocr_pillow is put on sys.path by the
+    code that uses it, so its modules are imported by names relative to it.
     """
     files: list[str] = []
     dist_roots: list[str] = []
@@ -194,7 +211,7 @@ def _walk(root: Path) -> tuple[list[str], list[str]]:
             d for d in dirnames if not d.startswith(".") and d not in PRUNE_DIRS and not d.endswith(".egg-info")
         )
         here = Path(dirpath).relative_to(root).as_posix()
-        if here != "." and ("pyproject.toml" in filenames or "setup.py" in filenames):
+        if here.startswith(VENDOR_ROOT + "/") and ("pyproject.toml" in filenames or "setup.py" in filenames):
             dist_roots.append(here)
         for name in sorted(filenames):
             if name.endswith(".py"):
@@ -432,14 +449,24 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
     # Modules of a separately packaged directory also answer to their import
     # name ("rapidocr_onnxruntime._pillow_cv" for
     # deps/rapidocr_pillow/rapidocr_onnxruntime/_pillow_cv.py); real modules win.
+    # Only vendored packages count (deps/): other packaged directories, such as
+    # a plugin or a CLI test fixture, are imported by their full path.
     aliases: dict[str, str] = {}
-    for dist_root in dist_roots:
+    collisions: set[str] = set()
+    top_level = {m.split(".")[0] for m in known}
+    for dist_root in dist_roots:  # _walk only reports packages under deps/
         prefix = dist_root + "/"
         for mod, rel in list(known.items()):
-            if rel.startswith(prefix):
-                alias = module_name(rel[len(prefix):])
-                if alias and alias not in known:
-                    aliases[alias] = mod
+            if not rel.startswith(prefix) or rel == prefix + "__init__.py":
+                continue
+            alias = module_name(rel[len(prefix):])
+            if not alias or alias.split(".")[0] in top_level:
+                continue
+            if alias in aliases and aliases[alias] != mod:
+                collisions.add(alias)
+            aliases[alias] = mod
+    for alias in collisions:
+        del aliases[alias]
     resolvable = {**{a: known[m] for a, m in aliases.items()}, **known}
     packages = {mod for mod, rel in modules.items() if rel.endswith("/__init__.py")}
     exports = {mod: _package_exports(modules[mod], trees.get(modules[mod]), resolvable) for mod in packages}
@@ -757,25 +784,47 @@ def _tokens(text: str) -> frozenset[str]:
 
 
 def _mentioning(index: RepoIndex, literal: tuple[str, ...]) -> set[str]:
-    """Test-tree files naming ``literal``: a whole file name, or a directory right before a file name.
+    """Test-tree files naming ``literal``: a whole file name, or directories and a file name.
 
-    The pair has to be adjacent ("config/__init__.py", ``"config" / "__init__.py"``,
-    ``"config", "__init__.py"``): two common words anywhere in a big file name nothing.
+    For a Python file the parts have to be adjacent ("config/__init__.py",
+    ``"config" / "__init__.py"``, ``"config", "__init__.py"``): "config" and
+    "__init__.py" anywhere in a big conftest name nothing. A data file is
+    often read through a parameter (``["index.html"]`` then
+    ``ROOT / "templates" / name``), so for it both words anywhere are enough.
     """
     if index.test_tree_tokens is None:
         index.test_tree_tokens = {p: _tokens(text) for p, text in index.test_tree_text.items()}
     wanted = set(literal)
     found = {p for p, tokens in index.test_tree_tokens.items() if wanted <= tokens}
-    if len(literal) == 1:
+    if len(literal) == 1 or not literal[-1].endswith(".py"):
         return found
-    # Quotes and a closing parenthesis may sit between the parts: (Path("templates") / "index.html").
-    separator = r"['\"]?\)?\s*[/\\,]\s*['\"]?"
+    # Quotes and a closing parenthesis may sit between the parts: (Path("pkg") / "core.py"),
+    # and a Windows path may spell the separator as an escaped backslash.
+    separator = r"['\"]?\)?\s*(?:[/,]|\\{1,2})\s*['\"]?"
     pattern = re.compile(r"(?<![\w.-])" + separator.join(re.escape(part) for part in literal) + r"(?![\w-])")
     return {p for p in found if pattern.search(index.test_tree_text[p])}
 
 
-def _ignored(rel: str) -> bool:
-    return rel.startswith("docs/") or rel.lower().endswith(".md")
+def _data_dir_literal(rel: str) -> tuple[str, ...] | None:
+    """For a sample file under a data directory in tests/, the nearest specific directory name.
+
+    Tests often glob a directory of samples (``fixtures/scoped_client_wire/*.json``)
+    without naming any file. Only files below a data directory (``fixtures``,
+    ``data``, ...) qualify: ``tests/frontend/x.test.cjs`` is a test, not a
+    sample, and "frontend" names half the test tree.
+    """
+    if not rel.startswith("tests/") or rel.endswith(".py"):
+        return None
+    parts = PurePosixPath(rel).parent.parts
+    data_dirs = {"fixtures", "fixture", "data", "testdata", "samples", "golden", "snapshots"}
+    if not any(part.lower() in data_dirs for part in parts):
+        return None
+    for part in reversed(parts):
+        if part.lower() in GENERIC_DIRS:
+            return None
+        if len(part) >= MIN_LITERAL_LEN:
+            return (part,)
+    return None
 
 
 def select(index: RepoIndex, changed: list[str]) -> Selection:
@@ -820,8 +869,6 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
     name_counts = Counter(PurePosixPath(p).name for p in index.modules.values())
     common_names = frozenset(n for n, count in name_counts.items() if count >= COMMON_NAME_COUNT)
     for rel in changed:
-        if _ignored(rel):
-            continue
         scopes = set(conftest_scope.get(rel, ()))
         if PurePosixPath(rel).name in ("conftest.py", "__init__.py") and rel.startswith(TEST_ROOT + "/"):
             # A test package's __init__ runs before every test module in it, like a conftest.
@@ -831,6 +878,11 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
         mod = module_name(rel)
         if mod is not None:
             seeds.add(mod)
+        dir_literal = _data_dir_literal(rel)
+        if dir_literal:
+            # Weaker evidence than a file name: it selects the tests that glob the
+            # directory, but does not spread to whole conftest directories.
+            literal_seeds |= _mentioning(index, dir_literal)
         literal = _literal_for(rel, common_names)
         if literal:
             hits = _mentioning(index, literal)

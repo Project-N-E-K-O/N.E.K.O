@@ -71,17 +71,34 @@ FILES = {
     "app/pkgy/thing.py": "THING = 1\n",
     "app/pkgx/core.py": "VALUE = 13\n",
     "tests/fixtures/policy.json": "{}\n",
+    "tests/unit/fixtures/wire_samples/case_one.json": "{}\n",
+    "tests/unit/test_wire_samples.py": (
+        "from pathlib import Path\n\n"
+        "def test_samples():\n    assert list((Path(__file__).parent / 'fixtures' / 'wire_samples').glob('*.json'))\n"
+    ),
+    "layouts/index.html": "<html></html>\n",
+    "tests/frontend/panel_flow.test.cjs": "test('x', () => {});\n",
+    "tests/unit/test_mentions_frontend.py": "def test_frontend():\n    assert 'tests/frontend'\n",
+    "tests/unit/test_template_param.py": (
+        "import pytest\nfrom pathlib import Path\n\n"
+        "@pytest.mark.parametrize('name', ['index.html'])\n"
+        "def test_template(name):\n    assert (Path('layouts') / name).name\n"
+    ),
+    "plugin/plugins/kitx/pyproject.toml": "[project]\nname = 'kitx'\n",
+    "plugin/plugins/kitx/__init__.py": "",
+    "plugin/plugins/kitx/routes_table.py": "VALUE = 15\n",
+    "tests/unit/test_mentions_init.py": "def test_init():\n    assert 'routes_table.main'\n",
     "tests/fixtures/test_payload.py": "PAYLOAD = 1\n",
     "pages/index.html": "<html></html>\n",
-    "vendor/libx/pyproject.toml": "[project]\nname = 'libx'\n",
-    "vendor/libx/libx_pkg/__init__.py": "from libx_pkg.geometry_ops import VALUE\n",
+    "deps/libx/pyproject.toml": "[project]\nname = 'libx'\n",
+    "deps/libx/libx_pkg/__init__.py": "from libx_pkg.geometry_ops import VALUE\n",
     "tests/unit/test_vendored_facade.py": (
-        "import sys\n\ndef test_facade():\n    sys.path.insert(0, 'vendor/libx')\n"
+        "import sys\n\ndef test_facade():\n    sys.path.insert(0, 'deps/libx')\n"
         "    from libx_pkg import VALUE\n    assert VALUE\n"
     ),
-    "vendor/libx/libx_pkg/geometry_ops.py": "VALUE = 14\n",
+    "deps/libx/libx_pkg/geometry_ops.py": "VALUE = 14\n",
     "tests/unit/test_vendored.py": (
-        "import sys\n\ndef test_vendored():\n    sys.path.insert(0, 'vendor/libx')\n"
+        "import sys\n\ndef test_vendored():\n    sys.path.insert(0, 'deps/libx')\n"
         "    from libx_pkg.geometry_ops import VALUE\n    assert VALUE\n"
     ),
     "app/base_service.py": "VALUE = 7\n",
@@ -411,10 +428,29 @@ def test_shared_file_names_need_their_directories(index):
 def test_separately_packaged_directory_resolves_by_its_import_name(index):
     # vendor/libx has its own pyproject.toml; the test puts it on sys.path and imports libx_pkg.
     # test_vendored_facade.py takes VALUE from the package, which re-exports it by import name.
-    assert _selected(index, "vendor/libx/libx_pkg/geometry_ops.py") == [
+    assert _selected(index, "deps/libx/libx_pkg/geometry_ops.py") == [
         "tests/unit/test_vendored.py",
         "tests/unit/test_vendored_facade.py",
     ]
+
+
+def test_data_file_a_test_globs_by_directory_selects_it(index):
+    assert _selected(index, "tests/unit/fixtures/wire_samples/case_one.json") == ["tests/unit/test_wire_samples.py"]
+    # A generic directory name ("fixtures") alone names nothing.
+    assert sel._data_dir_literal("tests/fixtures/policy.json") is None
+    # A test file outside a data directory does not match through its directory ("frontend").
+    assert _selected(index, "tests/frontend/panel_flow.test.cjs") == []
+
+
+def test_template_read_through_a_parameter_selects_the_test(index):
+    # index.html sits in the parametrize list, "layouts" in the path expression: not adjacent.
+    assert _selected(index, "layouts/index.html") == ["tests/unit/test_template_param.py"]
+
+
+def test_only_vendored_packages_get_import_name_aliases(index):
+    # plugin/plugins/kitx has a pyproject.toml but is imported as plugin.plugins.kitx:
+    # "routes_table.main" in a test must not resolve to it.
+    assert _selected(index, "plugin/plugins/kitx/routes_table.py") == []
 
 
 def test_shard_marked_files_are_left_to_the_shards(index):
@@ -427,14 +463,18 @@ def test_shard_marked_files_are_left_to_the_shards(index):
     assert "tests/unit/test_function_marked.py" in _selected(index, "app/util.py")
 
 
-@pytest.mark.parametrize(
-    "changed",
-    [["docs/guide.md"], ["README.md"], ["docs/guide.md", "README.md"]],
-)
-def test_docs_and_markdown_select_nothing(index, changed):
+@pytest.mark.parametrize("changed", [["docs/unread_page.md"], ["notes/CHANGES_NOTE.md"]])
+def test_docs_nobody_reads_select_nothing(index, changed):
     result = sel.select(index, changed)
     assert result.mode == "none"
     assert result.files == []
+
+
+def test_doc_a_test_reads_selects_that_test(index):
+    # Docs stay out of the import graph, but a contract test that reads one by name still runs.
+    assert _selected(index, "docs/guide.md") == ["tests/unit/test_docs_reader.py"]
+    # README.md is too generic on its own: it counts only together with its directory.
+    assert _selected(index, "notes/README.md") == []
 
 
 def test_other_workflows_only_select_tests_that_read_them(index):
@@ -611,7 +651,7 @@ def test_cli_reports_nothing_to_run_for_a_docs_change(git_repo, tmp_path):
     (git_repo / "docs" / "guide.md").write_bytes(b"# changed\n")
     _git(git_repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-am", "docs")
     changed = tmp_path / "changed.txt"
-    changed.write_bytes(b"docs/guide.md\n")
+    changed.write_bytes(b"docs/unread_page.md\n")
     out = tmp_path / "out"
     gh_output = tmp_path / "gh_output"
     proc = _run_cli(git_repo, out, "--changed-files", str(changed), "--github-output", str(gh_output))
@@ -674,8 +714,6 @@ def test_related_shards_run_exactly_like_the_full_job(workflow):
 def test_powershell_steps_have_no_scope_qualified_variable_typos(workflow):
     # In a PowerShell string "$rc:" parses as a drive/scope-qualified variable
     # and the whole script fails to parse before its first command runs.
-    import re
-
     for job in workflow["jobs"].values():
         for step in job.get("steps", []):
             run = step.get("run", "")

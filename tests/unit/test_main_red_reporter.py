@@ -153,6 +153,7 @@ class FakeGitHub:
         self.writes: list[tuple[str, str, dict | None]] = []
         self.pages_read: list[str] = []
         self.issue_comments: list[dict] = []
+        self.extra_jobs: list[dict] = []
 
     @staticmethod
     def _commit(sha, message, login):
@@ -164,7 +165,8 @@ class FakeGitHub:
         if path.startswith(f"/repos/{REPO}/actions/workflows/"):
             return {"workflow_runs": self._page(path, self.runs)}
         if path.startswith(f"/repos/{REPO}/actions/runs/") and "/jobs" in path:
-            return {"jobs": [*self.failed_jobs, {"id": 1, "name": "ok", "conclusion": "success", "html_url": "x"}]}
+            ok = {"id": 1, "name": "ok", "conclusion": "success", "html_url": "x"}
+            return {"jobs": self._page(path, [*self.extra_jobs, *self.failed_jobs, ok])}
         if path.startswith(f"/repos/{REPO}/issues?"):
             return self.issues
         if path.startswith(f"/repos/{REPO}/compare/"):
@@ -392,8 +394,16 @@ def test_jobs_come_from_the_reported_attempt():
 
     gh.get = recording_get
     mr.collect_failure(gh, current, _history(current))
-    assert any(f"/actions/runs/5/attempts/2/jobs" in p for p in requested)
+    assert any("/actions/runs/5/attempts/2/jobs" in p for p in requested)
     assert not any("filter=latest" in p for p in requested)
+
+
+def test_failed_job_on_a_later_page_is_found():
+    current = _failure()
+    gh = FakeGitHub(current, _history(current))
+    gh.extra_jobs = [{"id": 1000 + i, "name": f"ok {i}", "conclusion": "success", "html_url": "x"} for i in range(150)]
+    report = mr.collect_failure(gh, current, _history(current))
+    assert [j["name"] for j in report.failed_jobs] == ["Unit pytest (Windows)"]
 
 
 def test_labels_are_settled_before_the_comment_that_marks_the_run_done():
