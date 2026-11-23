@@ -21,6 +21,12 @@ MEMORY = "plugin_sdk.main_agent.memory:read"
 NETWORK = "system.network:connect"
 PUSH = "plugin_sdk.main_agent.messages:push"
 ENV = "system.env:read"
+LISTEN = "system.network:listen"
+
+# Fake-only test controls and host-only plumbing; everything else is what a
+# plugin calls and must exist on both.
+FAKE_TEST_CONTROLS = frozenset({"set", "denial"})
+REAL_HOST_SIDE = frozenset({"apply", "revision"})
 
 
 class FakeDriver:
@@ -63,6 +69,20 @@ class RealDriver:
         self._send()
 
 
+def _public(obj) -> frozenset[str]:
+    return frozenset(name for name in dir(obj) if not name.startswith("_"))
+
+
+def test_fake_and_real_offer_the_same_plugin_facing_methods():
+    # A method only the fake has passes a plugin's tests and fails with
+    # AttributeError in a real process; one only the real one has cannot be
+    # tested against the fake. Instances, so attributes set in __init__ count.
+    fake = _public(FakePermissions())
+    real = _public(PluginPermissions())
+    assert FAKE_TEST_CONTROLS <= fake and REAL_HOST_SIDE <= real
+    assert fake - FAKE_TEST_CONTROLS == real - REAL_HOST_SIDE == {"get", "on_change"}
+
+
 @pytest.fixture(params=[FakeDriver, RealDriver], ids=["fake", "real"])
 def make(request):
     return request.param
@@ -88,6 +108,7 @@ def test_disclosure_only_permissions_are_not_enforced(make):
         assert driver.perms.get(permission).enforced is (permission not in UNENFORCED_PERMISSIONS)
     assert driver.perms.get(PUSH) == PermissionState("granted", enforced=False)
     assert driver.perms.get(ENV).enforced is False
+    assert driver.perms.get(LISTEN) == PermissionState("undecided", enforced=False)
 
 
 def test_master_switch_makes_every_permission_unenforced(make):

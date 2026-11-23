@@ -1140,6 +1140,64 @@ async def test_restore_escape_hatch_via_env(
 
     await srv_mod._maybe_restore_agent_intent()
     assert called["n"] == 0
+    assert srv_mod._intent_restore_finished is True
+
+
+@pytest.mark.asyncio
+async def test_restore_finished_flag_only_after_replay_completes(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``intent_restore_finished`` (served by GET /agent/flags) must stay False
+    while the replay is still running and turn True once it ends, including
+    when the replay raises."""
+    from app.agent_server import api_routes as srv_mod
+    srv_mod._reset_intent_restore_for_testing()
+
+    seen_during_replay = {}
+
+    async def _fake_do_restore():
+        seen_during_replay["finished"] = srv_mod._intent_restore_finished
+        flags = await srv_mod.get_agent_flags()
+        seen_during_replay["served"] = flags["intent_restore_finished"]
+        raise RuntimeError("replay failed")
+
+    monkeypatch.setattr(srv_mod, "_do_restore_agent_intent", _fake_do_restore)
+
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is False
+    await srv_mod._maybe_restore_agent_intent()
+    assert seen_during_replay == {"finished": False, "served": False}
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is True
+
+
+@pytest.mark.asyncio
+async def test_restore_finished_flag_waits_for_background_replay_tasks(
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The CU/BU probe and user-plugin replay run as background tasks that can
+    still write flags after ``_do_restore_agent_intent`` returns; the flag must
+    stay False until they end (even when one of them raises)."""
+    from app.agent_server import api_routes as srv_mod
+    srv_mod._reset_intent_restore_for_testing()
+
+    release = asyncio.Event()
+
+    async def _slow_replay_write():
+        await release.wait()
+        raise RuntimeError("probe failed")
+
+    async def _fake_do_restore():
+        srv_mod._intent_restore_background_tasks.append(asyncio.create_task(_slow_replay_write()))
+
+    monkeypatch.setattr(srv_mod, "_do_restore_agent_intent", _fake_do_restore)
+
+    await srv_mod._maybe_restore_agent_intent()
+    await asyncio.sleep(0)
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is False
+
+    release.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert (await srv_mod.get_agent_flags())["intent_restore_finished"] is True
 
 
 @pytest.mark.asyncio
@@ -1448,3 +1506,22 @@ async def test_a_restore_at_start_leaves_plugins_the_user_switched_off_as_they_a
     assert bool(srv.Modules.agent_flags.get("user_plugin_enabled")) is plugins_on
     # What was kept is as it was.
     assert ari.get_intent("user_plugin_enabled") is kept
+
+
+@pytest.mark.asyncio
+async def test_get_agent_flags_serves_saved_intent(
+    agent_state_isolation, isolated_intent_store: Path
+):
+    """GET /agent/flags serves the saved switch intents so the page can tell a
+    switch the user turned off (intent False) from one the backend put off after
+    a failed start (intent unchanged)."""
+    from app import agent_runtime_intent as ari
+    from app.agent_server import api_routes as srv_mod
+
+    assert (await srv_mod.get_agent_flags())["intent"] == {}
+    ari.set_intent("analyzer_enabled", True)
+    ari.set_intent("user_plugin_enabled", False)
+    served = (await srv_mod.get_agent_flags())["intent"]
+    assert served == {"analyzer_enabled": True, "user_plugin_enabled": False}
+    served["user_plugin_enabled"] = True
+    assert ari.get_intent("user_plugin_enabled") is False, "served intent must be a copy"

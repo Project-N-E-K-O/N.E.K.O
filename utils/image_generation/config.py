@@ -27,6 +27,22 @@ class ImageConfig:
     api_key: str = field(repr=False)
 
 
+def supports_image_edit(protocol: str, model: str) -> bool:
+    if protocol == "openai":
+        return model not in {"dall-e-2", "dall-e-3"}
+    return protocol == "dashscope" and model.startswith(
+        ("qwen-image-edit", "qwen-image-2.", "qwen-image-3.", "wan2.6-image", "wan2.7-image")
+    )
+
+
+def supports_text_to_image(protocol: str, model: str) -> bool:
+    if protocol == "openai":
+        return True
+    return protocol == "dashscope" and not model.startswith(
+        ("qwen-image-edit", "wanx2.1-imageedit", "wan2.5-i2i")
+    )
+
+
 def resolve_image_config(raw: dict, *, enabled: bool = True) -> ImageConfig | None:
     """Resolve only image settings; never fall back to a chat model or key."""
     provider = raw.get("imageModelProvider", "")

@@ -648,3 +648,56 @@ def test_autostart_prompt_state_response_reports_autostart_mode(tmp_path):
 
     assert response["prompt_mode"] == "autostart"
     assert response["state"]["autostart_enabled"] is False
+
+
+@pytest.mark.unit
+def test_autostart_heartbeat_replay_with_same_token_does_not_double_count_deltas(tmp_path):
+    """F0536: replaying the same heartbeat_token must not accumulate deltas or funnel counts twice."""
+    config = DummyConfig(tmp_path)
+    payload = {
+        "foreground_ms_delta": AUTOSTART_MIN_PROMPT_FOREGROUND_MS,
+        "home_interactions_delta": 3,
+        "chat_turns_delta": 2,
+        "voice_sessions_delta": 1,
+        "heartbeat_token": "tok-replay-1",
+    }
+
+    first = process_autostart_prompt_heartbeat(payload, config_manager=config, now_ms=10_000)
+    replayed = process_autostart_prompt_heartbeat(payload, config_manager=config, now_ms=11_000)
+
+    assert first["should_prompt"] is True
+    assert replayed["should_prompt"] is True
+    assert replayed["prompt_token"] == first["prompt_token"]
+    assert replayed["state"]["foreground_ms"] == AUTOSTART_MIN_PROMPT_FOREGROUND_MS
+    assert replayed["state"]["home_interactions"] == 3
+    assert replayed["state"]["chat_turns"] == 2
+    assert replayed["state"]["voice_sessions"] == 1
+    assert replayed["state"]["funnel_counts"]["issued"] == 1
+
+
+@pytest.mark.unit
+def test_autostart_heartbeat_distinct_token_accumulates_new_deltas(tmp_path):
+    """F0536: a new heartbeat_token after a prior batch must still accumulate new deltas."""
+    config = DummyConfig(tmp_path)
+    process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 1_000,
+            "chat_turns_delta": 1,
+            "heartbeat_token": "tok-batch-1",
+        },
+        config_manager=config,
+        now_ms=1_000,
+    )
+    second = process_autostart_prompt_heartbeat(
+        {
+            "foreground_ms_delta": 2_500,
+            "chat_turns_delta": 2,
+            "heartbeat_token": "tok-batch-2",
+        },
+        config_manager=config,
+        now_ms=2_000,
+    )
+
+    assert second["state"]["foreground_ms"] == 3_500
+    assert second["state"]["chat_turns"] == 3
+

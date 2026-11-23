@@ -536,6 +536,30 @@ def test_clear_removes_a_stored_id_the_vocabulary_no_longer_has(manager):
         store.clear("y", "system.retired:read")
 
 
+def test_a_new_id_stored_here_reads_like_a_dropped_id_without_it_in_the_vocabulary(monkeypatch, manager):
+    """A grant for system.network:listen, read by a build whose vocabulary
+    does not have it, behaves like any id the vocabulary no longer has."""
+    from types import MappingProxyType
+
+    from plugin.sdk.shared.permissions import catalog
+
+    listen = "system.network:listen"
+    store = PluginPermissionStore(manager)
+    store.decide("x", MEMORY_READ, "granted")
+    assert list(store.decide("x", listen, "granted")["permissions"]) == [MEMORY_READ, listen]
+
+    older = MappingProxyType({key: spec for key, spec in catalog.PERMISSIONS.items() if key != listen})
+    monkeypatch.setattr(catalog, "PERMISSIONS", older)
+    store = PluginPermissionStore(manager)
+
+    # Kept and readable, other grants untouched; no new decision for it.
+    assert set(store.read("x")["permissions"]) == {MEMORY_READ, listen}
+    with pytest.raises(ValueError):
+        store.decide("x", listen, "denied")
+    # Clearing it still works because the record holds it.
+    assert list(store.clear("x", listen)["permissions"]) == [MEMORY_READ]
+
+
 # ---------------------------------------------------------------------------
 # Source binding
 # ---------------------------------------------------------------------------

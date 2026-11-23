@@ -629,7 +629,7 @@ def _imports(path: Path) -> set[str]:
     return found
 
 
-def test_host_reaches_plugins_over_http_and_imports_only_their_settings():
+def test_host_reaches_plugins_over_http_and_imports_only_their_settings_and_model_slots():
     project_packages = {
         "app", "brain", "config", "knowledge", "launcher_core", "local_server", "main_logic",
         "main_routers", "memory", "nekopower", "plugin", "services", "steamworks", "theater_workshop", "utils",
@@ -642,7 +642,14 @@ def test_host_reaches_plugins_over_http_and_imports_only_their_settings():
                 used.setdefault(top, set()).add(module)
 
     assert set(used) <= {"config", "utils", "nekopower", "plugin"}
-    assert used.get("plugin", set()) <= {"plugin.settings"}
+    # Its settings; and, for the model each preset's sessions are sent to, the slots of the model
+    # panel, read in process (``role_models.py``): what the slots are and how one is resolved.
+    assert used.get("plugin", set()) <= {
+        "plugin.settings",
+        "plugin.server.infrastructure.model_slot_resolver",
+        "plugin.server.infrastructure.host_model_slots",
+        "plugin.server.domain.model_config",
+    }
     # The runtime below it knows nothing of the host.
     for path in sorted((REPO_ROOT / "nekopower" / "runtime").rglob("*.py")):
         assert not any(module.startswith("nekopower.host") for module in _imports(path)), path

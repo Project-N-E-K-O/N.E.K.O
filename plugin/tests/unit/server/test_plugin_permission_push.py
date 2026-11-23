@@ -11,6 +11,7 @@ import pytest
 from plugin import settings
 from plugin.sdk.shared.permissions import LEGACY_PERMISSION_NAMES, PERMISSIONS, UNENFORCED_PERMISSIONS
 from plugin.sdk.shared.permissions.runtime import PluginPermissions
+from plugin.sdk.shared.permissions.state import PermissionState
 from plugin.server.application.plugins import capability_gate, permission_push, permission_service
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import plugin_permissions
@@ -24,6 +25,7 @@ pytestmark = pytest.mark.plugin_unit
 
 NETWORK = "system.network:connect"
 ENV = "system.env:read"
+LISTEN = "system.network:listen"
 
 
 class ConfigManager:
@@ -189,6 +191,7 @@ def test_legacy_whole_plugin_denial(store):
     assert perms.get(CONVERSATIONS_READ).status == "denied"
     # Permissions the earlier flow did not know are undecided.
     assert perms.get(NETWORK).status == "undecided"
+    assert perms.get(LISTEN).status == "undecided"
     # Disclosure only: granted or undecided, never denied.
     assert perms.get(MESSAGES_PUSH).status == "undecided"
     # An explicit later decision wins over the denial.
@@ -201,6 +204,9 @@ def test_disclosure_only_permissions_are_never_enforced(store):
     store.decide("demo", MESSAGES_PUSH, "denied")
     perms = _states("demo")
     assert (perms.get(ENV).status, perms.get(ENV).enforced) == ("denied", False)
+    assert perms.get(LISTEN) == PermissionState("undecided", enforced=False)
+    store.decide("demo", LISTEN, "granted", condition="anytime")
+    assert _states("demo").get(LISTEN) == PermissionState("granted", background=True, enforced=False)
     assert (perms.get(MESSAGES_PUSH).status, perms.get(MESSAGES_PUSH).enforced) == ("undecided", False)
 
 
@@ -247,6 +253,7 @@ def test_read_failure_without_any_earlier_read_denies_enforced_permissions(monke
     perms = _states("demo")
     assert perms.get(MEMORY_READ).status == "denied"
     assert perms.get(MESSAGES_PUSH).status == "undecided"
+    assert perms.get(LISTEN).status == "undecided"  # disclosure only
     assert "PLUGIN_PERMISSIONS_CORRUPT" in log.lines[0][1]
 
 

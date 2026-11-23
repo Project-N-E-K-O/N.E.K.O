@@ -39,6 +39,37 @@ def test_apply_user_config_profiles_uses_active_profile_from_plugin_section(tmp_
 
 
 @pytest.mark.plugin_unit
+def test_apply_user_config_profiles_ignores_reserved_permissions_table(tmp_path: Path) -> None:
+    plugin_dir = tmp_path / "demo"
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+
+    profile_file = plugin_dir / "profiles" / "dev.toml"
+    profile_file.parent.mkdir(parents=True, exist_ok=True)
+    profile_file.write_text("[runtime]\nlevel=2\n[permissions]\nask=true\n", encoding="utf-8")
+
+    base_config: dict[str, object] = {
+        "plugin": {
+            "id": "demo",
+            "config_profiles": {
+                "active": "dev",
+                "files": {"dev": "profiles/dev.toml"},
+            },
+        },
+        "runtime": {"enabled": True, "level": 1},
+    }
+
+    merged = apply_user_config_profiles(
+        plugin_id="demo",
+        base_config=base_config,
+        config_path=config_path,
+    )
+    assert merged["runtime"] == {"enabled": True, "level": 2}
+    assert "permissions" not in merged
+
+
+@pytest.mark.plugin_unit
 def test_apply_user_config_profiles_supports_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     plugin_dir = tmp_path / "demo"
     plugin_dir.mkdir(parents=True, exist_ok=True)
