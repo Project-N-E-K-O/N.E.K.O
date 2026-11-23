@@ -375,6 +375,7 @@ class _Resolver:
             if mod not in self.packages or used >= len(parts):
                 break
             target = self.exports.get(mod, {}).get(parts[used])
+            target = self.aliases.get(target, target)  # a facade may re-export by import name
             if not target or target == mod:
                 break
             weak |= {mod} | _parents(target, self.known)
