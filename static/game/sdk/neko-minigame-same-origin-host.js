@@ -1426,6 +1426,9 @@
           headers: { ...headers, ...(options.headers || {}) },
           credentials: options.credentials || 'same-origin',
         });
+      }, {
+        signal: options.signal,
+        operation: options.operation,
       });
     }
 
@@ -2204,12 +2207,54 @@
       return this.getMutationHeaders({ forceRefresh: true });
     }
 
-    async withCsrfRetry(requestWithHeaders) {
-      let response = await requestWithHeaders(await this.getMutationHeaders());
+    _awaitWithAbortSignal(promise, signal, operation = 'request') {
+      if (!signal) return promise;
+      if (signal.aborted) {
+        return Promise.reject(
+          this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation }),
+        );
+      }
+      return new Promise((resolve, reject) => {
+        const onAbort = () => {
+          reject(this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation }));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        Promise.resolve(promise)
+          .then(resolve, reject)
+          .finally(() => {
+            signal.removeEventListener('abort', onAbort);
+          });
+      });
+    }
+
+    async withCsrfRetry(requestWithHeaders, options = {}) {
+      const signal = options?.signal;
+      const operation = options?.operation || 'request';
+      const initialHeaders = await this._awaitWithAbortSignal(
+        this.getMutationHeaders(),
+        signal,
+        operation,
+      );
+      if (signal?.aborted) {
+        throw this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation });
+      }
+      let response = await requestWithHeaders(initialHeaders);
       if (response.status !== 403) return response;
       const errorPayload = await response.clone().json().catch(() => ({}));
       if (errorPayload?.error_code !== 'csrf_validation_failed') return response;
-      response = await requestWithHeaders(await this.refreshMutationHeaders());
+      if (signal) {
+        const refreshedHeaders = await this._awaitWithAbortSignal(
+          this.refreshMutationHeaders(),
+          signal,
+          operation,
+        );
+        if (signal.aborted) {
+          throw this._hostError('cancelled', `${this.displayName} host request was cancelled`, { operation });
+        }
+        response = await requestWithHeaders(refreshedHeaders);
+      } else {
+        response = await requestWithHeaders(await this.refreshMutationHeaders());
+      }
       return response;
     }
 
@@ -3742,17 +3787,21 @@
           signal: options.signal,
         });
         response = await endRequestPromise;
-        if (!this._disposed && response.status === 403) {
+        if (!this._disposed && !options.signal?.aborted && response.status === 403) {
           const errPayload = await response.clone().json().catch(() => ({}));
           if (errPayload?.error_code === 'csrf_validation_failed') {
-            const refreshedHeaders = await this.refreshMutationHeaders();
+            const refreshedHeaders = await this._awaitWithAbortSignal(
+              this.refreshMutationHeaders(),
+              options.signal,
+              'route_end',
+            );
             const refreshedToken = csrfTokenFromHeaders(refreshedHeaders);
             const retryBody = JSON.stringify(
               refreshedToken
                 ? { ...fallbackPayloadObj, _csrf_token: refreshedToken }
                 : fallbackPayloadObj
             );
-            if (!this._disposed) {
+            if (!this._disposed && !options.signal?.aborted) {
               response = await this._post(this._gameEndpoint('end'), retryBody, {
                 headers: refreshedHeaders,
                 credentials: 'same-origin',

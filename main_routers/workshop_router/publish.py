@@ -616,9 +616,9 @@ async def publish_to_workshop(request: Request):
                             "workshop_item_id": str(existing_item_id),
                         }, status_code=409)
         
-        # Process the preview-image path.
+        # Process the preview-image path (preserve literal percent sequences returned by /upload-preview-image).
         if preview_image:
-            preview_image = unquote(preview_image)
+            preview_image = str(preview_image)
             if "\x00" in preview_image:
                 return JSONResponse(content={
                     "success": False,
@@ -690,14 +690,18 @@ async def publish_to_workshop(request: Request):
                         await asyncio.to_thread(shutil.copy2, source_preview, new_preview_path)
                         logger.info(f'预览图片已复制到内容文件夹并统一命名: {new_preview_path}')
                         preview_image = new_preview_path
+                        consumed_staged_preview = source_preview
                     except Exception as e:
                         logger.error(f'复制预览图片到内容文件夹失败: {e}')
-                        return JSONResponse(content={
-                            "success": False,
-                            "error": "预览图片处理失败",
-                            "message": "无法复制预览图片到内容文件夹"
-                        }, status_code=500)
-                    consumed_staged_preview = source_preview
+                        if os.path.isfile(source_preview):
+                            logger.warning(f'继续使用已验证的源预览图片路径: {source_preview}')
+                            preview_image = source_preview
+                        else:
+                            return JSONResponse(content={
+                                "success": False,
+                                "error": "预览图片处理失败",
+                                "message": "无法复制预览图片到内容文件夹"
+                            }, status_code=500)
         else:
             # If no preview is specified, try automatic discovery.
             auto_preview = find_preview_image_in_folder(content_folder)
@@ -748,11 +752,14 @@ async def publish_to_workshop(request: Request):
                             preview_image = new_preview_path
                         except Exception as e:
                             logger.error(f'重命名自动预览图片失败: {e}')
-                            return JSONResponse(content={
-                                "success": False,
-                                "error": "预览图片处理失败",
-                                "message": "无法处理自动发现的预览图片"
-                            }, status_code=500)
+                            if os.path.isfile(preview_image):
+                                logger.warning(f'继续使用已验证的自动预览图片路径: {preview_image}')
+                            else:
+                                return JSONResponse(content={
+                                    "success": False,
+                                    "error": "预览图片处理失败",
+                                    "message": "无法处理自动发现的预览图片"
+                                }, status_code=500)
 
         # Record information about the upload content.
         logger.info(f"准备发布创意工坊物品: {title}")

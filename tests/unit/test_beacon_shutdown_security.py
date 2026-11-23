@@ -341,3 +341,22 @@ def test_beacon_shutdown_allows_authenticated_tls_proxy_origin_and_blocks_cross_
         client.close()
 
     assert shutdown_mock.await_count == 2
+
+
+def test_beacon_shutdown_treats_non_ascii_csrf_token_as_invalid(beacon_client):
+    client, shutdown_mock = beacon_client
+
+    r_no_origin = client.post(
+        "/api/beacon/shutdown",
+        json={"_csrf_token": "非ASCII令牌"},
+    )
+    assert r_no_origin.status_code == 403
+    assert r_no_origin.json()["detail"]["error_code"] == "csrf_validation_failed"
+
+    r_same_origin = client.post(
+        "/api/beacon/shutdown",
+        json={"_csrf_token": "非ASCII令牌"},
+        headers={"Origin": "http://127.0.0.1:48911", "Sec-Fetch-Site": "same-origin"},
+    )
+    assert r_same_origin.status_code == 200
+    assert shutdown_mock.await_count == 1

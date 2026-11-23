@@ -19,6 +19,7 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
 from ._shared import (
+    _extract_unc_share,
     _get_app_root,
     _is_path_within_base,
     _is_unsafe_windows_unc_or_device_path,
@@ -379,8 +380,10 @@ async def proxy_image(image_path: str):
         except Exception as e:
             logger.warning(f"无法添加额外创意工坊库目录: {str(e)}")
 
-        allow_unc = any(d.replace("/", "\\").startswith("\\\\") for d in allowed_dirs)
-        if _is_unsafe_windows_unc_or_device_path(decoded_path, allow_unc=allow_unc):
+        allowed_unc_shares = {
+            share for d in allowed_dirs if (share := _extract_unc_share(d)) is not None
+        }
+        if _is_unsafe_windows_unc_or_device_path(decoded_path, allowed_unc_shares=allowed_unc_shares):
             return JSONResponse(content={"success": False, "error": "文件不存在或无访问权限"}, status_code=404)
 
         final_path: str | None = None

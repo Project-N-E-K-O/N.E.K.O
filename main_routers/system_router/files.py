@@ -19,6 +19,7 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
 from ._shared import (
+    _extract_unc_share,
     _get_app_root,
     _get_system_config_manager,
     _is_path_within_base,
@@ -97,8 +98,10 @@ async def check_file_exists(path: str = None):
             return JSONResponse(content={"exists": False}, status_code=403)
 
         allowed_dirs = await _get_file_exists_allowed_dirs()
-        allow_unc = any(d.replace("/", "\\").startswith("\\\\") for d in allowed_dirs)
-        if _is_unsafe_windows_unc_or_device_path(decoded_path, allow_unc=allow_unc):
+        allowed_unc_shares = {
+            share for d in allowed_dirs if (share := _extract_unc_share(d)) is not None
+        }
+        if _is_unsafe_windows_unc_or_device_path(decoded_path, allowed_unc_shares=allowed_unc_shares):
             logger.warning("Rejected UNC path probe in file-exists")
             return JSONResponse(content={"exists": False}, status_code=403)
 

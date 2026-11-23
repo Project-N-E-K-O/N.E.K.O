@@ -487,6 +487,10 @@ def test_file_exists_allows_unc_when_allowed_dir_is_unc_but_still_blocks_device_
         assert r_device.status_code == 403
         assert realpath_calls == []
 
+        r_foreign_unc = client.get("/api/file-exists", params={"path": r"\\attacker\other\secret.txt"})
+        assert r_foreign_unc.status_code == 403
+        assert realpath_calls == []
+
         r_unc = client.get("/api/file-exists", params={"path": r"\\fileserver\share\docs\ok.txt"})
         assert realpath_calls and "fileserver" in realpath_calls[0], (
             "UNC path under an allowed UNC root should not be blocked before realpath"

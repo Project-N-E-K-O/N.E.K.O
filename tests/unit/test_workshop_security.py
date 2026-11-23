@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -356,9 +357,9 @@ async def test_upload_preview_image_streams_bounded_chunks_and_stops_at_cap(tmp_
         _StubFormRequest(upload, content_folder=str(export_item))
     )
     assert resp.status_code == 400
+    assert json.loads(resp.body)["error"] == "文件大小无效"
     assert upload.closed is True
-    assert upload.total_read <= 1024 + 64 * 1024
-    assert upload.total_read < 100 * 1024
+    assert upload.total_read == 1025
 
 
 @pytest.mark.asyncio
@@ -523,19 +524,147 @@ def test_assert_workshop_path_allows_unc_when_resolved_base_is_unc(monkeypatch):
     unc_base = r"\\fileserver\share\workshop"
     unc_file = r"\\fileserver\share\workshop\WorkshopExport\_preview_staging\abc\preview.png"
     foreign_unc = r"\\attacker\share\evil.png"
+    extended_device = r"\\?\C:\Windows\win.ini"
     nt_device = r"\??\C:\Windows\win.ini"
+    realpath_calls: list[str] = []
+
+    def _spy_realpath(p):
+        realpath_calls.append(p)
+        return unc_base if p == mapped_base else p
 
     monkeypatch.setattr(preview_cards.os.path, "normpath", lambda p: p.replace("/", "\\"))
-    monkeypatch.setattr(
-        preview_cards.os.path,
-        "realpath",
-        lambda p: unc_base if p == mapped_base else p,
-    )
+    monkeypatch.setattr(preview_cards.os.path, "realpath", _spy_realpath)
     monkeypatch.setattr(preview_cards.os.path, "normcase", lambda p: p.lower())
     monkeypatch.setattr(preview_cards.os.path, "commonpath", ntpath.commonpath)
 
     assert preview_cards._assert_workshop_path(unc_file, mapped_base) == unc_file
+    realpath_calls.clear()
     with pytest.raises(PermissionError):
         preview_cards._assert_workshop_path(foreign_unc, mapped_base)
     with pytest.raises(PermissionError):
+        preview_cards._assert_workshop_path(extended_device, mapped_base)
+    with pytest.raises(PermissionError):
         preview_cards._assert_workshop_path(nt_device, mapped_base)
+    assert all("attacker" not in c and "Windows" not in c for c in realpath_calls), realpath_calls
+
+
+def test_verify_preview_image_file_rejects_mismatched_format_bmp_as_png(tmp_path):
+    from main_routers.workshop_router import preview_cards
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color=(1, 2, 3)).save(buf, format="BMP")
+    disguised = tmp_path / "preview.png"
+    disguised.write_bytes(buf.getvalue())
+
+    with pytest.raises(ValueError):
+        preview_cards._verify_preview_image_file(str(disguised))
+
+
+@pytest.mark.asyncio
+async def test_preview_staging_rejects_in_workshop_symlink_redirect_and_protects_exports(tmp_path, monkeypatch):
+    from main_routers.workshop_router import preview_cards
+
+    workshop = tmp_path / "workshop"
+    export_dir = workshop / "WorkshopExport"
+    legit_export = export_dir / "legit_item"
+    old_child = legit_export / "old_dir"
+    export_dir.mkdir(parents=True)
+    legit_export.mkdir()
+    old_child.mkdir()
+    (old_child / "keep.txt").write_text("keep", encoding="utf-8")
+    old_ts = time.time() - (preview_cards._PREVIEW_STAGING_TTL_SECONDS + 3600)
+    os.utime(old_child, (old_ts, old_ts))
+
+    staging_link = export_dir / "_preview_staging"
+    try:
+        staging_link.symlink_to(legit_export, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlinks are not supported in this test environment: {exc}")
+
+    monkeypatch.setattr(preview_cards, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    resp = await preview_cards.upload_preview_image(
+        _StubFormRequest(_StubUpload(_png_bytes()), content_folder=None)
+    )
+    assert resp.status_code == 403
+
+    preview_cards._cleanup_stale_preview_staging(str(staging_link), workshop_base=str(workshop))
+    preview_cards._cleanup_consumed_preview_staging(str(old_child / "keep.txt"), str(workshop))
+    assert (old_child / "keep.txt").is_file()
+
+
+@pytest.mark.asyncio
+async def test_publish_preserves_literal_percent_in_preview_image_path(tmp_path, monkeypatch):
+    from main_routers.workshop_router import publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_target"
+    percent_dir = workshop / "WorkshopExport" / "item%20v2"
+    content_folder.mkdir(parents=True)
+    percent_dir.mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+    percent_preview = percent_dir / "cover%20face.png"
+    percent_preview.write_bytes(_png_bytes())
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+
+    captured = {}
+
+    def _fake_preflight(_sw, _title, _desc, _cf, preview_arg, *_rest):
+        captured["preview_image"] = preview_arg
+        return "7890"
+
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", _fake_preflight)
+    publish_resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Percent Item",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": str(percent_preview),
+        })
+    )
+    assert publish_resp.status_code == 200
+    assert (content_folder / "preview.png").is_file()
+    assert captured["preview_image"] == str((content_folder / "preview.png").resolve())
+
+
+@pytest.mark.asyncio
+async def test_publish_continues_with_validated_preview_when_copy_fails_on_readonly_folder(tmp_path, monkeypatch):
+    from main_routers.workshop_router import publish as wr_publish
+
+    workshop = tmp_path / "workshop"
+    content_folder = workshop / "WorkshopExport" / "item_ro"
+    staging_folder = workshop / "WorkshopExport" / "_preview_staging" / "keep_me"
+    content_folder.mkdir(parents=True)
+    staging_folder.mkdir(parents=True)
+    (content_folder / "card.json").write_text("{}", encoding="utf-8")
+    staged_preview = staging_folder / "cover.png"
+    staged_preview.write_bytes(_png_bytes())
+
+    captured = {}
+
+    def _fake_preflight(_sw, _title, _desc, _cf, preview_arg, *_rest):
+        captured["preview_image"] = preview_arg
+        return "2468"
+
+    def _fail_copy2(*_args, **_kwargs):
+        raise PermissionError("read-only destination")
+
+    monkeypatch.setattr(wr_publish, "get_workshop_path_async", AsyncMock(return_value=str(workshop)))
+    monkeypatch.setattr(wr_publish, "get_steamworks", lambda: SimpleNamespace())
+    monkeypatch.setattr(wr_publish, "_is_workshop_publish_native_crash_risk", lambda: False)
+    monkeypatch.setattr(wr_publish, "_preflight_and_publish", _fake_preflight)
+    monkeypatch.setattr(shutil, "copy2", _fail_copy2)
+
+    resp = await wr_publish.publish_to_workshop(
+        _StubJsonRequest({
+            "title": "Readonly",
+            "content_folder": str(content_folder),
+            "visibility": 0,
+            "preview_image": str(staged_preview),
+        })
+    )
+    assert resp.status_code == 200
+    assert captured["preview_image"] == str(staged_preview.resolve())
+    assert staging_folder.exists()

@@ -27,7 +27,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from main_logic.mini_game_sdk import run_isolated_structured_output
-from utils.character_name import validate_character_name
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 
 from config.prompts.prompts_drawing_guess import (
     DRAWING_GUESS_CHAT_EXTRA_RULES,
@@ -4384,7 +4384,7 @@ async def drawing_guess_round_start(request: Request):
     session_id = str(data.get("session_id") or "").strip()
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    name_check = validate_character_name(lanlan_name, allow_dots=True, max_length=50)
+    name_check = validate_character_name(lanlan_name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS)
     if not name_check.ok:
         return {"ok": False, "reason": "invalid_lanlan_name"}
     lanlan_name = name_check.normalized

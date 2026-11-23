@@ -2225,6 +2225,50 @@ async function main() {
     assert(beaconSentCount === 0, 'tokenless sendBeacon must not be invoked');
     assert(noTokenResult.ok === true && endCalls.length === 2,
       'tokenless unload did not fall back to synchronous keepalive fetch');
+
+    // Aborting one caller while page_config is pending cancels only that caller
+    // without breaking concurrent waiters sharing the CSRF fetch.
+    let releaseSlowPageConfig;
+    const slowPageConfigGate = new Promise((resolve) => { releaseSlowPageConfig = resolve; });
+    const abortTestFetchImpl = async (url, init = {}) => {
+      const pathName = String(url);
+      if (pathName.startsWith('/api/config/page_config')) {
+        await slowPageConfigGate;
+        return jsonResponse({ autostart_csrf_token: 'shared-abort-token' });
+      }
+      const body = init.body ? JSON.parse(init.body) : {};
+      endCalls.push({ url: pathName, init, body });
+      return jsonResponse({ ok: true, accepted: true });
+    };
+    const abortWaitHost = createHost({
+      gameType: 'example-game',
+      sessionId: 'abort-csrf-wait-session',
+      fetchImpl: abortTestFetchImpl,
+      windowImpl: windowMock,
+      navigatorImpl: windowMock.navigator,
+    });
+    abortWaitHost.connectGame({
+      protocolVersions: ['1'],
+      manifest: {
+        id: 'example-game', version: '1.0.0',
+        requiredCapabilities: ['runtime'], optionalCapabilities: [],
+      },
+    });
+    const hbAbortController = new AbortController();
+    const abortedHeartbeat = abortWaitHost.heartbeat(
+      { ok: true },
+      { signal: hbAbortController.signal },
+    ).then(() => null, (err) => err);
+    const healthyHeartbeat = abortWaitHost.heartbeat({ ok: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    hbAbortController.abort();
+    const abortedError = await abortedHeartbeat;
+    assert(abortedError?.code === 'cancelled',
+      `expected aborted heartbeat to cancel while page_config was pending, got ${abortedError?.code}`);
+    releaseSlowPageConfig();
+    const healthyResp = await healthyHeartbeat;
+    assert(healthyResp.ok === true, 'cancelling one caller broke shared page_config waiter');
+    abortWaitHost.dispose();
   }
 
   process.stdout.write('mini-game same-origin host runtime test passed\n');

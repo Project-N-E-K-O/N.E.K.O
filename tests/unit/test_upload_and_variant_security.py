@@ -414,14 +414,19 @@ def test_godot_variant_rejects_oversized_counts_without_oom(variant_type):
     else:
         payload = struct.pack("<II", variant_type, 0xFFFFFFFF if variant_type >= 30 else 0x7FFFFFFF)
 
-    tracemalloc.start()
+    was_tracing = tracemalloc.is_tracing()
+    if not was_tracing:
+        tracemalloc.start()
     try:
         with pytest.raises(ValueError):
             GodotVariantReader(payload).read_variant()
-        _current, peak = tracemalloc.get_traced_memory()
+        if not was_tracing:
+            _current, peak = tracemalloc.get_traced_memory()
     finally:
-        tracemalloc.stop()
-    assert peak < 1_000_000
+        if not was_tracing:
+            tracemalloc.stop()
+    if not was_tracing:
+        assert peak < 1_000_000
 
 
 def test_godot_variant_rejects_oversized_string_and_bytes_lengths():

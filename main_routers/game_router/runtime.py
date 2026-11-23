@@ -193,7 +193,7 @@ from collections import OrderedDict
 from typing import Any, Dict, Optional
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from utils.character_name import validate_character_name
+from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from config.prompts.prompts_soccer import (
     get_soccer_passive_guard_system_prompt,
     get_soccer_passive_guard_user_prompt,
@@ -1981,7 +1981,7 @@ async def game_route_start(game_type: str, request: Request):
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
     if not lanlan_name:
         return {"ok": False, "reason": "missing_lanlan_name"}
-    name_check = validate_character_name(lanlan_name, allow_dots=True, max_length=50)
+    name_check = validate_character_name(lanlan_name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS)
     if not name_check.ok:
         return {"ok": False, "reason": "invalid_lanlan_name"}
     lanlan_name = name_check.normalized

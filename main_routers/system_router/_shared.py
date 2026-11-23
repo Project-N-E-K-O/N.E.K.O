@@ -157,7 +157,7 @@ def _validate_local_mutation_request(
     has_valid_csrf = bool(
         csrf_token
         and AUTOSTART_CSRF_TOKEN
-        and secrets.compare_digest(csrf_token, AUTOSTART_CSRF_TOKEN)
+        and secrets.compare_digest(csrf_token.encode("utf-8"), AUTOSTART_CSRF_TOKEN.encode("utf-8"))
     )
     request_origin = _get_request_origin(request)
     allowed_origins = _get_allowed_local_origins(request)
@@ -231,14 +231,40 @@ def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
         return False
 
 
-def _is_unsafe_windows_unc_or_device_path(raw_path: str, *, allow_unc: bool = False) -> bool:
-    """Reject Windows device/NT-object paths and (unless allowed) UNC network paths without touching the filesystem."""
+def _extract_unc_share(raw_path: str) -> tuple[str, str] | None:
+    """Extract normalized ``(server, share)`` from a Windows UNC path, else ``None``."""
+    unified = raw_path.replace("/", "\\")
+    if unified.startswith(("\\??\\", "\\\\.\\", "\\\\?\\")):
+        return None
+    if not unified.startswith("\\\\"):
+        return None
+    remainder = unified[2:]
+    if not remainder or remainder.startswith("\\"):
+        return None
+    parts = remainder.split("\\")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return None
+    return parts[0].lower(), parts[1].lower()
+
+
+def _is_unsafe_windows_unc_or_device_path(
+    raw_path: str,
+    *,
+    allow_unc: bool = False,
+    allowed_unc_shares: set[tuple[str, str]] | None = None,
+) -> bool:
+    """Reject Windows device/NT-object paths and untrusted UNC network paths without touching the filesystem."""
     unified = raw_path.replace("/", "\\")
     if unified.startswith(("\\??\\", "\\\\.\\", "\\\\?\\")):
         return True
-    if not allow_unc and unified.startswith("\\\\"):
+    if not unified.startswith("\\\\"):
+        return False
+    if allow_unc:
+        return False
+    if not allowed_unc_shares:
         return True
-    return False
+    share = _extract_unc_share(unified)
+    return share is None or share not in allowed_unc_shares
 
 
 def _get_app_root():
