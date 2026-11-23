@@ -1676,7 +1676,7 @@ async def test_two_settlings_of_one_session_at_once_settle_it_on_one_model(hosts
 
     # One settling reads the setting and waits in the slot; the user changes the setting; another begins.
     first = asyncio.ensure_future(tasks.session_model(session))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     await tasks.role_models.store.put("general", SMALL_SLOT)
     second = asyncio.ensure_future(tasks.session_model(session))
     await asyncio.sleep(0.05)
@@ -1701,3 +1701,84 @@ async def test_a_usable_slot_a_session_was_settled_on_is_found_behind_any_number
         )
 
     assert await host.task_agents.available() == (True, "")
+
+
+async def test_a_commission_is_settled_before_it_is_queued_whatever_is_set_while_that_is_written(
+    hosts, tmp_path, monkeypatch
+):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first, writing, release_note = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    specs: list[Any] = []
+    scripts = [ScriptedLLM([[wait_first, *_report()]]), ScriptedLLM([_report()])]
+    host = _host(
+        hosts, tmp_path, lambda spec: specs.append(spec) or scripts[len(specs) - 1], manager, max_task_agents=1
+    )
+    await host.set_role_model("general", OWN_SLOT)
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    append = host.ledger.append_event
+
+    async def held_note(commission_id: str, kind: str, payload: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if kind == "queued":
+            writing.set()
+            await release_note.wait()
+        return await append(commission_id, kind, payload, *args, **kwargs)
+
+    monkeypatch.setattr(host.ledger, "append_event", held_note)
+    queued = asyncio.ensure_future(_dispatch(host, "sort the music"))
+    await asyncio.wait_for(writing.wait(), 10)
+    # The setting changes while it is being noted that the commission is queued.
+    await host.task_agents.role_models.store.put("general", SMALL_SLOT)
+    release_note.set()
+    second = (await queued).commission_id
+    release_first.set()
+    await wait_status(host, second, "done")
+
+    assert [spec.model.model for spec in specs] == ["own-model", "own-model"]
+
+
+async def test_a_place_that_comes_free_while_a_commission_is_settled_for_the_queue_is_taken(hosts, tmp_path):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first, settling, release_settling = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    specs: list[Any] = []
+    scripts = [ScriptedLLM([[wait_first, *_report()]]), ScriptedLLM([_report()])]
+    host = _host(
+        hosts, tmp_path, lambda spec: specs.append(spec) or scripts[len(specs) - 1], manager, max_task_agents=1
+    )
+    tasks = host.task_agents
+    await host.set_role_model("general", OWN_SLOT)
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    settle = tasks.settle_model
+
+    async def held_settling(session: Any) -> None:
+        # Only the settling of a commission that found no place comes here.
+        settling.set()
+        await release_settling.wait()
+        await settle(session)
+
+    tasks.settle_model = held_settling
+    queued = asyncio.ensure_future(_dispatch(host, "sort the music"))
+    await asyncio.wait_for(settling.wait(), 10)
+    # The first one finishes while the second is being settled, not yet queued: nobody is queued to be started.
+    release_first.set()
+    await wait_status(host, first, "done")
+    await wait_until(lambda: not tasks._sessions and not tasks._held_by, what="the first place coming free")
+    await tasks.settle()
+    release_settling.set()
+    second = (await queued).commission_id
+
+    await wait_status(host, second, "done")
+    assert [spec.model.model for spec in specs] == ["own-model", "own-model"]

@@ -1731,7 +1731,7 @@ class TaskAgentManager:
         # Up to when it was filed, which is when the sentence was dispatched.
         # (Kept then already for one that was filed by the task brain.)
         self._keep_excerpt(commission, upto=commission.created_at)
-        if not self._take_place(commission.id):
+        if not self._take_place(commission.id) and not (wait and await self._settled_for_the_queue(commission.id)):
             if not wait:
                 self._candidates.pop(commission.id, None)
                 self._excerpts.pop(commission.id, None)
@@ -1752,11 +1752,6 @@ class TaskAgentManager:
                 # as failed while it still has its place in the queue, and
                 # be started from there later.
                 logger.warning("noting that commission %s is queued failed", commission.id, exc_info=True)
-            # Its session was made for it, or is there: settled now, and not
-            # by what the user sets while it waits for a place.
-            queued_in = await self._ledger.get_session(self._session_of.get(commission.id))
-            if queued_in is not None:
-                await self.settle_model(queued_in)
             # Queued behind another commission of its session: it may be
             # carried on in a copy of the session meanwhile.
             self._try_carry_on(commission)
@@ -1914,6 +1909,19 @@ class TaskAgentManager:
         # The model it is sent to is settled as the commission starts in it,
         # which is now unless it waits for a place (``_start``).
         return commission
+
+    async def _settled_for_the_queue(self, commission_id: str) -> bool:
+        """Settle the model of the session of a commission that found no place, before it is queued; whether one came free.
+
+        Settled as it is queued, and not by what the user sets while it
+        waits (``settle_model``). A place may come free meanwhile, while
+        it is not yet in the queue for whoever gives places to see: it is
+        taken then, and True says so.
+        """
+        queued_in = await self._ledger.get_session(self._session_of.get(commission_id))
+        if queued_in is not None:
+            await self.settle_model(queued_in)
+        return self._take_place(commission_id)
 
     async def _preset_chosen(self, commission_id: str) -> str | None:
         """Return the preset a task agent was started with by the one that started it; None when that one named none.
