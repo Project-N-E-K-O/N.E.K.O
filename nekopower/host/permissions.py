@@ -185,6 +185,14 @@ Asker = Callable[[str, PermissionAsk], Awaitable[str]]
 ParentLookup = Callable[[str], Awaitable["str | None | tuple[str | None, bool]"]]
 
 
+def _log_unsaved_always(category: str) -> None:
+    logger.warning(
+        "an 'always' answer for %s could not be saved (the permissions file cannot be written); "
+        "it holds for this request only and is asked again later",
+        category,
+    )
+
+
 def _slot(category: str, key: str | None) -> tuple[str, str | None]:
     if category == MCP_SERVER_CATEGORY:
         return category, (key or "").strip() or "*"
@@ -331,6 +339,10 @@ class PermissionStore:
         when the settings changed since that version was read. Raises
         ``PermissionFileError`` while an existing file cannot be read, so the
         user's settings in it are not lost.
+
+        The file is written first, and the setting changes here only once
+        it is: a write that fails (the error is raised) leaves the setting
+        as it was in both places, to be set again.
         """
         from utils.asyncio_executor import to_thread_through_cancellation
 
@@ -345,37 +357,59 @@ class PermissionStore:
                 return False
             if expected_revision is not None and self.revision(category, key) != expected_revision:
                 return False
-            fallback = self._categories.get(name, "auto")
+            categories = dict(self._categories)
+            mcp_servers = dict(self._mcp_servers)
+            fallback = categories.get(name, "auto")
             setting = (name, None)
             previous = fallback
             generation = self._revisions.get(setting, 0)
             if name == MCP_SERVER_CATEGORY and key is not None:
-                previous = self._mcp_servers.get(slot, fallback)
+                previous = mcp_servers.get(slot, fallback)
                 generation = self.revision(name, key)
                 setting = (name, slot)
-                self._mcp_servers[slot] = mode
+                mcp_servers[slot] = mode
             else:
-                self._categories[name] = mode
-            self._version += 1
-            if name == "outside_read" and mode == "deny" and previous != "deny":
-                self._session_read_denied_at = self._version
-            # Managed transfers still ask per recipient under an "allow" setting.
-            ceiling = _MODE_RANK["first_ask"] if name == "managed_delivery" else _MODE_RANK["allow"]
-            old_rule = _effective_mode(name, previous, category_mode=fallback)
-            new_rule = _effective_mode(name, mode, category_mode=self._categories.get(name, "auto"))
-            tighter = min(_MODE_RANK[new_rule], ceiling) < min(_MODE_RANK[old_rule], ceiling)
-            self._revisions[setting] = self._version if tighter else generation
-            if name == MCP_SERVER_CATEGORY and key is None:
-                old_auto = _effective_mode(name, "auto", category_mode=fallback)
-                new_auto = _effective_mode(name, "auto", category_mode=mode)
-                if _MODE_RANK[new_auto] < _MODE_RANK[old_auto]:
-                    for server, configured in self._mcp_servers.items():
-                        if configured == "auto":
-                            self._revisions[(name, server)] = self._version
-            # A cancelled caller still waits for the write, so the lock is not
-            # released while an older setting can land on disk after a newer one.
-            await to_thread_through_cancellation(self._write, dict(self._categories), dict(self._mcp_servers))
+                categories[name] = mode
+            written = False
+
+            def write() -> None:
+                nonlocal written
+                self._write(categories, mcp_servers)
+                written = True
+
+            try:
+                # A cancelled caller still waits for the write, so the lock is not
+                # released while an older setting can land on disk after a newer one.
+                await to_thread_through_cancellation(write)
+            finally:
+                # What is on the disk holds here too, the caller cancelled or not.
+                # Not written: nothing is changed, and setting it again writes again.
+                if written:
+                    self._commit_mode(name, mode, categories, mcp_servers, setting, previous, fallback, generation)
         return True
+
+    def _commit_mode(
+        self, name: str, mode: str, categories: dict[str, str], mcp_servers: dict[str, str],
+        setting: tuple[str, str | None], previous: str, fallback: str, generation: int,
+    ) -> None:
+        """Make a setting ``set_mode`` has written hold here, and move the generations it tightens."""
+        self._categories, self._mcp_servers = categories, mcp_servers
+        self._version += 1
+        if name == "outside_read" and mode == "deny" and previous != "deny":
+            self._session_read_denied_at = self._version
+        # Managed transfers still ask per recipient under an "allow" setting.
+        ceiling = _MODE_RANK["first_ask"] if name == "managed_delivery" else _MODE_RANK["allow"]
+        old_rule = _effective_mode(name, previous, category_mode=fallback)
+        new_rule = _effective_mode(name, mode, category_mode=categories.get(name, "auto"))
+        tighter = min(_MODE_RANK[new_rule], ceiling) < min(_MODE_RANK[old_rule], ceiling)
+        self._revisions[setting] = self._version if tighter else generation
+        if name == MCP_SERVER_CATEGORY and setting[1] is None:
+            old_auto = _effective_mode(name, "auto", category_mode=fallback)
+            new_auto = _effective_mode(name, "auto", category_mode=mode)
+            if _MODE_RANK[new_auto] < _MODE_RANK[old_auto]:
+                for server, configured in mcp_servers.items():
+                    if configured == "auto":
+                        self._revisions[(name, server)] = self._version
 
     async def snapshot(self) -> dict[str, Any]:
         """Return every category with its current mode, for the console."""
@@ -608,11 +642,18 @@ class PermissionGate:
         if self._store.version != version:
             return await self._decide_again(category, key)
         if choice == "always":
-            if not await self._store.set_mode(category, "allow", key, expected_version=version):
-                return await self._decide_again(category, key)
-        elif choice == "session":
+            try:
+                saved = await self._store.set_mode(category, "allow", key, expected_version=version)
+            except OSError:
+                # Approved, but not remembered: it holds as "once", and is asked again later.
+                _log_unsaved_always(category)
+                choice = "once"
+            else:
+                if not saved:
+                    return await self._decide_again(category, key)
+        if choice == "session":
             session.add(slot)
-        elif run is not None:
+        elif choice == "once" and run is not None:
             run.add(slot)
         return PermissionDecision(True, asked=True)
 
@@ -838,7 +879,12 @@ class PermissionGate:
                     return result
                 if choice == "always":
                     # Only this rule can invalidate an approval, not a simultaneous edit elsewhere.
-                    await self._store.set_mode(category, "allow", key, expected_revision=revision)
+                    try:
+                        await self._store.set_mode(category, "allow", key, expected_revision=revision)
+                    except OSError:
+                        # Approved, but not remembered: it holds as "once", and is asked again later.
+                        _log_unsaved_always(category)
+                        choice = "once"
                 current = await self._store.mode(category, key)
                 if current == "deny":
                     result = PermissionDecision(False, DENIED_BY_SETTINGS)

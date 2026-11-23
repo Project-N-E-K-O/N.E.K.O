@@ -10,6 +10,7 @@ const messages: PowerMessages = {
     remote_backend: '后端运行在另一台机器上，这里只能看设置，不能改。',
     stale: '这些设置在别处被改过了。已经重新读取，请核对后再试。',
     permissions_unreadable: '权限设置文件读不了。请修好或删掉它再试。',
+    permissions_not_saved: '权限设置没有存上（文件写不进去），请稍后再试。下面显示的是现在生效的设置。',
     no_model: '还没有给使魔配置模型。',
     out_of_range: '这个数值超出了范围。',
     bad_number: '请填一个数字。',

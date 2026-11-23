@@ -17,6 +17,7 @@ const messages = {
     remote_backend: 'The backend runs on another machine, so settings can be viewed here but not changed.',
     stale: 'These settings were changed somewhere else. They have been reloaded; check them and try again.',
     permissions_unreadable: 'The permission file cannot be read. Repair or remove it, then try again.',
+    permissions_not_saved: 'The permission setting could not be saved (its file cannot be written). Try again later; what is shown is what holds now.',
     no_model: 'No model is configured for familiars yet.',
     out_of_range: 'That value is out of range.',
     bad_number: 'Enter a number.',

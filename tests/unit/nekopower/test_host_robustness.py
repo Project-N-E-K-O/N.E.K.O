@@ -493,6 +493,133 @@ async def test_a_cancelled_set_mode_finishes_its_write_before_the_next_one(tmp_p
     assert store._lock.locked() is False
 
 
+def _store_state(store: PermissionStore) -> Any:
+    return (
+        dict(store._categories), dict(store._mcp_servers), store.version,
+        dict(store._revisions), store._session_read_denied_at,
+    )
+
+
+def _disk_full(*_args: Any) -> None:
+    raise OSError("the disk is full")
+
+
+@pytest.mark.parametrize(
+    ("category", "key", "mode"),
+    [
+        ("run_command", None, "allow"),
+        # Tightenings: the generations that end approvals must not move either.
+        ("outside_read", None, "deny"),
+        ("mcp_server", None, "deny"),
+        ("mcp_server", "notes", "allow"),
+        ("mcp_server", "calendar", "deny"),
+    ],
+)
+async def test_a_setting_that_cannot_be_written_changes_nothing_here_either(tmp_path, monkeypatch, category, key, mode):
+    path = tmp_path / "permissions.json"
+    content = json.dumps({
+        "version": 1, "categories": {"run_command": "deny", "outside_read": "allow", "mcp_server": "allow"},
+        "mcp_servers": {"notes": "deny", "calendar": "auto"},
+    })
+    path.write_text(content, encoding="utf-8")
+    store = PermissionStore(path)
+    before_mode = await store.mode(category, key)
+    before = _store_state(store)
+
+    monkeypatch.setattr(store, "_write", _disk_full)
+    with pytest.raises(OSError):
+        await store.set_mode(category, mode, key, expected_version=store.version)
+
+    assert _store_state(store) == before
+    assert await store.mode(category, key) == before_mode
+    assert path.read_text(encoding="utf-8") == content
+    assert await PermissionStore(path).mode(category, key) == before_mode
+    assert store._lock.locked() is False
+
+    # Once the file can be written, the same change (on the same version) goes through.
+    monkeypatch.undo()
+    assert await store.set_mode(category, mode, key, expected_version=before[2])
+    assert store.version == before[2] + 1
+    assert await PermissionStore(path).mode(category, key) == await store.mode(category, key)
+
+
+async def test_a_cancelled_set_mode_whose_write_landed_holds_here_too(tmp_path):
+    path = tmp_path / "permissions.json"
+    store = PermissionStore(path)
+    await store.mode("run_command")
+    original = store._write
+    started, release = threading.Event(), threading.Event()
+
+    def slow_write(categories: dict[str, str], mcp_servers: dict[str, str]) -> None:
+        started.set()
+        release.wait(5.0)
+        original(categories, mcp_servers)
+
+    store._write = slow_write  # type: ignore[method-assign]
+    pending = asyncio.ensure_future(store.set_mode("run_command", "allow"))
+    await _wait_for(started.is_set)
+    pending.cancel()
+    await asyncio.sleep(0.02)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert await PermissionStore(path).mode("run_command") == "allow"
+    assert await store.mode("run_command") == "allow"
+
+
+async def test_an_always_answer_that_cannot_be_saved_holds_for_this_request_only(tmp_path, monkeypatch):
+    store = PermissionStore(tmp_path / "permissions.json")
+    asked: list[str] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append(commission_id)
+        return "always"
+
+    gate = PermissionGate(store, asker)
+    before = await store.mode("browser")
+    monkeypatch.setattr(store, "_write", _disk_full)
+
+    decision = await gate.check("c1", "browser")
+    assert decision.allow and decision.asked
+    assert await store.mode("browser") == before
+    # Kept as an answer of "once": it covers the rest of this run, not this session.
+    assert gate.run_grants("c1") == {("browser", None)} and not gate.session_grants("c1")
+    assert (await gate.check("c1", "browser")).allow and asked == ["c1"]
+    assert (await gate.check("c2", "browser")).allow and asked == ["c1", "c2"]
+
+    monkeypatch.undo()
+    assert (await gate.check("c3", "browser")).allow and asked == ["c1", "c2", "c3"]
+    assert await store.mode("browser") == "allow"
+    assert not gate.run_grants("c3")
+
+
+async def test_a_scoped_always_answer_that_cannot_be_saved_holds_for_this_request_only(tmp_path, monkeypatch):
+    from nekopower.host.permissions import GrantScope
+
+    store = PermissionStore(tmp_path / "permissions.json")
+    asked: list[str] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append(commission_id)
+        return "always"
+
+    gate = PermissionGate(store, asker)
+    scope = GrantScope("builtin", "browser")
+    before = await store.mode("browser")
+    monkeypatch.setattr(store, "_write", _disk_full)
+
+    decision = await gate.check("c1", "browser", scope=scope, hold_once=True)
+    assert decision.allow and decision.asked and gate.grant_active(decision.grant_id)
+    assert await store.mode("browser") == before
+    assert (await gate.check("c2", "browser", scope=scope, hold_once=True)).allow and asked == ["c1", "c2"]
+
+    monkeypatch.undo()
+    assert (await gate.check("c3", "browser", scope=scope, hold_once=True)).allow
+    assert await store.mode("browser") == "allow"
+    assert (await gate.check("c4", "browser", scope=scope, hold_once=True)).allow and asked == ["c1", "c2", "c3"]
+
+
 async def test_a_setting_changed_while_asking_is_not_overwritten_by_always(tmp_path):
     store = PermissionStore(tmp_path / "permissions.json")
 
