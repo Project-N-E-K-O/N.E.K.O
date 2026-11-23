@@ -6,7 +6,8 @@ is cancelled there as well), and no release that fixes this is left on PyPI
 (2.5.0 was yanked). A fixture teardown that hangs after a failure would then
 run on to the job's time limit with nothing in the log.
 
-Such a teardown gets a watchdog as long as pytest-timeout's limit for the test:
+Such a teardown gets a watchdog for what is left of pytest-timeout's limit
+for the test, counted from its setup:
 the stack of every thread is written out, then the process ends. Under xdist
 the test is reported as failed and a new worker goes on. A test that passed is
 left to pytest-timeout, whose timer is still running through its teardown.
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import faulthandler
 import os
+import time
 from typing import Any
 
 import pytest
@@ -69,6 +71,12 @@ def _stderr_fd(config: pytest.Config) -> Any:
         return sys.__stderr__
 
 
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item):
+    item.stash[_STARTED_AT] = time.monotonic()
+    yield
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call: Any):
     outcome = yield
@@ -81,7 +89,12 @@ def pytest_runtest_makereport(item: pytest.Item, call: Any):
 def pytest_runtest_teardown(item: pytest.Item, nextitem: Any):
     limit = timeout_seconds(item) if item.stash.get(_FAILED_BEFORE_TEARDOWN, False) else 0.0
     if limit > 0:
-        faulthandler.dump_traceback_later(limit, file=_stderr_fd(item.config), exit=True)
+        # What is left of the test's whole budget, counted from its setup: a
+        # test that failed at second 299 does not get another 300 for its
+        # teardown. Spent already, it still gets a moment to write the stacks.
+        started = item.stash.get(_STARTED_AT, time.monotonic())
+        left = max(limit - (time.monotonic() - started), _AT_LEAST_SECONDS)
+        faulthandler.dump_traceback_later(left, file=_stderr_fd(item.config), exit=True)
     try:
         yield
     finally:
@@ -90,3 +103,5 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: Any):
 
 
 _FAILED_BEFORE_TEARDOWN = pytest.StashKey[bool]()
+_STARTED_AT = pytest.StashKey[float]()
+_AT_LEAST_SECONDS = 1.0
