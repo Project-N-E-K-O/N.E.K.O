@@ -161,7 +161,12 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
         output_format,
     )
     pcm_sample_rate = _parse_elevenlabs_pcm_sample_rate(output_format)
-    ws_host = urlparse(ws_url).hostname or ws_url
+    try:
+        ws_host = urlparse(ws_url).hostname or ws_url
+    except ValueError:
+        # Log label only: a malformed URL goes on to fail at connect inside
+        # the worker's own error handling, exactly as before this label.
+        ws_host = ws_url
 
     async def async_worker():
         ws = None

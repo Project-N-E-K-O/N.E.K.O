@@ -695,3 +695,13 @@ def test_worker_without_the_flag_is_not_sent_preconnects():
 
     assert not worker_supports_preconnect(gemini.gemini_tts_worker)
     assert not worker_supports_preconnect(partial(gemini.gemini_tts_worker))
+
+
+def test_elevenlabs_malformed_base_url_still_reports_through_the_worker():
+    # The host label for the log must not raise outside the worker's own
+    # error handling (urlparse rejects an unclosed IPv6 bracket).
+    responses = queue.Queue()
+    elevenlabs_mod.elevenlabs_tts_worker(
+        _Requests(), responses, "xi-test", "21m00Tcm4TlvDq8ikWAM", base_url="http://[::1",
+    )
+    assert any(isinstance(item, tuple) and item[0] == "__ready__" for item in list(responses.queue))

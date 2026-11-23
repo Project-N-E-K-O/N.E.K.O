@@ -82,3 +82,34 @@ def test_a_take_cancelled_around_the_spares_connect_leaves_no_socket_open(yields
         if adopted is not None and ws is adopted[0]:
             continue  # the take won the race and handed it over
         assert ws.closed, "a connected spare was left open after its take was cancelled"
+
+
+def test_audio_done_counts_as_emitted_only_once_it_is_on_the_queue():
+    from main_logic.tts_client._infra import AudioDoneEmitter
+
+    class _BrokenQueue:
+        def __init__(self):
+            self.puts = 0
+
+        def put(self, _item):
+            self.puts += 1
+            raise RuntimeError("queue closed")
+
+    broken = _BrokenQueue()
+    emitter = AudioDoneEmitter(broken)
+    emitter.emit("speech-1")
+    emitter.emit("speech-1")
+    assert not emitter.emitted("speech-1"), "a round whose end never reached core counts as finished"
+    assert broken.puts == 1, "a failed delivery is not retried"
+
+    delivered = []
+
+    class _Queue:
+        def put(self, item):
+            delivered.append(item)
+
+    ok = AudioDoneEmitter(_Queue())
+    ok.emit("speech-2")
+    assert ok.emitted("speech-2")
+    ok.reset()
+    assert not ok.emitted("speech-2")
