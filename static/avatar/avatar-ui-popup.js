@@ -387,16 +387,10 @@ function injectPopupStyles(prefix) {
  * 创建弹出框（按 buttonId 区分类型）
  */
 function createPopup(manager, prefix, buttonId) {
-    // 去重守卫：如果同 ID 弹窗已存在，先移除旧的及其侧面板
+    // 幂等守卫：同 ID 弹窗已存在时直接复用，避免销毁按钮闭包引用的原节点及其侧面板
     const existingPopup = document.getElementById(`${prefix}-popup-${buttonId}`);
     if (existingPopup) {
-        const existingId = existingPopup.id;
-        document.querySelectorAll(`[data-neko-sidepanel-owner="${existingId}"]`).forEach(panel => {
-            clearAvatarSidePanelHoverState(panel);
-            panel.remove();
-        });
-        if (existingPopup._hideTimeoutId) { clearTimeout(existingPopup._hideTimeoutId); }
-        existingPopup.remove();
+        return existingPopup;
     }
 
     const popup = document.createElement('div');
@@ -3426,7 +3420,7 @@ const AvatarPopupMixin = {
 
         // 新增的核心方法
         ManagerProto.showPopup = function (buttonId, popup) {
-            const isVisible = popup.style.display === 'flex';
+            const isVisible = popup.style.display === 'flex' && !popup._hideTimeoutId;
             const popupUi = window.AvatarPopupUI || null;
             if (typeof popup._showToken !== 'number') popup._showToken = 0;
 
