@@ -1327,6 +1327,11 @@ def _plugin_process_runner(
         
         # Fall back to method scanning if collect_entries is missing or fails.
         if not entry_map:
+            # The same narrowing check collect_entries() runs: a component
+            # it refused (possibly every one, leaving entry_map empty) must
+            # not come back through this scan.
+            narrow = getattr(instance, "_apply_permission_narrowing", None)
+            scanned: list[tuple[str, Any, Any]] = []
             for name, member in inspect.getmembers(instance, predicate=callable):
                 if name.startswith("_") and not hasattr(member, EVENT_META_ATTR):
                     continue
@@ -1335,9 +1340,27 @@ def _plugin_process_runner(
                     wrapped = getattr(member, "__wrapped__", None)
                     if wrapped is not None:
                         event_meta = getattr(wrapped, EVENT_META_ATTR, None)
+                scanned.append((name, member, event_meta))
+            kept: Dict[str, Any] | None = None
+            if callable(narrow):
+                from plugin.sdk.shared.core.events import EventHandler as _SdkEventHandler
 
+                try:
+                    kept = narrow({
+                        str(getattr(event_meta, "id", name)): _SdkEventHandler(meta=event_meta, handler=member)
+                        for name, member, event_meta in scanned
+                        if event_meta
+                    })
+                except Exception as e:
+                    logger.warning("Permission narrowing check failed during fallback scan: {}", e)
+
+            for name, member, event_meta in scanned:
                 if event_meta:
                     eid = getattr(event_meta, "id", name)
+                    if kept is not None:
+                        if str(eid) not in kept:
+                            continue
+                        event_meta = kept[str(eid)].meta
                     entry_map[eid] = member
                     entry_meta_map[eid] = event_meta  # Store EventMeta for custom settings.
                     etype = getattr(event_meta, "event_type", "plugin_entry")

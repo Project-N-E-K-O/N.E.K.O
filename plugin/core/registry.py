@@ -47,7 +47,15 @@ from plugin._types.entry_metadata import (
 )
 from plugin._types.version import SDK_VERSION
 from plugin.sdk.shared.core.events import EventMeta as SdkEventMeta
-from plugin.sdk.shared.core.router import router_entry_meta
+from plugin.sdk.shared.core.router import router_entry_meta, router_entry_permissions, router_permissions
+from plugin.sdk.shared.permissions.declarations import declared_permission_ids
+from plugin.sdk.shared.permissions.narrowing import (
+    Component,
+    component_label,
+    resolve_component_permissions,
+    static_entry_hooks,
+    with_permissions,
+)
 from plugin.server.infrastructure.config_resolver import read_plugin_config_from_path, resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
     get_runtime_auto_start_override,
@@ -598,6 +606,11 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
         except Exception as e:
             logger.warning("Failed to scan router {} for entries: {}", router_cls, e)
             continue
+        try:
+            router_level = router_permissions(router_cls)
+        except TypeError as e:
+            logger.warning("Router {} declares invalid permissions: {}", router_cls, e)
+            router_level = None
         for name, member in members:
             if name.startswith("_"):  # runtime _collect_decorated_entries skips these too
                 continue
@@ -613,11 +626,62 @@ def _iter_router_plugin_entries(cls: type) -> Iterable[tuple[str, Any, Any]]:
                     event_meta = router_entry_meta(event_meta, getattr(member, "__func__", member), router_cls)
                 except Exception as e:
                     logger.warning("Failed to infer router entry contract {}.{}: {}", router_cls, name, e)
+                # Entries that do not narrow inherit the router's narrowing, as at runtime.
+                event_meta = router_entry_permissions(event_meta, router_level)
             eid = str(getattr(event_meta, "id", None) or name)
             if eid:
                 router_entries[eid] = (event_meta, member)
 
     yield from ((eid, meta, handler) for eid, (meta, handler) in router_entries.items())
+
+
+def _narrowed_components(
+    pid: str,
+    cls: type,
+    conf: dict,
+    components: Dict[Any, tuple[str, str, Any]],
+    *,
+    report: bool,
+) -> Dict[Any, Any]:
+    """Registration check for component narrowing, as the plugin process runs it.
+
+    ``components`` maps a caller key to ``(event_type, entry_id, meta)``. The
+    result maps the same keys to the meta to register (recording the
+    effective ``permissions``), or ``None`` for a component that narrows
+    outside plugin.toml and is not registered. One decision for the static
+    tables and the plugin process (``resolve_component_permissions``), so
+    both list the same entries. ``report`` logs each refusal.
+    """
+    hooks = static_entry_hooks(cls)
+    if all(getattr(meta, "permissions", None) is None for _, _, meta in components.values()) and all(
+        hook.permissions is None for hook in hooks
+    ):
+        return {key: meta for key, (_, _, meta) in components.items()}
+    resolved = resolve_component_permissions(
+        {
+            key: Component(
+                label=component_label(etype, eid),
+                event_type=etype,
+                entry_id=eid,
+                permissions=getattr(meta, "permissions", None),
+            )
+            for key, (etype, eid, meta) in components.items()
+        },
+        hooks,
+        # [permissions] is kept from the manifest in the effective config.
+        declared_permission_ids(conf),
+    )
+    result: Dict[Any, Any] = {}
+    for key, (_, _, meta) in components.items():
+        resolution = resolved[key]
+        if not resolution.registered:
+            if report:
+                for message in resolution.errors:
+                    logger.error("Plugin {}: component not registered: {}", pid, message)
+            result[key] = None
+        else:
+            result[key] = with_permissions(meta, resolution.permissions)
+    return result
 
 
 def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
@@ -627,10 +691,41 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     # Use module-level logger.
     handlers_updated = False
     decorated_entries: dict[str, EventHandler] = {}
-    for name, member in inspect.getmembers(cls):
-        event_meta = _member_event_meta(member)
-
+    members = [(name, member, _member_event_meta(member)) for name, member in inspect.getmembers(cls)]
+    try:
+        router_items = list(_iter_router_plugin_entries(cls))
+        router_error: Exception | None = None
+    except Exception as e:
+        router_items, router_error = [], e
+    narrowed = _narrowed_components(
+        pid,
+        cls,
+        conf,
+        {
+            **{
+                ("class", name): (
+                    getattr(event_meta, "event_type", None) or "plugin_entry",
+                    str(getattr(event_meta, "id", name)),
+                    event_meta,
+                )
+                for name, _member, event_meta in members
+                if event_meta
+            },
+            **{("router", eid): ("plugin_entry", eid, event_meta) for eid, event_meta, _handler in router_items},
+        },
+        report=True,
+    )
+    # Entry ids whose winning handler was refused: nothing else registers
+    # under them (the plugin process drops the id the same way).
+    closed_entries: set[str] = set()
+    for name, member, event_meta in members:
         if event_meta:
+            narrowed_meta = narrowed[("class", name)]
+            if narrowed_meta is None:
+                if (getattr(event_meta, "event_type", None) or "plugin_entry") == "plugin_entry":
+                    closed_entries.add(str(getattr(event_meta, "id", name)))
+                continue
+            event_meta = narrowed_meta
             etype = getattr(event_meta, "event_type", None) or "plugin_entry"
             eid = getattr(event_meta, "id", name)
             handler_obj = EventHandler(meta=event_meta, handler=member)
@@ -649,8 +744,14 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     # plugin class win on id clashes. The method is not on the plugin class, so
     # plugin_entry_method_map is not written.
     try:
-        for eid, event_meta, handler in _iter_router_plugin_entries(cls):
-            if eid in decorated_entries:
+        if router_error is not None:
+            raise router_error
+        for eid, event_meta, handler in router_items:
+            if eid in decorated_entries or eid in closed_entries:
+                continue
+            event_meta = narrowed[("router", eid)]
+            if event_meta is None:
+                closed_entries.add(eid)
                 continue
             handler_obj = EventHandler(meta=event_meta, handler=handler)
             with state.acquire_event_handlers_write_lock():
@@ -664,7 +765,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     for ent in entries:
         try:
             eid = ent.get("id") if isinstance(ent, dict) else str(ent)
-            if not eid:
+            if not eid or str(eid) in closed_entries:
                 continue
             decorated = decorated_entries.get(str(eid))
             try:
@@ -932,7 +1033,9 @@ def _normalized_entry_declaration(declaration: Dict[str, Any]) -> Dict[str, Any]
     # The output contract runs in the plugin process from the decorator; a
     # manifest override would be published but never enforced, so it is not
     # taken (neko-plugin validate warns about it).
-    for name in ("output_schema", "strict_output"):
+    # ``permissions`` (component narrowing) is checked at registration from
+    # the decorator; a manifest value would skip that check, so it is not taken.
+    for name in ("output_schema", "strict_output", "permissions"):
         fields.pop(name, None)
     for name in _ENTRY_DISPLAY_FIELDS:
         if name in declaration:
@@ -1004,6 +1107,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
     seen: set[str] = set()
 
     # 1) Decorator-based metadata (@plugin_entry / EVENT_META_ATTR)
+    class_items: list[tuple[str, Any]] = []
     try:
         for name, member in inspect.getmembers(cls):
             event_meta = _member_event_meta(member)
@@ -1018,9 +1122,7 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
             if not eid or eid in seen:
                 continue
             seen.add(eid)
-
-            entry_preview = _entry_preview(pid, eid, event_meta)
-            results.append(entry_preview)
+            class_items.append((eid, event_meta))
     except Exception:
         # Best-effort: preview must never break plugin listing.
         pass
@@ -1033,14 +1135,35 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
     #
     #     For instances, prefer collect_entries() with resolved prefixes,
     #     preventing preview/runtime ID differences and false seen deduplication, meow.
+    router_items: list[tuple[str, Any]] = []
     try:
         for eid, event_meta, _handler in _iter_router_plugin_entries(cls):
             if eid in seen:
                 continue
             seen.add(eid)
-            results.append(_entry_preview(pid, eid, event_meta))
+            router_items.append((eid, event_meta))
     except Exception:
         pass
+
+    # Same narrowing decision as the registration scan (refusals are logged
+    # there, not on every preview). A refused id stays in ``seen``: no other
+    # declaration shows it, matching the registered tables.
+    items = class_items + router_items
+    try:
+        narrowed = _narrowed_components(
+            pid, cls, conf, {index: ("plugin_entry", eid, meta) for index, (eid, meta) in enumerate(items)}, report=False,
+        )
+    except Exception:
+        narrowed = {index: meta for index, (_eid, meta) in enumerate(items)}
+    for index, (eid, _meta) in enumerate(items):
+        event_meta = narrowed[index]
+        if event_meta is None:
+            continue
+        try:
+            results.append(_entry_preview(pid, eid, event_meta))
+        except Exception:
+            # Best-effort, like the scans above.
+            continue
 
     # 2) Config-specified entries (conf/pdata). Only the skeleton is built here:
     #    the declared fields are written by the overlay below, the same way it

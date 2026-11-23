@@ -34,6 +34,7 @@ from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.core.permission_declarations import (
     PermissionDeclarations,
     PermissionIssue,
+    declared_permission_ids,
     narrowing_issues,
     parse_permission_declarations,
 )
@@ -241,7 +242,7 @@ def validate_plugin_dir(
     _check_python_decorators(
         plugin_dir,
         issues,
-        declared=declarations.ids() if declarations.status != "invalid" else None,
+        declared=declared_permission_ids(source.plugin_toml),
     )
     _check_permission_usage(plugin_dir, declarations, issues, pyproject=source.pyproject_toml)
     _check_symlink_tree(
@@ -985,9 +986,10 @@ def _check_entry_field_types(
                 )
             issues.append(("warning", message))
     # A keyed table is not applied at all (warned separately): no publish hint.
-    for key in ("output_schema", "strict_output") if applied else ():
+    for key in ("output_schema", "strict_output", "permissions") if applied else ():
         if key in item:
-            # The registry drops it: the output check runs from the decorator.
+            # The registry drops it: the output check and the narrowing check
+            # run from the decorator.
             issues.append((
                 "warning",
                 f"{label}.{key} is ignored; declare it on @plugin_entry instead / "
@@ -1250,9 +1252,16 @@ def _check_permissions_table(config: dict[str, object], issues: list[tuple[str, 
     issues.extend(_permission_issue(issue) for issue in found)
 
 
-# Component decorators that may narrow the plugin's declared permissions.
+# Component decorators that take ``permissions=`` to narrow the plugin's
+# declared permissions: the SDK names, their hook aliases and the
+# ``plugin.entry`` / ``plugin.event`` / ``plugin.hook`` / ``plugin.timer`` /
+# ``plugin.custom_event`` proxies (matched by the last attribute).
 _PERMISSION_NARROWING_DECORATORS = frozenset(
-    {"plugin_entry", "llm_tool", "hook", "on_event", "custom_event", "timer_interval"}
+    {
+        "plugin_entry", "llm_tool", "hook", "on_event", "custom_event", "timer_interval",
+        "before_entry", "after_entry", "around_entry", "replace_entry",
+        "entry", "event", "timer",
+    }
 )
 
 
@@ -1264,19 +1273,23 @@ def _check_permission_narrowing(
     *,
     narrows: bool = True,
 ) -> None:
-    """``narrows``: the decorator is a component that may narrow; others only
-    get the load-time error."""
+    """``narrows``: the decorator is a component that may narrow. Any other
+    SDK decorator does not take ``permissions=`` (the plugin fails to load).
+
+    The verdict matches registration in the plugin process: both run
+    ``narrowing_issues`` against the same declared ids.
+    """
     if not isinstance(decorator, ast.Call):
         return
     for item in decorator.keywords:
         if item.arg != "permissions":
             continue
-        # No SDK decorator takes this yet (they are keyword-only), so the
-        # plugin would fail to load.
-        issues.append(
-            _permission_issue(PermissionIssue("error", "narrowing_runtime_unsupported", {"label": label}))
-        )
-        if declared is None or not narrows:
+        if not narrows:
+            issues.append(
+                _permission_issue(PermissionIssue("error", "narrowing_unsupported_decorator", {"label": label}))
+            )
+            return
+        if declared is None:
             return
         try:
             value = ast.literal_eval(item.value)

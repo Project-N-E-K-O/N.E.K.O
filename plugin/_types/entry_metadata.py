@@ -28,6 +28,7 @@ ENTRY_CONTRACT_FIELDS = (
     "quick_action_config",
     "output_schema",
     "strict_output",
+    "permissions",
 )
 
 # Contract fields added after the packaged metadata format was fixed. They
@@ -37,6 +38,7 @@ ENTRY_CONTRACT_FIELDS = (
 ENTRY_OPT_IN_CONTRACT_FIELDS = (
     "output_schema",
     "strict_output",
+    "permissions",
 )
 
 # Contract fields every hand-built entry projection (IPC registration,

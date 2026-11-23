@@ -40,7 +40,8 @@ from plugin.sdk.shared.core.base_runtime import (
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
 from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
-from plugin.sdk.shared.models.exceptions import EntryConflictError, ValidationError
+from plugin.sdk.shared.models.exceptions import EntryConflictError, PermissionDeniedError, ValidationError
+from plugin.sdk.shared.permissions.narrowing import normalize_narrowing
 
 from .llm_tool import (
     LlmToolMeta,
@@ -551,7 +552,15 @@ class NekoPluginBase(_SharedNekoPluginBase):
         timeout: float | None = None,
         llm_result_fields: list[str] | None = None,
         output_schema: dict[str, Any] | None = None,
+        permissions: list[str] | tuple[str, ...] | None = None,
     ) -> bool:
+        """Register an entry at runtime.
+
+        ``permissions`` narrows the entry to part of plugin.toml's declared
+        permissions; it must be a subset of them, otherwise
+        ``PermissionDeniedError`` (reason ``not_declared``) is raised and
+        nothing is registered.
+        """
         if not callable(handler):
             raise TypeError("handler must be callable")
         if output_schema is not None and not isinstance(output_schema, Mapping):
@@ -565,6 +574,16 @@ class NekoPluginBase(_SharedNekoPluginBase):
                 raise TypeError("timeout must be a number or None")
             timeout = float(timeout)
         entry_id = entry_id.strip()
+        narrowed = normalize_narrowing(permissions, where=f"register_dynamic_entry({entry_id!r})")
+        if narrowed is not None:
+            declared = self._declared_permission_ids()
+            if declared is not None:
+                from plugin.sdk.shared.core.router import denied_narrowing
+
+                denied = denied_narrowing(declared, narrowed, f"entry {entry_id!r}")
+                if denied is not None:
+                    self.logger.error("Entry not registered: {}", str(denied))
+                    raise denied
         existing_entries = self.collect_entries()
         if entry_id in existing_entries or entry_id in self._dynamic_entries:
             raise EntryConflictError(f"duplicate entry id: {entry_id!r}")
@@ -581,6 +600,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             # Nested levels too: a caller reusing its dict cannot change the contract.
             output_schema=detached_copy(output_schema) if output_schema is not None else None,
             metadata={"dynamic": True, "enabled": True},
+            permissions=narrowed,
         )
         if timeout is not None:
             meta.extra["timeout"] = timeout
@@ -733,6 +753,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             input_schema=dict(meta.parameters),
             kind="action",
             timeout=meta.timeout_seconds,
+            permissions=meta.permissions,
         )
         with self._llm_tools_lock:
             self._llm_tools[meta.name] = meta
@@ -776,8 +797,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
         timeout: float,
         role: str | None,
         reply_tail: bool,
+        permissions: list[str] | tuple[str, ...] | None = None,
     ) -> "LlmToolMeta":
         validate_tool_name(name)
+        narrowed = normalize_narrowing(permissions, where=f"LLM tool {name!r}")
         return LlmToolMeta(
             name=name,
             description=description or "",
@@ -785,6 +808,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             timeout_seconds=float(timeout),
             role=role,
             reply_tail=reply_tail,
+            permissions=narrowed,
         )
 
     @contextlib.asynccontextmanager
@@ -942,6 +966,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         timeout: float = 30.0,
         role: str | None = None,
         reply_tail: bool = False,
+        permissions: list[str] | None = None,
     ) -> bool:
         """Register an LLM tool at runtime.
 
@@ -971,13 +996,17 @@ class NekoPluginBase(_SharedNekoPluginBase):
             Per-call timeout in seconds. Capped at 300s server-side.
         role:
             Optional role/character to scope to. ``None`` is global.
+        permissions:
+            Optional narrowing, as on ``@llm_tool``: a subset of plugin.toml's
+            declared permissions.
 
         Returns ``True`` on success. Raises ``ValueError`` for invalid
-        names and ``EntryConflictError`` for duplicates.
+        names, ``EntryConflictError`` for duplicates and
+        ``PermissionDeniedError`` for a narrowing outside the declarations.
         """
         meta = self._build_llm_tool_meta(
             name=name, description=description, parameters=parameters,
-            timeout=timeout, role=role, reply_tail=reply_tail,
+            timeout=timeout, role=role, reply_tail=reply_tail, permissions=permissions,
         )
         self._register_llm_tool_internal(meta, handler)
         return True
@@ -1009,6 +1038,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         role: str | None = None,
         reply_tail: bool = False,
         request_timeout: float = DEFAULT_LLM_TOOL_REQUEST_TIMEOUT,
+        permissions: list[str] | None = None,
     ) -> LlmToolRegisterResult:
         """Register an LLM tool and wait for main_server's real answer.
 
@@ -1058,7 +1088,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
         ``timeout`` outside (0, 300] (main_server's bound),
         ``TypeError`` for a non-callable handler and
         ``EntryConflictError`` when the name is already registered
-        locally -- like :meth:`register_llm_tool`. Host and main_server
+        locally and ``PermissionDeniedError`` for a narrowing outside
+        plugin.toml's declarations -- like :meth:`register_llm_tool`. Host and main_server
         failures never raise; they come back in the result.
         """
         request_timeout = self._validate_llm_tool_request_timeout(request_timeout)
@@ -1066,7 +1097,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         self._validate_async_llm_tool_name(name)
         meta = self._build_llm_tool_meta(
             name=name, description=description, parameters=parameters,
-            timeout=timeout, role=role, reply_tail=reply_tail,
+            timeout=timeout, role=role, reply_tail=reply_tail, permissions=permissions,
         )
         # Known before sending, so the cleanup below can target exactly this
         # registration even when the register's answer never arrived.
@@ -1336,6 +1367,10 @@ class NekoPluginBase(_SharedNekoPluginBase):
             try:
                 self._register_llm_tool_internal(meta, bound)
                 registered += 1
+            except PermissionDeniedError:
+                # Already logged with the reason by register_dynamic_entry;
+                # the other tools still register.
+                continue
             except EntryConflictError:
                 # Surface but don't crash the plugin — the rest of
                 # startup should still proceed.

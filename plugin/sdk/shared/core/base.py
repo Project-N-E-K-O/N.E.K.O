@@ -16,6 +16,15 @@ from plugin.sdk.shared.core.base_runtime import (
     setup_plugin_file_logging,
 )
 from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG, SDK_VERSION
+from plugin.sdk.shared.permissions.narrowing import (
+    PLUGIN_ENTRY,
+    Component,
+    component_label,
+    read_declared_permission_ids,
+    resolve_component_permissions,
+    static_entry_hooks,
+    with_permissions,
+)
 from plugin.sdk.shared.logging import LogLevel, LoggerLike, get_plugin_logger, setup_sdk_logging
 from .context import ensure_sdk_context
 from .events import EventHandler, EventMeta
@@ -43,6 +52,9 @@ def _router_event_handler(key: str, handler: object) -> EventHandler | None:
 
 def _is_plugin_entry(handler: EventHandler) -> bool:
     return (getattr(handler.meta, "event_type", None) or "plugin_entry") == "plugin_entry"
+
+
+_UNREAD = object()
 
 
 def _router_handler_replaces(existing: EventHandler, incoming: EventHandler, *, existing_from_class: bool) -> bool:
@@ -138,6 +150,18 @@ class NekoPluginBase:
             return schema
         return {}
 
+    def _declared_permission_ids(self) -> frozenset[str] | None:
+        """Permission ids plugin.toml declares (read once); ``None`` when unknown.
+
+        Read from the manifest the plugin was loaded from (``ctx.config_path``),
+        never from runtime configuration overrides.
+        """
+        cached = getattr(self, "_declared_permissions_cache", _UNREAD)
+        if cached is _UNREAD:
+            cached = read_declared_permission_ids(getattr(self.ctx, "config_path", None))
+            self._declared_permissions_cache = cached
+        return cached  # type: ignore[return-value]
+
     def include_router(self, router: RouterProtocol, *, prefix: str = "") -> None:
         # Bind first: binding can fail, and a failed include must not leave
         # the router with a changed prefix.
@@ -147,6 +171,27 @@ class NekoPluginBase:
         if prefix != "":
             router.set_prefix(prefix)
         self._routers.append(router)
+        self._check_router_narrowing(router)
+
+    def _check_router_narrowing(self, router: RouterProtocol) -> None:
+        """Run the narrowing check on the router's entries now, when it is included.
+
+        Entries narrowing outside plugin.toml are logged here and left out of
+        ``collect_entries`` (the same decision the host's static scan makes
+        per entry); the rest of the router is included.
+        """
+        collect = getattr(router, "collect_entries", None)
+        if not callable(collect):
+            return
+        try:
+            collected = dict(collect())
+        except Exception:
+            # An id clash inside the router surfaces from collect_entries()
+            # as before; there is nothing to check until it is fixed.
+            return
+        self._apply_permission_narrowing(
+            {key: item for key, item in collected.items() if isinstance(item, EventHandler)}
+        )
 
     def exclude_router(self, router: RouterProtocol | str) -> bool:
         if isinstance(router, str):
@@ -236,7 +281,53 @@ class NekoPluginBase:
                     continue
                 entries[str(key)] = router_handler
                 class_entry_ids.discard(str(key))
-        return entries
+        return self._apply_permission_narrowing(entries)
+
+    def _apply_permission_narrowing(self, entries: dict[str, EventHandler]) -> dict[str, EventHandler]:
+        """Registration check for component narrowing (``permissions=``).
+
+        A component narrowing outside plugin.toml is left out (an entry is
+        not registered, an event handler not subscribed) and logged once;
+        entry hooks add their permissions to the entries they target. Runs
+        after id conflicts are settled, so the permissions follow the handler
+        that won. Without any narrowing the entries are returned untouched.
+        """
+        hooks = static_entry_hooks(type(self))
+        if all(getattr(item.meta, "permissions", None) is None for item in entries.values()) and all(
+            hook.permissions is None for hook in hooks
+        ):
+            return entries
+        components = {
+            entry_id: Component(
+                label=component_label(event_type, entry_id),
+                event_type=event_type,
+                entry_id=entry_id,
+                permissions=getattr(item.meta, "permissions", None),
+            )
+            for entry_id, item in entries.items()
+            for event_type in [str(getattr(item.meta, "event_type", None) or PLUGIN_ENTRY)]
+        }
+        resolved = resolve_component_permissions(components, hooks, self._declared_permission_ids())
+        reported: set[object] = self.__dict__.setdefault("_narrowing_reported", set())
+        result: dict[str, EventHandler] = {}
+        for entry_id, item in entries.items():
+            resolution = resolved[entry_id]
+            if not resolution.registered:
+                # Per handler: a refused router entry checked at include time
+                # must not hide a later refusal of the class entry that wins its id.
+                try:
+                    key: object = (components[entry_id].event_type, entry_id, item.handler)
+                    hash(key)
+                except TypeError:
+                    key = (components[entry_id].event_type, entry_id, id(item.handler))
+                if key not in reported:
+                    reported.add(key)
+                    for message in resolution.errors:
+                        self.logger.error("Component not registered: {}", message)
+                continue
+            meta = with_permissions(item.meta, resolution.permissions)
+            result[entry_id] = item if meta is item.meta else EventHandler(meta=meta, handler=item.handler)
+        return result
 
     def enable_file_logging(
         self,

@@ -80,6 +80,7 @@ def test_runtime_typed_structures_and_dataclasses() -> None:
         "output_schema",
         "output_model",
         "strict_output",
+        "permissions",
     ]
 
 

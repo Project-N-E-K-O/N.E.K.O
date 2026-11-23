@@ -318,6 +318,21 @@ UI が不要なら、このセクションは書かなくてかまいません�
 
 このトップレベルのテーブルは、`[[plugin.ui.panel]]` / `[[plugin.ui.guide]]` の `permissions` リストとは別物です。
 
+#### コンポーネントごとの絞り込み
+
+コンポーネントは、デコレーターに `permissions=[...]` を書くことで、テーブルで宣言した権限の一部だけを使うことを示せます。対象は `@plugin_entry`、`@llm_tool`、エントリフック（`@hook`、`@before_entry`、`@after_entry`、`@around_entry`、`@replace_entry`）、`@on_event`、`@custom_event`、`@timer_interval` と、それぞれの `plugin.entry` / `plugin.event` / `plugin.hook` / `plugin.timer` / `plugin.custom_event` 形式です。`register_llm_tool`、`register_dynamic_entry`、`PluginRouter.add_entry` も同じ引数を受け付けます。
+
+```python
+@llm_tool(name="weather", permissions=["plugin_sdk.main_agent.memory:read"])
+async def weather(self, **_): ...
+```
+
+- 書かないのが既定です。コンポーネントは宣言した権限をすべて引き継ぎます。絞り込みは「この権限をオフにするとどの機能が使えなくなるか」をユーザーに示すためだけに使われ、コンポーネントの動作は制限しません。
+- プラグインがコンポーネントを登録するとき、絞り込みは `[permissions.require]` + `[permissions.ask]` の部分集合でなければなりません。それ以外を書いたコンポーネントは登録されず（エントリは呼び出せず、イベントハンドラーは購読されません）、どのコンポーネントがなぜ登録されなかったかがプラグインのログに出ます。公開前の `neko-plugin check` も同じ問題を報告します。
+- エントリフックの権限は、`target` に一致する各エントリに加わります。宣言されていない権限を書いたフックは、それらのエントリを閉じます。
+- `PluginRouter` はクラス属性 `permissions = [...]`（または `PluginRouter(permissions=[...])`）で全エントリを絞り込めます。エントリ自身や `add_entry(..., permissions=...)` で指定したものが優先されます。組み込み済みの router で宣言されていない権限を `add_entry` に渡すと `Err(PermissionDeniedError)` が返ります。
+- `@neko_plugin`、`@lifecycle`、`@message` などコンポーネント以外のデコレーターは `permissions=` を受け付けません。
+
 ---
 
 ### カスタムセクション — プラグイン固有の設定
