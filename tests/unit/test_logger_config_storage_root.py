@@ -972,3 +972,51 @@ def test_symlinked_last_resort_log_root_skips_plugin_subdir_creation_and_cleanup
     finally:
         for handler in handlers:
             handler.close()
+
+
+@pytest.mark.unit
+def test_safe_rotating_file_handler_rollover_rejects_non_regular_backup_before_mutation(tmp_path):
+    """doRollover() must inspect all backup slots before mutating any file and reject FIFOs or directories."""
+    import logging
+    import os
+    from utils.logger_config import _SafeRotatingFileHandler
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    app_log = logs_dir / "app.log"
+    app_log.write_text("active-line\n", encoding="utf-8")
+    backup_1 = logs_dir / "app.log.1"
+    backup_1.write_text("backup-1\n", encoding="utf-8")
+    backup_2 = logs_dir / "app.log.2"
+    if hasattr(os, "mkfifo"):
+        os.mkfifo(backup_2)
+    else:
+        backup_2.mkdir()
+
+    handler = _SafeRotatingFileHandler(
+        app_log,
+        allowed_root=logs_dir,
+        maxBytes=64,
+        backupCount=2,
+        encoding="utf-8",
+        delay=True,
+    )
+    try:
+        with pytest.raises(OSError, match="Refusing non-regular log rotation target"):
+            handler.doRollover()
+        assert backup_2.exists()
+        assert backup_1.read_text(encoding="utf-8") == "backup-1\n"
+        assert app_log.read_text(encoding="utf-8") == "active-line\n"
+
+        if backup_2.is_dir():
+            backup_2.rmdir()
+        else:
+            backup_2.unlink()
+        handler.doRollover()
+        assert backup_2.read_text(encoding="utf-8") == "backup-1\n"
+        assert backup_1.read_text(encoding="utf-8") == "active-line\n"
+        assert not app_log.exists()
+        handler.emit(logging.LogRecord("t", logging.INFO, __file__, 1, "post-rollover", (), None))
+        assert "post-rollover" in app_log.read_text(encoding="utf-8")
+    finally:
+        handler.close()

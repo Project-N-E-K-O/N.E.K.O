@@ -732,7 +732,15 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Browser cookies are signed for the public host, not this private HTTP
     # hop. Replace any caller-supplied proof after the main entry guard passed;
     # retain Market's independent Authorization credential unchanged.
-    from utils.instance_access import INTERNAL_SERVICE_HEADER, instance_key, market_internal_proof, remote_instance_identity, request_public_origin
+    from utils.instance_access import (
+        INTERNAL_SERVICE_HEADER,
+        _internal_service_identity,
+        instance_key,
+        internal_service_proof,
+        market_internal_proof,
+        remote_instance_identity,
+        request_public_origin,
+    )
     from utils.deployment import has_forwarding_metadata
     from filelock import Timeout as FileLockTimeout
 
@@ -744,22 +752,34 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     knowledge_path = path == "knowledge" or path.startswith("knowledge/")
     theater_path = path.startswith("theater/")
     body = b"" if knowledge_path or theater_path else await request.body()
-    if request.scope.get("neko.instance_identity"):
+    scope_identity = request.scope.get("neko.instance_identity")
+    if scope_identity:
         # This is a new authenticated service-to-service hop. The plugin's
         # proxy middleware must observe its real loopback caller, not rewrite
         # it using browser-supplied metadata from the preceding public hop.
         headers = {name: value for name, value in headers.items()
                    if not has_forwarding_metadata({name: value})}
-        public_origin = request_public_origin(request)
         try:
             signing_key = await asyncio.to_thread(instance_key)
         except (OSError, ValueError, FileLockTimeout):
             return JSONResponse(status_code=503, content={"detail": "instance_access_unavailable"})
-        if remote_instance_identity(request, key=signing_key) != request.scope["neko.instance_identity"]:
+        if scope_identity == "internal" and _internal_service_identity(request, signing_key) == "internal":
+            upstream_url = httpx.URL(target)
+            upstream_raw_path = upstream_url.raw_path.split(b"?", 1)[0].decode("latin-1")
+            upstream_port = upstream_url.port or (443 if upstream_url.scheme == "https" else 80)
+            headers[INTERNAL_SERVICE_HEADER] = internal_service_proof(
+                signing_key,
+                request.method,
+                upstream_raw_path,
+                port=upstream_port,
+            )
+        elif remote_instance_identity(request, key=signing_key) == scope_identity:
+            public_origin = request_public_origin(request)
+            headers["x-neko-market-public-origin"] = public_origin
+            headers["x-neko-market-internal"] = market_internal_proof(
+                signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
+        else:
             return JSONResponse(status_code=401, content={"detail": "instance_authorization_required"})
-        headers["x-neko-market-public-origin"] = public_origin
-        headers["x-neko-market-internal"] = market_internal_proof(
-            signing_key, request.method, "/market" + ("/" + path if path else ""), public_origin)
 
     if knowledge_path:
         refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))

@@ -365,3 +365,144 @@ async def test_market_proxy_strips_client_internal_service_header(monkeypatch):
     lowered = {k.lower(): v for k, v in seen_headers.items()}
     assert "x-neko-internal-service" not in lowered
     assert "x-neko-market-internal" not in lowered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode_env",
+    ["NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE"],
+    ids=["behind-proxy", "activity-tracker-remote"],
+)
+async def test_market_proxy_preserves_internal_service_installer_auth_and_blocks_browser_escalation(
+    monkeypatch,
+    mode_env: str,
+):
+    """Main /market proxy must re-sign internal-service installer calls across hops while keeping browser sessions confined to market remote identity."""
+    import time
+    import config as cfg
+    from utils.http.internal_client import internal_service_event_hooks
+    from utils.instance_access import COOKIE, INTERNAL_SERVICE_HEADER, InstanceAccessMiddleware, _signed
+
+    key = "market-installer-internal-key-" + "y" * 40
+    for env_name in ("NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", key)
+    monkeypatch.setenv(mode_env, "true")
+
+    main_port = int(cfg.MAIN_SERVER_PORT)
+    plugin_port = int(cfg.USER_PLUGIN_SERVER_PORT)
+    monkeypatch.setattr(cfg, "MAIN_SERVER_PORT", main_port, raising=False)
+    monkeypatch.setattr(cfg, "USER_PLUGIN_SERVER_PORT", plugin_port, raising=False)
+    monkeypatch.setattr(cfg, "USER_PLUGIN_BASE", f"http://127.0.0.1:{plugin_port}", raising=False)
+
+    real_client = httpx.AsyncClient
+    plugin = FastAPI()
+
+    @plugin.post("/market/install")
+    @plugin.get("/market/tasks/{task_id}")
+    async def market_install_or_task(request: Request, task_id: str | None = None, token: str = ""):
+        lowered = {k.lower() for k in request.headers.keys()}
+        return {
+            "identity": request.scope.get("neko.instance_identity"),
+            "market_remote": bool(request.scope.get("neko.market_remote_authorized")),
+            "has_internal_header": INTERNAL_SERVICE_HEADER in lowered,
+            "has_market_internal_header": "x-neko-market-internal" in lowered,
+            "token": token,
+            "task_id": task_id,
+        }
+
+    @plugin.get("/market/bridge-token")
+    async def market_bridge_token(request: Request):
+        from plugin.server.routes.market_bridge import _require_local_bridge_token_access
+
+        _require_local_bridge_token_access(request)
+        return {"bridge_token": "secret"}
+
+    plugin.add_middleware(InstanceAccessMiddleware)
+    plugin_hop = ProxyHeadersMiddleware(plugin, trusted_hosts="127.0.0.1,::1")
+
+    def upstream_client(**_kwargs):
+        return real_client(
+            transport=httpx.ASGITransport(app=plugin_hop, client=("127.0.0.1", 50000)),
+        )
+
+    monkeypatch.setattr(web_app, "_resolve_user_plugin_base", lambda: f"http://127.0.0.1:{plugin_port}")
+    monkeypatch.setattr(web_app.httpx, "AsyncClient", upstream_client)
+
+    main = FastAPI()
+    main.add_api_route("/market/{path:path}", web_app.proxy_user_plugin_market_bridge, methods=["GET", "POST"])
+    main.add_middleware(InstanceAccessMiddleware)
+    main_hop = ProxyHeadersMiddleware(main, trusted_hosts="127.0.0.1,::1")
+
+    # 1. Internal installer hop with internal_service_event_hooks() succeeds on both POST and GET.
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50001)),
+        base_url=f"http://127.0.0.1:{main_port}",
+        event_hooks=internal_service_event_hooks(),
+    ) as installer_client:
+        install_resp = await installer_client.post(
+            f"http://127.0.0.1:{main_port}/market/install",
+            params={"token": "bridge-tok"},
+            json={"plugin_id": "demo"},
+        )
+        assert install_resp.status_code == 200
+        assert install_resp.json() == {
+            "identity": "internal",
+            "market_remote": False,
+            "has_internal_header": True,
+            "has_market_internal_header": False,
+            "token": "bridge-tok",
+            "task_id": None,
+        }
+
+        poll_resp = await installer_client.get(
+            f"http://127.0.0.1:{main_port}/market/tasks/task-1",
+            params={"token": "bridge-tok"},
+        )
+        assert poll_resp.status_code == 200
+        assert poll_resp.json() == {
+            "identity": "internal",
+            "market_remote": False,
+            "has_internal_header": True,
+            "has_market_internal_header": False,
+            "token": "bridge-tok",
+            "task_id": "task-1",
+        }
+
+    # 2. Unsigned loopback caller without internal proof is rejected with 401.
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 50002)),
+        base_url=f"http://127.0.0.1:{main_port}",
+    ) as unsigned_client:
+        denied = await unsigned_client.post("/market/install?token=bridge-tok", json={})
+        assert denied.status_code == 401
+
+    # 3. Remote browser session cookie + forged X-Neko-Internal-Service cannot escalate to internal identity.
+    cookie = _signed(key, "session", "public.example", "owner-session", int(time.time()) + 600)
+    async with real_client(
+        transport=httpx.ASGITransport(app=main_hop, client=("127.0.0.1", 40000)),
+        base_url="https://public.example",
+    ) as browser_client:
+        browser_headers = {
+            "Cookie": f"{COOKIE}={cookie}",
+            "Origin": "https://public.example",
+            "Sec-Fetch-Site": "same-origin",
+            "X-Neko-Internal-Service": "attacker-forged-proof",
+        }
+        bridge_denied = await browser_client.get("/market/bridge-token", headers=browser_headers)
+        assert bridge_denied.status_code == 403
+
+        install_browser = await browser_client.post(
+            "/market/install?token=bridge-tok",
+            headers=browser_headers,
+            json={"plugin_id": "demo"},
+        )
+        assert install_browser.status_code == 200
+        assert install_browser.json() == {
+            "identity": "market",
+            "market_remote": True,
+            "has_internal_header": False,
+            "has_market_internal_header": True,
+            "token": "bridge-tok",
+            "task_id": None,
+        }

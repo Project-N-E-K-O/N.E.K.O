@@ -167,12 +167,19 @@ async def test_remote_or_proxy_mode_closes_raw_asgi_websocket_health_without_upg
     assert sent == [{"type": "websocket.close", "code": 4401}]
 
 
+@pytest.mark.parametrize(
+    "mode_env",
+    ["NEKO_BEHIND_PROXY", "NEKO_ACTIVITY_TRACKER_REMOTE"],
+    ids=["behind-proxy", "activity-tracker-remote"],
+)
 async def test_internal_http_client_attaches_signed_proof_in_remote_mode_and_validates_in_middleware(
     monkeypatch: pytest.MonkeyPatch,
+    mode_env: str,
 ):
-    """R1111-01: internal HTTP client injects X-Neko-Internal-Service in proxy/remote mode and passes middleware."""
+    """R1111-01: internal HTTP client injects X-Neko-Internal-Service in both proxy and remote modes and passes middleware."""
+    _clear_deployment_mode_env(monkeypatch)
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
-    monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+    monkeypatch.setenv(mode_env, "true")
 
     app = _build_guarded_app()
     internal_client = get_internal_http_client()
@@ -553,9 +560,10 @@ def _iter_ast_calls(tree: ast.AST):
     return _visit(tree)
 
 
-def _collect_httpx_import_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
+def _collect_httpx_import_bindings(tree: ast.AST) -> tuple[set[str], set[str], set[str]]:
     mod_aliases = {"httpx"}
-    client_aliases = {"AsyncClient", "Client"}
+    async_client_aliases = {"AsyncClient"}
+    sync_client_aliases = {"Client"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -563,9 +571,11 @@ def _collect_httpx_import_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
                     mod_aliases.add(alias.asname or alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module == "httpx":
             for alias in node.names:
-                if alias.name in ("AsyncClient", "Client"):
-                    client_aliases.add(alias.asname or alias.name)
-    return mod_aliases, client_aliases
+                if alias.name == "AsyncClient":
+                    async_client_aliases.add(alias.asname or alias.name)
+                elif alias.name == "Client":
+                    sync_client_aliases.add(alias.asname or alias.name)
+    return mod_aliases, async_client_aliases, sync_client_aliases
 
 
 _INTERNAL_HTTPX_CALLABLE_HOOK_HELPERS = frozenset(
@@ -584,122 +594,202 @@ def _callee_name(func: ast.AST) -> str | None:
     return None
 
 
-def _expr_is_hook_callable(node: ast.AST | None, hook_helpers: tuple[str, ...]) -> bool:
+def _helper_call_matches_sync_mode(call: ast.Call, expected_sync: bool) -> bool:
+    if any(kw.arg is None for kw in call.keywords):
+        return False
+    sync_kws = [kw.value for kw in call.keywords if kw.arg == "sync"]
+    if not sync_kws:
+        sync_val = False
+    elif len(sync_kws) == 1 and isinstance(sync_kws[0], ast.Constant) and type(sync_kws[0].value) is bool:
+        sync_val = sync_kws[0].value
+    else:
+        return False
+    return sync_val is expected_sync
+
+
+def _expr_is_hook_callable(
+    node: ast.AST | None,
+    hook_helpers: tuple[str, ...],
+    *,
+    expected_sync: bool = False,
+) -> bool:
     if node is None:
         return False
+    expected_name = "attach_internal_service_proof_sync" if expected_sync else "attach_internal_service_proof"
     if isinstance(node, (ast.Name, ast.Attribute)):
         name = node.id if isinstance(node, ast.Name) else node.attr
-        return name in hook_helpers and name in _INTERNAL_HTTPX_CALLABLE_HOOK_HELPERS
+        return name in hook_helpers and name == expected_name
     if isinstance(node, ast.IfExp):
-        return _expr_is_hook_callable(node.body, hook_helpers) and _expr_is_hook_callable(node.orelse, hook_helpers)
+        return _expr_is_hook_callable(node.body, hook_helpers, expected_sync=expected_sync) and _expr_is_hook_callable(
+            node.orelse, hook_helpers, expected_sync=expected_sync
+        )
     if isinstance(node, ast.NamedExpr):
-        return _expr_is_hook_callable(node.value, hook_helpers)
+        return _expr_is_hook_callable(node.value, hook_helpers, expected_sync=expected_sync)
     return False
 
 
-def _request_hook_seq_has_proof(node: ast.AST | None, hook_helpers: tuple[str, ...]) -> bool:
+def _request_hook_seq_has_proof(
+    node: ast.AST | None,
+    hook_helpers: tuple[str, ...],
+    *,
+    expected_sync: bool = False,
+) -> bool:
     if node is None:
         return False
     if isinstance(node, (ast.List, ast.Tuple)):
-        return any(_expr_is_hook_callable(el, hook_helpers) for el in node.elts)
+        return any(_expr_is_hook_callable(el, hook_helpers, expected_sync=expected_sync) for el in node.elts)
     if isinstance(node, ast.IfExp):
-        return _request_hook_seq_has_proof(node.body, hook_helpers) and _request_hook_seq_has_proof(
-            node.orelse, hook_helpers
-        )
+        return _request_hook_seq_has_proof(
+            node.body, hook_helpers, expected_sync=expected_sync
+        ) and _request_hook_seq_has_proof(node.orelse, hook_helpers, expected_sync=expected_sync)
     if isinstance(node, ast.NamedExpr):
-        return _request_hook_seq_has_proof(node.value, hook_helpers)
+        return _request_hook_seq_has_proof(node.value, hook_helpers, expected_sync=expected_sync)
     return False
 
 
-def _expr_uses_hook_helper(node: ast.AST | None, hook_helpers: tuple[str, ...]) -> bool:
+def _expr_uses_hook_helper(
+    node: ast.AST | None,
+    hook_helpers: tuple[str, ...],
+    *,
+    expected_sync: bool = False,
+) -> bool:
     if node is None:
         return False
     if isinstance(node, ast.Call):
         name = _callee_name(node.func)
-        return name is not None and name in hook_helpers and name not in _INTERNAL_HTTPX_CALLABLE_HOOK_HELPERS
+        return (
+            name is not None
+            and name in hook_helpers
+            and name not in _INTERNAL_HTTPX_CALLABLE_HOOK_HELPERS
+            and _helper_call_matches_sync_mode(node, expected_sync)
+        )
     if isinstance(node, ast.Dict):
         provides = False
         for k, v in zip(node.keys, node.values):
             if k is None:
-                provides = _expr_uses_hook_helper(v, hook_helpers)
-            elif isinstance(k, ast.Constant) and k.value == "request":
-                provides = _request_hook_seq_has_proof(v, hook_helpers)
+                provides = _expr_uses_hook_helper(v, hook_helpers, expected_sync=expected_sync)
+            elif isinstance(k, ast.Constant) and isinstance(k.value, str):
+                if k.value == "request":
+                    provides = _request_hook_seq_has_proof(v, hook_helpers, expected_sync=expected_sync)
+            else:
+                provides = False
         return provides
     if isinstance(node, ast.IfExp):
-        return _expr_uses_hook_helper(node.body, hook_helpers) and _expr_uses_hook_helper(node.orelse, hook_helpers)
+        return _expr_uses_hook_helper(
+            node.body, hook_helpers, expected_sync=expected_sync
+        ) and _expr_uses_hook_helper(node.orelse, hook_helpers, expected_sync=expected_sync)
     if isinstance(node, ast.BoolOp):
-        return all(_expr_uses_hook_helper(val, hook_helpers) for val in node.values)
+        return all(_expr_uses_hook_helper(val, hook_helpers, expected_sync=expected_sync) for val in node.values)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        if _expr_uses_hook_helper(node.right, hook_helpers):
+        if _expr_uses_hook_helper(node.right, hook_helpers, expected_sync=expected_sync):
             return True
-        if isinstance(node.right, ast.Dict) and not any(
-            k is None or (isinstance(k, ast.Constant) and k.value == "request") for k in node.right.keys
+        if isinstance(node.right, ast.Dict) and all(
+            isinstance(k, ast.Constant) and isinstance(k.value, str) and k.value != "request"
+            for k in node.right.keys
         ):
-            return _expr_uses_hook_helper(node.left, hook_helpers)
+            return _expr_uses_hook_helper(node.left, hook_helpers, expected_sync=expected_sync)
         return False
     if isinstance(node, ast.NamedExpr):
-        return _expr_uses_hook_helper(node.value, hook_helpers)
+        return _expr_uses_hook_helper(node.value, hook_helpers, expected_sync=expected_sync)
     return False
 
 
-def _merge_dict_into_binding(dict_node: ast.Dict, bound: bool, hook_helpers: tuple[str, ...]) -> bool:
+def _merge_dict_into_binding(
+    dict_node: ast.Dict,
+    bound: bool,
+    hook_helpers: tuple[str, ...],
+    *,
+    expected_sync: bool = False,
+) -> bool:
     for k, v in zip(dict_node.keys, dict_node.values):
         if k is None:
-            bound = _merge_dict_into_binding(v, bound, hook_helpers) if isinstance(v, ast.Dict) else False
-        elif isinstance(k, ast.Constant) and k.value == "event_hooks":
-            bound = _expr_uses_hook_helper(v, hook_helpers)
+            bound = (
+                _merge_dict_into_binding(v, bound, hook_helpers, expected_sync=expected_sync)
+                if isinstance(v, ast.Dict)
+                else False
+            )
+        elif isinstance(k, ast.Constant) and isinstance(k.value, str):
+            if k.value == "event_hooks":
+                bound = _expr_uses_hook_helper(v, hook_helpers, expected_sync=expected_sync)
+        else:
+            bound = False
     return bound
 
 
-def _dict_expr_binds_event_hooks(node: ast.AST, hook_helpers: tuple[str, ...]) -> bool:
-    return isinstance(node, ast.Dict) and _merge_dict_into_binding(node, False, hook_helpers)
+def _dict_expr_binds_event_hooks(
+    node: ast.AST,
+    hook_helpers: tuple[str, ...],
+    *,
+    expected_sync: bool = False,
+) -> bool:
+    return isinstance(node, ast.Dict) and _merge_dict_into_binding(
+        node, False, hook_helpers, expected_sync=expected_sync
+    )
 
 
 def _stmt_contains_node(stmt: ast.AST, target: ast.AST) -> bool:
     return any(node is target for node in ast.walk(stmt))
 
 
+def _httpx_client_mode(
+    node: ast.AST,
+    httpx_mod_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
+) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id in httpx_mod_aliases:
+        if node.func.attr == "AsyncClient":
+            return "async"
+        if node.func.attr == "Client":
+            return "sync"
+    if isinstance(node.func, ast.Name):
+        if node.func.id in async_client_aliases:
+            return "async"
+        if node.func.id in sync_client_aliases:
+            return "sync"
+    return None
+
+
 def _is_httpx_client_call(
     node: ast.AST,
     httpx_mod_aliases: set[str],
-    httpx_client_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
 ) -> bool:
-    if not isinstance(node, ast.Call):
-        return False
-    if (
-        isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id in httpx_mod_aliases
-        and node.func.attr in ("AsyncClient", "Client")
-    ):
-        return True
-    return isinstance(node.func, ast.Name) and node.func.id in httpx_client_aliases
+    return _httpx_client_mode(node, httpx_mod_aliases, async_client_aliases, sync_client_aliases) is not None
 
 
 def _stmt_mentions_name(
     node: ast.AST,
     var_name: str,
     httpx_mod_aliases: set[str] | None = None,
-    httpx_client_aliases: set[str] | None = None,
+    async_client_aliases: set[str] | None = None,
+    sync_client_aliases: set[str] | None = None,
 ) -> bool:
     if isinstance(node, ast.Name):
         return node.id == var_name
     if (
         httpx_mod_aliases is not None
-        and httpx_client_aliases is not None
-        and _is_httpx_client_call(node, httpx_mod_aliases, httpx_client_aliases)
+        and async_client_aliases is not None
+        and sync_client_aliases is not None
+        and _is_httpx_client_call(node, httpx_mod_aliases, async_client_aliases, sync_client_aliases)
     ):
         assert isinstance(node, ast.Call)
-        if any(_stmt_mentions_name(arg, var_name, httpx_mod_aliases, httpx_client_aliases) for arg in node.args):
+        if any(
+            _stmt_mentions_name(arg, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases)
+            for arg in node.args
+        ):
             return True
         for kw in node.keywords:
             if kw.arg is None and isinstance(kw.value, ast.Name) and kw.value.id == var_name:
                 continue
-            if _stmt_mentions_name(kw.value, var_name, httpx_mod_aliases, httpx_client_aliases):
+            if _stmt_mentions_name(kw.value, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases):
                 return True
         return False
     return any(
-        _stmt_mentions_name(child, var_name, httpx_mod_aliases, httpx_client_aliases)
+        _stmt_mentions_name(child, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases)
         for child in ast.iter_child_nodes(node)
     )
 
@@ -714,14 +804,46 @@ def _control_flow_node_types() -> tuple[type[ast.AST], ...]:
 
 
 def _contains_direct_continue(node: ast.AST) -> bool:
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.Continue):
-            return True
-        if isinstance(child, (ast.For, ast.AsyncFor, ast.While, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-        if _contains_direct_continue(child):
-            return True
-    return False
+    if isinstance(node, ast.Continue):
+        return True
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return False
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+        return any(_contains_direct_continue(stmt) for stmt in node.orelse)
+    return any(_contains_direct_continue(child) for child in ast.iter_child_nodes(node))
+
+
+_SAFE_DICT_READ_METHODS = frozenset({"get", "keys", "values", "items", "copy", "setdefault"})
+_SAFE_READONLY_BUILTINS = frozenset({"dict", "len", "bool", "repr", "str"})
+
+
+def _apply_comprehension_mutations(
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    var_name: str,
+    bound: bool,
+    hook_helpers: tuple[str, ...],
+    *,
+    expected_sync: bool = False,
+) -> bool:
+    cur = (
+        _apply_expr_mutations(
+            node.generators[0].iter, var_name, bound, hook_helpers, expected_sync=expected_sync
+        )
+        if node.generators
+        else bound
+    )
+    after = cur
+    for idx, comp in enumerate(node.generators):
+        if idx > 0:
+            after = _apply_expr_mutations(comp.iter, var_name, after, hook_helpers, expected_sync=expected_sync)
+        for cond in comp.ifs:
+            after = _apply_expr_mutations(cond, var_name, after, hook_helpers, expected_sync=expected_sync)
+    if isinstance(node, ast.DictComp):
+        after = _apply_expr_mutations(node.key, var_name, after, hook_helpers, expected_sync=expected_sync)
+        after = _apply_expr_mutations(node.value, var_name, after, hook_helpers, expected_sync=expected_sync)
+    else:
+        after = _apply_expr_mutations(node.elt, var_name, after, hook_helpers, expected_sync=expected_sync)
+    return cur and after
 
 
 def _apply_expr_mutations(
@@ -729,13 +851,30 @@ def _apply_expr_mutations(
     var_name: str,
     bound: bool,
     hook_helpers: tuple[str, ...],
+    *,
+    expected_sync: bool = False,
 ) -> bool:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
         return bound
+    if isinstance(node, ast.BoolOp):
+        cur = _apply_expr_mutations(node.values[0], var_name, bound, hook_helpers, expected_sync=expected_sync)
+        for val in node.values[1:]:
+            after = _apply_expr_mutations(val, var_name, cur, hook_helpers, expected_sync=expected_sync)
+            cur = cur and after
+        return cur
+    if isinstance(node, ast.IfExp):
+        after_test = _apply_expr_mutations(node.test, var_name, bound, hook_helpers, expected_sync=expected_sync)
+        after_body = _apply_expr_mutations(node.body, var_name, after_test, hook_helpers, expected_sync=expected_sync)
+        after_else = _apply_expr_mutations(node.orelse, var_name, after_test, hook_helpers, expected_sync=expected_sync)
+        return after_body and after_else
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        return _apply_comprehension_mutations(node, var_name, bound, hook_helpers, expected_sync=expected_sync)
+
     for child in ast.iter_child_nodes(node):
-        bound = _apply_expr_mutations(child, var_name, bound, hook_helpers)
+        bound = _apply_expr_mutations(child, var_name, bound, hook_helpers, expected_sync=expected_sync)
+
     if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name) and node.target.id == var_name:
-        return _dict_expr_binds_event_hooks(node.value, hook_helpers)
+        return _dict_expr_binds_event_hooks(node.value, hook_helpers, expected_sync=expected_sync)
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
@@ -743,6 +882,8 @@ def _apply_expr_mutations(
         and node.func.value.id == var_name
     ):
         attr = node.func.attr
+        if attr in _SAFE_DICT_READ_METHODS:
+            return bound
         if attr in ("clear", "popitem"):
             return False
         if attr == "pop":
@@ -758,21 +899,68 @@ def _apply_expr_mutations(
             if node.args:
                 first_arg = node.args[0]
                 bound = (
-                    _merge_dict_into_binding(first_arg, bound, hook_helpers)
+                    _merge_dict_into_binding(first_arg, bound, hook_helpers, expected_sync=expected_sync)
                     if isinstance(first_arg, ast.Dict)
                     else False
                 )
             for ukw in node.keywords:
                 if ukw.arg is None:
                     bound = (
-                        _merge_dict_into_binding(ukw.value, bound, hook_helpers)
+                        _merge_dict_into_binding(ukw.value, bound, hook_helpers, expected_sync=expected_sync)
                         if isinstance(ukw.value, ast.Dict)
                         else False
                     )
                 elif ukw.arg == "event_hooks":
-                    bound = _expr_uses_hook_helper(ukw.value, hook_helpers)
+                    bound = _expr_uses_hook_helper(ukw.value, hook_helpers, expected_sync=expected_sync)
             return bound
+        return False
     return bound
+
+
+def _call_passes_var_to_unknown_helper(
+    node: ast.AST,
+    var_name: str,
+    httpx_mod_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
+) -> bool:
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        if _is_httpx_client_call(sub, httpx_mod_aliases, async_client_aliases, sync_client_aliases):
+            continue
+        if (
+            isinstance(sub.func, ast.Attribute)
+            and isinstance(sub.func.value, ast.Name)
+            and sub.func.value.id == var_name
+        ):
+            continue
+        if isinstance(sub.func, ast.Name) and sub.func.id in _SAFE_READONLY_BUILTINS:
+            continue
+        if any(isinstance(a, ast.Name) and a.id == var_name for a in sub.args):
+            return True
+        if any(isinstance(kw.value, ast.Name) and kw.value.id == var_name for kw in sub.keywords):
+            return True
+    return False
+
+
+def _apply_while_test_state(
+    test_expr: ast.expr,
+    var_name: str,
+    bound: bool,
+    hook_helpers: tuple[str, ...],
+    httpx_mod_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
+    *,
+    expected_sync: bool = False,
+) -> bool:
+    after = _apply_expr_mutations(test_expr, var_name, bound, hook_helpers, expected_sync=expected_sync)
+    if _call_passes_var_to_unknown_helper(
+        test_expr, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases
+    ):
+        return False
+    return after
 
 
 def _update_event_hooks_binding_state(
@@ -780,9 +968,11 @@ def _update_event_hooks_binding_state(
     var_name: str,
     bound: bool,
     hook_helpers: tuple[str, ...],
+    *,
+    expected_sync: bool = False,
 ) -> bool:
     if isinstance(stmt, ast.Assign):
-        bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers)
+        bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers, expected_sync=expected_sync)
         for tgt in stmt.targets:
             if (
                 isinstance(tgt, ast.Subscript)
@@ -791,16 +981,16 @@ def _update_event_hooks_binding_state(
             ):
                 if isinstance(tgt.slice, ast.Constant) and isinstance(tgt.slice.value, str):
                     if tgt.slice.value == "event_hooks":
-                        bound = _expr_uses_hook_helper(stmt.value, hook_helpers)
+                        bound = _expr_uses_hook_helper(stmt.value, hook_helpers, expected_sync=expected_sync)
                 else:
                     bound = False
             elif isinstance(tgt, ast.Name) and tgt.id == var_name:
-                bound = _dict_expr_binds_event_hooks(stmt.value, hook_helpers)
+                bound = _dict_expr_binds_event_hooks(stmt.value, hook_helpers, expected_sync=expected_sync)
         return bound
 
     if isinstance(stmt, ast.AnnAssign):
         if stmt.value is not None:
-            bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers)
+            bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers, expected_sync=expected_sync)
         tgt = stmt.target
         if (
             isinstance(tgt, ast.Subscript)
@@ -809,11 +999,15 @@ def _update_event_hooks_binding_state(
         ):
             if isinstance(tgt.slice, ast.Constant) and isinstance(tgt.slice.value, str):
                 if tgt.slice.value == "event_hooks":
-                    return stmt.value is not None and _expr_uses_hook_helper(stmt.value, hook_helpers)
+                    return stmt.value is not None and _expr_uses_hook_helper(
+                        stmt.value, hook_helpers, expected_sync=expected_sync
+                    )
                 return bound
             return False
         if isinstance(tgt, ast.Name) and tgt.id == var_name:
-            return stmt.value is not None and _dict_expr_binds_event_hooks(stmt.value, hook_helpers)
+            return stmt.value is not None and _dict_expr_binds_event_hooks(
+                stmt.value, hook_helpers, expected_sync=expected_sync
+            )
         return bound
 
     if isinstance(stmt, ast.Delete):
@@ -834,14 +1028,14 @@ def _update_event_hooks_binding_state(
         return bound
 
     if isinstance(stmt, ast.AugAssign):
-        bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers)
+        bound = _apply_expr_mutations(stmt.value, var_name, bound, hook_helpers, expected_sync=expected_sync)
         if isinstance(stmt.target, ast.Name) and stmt.target.id == var_name:
             if isinstance(stmt.op, ast.BitOr) and isinstance(stmt.value, ast.Dict):
-                return _merge_dict_into_binding(stmt.value, bound, hook_helpers)
+                return _merge_dict_into_binding(stmt.value, bound, hook_helpers, expected_sync=expected_sync)
             return False
         return bound
 
-    return _apply_expr_mutations(stmt, var_name, bound, hook_helpers)
+    return _apply_expr_mutations(stmt, var_name, bound, hook_helpers, expected_sync=expected_sync)
 
 
 def _loop_backedge_preserves_binding(
@@ -850,7 +1044,11 @@ def _loop_backedge_preserves_binding(
     initial_bound: bool,
     hook_helpers: tuple[str, ...],
     httpx_mod_aliases: set[str],
-    httpx_client_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
+    *,
+    expected_sync: bool = False,
+    while_test: ast.expr | None = None,
 ) -> bool:
     if not initial_bound:
         return False
@@ -859,18 +1057,64 @@ def _loop_backedge_preserves_binding(
     cont_ok = True
     for stmt in stmts:
         if isinstance(stmt, ast.Continue):
-            return cont_ok and cur
+            at_cont = (
+                _apply_while_test_state(
+                    while_test,
+                    var_name,
+                    cur,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                )
+                if while_test is not None
+                else cur
+            )
+            return cont_ok and at_cont
         if isinstance(stmt, (ast.Break, ast.Return, ast.Raise)):
             return cont_ok
         if isinstance(stmt, control_flow_nodes):
-            if _stmt_mentions_name(stmt, var_name, httpx_mod_aliases, httpx_client_aliases):
-                if not isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)) and _contains_direct_continue(stmt):
+            has_outer_continue = (
+                any(_contains_direct_continue(s) for s in stmt.orelse)
+                if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While))
+                else _contains_direct_continue(stmt)
+            )
+            if _stmt_mentions_name(stmt, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases):
+                if has_outer_continue:
                     cont_ok = False
                 cur = False
-            elif not isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)) and _contains_direct_continue(stmt):
-                cont_ok = cont_ok and cur
+            elif has_outer_continue:
+                at_cont = (
+                    _apply_while_test_state(
+                        while_test,
+                        var_name,
+                        cur,
+                        hook_helpers,
+                        httpx_mod_aliases,
+                        async_client_aliases,
+                        sync_client_aliases,
+                        expected_sync=expected_sync,
+                    )
+                    if while_test is not None
+                    else cur
+                )
+                cont_ok = cont_ok and at_cont
             continue
-        cur = _update_event_hooks_binding_state(stmt, var_name, cur, hook_helpers)
+        cur = _update_event_hooks_binding_state(
+            stmt, var_name, cur, hook_helpers, expected_sync=expected_sync
+        )
+    if while_test is not None:
+        cur = _apply_while_test_state(
+            while_test,
+            var_name,
+            cur,
+            hook_helpers,
+            httpx_mod_aliases,
+            async_client_aliases,
+            sync_client_aliases,
+            expected_sync=expected_sync,
+        )
     return cur and cont_ok
 
 
@@ -881,24 +1125,71 @@ def _track_binding_in_block(
     bound: bool,
     hook_helpers: tuple[str, ...],
     httpx_mod_aliases: set[str],
-    httpx_client_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
+    *,
+    expected_sync: bool = False,
 ) -> tuple[bool, bool]:
     control_flow_nodes = _control_flow_node_types()
 
     for stmt in stmts:
         if _stmt_contains_node(stmt, target_call):
             child_blocks: list[tuple[list[ast.stmt], bool]] = []
-            loop_bound = bound
+            test_entry_bound = bound
             if isinstance(stmt, ast.If):
-                child_blocks.extend([(stmt.body, bound), (stmt.orelse, bound)])
-            elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
-                loop_bound = bound and _loop_backedge_preserves_binding(
+                after_test = _apply_expr_mutations(
+                    stmt.test, var_name, bound, hook_helpers, expected_sync=expected_sync
+                )
+                child_blocks.extend([(stmt.body, after_test), (stmt.orelse, after_test)])
+                test_entry_bound = bound
+            elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+                iter_bound = _apply_expr_mutations(
+                    stmt.iter, var_name, bound, hook_helpers, expected_sync=expected_sync
+                )
+                loop_bound = iter_bound and _loop_backedge_preserves_binding(
                     stmt.body,
+                    var_name,
+                    iter_bound,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                )
+                child_blocks.extend([(stmt.body, loop_bound), (stmt.orelse, loop_bound)])
+                test_entry_bound = bound
+            elif isinstance(stmt, ast.While):
+                entry_after_test = _apply_while_test_state(
+                    stmt.test,
                     var_name,
                     bound,
                     hook_helpers,
                     httpx_mod_aliases,
-                    httpx_client_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                )
+                body_backedge_ok = _loop_backedge_preserves_binding(
+                    stmt.body,
+                    var_name,
+                    entry_after_test,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
+                    while_test=stmt.test,
+                )
+                loop_bound = entry_after_test and body_backedge_ok
+                test_entry_bound = bound and _loop_backedge_preserves_binding(
+                    stmt.body,
+                    var_name,
+                    entry_after_test,
+                    hook_helpers,
+                    httpx_mod_aliases,
+                    async_client_aliases,
+                    sync_client_aliases,
+                    expected_sync=expected_sync,
                 )
                 child_blocks.extend([(stmt.body, loop_bound), (stmt.orelse, loop_bound)])
             elif isinstance(stmt, (ast.With, ast.AsyncWith)):
@@ -906,7 +1197,10 @@ def _track_binding_in_block(
             elif isinstance(stmt, control_flow_nodes):
                 body_stmts = getattr(stmt, "body", [])
                 body_mentions = any(
-                    _stmt_mentions_name(s, var_name, httpx_mod_aliases, httpx_client_aliases) for s in body_stmts
+                    _stmt_mentions_name(
+                        s, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases
+                    )
+                    for s in body_stmts
                 )
                 child_blocks.append((body_stmts, bound))
                 for handler in getattr(stmt, "handlers", []):
@@ -927,16 +1221,20 @@ def _track_binding_in_block(
                         initial_bound,
                         hook_helpers,
                         httpx_mod_aliases,
-                        httpx_client_aliases,
+                        async_client_aliases,
+                        sync_client_aliases,
+                        expected_sync=expected_sync,
                     )
-            return True, (loop_bound if isinstance(stmt, ast.While) else bound)
+            return True, test_entry_bound
 
         if isinstance(stmt, control_flow_nodes):
-            if _stmt_mentions_name(stmt, var_name, httpx_mod_aliases, httpx_client_aliases):
+            if _stmt_mentions_name(stmt, var_name, httpx_mod_aliases, async_client_aliases, sync_client_aliases):
                 bound = False
             continue
 
-        bound = _update_event_hooks_binding_state(stmt, var_name, bound, hook_helpers)
+        bound = _update_event_hooks_binding_state(
+            stmt, var_name, bound, hook_helpers, expected_sync=expected_sync
+        )
 
     return False, bound
 
@@ -946,12 +1244,15 @@ def _kw_splat_sets_event_hooks(
     func_node: ast.AST | None,
     hook_helpers: tuple[str, ...],
     httpx_mod_aliases: set[str],
-    httpx_client_aliases: set[str],
+    async_client_aliases: set[str],
+    sync_client_aliases: set[str],
+    *,
+    expected_sync: bool = False,
 ) -> bool:
     for kw in call.keywords:
         if kw.arg is not None:
             continue
-        if _dict_expr_binds_event_hooks(kw.value, hook_helpers):
+        if _dict_expr_binds_event_hooks(kw.value, hook_helpers, expected_sync=expected_sync):
             return True
         if isinstance(kw.value, ast.Name) and isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             found, bound = _track_binding_in_block(
@@ -961,7 +1262,9 @@ def _kw_splat_sets_event_hooks(
                 False,
                 hook_helpers,
                 httpx_mod_aliases,
-                httpx_client_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
             )
             if found and bound:
                 return True
@@ -987,7 +1290,7 @@ def _scan_source_for_internal_httpx_clients(
         return 0, set(), []
 
     tree = ast.parse(source, filename=relpath)
-    httpx_mod_aliases, httpx_client_aliases = _collect_httpx_import_bindings(tree)
+    httpx_mod_aliases, async_client_aliases, sync_client_aliases = _collect_httpx_import_bindings(tree)
     mod_has_indicator = any(ind in source for ind in module_indicators)
 
     signed_count = 0
@@ -995,8 +1298,10 @@ def _scan_source_for_internal_httpx_clients(
     unhooked: list[str] = []
 
     for call, owners in _iter_ast_calls(tree):
-        if not _is_httpx_client_call(call, httpx_mod_aliases, httpx_client_aliases):
+        client_mode = _httpx_client_mode(call, httpx_mod_aliases, async_client_aliases, sync_client_aliases)
+        if client_mode is None:
             continue
+        expected_sync = client_mode == "sync"
 
         qualname = ".".join(getattr(o, "name", "") for o in owners) or "<module>"
         func_node = next(
@@ -1008,7 +1313,7 @@ def _scan_source_for_internal_httpx_clients(
             continue
 
         has_hook = any(
-            kw.arg == "event_hooks" and _expr_uses_hook_helper(kw.value, hook_helpers)
+            kw.arg == "event_hooks" and _expr_uses_hook_helper(kw.value, hook_helpers, expected_sync=expected_sync)
             for kw in call.keywords
         )
         if not has_hook:
@@ -1017,13 +1322,15 @@ def _scan_source_for_internal_httpx_clients(
                 func_node,
                 hook_helpers,
                 httpx_mod_aliases,
-                httpx_client_aliases,
+                async_client_aliases,
+                sync_client_aliases,
+                expected_sync=expected_sync,
             )
 
         site_key = (relpath, qualname)
         if has_hook:
             signed_count += 1
-        elif site_key in exempt_sites:
+        elif site_key in exempt_sites and site_key not in seen_exemptions:
             seen_exemptions.add(site_key)
         else:
             unhooked.append(f"{relpath}:{call.lineno} ({qualname})")
@@ -1206,7 +1513,7 @@ def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
     assert signed == 0
     assert unhooked == ["synthetic/dict_callable_cond_neg.py:6 (make)"]
 
-    conditional_pos_src = (
+    mixed_sync_async_neg_src = (
         "import httpx\n"
         "from config import MAIN_SERVER_PORT\n"
         "from utils.internal_http_client import internal_service_event_hooks\n"
@@ -1214,10 +1521,75 @@ def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
         "    return httpx.AsyncClient(event_hooks=internal_service_event_hooks(sync=True) if is_sync else internal_service_event_hooks())\n"
     )
     signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        mixed_sync_async_neg_src, "synthetic/mixed_sync_async_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/mixed_sync_async_neg.py:5 (make)"]
+
+    conditional_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks, merge_internal_service_event_hooks\n"
+        "def make(existing=None):\n"
+        "    return httpx.AsyncClient(event_hooks=merge_internal_service_event_hooks(existing) if existing else internal_service_event_hooks())\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
         conditional_pos_src, "synthetic/conditional_pos.py"
     )
     assert signed == 1
     assert unhooked == []
+
+    sync_client_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make():\n"
+        "    return httpx.Client(event_hooks=internal_service_event_hooks(sync=True))\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        sync_client_pos_src, "synthetic/sync_client_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    sync_callable_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import attach_internal_service_proof_sync\n"
+        "def make():\n"
+        "    return httpx.Client(event_hooks={'request': [attach_internal_service_proof_sync]})\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        sync_callable_pos_src, "synthetic/sync_callable_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    sync_client_with_async_hook_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make():\n"
+        "    return httpx.Client(event_hooks=internal_service_event_hooks())\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        sync_client_with_async_hook_neg_src, "synthetic/sync_client_async_hook_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/sync_client_async_hook_neg.py:5 (make)"]
+
+    async_client_with_sync_callable_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import attach_internal_service_proof_sync\n"
+        "def make():\n"
+        "    return httpx.AsyncClient(event_hooks={'request': [attach_internal_service_proof_sync]})\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        async_client_with_sync_callable_neg_src, "synthetic/async_client_sync_callable_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/async_client_sync_callable_neg.py:5 (make)"]
 
     dict_callable_pos_src = (
         "import httpx\n"
@@ -1422,6 +1794,145 @@ def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
     assert signed == 1
     assert unhooked == []
 
+    dynamic_request_key_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import attach_internal_service_proof\n"
+        "def make(key):\n"
+        "    return httpx.AsyncClient(event_hooks={'request': [attach_internal_service_proof], key: []})\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        dynamic_request_key_neg_src, "synthetic/dynamic_req_key_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/dynamic_req_key_neg.py:5 (make)"]
+
+    dynamic_event_hooks_key_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(key):\n"
+        "    kwargs = {'event_hooks': internal_service_event_hooks(), key: {}}\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        dynamic_event_hooks_key_neg_src, "synthetic/dynamic_eh_key_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/dynamic_eh_key_neg.py:6 (make)"]
+
+    dynamic_key_restored_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import attach_internal_service_proof, internal_service_event_hooks\n"
+        "def make(key):\n"
+        "    c1 = httpx.AsyncClient(event_hooks={key: [], 'request': [attach_internal_service_proof]})\n"
+        "    kwargs = {'event_hooks': internal_service_event_hooks(), key: {}, 'event_hooks': internal_service_event_hooks()}\n"
+        "    return c1, httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        dynamic_key_restored_pos_src, "synthetic/dynamic_key_restored_pos.py"
+    )
+    assert signed == 2
+    assert unhooked == []
+
+    short_circuit_update_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(enabled: bool = False, **kwargs):\n"
+        "    _ = enabled and kwargs.update(event_hooks=internal_service_event_hooks())\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        short_circuit_update_neg_src, "synthetic/short_circuit_update_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/short_circuit_update_neg.py:6 (make)"]
+
+    unconditional_update_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    _ = kwargs.update(event_hooks=internal_service_event_hooks())\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        unconditional_update_pos_src, "synthetic/unconditional_update_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    while_test_pop_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    while kwargs.pop('event_hooks', None):\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        while_test_pop_neg_src, "synthetic/while_test_pop_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/while_test_pop_neg.py:7 (make)"]
+
+    while_safe_pos_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(flag, **kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    while flag and kwargs.get('event_hooks'):\n"
+        "        return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        while_safe_pos_src, "synthetic/while_safe_pos.py"
+    )
+    assert signed == 1
+    assert unhooked == []
+
+    nested_loop_orelse_continue_neg_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    for _ in range(2):\n"
+        "        client = httpx.AsyncClient(**kwargs)\n"
+        "        kwargs.clear()\n"
+        "        for _ in ():\n"
+        "            pass\n"
+        "        else:\n"
+        "            continue\n"
+        "        kwargs['event_hooks'] = internal_service_event_hooks()\n"
+        "    return client\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(
+        nested_loop_orelse_continue_neg_src, "synthetic/nested_loop_orelse_continue_neg.py"
+    )
+    assert signed == 0
+    assert unhooked == ["synthetic/nested_loop_orelse_continue_neg.py:7 (make)"]
+
+    double_exempt_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "def make():\n"
+        "    c1 = httpx.AsyncClient()\n"
+        "    c2 = httpx.AsyncClient()\n"
+        "    return c1, c2\n"
+    )
+    signed, seen, unhooked = _scan_source_for_internal_httpx_clients(
+        double_exempt_src,
+        "synthetic/double_exempt.py",
+        exempt_sites={("synthetic/double_exempt.py", "make")},
+    )
+    assert signed == 0
+    assert seen == {("synthetic/double_exempt.py", "make")}
+    assert unhooked == ["synthetic/double_exempt.py:5 (make)"]
+
 
 def test_internal_httpx_scan_path_filter_uses_repo_relative_components(tmp_path: Path):
     """Scanning must ignore 'tests'/'__pycache__' above repo_root while filtering test dirs/files inside repo_root."""
@@ -1551,22 +2062,33 @@ async def test_signing_failure_raises_request_error_and_agent_router_rolls_back_
 
 
 @pytest.mark.parametrize(
-    ("bad_server", "proof_port"),
+    ("bad_server", "port_spec"),
     [
-        (None, MAIN_SERVER_PORT),
-        (("127.0.0.1", None), MAIN_SERVER_PORT),
+        (None, "main"),
+        (("127.0.0.1", None), "main"),
         (("127.0.0.1", True), 1),
     ],
+    ids=["no-server", "server-port-none", "server-port-bool"],
 )
 async def test_internal_service_proof_fails_closed_when_asgi_server_port_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     bad_server,
-    proof_port: int,
+    port_spec,
 ):
     """_request_signing_port must fail closed when ASGI scope['server'] lacks an int port, never falling back to Host header."""
+    from starlette.requests import Request as StarletteRequest
+    from utils.instance_access import _request_signing_port
+
     _clear_deployment_mode_env(monkeypatch)
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
+
+    proof_port = MAIN_SERVER_PORT if port_spec == "main" else int(port_spec)
+    assert _request_signing_port(StarletteRequest({"type": "http", "server": ("127.0.0.1", proof_port)})) == proof_port
+    bad_scope = {"type": "http"}
+    if bad_server is not None:
+        bad_scope["server"] = bad_server
+    assert _request_signing_port(StarletteRequest(bad_scope)) is None
 
     app = _build_guarded_app()
     valid_proof = internal_service_proof(KEY, "GET", "/private", port=proof_port)

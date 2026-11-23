@@ -110,6 +110,16 @@ def _assert_safe_log_file_target(path: str | os.PathLike[str], allowed_root: Pat
     return target
 
 
+def _assert_existing_regular_log_file(path: str | os.PathLike[str]) -> None:
+    """Allow absent log slots and regular files; reject special files such as FIFOs or directories."""
+    try:
+        st = os.lstat(os.fspath(path))
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError(f"Refusing non-regular log rotation target: {path}")
+
+
 def _open_log_file_nofollow(
     path: str | os.PathLike[str],
     mode: str,
@@ -224,9 +234,11 @@ class _SafeRotatingFileHandler(_StdlibRotatingFileHandler):
         """Validate root identity and rotation targets before performing rollover."""
         self._assert_allowed_root_unchanged()
         _assert_safe_log_file_target(self.baseFilename, self._allowed_root)
+        _assert_existing_regular_log_file(self.baseFilename)
         for idx in range(1, self.backupCount + 1):
             rotated = self.rotation_filename(f"{self.baseFilename}.{idx}")
             _assert_safe_log_file_target(rotated, self._allowed_root)
+            _assert_existing_regular_log_file(rotated)
         return super().doRollover()
 
 
