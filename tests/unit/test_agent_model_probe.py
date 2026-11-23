@@ -213,6 +213,41 @@ def test_a_probe_that_keeps_failing_reports_its_last_failure(setup):
     assert setup.probe.last_error == "401 Unauthorized"
 
 
+@pytest.mark.parametrize(
+    "outcomes",
+    [[SimpleNamespace(choices=[])], [Exception("Read timeout")]],
+    ids=["answered", "failed"],
+)
+def test_a_probe_tags_its_own_request_as_agent_and_leaves_the_caller_untagged(setup, monkeypatch, outcomes):
+    # The probe is synchronous; a caller that runs it on its own thread (as
+    # these tests do) shares that thread's context. If the "agent" tag
+    # outlived the request, every later LLM call on that thread would be
+    # booked as "agent" -- which made unrelated usage tests fail when they
+    # ran after this file in the same pytest worker.
+    import contextvars
+
+    from utils.token_tracker import _current_call_type
+
+    seen: list[str] = []
+    invoke_raw = setup.client.invoke_raw
+
+    def tagged_invoke_raw(messages: Any, **options: Any) -> Any:
+        seen.append(_current_call_type.get())
+        return invoke_raw(messages, **options)
+
+    monkeypatch.setattr(setup.client, "invoke_raw", tagged_invoke_raw)
+    setup.client.outcomes = list(outcomes)
+
+    def run() -> str:
+        _current_call_type.set("caller")
+        setup.probe.check_connectivity()
+        return _current_call_type.get()
+
+    # A fresh context, so a regression here cannot leak into later tests.
+    assert contextvars.Context().run(run) == "caller"
+    assert seen == ["agent"]
+
+
 def test_the_client_is_kept_between_probes_and_rebuilt_when_the_model_configuration_changes(setup):
     setup.probe.check_connectivity()
     setup.probe.check_connectivity()

@@ -12,6 +12,22 @@ from main_logic.tool_calling import ToolDefinition, ToolResult
 from utils.token_tracker import TokenTracker, _current_call_type
 
 
+@pytest.fixture(autouse=True)
+def _default_call_type():
+    """Start every test here from the default ``unknown`` call type.
+
+    Several assertions below expect ``call_type == "unknown"``. The call type
+    is a context variable, so a synchronous code path that sets it without
+    putting it back (one did: the agent model probe) leaves it set for every
+    later test on the same pytest worker.
+    """
+    token = _current_call_type.set("unknown")
+    try:
+        yield
+    finally:
+        _current_call_type.reset(token)
+
+
 class _FakeThinkingConfig:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
