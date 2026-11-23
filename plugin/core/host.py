@@ -1393,10 +1393,12 @@ def _plugin_process_runner(
                 events_by_type[etype][eid] = eh.handler
             ctx._entry_map = entry_map
 
-        initial_map, initial_meta_map, initial_events = _initial_entry_tables(instance, logger)
-        # The components generation these maps reflect; the executor is built
-        # after on_startup, which may change components again.
+        # The components generation the maps reflect, read before the snapshot:
+        # a change made while it is taken leaves the recorded value behind, so
+        # the first call rebuilds (same order as EntryExecutor._resolve). The
+        # executor is built after on_startup, which may change components again.
         initial_maps_generation = getattr(instance, "_components_generation", None)
+        initial_map, initial_meta_map, initial_events = _initial_entry_tables(instance, logger)
         entry_map.update(initial_map)
         entry_meta_map.update(initial_meta_map)
         events_by_type.update(initial_events)
