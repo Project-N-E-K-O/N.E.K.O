@@ -171,6 +171,130 @@ def test_follow_core_non_omni_still_uses_core_provider_http_url():
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
+_INTL_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+_US_URL = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+
+
+def _named_qwen_intl_slots(slot_url: str, resolved: dict | None) -> dict:
+    data = {
+        "coreApi": "openai",
+        "coreApiKey": "sk-openai-core",
+        "assistApi": "openai",
+        "assistApiKeyOpenai": "sk-openai-assist",
+        "assistApiKeyQwenIntl": "sk-intl",
+        "enableCustomApi": True,
+    }
+    if resolved is not None:
+        data["resolvedProviderUrls"] = resolved
+    for prefix in ("conversation", "memory", "recognition", "agent"):
+        data.update({
+            f"{prefix}ModelProvider": "qwen_intl",
+            f"{prefix}ModelUrl": slot_url,
+            f"{prefix}ModelId": "",
+            f"{prefix}ModelApiKey": "",
+        })
+    return data
+
+
+def test_named_qwen_intl_slots_follow_region_pinned_at_save():
+    """Named slots saved with the intl URL move to the US candidate the save-time probe pinned."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(
+            config_dir, _named_qwen_intl_slots(_INTL_URL, {"assist:qwen_intl": _US_URL})
+        )
+
+        for tier in ("conversation", "memory", "recognition", "agent"):
+            api = cm.get_model_api_config(tier)
+            assert api["base_url"] == _US_URL, tier
+            # Still this provider's endpoint, so the Key Book key and tier default keep applying.
+            assert api["api_key"] == "sk-intl", tier
+            assert api["model"], tier
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def test_named_qwen_intl_slots_keep_saved_url_without_pin():
+    """No pin (never probed, or the last probe failed): the saved slot URL stands."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(config_dir, _named_qwen_intl_slots(_INTL_URL, {}))
+
+        assert cm.get_model_api_config("conversation")["base_url"] == _INTL_URL
+        assert cm.get_core_config()["RECOGNITION_MODEL_URL"] == _INTL_URL
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def test_named_slot_ignores_pin_outside_its_candidates():
+    """A stale pin that is no longer one of the provider's candidates is ignored."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(
+            config_dir,
+            _named_qwen_intl_slots(_INTL_URL, {"assist:qwen_intl": "https://old-region.example.test/v1"}),
+        )
+
+        assert cm.get_core_config()["CONVERSATION_MODEL_URL"] == _INTL_URL
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def test_named_slot_with_foreign_url_is_not_moved_by_pin():
+    """A slot URL outside the provider's candidates (legacy/hand-edited) is never rewritten."""
+    foreign = "https://gateway.example.test/v1"
+    config_dir = _make_workspace_temp_dir()
+    try:
+        cm = _manager_with_core_config(
+            config_dir, _named_qwen_intl_slots(foreign, {"assist:qwen_intl": _US_URL})
+        )
+
+        assert cm.get_core_config()["CONVERSATION_MODEL_URL"] == foreign
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def test_named_slot_of_single_url_provider_unchanged():
+    """Providers with one URL have nothing to pin; their slot URL is untouched."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        data = _named_qwen_intl_slots(_INTL_URL, None)
+        data.update({
+            "assistApiKeyDeepseek": "sk-deepseek",
+            "memoryModelProvider": "deepseek",
+            "memoryModelUrl": "https://api.deepseek.com/v1",
+            "resolvedProviderUrls": {"assist:deepseek": "https://elsewhere.example.test/v1"},
+        })
+        cm = _manager_with_core_config(config_dir, data)
+
+        assert cm.get_core_config()["MEMORY_MODEL_URL"] == "https://api.deepseek.com/v1"
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def test_named_qwen_intl_decision_slot_follows_us_pin_into_chat_fallback():
+    """The decision slot follows the pin too, so it decides the way the page probe checked it:
+    the US host has no workspace decision endpoint, hence the regional chat fallback."""
+    config_dir = _make_workspace_temp_dir()
+    try:
+        data = _named_qwen_intl_slots(_INTL_URL, {"assist:qwen_intl": _US_URL})
+        data.update({
+            "assistWorkspaceIdQwenIntl": "llm-sg",
+            "decisionModelProvider": "qwen_intl",
+            "decisionModelUrl": _INTL_URL,
+            "decisionModelId": "",
+            "decisionModelApiKey": "",
+        })
+        cm = _manager_with_core_config(config_dir, data)
+
+        dec = cm.get_model_api_config("decision")
+        assert dec["base_url"] == _US_URL
+        assert dec["decision_protocol"] == "chat_fallback"
+        assert dec["native_unavailable_reason"] == "region_unsupported"
+    finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
 def test_tts_custom_non_active_qwen_intl_uses_saved_resolved_url():
     """Alibaba international TTS outside the current assist provider must also use the saved, available regional URL."""
     us_url = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
