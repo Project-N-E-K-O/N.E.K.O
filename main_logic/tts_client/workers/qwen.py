@@ -299,6 +299,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 try:
                     await receive_task
                 except asyncio.CancelledError:
+                    # Expected: this task was cancelled just above.
                     pass
                 except Exception as e:
                     logger.debug("Qwen TTS retired receive task cleanup failed: %s", e)
