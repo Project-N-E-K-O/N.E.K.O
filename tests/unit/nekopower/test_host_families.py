@@ -2607,6 +2607,9 @@ async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_pro
         project = agents._writes_in[one.id][0]
         agents._writes_in["another member"] = (project, "another member")
         agents._session_of["its commission"] = "another member"
+        if not noting:
+            # Another lot is being noted in the same project meanwhile, and is not through when this one is.
+            agents._noting[project] += 1
         noting.append((set(agents._noting) == {project}, agents._session_free_for("its commission")))
         del agents._writes_in["another member"], agents._session_of["its commission"]
         await note(session_id, **more)
@@ -2616,7 +2619,10 @@ async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_pro
         placed = await agents._give_session(commission)
         agents._note_writer = note
         await asyncio.sleep(0.01)
-        assert noting and set(noting) == {(True, False)} and agents._noting == set()
+        assert noting and set(noting) == {(True, False)}
+        # This lot is through and the other is not: the project is held until that one is as well.
+        assert agents._noting == {placed.project: 1}
+        del agents._noting[placed.project]
 
         # The one it started that can change files is noted with it; the one that reads is not. Nor
         # is the member that reads only, at work though it is: that it changes files was a guess.
@@ -2897,11 +2903,11 @@ async def test_no_task_agent_that_changes_files_starts_in_a_project_while_its_ta
     agents._session_of.update({"its commission": "writer", "another commission": "elsewhere", "a reader's": "reader"})
     try:
         assert all(agents._session_free_for(item) for item in ("its commission", "another commission", "a reader's"))
-        agents._noting.add("Reports")
+        agents._noting["Reports"] = 1
         # The one that changes files there waits; one of another project, and one that only reads, do not.
         assert agents._session_free_for("its commission") is False
         assert agents._session_free_for("another commission") and agents._session_free_for("a reader's")
-        agents._noting.discard("Reports")
+        del agents._noting["Reports"]
         assert agents._session_free_for("its commission")
     finally:
         agents._noting.clear()
@@ -2965,3 +2971,43 @@ async def test_a_queued_commission_whose_preset_changes_files_by_now_waits_for_t
     finally:
         agents._held_by.clear()
         agents._queue.clear()
+
+
+async def test_a_queued_commission_stays_queued_when_the_last_place_goes_to_another_as_it_is_looked_at(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    await _project(host, "Budget app", tmp_path)
+    agents = host.task_agents
+    member = await host.ledger.create_session(lanlan_name="Lan", name="Budget app", kind="line", project="Budget app")
+    agents._session_of["waits"] = member.id
+    agents._queue.append("waits")
+    note, failed, started = agents._note_writer, [], []
+
+    async def meanwhile(session_id: Any, **more: Any) -> None:
+        # While its session is looked at, other commissions take every place there is.
+        for index in range(agents.limit - len(agents._sessions)):
+            agents._sessions[f"another {index}"] = object()
+        await note(session_id, **more)
+
+    async def fail(commission_id: str, *args: Any, **more: Any) -> None:
+        failed.append(commission_id)
+
+    async def start(commission_id: str, **_more: Any) -> None:
+        started.append(commission_id)
+
+    agents._note_writer, agents._fail, agents._start = meanwhile, fail, start
+    try:
+        await agents._start_next()
+
+        # Not taken off the queue to find no place and fail: it waits for the next place.
+        assert (failed, started, list(agents._queue)) == ([], [], ["waits"])
+        for key in [key for key in agents._sessions if str(key).startswith("another ")]:
+            del agents._sessions[key]
+        agents._note_writer = note
+        await agents._start_next()
+        assert (failed, started, list(agents._queue)) == ([], ["waits"], [])
+    finally:
+        agents._note_writer = note
+        agents._queue.clear()
+        agents._held_by.clear()
+        for key in [key for key in agents._sessions if str(key).startswith("another ") or key == "waits"]:
+            del agents._sessions[key]

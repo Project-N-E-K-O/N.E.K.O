@@ -1315,7 +1315,9 @@ class TaskAgentManager:
         # files or not, several together (task agents that just became its
         # members, and those they started): until all are, none that
         # changes files starts in it, whatever else comes free meanwhile.
-        self._noting: set[str] = set()
+        # Counted: two lots may be noted in one project at a time, and it is
+        # held until the last of them is through.
+        self._noting: dict[str, int] = {}
         # The commissions a ``hand_over`` call is at work on: a second call
         # for one, made beside it, is refused before either awaits anything.
         self._handing_claims: set[str] = set()
@@ -2025,15 +2027,19 @@ class TaskAgentManager:
             # task agents they started, which were none of a project's when they began. Until all
             # of them are noted, none that changes files starts in the project (``_noting``): one
             # that came free meanwhile would start beside one not noted yet.
-            noting = commission.project if commission.project and commission.project not in self._noting else None
+            noting = commission.project
             if noting:
-                self._noting.add(noting)
+                self._noting[noting] = self._noting.get(noting, 0) + 1
             try:
                 for other in {session.id, *verdict.members, *self._held_by}:
                     await self._note_writer(other, guessed=other in guessed, batch=True)
             finally:
                 if noting:
-                    self._noting.discard(noting)
+                    left = self._noting.get(noting, 1) - 1
+                    if left > 0:
+                        self._noting[noting] = left
+                    else:
+                        self._noting.pop(noting, None)
                 # What waited is looked at once, now that all of them are noted.
                 if self._queue and not self._closed:
                     self._spawn(self._start_next())
@@ -4492,12 +4498,16 @@ class TaskAgentManager:
             # about to start: its preset may say otherwise than when it was queued (a template
             # changed meanwhile), and it is opened by what the preset says now.
             await self._note_writer(self._session_of.get(commission_id))
+            if self._closed or len(self._sessions) >= self.limit:
+                # The last place went to another while that was read: it stays queued, for the next one that comes free.
+                return
             if commission_id not in self._queue or commission_id in self._sessions:
                 # Taken, or gone, while that was read.
                 continue
             if not self._session_free_for(commission_id):
                 waits.add(commission_id)
                 continue
+            # (From the looks above to the place being taken below nothing is awaited.)
             self._queue.remove(commission_id)
             if self._take_place(commission_id):
                 with call_audit.commission_entry():
