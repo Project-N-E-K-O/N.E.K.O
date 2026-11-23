@@ -1941,13 +1941,25 @@
     }
 
     function persistWardrobePlacements() {
-        forgetStageFrames();
-        void stateStageSession?.refresh();
+        invalidateWardrobeStageFrames();
         try {
             localStorage.setItem(wardrobePlacementKey(), JSON.stringify(wardrobeSnapshot()));
         } catch (_) {
             showToast(t('emoteMaker.wardrobeSpriteSaveFailed'));
         }
+    }
+
+    function invalidateWardrobeStageFrames() {
+        forgetStageFrames();
+        void stateStageSession?.refresh();
+    }
+
+    function commitWardrobeArtwork(commit) {
+        // History already owns the queue; other captures must finish first.
+        if (stageQueueRunning && stageActiveJob?.kind !== 'history') {
+            return queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 11, 'wardrobe', commit);
+        }
+        return commit();
     }
 
     function persistWardrobePresence(key, placement, index, present) {
@@ -2337,13 +2349,15 @@
                 restoreFailed: Boolean(previous?.restoreFailed), restoring: true }, image);
             if (previous) setWardrobeOrder([...wardrobeSprites.values()]);
             image.addEventListener('load', () => {
-                const current = wardrobeSprites.get(sprite.id);
-                if (current?.image !== image || key !== wardrobeTemplateKey || key !== currentTemplateKey()) return;
-                current.restoring = false;
-                current.restoreFailed = false;
-                updateWardrobeSprite(current);
-                scheduleWardrobeRetry(key);
-                forgetStageFrames();
+                commitWardrobeArtwork(() => {
+                    const current = wardrobeSprites.get(sprite.id);
+                    if (current?.image !== image || key !== wardrobeTemplateKey || key !== currentTemplateKey()) return;
+                    current.restoring = false;
+                    current.restoreFailed = false;
+                    updateWardrobeSprite(current);
+                    scheduleWardrobeRetry(key);
+                    forgetStageFrames();
+                });
             }, { once: true });
             image.addEventListener('error', () => {
                 const current = wardrobeSprites.get(sprite.id);
@@ -2505,10 +2519,10 @@
             if (url) URL.revokeObjectURL(url);
             throw error;
         }
+        persistWardrobePresence(key, placement, index, present);
         const commit = () => {
             if (key !== currentTemplateKey() || key !== wardrobeTemplateKey) {
                 if (url) URL.revokeObjectURL(url);
-                persistWardrobePresence(key, placement, index, present);
                 return;
             }
             if (present) {
@@ -2529,16 +2543,10 @@
                 }
             }
             renderWardrobeArtwork();
-            persistWardrobePlacements();
+            invalidateWardrobeStageFrames();
             scheduleWardrobeRetry(key);
         };
-        // History jobs already own this queue. Other in-flight captures must
-        // finish before an asynchronous file response changes their artwork.
-        if (stageQueueRunning && stageActiveJob?.kind !== 'history') {
-            await queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'wardrobe', commit);
-        } else {
-            commit();
-        }
+        await commitWardrobeArtwork(commit);
     }
 
     async function removeWardrobeSprite(sprite) {
@@ -5341,7 +5349,7 @@
         context.imageSmoothingEnabled = true;
         context.imageSmoothingQuality = 'high';
         for (const sprite of sprites) {
-            if (!wardrobeImageReady(sprite.image) || (sprite.anchor && spineRenderer.skeleton.visible === false)) continue;
+            if (sprite.restoring || !wardrobeImageReady(sprite.image) || (sprite.anchor && spineRenderer.skeleton.visible === false)) continue;
             const { width, height } = wardrobeSpriteGeometry(sprite);
             const [a, b, c, d, x, y] = wardrobeSpritePose(sprite);
             context.setTransform(a * canvasWidth, b * canvasHeight, c * canvasWidth, d * canvasHeight,
@@ -5357,7 +5365,7 @@
         return [...wardrobeSprites.values()]
             .flatMap((sprite) => {
                 const aboveSlot = wardrobeSpriteLayerSlot(sprite);
-                if (!slots.has(aboveSlot) || !wardrobeImageReady(sprite.image)) return [];
+                if (sprite.restoring || !slots.has(aboveSlot) || !wardrobeImageReady(sprite.image)) return [];
                 const { width, height } = wardrobeSpriteGeometry(sprite);
                 const [a, b, c, d, x, y] = wardrobeSpritePose(sprite);
                 const corners = [[-width, -height], [-width, height], [width, height], [width, -height]]
@@ -6403,7 +6411,9 @@
         syncStageSceneCache();
         const key = `${String(sourceKey || '')}|${quality || 'full'}`;
         if (stageFramesBySource.has(key)) return stageFramesBySource.get(key);
+        const revision = stageFramesRevision;
         const result = await captureStageSource(String(sourceKey || ''), quality || 'full');
+        if (revision !== stageFramesRevision) return [];
         // 采集失败/场景没了时不要缓存空表，否则切回来永远是空的
         if (result.length) stageFramesBySource.set(key, result);
         return result;
@@ -6420,10 +6430,12 @@
         const startAt = Math.max(0, Number(opts && opts.startAt) || 0);
         const key = startAt > 0 ? `${String(sceneId)}@${startAt}` : String(sceneId || '');
         if (stageThumbs.has(key)) return stageThumbs.get(key);
+        const revision = stageFramesRevision;
         const frames = await captureStageSource(
             String(sceneId || ''), 'thumb',
             hot ? STAGE_CAPTURE_INTERACTIVE : STAGE_CAPTURE_THUMB,
             startAt > 0 ? { startAt } : undefined);
+        if (revision !== stageFramesRevision) return '';
         const first = frames[0];
         if (!first) return '';
         const canvas = document.createElement('canvas');

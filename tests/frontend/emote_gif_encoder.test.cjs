@@ -265,12 +265,12 @@ test('an over-long supplied table is trimmed instead of desyncing the stream', (
 test('single-colour frames preserve their exact opaque colour in either table size', () => {
     for (const colors of [128, 256]) {
         for (const rgb of [[255, 255, 255], [0, 0, 0], [10, 200, 90]]) {
-            const data = new Uint8ClampedArray(8 * 8 * 4);
-            for (let index = 0; index < 64; index += 1) data.set([...rgb, 255], index * 4);
-            const frames = [{ width: 8, height: 8, data }];
-            const sampled = encoder.buildPaletteFromFrames(frames, { colors });
+            const data = new Uint8ClampedArray(64 * 64 * 4);
+            for (let index = 0; index < 64 * 64; index += 1) data.set([...rgb, 255], index * 4);
+            const frames = [{ width: 64, height: 64, data }];
+            const sampled = encoder.buildPaletteFromFrames(frames, { colors, sampleLimit:1024 });
             assert.equal(sampled.colors, 1);
-            const bytes = encoder.encode(frames, { width: 8, height: 8, colors });
+            const bytes = encoder.encode(frames, { width: 64, height: 64, colors, sampleLimit:1024 });
             const result = inspectGif(bytes);
             assert.equal(result.frames, 1);
             assert.equal(result.colorTableEntries, colors);

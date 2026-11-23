@@ -280,6 +280,24 @@
             : 128));
         const histogram = sampleHistogram(frames, alphaThreshold, options.sampleLimit);
         if (!histogram.size) return null;
+        if (histogram.size === 1) {
+            const onlyColor = histogram.keys().next().value;
+            // A sparse sample can miss a small outline or eye. Only collapse
+            // the palette after confirming every opaque pixel has this color.
+            const hasOtherColor = frames.some((frame) => {
+                const { width, height, data } = framePixels(frame);
+                for (let index = 0; index < width * height; index += 1) {
+                    const base = index * 4;
+                    const alpha = Number(data[base + 3]);
+                    if (!Number.isFinite(alpha) || alpha < alphaThreshold) continue;
+                    const key = (clampByte(data[base]) << 16)
+                        | (clampByte(data[base + 1]) << 8) | clampByte(data[base + 2]);
+                    if (key !== onlyColor) return true;
+                }
+                return false;
+            });
+            if (hasOtherColor) return null;
+        }
         const entries = entriesFromHistogram(histogram);
         const colors = medianCut(entries, count - 1);
         if (!colors.length) return null;

@@ -27,6 +27,9 @@ def editor(page, running_server, emote_template_library_dir):
         isPackBusy: () => packBusy,
         isWardrobeBusy: () => wardrobeFileBusy,
         restoreStageImages,
+        stageFramesFor, stageThumbFor, forgetStageFrames,
+        activeCaptureKey: () => String(stageActiveJob?.key || ''),
+        wardrobeRestorationPending: () => [...wardrobeSprites.values()].some(sprite=>sprite.restoring),
         switchTemplate, downloadPng, refreshTemplateArchiveSizes,
         pickedAnimations: () => [...pickedAnimations],
         syncWardrobePlacements, wardrobeSnapshot, addWardrobePlacement, removeStageImage,
@@ -1436,8 +1439,9 @@ def _finish_accessory_capture(editor):
 
 
 @pytest.mark.parametrize('operation', ['add', 'remove'])
+@pytest.mark.parametrize('close_page', [False, True])
 def test_pending_accessory_file_commit_cannot_change_an_inflight_capture(
-        editor, running_server, builtin_emote_template_dir, operation):
+        editor, running_server, builtin_emote_template_dir, operation, close_page):
     key='builtin:yui-0.2'
     sprite={'id':'sprite-00000000000000dd','x':.5,'y':.5,'size':.3}
     _save_wardrobe_test_sprites(editor,running_server,key,[sprite] if operation=='remove' else [])
@@ -1470,14 +1474,98 @@ def test_pending_accessory_file_commit_cannot_change_an_inflight_capture(
         pending[0][0].fulfill(response=pending[0][1])
         editor.wait_for_function("!reviewEditor.isWardrobeBusy()||reviewEditor.queuedCaptureKinds().includes('wardrobe')")
         during=editor.evaluate('reviewEditor.wardrobeSnapshot().map(sprite=>sprite.id)')
+        saved_during=editor.evaluate("key=>JSON.parse(localStorage.getItem('neko.emote.wardrobeSprites.'+key)).map(sprite=>sprite.id)",key)
     finally:
-        result=_finish_accessory_capture(editor)
+        if close_page:
+            editor.evaluate("window.dispatchEvent(new Event('pagehide'))")
+            editor.reload(wait_until='networkidle')
+            editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+            editor.wait_for_function('reviewEditor.renderer()?.loaded')
+        else:
+            result=_finish_accessory_capture(editor)
     editor.wait_for_function('!reviewEditor.isWardrobeBusy()')
+    assert len(saved_during)==(1 if operation=='add' else 0)
+    assert len(editor.evaluate('reviewEditor.wardrobeSnapshot()'))==(1 if operation=='add' else 0)
+    if close_page:
+        return
     before=[sprite['id']] if operation=='remove' else []
     assert during==before
     assert len(result['ids'])==6 and all(ids==before for ids in result['ids'])
     assert all(count>0 for count in result['cyan']) if operation=='remove' else not any(result['cyan'])
-    assert len(editor.evaluate('reviewEditor.wardrobeSnapshot()'))==(1 if operation=='add' else 0)
+
+
+@pytest.mark.parametrize('layer', ['front','back','slot'])
+def test_pending_accessory_restoration_activates_only_after_an_inflight_capture(
+        editor,running_server,builtin_emote_template_dir,layer):
+    key='builtin:yui-0.2'
+    sprite={'id':'sprite-00000000000000df','x':.05 if layer=='back' else .5,
+            'y':.05 if layer=='back' else .5,'size':.3,'behind':layer=='back'}
+    if layer=='slot':
+        sprite['aboveSlot']='body'
+    _save_wardrobe_test_sprites(editor,running_server,key,[sprite])
+    pending=[]
+    editor.route('**/api/emote-maker/library/texture?**',lambda route:pending.append(route)
+                 if sprite['id'] in route.request.url and route.request.resource_type=='image' else route.continue_())
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    editor.wait_for_function('reviewEditor.renderer()?.loaded && document.querySelector(".wardrobe-placement img")')
+    assert len(pending)==1
+    _start_paused_accessory_capture(editor)
+    try:
+        pending[0].fulfill(content_type='image/png',body=_wardrobe_test_image())
+        editor.wait_for_function('''()=>{const image=document.querySelector('.wardrobe-placement img');
+            return image.complete&&image.naturalWidth===32;}''')
+        editor.wait_for_function("reviewEditor.queuedCaptureKinds().includes('wardrobe') || !reviewEditor.wardrobeRestorationPending()")
+    finally:
+        result=_finish_accessory_capture(editor)
+    assert len(result['cyan'])==6 and not any(result['cyan']),result
+    after=editor.evaluate('''async()=>{
+        const q=reviewEditor,frames=await q.captureGifFrames({scene:q.getImportedScenes()[0],maxFrames:1,maxDimension:96});
+        const data=frames[0].data;
+        for(let i=0;i<data.length;i+=4)if(data[i]===23&&data[i+1]===180&&data[i+2]===210&&data[i+3]===255)return true;
+        return false;
+    }''')
+    assert after
+
+
+@pytest.mark.parametrize('quality',['full','thumb'])
+def test_invalidated_stage_results_cannot_repopulate_the_frame_or_thumbnail_cache(editor,quality):
+    _import(editor,spine_zip())
+    result=editor.evaluate('''async quality=>{
+        const q=reviewEditor,id=q.getImportedScenes()[0].id;
+        q.forgetStageFrames();let queued=false,reads=0;
+        window.reviewCaptureHook=()=>{
+            if(!q.activeCaptureKey().includes(id+'|'+quality))return;
+            reads++;
+            if(queued)return;queued=true;
+            q.queueStageCapture('review-invalidate',100000,'wardrobe',()=>q.forgetStageFrames());
+        };
+        const get=()=>quality==='thumb'?q.stageThumbFor(id,true):q.stageFramesFor(id,'full');
+        try {
+            const first=await get();delete window.reviewCaptureHook;
+            window.reviewCaptureHook=()=>{reads++;};
+            const second=await get(),before=reads,third=await get();
+            return {queued,empty:quality==='thumb'?first==='':first.length===0,
+                fresh:quality==='thumb'?second.startsWith('data:image/png'):second.length>0,
+                reused:second===third&&reads===before};
+        } finally {delete window.reviewCaptureHook;}
+    }''',quality)
+    assert result=={'queued':True,'empty':True,'fresh':True,'reused':True}
+
+
+@pytest.mark.parametrize('colors',[128,256])
+def test_sparse_gif_palette_sampling_does_not_erase_an_unsampled_detail(page,running_server,colors):
+    page.goto(running_server+'/emote_maker',wait_until='networkidle')
+    pixel=page.evaluate('''async colors=>{
+        const data=new Uint8ClampedArray(64*64*4);data.fill(255);data.set([0,0,0,255],4);
+        const bytes=NekoEmoteGifEncoder.encode([{width:64,height:64,data}],{colors,sampleLimit:1024});
+        const url=URL.createObjectURL(new Blob([bytes],{type:'image/gif'}));
+        try{const image=new Image();image.src=url;await image.decode();
+            const canvas=document.createElement('canvas');canvas.width=canvas.height=64;
+            const context=canvas.getContext('2d');context.drawImage(image,0,0);
+            return Array.from(context.getImageData(1,0,1,1).data);
+        }finally{URL.revokeObjectURL(url);}
+    }''',colors)
+    assert pixel==[0,0,0,255]
 
 
 def test_accessory_undo_inside_the_capture_queue_commits_without_deadlocking(

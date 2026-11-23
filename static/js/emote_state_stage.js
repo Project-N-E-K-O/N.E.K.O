@@ -1156,6 +1156,7 @@
             if (!node || formatIsFlat() || event.button !== 0 || stageDrag || stripDrag) return;
             const center = stageCenter();
             stageDrag = {
+                pointerId: event.pointerId,
                 angle: pointerAngle(event, center),
                 degrees: Number(node.params.degrees) || 0,
                 before: snapshotGraph(),
@@ -1165,15 +1166,15 @@
             event.preventDefault();
         });
         stage.addEventListener('pointermove', (event) => {
-            if (!stageDrag) return;
+            if (!stageDrag || event.pointerId !== stageDrag.pointerId) return;
             const now = pointerAngle(event, stageCenter());
             let degrees = stageDrag.degrees + (now - stageDrag.angle);
             // 越过 ±180 要绕回去，否则转到头会突然反向
             degrees = ((degrees + 180 + 360 * 40) % 360) - 180;
             setPose(snapAngle(degrees), Number(selectedNode()?.params.scalePercent) || 100);
         });
-        const endStageDrag = () => {
-            if (!stageDrag) return;
+        const endStageDrag = (event) => {
+            if (!stageDrag || (event && event.pointerId !== stageDrag.pointerId)) return;
             const { before } = stageDrag;
             stageDrag = null;
             stage.classList.remove('is-transforming');

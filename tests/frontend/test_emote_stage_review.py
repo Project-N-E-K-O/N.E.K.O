@@ -59,6 +59,37 @@ def test_strip_gestures_ignore_other_pointer_ids(page, running_server, foreign_e
     assert page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params.seconds") < before
 
 
+@pytest.mark.parametrize('foreign_event', ['pointermove', 'pointerup', 'pointercancel', 'lostpointercapture'])
+def test_stage_rotation_only_accepts_its_initiating_pointer(page, running_server, foreign_event):
+    page.goto(running_server + '/emote_maker', wait_until='networkidle')
+    page.evaluate(REVEAL)
+    boot = BOOT.replace('        beginDrag:',
+                        '        onCommit:()=>{window.reviewRotationCommits+=1;},\n        beginDrag:')
+    assert boot != BOOT
+    page.evaluate('window.reviewRotationCommits=0')
+    page.evaluate(boot, .1)
+    stage = page.locator('.st-stage')
+    box = stage.bounding_box()
+    cx, cy = box['x'] + box['width'] / 2, box['y'] + box['height'] / 2
+    page.mouse.move(cx + box['width'] * .3, cy)
+    page.mouse.down()
+    try:
+        page.mouse.move(cx + box['width'] * .2, cy + box['height'] * .2)
+        before = page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params.degrees")
+        stage.evaluate('''(node,[type,x,y])=>{
+            node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:987,button:0,clientX:x,clientY:y}));
+            node.dispatchEvent(new PointerEvent(type,{bubbles:true,pointerId:987,clientX:x,clientY:y}));
+        }''', [foreign_event, cx - box['width'] * .3, cy])
+        assert page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params.degrees") == before
+        assert page.evaluate('window.reviewRotationCommits') == 0
+        assert 'is-transforming' in stage.get_attribute('class')
+        page.mouse.move(cx, cy + box['height'] * .3)
+        assert page.evaluate("__STAGE.getGraph().nodes.find(n=>n.params.stateKey==='idle_image').params.degrees") != before
+    finally:
+        page.mouse.up()
+    assert page.evaluate('window.reviewRotationCommits') == 1
+
+
 @pytest.mark.parametrize('gesture', ['strip', 'stage'])
 def test_state_keyboard_click_during_a_pointer_gesture_does_not_redirect_the_edit(page, running_server, gesture):
     _boot(page, running_server)
