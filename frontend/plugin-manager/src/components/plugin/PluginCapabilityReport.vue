@@ -109,7 +109,15 @@
         </ul>
       </div>
     </section>
-    <p v-if="report && !capabilities.length && report.analysis.status !== 'completed'">
+    <p
+      v-if="
+        report
+          && !capabilities.length
+          && !permissions.length
+          && report.analysis.status !== 'completed'
+      "
+      data-testid="analysis-unknown"
+    >
       {{ t('pluginConsent.unknown') }}
     </p>
     <ul v-if="report?.analysis.warnings.length" class="analysis-warnings">

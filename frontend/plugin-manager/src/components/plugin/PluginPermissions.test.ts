@@ -283,6 +283,26 @@ describe('PluginPermissions', () => {
       expect(root.querySelector('.evidence code')?.textContent).toBe('main.py:900')
     })
 
+    it.each([
+      ['with permissions found', true],
+      ['without anything found', false],
+    ])('a partial analysis %s says the data use is unknown only when nothing is listed', async (_, found) => {
+      seed({
+        ...clearRecord,
+        analysis: analysis({
+          status: 'partial',
+          warnings: [{ code: 'budget_exceeded' }],
+          permissions: found
+            ? { 'system.network:connect': { declared: null, findings: [{ file: 'main.py', line: 2 }] } }
+            : {},
+        }),
+      })
+      const root = mount()
+      await flush()
+      expect(Boolean(root.querySelector('[data-testid="used-permissions"]'))).toBe(found)
+      expect(Boolean(root.querySelector('[data-testid="analysis-unknown"]'))).toBe(!found)
+    })
+
     it('counts blind spots instead of reporting nothing found', async () => {
       seed({
         ...clearRecord,
