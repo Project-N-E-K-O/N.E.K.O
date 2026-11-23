@@ -1782,3 +1782,45 @@ async def test_a_place_that_comes_free_while_a_commission_is_settled_for_the_que
 
     await wait_status(host, second, "done")
     assert [spec.model.model for spec in specs] == ["own-model", "own-model"]
+
+async def test_a_commission_stopped_while_it_is_settled_for_the_queue_is_neither_started_nor_queued(hosts, tmp_path):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release_first, settling, release_settling = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def wait_first() -> None:
+        await release_first.wait()
+
+    specs: list[Any] = []
+    host = _host(
+        hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([[wait_first, *_report()]]), manager,
+        max_task_agents=1,
+    )
+    tasks = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the music", dispatch_text="sort the music", source="dispatch", route="task_agent"
+    )
+    settle = tasks.settle_model
+
+    async def held_settling(session: Any) -> None:
+        settling.set()
+        await release_settling.wait()
+        await settle(session)
+
+    tasks.settle_model = held_settling
+    wanted = {"yes": True}
+    handing = asyncio.ensure_future(tasks.submit(later, still_wanted=lambda: wanted["yes"]))
+    await asyncio.wait_for(settling.wait(), 10)
+    # Everything is stopped meanwhile, and a place comes free.
+    wanted["yes"] = False
+    release_first.set()
+    await wait_status(host, first, "done")
+    await wait_until(lambda: not tasks._sessions and not tasks._held_by, what="the first place coming free")
+    release_settling.set()
+
+    assert await asyncio.wait_for(handing, 10) is False
+    assert later.id not in tasks._queue and later.id not in tasks._sessions
+    assert len(specs) == 1
