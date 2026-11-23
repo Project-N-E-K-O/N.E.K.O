@@ -48,7 +48,7 @@ import mimetypes
 from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse
-from utils.file_utils import PublishedFileSyncError, atomic_write_json
+from utils.file_utils import atomic_write_json
 from utils.workshop_utils import (
     get_workshop_path_async,
 )
@@ -140,11 +140,6 @@ def _replace_voice_reference(
             #    or complete new manifest. Failure before this step leaves the complete
             #    old pair on disk.
             atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
-        except PublishedFileSyncError as exc:
-            logger.warning(
-                '参考语音清单已写入但目录同步未确认，保留新参考语音: %s (%s)',
-                manifest_path, exc,
-            )
         except BaseException:
             with suppress(OSError):
                 os.remove(temp_audio)

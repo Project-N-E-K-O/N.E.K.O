@@ -1256,6 +1256,28 @@ def test_unsent_queue_handles_huge_int_without_overflow_and_isolates_surrogate_b
     assert sent_surr[0][3] is False
     assert not tracker_surr._unsent_queue_path.exists()
 
+    # Part E: unnumbered queue holding max_int64 recovers into _unsent_daily and then receives live delta -> resets cleanly instead of overflowing.
+    seed._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": None,
+                "daily": {today: {"total_tokens": max_int64, "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "model-max-on-disk"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker_post_merge = tracker_factory()
+    sent_post_merge = []
+    monkeypatch.setattr(tracker_post_merge, "_send_report", lambda *args: sent_post_merge.append(args))
+    tracker_post_merge.record("model-after-load", 1, 0, 1)
+    tracker_post_merge.save()
+
+    assert len(sent_post_merge) == 1
+    assert sent_post_merge[0][0][today]["total_tokens"] == 1
+    assert [r["model"] for r in sent_post_merge[0][1]] == ["model-max-on-disk", "model-after-load"]
+    assert not tracker_post_merge._unsent_queue_path.exists()
+
 
 
 

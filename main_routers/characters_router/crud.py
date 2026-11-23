@@ -42,6 +42,7 @@ import inspect
 import json
 import os
 import shutil
+import stat
 import asyncio
 import copy
 import errno
@@ -1210,6 +1211,27 @@ def _find_self_referential_card_symlink(
     return None
 
 
+def _is_symlink_or_junction(path: Path) -> bool:
+    """Return True when ``path`` is a symbolic link or a Windows directory junction."""
+    try:
+        if path.is_symlink():
+            return True
+        isjunction = getattr(os.path, "isjunction", None)
+        if callable(isjunction) and isjunction(path):
+            return True
+        if os.name == "nt":
+            lstat_result = os.lstat(path)
+            file_attrs = getattr(lstat_result, "st_file_attributes", 0)
+            reparse_attr = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            reparse_tag = getattr(lstat_result, "st_reparse_tag", 0)
+            mount_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+            if (file_attrs & reparse_attr) and reparse_tag == mount_tag:
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _find_symlinked_memory_path(
     config_manager,
     old_name: str,
@@ -1224,21 +1246,21 @@ def _find_symlinked_memory_path(
         )
         for base_dir in iter_character_memory_roots(config_manager):
             direct_root = base_dir / char_name
-            if direct_root.is_symlink():
+            if _is_symlink_or_junction(direct_root):
                 return direct_root
             for pattern in legacy_patterns:
                 legacy_entry = base_dir / pattern.format(name=char_name)
-                if legacy_entry.is_symlink():
+                if _is_symlink_or_junction(legacy_entry):
                     return legacy_entry
         for entry_path in list_character_memory_paths(config_manager, char_name):
-            if entry_path.is_symlink():
+            if _is_symlink_or_junction(entry_path):
                 return entry_path
             if entry_path.is_dir():
                 for root, dirnames, filenames in os.walk(entry_path, followlinks=False):
                     root_path = Path(root)
                     for child_name in (*dirnames, *filenames):
                         child_path = root_path / child_name
-                        if child_path.is_symlink():
+                        if _is_symlink_or_junction(child_path):
                             return child_path
     return None
 

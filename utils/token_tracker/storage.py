@@ -150,7 +150,7 @@ class StorageMixin:
                 else:
                     existing.pop("migrated_legacy_files", None)
                 self._storage_dir.mkdir(parents=True, exist_ok=True)
-                atomic_write_json(self._storage_path, existing)
+                atomic_write_json(self._storage_path, existing, strict_dir_sync=True)
 
                 # Migration complete: delete the old files only after atomic write succeeds.
                 unlinked_names: set[str] = set()

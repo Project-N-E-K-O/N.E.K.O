@@ -49,7 +49,6 @@ from typing import Callable, Iterable
 
 from config import ARCHIVE_FILE_MAX_ENTRIES
 from utils.file_utils import (
-    PublishedFileSyncError,
     atomic_write_json,
     atomic_write_json_async,
     read_json_async,
@@ -287,7 +286,6 @@ async def aappend_to_shard(
                 sizes[fn] = ARCHIVE_FILE_MAX_ENTRIES  # treat as full → don't reuse
 
     last_written = ""
-    sync_error: PublishedFileSyncError | None = None
     remaining = list(entries)
     while remaining:
         shard_path = _pick_shard_path_for_today(archive_dir, today, sizes)
@@ -318,18 +316,9 @@ async def aappend_to_shard(
             # under overflow.
             stamper(chunk, os.path.basename(shard_path))
         merged = existing + chunk
-        try:
-            await atomic_write_json_async(shard_path, merged, indent=2, ensure_ascii=False)
-        except PublishedFileSyncError as exc:
-            if sync_error is None:
-                sync_error = exc
-            logger.warning(
-                f"[ArchiveShard] 分片已写入但目录同步未确认 {shard_path}: {exc}"
-            )
+        await atomic_write_json_async(shard_path, merged, indent=2, ensure_ascii=False)
         sizes[os.path.basename(shard_path)] = len(merged)
         last_written = shard_path
-    if sync_error is not None:
-        raise sync_error
     return last_written
 
 
@@ -366,7 +355,6 @@ def append_to_shard_sync(
                 sizes[fn] = ARCHIVE_FILE_MAX_ENTRIES
 
     last_written = ""
-    sync_error: PublishedFileSyncError | None = None
     remaining = list(entries)
     while remaining:
         shard_path = _pick_shard_path_for_today(archive_dir, today, sizes)
@@ -388,18 +376,9 @@ def append_to_shard_sync(
         if stamper is not None:
             stamper(chunk, os.path.basename(shard_path))
         merged = existing + chunk
-        try:
-            atomic_write_json(shard_path, merged, indent=2, ensure_ascii=False)
-        except PublishedFileSyncError as exc:
-            if sync_error is None:
-                sync_error = exc
-            logger.warning(
-                f"[ArchiveShard] 分片已写入但目录同步未确认 {shard_path}: {exc}"
-            )
+        atomic_write_json(shard_path, merged, indent=2, ensure_ascii=False)
         sizes[os.path.basename(shard_path)] = len(merged)
         last_written = shard_path
-    if sync_error is not None:
-        raise sync_error
     return last_written
 
 

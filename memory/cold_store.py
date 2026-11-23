@@ -60,11 +60,7 @@ from memory.archive_shards import (
     append_to_shard_sync,
     shard_filename_for,
 )
-from utils.file_utils import (
-    PublishedFileSyncError,
-    atomic_write_json,
-    read_json_tolerating_replace,
-)
+from utils.file_utils import atomic_write_json, read_json_tolerating_replace
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Memory")
@@ -175,12 +171,6 @@ def _forget_cached(path: str) -> None:
         _stub_cache.pop(path, None)
 
 
-def _forget_cached_dir(folder: str) -> None:
-    with _stub_cache_guard:
-        for cached_path in [p for p in _stub_cache if os.path.dirname(p) == folder]:
-            _stub_cache.pop(cached_path, None)
-
-
 def _subject_field(kind: str) -> str:
     return "entity_key" if kind == "persona" else "entity"
 
@@ -289,12 +279,7 @@ def append(
     if not fresh:
         return 0
     folder = cold_dir(directory)
-    try:
-        written = append_to_shard_sync(folder, [dict(row) for row in fresh], now=now)
-    except PublishedFileSyncError as exc:
-        logger.warning(f"[ColdStore] 冷存分片已写入但目录同步未确认: {exc}")
-        _forget_cached_dir(folder)
-        return len(fresh)
+    written = append_to_shard_sync(folder, [dict(row) for row in fresh], now=now)
     if written:
         _forget_cached(written)
     return len(fresh)

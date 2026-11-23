@@ -766,10 +766,21 @@ def write_recent_payload_unlocked(path: Any, payload: Any, *, receipt: tuple[str
         text = json.dumps(payload, indent=2, ensure_ascii=False)
         receipts[key] = {"token": token, "before": _recent_text_hash_unlocked(path),
                          "after": hashlib.sha256(text.encode("utf-8")).hexdigest(), "applied": None}
-        write_recent_sidecar_unlocked(path, _write_receipts_filename(path), receipts)
+        write_recent_sidecar_unlocked(
+            path,
+            _write_receipts_filename(path),
+            receipts,
+            strict_dir_sync=True,
+        )
     retire_removed_keyed_entries(path, None, payload)
     try:
-        atomic_write_json(path, payload, indent=2, ensure_ascii=False)
+        atomic_write_json(
+            path,
+            payload,
+            indent=2,
+            ensure_ascii=False,
+            strict_dir_sync=True,
+        )
     except PublishedFileSyncError as exc:
         logger.warning("Recent history is visible but directory sync failed: %s", exc)
     with _LOCKS_GUARD:
@@ -789,7 +800,13 @@ def recent_sidecar_path(path: Any, filename: str) -> str:
     return os.path.join(os.path.dirname(os.fspath(path)), filename)
 
 
-def write_recent_sidecar_unlocked(path: Any, filename: str, payload: Any) -> None:
+def write_recent_sidecar_unlocked(
+    path: Any,
+    filename: str,
+    payload: Any,
+    *,
+    strict_dir_sync: bool = False,
+) -> None:
     """Atomically replace a recent.json sidecar. The caller MUST already hold the lock.
 
     Sidecars (such as theater retraction tombstones) are serialized with the
@@ -797,7 +814,11 @@ def write_recent_sidecar_unlocked(path: Any, filename: str, payload: Any) -> Non
     sees a consistent sidecar. They do not bump the recent content version.
     """
     atomic_write_json(
-        recent_sidecar_path(path, filename), payload, indent=2, ensure_ascii=False,
+        recent_sidecar_path(path, filename),
+        payload,
+        indent=2,
+        ensure_ascii=False,
+        strict_dir_sync=strict_dir_sync,
     )
 
 

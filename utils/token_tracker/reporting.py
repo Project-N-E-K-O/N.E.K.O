@@ -506,7 +506,7 @@ class ReportingMixin:
                     allow_nan=False,
                 ).encode("utf-8")
             except (TypeError, ValueError, AttributeError, UnicodeEncodeError, OverflowError) as exc:
-                logger.debug("Token tracker: ignoring malformed unsent queue totals: %s", exc)
+                logger.warning("Token tracker: ignoring malformed unsent queue totals: %s", exc)
                 merged_daily = copy.deepcopy(self._unsent_daily)
                 merged_records = list(self._unsent_records)
 
@@ -539,7 +539,7 @@ class ReportingMixin:
                         next_daily=self._unsent_daily, next_records=self._unsent_records)
         try:
             if self._pending_batch_seq or self._unsent_daily or self._unsent_records:
-                atomic_write_json(self._unsent_queue_path, data)
+                atomic_write_json(self._unsent_queue_path, data, strict_dir_sync=True)
             else:
                 self._unsent_queue_path.unlink(missing_ok=True)
             return True
@@ -644,7 +644,7 @@ class ReportingMixin:
                 with self._lock:
                     write_sync_epoch = int(getattr(self, "_storage_dir_sync_epoch", 0))
                 try:
-                    atomic_write_json(self._storage_path, existing)
+                    atomic_write_json(self._storage_path, existing, strict_dir_sync=True)
                 except PublishedFileSyncError as exc:
                     # The totals are already visible to the next read-merge-write.
                     # Restoring this delta would add it to the same file twice.
@@ -706,7 +706,20 @@ class ReportingMixin:
                     if day_key not in self._unsent_daily:
                         self._unsent_daily[day_key] = copy.deepcopy(day_delta)
                     else:
-                        _merge_day_stats(self._unsent_daily[day_key], day_delta)
+                        candidate = copy.deepcopy(self._unsent_daily[day_key])
+                        try:
+                            _merge_day_stats(candidate, day_delta)
+                            valid = _is_valid_day_stats(candidate)
+                        except (TypeError, ValueError, AttributeError, OverflowError):
+                            valid = False
+                        if valid:
+                            self._unsent_daily[day_key] = candidate
+                        else:
+                            logger.warning(
+                                "Token tracker: resetting out-of-range unsent stats for %s before merging live delta",
+                                day_key,
+                            )
+                            self._unsent_daily[day_key] = copy.deepcopy(day_delta)
                 self._unsent_records.extend(delta_records)
                 if len(self._unsent_records) > 200:
                     self._unsent_records = self._unsent_records[-200:]

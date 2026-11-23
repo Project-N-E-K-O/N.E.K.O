@@ -162,7 +162,10 @@ def _publish_cookie_artifact(
 
 
 def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
-    _publish_cookie_artifact(key_file, lambda: atomic_write_bytes(key_file, key))
+    _publish_cookie_artifact(
+        key_file,
+        lambda: atomic_write_bytes(key_file, key, strict_dir_sync=True),
+    )
 
 def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
     """Save cookies, with normalization checks and encryption logic"""
@@ -213,7 +216,9 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
             # Save encrypted data and lock down file permissions
             _publish_cookie_artifact(
                 cookie_file,
-                lambda: atomic_write_bytes(cookie_file, encrypted_data),
+                lambda: atomic_write_bytes(
+                    cookie_file, encrypted_data, strict_dir_sync=True
+                ),
                 track_payload_publish=True,
             )
             
@@ -222,7 +227,9 @@ def _save_cookies_to_file_uncached(platform: str, cookies: Dict[str, Any], encry
             # Save plaintext and lock down file permissions (0o600: current-user read/write only)
             _publish_cookie_artifact(
                 cookie_file,
-                lambda: atomic_write_json(cookie_file, cookies, ensure_ascii=False, indent=4),
+                lambda: atomic_write_json(
+                    cookie_file, cookies, ensure_ascii=False, indent=4, strict_dir_sync=True
+                ),
                 track_payload_publish=True,
             )
             

@@ -1210,8 +1210,9 @@ def test_fsync_directory_tolerates_oserror_and_windows_short_circuits(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync")
 @pytest.mark.parametrize("writer,payload", [(atomic_write_text, "new"), (file_utils.atomic_write_bytes, b"new")])
-def test_directory_io_error_identifies_published_target(tmp_path, monkeypatch, writer, payload):
+def test_directory_io_error_identifies_published_target(tmp_path, monkeypatch, caplog, writer, payload):
     import errno
+    import logging
     import stat
 
     target = tmp_path / "state"
@@ -1224,7 +1225,13 @@ def test_directory_io_error_identifies_published_target(tmp_path, monkeypatch, w
         real_sync(fd)
 
     monkeypatch.setattr(os, "fsync", fail_directory_sync)
-    with pytest.raises(file_utils.PublishedFileSyncError, match="File replaced") as exc:
+    with caplog.at_level(logging.WARNING, logger=file_utils.__name__):
         writer(target, payload)
+    assert target.read_bytes() == b"new"
+    assert "parent directory sync failed" in caplog.text
+
+    target.write_bytes(b"old")
+    with pytest.raises(file_utils.PublishedFileSyncError, match="File replaced") as exc:
+        writer(target, payload, strict_dir_sync=True)
     assert exc.value.errno == errno.EIO
     assert target.read_bytes() == b"new"
