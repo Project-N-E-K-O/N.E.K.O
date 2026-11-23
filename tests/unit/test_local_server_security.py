@@ -308,8 +308,11 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     # with cleanup trap on failure before replacing installed scripts or switching $INSTALL_DIR/venv,
     # and never execute pip from an existing $INSTALL_DIR/venv.
     assert "$INSTALL_DIR/venv/bin/pip" not in setup_sh
+    assert 'LOCK_FILE="/run/${SERVICE_NAME}-setup.lock"' in setup_sh
+    assert 'readlink -f "$INSTALL_DIR/venv"' in setup_sh
     assert 'STAGING_VENV="$INSTALL_DIR/venvs/venv-' in setup_sh
     assert "trap cleanup_staging_venv EXIT" in setup_sh
+    lock_pos = setup_sh.find('flock -x "$LOCK_FILE"')
     chown_root_pos = setup_sh.find('chown root:root "$INSTALL_DIR" "$INSTALL_DIR/venvs"')
     chmod_root_pos = setup_sh.find('chmod 755 "$INSTALL_DIR" "$INSTALL_DIR/venvs"')
     create_staging_pos = setup_sh.find('python3 -m venv "$STAGING_VENV"')
@@ -320,7 +323,7 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     switch_link_pos = setup_sh.find('mv -Tf "$TMP_LINK" "$INSTALL_DIR/venv"')
     restart_pos = setup_sh.find('systemctl restart "$SERVICE_NAME"')
     cleanup_old_pos = setup_sh.find('rm -rf "$OLD_LEGACY_VENV"')
-    assert 0 <= chown_root_pos < create_staging_pos < pip_staging_pos < chown_staging_pos < install_files_pos < switch_link_pos < restart_pos < cleanup_old_pos
+    assert 0 <= lock_pos < chown_root_pos < create_staging_pos < pip_staging_pos < chown_staging_pos < install_files_pos < switch_link_pos < restart_pos < cleanup_old_pos
     assert 0 <= chmod_root_pos < create_staging_pos
     assert 0 <= pip_staging_pos < chmod_staging_pos < install_files_pos
 

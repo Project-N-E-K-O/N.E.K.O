@@ -19,6 +19,16 @@ INSTALL_DIR="/opt/neko-survey"
 SERVICE_NAME="neko-survey"
 PORT=8100
 
+# 串行化并发部署，避免多个 setup.sh 实例同时切换 venv 或互删正在构建/使用中的环境
+LOCK_FILE="/run/${SERVICE_NAME}-setup.lock"
+if [ "${NEKO_SETUP_LOCKED:-}" != "1" ]; then
+    if ! command -v flock &> /dev/null; then
+        echo "❌ flock not found (install util-linux) — cannot serialize concurrent deployments."
+        exit 1
+    fi
+    exec sudo flock -x "$LOCK_FILE" env NEKO_SETUP_LOCKED=1 bash "$SCRIPT_DIR/$(basename "$0")" "$@"
+fi
+
 # 自动检测 nobody 的组名（Debian 用 nogroup，CentOS/RHEL 用 nobody）
 if getent group nogroup &>/dev/null; then
     RUN_GROUP="nogroup"
@@ -160,9 +170,11 @@ if [ -n "$OLD_LEGACY_VENV" ] && [ -e "$OLD_LEGACY_VENV" ]; then
     sudo rm -rf "$OLD_LEGACY_VENV"
 fi
 ACTIVE_VENV_NAME="$(basename "$ACTIVE_VENV")"
+LIVE_VENV_TARGET="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || printf '%s' "$ACTIVE_VENV")"
 for old_venv in "$INSTALL_DIR/venvs"/venv-*; do
     [ -e "$old_venv" ] || continue
-    if [ "$(basename "$old_venv")" != "$ACTIVE_VENV_NAME" ]; then
+    old_venv_real="$(readlink -f "$old_venv" 2>/dev/null || printf '%s' "$old_venv")"
+    if [ "$(basename "$old_venv")" != "$ACTIVE_VENV_NAME" ] && [ "$old_venv_real" != "$LIVE_VENV_TARGET" ]; then
         sudo rm -rf "$old_venv"
     fi
 done
