@@ -13,7 +13,7 @@ Uses the repo's `running_server` fixture, so uploads land in a throwaway user-da
 from __future__ import annotations
 
 import pytest
-from playwright.sync_api import Page
+from playwright.sync_api import Error as PlaywrightError, Page
 
 MODULES = (
     "/static/js/emote_pngtuber_pack.js",
@@ -757,6 +757,19 @@ def _upload_states(page, running_server, folder, states, priority="talking"):
     return result
 
 
+def _delete_uploaded_package(page, running_server, uploaded_package):
+    # Release image consumers before deleting their files on Windows.
+    try:
+        page.goto('about:blank', wait_until='networkidle', timeout=5000)
+    except PlaywrightError:
+        pass  # A broken/closed page must still attempt cleanup through the request context.
+    response = page.request.delete(
+        f"{running_server}/api/model/pngtuber/model",
+        data={"folder": uploaded_package["json"]["folder"]},
+    )
+    assert response.ok, response.text()
+
+
 def _step(out, label):
     hit = [s for s in out["steps"] if s["label"] == label]
     assert hit, f"缺少步骤 {label}: {out['steps']}"
@@ -765,13 +778,13 @@ def _step(out, label):
 
 def test_speech_drag_click_take_the_state_slot(page, running_server):
     """Use each layered state with priority drag above talking above default."""
-    _upload_states(page, running_server, SLOT_FOLDER, SLOT_STATES)
-    _runtime_page(page, running_server)
-    page.evaluate(
-        """(map) => { window.__slotColours = map; }""",
-        {s["key"][:4]: s["rgb"] for s in SLOT_STATES})
-    out = page.evaluate(SLOT_PROBE, [SLOT_FOLDER])
+    uploaded_package = _upload_states(page, running_server, SLOT_FOLDER, SLOT_STATES)
     try:
+        _runtime_page(page, running_server)
+        page.evaluate(
+            """(map) => { window.__slotColours = map; }""",
+            {s["key"][:4]: s["rgb"] for s in SLOT_STATES})
+        out = page.evaluate(SLOT_PROBE, [SLOT_FOLDER])
         assert out["priority"] == "talking", out["priority"]
         assert _step(out, "open")["shown"] == "idle", out["steps"]
         assert _step(out, "speak")["index"] == 1, "说话没有切到 talking 那一格"
@@ -791,18 +804,15 @@ def test_speech_drag_click_take_the_state_slot(page, running_server):
         assert out["clickTimerCleared"] is True, out
         assert _step(out, "cleanup")["index"] == 0, out["steps"]
     finally:
-        page.evaluate(
-            """async ([f]) => fetch('/api/model/pngtuber/model', {
-                method: 'DELETE', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ folder: f }) })""", [SLOT_FOLDER])
+        _delete_uploaded_package(page, running_server, uploaded_package)
 
 
 def test_emotion_first_owns_the_slot_over_speech(page, running_server):
     """Restore ongoing talking after an emotion-first animation releases the state slot."""
-    _upload_states(page, running_server, SLOT_EMO_FOLDER, SLOT_STATES, "emotion")
-    _runtime_page(page, running_server)
-    out = page.evaluate(EMOTION_SLOT_PROBE, [SLOT_EMO_FOLDER])
+    uploaded_package = _upload_states(page, running_server, SLOT_EMO_FOLDER, SLOT_STATES, "emotion")
     try:
+        _runtime_page(page, running_server)
+        out = page.evaluate(EMOTION_SLOT_PROBE, [SLOT_EMO_FOLDER])
         assert out["priority"] == "emotion", out["priority"]
         assert out["talking"] == 1 and out["happy"] == 4, out
         assert out["absent"] is None, "包里没有的状态被当成了 0（会悄悄跳回待机）"
@@ -811,25 +821,19 @@ def test_emotion_first_owns_the_slot_over_speech(page, running_server):
         assert out["afterEmotionGone"] == 1, f"情绪撤走后没把说话接回来: {out}"
         assert out["afterSpeech"] == 0, f"话说完没回到默认状态: {out}"
     finally:
-        page.evaluate(
-            """async ([f]) => fetch('/api/model/pngtuber/model', {
-                method: 'DELETE', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ folder: f }) })""", [SLOT_EMO_FOLDER])
+        _delete_uploaded_package(page, running_server, uploaded_package)
 
 
 def test_costume_packs_are_not_disturbed(page, running_server):
     """Keep talking and dragging from changing state indices in packs without those state names."""
-    _upload_states(page, running_server, COSTUME_FOLDER, COSTUME_STATES)
-    _runtime_page(page, running_server)
-    out = page.evaluate(COSTUME_PROBE, [COSTUME_FOLDER])
+    uploaded_package = _upload_states(page, running_server, COSTUME_FOLDER, COSTUME_STATES)
     try:
+        _runtime_page(page, running_server)
+        out = page.evaluate(COSTUME_PROBE, [COSTUME_FOLDER])
         # 用户挑中的第 2 套服装，从头到尾都得是第 2 套
         assert [item["index"] for item in out["indices"]] == [1, 1, 1, 1, 1], out["indices"]
     finally:
-        page.evaluate(
-            """async ([f]) => fetch('/api/model/pngtuber/model', {
-                method: 'DELETE', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ folder: f }) })""", [COSTUME_FOLDER])
+        _delete_uploaded_package(page, running_server, uploaded_package)
 
 
 @pytest.mark.parametrize('mode', ['partial', 'empty', 'legacy', 'plus'])
@@ -842,16 +846,16 @@ def test_emotion_mappings_are_complete_and_legacy_numbered_states_remain_support
         states = [{'key':f'costume_{index}','rgb':[30+index*35,90,160]} for index in range(5)]
     else:
         states = SLOT_STATES if mode == 'partial' else SLOT_STATES[:4]+[{'key':'pose_image','rgb':[70,80,90]}]
-    _upload_states(page, running_server, folder, states, 'emotion')
-    if mode in ('legacy', 'plus'):
-        def legacy_metadata(route):
-            payload = route.fetch().json()
-            payload.pop('emotion_mappings', None)
-            payload['source_format'] = 'pngtube_remix_pngremix' if mode == 'legacy' else 'pngtuber_plus_save'
-            route.fulfill(json=payload)
-
-        page.route('**/user_pngtuber/**/metadata.json', legacy_metadata)
+    uploaded_package = _upload_states(page, running_server, folder, states, 'emotion')
     try:
+        if mode in ('legacy', 'plus'):
+            def legacy_metadata(route):
+                payload = route.fetch().json()
+                payload.pop('emotion_mappings', None)
+                payload['source_format'] = 'pngtube_remix_pngremix' if mode == 'legacy' else 'pngtuber_plus_save'
+                route.fulfill(json=payload)
+
+            page.route('**/user_pngtuber/**/metadata.json', legacy_metadata)
         _runtime_page(page, running_server)
         result = page.evaluate('''async ([folder]) => {
             const container=document.createElement('div');container.id='mapping-container';
@@ -889,8 +893,7 @@ def test_emotion_mappings_are_complete_and_legacy_numbered_states_remain_support
         assert [row['accepted'] for row in result['results']] == [index is not None for index in expected]
         assert [row['index'] for row in result['results']] == [index or 0 for index in expected]
     finally:
-        page.evaluate('''async folder=>fetch('/api/model/pngtuber/model',{
-            method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({folder})})''', folder)
+        _delete_uploaded_package(page, running_server, uploaded_package)
 
 
 # ── 平铺包：说话优先时，情绪不得从口型节拍里漏出来 ─────────────────────────────
@@ -960,15 +963,135 @@ def test_speech_first_blocks_the_emotion_from_flat_mouth_beats(page, running_ser
         f"话说完没把攒下的情绪补上: {out['afterSpeech']}"
 
 
+@pytest.fixture
+def slot_runtime(page, running_server, request):
+    def load(folder, states=None):
+        uploaded_package = _upload_states(page, running_server, folder, states or SLOT_STATES)
+        request.addfinalizer(lambda: _delete_uploaded_package(page, running_server, uploaded_package))
+        _runtime_page(page, running_server)
+        page.evaluate("""async folder => {
+            const div = document.createElement('div');
+            div.id = 'review-slot'; div.style.cssText = 'position:fixed;inset:0;z-index:999999';
+            document.body.append(div);
+            const root = `/user_pngtuber/${encodeURIComponent(folder)}`;
+            const config = (await (await fetch(`${root}/model.json`)).json()).pngtuber;
+            config.layered_metadata = `${root}/metadata.json`; config.idle_image = `${root}/idle.png`;
+            window.lanlan_config = {model_type:'pngtuber'};
+            window.reviewSlotManager = new PNGTuberManager(div.id);
+            await reviewSlotManager.load(config);
+        }""", uploaded_package["json"]["folder"])
+        request.addfinalizer(lambda: page.evaluate('window.reviewSlotManager?.dispose()'))
+
+    return load
+
+
+@pytest.mark.parametrize("transient", ["talking", "drag"])
+def test_timed_layered_return_expires_under_a_transient_slot(page, slot_runtime, transient):
+    slot_runtime("review-timed-" + transient)
+    page.clock.install()
+    page.evaluate("""kind => {
+        const m = reviewSlotManager;
+        m.playLayeredAnimation('happy', {returnToDefaultAfterMs:120});
+        if (kind === 'talking') m.startSpeakingMouthAnimation(); else m.showDragImage();
+    }""", transient)
+    page.clock.run_for(200)
+    assert page.evaluate('reviewSlotManager.layeredStateIndex') == (1 if transient == 'talking' else 2)
+    assert page.evaluate('reviewSlotManager.layeredHomeStateIndex()') == 0
+    page.evaluate("""kind => {
+        if (kind === 'talking') reviewSlotManager.setSpeaking(false);
+        else reviewSlotManager.restoreStateImage();
+    }""", transient)
+    assert page.evaluate('reviewSlotManager.layeredStateIndex') == 0
+
+
+def test_explicit_layered_state_replaces_an_older_return_timer(page, slot_runtime):
+    slot_runtime("review-return-replaced")
+    page.clock.install()
+    page.evaluate("""() => {
+        reviewSlotManager.playLayeredAnimation('happy', {returnToDefaultAfterMs:120});
+        reviewSlotManager.startSpeakingMouthAnimation();
+        reviewSlotManager.playLayeredAnimation('drag');
+    }""")
+    page.clock.run_for(200)
+    assert page.evaluate('reviewSlotManager.layeredStateIndex') == 2
+
+
+@pytest.mark.parametrize("flat", [False, True])
+def test_unsupported_emotion_preserves_the_valid_pending_emotion(page, slot_runtime, flat):
+    states = SLOT_STATES + [{"key": "sad_image", "rgb": [80, 90, 120]}]
+    slot_runtime("review-pending-" + str(flat), states)
+    if flat:
+        page.evaluate("""async () => {
+            const idle = reviewSlotManager.config.idle_image;
+            await reviewSlotManager.load({idle_image:idle, talking_image:idle+'?talk',
+                happy_image:idle+'?happy', sad_image:idle+'?sad', state_priority:'talking'});
+        }""")
+    page.clock.install()
+    result = page.evaluate("""() => {
+        const m = reviewSlotManager;
+        m.startSpeakingMouthAnimation();
+        const accepted = m.setEmotion('happy', {durationMs:0});
+        const unsupported = m.setEmotion('angry', {durationMs:0});
+        const held = m.pendingEmotion?.name;
+        const replaced = m.setEmotion('sad', {durationMs:0});
+        const latest = m.pendingEmotion?.name;
+        m.setSpeaking(false);
+        return {accepted,unsupported,held,replaced,latest};
+    }""")
+    assert result == {"accepted": True, "unsupported": False, "held": "happy", "replaced": True, "latest": "sad"}
+    page.clock.run_for(250)
+    assert page.evaluate('reviewSlotManager.currentEmotion') == 'sad'
+    assert page.evaluate('reviewSlotManager.pendingEmotion') is None
+    if not flat:
+        assert page.evaluate('reviewSlotManager.layeredStateIndex') == 5
+
+
+@pytest.mark.parametrize("flat", [False, True])
+def test_click_fallback_does_not_end_a_later_pointer_drag(page, slot_runtime, flat):
+    slot_runtime("review-click-drag", [state for state in SLOT_STATES if state['key'] != 'click_image'])
+    if flat:
+        page.evaluate("""async () => {
+            const idle = reviewSlotManager.config.idle_image;
+            await reviewSlotManager.load({idle_image:idle, drag_image:idle+'?drag'});
+        }""")
+        page.wait_for_function('reviewSlotManager.image.complete && reviewSlotManager.image.naturalWidth > 0')
+    page.clock.install()
+    image = page.evaluate("""() => {
+        const m = reviewSlotManager;
+        m.image.id = 'review-slot-hit';
+        m.image.style.pointerEvents = 'auto';
+        const r = m.image.getBoundingClientRect();
+        return {x:r.x+r.width/2, y:r.y+r.height/2};
+    }""")
+    page.mouse.click(image['x'], image['y'])
+    assert page.evaluate('reviewSlotManager.clickTimer !== null')
+    page.mouse.move(image['x'], image['y'])
+    page.mouse.down()
+    try:
+        page.mouse.move(image['x'] + 12, image['y'] + 12)
+        assert page.evaluate('Boolean(reviewSlotManager._dragState)')
+        if not flat:
+            assert page.evaluate('reviewSlotManager.layeredStateIndex') == 2
+        page.clock.run_for(700)
+        if flat:
+            assert page.evaluate("reviewSlotManager.image.src.endsWith('?drag')")
+        else:
+            assert page.evaluate('reviewSlotManager.layeredStateIndex') == 2
+            assert page.evaluate('reviewSlotManager.layeredSlotStack().map(slot => slot.kind)') == ['drag']
+    finally:
+        page.mouse.up()
+    assert page.evaluate('reviewSlotManager.layeredStateIndex') == 0
+
+
 @pytest.mark.parametrize("priority", ["emotion", "talking"])
 @pytest.mark.parametrize("clear_while_dragging", [False, True])
 def test_layered_emotion_priority_survives_speech_starting_during_drag(
     page, running_server, priority, clear_while_dragging,
 ):
     folder = f"review-emotion-drag-{priority}-{clear_while_dragging}"
-    _upload_states(page, running_server, folder, SLOT_STATES, priority)
-    _runtime_page(page, running_server)
+    uploaded_package = _upload_states(page, running_server, folder, SLOT_STATES, priority)
     try:
+        _runtime_page(page, running_server)
         result = page.evaluate("""async ([folder, clearWhileDragging]) => {
             const div = document.createElement('div');
             div.id = 'review-emotion-drag';
@@ -1024,18 +1147,16 @@ def test_layered_emotion_priority_survives_speech_starting_during_drag(
             "index": 0 if clear_while_dragging else 4, "slots": [],
         }, result
     finally:
-        page.evaluate("""folder => fetch('/api/model/pngtuber/model', {
-            method: 'DELETE', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({folder})})""", folder)
+        _delete_uploaded_package(page, running_server, uploaded_package)
 
 
 @pytest.mark.parametrize("mode", ["legacy-emotion", "drag-before-speech", "paused-end", "paused-no-emotion", "hidden-end"])
 def test_layered_speech_priority_lifecycle(page, running_server, mode):
     folder = "review-speech-" + mode
     states = [SLOT_STATES[0], SLOT_STATES[4]] if mode == "legacy-emotion" else SLOT_STATES
-    _upload_states(page, running_server, folder, states)
-    _runtime_page(page, running_server)
+    uploaded_package = _upload_states(page, running_server, folder, states)
     try:
+        _runtime_page(page, running_server)
         result = page.evaluate("""async ([folder, mode]) => {
             const div = document.createElement('div');
             div.id = 'review-speech-container';
@@ -1089,6 +1210,4 @@ def test_layered_speech_priority_lifecycle(page, running_server, mode):
             else:
                 assert not result["emotion"]
     finally:
-        page.evaluate("""folder => fetch('/api/model/pngtuber/model', {
-            method: 'DELETE', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({folder})})""", folder)
+        _delete_uploaded_package(page, running_server, uploaded_package)

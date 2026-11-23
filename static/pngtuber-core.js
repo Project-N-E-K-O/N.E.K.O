@@ -606,7 +606,8 @@
             const stateCount = this.getLayeredStateCount();
             const nextIndex = Math.max(0, Math.min(stateCount - 1, Number(index) || 0));
             const previousIndex = this.layeredStateIndex;
-            if (this.layeredStateReturnTimer) {
+            const isSlotChange = /^slot(:|-)/.test(String(options.source || ''));
+            if (!isSlotChange && this.layeredStateReturnTimer) {
                 clearTimeout(this.layeredStateReturnTimer);
                 this.layeredStateReturnTimer = null;
             }
@@ -614,7 +615,7 @@
             // 显式的状态切换（情绪、快捷键、外部 API）重定义"家"，并作废旧的瞬时槽：
             // 槽里的动作此刻已被盖掉，留着它只会在结束时把用户刚选中的状态抢走。
             // 槽自己发起的切换（source 以 slot 开头）不参与这个判断。
-            if (!/^slot(:|-)/.test(String(options.source || ''))) {
+            if (!isSlotChange) {
                 this.layeredSlotHomeIndex = nextIndex;
                 this.layeredTransientSlots = [];
             }
@@ -639,7 +640,8 @@
             if (returnDelay > 0 && this.layeredStateIndex !== 0) {
                 this.layeredStateReturnTimer = setTimeout(() => {
                     this.layeredStateReturnTimer = null;
-                    this.setLayeredStateIndex(0, { source: 'return' });
+                    if (this.layeredSlotStack().length) this.layeredSlotHomeIndex = 0;
+                    else this.setLayeredStateIndex(0, { source: 'return' });
                 }, Math.max(80, returnDelay));
             }
             return true;
@@ -3636,7 +3638,7 @@
             this.clickTimer = setTimeout(() => {
                 this.clickTimer = null;
                 if (layeredDuration === null) {
-                    this.restoreStateImage();
+                    if (!this._dragState) this.setState(this.state || 'idle');
                 } else if (this.clearLayeredTransientSlot('click')) {
                     this.applyTransform();
                     this.updateLockIconPosition();
@@ -4384,6 +4386,10 @@
             // 说话优先 + 正在说话：这一条情绪不进画面，攒到话说完再补（平铺和分层同一套）。
             // 先作废当前正在显示的那条，否则它的定时器会在说话中途把情绪插回画面。
             if (this.emotionBlockedBySpeech()) {
+                const hasTarget = this.isLayeredActive()
+                    ? this.layeredEmotionTarget(emotionName) !== null
+                    : Boolean(this.emotionImageFor(emotionName));
+                if (!hasTarget) return false;
                 this.clearEmotion();
                 this.currentEmotion = emotionName;
                 this.pendingEmotion = { name: emotionName, options };

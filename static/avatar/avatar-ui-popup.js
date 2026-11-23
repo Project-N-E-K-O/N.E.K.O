@@ -1062,6 +1062,14 @@ function createCharacterSettingsSidePanel(manager, prefix) {
 function createSidePanelMenuItem(manager, prefix, item) {
     const menuItem = document.createElement('div');
     menuItem.id = `${prefix}-sidepanel-${item.id}`;
+    menuItem.setAttribute('role', 'button');
+    menuItem.tabIndex = 0;
+    menuItem.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        menuItem.click();
+    });
     markAvatarPopupActionElement(menuItem, 'sidepanel-menu');
     setAvatarPopupActionDebugMetadata(menuItem, item, 'sidepanel-menu');
     Object.assign(menuItem.style, {
@@ -2204,7 +2212,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     sidePanel._stopHoverPointerTracking = stopPointerTracking;
 
     const isHoveringAnchorOrPanel = () => {
-        return anchorEl.matches(':hover') || sidePanel.matches(':hover');
+        return anchorEl.matches(':hover, :focus-within') || sidePanel.matches(':hover, :focus-within');
     };
 
     const isPointerInTransferBridge = () => {
@@ -2286,6 +2294,26 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
     };
 
     anchorEl.addEventListener('mouseenter', expandPanel);
+    const focusPanel = () => {
+        expandPanel();
+        if (isTutorialHoverDisabled()) return;
+        sidePanel.querySelector('button, input, select, a[href], [tabindex="0"]')?.focus();
+    };
+    anchorEl.addEventListener('keydown', (event) => {
+        if (event.target !== anchorEl || !['Enter', ' ', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        focusPanel();
+    }, true);
+    sidePanel.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        sidePanel._collapse();
+        anchorEl.focus();
+    });
+    anchorEl.addEventListener('focusout', collapsePanel);
+    sidePanel.addEventListener('focusout', collapsePanel);
     anchorEl.addEventListener('mousemove', rememberPointerPosition);
     anchorEl.addEventListener('mouseleave', collapsePanel);
     sidePanel.addEventListener('mouseenter', () => {

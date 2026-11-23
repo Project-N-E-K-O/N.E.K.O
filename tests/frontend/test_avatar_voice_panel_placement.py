@@ -20,7 +20,7 @@ BUTTON_PARTS = (
 
 
 def _install_toolbar(
-    page: Page, *, width=1420, height=786, x=1029, scale=1, pet=False,
+    page: Page, *, width=1420, height=786, x=1029, scale=1, pet=False, open_voice=True,
 ) -> None:
     install_voice_popover_harness(page, deferred_permission=False)
     page.set_viewport_size({"width": width, "height": height})
@@ -83,6 +83,8 @@ def _install_toolbar(
             window.__placements++;return position(...args);
         };
     }""", {"x": x, "scale": scale})
+    if not open_voice:
+        return
     page.locator(".live2d-trigger-btn").click()
     page.locator('[data-neko-mic-main-action="screen"]').wait_for(state="visible")
     page.wait_for_function("""() => {
@@ -608,3 +610,38 @@ def test_adaptive_exit_motion_tracks_placement(page: Page):
         return getAvatarSidePanelExitMotion(panel);
     })""")
     assert result == ['translateY(6px)', 'translateY(-6px)', 'none', 'translateX(6px)']
+
+@pytest.mark.parametrize('key', ['Enter', 'Space', 'ArrowRight', 'mouse'])
+def test_character_side_panel_supports_keyboard_navigation_and_emote_entry(page: Page, key):
+    _install_toolbar(page, open_voice=False)
+    page.evaluate("""() => {
+        const manager = live2dManager;
+        const parent = manager._createMenuItem({id:'keyboard-character', label:'Character'});
+        parent.id = 'keyboard-character-anchor';
+        parent.style.cssText += ';position:fixed;left:40px;top:300px;pointer-events:auto';
+        document.body.append(parent);
+        const panel = manager._createCharacterSettingsSidePanel();
+        panel._anchorElement = parent;
+        manager._attachSidePanelHover(parent, panel);
+        window.__keyboardPanel = panel;
+        window.__keyboardOpened = [];
+        window.openOrFocusWindow = (url, name) => { window.__keyboardOpened.push({url,name}); };
+    }""")
+    parent = page.locator('#keyboard-character-anchor')
+    if key == 'mouse':
+        parent.hover()
+        page.locator('#live2d-sidepanel-emote-maker').click()
+        assert page.evaluate('window.__keyboardOpened') == [{'url':'/emote_maker', 'name':'neko_emote_maker'}]
+        return
+    parent.focus()
+    parent.press(key)
+    page.wait_for_function("document.activeElement?.id === 'live2d-sidepanel-general'")
+    # Focus must keep the panel open after the hover-collapse interval.
+    page.wait_for_timeout(500)
+    page.keyboard.press('Tab')
+    assert page.evaluate('document.activeElement.id') == 'live2d-sidepanel-emote-maker'
+    page.keyboard.press('Enter')
+    assert page.evaluate('window.__keyboardOpened') == [{'url':'/emote_maker', 'name':'neko_emote_maker'}]
+    page.keyboard.press('Escape')
+    assert page.evaluate('document.activeElement.id') == 'keyboard-character-anchor'
+    page.wait_for_function("getComputedStyle(window.__keyboardPanel).display === 'none'")

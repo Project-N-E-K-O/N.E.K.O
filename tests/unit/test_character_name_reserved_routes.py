@@ -130,16 +130,19 @@ def test_newly_reserved_route_names_rejected_by_validator(name):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("name", ["focus", "market", "theater", "templates"])
+@pytest.mark.parametrize("name", ["focus", "market", "theater", "templates", "emote_maker"])
 def test_existing_characters_with_reserved_route_names_allowed_on_data_paths(name):
     """Existing characters named after routes remain accessible for memory, cloudsave, migration, and import."""
     import memory as memory_pkg
     from fastapi import HTTPException
-    from main_routers.memory_router import ExternalMemoryImportError, _prepare_external_import
+    from main_routers.memory_router import (
+        ExternalMemoryImportError, _prepare_external_import, _validate_browser_character_or_400,
+    )
     from app.memory_server._shared import validate_lanlan_name
     from utils.cloudsave_runtime._shared import audit_cloudsave_character_names
 
     assert validate_lanlan_name(name) == name
+    assert _validate_browser_character_or_400(name) is None
     with pytest.raises(HTTPException):
         validate_lanlan_name(f"../{name}")
     with pytest.raises(HTTPException):
@@ -163,6 +166,36 @@ def test_existing_characters_with_reserved_route_names_allowed_on_data_paths(nam
         _prepare_external_import({"character_name": f"../{name}", "files": []})
     with pytest.raises(ExternalMemoryImportError, match="Invalid target character name"):
         _prepare_external_import({"character_name": "CON", "files": []})
+
+
+@pytest.mark.parametrize("name", ["", "../emote_maker", "bad/name", "CON", "x" * 51])
+def test_memory_browser_still_rejects_invalid_character_names(name):
+    from main_routers.memory_router import _validate_browser_character_or_400
+
+    response = _validate_browser_character_or_400(name)
+    assert response is not None and response.status_code == 400
+
+
+def test_memory_browser_overview_accepts_an_existing_reserved_character(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
+    from fastapi.testclient import TestClient
+    from main_routers import memory_router
+
+    calls = []
+
+    async def proxy(method, path, **kwargs):
+        calls.append((method, path))
+        return JSONResponse({"success": True, "character": "emote_maker"})
+
+    monkeypatch.setattr(memory_router, "_proxy_memory_browser", proxy)
+    app = FastAPI()
+    app.include_router(memory_router.router)
+    with TestClient(app) as client:
+        response = client.get('/api/memory/overview/emote_maker')
+    assert response.status_code == 200
+    assert response.json()["character"] == "emote_maker"
+    assert calls == [("GET", "/internal/memory/browser/overview/emote_maker")]
 
 
 class _DummyJsonRequest:
