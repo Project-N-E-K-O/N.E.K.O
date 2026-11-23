@@ -1213,3 +1213,76 @@ def test_qwen_late_chunk_on_the_same_socket_revokes_its_finished_round(monkeypat
 
     assert observations == {"first_still_open": True}, "retired a socket still synthesizing late text"
     connects.assert_one_connection_at_a_time()
+
+
+def test_qwen_done_arriving_after_a_late_chunk_does_not_count(monkeypatch):
+    # The late chunk goes out after the commit but before the round's done;
+    # that done, arriving next, must not mark the socket finished either.
+    monkeypatch.setattr(qwen_mod, "_resolve_qwen_realtime_tts_url", lambda: "wss://dashscope.test/realtime")
+    monkeypatch.setattr(qwen_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    monkeypatch.setattr(qwen_mod, "FINISHED_ROUND_QUIET_SECONDS", 0.0)
+    # Every append is answered by a done; the commit by nothing, so the first
+    # done after the commit is the one that follows the late chunk.
+    first = _Sock("first", _type_kind, replies={
+        "session.update": [{"type": "session.updated"}],
+        "input_text_buffer.append": [{"type": "response.done"}],
+    })
+    connects = _Connects(monkeypatch, [_qwen_socket("warmup"), first, _qwen_socket("spare")])
+    responses = queue.Queue()
+    observations = {}
+    late = "A late chunk sent after the commit, before the round's done."
+
+    qwen_mod.qwen_realtime_tts_worker(
+        _Requests(
+            ("speech-1", _OPENING),
+            _wait(lambda: _PROVIDERS[0].spoken(first) == [_OPENING] and first._events.empty()),
+            _pause(0.05),
+            (None, None),
+            _wait(lambda: any(e.get("type") == "input_text_buffer.commit" for e in first.sent)),
+            ("speech-1", late),
+            _wait(lambda: late in _PROVIDERS[0].spoken(first) and first._events.empty()),
+            _pause(0.05),
+            _PRECONNECT,
+            _pause(0.1),
+            _observe(observations, "first_still_open", lambda: first.state is State.OPEN, timeout=0),
+        ),
+        responses,
+        "sk-test",
+        "Momo",
+    )
+
+    assert observations == {"first_still_open": True}, "a done that followed late text retired the socket"
+    connects.assert_one_connection_at_a_time()
+
+
+def test_qwen_round_with_several_chunks_is_still_retired_once_finished(monkeypatch):
+    # Only text sent after the commit revokes a socket: the ordinary chunks
+    # of a round, sent before it, must leave the finished round retirable.
+    monkeypatch.setattr(qwen_mod, "_resolve_qwen_realtime_tts_url", lambda: "wss://dashscope.test/realtime")
+    monkeypatch.setattr(qwen_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    monkeypatch.setattr(qwen_mod, "FINISHED_ROUND_QUIET_SECONDS", 0.0)
+    first = _qwen_socket("first")
+    spare = _qwen_socket("spare")
+    connects = _Connects(monkeypatch, [_qwen_socket("warmup"), first, spare])
+    responses = queue.Queue()
+    observations = {}
+    second_chunk = "And a second chunk of the same reply."
+
+    qwen_mod.qwen_realtime_tts_worker(
+        _Requests(
+            ("speech-1", _OPENING),
+            ("speech-1", second_chunk),
+            (None, None),
+            _wait(_audio_done(responses, "speech-1")),
+            _PRECONNECT,
+            _wait(lambda: len(connects) == 3),
+            _observe(observations, "first_retired", first.closed.is_set),
+        ),
+        responses,
+        "sk-test",
+        "Momo",
+    )
+
+    assert second_chunk in _PROVIDERS[0].spoken(first)
+    assert observations == {"first_retired": True}
+    connects.assert_one_connection_at_a_time()

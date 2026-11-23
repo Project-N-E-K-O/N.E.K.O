@@ -119,6 +119,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         # object, so evidence from an earlier connection of the same speech
         # never counts for the next one.
         round_done_ws = None
+        # A socket that got text after its commit: its done events, earlier or
+        # later, no longer show the round is over (see the append path).
+        revoked_ws = None
         current_speech_id = None
         receive_task = None
         session_ready = asyncio.Event()
@@ -695,6 +698,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                         # Start a new receive task that also observes session.updated
                         async def receive_messages(bound_speech_id, bound_ws):
                             nonlocal ws, audio_started, idle_closed, last_audio_at, round_done_ws
+                            nonlocal revoked_ws
                             cancelled = False
                             try:
                                 async for message in bound_ws:
@@ -731,7 +735,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         # flush already enqueued the tail audio; only now is this round's audio stream truly closed.
                                         _emit_audio_done(bound_speech_id)
                                         response_done.set()
-                                        if buffer_committed and ws is bound_ws:
+                                        if buffer_committed and ws is bound_ws and bound_ws is not revoked_ws:
                                             round_done_ws = bound_ws
                             except websockets.exceptions.ConnectionClosed as exc:
                                 if _report_server_rejection(exc, bound_speech_id) and buffer_committed:
@@ -870,6 +874,10 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # back, so this socket is closed the usual way, by the next
                     # speech.
                     round_done_ws = None
+                    if buffer_committed:
+                        # The round's own done may still be on its way; it
+                        # must not count either.
+                        revoked_ws = ws
                     _record_tts_telemetry("qwen", len(tts_text))
                     reconnect_attempts = 0
                 except Exception as e:
