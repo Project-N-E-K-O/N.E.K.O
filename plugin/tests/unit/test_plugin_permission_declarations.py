@@ -1516,10 +1516,14 @@ def test_default_executor_keeps_the_context(tmp_path, call):
         "async def f(loop, args):\n    await loop.run_in_executor(*args)",
         "async def f(loop, opts):\n    await loop.run_in_executor(**opts)",
         "async def f(loop):\n    await loop.run_in_executor(False, g)",
-        "from concurrent.futures import ThreadPoolExecutor\n"
-        "async def f(loop):\n    await loop.run_in_executor(ThreadPoolExecutor(), g)",
-        "from concurrent.futures import ThreadPoolExecutor\n"
-        "with ThreadPoolExecutor() as pool:\n    pool.submit(g)",
+        (
+            "from concurrent.futures import ThreadPoolExecutor\n"
+            "async def f(loop):\n    await loop.run_in_executor(ThreadPoolExecutor(), g)"
+        ),
+        (
+            "from concurrent.futures import ThreadPoolExecutor\n"
+            "with ThreadPoolExecutor() as pool:\n    pool.submit(g)"
+        ),
         "import threading\nthreading.Thread(target=g).start()",
         # A loop the plugin makes itself, or a replaced default executor.
         "import asyncio\nloop = asyncio.new_event_loop()",
