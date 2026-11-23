@@ -695,11 +695,14 @@ describe('the commissions', () => {
     taken({ success: true })
     await flush()
     expect(typed()).toBe('same words')
-    // Sent, another one opened, back to the first and the same words typed again before the
-    // answer came: they are a new draft, and stay.
+    // Sent, another one opened, back to the one it was sent for and the same words typed again
+    // before the answer came: they are a new draft, and stay.
     enter('commission-say')
     await flush()
+    expect(api.tellCommission).toHaveBeenLastCalledWith('c5', 'same words')
     await click(document.querySelector('[data-commission="c1"]'))
+    await click(document.querySelector('[data-commission="c5"]'))
+    expect(document.querySelector('[data-detail="c5"]')).toBeTruthy()
     await type('commission-say', 'same words')
     taken({ success: true })
     await flush()
