@@ -924,6 +924,32 @@ async def test_llm_failure_on_last_attempt_still_blocks_as_llm_unavailable(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_stale_cause_is_not_written_onto_a_newer_attempt(tmp_path):
+    """A model wait that outlasts the backoff lets another pass start a new
+    attempt; the old attempt's cause must not label the new one."""
+    pm, re, R = await _seed_stale_merge_case(tmp_path, 'ref_overlap', 0)
+    newer_attempt_at = (datetime.now() + timedelta(minutes=31)).isoformat()
+
+    async def _decide(*_args, **_kwargs):
+        await re._arecord_promote_attempt('小天', 'ref_overlap', newer_attempt_at)
+        await pm.aedit_persona_entry('小天', 'master', 'p_001', '主人改口说更喜欢狗')
+        return {
+            'action': 'merge_into',
+            'target_id': 'persona.master.p_001',
+            'merged_text': '主人非常喜爱猫咪',
+        }
+
+    with patch.object(re, '_allm_call_promotion_merge',
+                      AsyncMock(side_effect=_decide)):
+        assert await re._apromote_with_merge('小天', R) == 'skip_retry_pending'
+
+    rstate = await _reflection_state(re, 'ref_overlap')
+    assert rstate['last_promote_attempt_at'] == newer_attempt_at
+    assert rstate['promote_attempt_count'] == 2
+    assert rstate.get('last_promote_failure') is None
+
+
+@pytest.mark.asyncio
 async def test_promote_failure_cause_survives_evidence_replay(tmp_path):
     """Replay must restore the cause, or a crash relabels it llm_unavailable."""
     from memory.evidence_handlers import make_reflection_evidence_handler

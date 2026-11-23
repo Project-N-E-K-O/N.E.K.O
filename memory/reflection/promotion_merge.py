@@ -181,18 +181,24 @@ class PromotionMergeMixin:
         )
 
     async def _arecord_promote_failure(
-        self, name: str, reflection_id: str, cause: str,
+        self, name: str, reflection_id: str, cause: str, attempt_at: str,
     ) -> None:
         """Remember why the current attempt failed, for the dead-letter reason.
 
         Only causes other than the model itself are recorded; an attempt
         that ends without one is reported as ``llm_unavailable`` when the
-        retries run out.
+        retries run out. ``attempt_at`` is the stamp this attempt recorded:
+        if a later attempt has started since (a model wait outlasting the
+        backoff), the cause belongs to an older attempt and is dropped.
         """
         async with self._get_alock(name):
             await self._arecord_promote_throttle_locked(
                 name, reflection_id, 'promote_failure',
-                lambda _entry: {'last_promote_failure': cause},
+                lambda entry: (
+                    {'last_promote_failure': cause}
+                    if entry.get('last_promote_attempt_at') == attempt_at
+                    else None
+                ),
             )
 
     async def _arecord_promote_throttle_locked(
@@ -201,7 +207,8 @@ class PromotionMergeMixin:
         """Write throttle fields through EVT_REFLECTION_EVIDENCE_UPDATED.
 
         Caller MUST hold `self._get_alock(name)`. ``fields_for(entry)``
-        returns the throttle fields to set; every key must be whitelisted in
+        returns the throttle fields to set, or None to write nothing; every
+        key must be whitelisted in
         ``evidence_handlers._REFLECTION_EVIDENCE_SNAPSHOT_KEYS`` or replay
         drops it.
         """
@@ -221,6 +228,8 @@ class PromotionMergeMixin:
             return
 
         fields = fields_for(entry)
+        if not fields:
+            return
         payload = {
             'reflection_id': reflection_id,
             # Full-snapshot evidence values (unchanged by this event,
@@ -944,6 +953,7 @@ class PromotionMergeMixin:
                 try:
                     await self._arecord_promote_failure(
                         lanlan_name, R['id'], 'target_changed',
+                        attempt_at=now_iso,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
