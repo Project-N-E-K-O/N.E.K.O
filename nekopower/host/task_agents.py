@@ -6376,9 +6376,12 @@ class TaskAgentManager:
                 self._said_while_handed[commission_id].append(text)
                 return True
             if self._sessions.get(commission_id) is not session:
-                # It moved on while that was written (its leader handed it over, and it waits for
-                # the other task agent or is at work there): said where it is now.
-                return await self._wake_working(commission_id, text, reason=_WOKEN_REASON)
+                moved = await self._ledger.get(commission_id)
+                if moved is not None and moved.handed_by and moved.session_id != session.session_id:
+                    # Its leader handed it over while that was written, and it waits for the other
+                    # task agent or is at work there: said where it is now. (Only then: a session
+                    # that went for another reason is told as it was before.)
+                    return await self._wake_working(commission_id, text, reason=_WOKEN_REASON)
             await self._send_text(self._runtime_of(session), session, "steer", text)
             return True
         return False
