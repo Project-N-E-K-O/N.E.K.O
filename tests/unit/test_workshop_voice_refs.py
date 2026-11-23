@@ -884,3 +884,33 @@ def test_a_nested_reference_is_not_treated_as_owned(tmp_path):
     )
 
     assert (assets / "theme.mp3").read_bytes() == b"user-track", "删了子目录里的用户素材"
+
+
+def test_replace_voice_reference_keeps_audio_on_post_publish_dir_sync_error(tmp_path, monkeypatch):
+    """PublishedFileSyncError on voice_manifest.json must not delete the newly committed audio file."""
+    import errno
+    from pathlib import Path
+    from utils import file_utils
+    from main_routers.workshop_router import voice_refs
+
+    real_fsync_dir = file_utils._fsync_directory
+
+    def fail_dir_sync(path):
+        if Path(path) == tmp_path:
+            raise OSError(errno.EIO, "injected workshop dir sync error")
+        return real_fsync_dir(path)
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", fail_dir_sync)
+
+    new_audio = tmp_path / "voice_sample_bbbbbbbbbbbb.wav"
+    manifest_path = tmp_path / WORKSHOP_VOICE_MANIFEST_NAME
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(new_audio),
+        b"new-audio",
+        str(manifest_path),
+        {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
+    )
+
+    assert new_audio.read_bytes() == b"new-audio"
+    assert _manifest(tmp_path)["reference_audio"] == "voice_sample_bbbbbbbbbbbb.wav"

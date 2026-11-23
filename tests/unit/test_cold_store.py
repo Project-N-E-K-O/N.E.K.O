@@ -630,3 +630,45 @@ async def test_an_active_fact_never_hides_another_subjects_archived_row_with_the
     strict = await fs.aload_facts_strict(NAME, include_archive=True)
     assert [row["text"] for row in strict] == expected
     assert [row["text"] for row in await fs.aload_facts_full(NAME)] == expected
+
+
+@pytest.mark.asyncio
+async def test_arbitration_and_manual_merge_preserve_cold_and_archive_on_post_publish_dir_sync_error(
+    tmp_path, monkeypatch
+):
+    """PublishedFileSyncError on facts.json must not roll back already-written cold/archive entries."""
+    import errno
+    from pathlib import Path
+    from utils import file_utils
+
+    _, fs, *_ = _install(tmp_path)
+    char_dir = Path(fs._character_dir(NAME))
+    fs._facts[NAME] = [
+        _fact("keep", "likes tea"),
+        _fact("lose", "likes tea a lot"),
+        _fact("drop", "also likes tea"),
+    ]
+    await fs.asave_facts(NAME)
+
+    real_fsync_dir = file_utils._fsync_directory
+
+    def fail_char_dir_sync(path):
+        if Path(path) == char_dir:
+            raise OSError(errno.EIO, "injected character dir sync error")
+        return real_fsync_dir(path)
+
+    monkeypatch.setattr(file_utils, "_fsync_directory", fail_char_dir_sync)
+
+    archived_count = await fs.aarchive_arbitrated_facts(
+        NAME, {"lose": {"reason": "dedup", "superseded_by": "keep"}}
+    )
+    assert archived_count == 1
+    assert [row["id"] for row in await fs.aload_facts(NAME)] == ["keep", "drop"]
+    assert [row["id"] for row in cold_store.read_full(str(char_dir))] == ["lose"]
+
+    merged_fact = await fs.amerge_facts_manual(NAME, "keep", "drop", "loves brewed tea")
+    assert merged_fact is not None and merged_fact["text"] == "loves brewed tea"
+    live_rows = await fs.aload_facts(NAME)
+    assert [(row["id"], row["text"]) for row in live_rows] == [("keep", "loves brewed tea")]
+    archive_rows = _read_json(fs._facts_archive_path(NAME))
+    assert [row["id"] for row in archive_rows] == ["drop"]

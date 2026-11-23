@@ -80,6 +80,7 @@ from utils.language_utils import (
 )
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
+    PublishedFileSyncError,
     atomic_write_json,
     robust_json_loads,
 )
@@ -1616,10 +1617,15 @@ class FactStore:
                             identity=_fact_scoped_identity,
                         )
                         cold_written = True
-                        atomic_write_json(
-                            self._facts_path(name), active, indent=2,
-                            ensure_ascii=False,
-                        )
+                        try:
+                            atomic_write_json(
+                                self._facts_path(name), active, indent=2,
+                                ensure_ascii=False,
+                            )
+                        except PublishedFileSyncError as exc:
+                            logger.warning(
+                                f"[FactStore] {name}: 仲裁后 facts 已写入但目录同步未确认: {exc}"
+                            )
                     except Exception:
                         if cold_written:
                             # The survivors were not updated: take this commit's
@@ -7283,9 +7289,14 @@ class FactStore:
                 orig_current = [dict(f) if isinstance(f, dict) else f for f in current]
                 merged_archive = _merge_archive_entries(existing_archive, [removed])
                 try:
-                    atomic_write_json(
-                        archive_path, merged_archive, indent=2, ensure_ascii=False,
-                    )
+                    try:
+                        atomic_write_json(
+                            archive_path, merged_archive, indent=2, ensure_ascii=False,
+                        )
+                    except PublishedFileSyncError as exc:
+                        logger.warning(
+                            f"[FactStore] {name}: 合并归档已写入但目录同步未确认: {exc}"
+                        )
                     keep_obj["text"] = cleaned
                     keep_obj["hash"] = self._recompute_fact_hash(keep_obj, cleaned)
                     clear_embedding_fields(keep_obj)
@@ -7294,7 +7305,12 @@ class FactStore:
 
                     kept = [f for f in current if f is not drop_obj]
                     current[:] = kept
-                    self.save_facts(name, _fact_lock_held=True)
+                    try:
+                        self.save_facts(name, _fact_lock_held=True)
+                    except PublishedFileSyncError as exc:
+                        logger.warning(
+                            f"[FactStore] {name}: 合并后 facts 已写入但目录同步未确认: {exc}"
+                        )
                 except Exception:
                     current[:] = orig_current
                     try:

@@ -63,6 +63,8 @@ from ..shared_state import (
 from ..workshop_router import _ugc_sync_lock
 from ..agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
+    LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES,
+    LEGACY_CHARACTER_MEMORY_FILE_MAP,
     asave_characters_with_recent_activation,
     begin_character_recent_transaction,
     character_config_mutation_lock,
@@ -1216,10 +1218,18 @@ def _find_symlinked_memory_path(
     """Return any symlinked memory root or child entry for the rename endpoints."""
     names = (old_name, new_name) if new_name and new_name != old_name else (old_name,)
     for char_name in names:
+        legacy_patterns = (
+            *LEGACY_CHARACTER_MEMORY_FILE_MAP,
+            *LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES,
+        )
         for base_dir in iter_character_memory_roots(config_manager):
             direct_root = base_dir / char_name
             if direct_root.is_symlink():
                 return direct_root
+            for pattern in legacy_patterns:
+                legacy_entry = base_dir / pattern.format(name=char_name)
+                if legacy_entry.is_symlink():
+                    return legacy_entry
         for entry_path in list_character_memory_paths(config_manager, char_name):
             if entry_path.is_symlink():
                 return entry_path

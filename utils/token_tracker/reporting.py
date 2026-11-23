@@ -78,14 +78,18 @@ _BUCKET_STAT_KEYS = (
 )
 
 
+_SQLITE_INT64_MIN = -(1 << 63)
+_SQLITE_INT64_MAX = (1 << 63) - 1
+
+
 def _is_finite_stat_number(val) -> bool:
-    """Return True when ``val`` is an int or finite float (excluding bool)."""
+    """Return True when ``val`` fits in SQLite signed 64-bit integer range and is finite."""
     if isinstance(val, bool):
         return False
     if isinstance(val, int):
-        return True
+        return _SQLITE_INT64_MIN <= val <= _SQLITE_INT64_MAX
     if isinstance(val, float):
-        return math.isfinite(val)
+        return math.isfinite(val) and _SQLITE_INT64_MIN <= val <= _SQLITE_INT64_MAX
     return False
 
 
@@ -493,6 +497,8 @@ class ReportingMixin:
                         merged_daily[day_key] = copy.deepcopy(day_delta)
                     else:
                         _merge_day_stats(merged_daily[day_key], day_delta)
+                if not all(_is_valid_day_stats(day_val) for day_val in merged_daily.values()):
+                    raise ValueError("unsent stats out of range")
                 merged_records = (list(recovered_records) + list(self._unsent_records))[-200:]
                 json.dumps(
                     {"daily": merged_daily, "records": merged_records},

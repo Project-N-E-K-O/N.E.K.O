@@ -7804,6 +7804,7 @@ def test_f0064_rename_rejects_casefold_collision_without_runtime_dir_on_disk(
 @pytest.mark.parametrize(
     ("existing_name", "candidate_name"),
     [
+        ("  neko", "Neko"),
         ("  neko  ", "  Neko  "),
         ("  neko  ", "Neko"),
         ("neko ", "Neko"),
@@ -7816,6 +7817,9 @@ def test_f0064_symmetric_whitespace_collision_detection_and_rename_guard(
 ):
     """F0064: whitespace-padded existing and candidate names collide symmetrically."""
     import utils.character_memory as character_memory
+
+    if existing_on_disk and os.name == "nt" and existing_name.endswith(" "):
+        pytest.skip("Win32 strips trailing spaces from directory names")
 
     cm = _make_config_manager(tmp_path)
     memory_root = Path(cm.memory_dir)
@@ -7864,14 +7868,24 @@ def test_f0064_symmetric_whitespace_collision_detection_and_rename_guard(
 
 
 @pytest.mark.unit
-def test_f0064_same_character_whitespace_padded_case_only_rename_succeeds(tmp_path):
+@pytest.mark.parametrize(
+    ("old_name", "new_name"),
+    [
+        ("  neko", "  Neko"),
+        ("  neko  ", "  Neko  "),
+    ],
+)
+def test_f0064_same_character_whitespace_padded_case_only_rename_succeeds(
+    tmp_path, old_name, new_name
+):
     """F0064: renaming a whitespace-padded character onto its own case-variant succeeds."""
     import utils.character_memory as character_memory
 
+    if os.name == "nt" and old_name.endswith(" "):
+        pytest.skip("Win32 strips trailing spaces from directory names")
+
     cm = _make_config_manager(tmp_path)
     memory_root = Path(cm.memory_dir)
-    old_name = "  neko  "
-    new_name = "  Neko  "
     cm.save_characters(
         {
             "当前猫娘": old_name,
@@ -8135,6 +8149,50 @@ def test_f0064_same_directory_entry_and_two_step_rename_guards(tmp_path):
         character_memory._merge_directories(link_dir, target_dir)
     assert (target_dir / "file.txt").read_text(encoding="utf-8") == "keep"
     assert not any(p.name.startswith(".neko_rename_") for p in tmp_path.iterdir())
+
+
+@pytest.mark.unit
+def test_f0064_same_directory_entry_ignores_zero_inode_scandir_cache(tmp_path, monkeypatch):
+    """Windows DirEntry.stat(follow_symlinks=False) can report st_ino=0/st_dev=0; lstat must still match."""
+    from types import SimpleNamespace
+    import utils.character_memory as character_memory
+
+    case_only = tmp_path / "CaseOnly.txt"
+    case_only.write_bytes(b"case-payload")
+    case_alias = tmp_path / "caseonly.txt"
+
+    real_scandir = os.scandir
+    real_lstat = os.lstat
+
+    def lstat_case_alias(path, *args, **kwargs):
+        if Path(path) == case_alias:
+            return real_lstat(case_only, *args, **kwargs)
+        return real_lstat(path, *args, **kwargs)
+
+    class _ZeroInodeEntry:
+        def __init__(self, inner):
+            self.name = inner.name
+            self.path = inner.path
+
+        def stat(self, *, follow_symlinks=True):
+            return SimpleNamespace(st_mode=0o100644, st_ino=0, st_dev=0)
+
+    class _ScandirCtx:
+        def __init__(self, path):
+            self._inner = real_scandir(path)
+
+        def __enter__(self):
+            entries = self._inner.__enter__()
+            return [_ZeroInodeEntry(entry) for entry in entries]
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+    monkeypatch.setattr(character_memory.os, "lstat", lstat_case_alias)
+    monkeypatch.setattr(character_memory.os, "scandir", _ScandirCtx)
+
+    assert character_memory._paths_refer_to_same_directory_entry(case_only, case_alias)
+
 
 
 

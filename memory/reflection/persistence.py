@@ -32,6 +32,7 @@ from utils.cloudsave_runtime import assert_cloudsave_writable
 
 
 from utils.file_utils import (
+    PublishedFileSyncError,
     atomic_write_json,
     atomic_write_json_async,
     read_json_async,
@@ -393,6 +394,10 @@ class PersistenceMixin:
                 logger.info(
                     f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections → {os.path.basename(shard_path)}"
                 )
+            except PublishedFileSyncError as e:
+                logger.warning(
+                    f"[Reflection] {name}: 归档分片已写入但目录同步未确认，保留归档结果不回滚主文件: {e}"
+                )
             except OSError as e:
                 # Fall-back: keep the entries in main file rather than lose
                 # them. Same posture as the old flat-file path.
@@ -591,6 +596,10 @@ class PersistenceMixin:
                 )
                 logger.info(
                     f"[Reflection] {name}: 归档 {len(to_archive)} 条旧 reflections → {os.path.basename(shard_path)}"
+                )
+            except PublishedFileSyncError as e:
+                logger.warning(
+                    f"[Reflection] {name}: 归档分片已写入但目录同步未确认，保留归档结果不回滚主文件: {e}"
                 )
             except OSError as e:
                 logger.warning(

@@ -612,3 +612,76 @@ async def test_synth_backoff_survives_disk_write_failure(tmp_path):
             f"写盘失败不应丢失失败计数；dead-letter 应在 MAX 次后生效，"
             f"实际调了 {llm_calls['n']} 次 LLM"
         )
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.asyncio
+async def test_save_reflections_archive_post_publish_dir_sync_error_does_not_duplicate(
+    tmp_path, monkeypatch, use_async
+):
+    """PublishedFileSyncError after writing an archive shard must not merge archived items back."""
+    import errno
+    import json
+    from pathlib import Path
+    from utils import file_utils
+
+    mock_cm = _build_mock_cm(str(tmp_path))
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
+         patch("memory.facts.get_config_manager", return_value=mock_cm):
+        from memory.facts import FactStore
+        from memory.persona import PersonaManager
+        from memory.reflection import ReflectionEngine
+
+        fs = FactStore()
+        fs._config_manager = mock_cm
+        pm = PersonaManager()
+        pm._config_manager = mock_cm
+        re = ReflectionEngine(fs, pm)
+        re._config_manager = mock_cm
+
+        old_promoted = {
+            "id": "ref_old_promoted",
+            "text": "old promoted reflection",
+            "entity": "master",
+            "status": "promoted",
+            "promoted_at": "2020-01-01T00:00:00",
+            "created_at": "2020-01-01T00:00:00",
+            "source_fact_ids": ["f1"],
+        }
+        active = {
+            "id": "ref_active",
+            "text": "active reflection",
+            "entity": "master",
+            "status": "confirmed",
+            "created_at": "2026-11-01T00:00:00",
+            "source_fact_ids": ["f2"],
+        }
+        reflections_path = Path(re._reflections_path("小天"))
+        reflections_path.parent.mkdir(parents=True, exist_ok=True)
+        reflections_path.write_text(json.dumps([old_promoted, active]), encoding="utf-8")
+
+        archive_dir = Path(re._reflections_archive_dir("小天"))
+        real_fsync_dir = file_utils._fsync_directory
+
+        def fail_archive_dir_sync(path):
+            if Path(path) == archive_dir:
+                raise OSError(errno.EIO, "injected archive directory sync error")
+            return real_fsync_dir(path)
+
+        monkeypatch.setattr(file_utils, "_fsync_directory", fail_archive_dir_sync)
+
+        if use_async:
+            await re.asave_reflections("小天", [active])
+            await re.asave_reflections("小天", [active])
+        else:
+            re.save_reflections("小天", [active])
+            re.save_reflections("小天", [active])
+
+        main_ids = [r["id"] for r in json.loads(reflections_path.read_text(encoding="utf-8"))]
+        assert main_ids == ["ref_active"]
+
+        archived_ids = []
+        for shard_file in sorted(archive_dir.glob("*.json")):
+            archived_ids.extend(item["id"] for item in json.loads(shard_file.read_text(encoding="utf-8")))
+        assert archived_ids.count("ref_old_promoted") == 1
+        assert archived_ids == ["ref_old_promoted"]

@@ -488,7 +488,10 @@ def _paths_refer_to_same_directory_entry(source_path: Path, target_path: Path) -
             matching_names: list[str] = []
             for entry in entries:
                 try:
-                    if os.path.samestat(entry.stat(follow_symlinks=False), src_lstat):
+                    # On Windows Python 3.11, DirEntry.stat(follow_symlinks=False)
+                    # reads WIN32_FIND_DATA with zero st_dev/st_ino, breaking samestat
+                    # against os.lstat(source_path). Query os.lstat directly.
+                    if os.path.samestat(os.lstat(entry.path), src_lstat):
                         matching_names.append(entry.name)
                 except OSError:
                     continue

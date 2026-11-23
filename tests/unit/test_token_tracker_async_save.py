@@ -1148,13 +1148,15 @@ def test_legacy_migration_rejects_lone_surrogate_and_syncs_dir_before_pruning_st
 def test_unsent_queue_handles_huge_int_without_overflow_and_isolates_surrogate_batch_seq(
     tracker_factory, monkeypatch
 ):
-    """Huge integer stats must not raise OverflowError and lone-surrogate batch_seq must not block next window."""
+    """Out-of-int64 stats must be quarantined without OverflowError, and lone-surrogate batch_seq must not block next window."""
     from datetime import date
 
     today = date.today().isoformat()
     huge_int = 10**400
+    over_int64 = 1 << 63
+    max_int64 = (1 << 63) - 1
 
-    # Part A: huge int in primary window + valid next window + live delta -> no OverflowError, both send cleanly.
+    # Part A: out-of-int64 stats in primary window are quarantined while valid next window + live delta send cleanly.
     seed = tracker_factory()
     seed._unsent_queue_path.write_text(
         json.dumps(
@@ -1174,14 +1176,61 @@ def test_unsent_queue_handles_huge_int_without_overflow_and_isolates_surrogate_b
     tracker_huge.record("model-live", 3, 2, 5)
     tracker_huge.save()
 
-    assert len(sent_huge) == 2
-    assert sent_huge[0][0][today]["total_tokens"] == huge_int
-    assert sent_huge[0][2] == "seq-huge" and sent_huge[0][3] is True
-    assert sent_huge[1][0][today]["total_tokens"] == 17
-    assert [r["model"] for r in sent_huge[1][1]] == ["model-next", "model-live"]
+    assert len(sent_huge) == 1
+    assert sent_huge[0][0][today]["total_tokens"] == 17
+    assert [r["model"] for r in sent_huge[0][1]] == ["model-next", "model-live"]
+    assert sent_huge[0][3] is False
     assert not tracker_huge._unsent_queue_path.exists()
 
-    # Part B: lone surrogate in batch_seq quarantines unencodable primary batch and recovers next window + live delta.
+    # Part B: 2**63 and float-merge overflow (max_int64 + 5.0) are quarantined without OverflowError.
+    tracker_float = tracker_factory()
+    tracker_float._unsent_queue_loaded = False
+    seed._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "seq-over64",
+                "daily": {today: {"total_tokens": over_int64, "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "model-over64"}],
+                "next_daily": {today: {"total_tokens": max_int64, "call_count": 1}},
+                "next_records": [{"ts": 2.0, "model": "model-edge"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_float = []
+    monkeypatch.setattr(tracker_float, "_send_report", lambda *args: sent_float.append(args))
+    tracker_float._unsent_daily[today] = {"total_tokens": 5.0, "call_count": 1}
+    tracker_float._unsent_records.append({"ts": 3.0, "model": "model-live-float"})
+    tracker_float.record("model-live2", 4, 1, 5)
+    tracker_float.save()
+
+    assert len(sent_float) == 1
+    assert sent_float[0][0][today]["total_tokens"] == 10.0
+    assert [r["model"] for r in sent_float[0][1]] == ["model-live-float", "model-live2"]
+    assert not tracker_float._unsent_queue_path.exists()
+
+    # Part C: boundary-valid int64 values pass validation and send cleanly.
+    seed._unsent_queue_path.write_text(
+        json.dumps(
+            {
+                "batch_seq": "seq-valid-max",
+                "daily": {today: {"total_tokens": max_int64 - 10, "call_count": 1}},
+                "records": [{"ts": 1.0, "model": "model-valid-max"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracker_valid_max = tracker_factory()
+    sent_valid_max = []
+    monkeypatch.setattr(tracker_valid_max, "_send_report", lambda *args: sent_valid_max.append(args))
+    tracker_valid_max.save()
+
+    assert len(sent_valid_max) == 1
+    assert sent_valid_max[0][0][today]["total_tokens"] == max_int64 - 10
+    assert sent_valid_max[0][2] == "seq-valid-max" and sent_valid_max[0][3] is True
+    assert not tracker_valid_max._unsent_queue_path.exists()
+
+    # Part D: lone surrogate in batch_seq quarantines unencodable primary batch and recovers next window + live delta.
     seed._unsent_queue_path.write_text(
         json.dumps(
             {
@@ -1198,12 +1247,12 @@ def test_unsent_queue_handles_huge_int_without_overflow_and_isolates_surrogate_b
     tracker_surr = tracker_factory()
     sent_surr = []
     monkeypatch.setattr(tracker_surr, "_send_report", lambda *args: sent_surr.append(args))
-    tracker_surr.record("model-live2", 4, 1, 5)
+    tracker_surr.record("model-live3", 4, 1, 5)
     tracker_surr.save()
 
     assert len(sent_surr) == 1
     assert sent_surr[0][0][today]["total_tokens"] == 30
-    assert [r["model"] for r in sent_surr[0][1]] == ["valid-next", "model-live2"]
+    assert [r["model"] for r in sent_surr[0][1]] == ["valid-next", "model-live3"]
     assert sent_surr[0][3] is False
     assert not tracker_surr._unsent_queue_path.exists()
 

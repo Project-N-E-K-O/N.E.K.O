@@ -709,6 +709,24 @@ async def test_rename_refuses_symlinked_unregistered_memory_dir_before_mutation(
     assert "Old" in cm.load_characters()["猫娘"]
 
 
+async def test_rename_refuses_dangling_legacy_memory_symlink_before_mutation(tmp_path):
+    cm, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
+    memory_root = Path(cm.memory_dir)
+    memory_root.mkdir(parents=True, exist_ok=True)
+    dangling_legacy = memory_root / "recent_Old.json"
+    try:
+        dangling_legacy.symlink_to("nonexistent_recent.json")
+    except OSError as exc:
+        pytest.skip(f"symlinks unsupported on this platform: {exc}")
+
+    with patch("utils.config_manager._config_manager", cm):
+        status, body = await _rename(cm, "Old", "New")
+
+    assert status == 400 and body["success"] is False
+    assert dangling_legacy.is_symlink()
+    assert "Old" in cm.load_characters()["猫娘"]
+
+
 async def test_delete_refuses_real_directory_at_card_asset_path_without_deleting_it(tmp_path):
     cm, _ = _backfilled_manager(tmp_path, {"Current": {"昵称": "Current"}, "Old": {"昵称": "Old"}})
     cm.card_faces_dir.mkdir(parents=True, exist_ok=True)
