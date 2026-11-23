@@ -413,3 +413,45 @@ def test_initial_save_without_prior_mapping_allows_explicit_empty_group_to_clear
     assert saved["FileReferences"]["Expressions"] == [
         {"Name": "happy_smile", "File": "exp/smile.exp3.json"},
     ]
+
+
+@pytest.mark.unit
+def test_unmatched_raw_entries_in_existing_group_survive_unrelated_save(model_dir: Path) -> None:
+    """Keep untracked raw expressions under an existing group prefix untouched."""
+    model_json = model_dir / "m.model3.json"
+    _write(
+        model_json,
+        {
+            "Version": 3,
+            "EmotionMapping": {
+                "motions": {},
+                "expressions": {
+                    "custom": ["exp/a.exp3.json"],
+                },
+            },
+            "FileReferences": {
+                "Motions": {},
+                "Expressions": [
+                    {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
+                    {"Name": "custom_extra", "File": "exp/extra.exp3.json", "FadeInTime": 0.6},
+                ],
+            },
+        },
+    )
+
+    payload = {
+        "motions": {},
+        "expressions": {
+            "custom": ["exp/a.exp3.json"],
+            "happy": ["exp/h.exp3.json"],
+        },
+    }
+    res = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res["success"] is True
+
+    saved = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved["FileReferences"]["Expressions"] == [
+        {"Name": "custom_extra", "File": "exp/extra.exp3.json", "FadeInTime": 0.6},
+        {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
+        {"Name": "happy_h", "File": "exp/h.exp3.json"},
+    ]

@@ -994,18 +994,23 @@ async def update_emotion_mapping(model_name: str, request: Request):
             }
             known_prefixes = sorted(known_expression_groups, key=len, reverse=True)
 
-            prev_group_files: dict[str, set[str]] = {}
-            for group_name, files in prev_expressions_map.items():
-                if not isinstance(group_name, str) or not group_name:
-                    continue
-                files_iter = [files] if isinstance(files, str) else (files if isinstance(files, list) else [])
-                norm_files = {
-                    _normalize_posix_model_ref(file_path)
-                    for file_path in files_iter
-                    if isinstance(file_path, str) and file_path.strip()
-                }
-                if norm_files:
-                    prev_group_files[group_name] = norm_files
+            def _collect_group_norm_files(mapping: dict) -> dict[str, set[str]]:
+                grouped: dict[str, set[str]] = {}
+                for group_name, files in mapping.items():
+                    if not isinstance(group_name, str) or not group_name:
+                        continue
+                    files_iter = [files] if isinstance(files, str) else (files if isinstance(files, list) else [])
+                    norm_files = {
+                        _normalize_posix_model_ref(file_path)
+                        for file_path in files_iter
+                        if isinstance(file_path, str) and file_path.strip()
+                    }
+                    if norm_files:
+                        grouped[group_name] = norm_files
+                return grouped
+
+            prev_group_files = _collect_group_norm_files(prev_expressions_map)
+            input_group_files = _collect_group_norm_files(expressions_input)
             prev_known_prefixes = sorted(
                 (group_name for group_name in prev_expressions_map.keys() if isinstance(group_name, str) and group_name),
                 key=len,
@@ -1032,6 +1037,15 @@ async def update_emotion_mapping(model_name: str, request: Request):
                     matched_group = _match_managed_expression_group(name, known_prefixes)
 
                 if matched_group is None or matched_group not in managed_expression_groups:
+                    preserved_expressions.append(item)
+                    continue
+                if previous_had_emotion_mapping and (
+                    not norm_file
+                    or (
+                        norm_file not in prev_group_files.get(matched_group, ())
+                        and norm_file not in input_group_files.get(matched_group, ())
+                    )
+                ):
                     preserved_expressions.append(item)
                     continue
                 if norm_file:
