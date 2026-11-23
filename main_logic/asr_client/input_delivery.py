@@ -12,6 +12,7 @@ class InputAudioDeliveryLedger:
         self._max_tags = max_tags
         self._tags: list[tuple[int, int, AudioDeliveryTag]] = []
         self._untagged: list[tuple[int, int]] = []
+        self._max_untagged_end: int | None = None
         self.enabled = False
 
     def register(self, start: int, end: int, tag: AudioDeliveryTag) -> None:
@@ -24,6 +25,8 @@ class InputAudioDeliveryLedger:
             raise ValueError("ASR_DELIVERY_TAG_RANGE_OVERLAP")
         if self._untagged and start < self._untagged[-1][1]:
             raise ValueError("ASR_DELIVERY_TAG_RANGE_OVERLAP")
+        if self._max_untagged_end is not None and start < self._max_untagged_end:
+            raise ValueError("ASR_DELIVERY_TAG_RANGE_OVERLAP")
         self.enabled = True
         self._tags.append((start, end, tag))
 
@@ -34,10 +37,38 @@ class InputAudioDeliveryLedger:
             raise ValueError("ASR_DELIVERY_TAG_RANGE_OVERLAP")
         if self._untagged and start < self._untagged[-1][1]:
             raise ValueError("ASR_DELIVERY_TAG_RANGE_OVERLAP")
+        if self._max_untagged_end is not None and start < self._max_untagged_end:
+            raise ValueError("ASR_DELIVERY_TAG_RANGE_OVERLAP")
+        self._max_untagged_end = end
         if self._untagged and self._untagged[-1][1] == start:
             self._untagged[-1] = (self._untagged[-1][0], end)
         else:
             self._untagged.append((start, end))
+
+    def _subtract_untagged(self, start: int, end: int) -> None:
+        if start >= end or not self._untagged:
+            return
+        updated: list[tuple[int, int]] = []
+        for left, right in self._untagged:
+            if right <= start or left >= end:
+                updated.append((left, right))
+                continue
+            if left < start:
+                updated.append((left, start))
+            if right > end:
+                updated.append((end, right))
+        self._untagged = updated
+
+    def prune_untagged_before(self, sample: int) -> None:
+        """Drop untagged intervals that end at or before sample and trim straddling intervals."""
+        if not self._untagged:
+            return
+        updated: list[tuple[int, int]] = []
+        for left, right in self._untagged:
+            if right <= sample:
+                continue
+            updated.append((max(left, sample), right))
+        self._untagged = updated
 
     def partition_spans(
         self, ranges: tuple[AudioSampleSpan, ...], samples: int,
@@ -119,3 +150,5 @@ class InputAudioDeliveryLedger:
             begin, end = max(span.start, left), min(span.end, right)
             if begin < end and not tag.settled:
                 tag.observe(begin - left, end - left, InterceptionDeliveryStage.NOT_SENT)
+        if span.samples > 0 and span.end is not None:
+            self._subtract_untagged(span.start, span.end)

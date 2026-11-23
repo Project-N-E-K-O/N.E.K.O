@@ -74,9 +74,13 @@ const out = await evaluate(`(async () => {
   rv.srcObject = new cw.MediaStream([track]);
   cw.document.body.appendChild(rv);
   if (hasRvfc) {
-    const onRvfc = () => {
+    const onRvfc = (_now, meta) => {
       if (!trackObserverActive) return;
-      trackFrames += 1;
+      if (meta && typeof meta.presentedFrames === 'number') {
+        trackFrames = meta.presentedFrames;
+      } else {
+        trackFrames += 1;
+      }
       rv.requestVideoFrameCallback(onRvfc);
     };
     rv.requestVideoFrameCallback(onRvfc);

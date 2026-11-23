@@ -2334,3 +2334,38 @@ def test_get_original_source_evidence_ignores_non_string_and_empty_source_ids(tm
             [123, None, b'bytes', {'bad': 1}, ['list'], 'not-matching', valid_id],  # type: ignore[list-item]
         )
         assert result == {valid_id: ('human', 1700000000)}
+
+
+def test_get_original_source_evidence_skips_int_digit_limit_value_error_in_batch(tmp_path):
+    from datetime import datetime
+    from sqlalchemy import text as sql_text
+    from memory.timeindex import TimeIndexedMemory, TIME_ORIGINAL_TABLE_NAME
+    from utils.llm_client import HumanMessage
+
+    with patch('memory.timeindex.get_config_manager', return_value=_cm(str(tmp_path))):
+        ti = TimeIndexedMemory(recent_history_manager=MagicMock())
+        uid_valid = 'b' * 32
+        uid_bad = 'c' * 32
+        valid_id = 'sync:' + uid_valid
+        bad_id = 'sync:' + uid_bad
+        msg = HumanMessage(
+            content='hello',
+            metadata={
+                'recent_memory_id': uid_valid,
+                'recent_memory_time': '1700000100',
+            },
+        )
+        ti.store_conversation_strict('s1', [msg], '小天', datetime(2026, 10, 26))
+
+        oversized_json = '{"type": "human", "id": "' + uid_bad + '", "n": ' + ('9' * 5000) + '}'
+        with ti.engines['小天'].begin() as conn:
+            conn.execute(
+                sql_text(
+                    f'INSERT INTO {TIME_ORIGINAL_TABLE_NAME} (timestamp, session_id, message) '
+                    'VALUES (:ts, :sid, :msg)'
+                ),
+                {'ts': '2026-10-26 00:00:01', 'sid': 's1', 'msg': oversized_json},
+            )
+
+        result = ti.get_original_source_evidence('小天', [bad_id, valid_id])
+        assert result == {valid_id: ('human', 1700000100)}

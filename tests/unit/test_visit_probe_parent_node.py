@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.node_harness import run_node_script
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -18,7 +19,7 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node execu
 
 
 def _run_node(script: str) -> dict:
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+    proc = run_node_script(shutil.which("node") or "node", script, capture_output=True, check=False)
     assert proc.returncode == 0, proc.stderr or proc.stdout
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
@@ -105,8 +106,12 @@ def test_measure_bridge_tracks_rvfc_frames_and_removes_hidden_video():
     assert "requestVideoFrameCallback" in src
     assert "trackAvgFps" in src
 
-    proc = subprocess.run(["node", "--check", str(MEASURE_BRIDGE_MJS)], capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
+    syntax_check = (
+        "const { execFileSync } = require('node:child_process');\n"
+        f"execFileSync(process.execPath, ['--check', {json.dumps(str(MEASURE_BRIDGE_MJS))}], {{ encoding: 'utf8' }});\n"
+    )
+    proc = run_node_script(shutil.which("node") or "node", syntax_check, capture_output=True, check=False)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
 
     # Exercise the actual evaluate() body from measure_bridge.mjs against mocked browser/bridge objects.
     eval_start = src.index("const out = await evaluate(`") + len("const out = await evaluate(`")
@@ -118,6 +123,7 @@ def test_measure_bridge_tracks_rvfc_frames_and_removes_hidden_video():
     script = f"""
     const assert = require('assert');
     let rvfcCallbacks = [];
+    let presentedFrames = 100;
     let removed = false;
     let paused = false;
     const packCanvas = {{
@@ -177,11 +183,15 @@ def test_measure_bridge_tracks_rvfc_frames_and_removes_hidden_video():
         const fn = new Function('setTimeout', 'performance', 'document', 'window', 'location', 'devicePixelRatio', 'innerWidth', 'innerHeight', 'return ' + {json.dumps(eval_body)});
         const promise = fn((cb, ms) => {{
           global.setTimeout(() => {{
-            if (ms === 1000) {{
+            if (ms === 300) {{
+              const pending = rvfcCallbacks.splice(0);
+              for (const rcb of pending) rcb(0, {{ presentedFrames }});
+            }} else if (ms === 1000) {{
               ctl.packer.requestFrames += 30;
               ctl.packer.packMsTotal += 15;
+              presentedFrames += 30;
               const pending = rvfcCallbacks.splice(0);
-              for (const rcb of pending) rcb();
+              for (const rcb of pending) rcb(0, {{ presentedFrames }});
             }}
             cb();
           }}, 0);
@@ -201,4 +211,4 @@ def test_measure_bridge_tracks_rvfc_frames_and_removes_hidden_video():
     """
     out = _run_node(script)
     assert out["ok"] is True
-    assert out["trackAvgFps"] > 0
+    assert out["trackAvgFps"] == 30

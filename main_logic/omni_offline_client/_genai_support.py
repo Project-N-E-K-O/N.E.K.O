@@ -443,12 +443,7 @@ def _record_genai_usage(
     try:
         from utils.token_tracker import TokenTracker, _current_call_type
 
-        counts = _extract_genai_usage_dict(usage_meta) if success else {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "cached_tokens": 0,
-        }
+        counts = _extract_genai_usage_dict(usage_meta)
         TokenTracker.get_instance().record(
             model=model or "unknown",
             prompt_tokens=counts["prompt_tokens"],
@@ -564,6 +559,7 @@ class _GenaiMixin:
             except Exception as e:
                 raise _GenaiToolsUnsupported(f"GenerateContentConfig rejected: {e}") from e
 
+            request_model = getattr(self, "model", None) or "unknown"
             try:
                 stream = await self._genai_client.aio.models.generate_content_stream(
                     model=self.model,
@@ -572,7 +568,7 @@ class _GenaiMixin:
                 )
             except Exception as e:
                 _record_genai_usage(
-                    getattr(self, "model", None) or "unknown",
+                    request_model,
                     None,
                     success=False,
                 )
@@ -657,27 +653,6 @@ class _GenaiMixin:
                         last_usage_meta = usage_meta
                     candidates = getattr(chunk, "candidates", None) or []
                     if not candidates:
-                        if usage_meta is not None and not usage_emitted:
-                            try:
-                                counts = _extract_genai_usage_dict(usage_meta)
-                                usage_dict = {
-                                    "prompt_tokens": counts["prompt_tokens"],
-                                    "completion_tokens": counts["completion_tokens"],
-                                    "total_tokens": counts["total_tokens"],
-                                }
-                                if usage_dict["prompt_tokens"]:
-                                    self._last_prompt_tokens = usage_dict["prompt_tokens"]
-                                yield LLMStreamChunk(
-                                    content="",
-                                    usage_metadata=usage_dict,
-                                    response_metadata={"token_usage": usage_dict},
-                                )
-                                usage_emitted = True
-                            except Exception as usage_err:
-                                logger.debug(
-                                    "genai usage_metadata emit skipped: %s",
-                                    usage_err,
-                                )
                         continue
                     cand = candidates[0]
                     fr = getattr(cand, "finish_reason", None)
@@ -779,8 +754,8 @@ class _GenaiMixin:
             except Exception as e:
                 stream_errored = True
                 _record_genai_usage(
-                    getattr(self, "model", None) or "unknown",
-                    None,
+                    request_model,
+                    last_usage_meta,
                     success=False,
                 )
                 err_msg = str(e).lower()
@@ -798,13 +773,31 @@ class _GenaiMixin:
             finally:
                 if not stream_errored and last_usage_meta is not None:
                     _record_genai_usage(
-                        getattr(self, "model", None) or "unknown",
+                        request_model,
                         last_usage_meta,
                         success=True,
                     )
 
             if not generation_is_active():
                 return
+            if last_usage_meta is not None and not usage_emitted:
+                try:
+                    counts = _extract_genai_usage_dict(last_usage_meta)
+                    usage_dict = {
+                        "prompt_tokens": counts["prompt_tokens"],
+                        "completion_tokens": counts["completion_tokens"],
+                        "total_tokens": counts["total_tokens"],
+                    }
+                    if usage_dict["prompt_tokens"]:
+                        self._last_prompt_tokens = usage_dict["prompt_tokens"]
+                    yield LLMStreamChunk(
+                        content="",
+                        usage_metadata=usage_dict,
+                        response_metadata={"token_usage": usage_dict},
+                    )
+                    usage_emitted = True
+                except Exception as usage_err:
+                    logger.debug("genai usage_metadata emit skipped: %s", usage_err)
             # Empty-completion diagnostics persist self fields and emit dedicated INFO logs,
             # symmetric with OpenAI; either finish_reason/block_reason may arrive first, and whichever
             # arrives wins; stream_text/prompt_ephemeral fallback warnings read both fields.
@@ -1011,6 +1004,7 @@ class _GenaiMixin:
         # the tool iterations, so a switch_model that happened in one of them
         # has already dropped the client.
         self._ensure_genai_client()
+        final_request_model = getattr(self, "model", None) or "unknown"
         try:
             final_stream = await self._genai_client.aio.models.generate_content_stream(
                 model=self.model,
@@ -1019,7 +1013,7 @@ class _GenaiMixin:
             )
         except Exception:
             _record_genai_usage(
-                getattr(self, "model", None) or "unknown",
+                final_request_model,
                 None,
                 success=False,
             )
@@ -1089,15 +1083,15 @@ class _GenaiMixin:
         except Exception:
             final_stream_errored = True
             _record_genai_usage(
-                getattr(self, "model", None) or "unknown",
-                None,
+                final_request_model,
+                final_last_usage_meta,
                 success=False,
             )
             raise
         finally:
             if not final_stream_errored and final_last_usage_meta is not None:
                 _record_genai_usage(
-                    getattr(self, "model", None) or "unknown",
+                    final_request_model,
                     final_last_usage_meta,
                     success=True,
                 )

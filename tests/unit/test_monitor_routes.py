@@ -338,3 +338,38 @@ def test_monitor_page_config_error_returns_empty_fields_and_no_csrf_token(client
         "model_type": "",
     }
     assert "autostart_csrf_token" not in data
+
+
+def test_monitor_page_config_keeps_live2d_model_type_consistent_for_vrm_characters(client, monkeypatch):
+    class _FakeCM:
+        async def aget_character_data(self):
+            return (
+                "Carbon",
+                "YUI",
+                {"档案名": "Carbon"},
+                {
+                    "YUI": {
+                        "_reserved": {
+                            "avatar": {
+                                "model_type": "vrm",
+                                "vrm": {"model_path": "/user_vrm/yui.vrm"},
+                                "live2d": {"model_path": "yui-lolita/yui-lolita.model3.json"},
+                            }
+                        }
+                    }
+                },
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+    monkeypatch.setattr(monitor, "_config_manager", _FakeCM())
+    monkeypatch.setattr(monitor, "find_models", lambda: [{"name": "yui-lolita", "path": "/static/yui-lolita/yui-lolita.model3.json"}])
+
+    response = client.get("/api/config/page_config", headers={"Authorization": "Bearer route-secret"})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["model_type"] == "live2d"
+    assert data["model_path"] == "/static/yui-lolita/yui-lolita.model3.json"

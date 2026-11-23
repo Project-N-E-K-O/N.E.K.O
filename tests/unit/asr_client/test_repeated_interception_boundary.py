@@ -743,3 +743,87 @@ async def test_mixed_tagged_and_untagged_preroll_splits_into_valid_delivery_segm
         callbacks.on_failure.assert_not_awaited()
     finally:
         await _close_delivery_boundary_fixture(runtime)
+
+
+@pytest.mark.asyncio
+async def test_long_session_alternating_tagged_and_untagged_frames_prunes_untagged_history():
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag
+
+    runtime, callbacks, _detector, _session, _lifecycle, token, sent = await _delivery_boundary_fixture()
+    try:
+        for i in range(50):
+            tagged_pcm = b"\x05\x00" * 160
+            untagged_pcm = b"\x06\x00" * 160
+            tag = AudioDeliveryTag(160, lambda _stage: None)
+            res1 = await runtime.submit(
+                ProcessedVoiceFrame(tagged_pcm, 16000, 1.0, True, delivery=tag),
+                ingress_token=token.ingress,
+            )
+            res2 = await runtime.submit(
+                ProcessedVoiceFrame(untagged_pcm, 16000, 1.0, True, delivery=None),
+                ingress_token=token.ingress,
+            )
+            assert res1.status is AsrSubmitStatus.ACCEPTED
+            assert res2.status is AsrSubmitStatus.ACCEPTED
+
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert len(sent) == 100
+        assert runtime._asr_input_delivery._untagged == []
+        callbacks.on_failure.assert_not_awaited()
+    finally:
+        await _close_delivery_boundary_fixture(runtime)
+
+
+@pytest.mark.asyncio
+async def test_buffered_untagged_preroll_survives_pruning_until_forwarded_and_then_prunes():
+    from main_logic.voice_turn.audio_delivery import AudioDeliveryTag, AudioDeliverySpan
+
+    runtime, callbacks, detector, _session, _lifecycle, token, sent = await _delivery_boundary_fixture()
+    prefix = b"\x01\x00" * 1600
+    tagged_pre = b"\x02\x00" * 400
+    untagged_pre = b"\x03\x00" * 400
+    trigger = b"\x04\x00" * 400
+    tag = AudioDeliveryTag(400, lambda _stage: None)
+    try:
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(prefix, 16000, 1.0, True), ingress_token=token.ingress
+        )).status is AsrSubmitStatus.ACCEPTED
+        await runtime.discontinue_input(
+            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S
+        )
+        await runtime._handle_independent_asr_final("first", runtime._asr_session_epoch, "soniox")
+        await runtime.wait_transcript_idle()
+
+        detector.feed.return_value = SimpleNamespace(
+            endpointing_available=True, throttle_available=True,
+            throttle_action=ThrottleAction.PROCESS_PCM, events=(),
+        )
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(tagged_pre, 16000, 1.0, True, delivery=tag),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(untagged_pre, 16000, 1.0, True, delivery=None),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+
+        # Buffered untagged pre-roll span must still be retained while held in lifecycle buffers.
+        assert runtime._asr_input_delivery._untagged == [(400, 800)]
+
+        detector.feed.return_value = SimpleNamespace(
+            endpointing_available=True, throttle_available=True,
+            throttle_action=ThrottleAction.PROCESS_PCM,
+            events=(SpeechActivityEvent.SPEECH_STARTED,),
+        )
+        assert (await runtime.submit(
+            ProcessedVoiceFrame(trigger, 16000, 1.0, True, delivery=None),
+            ingress_token=token.ingress,
+        )).status is AsrSubmitStatus.ACCEPTED
+
+        await runtime._asr_audio_dispatcher.wait_idle()
+        assert sent[1] == (tagged_pre, (AudioDeliverySpan(tag, 0, 400),))
+        assert sent[2] == (untagged_pre + trigger, ())
+        assert runtime._asr_input_delivery._untagged == []
+        callbacks.on_failure.assert_not_awaited()
+    finally:
+        await _close_delivery_boundary_fixture(runtime)

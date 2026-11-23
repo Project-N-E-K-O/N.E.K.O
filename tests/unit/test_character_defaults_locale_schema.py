@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+
+from tests.node_harness import run_node_script
 
 from config import (
     CHARACTER_GENDER_FIELD_KEYS,
@@ -123,6 +125,9 @@ async def test_translation_service_matches_fields_to_translate_case_insensitivel
 
 @pytest.mark.unit
 def test_app_chat_js_resolves_localized_master_nicknames():
+    node_path = shutil.which("node")
+    if node_path is None:
+        pytest.skip("node executable not available")
     js_path = REPO_ROOT / "static" / "app" / "app-chat.js"
     script = (
         "const fs = require('fs');\n"
@@ -157,7 +162,7 @@ def test_app_chat_js_resolves_localized_master_nicknames():
         "  }\n"
         "})().catch((err) => { console.error(err); process.exit(1); });\n"
     )
-    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+    proc = run_node_script(node_path, script, capture_output=True, check=False)
     assert proc.returncode == 0, proc.stderr or proc.stdout
 
 

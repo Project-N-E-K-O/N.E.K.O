@@ -335,3 +335,203 @@ async def test_genai_records_token_tracker_usage_for_stream_trailing_chunk_final
         assert recorded[2]["call_type"] == "conversation"
     finally:
         _current_call_type.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_genai_preserves_known_usage_on_midstream_errors_and_defers_leading_empty_usage(monkeypatch):
+    recorded: list[dict] = []
+
+    class _StubTracker:
+        def record(self, **kwargs):
+            recorded.append(kwargs)
+
+    monkeypatch.setattr(TokenTracker, "get_instance", classmethod(lambda cls: _StubTracker()))
+
+    async def _raise_after_usage(items, msg="midstream drop"):
+        for item in items:
+            yield item
+        raise RuntimeError(msg)
+
+    captured_configs: list = []
+
+    def stream_factory(call_idx):
+        if call_idx == 1:
+            # Normal stream yields usage then fails mid-stream.
+            return _raise_after_usage([
+                SimpleNamespace(
+                    candidates=[
+                        SimpleNamespace(
+                            finish_reason=None,
+                            content=SimpleNamespace(parts=[SimpleNamespace(text="partial", thought=False)]),
+                        )
+                    ],
+                    usage_metadata=SimpleNamespace(
+                        prompt_token_count=15,
+                        candidates_token_count=4,
+                        thoughts_token_count=2,
+                        total_token_count=21,
+                        cached_content_token_count=1,
+                    ),
+                )
+            ])
+        if call_idx == 2:
+            # Tool call succeeds -> enters forced-finalize.
+            return _async_iter([
+                SimpleNamespace(
+                    candidates=[
+                        SimpleNamespace(
+                            finish_reason="STOP",
+                            content=SimpleNamespace(
+                                parts=[
+                                    SimpleNamespace(
+                                        text=None,
+                                        thought=False,
+                                        function_call=SimpleNamespace(id="c1", name="ping", args={}),
+                                    )
+                                ]
+                            ),
+                        )
+                    ],
+                    usage_metadata=SimpleNamespace(
+                        prompt_token_count=10,
+                        candidates_token_count=2,
+                        thoughts_token_count=0,
+                        total_token_count=12,
+                    ),
+                )
+            ])
+        if call_idx == 3:
+            # Forced finalize yields usage then raises.
+            return _raise_after_usage([
+                SimpleNamespace(
+                    candidates=[
+                        SimpleNamespace(
+                            finish_reason=None,
+                            content=SimpleNamespace(parts=[SimpleNamespace(text="part", thought=False)]),
+                        )
+                    ],
+                    usage_metadata=SimpleNamespace(
+                        prompt_token_count=25,
+                        candidates_token_count=7,
+                        thoughts_token_count=3,
+                        total_token_count=35,
+                        cached_content_token_count=5,
+                    ),
+                )
+            ], msg="finalize midstream drop")
+        # Leading candidates=[] chunk with partial usage followed by text chunk with final usage.
+        return _async_iter([
+            SimpleNamespace(
+                candidates=[],
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=12,
+                    candidates_token_count=0,
+                    thoughts_token_count=0,
+                    total_token_count=12,
+                ),
+            ),
+            SimpleNamespace(
+                candidates=[
+                    SimpleNamespace(
+                        finish_reason="STOP",
+                        content=SimpleNamespace(parts=[SimpleNamespace(text="hello", thought=False)]),
+                    )
+                ],
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=12,
+                    candidates_token_count=8,
+                    thoughts_token_count=4,
+                    total_token_count=24,
+                ),
+            ),
+        ])
+
+    _install_fake_genai(monkeypatch, captured_configs, stream_factory)
+    client = _make_client(model="gemini-2.5-flash", llm_extra_body=None)
+
+    with pytest.raises(RuntimeError, match="midstream drop"):
+        _ = [c async for c in client._astream_genai_with_tools([{"role": "user", "content": "hi"}])]
+    assert recorded[-1] == {
+        "model": "gemini-2.5-flash",
+        "prompt_tokens": 15,
+        "completion_tokens": 6,
+        "total_tokens": 21,
+        "cached_tokens": 1,
+        "call_type": "unknown",
+        "source": "main_logic/omni_offline_client",
+        "success": False,
+    }
+
+    client.max_tool_iterations = 1
+    client._tool_definitions = [ToolDefinition(name="ping", description="ping", parameters={"type": "object", "properties": {}})]
+    client.on_tool_call = AsyncMock(return_value=ToolResult(call_id="c1", name="ping", output={"ok": True}))
+    with pytest.raises(RuntimeError, match="finalize midstream drop"):
+        _ = [c async for c in client._astream_genai_with_tools([{"role": "user", "content": "hi"}])]
+    assert recorded[-1] == {
+        "model": "gemini-2.5-flash",
+        "prompt_tokens": 25,
+        "completion_tokens": 10,
+        "total_tokens": 35,
+        "cached_tokens": 5,
+        "call_type": "unknown",
+        "source": "main_logic/omni_offline_client",
+        "success": False,
+    }
+
+    client._tool_definitions = []
+    client.on_tool_call = None
+    chunks = [c async for c in client._astream_genai_with_tools([{"role": "user", "content": "hi"}])]
+    assert chunks[0].content == "hello"
+    usage_chunks = [c for c in chunks if getattr(c, "usage_metadata", None)]
+    assert len(usage_chunks) == 1
+    assert usage_chunks[0].usage_metadata == {
+        "prompt_tokens": 12,
+        "completion_tokens": 12,
+        "total_tokens": 24,
+    }
+
+
+@pytest.mark.asyncio
+async def test_genai_snapshots_model_at_request_start_across_midstream_switch(monkeypatch):
+    recorded: list[dict] = []
+
+    class _StubTracker:
+        def record(self, **kwargs):
+            recorded.append(kwargs)
+
+    monkeypatch.setattr(TokenTracker, "get_instance", classmethod(lambda cls: _StubTracker()))
+
+    captured_configs: list = []
+
+    def stream_factory(_call_idx):
+        return _async_iter([
+            SimpleNamespace(
+                candidates=[
+                    SimpleNamespace(
+                        finish_reason="STOP",
+                        content=SimpleNamespace(parts=[SimpleNamespace(text="hello", thought=False)]),
+                    )
+                ],
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=10,
+                    candidates_token_count=5,
+                    thoughts_token_count=0,
+                    total_token_count=15,
+                ),
+            )
+        ])
+
+    _install_fake_genai(monkeypatch, captured_configs, stream_factory)
+    client = _make_client(model="gemini-2.5-pro", llm_extra_body=None)
+
+    async for chunk in client._astream_genai_with_tools([{"role": "user", "content": "turn 1"}]):
+        if chunk.content == "hello":
+            # Simulate switch_model mutating self.model while the generator is paused at yield.
+            client.model = "gemini-2.5-flash"
+
+    assert recorded[0]["model"] == "gemini-2.5-pro"
+    assert recorded[0]["success"] is True
+
+    _ = [c async for c in client._astream_genai_with_tools([{"role": "user", "content": "turn 2"}])]
+    assert recorded[1]["model"] == "gemini-2.5-flash"
+    assert recorded[1]["success"] is True

@@ -279,15 +279,13 @@ def resolve_realtime_dialect(
     base_url: object = None,
     livestream_mode: bool = False,
 ) -> str:
-    """Resolve wire dialect from api_type, falling back to model name only when unset or local."""
+    """Resolve wire dialect from api_type, falling back to model name for unrecognized types."""
 
     effective = resolve_effective_realtime_api_type(
         api_type, model, base_url=base_url, livestream_mode=livestream_mode,
     )
     dialect = canonical_realtime_dialect(effective)
     if dialect in KNOWN_REALTIME_DIALECTS:
-        return dialect
-    if dialect not in ("", "local"):
         return dialect
     model_lower = str(model or "").lower()
     for candidate in _MODEL_FALLBACK_DIALECTS:

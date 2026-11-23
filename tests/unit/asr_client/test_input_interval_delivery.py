@@ -293,3 +293,30 @@ def test_partition_spans_separates_tagged_and_explicit_untagged_intervals_and_re
 
     with pytest.raises(RuntimeError, match="SOURCE_RANGE_MISSING"):
         ledger.spans((AudioSampleSpan(104, 4),), 4)
+
+
+def test_prune_untagged_before_and_discard_keep_ledger_bounded_and_reject_stale_overlap():
+    tag = AudioDeliveryTag(4, lambda _stage: None)
+    ledger = InputAudioDeliveryLedger()
+    ledger.register(100, 104, tag)
+    ledger.register_untagged(104, 110)
+    ledger.register_untagged(110, 120)
+
+    ledger.prune_untagged_before(108)
+    assert ledger._untagged == [(108, 120)]
+
+    # Pruning does not erase the monotonicity watermark against previously registered untagged end.
+    with pytest.raises(ValueError, match="ASR_DELIVERY_TAG_RANGE_OVERLAP"):
+        ledger.register_untagged(115, 118)
+    with pytest.raises(ValueError, match="ASR_DELIVERY_TAG_RANGE_OVERLAP"):
+        ledger.register(118, 122, AudioDeliveryTag(4, lambda _stage: None))
+
+    ledger.discard(AudioSampleSpan(112, 4))
+    assert ledger._untagged == [(108, 112), (116, 120)]
+
+    ledger.prune_untagged_before(120)
+    assert ledger._untagged == []
+
+    # Watermark remains enforced even after _untagged empties.
+    with pytest.raises(ValueError, match="ASR_DELIVERY_TAG_RANGE_OVERLAP"):
+        ledger.register_untagged(110, 112)

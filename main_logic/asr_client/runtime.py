@@ -774,6 +774,7 @@ class IndependentAsrRuntime:
         self._asr_sample_ingress: VoiceIngressToken | None = None
         self._asr_input_sample_end = 0
         self._asr_input_delivery = InputAudioDeliveryLedger()
+        self._asr_inflight_sample_starts: list[tuple[VoiceIngressToken, int]] = []
         self._asr_committed_sample_end = 0
         self._asr_pending_activation_turn: VoiceTurnToken | None = None
         self._asr_current_ingress_token: VoiceIngressToken | None = None
@@ -898,6 +899,8 @@ class IndependentAsrRuntime:
     def _ensure_asr_runtime_state(self) -> None:
         if not hasattr(self, "_asr_input_delivery"):
             self._asr_input_delivery = InputAudioDeliveryLedger()
+        if not hasattr(self, "_asr_inflight_sample_starts"):
+            self._asr_inflight_sample_starts = []
         if not hasattr(self, "_asr_admission_evidence"):
             self._asr_admission_evidence = {}
             self._asr_candidate_evidence = None
@@ -1563,6 +1566,28 @@ class IndependentAsrRuntime:
             lifecycle,
             turn_token,
         )
+
+    def _prune_asr_untagged_delivery(
+        self,
+        lifecycle: Any,
+        ingress_token: VoiceIngressToken,
+    ) -> None:
+        if self._asr_sample_ingress != ingress_token or not self._asr_input_delivery.enabled:
+            return
+        earliest_fn = getattr(lifecycle, "earliest_retained_sample", None)
+        if not callable(earliest_fn):
+            return
+        candidates: list[int] = []
+        retained = earliest_fn()
+        if retained is not None:
+            candidates.append(retained)
+        inflight = [
+            start for tok, start in self._asr_inflight_sample_starts if tok == ingress_token
+        ]
+        if inflight:
+            candidates.append(min(inflight))
+        floor = min(candidates) if candidates else self._asr_input_sample_end
+        self._asr_input_delivery.prune_untagged_before(floor)
 
     def _enqueue_segmented_audio(
         self,
@@ -3269,6 +3294,7 @@ class IndependentAsrRuntime:
         deferred_pause_revision: int | None = None
         submit_cancelled = False
         pause_audio_session = None
+        inflight_entry: tuple[VoiceIngressToken, int] | None = None
 
         try:
             lifecycle = identity.lifecycle
@@ -3282,6 +3308,7 @@ class IndependentAsrRuntime:
                     self._asr_input_sample_end = 0
                     self._asr_committed_sample_end = 0
                     self._asr_input_delivery = InputAudioDeliveryLedger()
+                    self._asr_inflight_sample_starts = []
                     lifecycle.set_audio_discard_observer(self._asr_input_delivery.discard)
                 if (frame.delivery is not None and not self._asr_input_delivery.enabled
                         and not lifecycle.begin_delivery_mapping()):
@@ -3297,6 +3324,8 @@ class IndependentAsrRuntime:
                     lifecycle.set_audio_discard_observer(self._asr_input_delivery.discard)
                 elif self._asr_input_delivery.enabled:
                     self._asr_input_delivery.register_untagged(source_start, source_end)
+                inflight_entry = (ingress_token, source_start)
+                self._asr_inflight_sample_starts.append(inflight_entry)
             buffered_before_detection = False
             buffered_for_activation = bool(
                 admission_enabled
@@ -3795,6 +3824,12 @@ class IndependentAsrRuntime:
             )
             return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
         finally:
+            if inflight_entry is not None:
+                try:
+                    self._asr_inflight_sample_starts.remove(inflight_entry)
+                except ValueError:
+                    pass
+                self._prune_asr_untagged_delivery(identity.lifecycle, ingress_token)
             if (
                 deferred_pause_revision is not None and not submit_cancelled
                 and pause_audio_session is not None

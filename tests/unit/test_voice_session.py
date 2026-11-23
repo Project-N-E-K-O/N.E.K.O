@@ -1807,3 +1807,28 @@ def test_whitespace_padded_api_type_matches_realtime_dialect_and_provider_flags(
     )
     assert free_client._realtime_dialect == "free"
     assert free_client._is_free_provider is True
+
+
+@pytest.mark.unit
+async def test_unrecognized_api_type_falls_back_to_model_dialect_without_entering_free():
+    gpt_client = _make_manual_client(
+        model="gpt-realtime",
+        api_type="custom",
+        base_url="wss://custom.example.test/realtime",
+    )
+    assert gpt_client._realtime_dialect == "gpt"
+    assert gpt_client._uplink_sample_rate == 24000
+
+    session = await _run_connect_and_capture_session(gpt_client)
+    assert session is not None
+    assert session.get("type") == "realtime"
+    assert session["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
+
+    freeform_client = _make_manual_client(
+        model="freeform-realtime",
+        api_type="custom",
+        base_url="wss://custom.example.test/realtime",
+    )
+    assert freeform_client._realtime_dialect == ""
+    with pytest.raises(ValueError, match="Invalid model"):
+        await _run_connect_and_capture_session(freeform_client)

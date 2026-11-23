@@ -1295,7 +1295,8 @@ class TimeIndexedMemory:
                     for original_time, session_id, serialized in rows:
                         try:
                             stored = json.loads(serialized)
-                        except (json.JSONDecodeError, TypeError):
+                        except (ValueError, TypeError):
+                            # JSONDecodeError subclasses ValueError; this also catches Python 3.11+ int-digit limit ValueError.
                             continue
                         if (not isinstance(stored, dict) or stored.get('type') not in ('human', 'ai')
                                 or is_theater_memory_message(stored)):

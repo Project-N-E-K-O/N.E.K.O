@@ -197,10 +197,8 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
         # If lanlan_name is provided, use it; otherwise use the current character
         target_name = lanlan_name if lanlan_name else her_name
         catgirl_config = lanlan_basic_config.get(target_name, {}) if isinstance(lanlan_basic_config, dict) else {}
-        model_type = get_reserved(catgirl_config, 'avatar', 'model_type', default='live2d', legacy_keys=('model_type',))
-        model_type = str(model_type or 'live2d').strip().lower()
-        if model_type == 'vrm':
-            model_type = 'live3d'
+        # Monitor (templates/viewer.html) only mounts and renders Live2D models, so keep model_type aligned with model_path.
+        model_type = "live2d"
 
         # Get the live2d field (compatible with the new _reserved structure)
         live2d_model_path = get_reserved(
