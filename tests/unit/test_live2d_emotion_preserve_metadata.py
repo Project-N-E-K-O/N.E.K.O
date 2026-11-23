@@ -519,3 +519,101 @@ def test_newly_generated_expression_names_avoid_preserved_and_duplicate_collisio
 
     saved2 = json.loads(model_json.read_text(encoding="utf-8"))
     assert saved2["FileReferences"]["Expressions"] == expected
+
+
+@pytest.mark.unit
+def test_shared_file_across_prefix_related_groups_is_idempotent_across_repeat_saves(model_dir: Path) -> None:
+    """Keep generated names distinct from longer prefix groups across repeat saves of a shared file."""
+    model_json = model_dir / "m.model3.json"
+    _write(
+        model_json,
+        {
+            "Version": 3,
+            "EmotionMapping": {
+                "motions": {},
+                "expressions": {
+                    "custom": ["exp/a.exp3.json"],
+                },
+            },
+            "FileReferences": {
+                "Motions": {},
+                "Expressions": [
+                    {"Name": "custom_a", "File": "exp/a.exp3.json", "FadeInTime": 0.2},
+                    {"Name": "custom_smile", "File": "exp/legacy_smile.exp3.json", "FadeInTime": 0.6},
+                ],
+            },
+        },
+    )
+
+    payload = {
+        "motions": {},
+        "expressions": {
+            "custom": ["exp/smile.exp3.json"],
+            "custom_smile": ["exp/smile.exp3.json"],
+        },
+    }
+    res1 = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res1["success"] is True
+
+    expected = [
+        {"Name": "custom_smile", "File": "exp/legacy_smile.exp3.json", "FadeInTime": 0.6},
+        {"Name": "custom_2_smile", "File": "exp/smile.exp3.json"},
+        {"Name": "custom_smile_smile", "File": "exp/smile.exp3.json"},
+    ]
+    saved1 = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved1["FileReferences"]["Expressions"] == expected
+
+    res2 = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res2["success"] is True
+
+    saved2 = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved2["FileReferences"]["Expressions"] == expected
+
+
+@pytest.mark.unit
+def test_preexisting_ambiguous_expression_name_survives_adding_longer_group_and_repeat_save(model_dir: Path) -> None:
+    """Keep pre-existing colliding names owned by the shorter group when a longer group shares the file."""
+    model_json = model_dir / "m.model3.json"
+    _write(
+        model_json,
+        {
+            "Version": 3,
+            "EmotionMapping": {
+                "motions": {},
+                "expressions": {
+                    "custom": ["exp/smile.exp3.json"],
+                },
+            },
+            "FileReferences": {
+                "Motions": {},
+                "Expressions": [
+                    {"Name": "custom_smile", "File": "exp/legacy_smile.exp3.json", "FadeInTime": 0.6},
+                    {"Name": "custom_smile_2", "File": "exp/smile.exp3.json", "FadeInTime": 0.3},
+                ],
+            },
+        },
+    )
+
+    payload = {
+        "motions": {},
+        "expressions": {
+            "custom": ["exp/smile.exp3.json"],
+            "custom_smile": ["exp/smile.exp3.json"],
+        },
+    }
+    res1 = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res1["success"] is True
+
+    expected = [
+        {"Name": "custom_smile", "File": "exp/legacy_smile.exp3.json", "FadeInTime": 0.6},
+        {"Name": "custom_smile_2", "File": "exp/smile.exp3.json", "FadeInTime": 0.3},
+        {"Name": "custom_smile_smile", "File": "exp/smile.exp3.json"},
+    ]
+    saved1 = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved1["FileReferences"]["Expressions"] == expected
+
+    res2 = asyncio.run(live2d_router.update_emotion_mapping("m", _FakeRequest(payload)))
+    assert res2["success"] is True
+
+    saved2 = json.loads(model_json.read_text(encoding="utf-8"))
+    assert saved2["FileReferences"]["Expressions"] == expected
