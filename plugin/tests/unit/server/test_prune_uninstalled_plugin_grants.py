@@ -49,12 +49,16 @@ def _entry(
 
 
 class _Lock:
+    # Set per test by the plugin_roots fixture: both roots exist and are
+    # empty, so every removed entry's directory is gone.
+    default_root: Path
+
     def __init__(
         self, *entries: LockEntry, degraded: bool = False, root: Path | None = None
     ) -> None:
         self.entries = list(entries)
         self.is_degraded = degraded
-        base = root or Path("/nonexistent-plugin-roots")
+        base = root or self.default_root
         self.builtin_root = base / "builtin"
         self.user_root = base / "user"
 
@@ -76,6 +80,15 @@ def _grant(plugin_id: str) -> None:
 def _grants_on_disk(tmp_path: Path) -> set[str]:
     document = json.loads(_store_path(tmp_path).read_text(encoding="utf-8"))
     return set(document["plugins"])
+
+
+@pytest.fixture(autouse=True)
+def plugin_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    base = tmp_path / "roots"
+    (base / "builtin").mkdir(parents=True)
+    (base / "user").mkdir()
+    monkeypatch.setattr(_Lock, "default_root", base, raising=False)
+    return base
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +197,7 @@ def test_active_entry_with_unreadable_metadata_skips_the_pass(
 ):
     _grant("demo")
     renamed = tmp_path / "roots" / "user" / "renamed"
-    renamed.mkdir(parents=True)
+    renamed.mkdir()
     (renamed / "plugin.toml").write_text("not toml [", encoding="utf-8")
     lock = _Lock(
         _entry("demo", removed_at=removed_after_grants),
@@ -200,7 +213,7 @@ def test_active_directory_without_plugin_toml_does_not_block(
     tmp_path, removed_after_grants
 ):
     _grant("demo")
-    (tmp_path / "roots" / "user" / "stray").mkdir(parents=True)
+    (tmp_path / "roots" / "user" / "stray").mkdir()
     lock = _Lock(
         _entry("demo", removed_at=removed_after_grants),
         _entry("", directory_name="stray"),
@@ -208,6 +221,38 @@ def test_active_directory_without_plugin_toml_does_not_block(
     )
 
     assert permission_service.prune_uninstalled_plugin_grants(lock) == ["demo"]
+
+
+def test_tombstone_whose_directory_still_exists_keeps_the_grants(
+    tmp_path, plugin_roots, removed_after_grants
+):
+    # The scan missed it (listing failed, symlinked directory): not uninstalled.
+    _grant("demo")
+    _grant("linked")
+    (plugin_roots / "user" / "demo").mkdir()
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (plugin_roots / "user" / "linked").symlink_to(target, target_is_directory=True)
+    lock = _Lock(
+        _entry("demo", removed_at=removed_after_grants),
+        _entry("linked", removed_at=removed_after_grants),
+    )
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"demo", "linked"}
+
+
+def test_tombstone_under_a_missing_root_keeps_the_grants(
+    tmp_path, removed_after_grants
+):
+    # e.g. the user plugin root is on a drive that is not mounted.
+    _grant("demo")
+    lock = _Lock(
+        _entry("demo", removed_at=removed_after_grants), root=tmp_path / "unmounted"
+    )
+
+    assert permission_service.prune_uninstalled_plugin_grants(lock) == []
+    assert _grants_on_disk(tmp_path) == {"demo"}
 
 
 def test_grants_updated_after_the_removal_are_kept(tmp_path):
@@ -298,7 +343,8 @@ async def test_reconciler_prunes_after_reconcile_under_the_lock(monkeypatch, pru
         task = asyncio.create_task(
             StartupReconciler(manager, prune_uninstalled_grants=prune).run()
         )
-        await asyncio.sleep(0)
+        for _ in range(5):
+            await asyncio.sleep(0)
         assert calls == []
 
     await task
@@ -363,3 +409,72 @@ async def test_real_lock_tombstone_prunes_after_reconcile(
     assert not manager.is_degraded
     assert any(e.plugin_id == "gone" and e.removed for e in manager.list_entries(include_removed=True))
     assert _grants_on_disk(tmp_path) == {"kept", "core", "project_only"}
+
+
+@pytest.mark.asyncio
+async def test_real_lock_unreadable_user_root_keeps_the_grants(tmp_path, monkeypatch):
+    from plugin.server.application.install_source.manager import InstallSourceManager
+    from plugin.server.application.install_source.scanner import PluginDirectoryScanner
+
+    monkeypatch.setattr(
+        operation_lock_module, "_reload_install_source_manager_sync", lambda: None
+    )
+    builtin_root, user_root = tmp_path / "builtin", tmp_path / "user"
+    builtin_root.mkdir()
+    (user_root / "demo").mkdir(parents=True)
+    (user_root / "demo" / "plugin.toml").write_text('[plugin]\nid = "demo"\n', encoding="utf-8")
+    manager = InstallSourceManager(
+        lock_path=tmp_path / "plugins.lock.json",
+        builtin_root=builtin_root,
+        user_root=user_root,
+        scanner=PluginDirectoryScanner(builtin_root, user_root),
+    )
+    await StartupReconciler(manager).run()
+    _grant("demo")
+
+    # The root is unmounted for one startup: the scan sees nothing and the
+    # reconcile tombstones the plugin, but it was never uninstalled.
+    user_root.rename(tmp_path / "user_unmounted")
+    await StartupReconciler(manager, prune_uninstalled_grants=True).run()
+
+    assert any(e.plugin_id == "demo" and e.removed for e in manager.list_entries(include_removed=True))
+    assert _grants_on_disk(tmp_path) == {"demo"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manage_lifecycle", [True, False])
+async def test_http_lifespan_prunes_only_when_it_owns_the_lifecycle(
+    monkeypatch, manage_lifecycle
+):
+    # Embedded, the lifespan reconciles before the layout migration, whose
+    # tombstones are not final yet; the lifecycle's replay prunes instead.
+    from plugin.server import http_app as module
+    from plugin.server.application import install_source
+    from plugin.server.routes import market_bridge
+
+    manager = object()
+    seen: list[bool] = []
+
+    class _Reconciler:
+        def __init__(self, mgr, *, prune_uninstalled_grants: bool = False) -> None:
+            assert mgr is manager
+            seen.append(prune_uninstalled_grants)
+
+        async def run(self) -> None:
+            return None
+
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(install_source, "build_install_source_manager", lambda *a, **k: manager)
+    monkeypatch.setattr(install_source, "StartupReconciler", _Reconciler)
+    monkeypatch.setattr(install_source, "set_global_manager", lambda mgr: None)
+    monkeypatch.setattr(market_bridge, "write_bridge_token_file", lambda *a, **k: None)
+    monkeypatch.setattr(module, "lifecycle_startup", _noop)
+    monkeypatch.setattr(module, "lifecycle_shutdown", _noop)
+
+    app = module.build_plugin_server_app(manage_lifecycle=manage_lifecycle)
+    async with module.plugin_server_lifespan(app):
+        pass
+
+    assert seen == [manage_lifecycle]

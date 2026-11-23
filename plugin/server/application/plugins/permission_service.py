@@ -379,13 +379,26 @@ def _parse_time(value: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
+def _directory_gone(root: object, directory_name: str) -> bool:
+    """Whether the plugin directory is absent under a root that is present."""
+    if root is None or not Path(root).is_dir():
+        return False
+    try:
+        (Path(root) / directory_name).lstat()
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
 def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
     """Plugins the install-source lock proves uninstalled, with their removal time.
 
-    A plugin counts only when it has a removed entry and no active entry in
-    any root; absence from the lock is never evidence (workbench projects and
-    other sources outside the managed roots are not in it). Returns ``None``
-    when the lock cannot be trusted for this.
+    A plugin counts only when it has a removed entry whose directory is gone
+    and no active entry in any root; absence from the lock is never evidence
+    (workbench projects and other sources outside the managed roots are not
+    in it). Returns ``None`` when the lock cannot be trusted for this.
     """
     if manager is None or manager.is_degraded:
         return None
@@ -407,6 +420,11 @@ def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
         when = _parse_time(entry.removed_at)
         if not entry.plugin_id or when is None:
             continue
+        if not _directory_gone(roots.get(entry.root_id), entry.directory_name):
+            # The reconcile also tombstones directories the scan could not
+            # see (root unmounted, listing failed, symlinked); only a
+            # directory that is really gone proves the uninstall.
+            continue
         if entry.plugin_id not in removed_at or when > removed_at[entry.plugin_id]:
             removed_at[entry.plugin_id] = when
     return {pid: when for pid, when in removed_at.items() if pid not in active}
@@ -415,8 +433,11 @@ def _uninstalled_plugin_cutoffs(manager) -> dict[str, datetime] | None:
 def _plugin_ids_in_use() -> set[str] | None:
     """Ids served from outside the lock: registered plugins and workbench projects.
 
-    Returns ``None`` when a workbench project cannot be read, since its
-    plugin id is then unknown.
+    The registry may not be populated yet at startup (it is refreshed after
+    the install-source reconcile in embedded mode), so registered ids are a
+    best-effort extra; the lock and the workbench store are the checks that
+    always apply. Returns ``None`` when a workbench project cannot be read,
+    since its plugin id is then unknown.
     """
     from plugin.core.state import state
     from plugin.server.application.plugins.project_sources import (
@@ -447,7 +468,7 @@ def prune_uninstalled_plugin_grants(manager) -> list[str]:
     """Drop grant records left behind by plugins that were uninstalled.
 
     An uninstall leaves the records in place when the permission store was
-    unusable at the time (see ``UNUSABLE_STORE_CODES``). Run once at startup,
+    unusable at the time (see ``_UNUSABLE_STORE_CODES``). Run once at startup,
     after the install-source reconcile, under the plugin operation lock.
 
     A record is dropped only when the lock proves the plugin uninstalled, no
