@@ -6869,7 +6869,7 @@
         await pendingTemplateWrites.get(key)?.catch(() => {});
         const response = await fetch(
             `${TEMPLATE_LIBRARY_API}?key=${encodeURIComponent(key)}`,
-            { method: 'DELETE', credentials: 'same-origin' },
+            { method: 'DELETE', credentials: 'same-origin', headers: { 'x-neko-emote-library': '1' } },
         );
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || !payload.success) throw new Error(payload.error || 'archive-delete-failed');

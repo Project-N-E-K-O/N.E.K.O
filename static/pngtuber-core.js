@@ -4194,7 +4194,7 @@
                 && (!this.isLayeredActive() || this.layeredSlotStateIndex('talking') !== null);
         }
 
-        /** 话说完了：把说话期间攒下的那条情绪按"刚到"的方式补上（还在有效期内才补） */
+        /** 话说完了：补上说话期间攒下的情绪，持续时间从实际开始播放时计算。 */
         flushPendingEmotion() {
             const pending = this.pendingEmotion;
             if (!pending) return false;

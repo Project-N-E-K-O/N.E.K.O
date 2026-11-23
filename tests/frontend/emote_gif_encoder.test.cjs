@@ -262,32 +262,19 @@ test('an over-long supplied table is trimmed instead of desyncing the stream', (
     assert.equal(result.trailer, 0x3b);
 });
 
-test('single-colour frames decline an adaptive palette and stay encodable', () => {
-    const data = new Uint8ClampedArray(8 * 8 * 4);
-    for (let index = 0; index < 64; index += 1) {
-        data[index * 4] = 10;
-        data[index * 4 + 1] = 200;
-        data[index * 4 + 2] = 90;
-        data[index * 4 + 3] = 255;
+test('single-colour frames preserve their exact opaque colour in either table size', () => {
+    for (const colors of [128, 256]) {
+        for (const rgb of [[255, 255, 255], [0, 0, 0], [10, 200, 90]]) {
+            const data = new Uint8ClampedArray(8 * 8 * 4);
+            for (let index = 0; index < 64; index += 1) data.set([...rgb, 255], index * 4);
+            const frames = [{ width: 8, height: 8, data }];
+            const sampled = encoder.buildPaletteFromFrames(frames, { colors });
+            assert.equal(sampled.colors, 1);
+            const bytes = encoder.encode(frames, { width: 8, height: 8, colors });
+            const result = inspectGif(bytes);
+            assert.equal(result.frames, 1);
+            assert.equal(result.colorTableEntries, colors);
+            assert.deepEqual(readGlobalColorTable(bytes)[1], rgb);
+        }
     }
-    const frames = [{ width: 8, height: 8, data }];
-    // One distinct colour carries no information to partition; median-cut would
-    // emit a degenerate table, so sampling reports "not usable" instead.
-    assert.equal(encoder.buildPaletteFromFrames(frames, { colors: 128 }), null);
-    // encode must still fall back to the lattice and produce a well-formed file
-    // whose chosen entry sits near the source colour.
-    const result = inspectGif(encoder.encode(frames, { width: 8, height: 8 }));
-    assert.equal(result.frames, 1);
-    assert.equal(result.colorTableEntries, 128);
-    const nearest = readGlobalColorTable(encoder.encode(frames, { width: 8, height: 8 }))
-        .slice(1)
-        .reduce((best, [r, g, b]) => {
-            const distance = (r - 10) ** 2 + (g - 200) ** 2 + (b - 90) ** 2;
-            return distance < best.distance ? { distance, color: [r, g, b] } : best;
-        }, { distance: Infinity, color: null });
-    assert.ok(nearest.color, 'the lattice must offer a colour');
-    assert.ok(
-        Math.abs(nearest.color[1] - 200) <= 40 && Math.abs(nearest.color[2] - 90) <= 40,
-        `nearest lattice colour ${JSON.stringify(nearest.color)} is too far from rgb(10,200,90)`,
-    );
 });

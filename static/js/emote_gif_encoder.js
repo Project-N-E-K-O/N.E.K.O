@@ -279,7 +279,7 @@
             ? Number(options.alphaThreshold)
             : 128));
         const histogram = sampleHistogram(frames, alphaThreshold, options.sampleLimit);
-        if (histogram.size < 2) return null;
+        if (!histogram.size) return null;
         const entries = entriesFromHistogram(histogram);
         const colors = medianCut(entries, count - 1);
         if (!colors.length) return null;

@@ -763,7 +763,9 @@ async def stage_image_frames(request: Request, file: UploadFile = File(...), edg
 
 
 @router.delete("/library")
-async def delete_template_library_archive(key: str = Query(...)):
+async def delete_template_library_archive(request: Request, key: str = Query(...)):
+    if request.headers.get(_LIBRARY_HEADER) != "1":
+        return _store_error(ValueError("forbidden"), status=403)
     if key == _BUILTIN_KEY:
         return _store_error(EmoteTemplateStoreError("内置模板不可删除"), status=403)
     try:
@@ -858,6 +860,8 @@ def _create_export_folder(parent: Path, folder: str) -> str:
         except FileExistsError:
             suffix = f" {index}"
             candidate = name[:80 - len(suffix)] + suffix
+        except OSError as exc:
+            raise ExportWriteError("没法在这个目录里建文件夹") from exc
     raise ExportWriteError("没法在这个目录里建文件夹")
 
 

@@ -112,6 +112,26 @@ def test_animation_drag_ignores_a_second_pointer(editor, with_hold, foreign_even
     assert editor.locator('.pack-drag-ghost').count() == 0
 
 
+@pytest.mark.parametrize('colors', [128, 256])
+@pytest.mark.parametrize('rgb', [[255, 255, 255], [0, 0, 0], [10, 200, 90], None])
+def test_monochrome_gif_preserves_decoded_color_and_transparency(page, running_server, colors, rgb):
+    page.goto(running_server + '/emote_maker', wait_until='networkidle')
+    pixels = page.evaluate("""async ([colors,rgb]) => {
+        const frame = {width:2,height:1,data:new Uint8ClampedArray([
+            ...(rgb ? [...rgb,255] : [0,0,0,0]),0,0,0,0])};
+        const bytes = NekoEmoteGifEncoder.encode([frame], {colors});
+        const url = URL.createObjectURL(new Blob([bytes], {type:'image/gif'}));
+        try {
+            const image = new Image(); image.src=url; await image.decode();
+            const canvas = document.createElement('canvas');canvas.width=2;canvas.height=1;
+            const context=canvas.getContext('2d');context.drawImage(image,0,0);
+            return Array.from(context.getImageData(0,0,2,1).data);
+        } finally {URL.revokeObjectURL(url);}
+    }""", [colors, rgb])
+    assert pixels[:4] == (rgb + [255] if rgb is not None else [0, 0, 0, 0])
+    assert pixels[4:] == [0, 0, 0, 0]
+
+
 def _two_skins():
     result = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(spine_zip())) as source, zipfile.ZipFile(result, "w") as target:

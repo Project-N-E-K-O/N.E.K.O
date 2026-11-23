@@ -337,6 +337,7 @@ def test_delete_waits_for_pending_archive_save_and_releases_copy(page: Page, run
     expect(remove).to_be_disabled()
     with page.expect_response(lambda response: response.request.method == "DELETE" and "/library?" in response.url) as deleted:
         pending[0].continue_()
+    assert deleted.value.request.headers.get('x-neko-emote-library') == '1'
     assert deleted.value.json()["freedBytes"] > 0
     expect(page.locator(".template-lib-card:not([data-template-built-in])")).to_have_count(0)
     assert page.request.get(running_server + "/api/emote-maker/library/archive", params={"key": key}).status == 404

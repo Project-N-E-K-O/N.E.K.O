@@ -1430,6 +1430,43 @@ def test_archive_processing_runs_outside_the_event_loop(client, monkeypatch, ope
     assert not any(on_event_loop for _, on_event_loop in calls)
 
 
+@pytest.mark.parametrize('error_type', [PermissionError, OSError])
+def test_export_folder_oserror_returns_a_controlled_error_without_writing(client, tmp_path, monkeypatch, error_type):
+    parent = tmp_path / 'picked'
+    parent.mkdir()
+    original = Path.mkdir
+
+    def deny_export(path, *args, **kwargs):
+        if path.parent == parent:
+            raise error_type('test-only-create-denied')
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'mkdir', deny_export)
+    response = client.post('/api/emote-maker/export/folder', headers=_EXPORT_HEADER,
+                           json={'directory': str(parent), 'folder': 'group'})
+    assert response.status_code == 400
+    assert response.json()['success'] is False
+    assert 'test-only-create-denied' not in response.text
+    assert list(parent.iterdir()) == []
+
+
+@pytest.mark.parametrize('header', [None, '0'])
+def test_library_delete_requires_the_editor_header_and_preserves_rejected_archives(client, tmp_path, header):
+    store = EmoteTemplateArchiveStore(tmp_path / 'emote_templates')
+    store.save('header-delete', _zip())
+    before = {p.relative_to(store.root): p.read_bytes() for p in store.root.rglob('*') if p.is_file()}
+    client.headers.pop('x-neko-emote-library', None)
+    headers = {} if header is None else {'x-neko-emote-library': header}
+    rejected = client.delete('/api/emote-maker/library', params={'key': 'header-delete'}, headers=headers)
+    assert rejected.status_code == 403
+    after = {p.relative_to(store.root): p.read_bytes() for p in store.root.rglob('*') if p.is_file()}
+    assert after == before
+    accepted = client.delete('/api/emote-maker/library', params={'key': 'header-delete'},
+                             headers={'x-neko-emote-library': '1'})
+    assert accepted.status_code == 200
+    assert accepted.json()['freedBytes'] > 0
+
+
 def test_export_folder_file_and_zip_land_beside_each_other(client, tmp_path: Path):
     parent = tmp_path / "picked"
     parent.mkdir()
