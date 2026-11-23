@@ -33,7 +33,14 @@ from nekopower.host.role_models import PluginModelSlots
 from plugin.server.domain.model_config import ModelSlot, PluginModelsConfig
 from plugin.server.infrastructure.model_config_store import CONFIG_FILENAME
 from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
-from tests.unit.nekopower.host_fakes import FakeDecisionLLM, make_host, scripted_runtime, wait_status, wait_until
+from tests.unit.nekopower.host_fakes import (
+    FakeDecisionLLM,
+    let_go,
+    make_host,
+    scripted_runtime,
+    wait_status,
+    wait_until,
+)
 from utils.file_utils import atomic_write_json
 
 AGENT_SLOT = "slot_" + "a" * 32
@@ -997,7 +1004,7 @@ async def test_an_idle_session_waits_under_its_own_model_and_not_the_task_agent_
     agent = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
     await host.task_agents.settle()
     tasks = host.task_agents
-    await wait_until(lambda: tasks._held_by == {}, what="every session being let go")
+    await let_go(host)
     own_key = await tasks._task_model_key(own.session_id)
     agent_key = await tasks._task_model_key(agent.session_id)
     manager.tiers["agent"] = {**AGENT_TIER, "model": "another-model"}
@@ -1533,7 +1540,7 @@ async def test_an_idle_session_is_not_summed_up_by_a_model_that_has_it_switched_
     tasks = host.task_agents
     done = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
     await tasks.settle()
-    await wait_until(lambda: tasks._held_by == {}, what="every session being let go")
+    await let_go(host)
     tasks._drop_idle_timer(done.session_id)
     key = await tasks._task_model_key(done.session_id)
     looked: list[str] = []

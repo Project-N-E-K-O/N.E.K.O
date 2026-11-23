@@ -33,6 +33,7 @@ from tests.unit.nekopower.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekopower.host_fakes import (
     FakeDecisionLLM,
     fake_model,
+    let_go,
     make_host,
     pick_plugin,
     scripted_runtime,
@@ -102,8 +103,8 @@ async def _released(host: Any, commission_id: str) -> None:
 
 
 async def _let_go(host: Any) -> None:
-    """Wait until no commission holds a session any more."""
-    await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
+    """Wait until no commission holds a session any more (``host_fakes.let_go``)."""
+    await let_go(host)
 
 
 def _user_messages(request: list[dict[str, Any]]) -> list[str]:
@@ -136,6 +137,10 @@ async def test_commissions_of_a_project_are_worked_on_in_its_one_session_one_aft
 
     first = await _dispatch(host, "add a CSV export to the budget app")
     await wait_status(host, first.commission_id, "working")
+    # Working is on record a moment before its first request reaches the model:
+    # the others are dispatched once it has, or one of no project could be
+    # asked first, and the order checked below would turn on timing.
+    await wait_until(lambda: seen[:1] == ["add a CSV export"], what="the first commission's first request")
     second = await _dispatch(host, "add a chart to the budget app")
     other = await _dispatch(host, "what is the weather tomorrow")
     await host.brain.settle()
