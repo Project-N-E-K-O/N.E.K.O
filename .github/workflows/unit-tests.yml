@@ -62,9 +62,10 @@ jobs:
     # broke the cat-mind harness lives, so the guard against it stays honest.
     runs-on: windows-latest
     # The suite alone takes 28-32 minutes here and the job ~41; the `--lf`
-    # re-run after a failure adds a few more. Nothing waits on this job any
-    # more, so the ceiling only has to stop a hung run.
-    timeout-minutes: 60
+    # re-run after a failure may add up to its own 15-minute cap. Nothing waits
+    # on this job any more, so the ceiling only has to stop a hung run without
+    # cutting a slow runner off in the middle of the re-run.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v5
 

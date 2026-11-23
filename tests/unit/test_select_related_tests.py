@@ -224,13 +224,20 @@ def test_global_files_select_the_full_suite(index, path):
     assert result.files == ALL_CANDIDATES
 
 
+def test_unit_package_init_is_global(index):
+    # tests/ has no __init__.py, so every test module is imported inside the
+    # `unit` package; the parametrized case above reads GLOBAL_FILES itself.
+    assert sel.select(index, ["tests/unit/__init__.py"]).mode == "full"
+
+
 def test_helper_of_root_conftest_counts_as_global(index):
     result = sel.select(index, ["tests/root_helper.py"])
     assert result.mode == "full"
 
 
 def test_sub_directory_conftest_selects_its_directory(index):
-    for changed in ("tests/unit/sub/conftest.py", "tests/unit/sub/sub_helper.py"):
+    # A test package's __init__.py runs before each of its test modules, like a conftest.
+    for changed in ("tests/unit/sub/conftest.py", "tests/unit/sub/sub_helper.py", "tests/unit/sub/__init__.py"):
         assert _selected(index, changed) == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
 
 

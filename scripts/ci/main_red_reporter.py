@@ -134,6 +134,7 @@ class FailureReport:
     last_success: dict | None
     suspects: list[Suspect] = field(default_factory=list)
     suspects_truncated: bool = False
+    total_commits: int = 0
 
     @property
     def flaky(self) -> bool:
@@ -169,6 +170,10 @@ def render_failure(report: FailureReport, *, for_comment: bool) -> str:
         lines.append("- 偶发判断：失败的测试用 `--lf` 原样重跑了一次，**重跑通过**，疑似偶发失败（已加 `flaky` 标签）。")
     elif report.rerun_verdict == "failed":
         lines.append("- 偶发判断：失败的测试用 `--lf` 原样重跑了一次，重跑仍然失败，不像偶发。")
+    elif report.rerun_verdict == "partial":
+        lines.append(
+            "- 偶发判断：pytest 失败的测试用 `--lf` 重跑通过了，但还有其它失败的 job 没有重跑，不能整体判为偶发。"
+        )
     else:
         lines.append("- 偶发判断：这个 workflow 没有做失败重跑，无法判断是否偶发。")
 
@@ -182,31 +187,36 @@ def render_failure(report: FailureReport, *, for_comment: bool) -> str:
         lines.append("日志里没有抓到 `FAILED` / `ERROR` 行（可能是安装、超时或非 pytest 步骤失败），请看运行日志。")
 
     lines += ["", "### 嫌疑范围", ""]
+    shown = report.suspects[-MAX_COMMITS:]
+    total = max(report.total_commits, len(report.suspects))
     if report.last_success is None:
         lines.append("没找到这个 workflow 最近在 main 上成功的运行，下面只列出本次运行的提交。")
     else:
         good = report.last_success
         lines.append(
             f"上次在 main 上成功：[#{good.get('run_number', good['id'])}]({good['html_url']})（提交 `{good['head_sha'][:8]}`）。"
-            f"从那之后到本次提交共 {len(report.suspects)} 个提交{'（只列出最近的一部分）' if report.suspects_truncated else ''}。"
+            f"从那之后到本次提交共 {total} 个提交{f'，下表只列出最近的 {len(shown)} 个' if total > len(shown) else ''}。"
         )
     lines.append(
         "main 上排队中的运行会被后来的提交顶掉（取消），所以一次失败可能来自下列任意一个提交。"
         "下面的作者只是**嫌疑范围**，不代表就是谁弄坏的。"
     )
     lines += ["", "| 提交 | PR | 作者 | 标题 |", "| --- | --- | --- | --- |"]
-    for suspect in report.suspects[-MAX_COMMITS:]:
+    # Only the opening post pings, and only the authors whose rows it shows:
+    # a follow-up failure in the same red streak re-notifies nobody.
+    ping = not for_comment
+    for suspect in shown:
         pr = f"#{suspect.pr}" if suspect.pr else "-"
         if not suspect.author:
             author = "-"
-        elif suspect.author.endswith("[bot]"):
-            author = f"`{suspect.author}`"  # do not ping bots
-        else:
+        elif ping and not suspect.author.endswith("[bot]"):
             author = f"@{suspect.author}"
+        else:
+            author = f"`{suspect.author}`"
         title = suspect.title.replace("|", "\\|")
         lines.append(f"| `{suspect.sha[:8]}` | {pr} | {author} | {title} |")
-    people = mentions(report.suspects)
-    if people:
+    people = mentions(shown)
+    if ping and people:
         lines += ["", "嫌疑范围内的作者：" + " ".join(f"@{p}" for p in people)]
     return "\n".join(lines) + "\n"
 
@@ -292,6 +302,20 @@ def run_history(gh: GitHub, run: dict) -> list[dict]:
     return runs
 
 
+def rerun_state(verdicts: list[str], failed_job_count: int) -> str | None:
+    """Combine the per-job ``--lf`` verdicts of one run.
+
+    None: nothing was re-run. "failed": some re-run reproduced. "passed": every
+    failed job re-ran and passed (flaky). "partial": the re-runs passed, but
+    other failed jobs had no re-run, so the run as a whole is not flaky.
+    """
+    if not verdicts:
+        return None
+    if "failed" in verdicts:
+        return "failed"
+    return "passed" if len(verdicts) == failed_job_count else "partial"
+
+
 def collect_failure(gh: GitHub, run: dict, runs: list[dict]) -> FailureReport:
     repo = gh.repo
     jobs = gh.get(f"/repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100")["jobs"]
@@ -304,10 +328,7 @@ def collect_failure(gh: GitHub, run: dict, runs: list[dict]) -> FailureReport:
         verdict = parse_rerun_verdict(log)
         if verdict:
             verdicts.append(verdict)
-    # Flaky only when every job that re-ran came back green and no failed job skipped the re-run.
-    rerun = None
-    if verdicts:
-        rerun = "passed" if all(v == "passed" for v in verdicts) and len(verdicts) == len(failed_jobs) else "failed"
+    rerun = rerun_state(verdicts, len(failed_jobs))
 
     good = last_success_before(run, runs)
     suspects: list[Suspect] = []
@@ -327,12 +348,14 @@ def collect_failure(gh: GitHub, run: dict, runs: list[dict]) -> FailureReport:
         truncated = total > len(commits)
     else:
         commits = [gh.get(f"/repos/{repo}/commits/{run['head_sha']}")]
+        total = 1
     authors: dict[int, str | None] = {}
-    for commit in commits:
+    shown_from = max(0, len(commits) - MAX_COMMITS)
+    for index, commit in enumerate(commits):
         message = commit["commit"]["message"]
         pr = pr_number_from_message(message)
         author = (commit.get("author") or {}).get("login")
-        if pr is not None:
+        if pr is not None and index >= shown_from:  # only rows the table shows need the PR author
             if pr not in authors:
                 try:
                     authors[pr] = gh.get(f"/repos/{repo}/issues/{pr}")["user"]["login"]
@@ -340,7 +363,7 @@ def collect_failure(gh: GitHub, run: dict, runs: list[dict]) -> FailureReport:
                     authors[pr] = None
             author = authors[pr] or author
         suspects.append(Suspect(commit["sha"], message.splitlines()[0], pr, author))
-    return FailureReport(run["name"], run, failed_jobs, tests, rerun, good, suspects, truncated)
+    return FailureReport(run["name"], run, failed_jobs, tests, rerun, good, suspects, truncated, total)
 
 
 def _ensure_label(gh: GitHub, name: str) -> None:

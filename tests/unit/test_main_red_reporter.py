@@ -248,8 +248,59 @@ def test_job_without_rerun_is_not_called_flaky():
     gh = FakeGitHub(current, _history(current), failed_jobs=jobs)
     gh.job_log = lambda job_id: LOG if job_id == 99 else "FAILED tests/unit/test_other.py::test_x - boom\n"
     report = mr.collect_failure(gh, current, _history(current))
-    assert report.rerun_verdict == "failed"
+    assert report.rerun_verdict == "partial"
     assert not report.flaky
+    body = mr.render_failure(report, for_comment=False)
+    assert "重跑通过了，但还有其它失败的 job 没有重跑" in body and "重跑仍然失败" not in body
+
+
+@pytest.mark.parametrize(
+    "verdicts, failed_jobs, state",
+    [([], 1, None), (["passed"], 1, "passed"), (["passed"], 2, "partial"), (["passed", "failed"], 2, "failed")],
+)
+def test_rerun_state(verdicts, failed_jobs, state):
+    assert mr.rerun_state(verdicts, failed_jobs) == state
+
+
+def test_partial_rerun_keeps_an_existing_flaky_label():
+    current = _failure()
+    issue = {"number": 8, "body": mr.issue_marker("Unit Tests"), "labels": [{"name": "flaky"}], "html_url": "u"}
+    jobs = [
+        {"id": 99, "name": "full", "conclusion": "failure", "html_url": "x"},
+        {"id": 98, "name": "vitest", "conclusion": "failure", "html_url": "y"},
+    ]
+    gh = FakeGitHub(current, _history(current), issues=[issue], failed_jobs=jobs)
+    gh.job_log = lambda job_id: LOG if job_id == 99 else ""
+    mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
+    assert not [w for w in gh.writes if w[0] == "DELETE"]
+
+
+def test_follow_up_comments_ping_nobody():
+    current = _failure()
+    issue = {"number": 8, "body": mr.issue_marker("Unit Tests"), "labels": [], "html_url": "u"}
+    gh = FakeGitHub(current, _history(current), issues=[issue])
+    mr.run_reporter(gh, "5", dry_run=False, discord_url=None)
+    body = next(w[2]["body"] for w in gh.writes if w[1].endswith("/comments"))
+    assert "@" not in body and "`alice`" in body
+
+
+def test_only_the_authors_shown_in_the_table_are_pinged():
+    current = _failure()
+    # The first 50 commits came from PR #10, the next 50 were pushed directly.
+    commits = [
+        FakeGitHub._commit(f"{i:03d}", f"old change {i}" + (" (#10)" if i < 50 else ""), f"old{i}")
+        for i in range(100)
+    ]
+    commits += [FakeGitHub._commit("new", "fix: last (#10)", "merger")]
+    gh = FakeGitHub(current, _history(current), commits=commits)
+    report = mr.collect_failure(gh, current, _history(current))
+    body = mr.render_failure(report, for_comment=False)
+    assert "共 101 个提交，下表只列出最近的 60 个" in body
+    assert "@alice" in body and "@old50" in body
+    assert "old40" not in body
+    # The PR author lookup is only spent on rows that are shown.
+    assert report.suspects[0].author == "old0"
+    assert report.suspects[45].author == "alice"
 
 
 def test_success_closes_the_open_issue():

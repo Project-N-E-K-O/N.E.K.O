@@ -91,6 +91,9 @@ GLOBAL_FILES = frozenset(
         "pytest.ini",
         "tests/conftest.py",
         "tests/unit/conftest.py",
+        # tests/ has no __init__.py, so pytest imports every test file as a
+        # module of the `unit` package: this runs before each of them.
+        "tests/unit/__init__.py",
         ".github/workflows/unit-tests.yml",
         SELF_PATH,
     }
@@ -662,7 +665,8 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
         if _ignored(rel):
             continue
         scope = conftest_scope.get(rel)
-        if PurePosixPath(rel).name == "conftest.py" and rel.startswith("tests/"):
+        if PurePosixPath(rel).name in ("conftest.py", "__init__.py") and rel.startswith(TEST_ROOT + "/"):
+            # A test package's __init__ runs before every test module in it, like a conftest.
             scope = rel.rsplit("/", 1)[0] + "/"
         if scope:
             chosen |= {p for p in candidates if p.startswith(scope)}
