@@ -17,3 +17,19 @@ supported = ">=0.1.0,<0.3.0"
 [plugin_runtime]
 enabled = true
 auto_start = false
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."system.fs:read"]
+reason = { zh-CN = "读取 Claude Code 的对话记录，了解它刚刚做了什么；也读取插件安装目录里待发给 Claude Code 的消息（inbox.json）。", zh-TW = "讀取 Claude Code 的對話紀錄，了解它剛剛做了什麼；也讀取外掛安裝目錄裡待發給 Claude Code 的訊息（inbox.json）。", en = "Read Claude Code's conversation logs to see what it just did, and the messages waiting for Claude Code (inbox.json) in the plugin's install folder.", ja = "Claude Code の会話ログを読み取り、直前に何をしたかを把握します。プラグインのインストールフォルダーにある Claude Code に送る待機中のメッセージ（inbox.json）も読み取ります。", ko = "Claude Code의 대화 기록을 읽어 방금 무엇을 했는지 파악합니다. 플러그인 설치 폴더에 있는 Claude Code에 보낼 대기 중인 메시지(inbox.json)도 읽습니다.", ru = "Читать журналы диалогов Claude Code, чтобы узнать, что он только что сделал, а также сообщения, ожидающие отправки в Claude Code (inbox.json), в папке установки плагина.", es = "Leer los registros de conversación de Claude Code para saber qué acaba de hacer, y los mensajes pendientes para Claude Code (inbox.json) en la carpeta de instalación del plugin.", pt = "Ler os registros de conversa do Claude Code para saber o que ele acabou de fazer, e as mensagens que aguardam o Claude Code (inbox.json) na pasta de instalação do plugin." }
+
+[permissions.require."plugin_sdk.main_agent.messages:push"]
+reason = { zh-CN = "把 Claude Code 的工作进展告诉 N.E.K.O。", zh-TW = "把 Claude Code 的工作進度告訴 N.E.K.O。", en = "Tell N.E.K.O how Claude Code's work is going.", ja = "Claude Code の作業の進み具合を N.E.K.O に伝えます。", ko = "Claude Code의 작업 진행 상황을 N.E.K.O에게 알립니다.", ru = "Сообщать N.E.K.O, как продвигается работа Claude Code.", es = "Contarle a N.E.K.O cómo avanza el trabajo de Claude Code.", pt = "Contar ao N.E.K.O como está o trabalho do Claude Code." }
+
+[permissions.require."system.env:read"]
+reason = { zh-CN = "如果设置里没有填访问令牌，就从环境变量读取。", zh-TW = "如果設定裡沒有填存取權杖，就從環境變數讀取。", en = "Read its access token from an environment variable if none is set in the settings.", ja = "設定にアクセストークンが入力されていない場合、環境変数から読み取ります。", ko = "설정에 액세스 토큰이 입력되지 않았으면 환경 변수에서 읽습니다.", ru = "Читать токен доступа из переменной окружения, если он не указан в настройках.", es = "Leer su token de acceso desde una variable de entorno si no está en los ajustes.", pt = "Ler o token de acesso de uma variável de ambiente se ele não estiver nas configurações." }
+
+[permissions.require."system.network:listen"]
+reason = { zh-CN = "在本机开一个端口，接收 Claude Code 发来的工作通知。", zh-TW = "在本機開一個連接埠，接收 Claude Code 傳來的工作通知。", en = "Open a port on this computer to receive work notifications from Claude Code.", ja = "このパソコンでポートを開き、Claude Code からの作業通知を受け取ります。", ko = "이 컴퓨터에서 포트를 열어 Claude Code가 보내는 작업 알림을 받습니다.", ru = "Открыть порт на этом компьютере, чтобы получать уведомления о работе от Claude Code.", es = "Abrir un puerto en este equipo para recibir avisos de trabajo de Claude Code.", pt = "Abrir uma porta neste computador para receber avisos de trabalho do Claude Code." }
+
+[permissions.require."system.fs:write"]
+reason = { zh-CN = "在插件安装目录里保存待发给 Claude Code 的消息（inbox.json）。", zh-TW = "在外掛安裝目錄裡保存待發給 Claude Code 的訊息（inbox.json）。", en = "Save messages waiting for Claude Code (inbox.json) in the plugin's install folder.", ja = "Claude Code に送る待機中のメッセージ（inbox.json）をプラグインのインストールフォルダーに保存します。", ko = "Claude Code에 보낼 대기 중인 메시지(inbox.json)를 플러그인 설치 폴더에 저장합니다.", ru = "Сохранять сообщения, ожидающие отправки в Claude Code (inbox.json), в папке установки плагина.", es = "Guardar los mensajes pendientes para Claude Code (inbox.json) en la carpeta de instalación del plugin.", pt = "Salvar as mensagens que aguardam o Claude Code (inbox.json) na pasta de instalação do plugin." }

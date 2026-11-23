@@ -292,6 +292,13 @@ permissions = ["state:read"]
 - `ask` 项如果在用户没在使用时也要用，可以加 `background = true`，同时写 `background_reason`。
 - `hosts`（只用于 `system.network:connect`）只展示给用户参考。
 
+`require` 还是 `ask`：
+
+- `require` 权限也包括后台使用，所以 `require` 项不写 `background`。
+- 插件在不是用户触发时也会用到的 `ask` 项（定时器、启动时、监听或事件回调、后台线程等），必须写 `background = true` 和 `background_reason`。
+- 从环境变量读配置、启动会继承插件环境变量的程序，一律算 `system.env:read`，归 `require`。
+- `system.network:listen` 一律归 `require`。
+
 权限 id：
 
 | id | 含义 |
