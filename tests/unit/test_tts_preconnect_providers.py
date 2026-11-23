@@ -505,6 +505,26 @@ def test_shutdown_closes_the_speech_socket(provider, monkeypatch):
     assert first.closed.is_set()
 
 
+def test_every_qwen_socket_closes_within_the_short_timeout(monkeypatch):
+    # Speech sockets are closed through the tracked close too, and the next
+    # connect waits for it: none may keep websockets' default 10s.
+    monkeypatch.setattr(qwen_mod, "_resolve_qwen_realtime_tts_url", lambda: "wss://dashscope.test/realtime")
+    monkeypatch.setattr(qwen_mod, "_record_tts_telemetry", lambda *_a, **_k: None)
+    warmup, first = _qwen_socket("warmup"), _qwen_socket("first")
+    _Connects(monkeypatch, [warmup, first])
+    responses = queue.Queue()
+
+    qwen_mod.qwen_realtime_tts_worker(
+        _Requests(("speech-1", _OPENING), (None, None), _wait(_audio_done(responses, "speech-1"))),
+        responses,
+        "sk-test",
+        "Momo",
+    )
+
+    for socket in (warmup, first):
+        assert 0 < socket.connect_kwargs.get("close_timeout", 10.0) <= 2.0, socket.name
+
+
 def test_spare_socket_uses_a_short_close_timeout(provider, monkeypatch):
     spare = provider.make_socket("spare")
     warmups = _warmups(provider)
@@ -705,3 +725,10 @@ def test_elevenlabs_malformed_base_url_still_reports_through_the_worker():
         _Requests(), responses, "xi-test", "21m00Tcm4TlvDq8ikWAM", base_url="http://[::1",
     )
     assert any(isinstance(item, tuple) and item[0] == "__ready__" for item in list(responses.queue))
+
+
+def test_quiet_window_outlasts_qwens_gaps_between_sentences():
+    # Qwen's server_commit mode can pause 1-2s between sentences; a window
+    # shorter than that could retire a round whose last sentence is coming.
+    assert _preconnect.FINISHED_ROUND_QUIET_SECONDS > 2.0
+    assert qwen_mod.FINISHED_ROUND_QUIET_SECONDS == _preconnect.FINISHED_ROUND_QUIET_SECONDS

@@ -299,6 +299,9 @@ def test_sentence_workers_build_their_client_with_the_tts_pool(
     ]
     assert len(kept) == 1, f"{module_name}: persistent client without the TTS pool: {created}"
     assert getattr(kept[0][1]._transport.handle_async_request, "_neko_stale_retry", False)
+    # A connection a middlebox dropped silently answers nothing; with idle
+    # connections now kept for 55s, no client may wait for it forever.
+    assert kept[0][1].timeout.read is not None, f"{module_name}: no read timeout"
 
 
 def test_pool_module_names_its_window_once():

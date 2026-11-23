@@ -66,8 +66,9 @@ SPARE_CLOSE_TIMEOUT_SECONDS = 2.0
 # Workers whose upstream keeps a finished round's socket open until the next
 # speech retire it on a preconnect, so the spare can open without a second
 # connection. "Finished" also requires this long without audio on it, in case
-# a done event arrived ahead of the round's last audio.
-FINISHED_ROUND_QUIET_SECONDS = 1.0
+# a done event arrived ahead of the round's last audio: Qwen's server_commit
+# mode can pause 1-2s between sentences.
+FINISHED_ROUND_QUIET_SECONDS = 3.0
 
 _CONTROL_REQUEST_IDS = frozenset({TTS_SHUTDOWN_SENTINEL, "__interrupt__"})
 

@@ -385,7 +385,9 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 defer_control=_defer_queued_work_until_control,
             )
 
-            ws = await websockets.connect(tts_url, additional_headers=headers)
+            ws = await websockets.connect(
+                tts_url, additional_headers=headers, close_timeout=SPARE_CLOSE_TIMEOUT_SECONDS,
+            )
             
             # Await and handle initial messages
             async def wait_for_session_ready():
@@ -651,7 +653,13 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             if not await spare.await_cleanup():
                                 # A queued interrupt/shutdown owns this boundary.
                                 continue
-                            ws = await websockets.connect(tts_url, additional_headers=headers)
+                            # Short close_timeout like the spare's: this socket's close is
+                            # tracked too, and the next connect waits for it.
+                            ws = await websockets.connect(
+                                tts_url,
+                                additional_headers=headers,
+                                close_timeout=SPARE_CLOSE_TIMEOUT_SECONDS,
+                            )
                         logger.info(
                             "[voice-chain] stage=tts_socket speech_id=%s host=%s preconnected=%s wait_ms=%d",
                             current_speech_id,

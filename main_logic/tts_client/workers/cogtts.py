@@ -52,7 +52,10 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id, ba
         }
 
         client = make_tts_http_client(
-            timeout=httpx.Timeout(connect=10, read=None, write=10, pool=10),
+            # The synthesis request sets its own tighter timeout; this default
+            # only keeps any other request off an unbounded read on a kept-
+            # alive connection a middlebox dropped silently.
+            timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
         )
 
         async def synthesize(text: str, speech_id: str) -> None:

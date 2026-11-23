@@ -258,7 +258,10 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
                 raise RuntimeError("MiniMax TTS 探测失败")
 
         client = make_tts_http_client(
-            timeout=httpx.Timeout(connect=10, read=None, write=10, pool=10),
+            # Finite read timeout (the longest gap between two chunks): a kept-
+            # alive connection a middlebox dropped silently must not hang the
+            # sentence forever.
+            timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
         )
 
         async def synthesize(text: str, speech_id: str) -> None:
