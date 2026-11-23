@@ -68,6 +68,12 @@ def test_market_entry_is_independent_of_toggle_for_pointer_and_keyboard(mock_pag
     assert mock_page.evaluate("window.__marketSaved") == 1
 
 
+def _click_and_expect_close(target, selector):
+    """Click from a page task so Playwright never awaits an action on a closing page."""
+    with target.expect_event('close'):
+        target.evaluate("selector => setTimeout(() => document.querySelector(selector).click(), 0)", selector)
+
+
 def _market_host(page, running_server):
     """Real transport/adapter, with an isolated host and no model or user data."""
     page.route('**/__market_test_host', lambda route: route.fulfill(content_type='text/html', body='''
@@ -86,21 +92,82 @@ def _market_host(page, running_server):
 
 
 @pytest.mark.frontend
-def test_market_bootstrap_never_initializes_or_displays_local_selector(page, running_server):
+@pytest.mark.parametrize('failure', ['http', 'network', 'timeout'])
+def test_market_bootstrap_never_initializes_or_displays_local_selector(page, running_server, failure):
     _market_host(page, running_server)
     requests = []
     page.context.route('**/api/theater-numeric/**', lambda route: (
         requests.append(route.request.url), route.fulfill(json={'ok': False})))
-    page.context.route('**/api/theater-market/launch', lambda route: route.fulfill(json={
-        'ok': False, 'reason': 'isolated_connection_failure'}))
+    def fail_connection(route):
+        if failure == 'http':
+            route.fulfill(status=502, json={'ok': False, 'reason': 'isolated_connection_failure'})
+        else:
+            route.abort('timedout' if failure == 'timeout' else 'connectionrefused')
+    page.context.route('**/api/theater-market/launch', fail_connection)
     with page.expect_popup() as opened:
         page.get_by_role('button', name='Market', exact=True).click()
     popup = opened.value
-    expect(popup.locator('#theater-selector-status')).to_have_text('无法连接剧本市场，请保持 NEKO 开启并重试。')
+    expect(popup.locator('#theater-selector-status')).to_have_text('暂时无法连接剧本市场，请重试。')
+    expect(popup.locator('.theater-title-bar')).to_be_visible()
+    expect(popup.locator('[data-neko-window-control]')).to_have_count(4)
+    expect(popup.locator('[data-neko-window-control="close"]')).to_be_visible()
+    expect(popup.locator('#theater-market-retry-btn')).to_be_enabled()
+    expect(popup.get_by_role('link', name='返回选择剧本')).to_have_attribute('href', '/theater')
+    expect(popup.locator('#theater-market-connection')).to_have_attribute('aria-busy', 'false')
     expect(popup.locator('#theater-story-list')).to_have_count(0)
     expect(popup.locator('#theater-start-btn')).to_have_count(0)
     assert not requests
     assert len(page.context.pages) == 2  # host plus exactly one entry window
+    _click_and_expect_close(popup, '[data-neko-window-control="close"]')
+    assert not page.is_closed()
+
+
+@pytest.mark.frontend
+def test_market_retry_preserves_parameters_and_blocks_overlapping_requests(page, running_server):
+    _market_host(page, running_server)
+    calls = []
+    pending = []
+    def connect(route):
+        calls.append(route.request.post_data_json)
+        if len(calls) == 1:
+            route.fulfill(status=502, json={'ok': False})
+        else:
+            pending.append(route)
+    page.context.route('**/api/theater-market/launch', connect)
+    page.context.route('**/__market_success', lambda route: route.fulfill(body='<h1>Market connected</h1>'))
+    with page.expect_popup() as opened:
+        page.evaluate("void window.open('/theater?market=random&share_id=12&market_revision=3&file_sha256=test-hash', 'neko_theater_market')")
+    popup = opened.value
+    retry = popup.locator('#theater-market-retry-btn')
+    expect(retry).to_be_visible()
+    with popup.expect_request('**/api/theater-market/launch'):
+        retry.click()
+    expect(retry).to_be_disabled()
+    expect(popup.locator('#theater-market-connection')).to_have_attribute('aria-busy', 'true')
+    popup.evaluate('window.nekoTheaterMarket.redirectSelector()')
+    assert calls == [{'random': True, 'share_id': 12, 'revision': 3, 'file_sha256': 'test-hash'}] * 2
+    assert len(pending) == 1
+    expect(popup.get_by_role('link', name='返回选择剧本')).to_be_visible()
+    expect(popup.locator('[data-neko-window-control="close"]')).to_be_enabled()
+    pending[0].fulfill(json={'ok': True, 'request_id': 'retry-success', 'url': running_server + '/__market_success'})
+    expect(popup.get_by_role('heading', name='Market connected')).to_be_visible()
+    assert len(page.context.pages) == 2
+
+
+@pytest.mark.frontend
+def test_failed_market_connection_returns_to_selector_in_the_same_window(page, running_server):
+    page.route('**/api/theater-market/launch', lambda route: route.fulfill(status=502, json={'ok': False}))
+    page.route('**/api/theater-numeric/stories', lambda route: route.fulfill(json={'ok': True, 'stories': []}))
+    page.route('**/api/theater-numeric/memory/stories', lambda route: route.fulfill(json={'ok': True, 'stories': []}))
+    page.route('**/api/theater-numeric/session/active**', lambda route: route.fulfill(
+        status=404, json={'ok': False, 'reason': 'numeric_session_not_found'}))
+    page.goto(running_server + '/theater?market=browse')
+    expect(page.locator('#theater-market-retry-btn')).to_be_visible()
+    page.get_by_role('link', name='返回选择剧本').click()
+    expect(page).to_have_url(running_server + '/theater')
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    expect(page.locator('#theater-market-btn')).to_be_enabled()
+    assert len(page.context.pages) == 1
 
 
 @pytest.mark.frontend
@@ -270,3 +337,323 @@ def test_theater_invitation_keeps_an_existing_market_window_on_non_accept_outcom
     assert not existing_window.is_closed()
     assert 'Loading' not in existing_window.title()
     assert existing_window.url.startswith(running_server)
+
+
+def _selector_api_stubs(context):
+    """Keep selector pages offline: empty library, no active session; count focus requests."""
+    context.add_init_script("""
+        window.__focusCalls = 0;
+        const nativeFocus = window.focus.bind(window);
+        window.focus = () => { window.__focusCalls += 1; return nativeFocus(); };
+        window.__restoreRequests = 0;
+        window.addEventListener('message', event => {
+            if (event.data && event.data.type === 'neko:restore-window') window.__restoreRequests += 1;
+        });
+    """)
+    context.route('**/api/theater-numeric/stories', lambda route: route.fulfill(json={'ok': True, 'stories': []}))
+    context.route('**/api/theater-numeric/memory/stories', lambda route: route.fulfill(json={'ok': True, 'stories': []}))
+    context.route('**/api/theater-numeric/session/active**', lambda route: route.fulfill(
+        status=404, json={'ok': False, 'reason': 'numeric_session_not_found'}))
+    context.route('**/api/theater-market/launch', lambda route: route.fulfill(status=502, json={'ok': False}))
+
+
+def _host_with_window_registry(page, running_server):
+    """Host page that opens windows through the real openOrFocusWindow registry."""
+    page.route('**/__market_registry_host', lambda route: route.fulfill(content_type='text/html', body='''
+        <button onclick="nekoTheaterMarket.browse()">Market</button>
+        <button onclick="nekoTheaterMarket.open()">Theater</button>
+        <script src="/static/common_dialogs.js"></script>
+        <script src="/static/js/theater_transport.js"></script>
+        <script src="/static/js/theater_market.js"></script>'''))
+    page.goto(running_server + '/__market_registry_host')
+    page.wait_for_function("() => typeof window.openOrFocusWindow === 'function' && window.nekoTheaterMarket")
+
+
+@pytest.mark.frontend
+def test_market_window_back_focuses_existing_selector_and_closes_itself(page, running_server):
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    with page.expect_popup() as opened_selector:
+        page.get_by_role('button', name='Theater', exact=True).click()
+    selector = opened_selector.value
+    expect(selector.locator('[data-theater-selector-app]')).to_be_visible()
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    assert market.evaluate('window.name') == 'neko_theater_market'
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    expect(market.get_by_role('link', name='返回选择剧本')).to_be_visible()
+    _click_and_expect_close(market, '#theater-market-back-link')
+    assert not selector.is_closed()
+    assert selector.url == running_server + '/theater'
+    assert selector.evaluate('window.__focusCalls') >= 1
+    selector.wait_for_function('() => window.__restoreRequests >= 1')
+    assert len(page.context.pages) == 2  # host plus the one selector
+
+
+@pytest.mark.frontend
+def test_market_window_back_prefers_a_selector_opener(page, running_server):
+    _selector_api_stubs(page.context)
+    page.goto(running_server + '/theater')
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    with page.expect_popup() as opened_market:
+        page.evaluate("void window.open('/theater?market=browse', 'neko_theater_market')")
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    expect(market.get_by_role('link', name='返回选择剧本')).to_be_visible()
+    _click_and_expect_close(market, '#theater-market-back-link')
+    assert page.url == running_server + '/theater'
+    assert page.evaluate('window.__focusCalls') >= 1
+    page.wait_for_function('() => window.__restoreRequests >= 1')
+    assert len(page.context.pages) == 1
+
+
+@pytest.mark.frontend
+def test_market_window_back_focuses_selector_registered_by_another_window(page, running_server):
+    """Invite accepted in a window that never opened the selector (e.g. /chat vs main page)."""
+    _selector_api_stubs(page.context)
+    page.goto(running_server + '/theater')
+    page.evaluate("window.name = 'neko_theater'")
+    page.reload()
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    page.wait_for_function("() => !!localStorage.getItem('neko:named-window:neko_theater')")
+    other = page.context.new_page()
+    _host_with_window_registry(other, running_server)
+    with other.expect_popup() as opened_market:
+        other.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    _click_and_expect_close(market, '#theater-market-back-link')
+    page.wait_for_function('() => window.__focusCalls >= 1')
+    assert page.url == running_server + '/theater'
+    assert len(page.context.pages) == 2  # the selector and the other host window
+
+
+@pytest.mark.frontend
+def test_market_window_back_without_selector_falls_back_to_in_place_selector(page, running_server):
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    market.get_by_role('link', name='返回选择剧本').click()
+    expect(market).to_have_url(running_server + '/theater')
+    expect(market.locator('[data-theater-selector-app]')).to_be_visible()
+    assert len(page.context.pages) == 2  # host plus the market window, now a selector
+
+
+@pytest.mark.frontend
+def test_market_opened_inside_selector_window_returns_in_place(page, running_server):
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    with page.expect_popup() as opened_selector:
+        page.get_by_role('button', name='Theater', exact=True).click()
+    selector = opened_selector.value
+    expect(selector.locator('#theater-market-btn')).to_be_enabled()
+    selector.locator('#theater-market-btn').click()
+    expect(selector).to_have_url(running_server + '/theater?market=browse')
+    expect(selector.locator('#theater-market-retry-btn')).to_be_visible()
+    assert selector.evaluate('window.name') == 'neko_theater'
+    selector.get_by_role('link', name='返回选择剧本').click()
+    expect(selector).to_have_url(running_server + '/theater')
+    expect(selector.locator('[data-theater-selector-app]')).to_be_visible()
+    assert len(page.context.pages) == 2
+
+
+@pytest.mark.frontend
+def test_market_window_back_ignores_stale_registry_without_selector(page, running_server):
+    """A heartbeat left by a crashed selector must not close the market with nowhere to go."""
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    page.evaluate("""() => localStorage.setItem('neko:named-window:neko_theater',
+        JSON.stringify({url: location.origin + '/theater', timestamp: Date.now() + 60000}))""")
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    market.get_by_role('link', name='返回选择剧本').click()
+    expect(market).to_have_url(running_server + '/theater')
+    expect(market.locator('[data-theater-selector-app]')).to_be_visible()
+    assert len(page.context.pages) == 2
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('stale_registry', [True, False])
+def test_market_back_ignores_a_connection_that_succeeds_afterwards(page, running_server, stale_registry):
+    """Back wins over a pending launch, whether waiting for a selector ack or navigating in place."""
+    _selector_api_stubs(page.context)
+    pending = []
+    page.context.route('**/api/theater-market/launch', lambda route: pending.append(route))
+    page.context.route('**/__market_success', lambda route: route.fulfill(body='<h1>Market connected</h1>'))
+    _host_with_window_registry(page, running_server)
+    if stale_registry:
+        page.evaluate("""() => localStorage.setItem('neko:named-window:neko_theater',
+            JSON.stringify({url: location.origin + '/theater', timestamp: Date.now() + 60000}))""")
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    market.wait_for_function('() => document.readyState === "complete"')
+    expect(market.locator('#theater-market-connection')).to_have_attribute('aria-busy', 'true')
+    assert len(pending) == 1
+    market.get_by_role('link', name='返回选择剧本').click()
+    pending[0].fulfill(json={'ok': True, 'request_id': 'late-success', 'url': running_server + '/__market_success'})
+    expect(market).to_have_url(running_server + '/theater')
+    expect(market.locator('[data-theater-selector-app]')).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_registered_selector_acknowledges_only_after_restore_settles(page, running_server):
+    _selector_api_stubs(page.context)
+    page.add_init_script("""
+        window.nekoWindowControl = {restore: () => new Promise(resolve => setTimeout(() => {
+            window.__restoredAt = performance.now();
+            resolve({ok: true});
+        }, 300))};
+        const recordFocus = window.focus;
+        window.focus = () => { window.__focusAt = performance.now(); return recordFocus(); };
+    """)
+    page.goto(running_server + '/theater')
+    page.evaluate("window.name = 'neko_theater'")
+    page.reload()
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    page.wait_for_function("() => !!localStorage.getItem('neko:named-window:neko_theater')")
+    other = page.context.new_page()
+    _host_with_window_registry(other, running_server)
+    with other.expect_popup() as opened_market:
+        other.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    _click_and_expect_close(market, '#theater-market-back-link')
+    page.wait_for_function('() => window.__focusAt !== undefined')
+    assert page.evaluate('window.__focusAt >= window.__restoredAt')
+
+
+@pytest.mark.frontend
+def test_market_retry_stays_locked_after_a_successful_launch(page, running_server):
+    calls = []
+    def connect(route):
+        calls.append(route.request.post_data_json)
+        if len(calls) == 1:
+            route.fulfill(status=502, json={'ok': False})
+        else:
+            route.fulfill(json={'ok': True, 'request_id': 'ok', 'url': running_server + '/__market_success_204'})
+    landed = []
+    # A 204 response never commits, so the page stays put after location.replace like a slow market load.
+    page.route('**/__market_success_204', lambda route: (landed.append(1), route.fulfill(status=204)))
+    page.route('**/api/theater-market/launch', connect)
+    page.goto(running_server + '/theater?market=browse')
+    retry = page.locator('#theater-market-retry-btn')
+    expect(retry).to_be_visible()
+    retry.click()
+    for _ in range(100):
+        if landed:
+            break
+        page.wait_for_timeout(20)
+    assert landed, 'successful launch should navigate to the market url'
+    assert page.evaluate("document.getElementById('theater-market-retry-btn').disabled") is True
+    page.evaluate('window.nekoTheaterMarket.redirectSelector()')
+    page.wait_for_timeout(100)
+    assert len(calls) == 2
+
+
+@pytest.mark.frontend
+def test_market_page_restored_from_bfcache_unlocks_back_and_retry(page, running_server):
+    calls = []
+    page.route('**/api/theater-market/launch', lambda route: (calls.append(1), route.fulfill(status=502, json={'ok': False})))
+    page.goto(running_server + '/theater?market=browse')
+    retry = page.locator('#theater-market-retry-btn')
+    expect(retry).to_be_visible()
+    assert len(calls) == 1
+    # Cancel the in-place navigation so the page stays with returning already set.
+    page.evaluate("document.addEventListener('click', event => event.preventDefault())")
+    page.get_by_role('link', name='返回选择剧本').click()
+    page.wait_for_timeout(100)
+    page.evaluate('window.nekoTheaterMarket.redirectSelector()')
+    page.wait_for_timeout(100)
+    assert len(calls) == 1
+    # The restored page reconnects like a fresh load, then retry works again.
+    with page.expect_request('**/api/theater-market/launch'):
+        page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+    expect(retry).to_be_enabled()
+    with page.expect_request('**/api/theater-market/launch'):
+        retry.click()
+    assert len(calls) == 3
+
+
+@pytest.mark.frontend
+def test_registered_selector_handles_a_focus_request_once_across_both_channels(page, running_server):
+    _selector_api_stubs(page.context)
+    page.add_init_script("""
+        window.__restoreCalls = 0;
+        window.nekoWindowControl = {restore: () => { window.__restoreCalls += 1; return Promise.resolve({ok: true}); }};
+    """)
+    page.goto(running_server + '/theater')
+    page.evaluate("window.name = 'neko_theater'")
+    page.reload()
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    page.wait_for_function("() => !!localStorage.getItem('neko:named-window:neko_theater')")
+    other = page.context.new_page()
+    other.goto(running_server + '/theater?market=browse')
+    acks = other.evaluate("""() => new Promise(resolve => {
+        const channel = new BroadcastChannel('neko:named-window');
+        let count = 0;
+        channel.onmessage = event => {
+            if (event.data && event.data.type === 'neko:named-window-focus-ack' && event.data.requestId === 'dup-1') count += 1;
+        };
+        const message = {type: 'neko:named-window-focus', windowName: 'neko_theater', requestId: 'dup-1'};
+        channel.postMessage(message);
+        localStorage.setItem('neko:named-window-focus:neko_theater', JSON.stringify(message));
+        setTimeout(() => { channel.close(); resolve(count); }, 500);
+    })""")
+    assert acks == 1
+    assert page.evaluate('window.__restoreCalls') == 1
+
+
+@pytest.mark.frontend
+def test_market_back_handoff_pending_across_bfcache_restore_does_not_navigate_later(page, running_server):
+    """A handoff still waiting for the selector ack is dropped once the page comes back from bfcache."""
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    page.evaluate("""() => localStorage.setItem('neko:named-window:neko_theater',
+        JSON.stringify({url: location.origin + '/theater', timestamp: Date.now() + 60000}))""")
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    market_url = market.url
+    market.get_by_role('link', name='返回选择剧本').click()
+    # The handoff now waits for an ack that never comes; simulate a bfcache restore meanwhile.
+    market.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+    market.wait_for_timeout(2600)
+    assert market.url == market_url
+    expect(market.locator('#theater-market-back-link')).to_be_visible()
+
+
+@pytest.mark.frontend
+def test_market_connection_dropped_by_back_stays_quiet_and_recovers_from_bfcache(page, running_server):
+    pending = []
+    page.route('**/api/theater-market/launch', lambda route: pending.append(route))
+    page.goto(running_server + '/theater?market=browse')
+    retry = page.locator('#theater-market-retry-btn')
+    status = page.locator('#theater-selector-status')
+    for _ in range(100):
+        if pending:
+            break
+        page.wait_for_timeout(20)
+    assert len(pending) == 1
+    # Cancel the in-place navigation so the page stays after back was clicked.
+    page.evaluate("document.addEventListener('click', event => event.preventDefault())")
+    page.get_by_role('link', name='返回选择剧本').click()
+    pending[0].abort()  # a network failure rejects and reaches the catch branch
+    # finally clears aria-busy, so the failure has been fully handled before asserting quietness.
+    expect(page.locator('#theater-market-connection')).to_have_attribute('aria-busy', 'false')
+    # A late failure after back must not flash an error with a retry button that does nothing.
+    expect(retry).to_be_hidden()
+    expect(status).to_have_attribute('data-i18n', 'theater.marketPreparing')
+    page.unroute('**/api/theater-market/launch')
+    page.route('**/api/theater-market/launch', lambda route: route.fulfill(status=502, json={'ok': False}))
+    page.evaluate("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}))")
+    expect(retry).to_be_visible()
+    expect(retry).to_be_enabled()
+    expect(status).to_have_attribute('data-i18n', 'theater.marketConnectError')
