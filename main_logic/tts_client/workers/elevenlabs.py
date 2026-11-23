@@ -290,10 +290,8 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
                         await asyncio.wait_for(response_finished.wait(), timeout=30.0)
                     except Exception:
                         pass
-                try:
-                    await asyncio.wait_for(ws.close(), timeout=0.5)
-                except Exception:
-                    pass
+                # Via the spare's tracked close: an inline wait_for would cancel a slow close and leave the socket CLOSING untracked, beside the next connect; the socket's own 0.5s close_timeout bounds it.
+                spare.close_tracked(ws)
             ws = None
             if receive_task and not receive_task.done():
                 if not interrupt:
@@ -601,15 +599,17 @@ def elevenlabs_tts_worker(request_queue, response_queue, audio_api_key, voice_id
             logger.error("ElevenLabs WS Worker error: %s", exc, exc_info=True)
             response_queue.put(("__ready__", False))
         finally:
+            # The current socket first: _close_ws hands it to the spare's
+            # tracked close, which the drain below then waits for.
+            try:
+                await _close_ws(send_final_empty=False, wait_for_final=False)
+            except Exception:
+                pass
             try:
                 spare.discard()
                 await spare.drain(2.5)
             except Exception as exc:
                 logger.debug("关闭预建 TTS socket 失败: %s", exc)
-            try:
-                await _close_ws(send_final_empty=False, wait_for_final=False)
-            except Exception:
-                pass
 
     try:
         asyncio.run(async_worker())

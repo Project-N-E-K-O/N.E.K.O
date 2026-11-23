@@ -335,10 +335,8 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                 logger.debug(f"xAI TTS interrupted receive task cleanup failed: {e}")
                             receive_task = None
                         if ws:
-                            try:
-                                await asyncio.wait_for(ws.close(), timeout=0.5)
-                            except Exception as e:
-                                logger.debug(f"xAI TTS interrupted websocket close failed: {e}")
+                            # Via the spare's tracked close: an inline wait_for would cancel a slow close and leave the socket CLOSING untracked, beside the next connect.
+                            spare.close_tracked(ws)
                             ws = None
                     finally:
                         current_speech_id = None
@@ -384,10 +382,11 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                                 # to rescue pending text and avoid silent truncated endings.
                                 logger.warning(f"flush pending_text 首次失败，尝试重连重试: {e}")
                                 if ws:
-                                    try:
-                                        await asyncio.wait_for(ws.close(), timeout=0.5)
-                                    except Exception:
-                                        pass
+                                    # Via the spare's tracked close: an inline wait_for would cancel a slow close and leave the socket CLOSING untracked, beside the next connect.
+                                    spare.close_tracked(ws)
+                                    # Cleared so a failed retry below never
+                                    # leaves the closed socket looking usable.
+                                    ws = None
                                 if receive_task and not receive_task.done():
                                     receive_task.cancel()
                                     try:
@@ -432,12 +431,10 @@ def grok_streaming_tts_worker(request_queue, response_queue, audio_api_key, voic
                     # sid, and subsequent same-sid chunks silently hit ``if not ws: continue``
                     # until a new sid retries, muting the entire utterance.
                     if ws:
-                        # Bound close handshakes; default 10 s blocks half-open connections in the main loop,
-                        # delaying next chunks and noticeably harming interaction latency.
-                        try:
-                            await asyncio.wait_for(ws.close(), timeout=0.5)
-                        except Exception:
-                            pass
+                        # Closed in the background via the spare's tracked close: an inline wait_for would cancel a slow close and leave the socket CLOSING untracked, beside the next connect; the
+                        # socket's own 0.5s close_timeout bounds it, and the
+                        # connect below waits for it (preemptible).
+                        spare.close_tracked(ws)
                         ws = None
                     if receive_task and not receive_task.done():
                         audio_jitter.flush()

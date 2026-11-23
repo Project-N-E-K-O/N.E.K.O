@@ -97,7 +97,11 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
     async def async_worker():
         """Async TTS worker main loop"""
         tts_url = _resolve_qwen_realtime_tts_url()
-        tts_host = urlparse(tts_url).hostname or tts_url
+        try:
+            tts_host = urlparse(tts_url).hostname or tts_url
+        except ValueError:
+            # Log label only; a malformed URL fails at connect as before.
+            tts_host = tts_url
         ws = None
         # Socket opened ahead of the next speech on core's preconnect request,
         # bound to no speech until a connect adopts it; created once the

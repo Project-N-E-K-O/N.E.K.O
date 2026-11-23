@@ -487,20 +487,59 @@ def test_shutdown_closes_an_unused_spare(provider, monkeypatch):
     assert spare.sent == []
 
 
+def test_a_slow_closing_previous_socket_never_sits_beside_the_next_one(provider, monkeypatch):
+    # No preconnect: the next speech replaces a round that is still running.
+    # However long the old socket takes to close, the new connect waits.
+    first = provider.make_socket("first", slow_close=True)
+    second = provider.make_socket("second")
+    warmups = _warmups(provider)
+    connects = _Connects(monkeypatch, [*warmups, first, second])
+    release = threading.Timer(0.8, first.release.set)  # past every 0.5s close bound
+    backstop = threading.Timer(4.0, first.release.set)
+    backstop.start()
+    try:
+        provider.run(
+            _Requests(
+                ("speech-1", _OPENING),
+                _wait(lambda: provider.spoken(first) == [_OPENING]),
+                release.start,
+                ("speech-2", _OPENING),
+                (None, None),
+                _wait(lambda: provider.spoken(second) == [_OPENING]),
+            ),
+            queue.Queue(),
+        )
+    finally:
+        release.cancel()
+        backstop.cancel()
+
+    assert first.closed.is_set()
+    assert provider.spoken(second) == [_OPENING]
+    connects.assert_one_connection_at_a_time()
+
+
 def test_shutdown_closes_the_speech_socket(provider, monkeypatch):
     # A receive task cancelled at exit may hand its socket to the spare's
-    # tracked close; the exit must still wait for that close.
-    first = provider.make_socket("first")
+    # tracked close; the exit must still wait for that close. The peer takes
+    # a moment to answer the close, as a real one does.
+    first = provider.make_socket("first", slow_close=True)
     warmups = _warmups(provider)
     _Connects(monkeypatch, [*warmups, first])
-
-    provider.run(
-        _Requests(
-            ("speech-1", _OPENING),
-            _wait(lambda: provider.spoken(first) == [_OPENING]),
-        ),
-        queue.Queue(),
-    )
+    release = threading.Timer(0.2, first.release.set)
+    backstop = threading.Timer(4.0, first.release.set)
+    backstop.start()
+    try:
+        provider.run(
+            _Requests(
+                ("speech-1", _OPENING),
+                _wait(lambda: provider.spoken(first) == [_OPENING]),
+                release.start,
+            ),
+            queue.Queue(),
+        )
+    finally:
+        release.cancel()
+        backstop.cancel()
 
     assert first.closed.is_set()
 
