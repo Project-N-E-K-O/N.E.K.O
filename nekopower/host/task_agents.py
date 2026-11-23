@@ -1355,7 +1355,8 @@ class TaskAgentManager:
 
         In ``session`` when one is given: by the model it is sent to
         (``session_model``, which is looked at, not settled). Otherwise in
-        a new session of a commission she hands over (preset ``general``).
+        a new session of a commission she hands over: one of no project
+        (preset ``general``) or the lead of a project (``boss``), either.
         """
         if self._closed:
             return False, "disabled"
@@ -1370,6 +1371,8 @@ class TaskAgentManager:
                 choice = await self.session_model(session, record=False)
             else:
                 choice = await self._new_session_model()
+                if not choice.config or not choice.config.get("model"):
+                    choice = await self._new_session_model("boss")
             config = choice.config
         except Exception as exc:  # noqa: BLE001 - no usable configuration
             logger.warning("the task agent model configuration cannot be read: %s", type(exc).__name__)
@@ -1378,12 +1381,13 @@ class TaskAgentManager:
             return False, "not_enabled"
         return True, ""
 
-    async def _new_session_model(self) -> Any:
-        """Return the model a new session of a commission she hands over would be sent to (preset ``general``)."""
+    async def _new_session_model(self, preset: str = "general") -> Any:
+        """Return the model a new session of hers that no session started would be sent to (preset ``general`` unless named)."""
+
         async def nobody() -> Any:
             return None
 
-        return await self.role_models.choose("general", None, nobody)
+        return await self.role_models.choose(preset, None, nobody)
 
     # -- runtime ----------------------------------------------------------
 
@@ -2004,7 +2008,9 @@ class TaskAgentManager:
                 return choice
         if recorded(kept):
             try:
-                choice = dataclass_replace(await self.role_models.again(kept.model_slot), fallback=kept.model_fallback)
+                choice = dataclass_replace(
+                    await self.role_models.again(kept.model_slot, kept.model_ident), fallback=kept.model_fallback
+                )
             except SlotUnavailable as exc:
                 logger.info(
                     "the model slot session %s was settled on cannot be used (%s); its preset's default is",
@@ -2082,16 +2088,13 @@ class TaskAgentManager:
             logger.warning("settling the model of session %s failed; it is settled when it is opened", session.id)
 
     async def _goes_free(self, kept: Session | None) -> bool:
-        """Return whether what a session sends goes with the built-in free key, as it was settled.
+        """Return whether what a session would send now goes with the built-in free key.
 
-        A session that was not settled yet, or none (a new one), by what it
-        would be settled on. Not known: as if it did, so it is counted as
-        before there were settings.
+        By where it is sent as things are now (``session_model``, looked
+        at): its slot may have been given a key of the user's own since it
+        last ran. None (a new one), by what it would be settled on. Not
+        known: as if it did, so it is counted as before there were settings.
         """
-        from nekopower.host.role_models import recorded
-
-        if kept is not None and recorded(kept):
-            return bool(kept.model_free)
         try:
             choice = await (self.session_model(kept, record=False) if kept is not None else self._new_session_model())
         except asyncio.CancelledError:
@@ -3057,6 +3060,8 @@ class TaskAgentManager:
                     config = choice.config
                     if not config or not config.get("model"):
                         raise RuntimeError("no model is configured for task agents")
+                    # On record as what it is sent to, for whoever reads it.
+                    await self._keep_model(kept, choice, True)
                 else:
                     builtin_only = True
             model = await self._model_of(config)
@@ -7911,10 +7916,14 @@ class TaskAgentManager:
         caller = await self._caller(session_id)
         if caller.parent_id is not None:
             raise RuntimeError(refusals["from_child"])
-        available, _reason = await self.available()
+        available, _reason = await self.available(await self._ledger.get_session(caller.session_id))
         if not available:
             raise RuntimeError(refusals["switched_off"])
         target = await self._session_named(str(payload.get("to") or ""))
+        # What is written is worked on in the other session, by its own model.
+        available, _reason = await self.available(target)
+        if not available:
+            raise RuntimeError(refusals["switched_off"])
         if action is not None:
             action.require()
             action.record.scope_ref = target.id
@@ -8056,10 +8065,14 @@ class TaskAgentManager:
             # outside this one's working directory: a user who forbade
             # reading there has forbidden this too, as for ``read_session``.
             raise RuntimeError(DENIED_BY_SETTINGS)
-        available, _reason = await self.available()
+        available, _reason = await self.available(await self._ledger.get_session(caller.session_id))
         if not available:
             raise RuntimeError(refusals["switched_off"])
         target = await self._session_named(str(payload.get("session") or ""))
+        # A copy of the other session answers, by that session's model.
+        available, _reason = await self.available(target)
+        if not available:
+            raise RuntimeError(refusals["switched_off"])
         if action is not None:
             action.require()
             action.record.scope_ref = target.id

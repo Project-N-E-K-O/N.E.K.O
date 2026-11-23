@@ -627,7 +627,8 @@ class NekoPowerHost:
         ``no_slots`` (there are none to choose from in this process), or
         why the slot will not do (``slot_not_found``,
         ``model_config_unreadable``, ``capability_missing``). Nothing is
-        written then.
+        written then; nor when the file of settings is there and cannot be
+        read (``OSError``).
         """
         from nekopower.host.role_models import INHERIT, REQUIRED_CAPABILITIES, SlotUnavailable
         from nekopower.host.templates import NOT_FOR_CHILDREN

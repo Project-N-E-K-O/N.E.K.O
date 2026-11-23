@@ -71,15 +71,24 @@ MODEL_CONFIG_UNREADABLE = "model_config_unreadable"
 HOST_API_NOT_CONFIGURED = "host_api_not_configured"
 HOST_API_UNSUPPORTED = "host_api_unsupported"
 CAPABILITY_MISSING = "capability_missing"
+# The host's own: a session's slot, which it was settled on, now sends it
+# to another address or model, and not by following a tier of the main app.
+# Slots can be rewritten by more than the user (a plugin's page is served
+# from the plugin server's origin), and what was said in the session is not
+# to go somewhere the user never chose for it.
+SLOT_CHANGED = "slot_changed"
 FALLBACK_REASONS: tuple[str, ...] = (
     SLOT_NOT_FOUND,
     MODEL_CONFIG_UNREADABLE,
     HOST_API_NOT_CONFIGURED,
     HOST_API_UNSUPPORTED,
     CAPABILITY_MISSING,
+    SLOT_CHANGED,
 )
 # What a slot has to declare for a task agent to be sent to it.
 REQUIRED_CAPABILITIES: tuple[str, ...] = ("tool_calling",)
+# What a slot declares when the model behind it takes pictures.
+IMAGE_INPUT = "image_input"
 # The tier of the main app a slot follows when it follows the task agent model.
 AGENT_TIER = "agent"
 _SLOT_PREFIX = "slot_"
@@ -191,9 +200,11 @@ class Choice:
 
     ``slot`` is the slot of the model panel ("" for the task agent model of
     the main app itself), ``agent`` whether it is that model (that slot, or
-    the slot that follows it), ``fallback`` why the setting of the preset
-    could not be used. ``config`` is what the session is opened with, its
-    key included; None when no model is configured.
+    the slot that follows it), ``follows_host`` whether it is a tier of the
+    main app (that model, or a slot that follows a tier), ``fallback`` why
+    the setting of the preset could not be used. ``config`` is what the
+    session is opened with, its key included; None when no model is
+    configured.
     """
 
     slot: str
@@ -203,6 +214,7 @@ class Choice:
     free: bool
     fallback: str = ""
     config: dict[str, Any] | None = field(default=None, repr=False, compare=False)
+    follows_host: bool = True
 
     def columns(self) -> dict[str, Any]:
         """Return what is kept of it on a session's row: no address, no key."""
@@ -215,9 +227,14 @@ class Choice:
         }
 
 
-def _choice(slot: str, agent: bool, config: dict[str, Any] | None, fallback: str = "") -> Choice:
+def _choice(
+    slot: str, agent: bool, config: dict[str, Any] | None, fallback: str = "", *, follows_host: bool = True
+) -> Choice:
     if not config or not config.get("model"):
-        return Choice(slot=slot, agent=agent, name="", ident="", free=False, fallback=fallback, config=None)
+        return Choice(
+            slot=slot, agent=agent, name="", ident="", free=False, fallback=fallback, config=None,
+            follows_host=follows_host,
+        )
     return Choice(
         slot=slot,
         agent=agent,
@@ -226,6 +243,7 @@ def _choice(slot: str, agent: bool, config: dict[str, Any] | None, fallback: str
         free=is_free_key(config.get("api_key")),
         fallback=fallback,
         config=config,
+        follows_host=follows_host,
     )
 
 
@@ -255,7 +273,8 @@ class RoleModelStore:
         source = self._path_source
         return Path(source() if callable(source) else source)
 
-    def _read(self) -> dict[str, str]:
+    def _read(self, *, strict: bool = False) -> dict[str, str]:
+        """Return the settings in the file. One that cannot be read is read as none, or raises with ``strict``."""
         import json
 
         try:
@@ -263,6 +282,10 @@ class RoleModelStore:
         except FileNotFoundError:
             return {}
         except (OSError, ValueError) as exc:
+            if strict:
+                # About to be written: what is in the file is not known, and
+                # would be lost.
+                raise OSError("the preset model settings cannot be read; nothing is written") from exc
             # Read as nothing set: every preset goes by its default meanwhile.
             logger.warning("the preset model settings cannot be read (%s); the defaults are used", type(exc).__name__)
             return {}
@@ -291,9 +314,18 @@ class RoleModelStore:
         return (await self.all()).get(preset)
 
     async def put(self, preset: str, value: str | None) -> None:
-        """Write a preset's setting; None goes back to its default."""
+        """Write a preset's setting; None goes back to its default.
+
+        Raises ``OSError`` when the file is there and cannot be read: the
+        other settings in it would be lost. Done to the end once begun, the
+        caller cancelled or not: the write in its thread cannot be stopped,
+        and the next one must not begin before it is over.
+        """
+        await asyncio.shield(asyncio.ensure_future(self._put(preset, value)))
+
+    async def _put(self, preset: str, value: str | None) -> None:
         async with self._lock:
-            roles = await asyncio.to_thread(self._read)
+            roles = await asyncio.to_thread(lambda: self._read(strict=True))
             if value is None:
                 roles.pop(preset, None)
             else:
@@ -329,25 +361,36 @@ class RoleModels:
         return _choice("", True, await self._agent_config(), fallback)
 
     async def slot(self, slot_id: str) -> Choice:
-        """Return a slot's model as it resolves now; raises ``SlotUnavailable``."""
+        """Return a slot's model as it resolves now; raises ``SlotUnavailable``.
+
+        A slot that does not declare that it takes pictures is opened as one
+        that does not; one that does is taken at its word only as far as the
+        host has not learned otherwise (``ModelCapabilityStore``).
+        """
         if self.slots is None:
             raise SlotUnavailable(MODEL_CONFIG_UNREADABLE)
         resolved = await self.slots.resolve(slot_id)
-        if resolved.source == "host_follow":
+        follows_host = resolved.source == "host_follow"
+        if follows_host:
             if resolved.host_api == AGENT_TIER:
                 # What every session was opened with before there were
                 # slots, read as it was: the same request goes out.
                 config = await self._agent_config()
-                return _choice(slot_id, True, config)
-            config = await self.slots.tier(str(resolved.host_api))
-            return _choice(slot_id, False, config)
-        config = {
-            "model": resolved.model,
-            "base_url": resolved.base_url,
-            "api_key": resolved.api_key,
-            "provider_type": _protocol_provider(resolved.protocol),
-        }
-        return _choice(slot_id, False, config)
+                agent = True
+            else:
+                config = await self.slots.tier(str(resolved.host_api))
+                agent = False
+        else:
+            config = {
+                "model": resolved.model,
+                "base_url": resolved.base_url,
+                "api_key": resolved.api_key,
+                "provider_type": _protocol_provider(resolved.protocol),
+            }
+            agent = False
+        if config is not None and IMAGE_INPUT not in tuple(resolved.capabilities):
+            config = {**config, "supports_images": False}
+        return _choice(slot_id, agent, config, follows_host=follows_host)
 
     async def agent_slot(self) -> str | None:
         """Return the slot that follows the task agent model of the main app, None when there is none; raises ``SlotUnavailable``."""
@@ -431,11 +474,20 @@ class RoleModels:
             "fallback": choice.fallback or None,
         }
 
-    async def again(self, slot_id: str) -> Choice:
-        """Return the model a settled session is sent to now, by the slot it was settled on; raises ``SlotUnavailable``."""
+    async def again(self, slot_id: str, ident: str) -> Choice:
+        """Return the model a settled session is sent to now, by the slot it was settled on; raises ``SlotUnavailable``.
+
+        ``ident`` is what it was settled on (``Choice.ident``). A slot that
+        now sends it to another address or model is not followed there
+        (``SLOT_CHANGED``), unless it follows a tier of the main app: what
+        the user sets for the main app is taken as it always was.
+        """
         if not slot_id:
             return await self.agent()
-        return await self.slot(slot_id)
+        found = await self.slot(slot_id)
+        if found.ident and found.ident != ident and not found.follows_host:
+            raise SlotUnavailable(SLOT_CHANGED)
+        return found
 
 
 def dataclass_replace(choice: Choice, **changes: Any) -> Choice:

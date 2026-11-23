@@ -359,9 +359,12 @@ async def test_a_session_begun_in_dsh_goes_on_there_with_the_task_agent_model(ho
 
     monkeypatch.setattr(task_agents_module, "_begun_in", lambda place, session_dir: task_agents_module.RUNTIME_DSH)
     host.task_agents._choose_runtime = choosing
-    await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "failed")
+    failed = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "failed")
 
     assert seen == [("agent-model", False)]
+    # And on record as what it is sent to: the board and the wake read the same.
+    row = await _session_of(host, failed.id)
+    assert (row.model_slot, row.model_name) == ("", "agent-model")
 
 
 async def test_a_task_agent_follows_the_session_that_started_it_unless_its_preset_is_set(hosts, tmp_path):
@@ -446,7 +449,7 @@ def _break(manager: Manager, how: str) -> None:
         _write_slots(manager, slots)
 
 
-@pytest.mark.parametrize("how", role_models.FALLBACK_REASONS)
+@pytest.mark.parametrize("how", [code for code in role_models.FALLBACK_REASONS if code != "slot_changed"])
 async def test_a_slot_that_cannot_be_used_leaves_the_preset_with_its_default_and_says_why(hosts, tmp_path, how):
     small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
     manager = _manager(tmp_path, _default_slots(), agent_small=small)
@@ -1163,3 +1166,162 @@ async def test_a_preset_whose_template_cannot_be_used_says_its_default_as_the_bu
 
     assert await host.task_agents.model_default_of("boss", None) == "agent"
     assert await host.task_agents.model_default_of("helper", None) == "inherit"
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: the gates that ask about a session ask about its own model
+# ---------------------------------------------------------------------------
+
+
+async def _session_of_hers(host: Any, title: str, name: str) -> Any:
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent"
+    )
+    _commission, session = await host.ledger.give_session(commission.id, kind="single", name=name)
+    await host.task_agents.settle_model(session)
+    return await host.ledger.get_session(session.id)
+
+
+async def test_a_lead_with_a_model_of_its_own_can_be_handed_work_without_the_task_agent_model(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    manager.tiers["agent"] = {}
+    assert await host.task_agents.available() == (False, "not_enabled")
+
+    # Leads of projects go to a slot of their own: what she hands over can be worked on.
+    await host.set_role_model("boss", OWN_SLOT)
+
+    assert await host.task_agents.available() == (True, "")
+
+
+async def test_a_note_or_a_question_goes_to_a_session_only_when_that_session_has_a_model(hosts, tmp_path):
+    from config.prompts import prompts_nekopower_sessions as words
+
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    await host.set_role_model("general", OWN_SLOT)
+    writer = await _session_of_hers(host, "write", "writer")
+    reader = await _session_of_hers(host, "read", "reader")
+    await host.set_role_model("general", None)
+    plain = await _session_of_hers(host, "plain", "plain")
+    manager.tiers["agent"] = {}
+    tasks = host.task_agents
+
+    async def refusal(call: Any) -> str:
+        try:
+            await call
+        except RuntimeError as exc:
+            return str(exc)
+        return ""
+
+    # To one sent to the task agent model, which has none now: nobody would work on it.
+    said = await refusal(tasks._cb_session_send(writer.id, {"to": "plain", "message": "hi"}))
+    assert said == words.MESSAGE_REFUSALS["switched_off"]
+    asked = await refusal(tasks._cb_session_ask(writer.id, {"session": "plain", "question": "Which photos?"}))
+    assert asked == words.ASK_REFUSALS["switched_off"]
+    # To one with a model of its own: not refused for that.
+    said = await refusal(tasks._cb_session_send(writer.id, {"to": "reader", "message": "hi"}))
+    assert said != words.MESSAGE_REFUSALS["switched_off"]
+    asked = await refusal(tasks._cb_session_ask(writer.id, {"session": "reader", "question": "Which photos?"}))
+    assert asked != words.ASK_REFUSALS["switched_off"]
+
+
+async def test_a_wake_is_counted_by_the_key_its_session_goes_with_now(hosts, tmp_path):
+    manager = _manager(tmp_path, _default_slots())
+    manager.tiers["agent"] = {**AGENT_TIER, "api_key": FREE_KEY}
+    counted: list[str] = []
+
+    async def meter(key: str) -> bool:
+        counted.append(key)
+        return False
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager, task_agent_meter=meter)
+    await host.set_role_model("general", OWN_SLOT)
+    slots = _default_slots()
+    slots[OWN_SLOT] = _own(api_key=FREE_KEY)
+    _write_slots(manager, slots)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    await host.task_agents.settle_model(session)
+    assert (await host.ledger.get_session(session.id)).model_free == 1
+    # The user puts a key of their own in the slot after it last ran: the wake waits for no quota.
+    _write_slots(manager, _default_slots())
+
+    assert await host.task_agents._may_start(session.id, session=await host.ledger.get_session(session.id)) is None
+    assert counted == []
+
+
+async def test_a_slot_that_does_not_declare_pictures_is_opened_without_them(hosts, tmp_path):
+    slots = _default_slots()
+    slots[OTHER_SLOT] = _own(name="Sees", capabilities=["text", "tool_calling", "image_input"])
+    manager = _manager(tmp_path, slots)
+    specs: list[Any] = []
+    host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
+    await host.set_role_model("general", OWN_SLOT)
+    await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
+    await host.set_role_model("general", OTHER_SLOT)
+    await wait_status(host, (await _dispatch(host, "sort the music")).commission_id, "done")
+
+    assert [spec.model.supports_images for spec in specs] == [False, True]
+
+
+async def test_a_settled_session_does_not_follow_its_slot_to_another_address_unless_it_follows_the_main_app(
+    hosts, tmp_path
+):
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _manager(tmp_path, _default_slots(), agent_small=small)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    await host.set_role_model("general", OWN_SLOT)
+    own = await host.ledger.create_session(lanlan_name="Lan", name="own", kind="single")
+    await tasks.settle_model(own)
+    await host.set_role_model("general", SMALL_SLOT)
+    small_one = await host.ledger.create_session(lanlan_name="Lan", name="small", kind="single")
+    await tasks.settle_model(small_one)
+    await host.set_role_model("general", None)
+
+    # A new key at the same address and name: taken.
+    slots = _default_slots()
+    slots[OWN_SLOT] = _own(api_key="sk-own-rotated")
+    _write_slots(manager, slots)
+    choice = await tasks.session_model(await host.ledger.get_session(own.id))
+    assert (choice.slot, choice.config["api_key"], choice.fallback) == (OWN_SLOT, "sk-own-rotated", "")
+
+    # The small tier of the main app moves to another provider: followed, as the main app always was.
+    manager.tiers["agent_small"] = {**small, "base_url": "http://elsewhere.test/v1"}
+    choice = await tasks.session_model(await host.ledger.get_session(small_one.id))
+    assert (choice.slot, choice.config["base_url"], choice.fallback) == (SMALL_SLOT, "http://elsewhere.test/v1", "")
+
+    # The slot itself is pointed somewhere else: what was said in the session does not go there.
+    slots[OWN_SLOT] = _own(base_url="http://somewhere-else.test/v1")
+    _write_slots(manager, slots)
+    choice = await tasks.session_model(await host.ledger.get_session(own.id))
+    assert (choice.slot, choice.name, choice.fallback) == (AGENT_SLOT, "agent-model", "slot_changed")
+    row = await host.ledger.get_session(own.id)
+    assert (row.model_slot, row.model_fallback) == (AGENT_SLOT, "slot_changed")
+    assert (await _card(host, own.id))["model_fallback"] == "slot_changed"
+
+
+async def test_settings_that_cannot_be_read_are_not_written_over(tmp_path):
+    path = tmp_path / "role_models.json"
+    store = role_models.RoleModelStore(path)
+    path.write_text("{half written", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        await store.put("scout", OWN_SLOT)
+
+    # What was there stays, for the user to see to; meanwhile every preset goes by its default.
+    assert path.read_text(encoding="utf-8") == "{half written"
+    assert await store.all() == {}
+
+
+async def test_a_setting_being_written_is_written_whole_when_whoever_asked_gives_up(tmp_path):
+    import asyncio
+
+    path = tmp_path / "role_models.json"
+    store = role_models.RoleModelStore(path)
+    first = asyncio.ensure_future(store.put("boss", OWN_SLOT))
+    await asyncio.sleep(0)
+    first.cancel()
+    await store.put("scout", "inherit")
+
+    assert await store.all() == {"boss": OWN_SLOT, "scout": "inherit"}

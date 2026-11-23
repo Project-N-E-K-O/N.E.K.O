@@ -378,7 +378,7 @@ async def test_what_cannot_be_asked_is_refused_with_what_to_do_instead(hosts, tm
     monkeypatch.setattr(host.task_agents, "fork_session", no_copy)
     assert await refused("photos") == refusals["no_copy"].format(name="photos", reason="the runtime did not answer")
     # Switched off.
-    monkeypatch.setattr(host.task_agents, "available", lambda: _answer((False, "off")))
+    monkeypatch.setattr(host.task_agents, "available", lambda session=None: _answer((False, "off")))
     assert await refused("photos") == refusals["switched_off"]
     monkeypatch.undo()
     # Nor where the user forbade reading outside the working directory: the copy answers from
