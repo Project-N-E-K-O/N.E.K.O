@@ -186,31 +186,32 @@ class EntryExecutor:
             )
 
     def _resolve(self, event_type: str, event_id: str, *, registered_only: bool):
+        generation = getattr(self._instance, "_components_generation", None)
+        if isinstance(generation, int) and generation != self._seen_generation:
+            # Components changed since the maps were built (a router included
+            # or excluded, a runtime entry added or removed): rebuild them once,
+            # for every event type, so a stale handler is not served.
+            self._seen_generation = generation
+            try:
+                self._refresh()
+            except Exception:
+                # The plugin's own collection is failing: keep serving from
+                # the existing maps (as before), but entries go through the
+                # state check below instead of the fast path, and the next
+                # call tries the rebuild again.
+                self._seen_generation = None
         # Custom-event calls (including cross-plugin ones) reach only handlers
         # registered for that event type; the attribute fallback would expose
         # any public or private instance method by name.
         if registered_only or event_type != "plugin_entry":
             return self._events.get(event_type, {}).get(event_id)
-        method = self._entries.get(event_id)
         # Permission narrowing: an id the check closed (a refused component,
         # or an entry hook listing an undeclared permission, including for an
         # entry only the manifest declares) is not run, whether it sits in the
         # map (the loader's fallback scan maps plain methods) or would come
         # from the attribute fallback. An id registered again with a valid
         # narrowing is "registered" and is picked up by a refresh.
-        generation = getattr(self._instance, "_components_generation", None)
-        if isinstance(generation, int) and generation != self._seen_generation:
-            # Components changed since the map was built (a router included
-            # or excluded, a runtime entry added or removed): rebuild it once
-            # so a stale handler is not served from it.
-            self._seen_generation = generation
-            try:
-                self._refresh()
-            except Exception:
-                # Keep serving, but not from a map that may be stale: the
-                # state check below decides instead.
-                self._seen_generation = None
-            method = self._entries.get(event_id)
+        method = self._entries.get(event_id)
         if method is not None and event_id in self._metadata and self._seen_generation == generation:
             # Mapped from collect_entries() (it carries metadata), which
             # already ran the check: no per-call cost for registered entries.

@@ -1253,3 +1253,37 @@ def test_candidate_selection_follows_the_executor_truthiness(tmp_path):
     executor = _executor_over(instance, ctx, {})
     # getattr(instance, "run") is falsy, so the executor would pick entry_run.
     assert executor._resolve("plugin_entry", "run", registered_only=False) is None
+
+
+def test_event_handlers_follow_component_changes_too(tmp_path):
+    from plugin.core.entry_executor import EntryExecutor
+
+    class R(PluginRouter):
+        @on_event(event_type="custom_x", id="ping")
+        async def ping(self, **_): ...
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        pass
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    router = R(name="r")
+    instance.include_router(router)
+    events: dict = {}
+
+    def refresh():
+        events.clear()
+        for eid, item in instance.collect_entries().items():
+            events.setdefault(item.meta.event_type, {})[eid] = item.handler
+
+    refresh()
+    executor = EntryExecutor(
+        plugin_id="p", context=ctx, instance=instance, entries={}, metadata={}, events=events,
+        default_timeout=5.0, refresh=refresh, should_persist=lambda method: False,
+        persist=lambda: None, logger=ctx.logger,
+    )
+    assert executor._resolve("custom_x", "ping", registered_only=True) == router.ping
+    assert instance.exclude_router(router)
+    # No plugin_entry call in between: the custom-event path rebuilds too.
+    assert executor._resolve("custom_x", "ping", registered_only=True) is None
