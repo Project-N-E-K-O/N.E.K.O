@@ -69,6 +69,6 @@ async def test_unsafe_schema_never_reaches_shared_tool_registry():
         tool_id="mcp_fs_read", server_name="fs", tool_name="read", description="read",
         schema={"$ref": "https://example.com/schema"},
     )
-    assert result is False
+    assert result == "skipped_schema"
     assert registrations == []
     assert plugin._pending_chat_tools == {}

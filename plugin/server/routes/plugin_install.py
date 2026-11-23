@@ -236,7 +236,7 @@ def _run_to_install_status(run_status: str) -> str:
     mapping = {
         "queued": "queued",
         "running": "running",
-        "cancel_requested": "canceled",
+        "cancel_requested": "cancel_requested",
         "canceled": "canceled",
         "succeeded": "completed",
         "failed": "failed",
