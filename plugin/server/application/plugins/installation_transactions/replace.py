@@ -538,14 +538,19 @@ async def replace_plugin(
             )
         ):
             restored = False
-        # A failed source restore leaves the lock naming the new package; the
-        # old code is not started under it (it stays stopped). A missing
-        # code directory keeps the new package's source and restarts as
-        # before.
-        if was_running and code_restored and not source_restored:
+        # Nothing is restarted unless the previous code and its source are
+        # both back: with the code directory not restored, what is on disk
+        # (possibly the new code) may not match the recorded source and
+        # grants; with the source not restored, the previous code would run
+        # under the new package's source. The plugin stays stopped and the
+        # rollback is incomplete.
+        if was_running and not (code_restored and source_restored):
+            restored = False
             logger.error(
-                "plugin rollback restart skipped: previous source not restored plugin_id={}",
+                "plugin rollback restart skipped plugin_id={} code_restored={} source_restored={}",
                 plugin_id,
+                code_restored,
+                source_restored,
             )
         elif was_running:
             try:

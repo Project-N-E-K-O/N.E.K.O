@@ -1023,8 +1023,7 @@ async def test_rollback_keeps_the_new_source_while_the_new_code_stays_on_disk(
     environment, monkeypatch,
 ):
     """When the rollback cannot take the new code off disk, the lock keeps
-    naming the new package, so the restart does not hand that code the
-    previous package's grants."""
+    naming the new package and nothing is restarted."""
     from plugin.server.application.plugins import permission_service
 
     env = environment
@@ -1070,9 +1069,67 @@ async def test_rollback_keeps_the_new_source_while_the_new_code_stays_on_disk(
 
     assert captured.value.details.get("rollback_status") == "incomplete"
     assert 'version="2.0.0"' in (target_dir / "plugin.toml").read_text(encoding="utf-8")
-    [(source_at_restart, record_at_restart)] = seen_at_restart
-    assert source_at_restart != first_source
-    assert permission not in record_at_restart.get("permissions", {})
+    # The code on disk is not the previous package's: nothing restarts, and
+    # the lock names the package that is actually on disk.
+    assert seen_at_restart == []
+    row = env.manager.entry_for_directory(target_dir)
+    assert row.source_detail.package_sha256 == cli.PluginCliService._sha256_file(package)
+    assert permission_service.current_source(PLUGIN_ID) != first_source
+    assert permission not in permission_service.permission_record(PLUGIN_ID).get("permissions", {})
+
+
+@pytest.mark.asyncio
+async def test_no_restart_when_neither_source_nor_grants_nor_code_could_be_settled(
+    environment, monkeypatch,
+):
+    """The new source cannot be recorded, the previous grants cannot be
+    dropped, and the rollback cannot take the new code off disk: the lock
+    and the grants are still the previous package's, so nothing starts."""
+    from plugin.server.application.plugins import permission_service
+
+    env = environment
+    _permission, package, plan = await _installed_with_grant(env)
+    target_dir = env.user / PLUGIN_ID
+    starts: list[str] = []
+
+    def cannot_record(*_args, **_kwargs):
+        raise OSError("lock file is busy")
+
+    def cannot_forget(_plugin_id):
+        raise OSError("store is busy")
+
+    async def running(_plugin_id):
+        return True
+
+    async def stop(_plugin_id):
+        return None
+
+    async def start(_plugin_id):
+        starts.append((target_dir / "plugin.toml").read_text(encoding="utf-8"))
+
+    real_remove = replace.remove_directory
+
+    async def cannot_remove_code(path):
+        if Path(path) == target_dir:
+            raise OSError("directory in use")
+        await real_remove(path)
+
+    monkeypatch.setattr(cli, "_record_install_source_for_install_result", cannot_record)
+    monkeypatch.setattr(permission_service, "forget_permissions", cannot_forget)
+    monkeypatch.setattr(replace, "_plugin_is_running", running)
+    monkeypatch.setattr(replace, "_stop_plugin", stop)
+    monkeypatch.setattr(replace, "_start_plugin", start)
+    monkeypatch.setattr(replace, "remove_directory", cannot_remove_code)
+
+    with pytest.raises(ServerDomainError) as captured:
+        await env.service.install(
+            package=str(package), install_source="imported", confirm_upgrade=True,
+            confirmation_token=plan["confirmation_token"],
+        )
+
+    assert captured.value.details.get("rollback_status") == "incomplete"
+    assert 'version="2.0.0"' in (target_dir / "plugin.toml").read_text(encoding="utf-8")
+    assert starts == []
 
 
 @pytest.mark.asyncio
