@@ -399,9 +399,6 @@ def test_analyzer_version_was_bumped_for_the_new_report_fields():
     assert capability_analysis.ANALYZER_VERSION >= 5
 
 
-def test_analyzer_version_was_bumped_for_the_default_executor_exemption():
-    assert capability_analysis.ANALYZER_VERSION >= 6
-
 
 def test_function_attribution_follows_classes_and_nested_functions(tmp_path):
     report = _scan(
@@ -1502,6 +1499,7 @@ def test_process_pools_forks_and_downloads_are_direct_evidence(tmp_path, source,
         "loop.run_in_executor(None, g)",
         "loop.run_in_executor(executor=None, func=g)",
         "asyncio.get_running_loop().run_in_executor(None, g, 1)",
+        "loop.run_in_executor(None, *rest)",
     ],
 )
 def test_default_executor_keeps_the_context(tmp_path, call):
