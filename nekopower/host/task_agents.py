@@ -199,6 +199,9 @@ _IDLE_TIMER_MARGIN_SECONDS = 0.05
 _NO_PLACE_REASON = "no task agent place was free"
 # Children that can still produce a result their parent should wait for.
 _STILL_WORKING = frozenset({"queued", "working", "waiting_user"})
+# The tools a session changes files with: one opened without all of them changes none
+# (``Template.changes_files`` says the same of a preset).
+_CHANGING_TOOLS = frozenset({"write", "edit", "bash", "pwsh"})
 _REPORT_TO_STATUS = {"ready": "done", "blocked": "blocked", "failed": "failed"}
 # The pool the screenshots of every built-in tool are counted in (``TaskAgentSpec.image_pools``).
 SCREENSHOT_POOL = "builtin_screenshots"
@@ -488,6 +491,10 @@ class _Session:
     # the commission goes on in the other one (``_handed_over``).
     # Then its preset, and whether it was made for this commission.
     handing_over: tuple[str, str, str, str, bool] | None = None
+    # Whether the session was opened, for this commission, with a tool that
+    # changes files; None until it is opened. What its preset says by now
+    # may differ (a template changed since): this is what the run has.
+    changes_files: bool | None = None
 
 
 # How many ends of runs a session keeps at the most (``_Session.ends``):
@@ -2110,16 +2117,23 @@ class TaskAgentManager:
         ):
             self._unnote_writer(session_id, guessed=guessed)
             return
-        try:
-            changes = (await self._template_of(kept)).changes_files
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - not told: held to the rule
-            changes = True
+        # A run under way has the tools it was opened with, whatever its preset says by now.
+        live = self._sessions.get(self._held_by.get(session_id) or "")
+        opened = live.changes_files if live is not None and live.session_id == session_id else None
+        if opened is not None:
+            changes = opened
+        else:
+            try:
+                changes = (await self._template_of(kept)).changes_files
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - not told: held to the rule
+                changes = True
         if changes:
             self._writes_in[session_id] = (member.project, member.id)
         else:
-            self._unnote_writer(session_id, guessed=guessed)
+            # (Known of the run itself, it is as good as looked at: taken off though it is at work.)
+            self._unnote_writer(session_id, guessed=guessed or opened is not None)
 
     def _unnote_writer(self, session_id: str, *, guessed: bool = False) -> None:
         """Take a session off the ones that change files in a project, unless a run of it is under way.
@@ -2133,7 +2147,9 @@ class TaskAgentManager:
         but the guess said it changes files.
         """
         if guessed or self._held_by.get(session_id) is None:
-            self._writes_in.pop(session_id, None)
+            if self._writes_in.pop(session_id, None) is not None and self._queue and not self._closed:
+                # One that waited for it may start now, and nothing else may come by to say so.
+                self._spawn(self._start_next())
 
     async def _settle_for_the_queue(self, commission_id: str) -> None:
         """Settle the model of the session of a commission that found no place, before it is queued.
@@ -3534,6 +3550,7 @@ class TaskAgentManager:
                 commission, kept, model, workdir=workdir, session_dir=session_path, gateway=gateway_spec,
                 template=template,
             )
+            session.changes_files = not _CHANGING_TOOLS <= set(spec.disabled_tools)
             # On record with the session from here on: a later commission of
             # it is opened in the same place. (That the session is at work
             # was written with the commission's status.)

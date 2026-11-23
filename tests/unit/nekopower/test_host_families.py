@@ -2797,3 +2797,68 @@ async def test_task_agents_whose_taker_is_gone_still_become_a_project_and_one_of
     assert (session.id, session.kind, session.project, placed.project) == (other.id, "line", project, project)
     (formed,) = await _events(host, commission.id, "family_formed")
     assert formed == {"project": project, "members": [other.id]}
+
+
+async def test_a_run_under_way_counts_by_the_tools_it_was_opened_with_whatever_its_preset_says_by_now(hosts, tmp_path):
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    scripts = {"sales report": ScriptedLLM([[wait, *_report("week 45 written")]])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    agents = host.task_agents
+    receipt = await _dispatch(host, "write the weekly sales report for week 45")
+    await wait_until(lambda: len(scripts["sales report"].requests) == 1, what="the task agent being at work")
+    live = agents._sessions[receipt.commission_id]
+    # Opened with the tools that change files; a loose one, so nothing is noted of it.
+    assert live.changes_files is True and agents._writes_in == {}
+    # Its template is changed to one that reads only while it works, and it becomes a project's member.
+    folder = tmp_path / "nekopower" / "task_agent_space" / "templates"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "general.md").write_text(
+        "---\nname: general\ndescription: Looks, and changes nothing.\nread_only: true\nwrites: none\n---\n", encoding="utf-8"
+    )
+    await _project(host, "Reports", tmp_path)
+    await host.ledger.adopt([receipt.commission_id], "Reports")
+
+    await agents._note_writer(receipt.commission_id, guessed=True)
+
+    # The run has the tools it was opened with: it is one that changes files there, guess or no guess.
+    assert agents._writes_in == {receipt.commission_id: ("Reports", receipt.commission_id)}
+    # And the other way about: a run opened without them is taken off though it is at work.
+    live.changes_files = False
+    await agents._note_writer(receipt.commission_id)
+    assert agents._writes_in == {}
+    live.changes_files = True
+    release.set()
+    await wait_status(host, receipt.commission_id, "done")
+
+
+async def test_what_waited_for_a_task_agent_noted_on_a_guess_is_looked_at_once_the_note_is_taken_back(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    agents = host.task_agents
+    looked: list[int] = []
+
+    async def next_one() -> None:
+        looked.append(1)
+
+    agents._start_next = next_one
+    agents._writes_in["reads"] = ("Reports", "reads")
+    agents._queue.append("waits")
+    try:
+        agents._unnote_writer("reads", guessed=True)
+        await asyncio.sleep(0.01)
+        assert agents._writes_in == {} and looked == [1]
+        # Nothing was noted of it: nothing changed, and nothing is looked at.
+        agents._unnote_writer("reads", guessed=True)
+        await asyncio.sleep(0.01)
+        assert looked == [1]
+        # Nor where nothing waits.
+        agents._queue.clear()
+        agents._writes_in["reads"] = ("Reports", "reads")
+        agents._unnote_writer("reads")
+        await asyncio.sleep(0.01)
+        assert agents._writes_in == {} and looked == [1]
+    finally:
+        agents._queue.clear()
