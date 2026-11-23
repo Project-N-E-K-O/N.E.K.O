@@ -60,6 +60,8 @@ const messages: PowerMessages = {
     capability_missing: '这个槽位没有声明支持工具调用，使魔用不了。',
     role_models_unreadable: '这些设置的文件读不了。没有覆盖它；请修好或删掉它再试。',
     limit_not_saved: '上限没有存上（文件写不进去），还是原来的数。',
+    permissions_not_saved: '权限设置没有存上（文件写不进去），请稍后再试。下面显示的是现在生效的设置。',
+    record_unreadable: '对话记录现在读不出来（文件打不开），请稍后再刷新。',
     bad_status: '没有这种状态。',
     bad_days: '这不是一个天数。',
     bad_server: '这不是一个服务的名字。',

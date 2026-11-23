@@ -43,6 +43,8 @@
     </template>
 
     <!-- What happened can be looked at with nobody left as well: those who took part come back while it is replayed. -->
+    <!-- Said with nobody there and nothing read as well: nothing to replay is not the same as nothing that could be read. -->
+    <p v-if="timelineError" class="muted" role="status" data-testid="timeline-error">{{ timelineError }}</p>
     <template v-if="lands.length || entries.length">
       <div class="replay" data-testid="colony-replay">
         <el-button size="small" :disabled="!entries.length" data-testid="replay-play" @click="togglePlay">
@@ -60,7 +62,6 @@
         </el-button>
       </div>
       <p v-if="gone && position !== null" class="muted" role="status" data-testid="replay-gone">{{ t('power.colony.momentGone') }}</p>
-      <p v-if="timelineError" class="muted" role="status">{{ timelineError }}</p>
 
       <h2 class="feed-title">{{ t('power.activity.title') }}</h2>
       <ActivityFeed :entries="entries" :current="position" :name-of="nameOf" :loading="timelineLoading" @pick="seek" />
@@ -111,6 +112,7 @@ const playing = ref(false)
 const tidy = ref(0)
 const holding = ref(false)
 const links = ref<Record<string, string[]>>({})
+let waitsTurn = 0
 const asking = ref('')
 const parting = ref('')
 const busy = ref('')
@@ -147,10 +149,11 @@ function member(card: BoardCard): ColonyMember {
     const fresh = at && clock.value - at.saidAt <= SAID_SECONDS ? at.said : ''
     return { ...base, look: familiarLook(card), said: fresh, hidden: false }
   }
-  // Replayed: as the entries up to the moment leave it. One that is first named
-  // later was not there yet; one the entries never name stood by all along.
+  // Replayed: as the entries up to the moment leave it. One that comes in later was not
+  // there yet; one the entries never name stood by all along, and so does one from the
+  // moment it comes in, whatever kind of entry names it first.
   if (at) return { ...base, look: at.look, said: at.said, hidden: false }
-  return { ...base, look: 'idle', said: '', hidden: seen.value.has(card.id) }
+  return { ...base, look: 'idle', said: '', hidden: (seen.value.get(card.id) ?? -1) > position.value }
 }
 
 const lands = computed<Territory[]>(() => {
@@ -219,6 +222,8 @@ function open(land: Territory, id: string) {
 async function onHolding(held: boolean) {
   holding.value = held
   if (!held) return
+  // Of two reads the one asked for last holds, whichever answers first.
+  const mine = ++waitsTurn
   try {
     const made: Record<string, string[]> = {}
     for (const wait of (await getWaits()).waits) {
@@ -228,10 +233,10 @@ async function onHolding(held: boolean) {
       ;(made[from] ??= []).push(to)
       ;(made[to] ??= []).push(from)
     }
-    links.value = made
+    if (mine === waitsTurn) links.value = made
   } catch {
     // Without them the lines to whom it started and who started it are drawn all the same.
-    links.value = {}
+    if (mine === waitsTurn) links.value = {}
   }
 }
 

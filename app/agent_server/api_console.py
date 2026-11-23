@@ -892,6 +892,8 @@ def build_console_router(
             page = await host.transcript(session_id, place, rows, one)
         except ValueError as exc:
             code = str(exc)
+            if code == "record_unreadable":
+                raise _refuse(409, code) from None
             raise _refuse(413 if code == "too_large" else 400, code if code in ("bad_place", "too_large") else "bad_place") from None
         if page is None:
             raise _refuse(404, "no_familiar")
@@ -984,6 +986,9 @@ def build_console_router(
                 )
         except PermissionFileError:
             raise _refuse(409, "permissions_unreadable") from None
+        except OSError:
+            # The file could not be written.
+            raise _refuse(409, "permissions_not_saved") from None
         if not changed:
             raise _refuse(409, "stale")
         view = await host.mcp_tools()
@@ -1001,7 +1006,11 @@ def build_console_router(
     async def set_usage_limit(payload: dict[str, Any]) -> dict[str, Any]:
         """Set that limit, in tokens; ``tokens`` None goes back to the default."""
         payload = payload or {}
-        tokens = payload.get("tokens")
+        # Said in so many words: a payload that names no ``tokens`` asks for nothing, and does
+        # not put the limit back to the default.
+        if "tokens" not in payload:
+            raise _refuse(400, "not_a_number", field="tokens")
+        tokens = payload["tokens"]
         if tokens is not None and (isinstance(tokens, bool) or not isinstance(tokens, int)):
             raise _refuse(400, "not_a_number", field="tokens")
         host = await get_host()

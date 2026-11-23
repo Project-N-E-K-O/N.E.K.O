@@ -67,6 +67,8 @@ const messages = {
     capability_missing: 'That slot does not say it can call tools, so familiars cannot use it.',
     role_models_unreadable: 'The file of these settings cannot be read. Nothing was written over it; repair or remove it.',
     limit_not_saved: 'The limit could not be saved (its file cannot be written). It is still what it was.',
+    permissions_not_saved: 'The permission setting could not be saved (its file cannot be written). Try again later; what is shown is what holds now.',
+    record_unreadable: 'The conversation cannot be read right now (its file cannot be opened). Refresh in a moment.',
     bad_status: 'That is not a status.',
     bad_days: 'That is not a number of days.',
     bad_server: 'That is not the name of a server.',

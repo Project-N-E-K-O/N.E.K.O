@@ -214,13 +214,22 @@ async function toggle(item: CommissionRow) {
     return
   }
   opened.value = item.id
+}
+// What the one that is open used: read when it is opened, and again whenever the list says it
+// used more or stands otherwise (it went on, it ended).
+watch(() => {
+  const item = items.value.find(some => some.id === opened.value)
+  return item ? `${item.id}:${item.status}:${item.usage.requests}:${item.usage.tokens}` : ''
+}, async key => {
+  const id = opened.value
+  if (!key || !id) return
   try {
-    const answer = await getCommissionUsage(item.id)
-    if (opened.value === item.id) usage.value = answer
+    const answer = await getCommissionUsage(id)
+    if (opened.value === id) usage.value = answer
   } catch {
     // Shown without what it used.
   }
-}
+})
 
 async function act(name: string, work: () => Promise<unknown>, done = '') {
   busy.value = name

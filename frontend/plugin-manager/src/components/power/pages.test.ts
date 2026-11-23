@@ -262,6 +262,12 @@ describe('what was said in a familiar', () => {
     state.props = { sessionId: 's3' }
     await flush()
     expect(byTest('transcript-error')?.textContent).toContain(words.errors.no_familiar)
+    // Not read is not the same as nothing said: only the one is said, and it can be read again.
+    expect(document.body.textContent).not.toContain(words.transcript.nothing)
+    expect(byTest('transcript-latest')).toBeTruthy()
+    api.getTranscript.mockRejectedValueOnce(refused('record_unreadable', 409))
+    await click(byTest('transcript-latest'))
+    expect(byTest('transcript-error')?.textContent).toContain(words.errors.record_unreadable)
   })
 })
 
@@ -725,6 +731,32 @@ describe('the commissions', () => {
     taken({ success: true })
     await flush()
     expect(typed()).toBe('same words')
+  })
+
+  it('reads what the open one used again when the list says it used more or stands otherwise', async () => {
+    await mount(Commissions)
+    await click(document.querySelector('[data-commission="c1"]'))
+    expect(api.getCommissionUsage).toHaveBeenCalledTimes(1)
+    const again = async (over: Partial<CommissionRow>) => {
+      api.listCommissions.mockResolvedValue({ commissions: listed().map(item => (item.id === 'c1' ? { ...item, ...over } : item)), more: false })
+      document.dispatchEvent(new Event('visibilitychange'))
+      await flush()
+    }
+    // Read again with nothing new about it: what it used is not asked for again.
+    await again({})
+    expect(api.getCommissionUsage).toHaveBeenCalledTimes(1)
+    // It used more: asked for again, and shown.
+    api.getCommissionUsage.mockResolvedValueOnce({
+      commission: { requests: 12, input: 20_000, output: 6_000, cache_read: 400_000, cache_write: 0, tokens: 426_000 },
+      used: 426_000, limit: 5_000_000, session: null, window: null,
+    })
+    await again({ usage: { requests: 12, tokens: 426_000 } })
+    expect(api.getCommissionUsage).toHaveBeenCalledTimes(2)
+    expect(byTest('commission-usage')?.textContent).toContain('12')
+    // It ended, having used no more: asked for once more, as how it stands changed.
+    await again({ usage: { requests: 12, tokens: 426_000 }, status: 'done' })
+    expect(api.getCommissionUsage).toHaveBeenCalledTimes(3)
+    expect(api.getCommissionUsage).toHaveBeenLastCalledWith('c1')
   })
 
   it('says why one that is stuck stopped, and still offers to call it off', async () => {

@@ -41,6 +41,10 @@ class RecordError(Exception):
     """A record cannot be read as asked; the text is told to the task agent that asked."""
 
 
+class RecordUnreadable(RecordError):
+    """A record is there and cannot be opened now (held by another program, not permitted)."""
+
+
 class NoSuchPlace(RecordError):
     """A page asked for a place in a record where no entry begins."""
 
@@ -461,8 +465,10 @@ def read_page(
 
     try:
         handle = path.open("rb")
-    except OSError as exc:
+    except FileNotFoundError as exc:
         raise RecordError("this session has no record that can be read: nothing was said in it, or it was removed") from exc
+    except OSError as exc:
+        raise RecordUnreadable(f"the record of this session cannot be read now ({type(exc).__name__})") from exc
     try:
         with handle:
             size = os.fstat(handle.fileno()).st_size
@@ -499,8 +505,10 @@ def read_whole_entry(path: Path, at: int, *, entry_tokens: int, max_bytes: int) 
     """
     try:
         handle = path.open("rb")
-    except OSError as exc:
+    except FileNotFoundError as exc:
         raise RecordError("this session has no record that can be read: nothing was said in it, or it was removed") from exc
+    except OSError as exc:
+        raise RecordUnreadable(f"the record of this session cannot be read now ({type(exc).__name__})") from exc
     try:
         with handle:
             # Past the end no line begins either: nothing is read there.

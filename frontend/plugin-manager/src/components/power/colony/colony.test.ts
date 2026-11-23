@@ -84,10 +84,10 @@ async function mount(component: Component, props: Record<string, unknown> = {}) 
 }
 const byTest = (id: string) => document.querySelector(`[data-testid="${id}"]`) as HTMLElement | null
 const cat = (id: string) => document.querySelector(`[data-cat="${id}"]`) as HTMLElement | null
-function pointer(element: Element | null, type: string, x: number, y: number) {
+function pointer(element: Element | null, type: string, x: number, y: number, id = 1) {
   expect(element).toBeTruthy()
   const event = new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 })
-  Object.defineProperty(event, 'pointerId', { value: 1 })
+  Object.defineProperty(event, 'pointerId', { value: id })
   element!.dispatchEvent(event)
 }
 /** Every territory is 400 by 300 at the top left; the gate is the 100 by 40 at its bottom right. */
@@ -429,6 +429,79 @@ describe('a territory of the colony', () => {
     expect(keptSpots('project:Blog').kid).toBeTruthy()
   })
 
+  it('puts a familiar back where it stood when the drag is called off, and keeps nothing of it', async () => {
+    sized()
+    await mount(ColonyTerritory, { territory: pair() })
+    const stood = [cat('other')!.style.left, cat('other')!.style.top]
+    pointer(cat('other'), 'pointerdown', 200, 150)
+    pointer(cat('other'), 'pointermove', 390, 10)
+    await flush()
+    expect([cat('other')!.style.left, cat('other')!.style.top]).not.toEqual(stood)
+    // The browser takes the pointer away (a gesture of its own): as if it had not been picked up.
+    pointer(cat('other'), 'pointercancel', 390, 10)
+    await flush()
+    expect([cat('other')!.style.left, cat('other')!.style.top]).toEqual(stood)
+    // Where the others are put is kept afterwards without it.
+    cat('kid')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await flush()
+    expect(Object.keys(keptSpots('project:Blog'))).toEqual(['kid'])
+
+    // Put somewhere by the user before: back there, not to where it stands by itself.
+    pointer(cat('other'), 'pointerdown', 200, 150)
+    pointer(cat('other'), 'pointermove', 160, 150)
+    pointer(cat('other'), 'pointerup', 160, 150)
+    await flush()
+    expect(keptSpots('project:Blog').other).toEqual({ x: 0.4, y: 0.5 })
+    pointer(cat('other'), 'pointerdown', 160, 150)
+    pointer(cat('other'), 'pointermove', 390, 10)
+    pointer(cat('other'), 'pointercancel', 390, 10)
+    await flush()
+    expect(cat('other')!.style.left).toBe('40%')
+    cat('kid')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await flush()
+    expect(keptSpots('project:Blog').other).toEqual({ x: 0.4, y: 0.5 })
+  })
+
+  it('is moved only by the pointer that picked it up, whatever another finger does meanwhile', async () => {
+    sized()
+    await mount(ColonyTerritory, { territory: pair() })
+    pointer(cat('kid'), 'pointerdown', 100, 100)
+    // A second finger comes down on another one, lifts, is taken away, moves: none of that is this drag.
+    pointer(cat('other'), 'pointerdown', 200, 150, 2)
+    pointer(cat('kid'), 'pointermove', 160, 150)
+    pointer(cat('other'), 'pointerup', 300, 220, 2)
+    pointer(cat('other'), 'pointercancel', 300, 220, 2)
+    // The first finger goes on after the second lifted, and is the one that says where it is put.
+    pointer(cat('kid'), 'pointermove', 200, 180)
+    pointer(cat('other'), 'pointermove', 300, 220, 2)
+    pointer(cat('kid'), 'pointerup', 200, 180)
+    await flush()
+    expect(keptSpots('project:Blog')).toEqual({ kid: { x: 0.5, y: 0.6 } })
+  })
+
+  it('ends the drag, and says so, when what is held goes away', async () => {
+    sized()
+    const holds: boolean[] = []
+    const { state } = await mount(ColonyTerritory, { territory: pair(), onHolding: (held: boolean) => holds.push(held) })
+    pointer(cat('kid'), 'pointerdown', 100, 100)
+    pointer(cat('kid'), 'pointermove', 160, 150)
+    expect(holds).toEqual([true])
+    // The one that is held is not among them any more.
+    const without = pair()
+    without.members = without.members.filter(member => member.id !== 'kid')
+    state.props = { ...state.props, territory: without }
+    await flush()
+    expect(holds).toEqual([true, false])
+    expect(keptSpots('project:Blog')).toEqual({})
+    // The whole territory goes while one of it is held (its project was put away elsewhere).
+    pointer(cat('other'), 'pointerdown', 200, 150)
+    pointer(cat('other'), 'pointermove', 260, 200)
+    expect(holds).toEqual([true, false, true])
+    cleanup?.()
+    cleanup = undefined
+    expect(holds).toEqual([true, false, true, false])
+  })
+
   it('moves the familiar that has the focus with the arrow keys, and puts all back when tidied', async () => {
     const { state } = await mount(ColonyTerritory, { territory: pair(), tidy: 0 })
     const before = cat('lead')!.style.left
@@ -578,6 +651,73 @@ describe('the colony on the home page', () => {
     // Not named yet at that moment, and there all the same.
     expect(cat('lead')?.getAttribute('data-look')).toBe('idle')
     expect(cat('kid')).toBeTruthy()
+  })
+
+  it('shows a familiar from the moment it is first named, whatever kind of entry names it', async () => {
+    api.getTimeline.mockReset()
+    api.getTimeline.mockResolvedValue({ entries: [], next: 'e9.m0', more: false, latest: 'e9.m0' })
+    api.getTimeline.mockResolvedValueOnce({ next: 'e9.m0', more: false, latest: 'e9.m0', entries: [
+      // A kind this page was not told of: it changes nothing about how anyone stands.
+      entry('teams_joined', { session_id: 'kid', at: 10, cursor: 'e1.m0' }),
+      entry('reported', { at: 20, cursor: 'e2.m0', text: 'half way' }),
+    ] })
+    await mount(FamiliarColony)
+    const slider = byTest('replay-slider') as HTMLInputElement
+    slider.value = '0'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    // Named by then, and so there; the one named only afterwards is not there yet.
+    expect(cat('kid')?.getAttribute('data-look')).toBe('idle')
+    expect(cat('lead')).toBeNull()
+    slider.value = '1'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    await flush()
+    expect(cat('lead')).toBeTruthy()
+  })
+
+  it('draws the lines of the read that was asked for last, whichever answers first', async () => {
+    sized()
+    const withPeer = board()
+    withPeer.projects![0].members.push(card({ id: 'peer', name: 'Peer', kind: 'single', preset: 'general', avatar: 'general', leader: false, parent: null }))
+    api.getBoard.mockResolvedValue(withPeer)
+    let late: (answer: unknown) => void = () => {}
+    api.getWaits.mockReset()
+    api.getWaits.mockReturnValueOnce(new Promise(resolve => { late = resolve }))
+    api.getWaits.mockResolvedValueOnce({ more: false, waits: [
+      { kind: 'session', waiter: { session_id: 'peer' }, target: { type: 'session', session_id: 'lead' }, since: 0, text: '', projects: [] },
+    ] })
+    await mount(FamiliarColony)
+    // Picked up, put down, picked up again: the first read is still out when the second answers.
+    pointer(cat('peer'), 'pointerdown', 100, 100)
+    pointer(cat('peer'), 'pointermove', 160, 150)
+    pointer(cat('peer'), 'pointerup', 160, 150)
+    pointer(cat('peer'), 'pointerdown', 160, 150)
+    pointer(cat('peer'), 'pointermove', 170, 160)
+    await flush()
+    const lines = () => document.querySelectorAll('[data-testid="colony-lines"] line').length
+    expect(api.getWaits).toHaveBeenCalledTimes(2)
+    expect(lines()).toBe(1)
+    late({ more: false, waits: [] })
+    await flush()
+    expect(lines()).toBe(1)
+
+    // The same when the read that was asked for first fails after the other answered.
+    pointer(cat('peer'), 'pointerup', 170, 160)
+    let fail: (why: unknown) => void = () => {}
+    api.getWaits.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject }))
+    api.getWaits.mockResolvedValueOnce({ more: false, waits: [
+      { kind: 'session', waiter: { session_id: 'peer' }, target: { type: 'session', session_id: 'lead' }, since: 0, text: '', projects: [] },
+    ] })
+    pointer(cat('peer'), 'pointerdown', 170, 160)
+    pointer(cat('peer'), 'pointermove', 180, 170)
+    pointer(cat('peer'), 'pointerup', 180, 170)
+    pointer(cat('peer'), 'pointerdown', 180, 170)
+    pointer(cat('peer'), 'pointermove', 190, 180)
+    await flush()
+    expect(lines()).toBe(1)
+    fail(new Error('Network Error'))
+    await flush()
+    expect(lines()).toBe(1)
   })
 
   it('answers a familiar that waits from the colony, with what it asks shown whole', async () => {
@@ -767,6 +907,14 @@ describe('the colony on the home page', () => {
     api.getTimeline.mockResolvedValue({ entries: [], next: 'e0.m0', more: false, latest: 'e0.m0' })
     await mount(FamiliarColony)
     expect(byTest('board-empty')).toBeTruthy()
+    expect(byTest('colony-replay')).toBeNull()
+    expect(byTest('timeline-error')).toBeNull()
+    cleanup?.()
+    // Nobody, and what happened could not be read: said, so that it is not taken for nothing having happened.
+    api.getTimelineStart.mockRejectedValue({ code: 'agent_unreachable', response: { status: 503, data: { detail: { code: 'agent_unreachable' } } } })
+    await mount(FamiliarColony)
+    expect(byTest('board-empty')).toBeTruthy()
+    expect(byTest('timeline-error')?.textContent).toBeTruthy()
     expect(byTest('colony-replay')).toBeNull()
     cleanup?.()
     api.getBoard.mockRejectedValue({ response: { status: 404 } })

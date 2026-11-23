@@ -29,7 +29,7 @@
       @pointerdown="grab(member.id, $event)"
       @pointermove="drag($event)"
       @pointerup="drop($event)"
-      @pointercancel="letGo()"
+      @pointercancel="cancel($event)"
       @keydown="nudge(member.id, $event)"
       @click="clicked(member.id, $event)"
     >
@@ -90,6 +90,8 @@ let moved = false
 let start: { x: number; y: number } | null = null
 // Where the one that is held was put by the user before it was picked up; null: nowhere.
 let from: Spot | null = null
+// The pointer it was picked up with: another finger on the screen is no part of it.
+let pointer: number | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 const STROLL_MS = 2800
 const STROLL_REACH = 0.05
@@ -141,14 +143,16 @@ function overGate(event: PointerEvent): boolean {
 
 function grab(id: string, event: PointerEvent) {
   if (event.button !== 0) return
+  if (held.value && pointer !== null && event.pointerId !== pointer) return
   start = { x: event.clientX, y: event.clientY }
   moved = false
   held.value = id
   from = placed[id] ? { ...placed[id] } : null
+  pointer = event.pointerId
   ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
 }
 function drag(event: PointerEvent) {
-  if (!held.value || !start) return
+  if (!held.value || !start || event.pointerId !== pointer) return
   // A press that barely moves is a click, not a drag.
   if (!moved && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 5) return
   if (!moved) {
@@ -160,7 +164,7 @@ function drag(event: PointerEvent) {
 }
 function drop(event: PointerEvent) {
   const id = held.value
-  if (!id) return
+  if (!id || event.pointerId !== pointer) return
   if (moved) {
     if (props.canDismiss && overGate(event)) {
       // Back to where it stood, put there by the user or not: the user may still say no.
@@ -176,6 +180,16 @@ function drop(event: PointerEvent) {
   }
   letGo()
 }
+/** The drag is called off (by the browser, or because what was held is not there any more): as if it had not begun. */
+function cancel(event?: PointerEvent) {
+  const id = held.value
+  if (!id || (event && event.pointerId !== pointer)) return
+  if (moved) {
+    if (from) placed[id] = from
+    else delete placed[id]
+  }
+  letGo()
+}
 function letGo() {
   if (moved) {
     emit('holding', false)
@@ -184,6 +198,7 @@ function letGo() {
   }
   held.value = ''
   start = null
+  pointer = null
 }
 function clicked(id: string, event: MouseEvent) {
   // The click that ends a drag opens nothing.
@@ -238,7 +253,12 @@ watch(() => props.tidy, () => {
 })
 
 onMounted(() => { timer = setInterval(strollOn, STROLL_MS) })
-onBeforeUnmount(() => { if (timer) clearInterval(timer) })
+// The one that is held went away (its project was put away elsewhere): the drag is over, and whoever was told of it is told.
+watch(shown, members => { if (held.value && !members.some(member => member.id === held.value)) cancel() })
+onBeforeUnmount(() => {
+  if (timer) clearInterval(timer)
+  cancel()
+})
 </script>
 
 <style scoped>

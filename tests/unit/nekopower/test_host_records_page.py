@@ -228,6 +228,23 @@ def test_a_record_that_is_not_there_says_so(tmp_path):
     assert _page(empty) == {"entries": [], "before": None}
 
 
+def test_a_record_that_is_there_and_cannot_be_opened_is_not_one_nothing_was_said_in(tmp_path):
+    # Nothing there: no record, as when nothing was said or it was removed.
+    with pytest.raises(records.RecordError) as gone:
+        records.read_page(tmp_path / "missing.jsonl", None, 5, entry_tokens=100, scan_bytes=10_000)
+    assert not isinstance(gone.value, records.RecordUnreadable)
+    with pytest.raises(records.RecordError) as gone:
+        records.read_whole_entry(tmp_path / "missing.jsonl", 0, entry_tokens=100, max_bytes=10_000)
+    assert not isinstance(gone.value, records.RecordUnreadable)
+    # There, and not to be opened as a file (a directory stands for one that is held or not permitted).
+    held = tmp_path / "held.jsonl"
+    held.mkdir()
+    with pytest.raises(records.RecordUnreadable):
+        records.read_page(held, None, 5, entry_tokens=100, scan_bytes=10_000)
+    with pytest.raises(records.RecordUnreadable):
+        records.read_whole_entry(held, 0, entry_tokens=100, max_bytes=10_000)
+
+
 def test_the_lines_before_a_place_are_the_same_whatever_the_size_of_the_blocks_they_are_read_in(tmp_path, monkeypatch):
     # Empty lines, short ones, and ones that reach over many blocks, as a picture kept in a record does.
     lines = [b"", b"a", b"x" * 37, b"", b"hello world", b"y" * 5, b"z" * 64, b"last"]

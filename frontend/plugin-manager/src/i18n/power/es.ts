@@ -60,6 +60,8 @@ const messages: PowerMessages = {
     capability_missing: 'Ese slot no indica que admita llamadas a herramientas, así que los familiares no pueden usarlo.',
     role_models_unreadable: 'No se puede leer el archivo de estos ajustes. No se ha sobrescrito; repáralo o elimínalo e inténtalo de nuevo.',
     limit_not_saved: 'No se pudo guardar el límite (no se puede escribir el archivo). Sigue como estaba.',
+    permissions_not_saved: 'No se pudo guardar el permiso (no se puede escribir el archivo). Inténtalo más tarde; lo que se muestra es lo que rige ahora.',
+    record_unreadable: 'La conversación no se puede leer ahora (no se puede abrir el archivo). Actualiza en un momento.',
     bad_status: 'Ese estado no existe.',
     bad_days: 'Eso no es un número de días.',
     bad_server: 'Eso no es el nombre de un servidor.',

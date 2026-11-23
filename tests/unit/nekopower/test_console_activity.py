@@ -348,6 +348,30 @@ async def test_what_was_said_in_a_task_agent_is_read_a_page_at_a_time_and_one_en
     assert _code(await console.get("/familiars/nobody/transcript")) == (404, "no_familiar")
 
 
+async def test_a_record_that_cannot_be_opened_now_is_said_and_not_shown_as_nothing_said(consoles, tmp_path, monkeypatch):
+    from nekopower.host import records
+
+    console = consoles(tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    done = await _over(console, (await console.dispatch("sort the photos")).id)
+    assert (await console.get(f"/familiars/{done.session_id}/transcript")).json()["readable"] is True
+
+    def held(*args: Any, **kwargs: Any) -> Any:
+        raise records.RecordUnreadable("the record of this session cannot be read now (PermissionError)")
+
+    monkeypatch.setattr(records, "read_page", held)
+    monkeypatch.setattr(records, "read_whole_entry", held)
+    assert _code(await console.get(f"/familiars/{done.session_id}/transcript")) == (409, "record_unreadable")
+    assert _code(await console.get(f"/familiars/{done.session_id}/transcript", at=0)) == (409, "record_unreadable")
+
+    # Gone between the look and the read: nothing to read, as before.
+    def gone(*args: Any, **kwargs: Any) -> Any:
+        raise records.RecordError("this session has no record that can be read")
+
+    monkeypatch.setattr(records, "read_page", gone)
+    page = (await console.get(f"/familiars/{done.session_id}/transcript")).json()
+    assert (page["readable"], page["reason"]) == (False, "empty")
+
+
 async def test_an_entry_too_large_to_show_whole_is_said_to_be(consoles, tmp_path, monkeypatch):
     console = consoles(tmp_path, ScriptedLLM([_report("ready", "sorted")]))
     done = await _over(console, (await console.dispatch("sort the photos")).id)
@@ -471,6 +495,30 @@ async def test_the_commissions_are_listed_newest_first_with_what_each_asks_and_k
         ({"project": " "}, "bad_name"),
     ):
         assert _code(await console.get("/commissions", **params)) == (400, code), params
+
+
+async def test_one_that_ended_between_the_two_reads_of_the_listing_is_listed_as_it_stands(consoles, tmp_path, monkeypatch):
+    llm = ScriptedLLM([_report("waiting", "Beans or peas?", "call-w"), _report("ready", "planned", "call-2")])
+    console = consoles(tmp_path, llm)
+    first = await console.dispatch("plan the garden")
+    await wait_status(console.host, first.id, "waiting_user")
+    ledger = console.host.ledger
+    select = ledger.select
+    reads = []
+
+    async def answered_between(**criteria: Any) -> Any:
+        found = await select(**criteria)
+        reads.append(criteria)
+        if len(reads) == 1:
+            # Read as waiting; answered and done before the listing reads the rest.
+            assert [item.status for item in found if item.id == first.id] == ["waiting_user"]
+            assert (await console.post(f"/commissions/{first.id}/answer", {"text": "beans"})).status_code == 200
+            await _over(console, first.id)
+        return found
+
+    monkeypatch.setattr(ledger, "select", answered_between)
+    listed = (await console.get("/commissions")).json()["commissions"]
+    assert [(item["id"], item["status"], item["ask"]) for item in listed] == [(first.id, "done", None)]
 
 
 async def test_what_is_kept_to_is_looked_for_before_the_listing_is_cut(consoles, tmp_path, monkeypatch):
@@ -637,6 +685,23 @@ async def test_the_mcp_tools_are_listed_by_server_and_each_server_is_set_on_its_
         ({"server": "notes", "mode": "deny", "expected_version": True}, "bad_version"),
     ):
         assert _code(await console.post("/mcp/permission", payload)) == (400, code), payload
+
+
+async def test_a_setting_of_the_servers_that_could_not_be_written_is_said_with_a_code(consoles, tmp_path, monkeypatch):
+    server = FakePluginServer.install(monkeypatch)
+    _mcp(server)
+    console = consoles(tmp_path, server=server)
+    assert (await console.post("/mcp/permission", {"server": "notes", "mode": "deny"})).status_code == 200
+
+    def full(*args: Any) -> None:
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(console.host.permission_store, "_write", full)
+    # Taken away, set, and the one all share: each says that it was not saved.
+    for payload in ({"server": "notes", "mode": "auto"}, {"server": "calendar", "mode": "allow"}, {"mode": "always_ask"}):
+        assert _code(await console.post("/mcp/permission", payload)) == (409, "permissions_not_saved"), payload
+    # What was to be taken away is still there, in both places.
+    assert await console.host.permission_store.mode("mcp_server", "notes") == "deny"
 
 
 async def test_taking_the_setting_of_a_server_away_ends_what_was_approved_for_those_that_share_the_setting(tmp_path):
@@ -819,6 +884,10 @@ async def test_the_usage_limit_is_shown_set_within_its_bounds_and_put_back(conso
 async def test_a_limit_that_could_not_be_written_is_said_with_a_code_and_stays_what_it_was(consoles, tmp_path, monkeypatch):
     console = consoles(tmp_path)
     assert (await console.post("/usage-limit", {"tokens": 800_000})).json()["set"] == 800_000
+    # A payload that names no limit asks for nothing: it does not put the default back.
+    for payload in ({}, {"token": 900_000}):
+        assert _code(await console.post("/usage-limit", payload)) == (400, "not_a_number"), payload
+    assert (await console.get("/usage-limit")).json()["set"] == 800_000
 
     def full(*args: Any) -> None:
         raise OSError("the disk is full")

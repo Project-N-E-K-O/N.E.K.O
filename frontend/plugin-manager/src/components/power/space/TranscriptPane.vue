@@ -18,7 +18,7 @@
         <span class="grow" />
         <el-button size="small" :loading="loading" data-testid="transcript-latest" @click="latest">{{ t('power.transcript.refresh') }}</el-button>
       </div>
-      <p v-if="!entries.length" class="muted">{{ t('power.transcript.nothing') }}</p>
+      <p v-if="!entries.length && !error" class="muted">{{ t('power.transcript.nothing') }}</p>
       <article v-for="entry in entries" :key="entry.at" class="entry" :class="`entry--${entry.role}`" :data-entry="entry.at" :data-role="entry.role">
         <!-- What the host told it by itself is part of the record, and folded: it is not what anyone said. -->
         <details v-if="entry.role === 'notice'" class="call">

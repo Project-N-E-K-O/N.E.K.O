@@ -801,7 +801,8 @@ class NekoPowerHost:
         where the host cannot read it), ``"empty"`` when nothing was said
         in it yet or what was said was removed. Raises ``ValueError`` with
         a code: ``bad_place`` (no entry begins there), ``too_large`` (the
-        one entry asked for is too large to show).
+        one entry asked for is too large to show), ``record_unreadable``
+        (the record is there and cannot be opened now).
         """
         from config import nekopower_settings as settings
         from nekopower.host import records
@@ -846,6 +847,9 @@ class NekoPowerHost:
             raise ValueError("bad_place") from None
         except records.EntryTooLarge:
             raise ValueError("too_large") from None
+        except records.RecordUnreadable:
+            # There, and not to be opened now: not the same as nothing said.
+            raise ValueError("record_unreadable") from None
         except records.RecordError:
             # Gone between the look and the read (cleaned, removed).
             return {"readable": False, "reason": "empty", "entries": [], "before": None}
@@ -963,7 +967,6 @@ class NekoPowerHost:
                 return False
             return project is None or (item.project or "") == project
 
-        found: dict[str, Commission] = {}
         # Queued, at work, waiting for the user. One that is stuck is over until somebody takes
         # it up again: it is listed like the others that are over, while it is recent enough.
         under_way = await self.ledger.select(statuses=tuple(UNDER_WAY_STATUSES))
@@ -982,10 +985,10 @@ class NekoPowerHost:
         looked_at_here = project is not None
         reach = settings.CONSOLE_COMMISSIONS_SCAN_ROWS if looked_at_here else rows + 1 + len(under_way)
         read = await self.ledger.select(limit=reach, **criteria)
-        for item in [*under_way, *read]:
-            if kept(item):
-                found.setdefault(item.id, item)
-        listed = sorted(found.values(), key=lambda item: item.created_at, reverse=True)
+        # Read a moment apart: of one that is in both, what the later read says holds, so one
+        # that was answered or ended between the two is not listed as it stood before.
+        latest = {item.id: item for item in [*under_way, *read]}
+        listed = sorted((item for item in latest.values() if kept(item)), key=lambda item: item.created_at, reverse=True)
         # One more than asked for was read: what is left over says there is more. So does a
         # look that went as far as it may: what lies beyond it was not looked at.
         more = len(listed) > rows or (looked_at_here and len(read) >= reach)
