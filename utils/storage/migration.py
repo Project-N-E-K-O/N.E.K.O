@@ -92,9 +92,9 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # NekoPower: what it keeps as plain files, each on its own (the ledger of
     # commissions with its write-ahead log, the permission settings, what
     # was learned about plugins and models, the model each role is sent to,
-    # the browser settings). Not the
-    # directory as a whole: below it are the task agents' working
-    # directories (virtual environments, ``node_modules``: full of links)
+    # the browser settings). Not the directory as a whole: below it are the
+    # task agents' working directories (virtual environments,
+    # ``node_modules``: full of links)
     # and the profile of the browser the browser tools start (lock links on
     # macOS and Linux), and one link fails a whole migration. Those two stay
     # in the old root; see ``DELIBERATELY_UNMIGRATED`` in
