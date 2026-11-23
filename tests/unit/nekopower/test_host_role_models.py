@@ -867,9 +867,7 @@ async def test_a_session_that_cannot_be_settled_as_it_is_made_is_settled_when_it
     assert (await _session_of(host, done.id)).model_slot == OWN_SLOT
 
 
-async def test_a_model_that_cannot_be_written_down_does_not_keep_a_session_from_starting(
-    hosts, tmp_path, monkeypatch
-):
+async def test_a_session_whose_model_cannot_be_written_down_is_not_opened(hosts, tmp_path, monkeypatch):
     manager = _manager(tmp_path, _default_slots())
     specs: list[Any] = []
     host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
@@ -882,10 +880,12 @@ async def test_a_model_that_cannot_be_written_down_does_not_keep_a_session_from_
         return await update(session_id, **values)
 
     monkeypatch.setattr(host.ledger, "update_session", failing)
-    done = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
+    failed = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "failed")
 
-    assert specs[0].model.model == "own-model"
-    assert (await _session_of(host, done.id)).model_ident == ""
+    # Opened now and on no record, it could be opened by another model the next time, conversation and all.
+    assert specs == []
+    assert "the ledger is busy" in failed.status_reason
+    assert (await _session_of(host, failed.id)).model_ident == ""
 
 
 async def test_a_project_the_user_opens_has_its_lead_settled_as_it_is_made(hosts, tmp_path):
@@ -926,8 +926,9 @@ async def test_whether_a_task_agent_can_be_started_is_told_by_the_model_it_would
     await host.task_agents.settle_model(agent)
     manager.tiers["agent"] = {}
 
-    # No task agent model: a new session of hers cannot start, nor can one sent to it; one sent to its own slot can.
-    assert await host.task_agents.available() == (False, "not_enabled")
+    # No task agent model: one sent to it cannot start, one sent to its own slot can; and she may go on
+    # with that one, so task agents are there for her.
+    assert await host.task_agents.available() == (True, "")
     assert await host.task_agents.available(await host.ledger.get_session(agent.id)) == (False, "not_enabled")
     assert await host.task_agents.available(await host.ledger.get_session(own.id)) == (True, "")
     # A new one of hers can once her preset is set to a slot that has a model.
@@ -1129,18 +1130,29 @@ async def test_a_project_is_opened_when_its_leads_model_cannot_be_read(hosts, tm
     assert (await host.ledger.get_session(made["session_id"])).model_ident == ""
 
 
-async def test_a_wake_of_a_session_with_a_model_of_its_own_is_not_held_for_the_task_agent_model(hosts, tmp_path):
-    manager = _manager(tmp_path, _default_slots())
+async def test_a_wake_is_held_or_not_by_the_model_of_the_session_it_wakes(hosts, tmp_path):
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _manager(tmp_path, _default_slots(), agent_small=small)
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
     await host.set_role_model("general", OWN_SLOT)
     own = await host.ledger.create_session(lanlan_name="Lan", name="own", kind="single")
-    await host.task_agents.settle_model(own)
+    await tasks.settle_model(own)
+    await host.set_role_model("general", SMALL_SLOT)
+    small_one = await host.ledger.create_session(lanlan_name="Lan", name="small", kind="single")
+    await tasks.settle_model(small_one)
     await host.set_role_model("general", None)
     manager.tiers["agent"] = {}
 
-    # A new session would have no model; this one has its own.
-    assert await host.task_agents.available() == (False, "not_enabled")
-    assert await host.task_agents._may_start(own.id, session=await host.ledger.get_session(own.id)) is None
+    # A session with a model of its own is woken, whatever a new one would have.
+    assert await tasks._may_start(own.id, session=await host.ledger.get_session(own.id)) is None
+    # One whose slot is gone, and whose default has no model, is not, though another session has one.
+    slots = _default_slots()
+    del slots[OWN_SLOT]
+    _write_slots(manager, slots)
+    assert await tasks.available() == (True, "")
+    held = await tasks._may_start(own.id, session=await host.ledger.get_session(own.id))
+    assert held is not None and held.outcome == "held"
 
 
 async def test_only_a_request_that_goes_with_the_free_key_is_charged(hosts, tmp_path):
@@ -1349,3 +1361,292 @@ async def test_a_slot_made_to_follow_another_tier_since_is_not_followed_there(ho
     # The conversation stays away from a tier nobody chose for it: the preset's default, and why.
     assert choice.name != "small-model"
     assert choice.fallback == "slot_changed"
+
+
+async def test_a_slot_that_cannot_be_read_just_now_is_tried_again_the_next_time(hosts, tmp_path):
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _manager(tmp_path, _default_slots(), agent_small=small)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    await host.set_role_model("general", SMALL_SLOT)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    await tasks.settle_model(session)
+    await host.set_role_model("general", None)
+
+    # The small tier cannot be read for a moment: the default this time, and nothing written over.
+    manager.tiers["agent_small"] = RuntimeError("being saved")
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.name, choice.fallback) == ("agent-model", "host_api_not_configured")
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_name, row.model_fallback) == (SMALL_SLOT, "small-model", "")
+
+    # Readable again: where it was settled.
+    manager.tiers["agent_small"] = small
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.name) == (SMALL_SLOT, "small-model")
+
+
+async def test_a_session_settled_before_goes_on_when_its_model_cannot_be_written_again(hosts, tmp_path, monkeypatch):
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _manager(tmp_path, _default_slots(), agent_small=small)
+    specs: list[Any] = []
+    host = _host(hosts, tmp_path, lambda spec: specs.append(spec) or ScriptedLLM([_report()]), manager)
+    await host.set_role_model("boss", SMALL_SLOT)
+    await host.space.touch_project("Budget app")
+    await wait_status(host, (await _dispatch(host, "add a chart to the budget app")).commission_id, "done")
+    manager.tiers["agent_small"] = {**small, "model": "small-model-2"}
+    update = host.ledger.update_session
+
+    async def failing(session_id: str, **values: Any) -> Any:
+        if "model_ident" in values:
+            raise RuntimeError("the ledger is busy")
+        return await update(session_id, **values)
+
+    monkeypatch.setattr(host.ledger, "update_session", failing)
+    await wait_status(host, (await _dispatch(host, "add a legend to the budget app")).commission_id, "done")
+
+    assert [spec.model.model for spec in specs] == ["small-model", "small-model-2"]
+
+
+async def test_a_commission_that_waits_for_a_place_has_its_session_settled_as_it_waits(hosts, tmp_path):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    specs: list[Any] = []
+    scripts = [ScriptedLLM([[wait, *_report()]]), ScriptedLLM([_report()])]
+    host = _host(
+        hosts, tmp_path, lambda spec: specs.append(spec) or scripts[len(specs) - 1], manager, max_task_agents=1
+    )
+    await host.set_role_model("general", OWN_SLOT)
+    first = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_status(host, first, "working")
+    second = (await _dispatch(host, "sort the music")).commission_id
+    await wait_status(host, second, "queued")
+    # The user changes the setting while it waits: it was settled as it was queued.
+    await host.set_role_model("general", None)
+    release.set()
+    await wait_status(host, second, "done")
+
+    assert [spec.model.model for spec in specs] == ["own-model", "own-model"]
+
+
+async def test_what_a_commission_at_work_used_is_told_against_the_window_of_the_model_it_runs_on(hosts, tmp_path):
+    import asyncio
+
+    manager = _manager(tmp_path, _default_slots())
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait, *_report()]]), manager)
+    await host.model_capabilities.set_context_window("http://own.test/v1", "own-model", 40_000)
+    await host.set_role_model("general", OWN_SLOT)
+    commission = (await _dispatch(host, "sort the photos")).commission_id
+    await wait_until(lambda: commission in host.task_agents._sessions and host.task_agents._sessions[commission].model)
+    own_window = await host.model_capabilities.describe_window("http://own.test/v1", "own-model")
+    slots = _default_slots()
+    del slots[OWN_SLOT]
+    _write_slots(manager, slots)
+
+    # Its slot is gone, and it would be opened with another model next time; what it used now is the own model's.
+    assert (await host.usage(commission))["window"] == own_window
+    release.set()
+    await wait_status(host, commission, "done")
+
+
+async def test_an_open_session_is_woken_by_the_key_it_is_open_with(hosts, tmp_path):
+    from nekopower.host.task_agents import _Session
+
+    manager = _manager(tmp_path, _default_slots())
+    counted: list[str] = []
+
+    async def meter(key: str) -> bool:
+        counted.append(key)
+        return False
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager, task_agent_meter=meter)
+    await host.set_role_model("general", OWN_SLOT)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    await host.task_agents.settle_model(session)
+    kept = await host.ledger.get_session(session.id)
+    # The slot was given the free key since the session was opened with the user's own.
+    slots = _default_slots()
+    slots[OWN_SLOT] = _own(api_key=FREE_KEY)
+    _write_slots(manager, slots)
+
+    host.task_agents._sessions["c1"] = _Session("c1", free=False, idle=True)
+    host.task_agents._sessions["c2"] = _Session("c2", free=True, idle=True)
+    try:
+        assert await host.task_agents._may_start("c1", session=kept) is None
+        assert counted == []
+        held = await host.task_agents._may_start("c2", session=kept)
+        assert held is not None and counted == ["c2"]
+        # One at work in its run is not taken for open and idle: where it would go now counts (the free
+        # key, with the quota known to be used up).
+        host.task_agents._sessions["c1"].idle = False
+        held = await host.task_agents._may_start("c1", session=kept)
+        assert held is not None
+    finally:
+        host.task_agents._sessions.clear()
+
+
+async def test_a_session_whose_model_moved_since_it_last_ran_gets_no_idle_timer(hosts, tmp_path):
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _manager(tmp_path, _default_slots(), agent_small=small)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    await host.set_role_model("general", SMALL_SLOT)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    await host.task_agents.settle_model(session)
+    assert await host.task_agents._task_model_key(session.id) is not None
+
+    # The small tier moves to another provider: nothing of the session goes there until it runs again.
+    manager.tiers["agent_small"] = {**small, "base_url": "http://elsewhere.test/v1"}
+    assert await host.task_agents._task_model_key(session.id) is None
+
+
+async def test_an_idle_session_is_not_summed_up_by_a_model_that_has_it_switched_off(hosts, tmp_path, monkeypatch):
+    from config import nekopower_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_ENABLED", True)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 3600.0)
+    # Any conversation is worth summing up here: only the switch stands in the way.
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_MIN_TOKENS", 0)
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([_report()]), manager)
+    tasks = host.task_agents
+    done = await wait_status(host, (await _dispatch(host, "sort the photos")).commission_id, "done")
+    await tasks.settle()
+    await wait_until(lambda: tasks._held_by == {}, what="every session being let go")
+    tasks._drop_idle_timer(done.session_id)
+    key = await tasks._task_model_key(done.session_id)
+    wanted = tasks._idle_compact_wanted
+    looked: list[str] = []
+
+    async def on_until_looked_at(session_id: str) -> bool:
+        looked.append(session_id)
+        return True
+
+    # Switched on as the timer comes due, and off for the model by the time it would be sent there.
+    monkeypatch.setattr(tasks, "_idle_compact_wanted", on_until_looked_at)
+    await host.model_capabilities.set_idle_compact_on("http://agent.test/v1", "agent-model", False)
+    begun: list[str] = []
+    begin = host.ledger.begin_compacting
+
+    async def beginning(session_id: str) -> Any:
+        begun.append(session_id)
+        return await begin(session_id)
+
+    monkeypatch.setattr(host.ledger, "begin_compacting", beginning)
+    assert await tasks._idle_compact(done.session_id, after=0.0, model=key) is False
+    assert looked == [done.session_id] and begun == []
+    del wanted
+
+
+async def test_a_slot_made_to_follow_a_tier_at_the_same_address_is_not_followed_when_the_tier_moves(hosts, tmp_path):
+    same = {"model": "own-model", "base_url": "http://own.test/v1", "api_key": "sk-small"}
+    manager = _manager(tmp_path, _default_slots(), agent_small=same)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    tasks = host.task_agents
+    await host.set_role_model("general", OWN_SLOT)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    await tasks.settle_model(session)
+    await host.set_role_model("general", None)
+
+    # The own slot is made to follow the small tier, which is the same model for now: not taken as chosen.
+    slots = _default_slots()
+    slots[OWN_SLOT] = _follow("agent_small")
+    _write_slots(manager, slots)
+    choice = await tasks.session_model(await host.ledger.get_session(session.id))
+    assert (choice.slot, choice.fallback) == (AGENT_SLOT, "slot_changed")
+    row = await host.ledger.get_session(session.id)
+    assert (row.model_slot, row.model_tier) == (AGENT_SLOT, "agent")
+
+
+async def test_a_setting_is_written_to_the_file_it_was_read_from_when_the_data_moves_meanwhile(tmp_path):
+    first, second = tmp_path / "a" / "role_models.json", tmp_path / "b" / "role_models.json"
+    asked: list[Path] = []
+
+    def where() -> Path:
+        # Where the data is, asked once per look: it moves after the first.
+        asked.append(first if not asked else second)
+        return asked[-1]
+
+    store = role_models.RoleModelStore(where)
+    await store.put("scout", "inherit")
+
+    assert json.loads(first.read_text(encoding="utf-8"))["roles"] == {"scout": "inherit"}
+    assert not second.exists()
+
+
+class _TierGoesAway(Manager):
+    """The small tier is there as the slot is resolved, and gone when it is read again."""
+
+    def __init__(self, root: Path, tiers: dict[str, Any]) -> None:
+        super().__init__(root, tiers)
+        self.reads = 0
+
+    def get_model_api_config(self, model_type: str) -> dict[str, Any]:
+        if model_type == "agent_small":
+            self.reads += 1
+            if self.reads > 1:
+                return {}
+        return super().get_model_api_config(model_type)
+
+
+async def test_a_tier_that_is_gone_by_the_time_it_is_read_again_leaves_the_preset_with_its_default(hosts, tmp_path):
+    small = {"model": "small-model", "base_url": "http://small.test/v1", "api_key": "sk-small"}
+    manager = _TierGoesAway(tmp_path / "app", {"agent": dict(AGENT_TIER), "agent_small": small})
+    _write_slots(manager, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    await host.task_agents.role_models.store.put("general", SMALL_SLOT)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+
+    choice = await host.task_agents.session_model(session)
+
+    assert (choice.name, choice.fallback) == ("agent-model", "host_api_not_configured")
+
+
+async def test_the_settings_are_read_once_for_all_the_presets_shown(hosts, tmp_path, monkeypatch):
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    store = host.task_agents.role_models.store
+    await host.set_role_model("scout", OWN_SLOT)
+    reads: list[int] = []
+    read_all = store.all
+
+    async def counting() -> dict[str, str]:
+        reads.append(1)
+        return await read_all()
+
+    async def no_one_by_one(preset: str) -> str | None:
+        raise AssertionError("read again for one preset")
+
+    monkeypatch.setattr(store, "all", counting)
+    monkeypatch.setattr(store, "get", no_one_by_one)
+    view = await host.role_models()
+
+    assert reads == [1]
+    assert next(item for item in view["presets"] if item["preset"] == "scout")["in_effect"]["slot"] == OWN_SLOT
+
+
+async def test_an_open_session_is_not_woken_while_task_agents_are_switched_off(hosts, tmp_path):
+    from nekopower.host.task_agents import _Session
+
+    manager = _manager(tmp_path, _default_slots())
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM(), manager)
+    session = await host.ledger.create_session(lanlan_name="Lan", name="s", kind="single")
+    host.task_agents._enabled = lambda: False
+
+    host.task_agents._sessions["c1"] = _Session("c1", idle=True)
+    try:
+        held = await host.task_agents._may_start("c1", session=session)
+    finally:
+        host.task_agents._sessions.clear()
+
+    assert held is not None and held.outcome == "held"

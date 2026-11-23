@@ -589,7 +589,8 @@ class NekoPowerHost:
                     "setting": settings.get(name),
                     "default": await self.task_agents.model_default_of(name, None),
                     "can_inherit": name not in NOT_FOR_CHILDREN,
-                    "in_effect": await roles.describe(name),
+                    # By the settings read above: one row says one state of them.
+                    "in_effect": await roles.describe(name, settings=settings),
                 }
             )
         slots: list[dict[str, Any]] = []

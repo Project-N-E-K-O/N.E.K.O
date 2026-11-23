@@ -86,6 +86,11 @@ FALLBACK_REASONS: tuple[str, ...] = (
     CAPABILITY_MISSING,
     SLOT_CHANGED,
 )
+# Those of them that say the slot is not to be used again: a session settled
+# on it is settled on its preset's default in its place. The others (a file
+# or a tier that cannot be read just now) leave it as it was settled, to be
+# tried again the next time.
+LASTING_REASONS: frozenset[str] = frozenset({SLOT_NOT_FOUND, CAPABILITY_MISSING, SLOT_CHANGED})
 # What a slot has to declare for a task agent to be sent to it.
 REQUIRED_CAPABILITIES: tuple[str, ...] = ("tool_calling",)
 # What a slot declares when the model behind it takes pictures.
@@ -274,12 +279,12 @@ class RoleModelStore:
         source = self._path_source
         return Path(source() if callable(source) else source)
 
-    def _read(self, *, strict: bool = False) -> dict[str, str]:
+    def _read(self, *, strict: bool = False, path: Path | None = None) -> dict[str, str]:
         """Return the settings in the file. One that cannot be read is read as none, or raises with ``strict``."""
         import json
 
         try:
-            raw = json.loads(self._path().read_text(encoding="utf-8"))
+            raw = json.loads((path or self._path()).read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except (OSError, ValueError) as exc:
@@ -299,10 +304,10 @@ class RoleModelStore:
             if isinstance(value, str) and (value == INHERIT or value.startswith(_SLOT_PREFIX))
         }
 
-    def _write(self, roles: dict[str, str]) -> None:
+    def _write(self, roles: dict[str, str], path: Path | None = None) -> None:
         from utils.file_utils import atomic_write_json
 
-        path = self._path()
+        path = path or self._path()
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(path, {"version": _FILE_VERSION, "roles": roles})
 
@@ -326,12 +331,15 @@ class RoleModelStore:
 
     async def _put(self, preset: str, value: str | None) -> None:
         async with self._lock:
-            roles = await asyncio.to_thread(lambda: self._read(strict=True))
+            # One file from the read to the write: what is read where the
+            # data used to be is not written where it is now.
+            path = self._path()
+            roles = await asyncio.to_thread(lambda: self._read(strict=True, path=path))
             if value is None:
                 roles.pop(preset, None)
             else:
                 roles[preset] = value
-            await asyncio.to_thread(self._write, roles)
+            await asyncio.to_thread(self._write, roles, path)
 
 
 class RoleModels:
@@ -389,7 +397,10 @@ class RoleModels:
                 "provider_type": _protocol_provider(resolved.protocol),
             }
             agent = False
-        if config is not None and IMAGE_INPUT not in tuple(resolved.capabilities):
+        if not config or not config.get("model"):
+            # The tier was there as the slot was resolved, and is not now.
+            raise SlotUnavailable(HOST_API_NOT_CONFIGURED)
+        if IMAGE_INPUT not in tuple(resolved.capabilities):
             config = {**config, "supports_images": False}
         return _choice(slot_id, agent, config, tier=tier)
 
@@ -425,6 +436,7 @@ class RoleModels:
         *,
         use_setting: bool = True,
         fallback: str = "",
+        settings: dict[str, str] | None = None,
     ) -> Choice:
         """Return the model a new session of a preset is sent to.
 
@@ -434,7 +446,12 @@ class RoleModels:
         setting it was settled by can no longer be used: ``fallback`` says
         why).
         """
-        setting = await self.store.get(preset) if use_setting else None
+        if not use_setting:
+            setting = None
+        elif settings is not None:
+            setting = settings.get(preset)
+        else:
+            setting = await self.store.get(preset)
         if setting is not None and setting != INHERIT:
             try:
                 return await self.slot(setting)
@@ -449,7 +466,9 @@ class RoleModels:
                 return dataclass_replace(found, fallback=fallback)
         return await self.agent_default(fallback)
 
-    async def describe(self, preset: str, project: str | None = None) -> dict[str, Any]:
+    async def describe(
+        self, preset: str, project: str | None = None, settings: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         """Return what a new session of a preset that no session starts would be sent to, as a page shows it.
 
         ``{"follows": "starter"}`` where it takes the model of the session
@@ -463,7 +482,7 @@ class RoleModels:
             # Told apart by what no other choice is: no slot, and not the task agent model.
             return Choice(slot="", agent=False, name="", ident="", free=False)
 
-        choice = await self.choose(preset, project, starter)
+        choice = await self.choose(preset, project, starter, settings=settings)
         if not choice.slot and not choice.agent:
             return {"follows": "starter", "fallback": choice.fallback or None}
         return {
@@ -488,7 +507,12 @@ class RoleModels:
         if not slot_id:
             return await self.agent()
         found = await self.slot(slot_id)
-        if found.ident and found.ident != ident and not (found.tier and found.tier == tier):
+        if found.tier != tier:
+            # Made to follow a tier since, or another one, or to follow
+            # none: whatever it says now was not chosen for this session,
+            # even where it is the same model for now.
+            raise SlotUnavailable(SLOT_CHANGED)
+        if found.ident != ident and not found.tier:
             raise SlotUnavailable(SLOT_CHANGED)
         return found
 
