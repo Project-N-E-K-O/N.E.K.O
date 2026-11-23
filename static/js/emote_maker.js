@@ -4523,7 +4523,8 @@
                 }
             });
         } catch (error) {
-            if (signal.aborted) throw error;
+            if (generation !== spineRendererGeneration || (signal.aborted && !groupExportAbort)) return;
+            if (signal.aborted && error?.name === 'AbortError') throw error;
             console.warn('[emote-maker] 整组导出失败', error);
             showToast(t(folder ? 'emoteMaker.groupExportZipFailed' : exportFailureKey));
         } finally {

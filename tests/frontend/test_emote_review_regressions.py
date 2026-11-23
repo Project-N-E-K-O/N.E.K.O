@@ -926,6 +926,67 @@ def test_batch_cancellation_and_archive_failure_do_not_claim_success(editor, mod
     assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
 
 
+@pytest.mark.parametrize('backend', ['path', 'directory'])
+@pytest.mark.parametrize('cancellation', ['user', 'automatic'])
+def test_final_batch_archive_failure_is_not_hidden_by_a_late_cancellation(editor, backend, cancellation):
+    _import(editor, spine_zip(animations=2))
+    editor.evaluate("""backend => {
+        const q = reviewEditor;
+        Object.assign(q.state, {exportFormat:'png',exportResolution:32});
+        window.reviewStoredFiles = []; window.reviewArchiveMessages = [];
+        window.reviewArchiveObserver = new MutationObserver(records => records.forEach(record =>
+            record.addedNodes.forEach(node => {if(node.textContent) reviewArchiveMessages.push(node.textContent);} )));
+        reviewArchiveObserver.observe(document.querySelector('#emote-toast'), {childList:true});
+        const gate = () => new Promise((_,reject) => {
+            window.reviewFailFinalZip = () => reject(Error('test-final-archive-failure'));
+        });
+        const folder = {getFileHandle:async name => ({createWritable:async()=>({
+            write:async data => reviewStoredFiles.push({name,bytes:Array.from(data)}),close:async()=>{},
+        })})};
+        const parent = {kind:'directory',entries:async function*(){},
+            getDirectoryHandle:async()=>folder,getFileHandle:async()=>gate()};
+        window.reviewOriginalFetch = window.fetch;
+        window.fetch = async (...args) => {
+            const url = String(args[0]);
+            if (!url.includes('/api/emote-maker/export/')) return reviewOriginalFetch(...args);
+            if (url.endsWith('/zip')) return gate();
+            if (url.endsWith('/file')) {
+                const form = args[1].body;
+                reviewStoredFiles.push({name:form.get('name'),
+                    bytes:Array.from(new Uint8Array(await form.get('file').arrayBuffer()))});
+            }
+            return new Response(JSON.stringify({success:true,directory:'Z:/intercepted',folder:'archive'}),
+                {headers:{'Content-Type':'application/json'}});
+        };
+        const group = {id:'review-final-zip',name:'final-zip',readOnly:true,
+            items:q.getImportedScenes().map(scene=>({kind:'scene',ref:scene.id}))};
+        window.reviewFinalBatch = q.exportGroup(group, document.querySelector('#export-group-open-btn'),
+            Promise.resolve(backend === 'path' ? {kind:'path',path:'Z:/intercepted'} : parent));
+    }""", backend)
+    editor.wait_for_function("typeof window.reviewFailFinalZip === 'function'")
+    assert editor.evaluate('reviewStoredFiles.length') == 2
+    if cancellation == 'user':
+        editor.locator('#export-group-open-btn').click(force=True)
+    else:
+        editor.evaluate('reviewEditor.advanceGeneration()')
+    result = editor.evaluate("""async () => {
+        try {
+            reviewFailFinalZip(); await reviewFinalBatch; await Promise.resolve();
+            const q = reviewEditor;
+            return {messages:reviewArchiveMessages,files:reviewStoredFiles,
+                failure:q.translate('emoteMaker.groupExportZipFailed'),
+                stopped:q.translate('emoteMaker.groupExportCancelled'),
+                success:q.translate('emoteMaker.groupExportFolderDone')};
+        } finally {window.fetch=reviewOriginalFetch;reviewArchiveObserver.disconnect();}
+    }""")
+    assert len(result['files']) == 2
+    assert all(file['name'].endswith('.png') and file['bytes'] for file in result['files'])
+    assert not any(result['stopped'] in message or result['success'] in message for message in result['messages']), result
+    assert any(result['failure'] in message for message in result['messages']) == (cancellation == 'user'), result
+    assert editor.locator('#export-group-open-btn').is_enabled()
+    assert not editor.locator('.emote-maker-page').get_attribute('aria-busy')
+
+
 def test_batch_stop_becomes_available_when_folder_preparation_overlaps_a_capture(editor):
     _import(editor, spine_zip())
     editor.evaluate("document.querySelector('#inspector-tab-export').click()")
