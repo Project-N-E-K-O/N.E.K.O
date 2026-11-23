@@ -2505,31 +2505,40 @@
             if (url) URL.revokeObjectURL(url);
             throw error;
         }
-        if (key !== currentTemplateKey() || key !== wardrobeTemplateKey) {
-            if (url) URL.revokeObjectURL(url);
-            persistWardrobePresence(key, placement, index, present);
-            return;
-        }
-        if (present) {
-            const order = [...wardrobeSprites.values()];
-            const sprite = mountWardrobeSprite({ ...structuredClone(placement), restoreFailed: missing,
-                restoreAttempts: WARDROBE_RESTORE_ATTEMPTS }, image);
-            sprite.blob = blob;
-            order.splice(index, 0, sprite);
-            setWardrobeOrder(order);
-            selectWardrobeSprite(id);
-        } else {
-            const sprite = wardrobeSprites.get(id);
-            if (sprite) {
-                sprite.button.remove();
-                if (sprite.image.src.startsWith('blob:')) URL.revokeObjectURL(sprite.image.src);
-                wardrobeSprites.delete(id);
-                if (selectedWardrobeSprite === id) selectWardrobeSprite(null);
+        const commit = () => {
+            if (key !== currentTemplateKey() || key !== wardrobeTemplateKey) {
+                if (url) URL.revokeObjectURL(url);
+                persistWardrobePresence(key, placement, index, present);
+                return;
             }
+            if (present) {
+                const order = [...wardrobeSprites.values()];
+                const sprite = mountWardrobeSprite({ ...structuredClone(placement), restoreFailed: missing,
+                    restoreAttempts: WARDROBE_RESTORE_ATTEMPTS }, image);
+                sprite.blob = blob;
+                order.splice(index, 0, sprite);
+                setWardrobeOrder(order);
+                selectWardrobeSprite(id);
+            } else {
+                const sprite = wardrobeSprites.get(id);
+                if (sprite) {
+                    sprite.button.remove();
+                    if (sprite.image.src.startsWith('blob:')) URL.revokeObjectURL(sprite.image.src);
+                    wardrobeSprites.delete(id);
+                    if (selectedWardrobeSprite === id) selectWardrobeSprite(null);
+                }
+            }
+            renderWardrobeArtwork();
+            persistWardrobePlacements();
+            scheduleWardrobeRetry(key);
+        };
+        // History jobs already own this queue. Other in-flight captures must
+        // finish before an asynchronous file response changes their artwork.
+        if (stageQueueRunning && stageActiveJob?.kind !== 'history') {
+            await queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 10, 'wardrobe', commit);
+        } else {
+            commit();
         }
-        renderWardrobeArtwork();
-        persistWardrobePlacements();
-        scheduleWardrobeRetry(key);
     }
 
     async function removeWardrobeSprite(sprite) {

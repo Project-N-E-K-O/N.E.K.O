@@ -19,7 +19,7 @@ def editor(page, running_server, emote_template_library_dir):
     marker = "    if (document.readyState === 'loading') {"
     hooks = """    window.reviewEditor = {
         state, importTemplateFile, persistTemplateToLibrary, getImportedScenes,
-        queueStageCapture, captureGifFrames, bakePackJobs, produceGroupFile, currentLookDefaults,
+        queueStageCapture, captureGifFrames, captureGifFramesNow, bakePackJobs, produceGroupFile, currentLookDefaults,
         importStageImages, persistExportSettings, previewGroupMember, renderLook,
         applyTemplateFromRegistry, currentTemplateKey, setPackBusy, buildPngtuberPackage, flatStates, exportGroup,
         captureStageSource, openStateStage, requestExportDirectory,
@@ -32,6 +32,7 @@ def editor(page, running_server, emote_template_library_dir):
         syncWardrobePlacements, wardrobeSnapshot, addWardrobePlacement, removeStageImage,
         templateRemovalPending: key => pendingTemplateRemovals.has(key),
         queuedCaptureKinds: () => stageQueue.map(job => job.kind),
+        activeCaptureKind: () => stageActiveJob?.kind,
         stageImages: () => [...stageUserImages].map(([id,image])=>({id,name:image.name})),
         renderer: () => spineRenderer,
         generation: () => spineRendererGeneration,
@@ -1393,6 +1394,109 @@ def _save_wardrobe_test_sprites(editor, server, key, sprites):
         assert response.ok, response.text()
     editor.evaluate('''([key,sprites])=>localStorage.setItem(
         'neko.emote.wardrobeSprites.'+key,JSON.stringify(sprites))''', [key, sprites])
+
+
+def _start_paused_accessory_capture(editor, *, preview=False):
+    editor.evaluate('''preview => {
+        const q=reviewEditor;
+        window.reviewAccessoryFrameIds=[];window.reviewAccessorySamples=0;
+        window.reviewCaptureHook=()=>{
+            if(!['export','frames'].includes(q.activeCaptureKind()))return;
+            reviewAccessorySamples++;
+            reviewAccessoryFrameIds.push(q.wardrobeSnapshot().map(sprite=>sprite.id));
+        };
+        window.reviewYieldGate=()=>{
+            if(reviewAccessorySamples===2 && !window.reviewResumeAccessoryCapture){
+                return new Promise(resolve=>{window.reviewResumeAccessoryCapture=resolve;});
+            }
+            return Promise.resolve();
+        };
+        const options={scene:q.getImportedScenes()[0],maxFrames:6,maxDimension:96,fps:12};
+        window.reviewAccessoryCapture=preview
+            ? q.queueStageCapture('review-preview',100,'frames',()=>q.captureGifFramesNow(options))
+            : q.captureGifFrames(options);
+    }''', preview)
+    editor.wait_for_function("typeof window.reviewResumeAccessoryCapture==='function'")
+
+
+def _finish_accessory_capture(editor):
+    return editor.evaluate('''async () => {
+        reviewResumeAccessoryCapture();
+        try {
+            const frames=await reviewAccessoryCapture;
+            return {ids:reviewAccessoryFrameIds,cyan:frames.map(frame=>{
+                let count=0;
+                for(let i=0;i<frame.data.length;i+=4){
+                    if(frame.data[i]===23&&frame.data[i+1]===180&&frame.data[i+2]===210&&frame.data[i+3]===255)count++;
+                }
+                return count;
+            })};
+        } finally {delete window.reviewCaptureHook;delete window.reviewYieldGate;}
+    }''')
+
+
+@pytest.mark.parametrize('operation', ['add', 'remove'])
+def test_pending_accessory_file_commit_cannot_change_an_inflight_capture(
+        editor, running_server, builtin_emote_template_dir, operation):
+    key='builtin:yui-0.2'
+    sprite={'id':'sprite-00000000000000dd','x':.5,'y':.5,'size':.3}
+    _save_wardrobe_test_sprites(editor,running_server,key,[sprite] if operation=='remove' else [])
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    editor.wait_for_function('reviewEditor.renderer()?.loaded')
+    if operation=='remove':
+        editor.wait_for_function('''()=>{const image=document.querySelector('.wardrobe-placement img');
+            return image?.complete&&image.naturalWidth===32;}''')
+    pending=[]
+
+    def hold_response(route):
+        response=route.fetch()
+        assert response.ok,response.text()
+        pending.append((route,response))
+        editor.evaluate('window.reviewAccessoryResponseHeld=true')
+
+    endpoint='textures' if operation=='add' else 'textures/remove'
+    editor.route(f'**/api/emote-maker/library/{endpoint}?**',hold_response)
+    if operation=='add':
+        editor.evaluate('''encoded=>{
+            const blob=new Blob([Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],{type:'image/png'});
+            window.reviewAccessoryWrite=reviewEditor.addWardrobePlacement(blob);
+        }''',base64.b64encode(_wardrobe_test_image()).decode())
+    else:
+        editor.locator('.wardrobe-placement').press('Delete')
+    editor.wait_for_function('window.reviewAccessoryResponseHeld===true')
+    assert len(pending)==1
+    _start_paused_accessory_capture(editor)
+    try:
+        pending[0][0].fulfill(response=pending[0][1])
+        editor.wait_for_function("!reviewEditor.isWardrobeBusy()||reviewEditor.queuedCaptureKinds().includes('wardrobe')")
+        during=editor.evaluate('reviewEditor.wardrobeSnapshot().map(sprite=>sprite.id)')
+    finally:
+        result=_finish_accessory_capture(editor)
+    editor.wait_for_function('!reviewEditor.isWardrobeBusy()')
+    before=[sprite['id']] if operation=='remove' else []
+    assert during==before
+    assert len(result['ids'])==6 and all(ids==before for ids in result['ids'])
+    assert all(count>0 for count in result['cyan']) if operation=='remove' else not any(result['cyan'])
+    assert len(editor.evaluate('reviewEditor.wardrobeSnapshot()'))==(1 if operation=='add' else 0)
+
+
+def test_accessory_undo_inside_the_capture_queue_commits_without_deadlocking(
+        editor, running_server, builtin_emote_template_dir):
+    key='builtin:yui-0.2'
+    sprite={'id':'sprite-00000000000000de','x':.5,'y':.5,'size':.3}
+    _save_wardrobe_test_sprites(editor,running_server,key,[sprite])
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    editor.wait_for_function('''()=>{const image=document.querySelector('.wardrobe-placement img');
+        return image?.complete&&image.naturalWidth===32;}''')
+    editor.locator('.wardrobe-placement').press('Delete')
+    editor.wait_for_function('!reviewEditor.isWardrobeBusy()&&reviewEditor.wardrobeSnapshot().length===0')
+    _start_paused_accessory_capture(editor,preview=True)
+    editor.keyboard.press('Control+z')
+    editor.wait_for_function("reviewEditor.queuedCaptureKinds().includes('history')")
+    result=_finish_accessory_capture(editor)
+    assert len(result['ids'])==6 and all(not ids for ids in result['ids'])
+    editor.wait_for_function('reviewEditor.wardrobeSnapshot().length===1',timeout=5000)
+    assert editor.evaluate('reviewEditor.wardrobeSnapshot()[0].id')==sprite['id']
 
 
 def test_same_template_renderer_rebuild_keeps_its_mounted_accessories(editor, running_server, builtin_emote_template_dir):
