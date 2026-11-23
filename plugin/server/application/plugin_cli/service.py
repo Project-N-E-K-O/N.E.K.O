@@ -64,6 +64,7 @@ from plugin.server.application.plugins.source_switch import (
     switch_builtin_source,
 )
 from plugin.server.application.plugins.operation_lock import serialized_plugin_operation
+from plugin.server.application.plugins.permission_push import push_permissions
 from plugin.server.application.plugins.permission_service import (
     bind_current_permission_source,
     bind_entry_permission_source,
@@ -744,11 +745,11 @@ class PluginCliService:
                 # Recorded here, before the replacement restarts the plugin,
                 # so the new code starts under its own source and never
                 # under the previous package's grants.
-                requested_source_written = True
                 warning = await self._requested_install_source_warning(
                     install_result=install_result,
                     package=package,
                 )
+                requested_source_written = warning is None
                 if warning is not None:
                     # The source still reads as the previous package's, so
                     # its grants would carry over: drop them before the
@@ -842,6 +843,11 @@ class PluginCliService:
                         "requested install source not restored after rollback plugin_id={}",
                         plan.plugin_id,
                     )
+            if source_write_attempted or requested_source_written:
+                # The rollback restart ran while the lock still named the new
+                # package, so the restarted plugin may hold a snapshot without
+                # its grants; send one read under the restored source.
+                await push_permissions(plan.plugin_id)
             details = _replacement_error_details(exc)
             if not source_restored:
                 details["rollback_status"] = "incomplete"

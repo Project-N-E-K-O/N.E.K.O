@@ -464,9 +464,16 @@ async def test_failed_local_upgrade_puts_the_previous_source_and_grants_back(
         # The rollback restart, as start_plugin does it.
         permission_service.reconcile_permission_source(plugin_id)
 
+    pushed: list[dict] = []
+
+    async def push(plugin_id):
+        pushed.append(permission_service.permission_record(plugin_id))
+        return True
+
     monkeypatch.setattr(replace, "_plugin_is_running", running)
     monkeypatch.setattr(replace, "_stop_plugin", stop)
     monkeypatch.setattr(replace, "_start_plugin", start)
+    monkeypatch.setattr(cli, "push_permissions", push)
 
     with pytest.raises(ServerDomainError) as captured:
         await env.service.install(
@@ -474,6 +481,10 @@ async def test_failed_local_upgrade_puts_the_previous_source_and_grants_back(
             confirmation_token=plan["confirmation_token"],
         )
 
+    # The restarted previous plugin is sent its grants as they apply under
+    # the restored source.
+    [pushed_record] = pushed
+    assert pushed_record["permissions"][permission]["state"] == "granted"
     assert captured.value.code == "PLUGIN_UPGRADE_ROLLED_BACK"
     assert captured.value.details.get("rollback_status") == "completed"
     assert 'version="1.0.0"' in (env.user / PLUGIN_ID / "plugin.toml").read_text(encoding="utf-8")
@@ -523,6 +534,38 @@ async def test_stopped_local_upgrade_rollback_accounts_for_dropped_grants(
     else:
         assert captured.value.details.get("rollback_status") == "incomplete"
         assert permission not in record.get("permissions", {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("record_fails", [False, True], ids=["recorded", "record_failed"])
+async def test_local_upgrade_rollback_without_a_previous_lock_entry(
+    environment, monkeypatch, record_fails,
+):
+    """With no previous lock entry to put back, only a source that was
+    actually recorded makes the rollback incomplete."""
+    env = environment
+    _permission, package, plan = await _installed_with_grant(env)
+    monkeypatch.setattr(cli, "_lock_entry_for_plugin", lambda *_args: None)
+    if record_fails:
+        def cannot_record(*_args, **_kwargs):
+            raise OSError("lock file is busy")
+
+        monkeypatch.setattr(cli, "_record_install_source_for_install_result", cannot_record)
+
+    def invalid_identity(_layout):
+        raise RuntimeError("installed identity does not match")
+
+    monkeypatch.setattr(replace, "_validate_installed_identity", invalid_identity)
+
+    with pytest.raises(ServerDomainError) as captured:
+        await env.service.install(
+            package=str(package), install_source="imported", confirm_upgrade=True,
+            confirmation_token=plan["confirmation_token"],
+        )
+
+    expected = "completed" if record_fails else "incomplete"
+    assert captured.value.details.get("rollback_status") == expected
+    assert ("source_rollback" in captured.value.details) is not record_fails
 
 
 @pytest.mark.asyncio
