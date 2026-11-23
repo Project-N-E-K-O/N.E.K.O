@@ -207,21 +207,23 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "es": "{label}: permissions= no es una lista literal, así que no se puede confirmar de forma estática",
         "pt": "{label}: permissions= não é uma lista literal, então não pode ser confirmado estaticamente",
     },
-    "narrowing_runtime_unsupported": {
-        "en": "{label}: the plugin SDK does not accept permissions= yet, so this decorator fails when the plugin loads; "
-        "remove it for now",
-        "zh-CN": "{label}：插件 SDK 目前还不接受 permissions= 参数，插件加载时这个装饰器会报错；请先去掉它",
-        "zh-TW": "{label}：外掛 SDK 目前還不接受 permissions= 參數，外掛載入時這個裝飾器會報錯；請先移除它",
-        "ja": "{label}：プラグイン SDK はまだ permissions= を受け付けないため、プラグインの読み込み時にこのデコレーターがエラーになります。"
-        "今は外してください",
-        "ko": "{label}: 플러그인 SDK가 아직 permissions=를 받지 않아 플러그인을 불러올 때 이 데코레이터에서 오류가 납니다. "
-        "지금은 제거하세요",
-        "ru": "{label}: SDK плагинов пока не принимает permissions=, поэтому этот декоратор вызовет ошибку при загрузке плагина; "
-        "пока уберите его",
-        "es": "{label}: el SDK de plugins todavía no acepta permissions=, así que este decorador falla al cargar el plugin; "
-        "quítalo por ahora",
-        "pt": "{label}: o SDK de plugins ainda não aceita permissions=, então este decorador falha ao carregar o plugin; "
-        "remova-o por enquanto",
+    "narrowing_unsupported_decorator": {
+        "en": "{label}: this decorator does not take permissions=, so the plugin fails to load; only component "
+        "decorators (entries, LLM tools, entry hooks, event handlers) can narrow permissions",
+        "zh-CN": "{label}：这个装饰器不接受 permissions= 参数，插件加载时会报错；只有组件装饰器（入口、LLM 工具、入口 hook、"
+        "事件处理）可以收窄权限",
+        "zh-TW": "{label}：這個裝飾器不接受 permissions= 參數，外掛載入時會報錯；只有元件裝飾器（入口、LLM 工具、入口 hook、"
+        "事件處理）可以收窄權限",
+        "ja": "{label}：このデコレーターは permissions= を受け付けないため、プラグインの読み込み時にエラーになります。"
+        "権限を絞り込めるのはコンポーネントのデコレーター（エントリ、LLM ツール、エントリフック、イベントハンドラー）だけです",
+        "ko": "{label}: 이 데코레이터는 permissions=를 받지 않아 플러그인을 불러올 때 오류가 납니다. "
+        "권한을 좁힐 수 있는 것은 컴포넌트 데코레이터(엔트리, LLM 도구, 엔트리 훅, 이벤트 핸들러)뿐입니다",
+        "ru": "{label}: этот декоратор не принимает permissions=, поэтому плагин не загрузится; сузить разрешения "
+        "можно только в декораторах компонентов (точки входа, LLM-инструменты, хуки точек входа, обработчики событий)",
+        "es": "{label}: este decorador no acepta permissions=, así que el plugin falla al cargarse; solo los decoradores "
+        "de componentes (entradas, herramientas LLM, hooks de entrada, manejadores de eventos) pueden acotar permisos",
+        "pt": "{label}: este decorador não aceita permissions=, então o plugin falha ao carregar; só os decoradores "
+        "de componentes (entradas, ferramentas LLM, hooks de entrada, manipuladores de eventos) podem restringir permissões",
     },
     "used_undeclared": {
         "en": "the code uses {permission} ({locations}) but plugin.toml does not declare it; "

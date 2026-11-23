@@ -886,7 +886,7 @@ def test_every_issue_code_has_a_message_in_all_locales():
         "text_translation_empty", "background_type", "background_on_require", "background_reason_missing",
         "background_reason_unused", "hosts_type", "hosts_unused", "narrowing_type", "narrowing_not_declared",
         "narrowing_unconfirmed", "used_undeclared", "used_undeclared_possible", "used_undeclared_no_table",
-        "declared_unused", "narrowing_runtime_unsupported",
+        "declared_unused", "narrowing_unsupported_decorator",
     }
     assert codes <= permission_messages.message_codes()
     source = Path(capability_analysis.__file__).read_text(encoding="utf-8") + Path(
@@ -1095,7 +1095,7 @@ def test_vendor_sync_work_directories_are_not_reported(tmp_path):
     assert _scan(tmp_path, "x = 1\n")["blind_spots"] == []
 
 
-def test_cli_warns_that_the_sdk_does_not_take_permissions_yet(tmp_path):
+def test_cli_accepts_a_declared_narrowing_on_a_component(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "from plugin.sdk.plugin import plugin_entry\n"
@@ -1104,10 +1104,21 @@ def test_cli_warns_that_the_sdk_does_not_take_permissions_yet(tmp_path):
         "    async def a(self): ...\n",
         '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
     )
-    warnings = _issues(plugin_dir, "error")
-    [warning] = [message for message in warnings if "does not accept permissions=" in message]
-    assert warning.startswith("@plugin_entry in worker.py:4:")
-    _assert_all_locales(warning)
+    assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
+
+
+def test_cli_permissions_on_a_non_component_decorator_is_an_error_in_every_locale(tmp_path):
+    plugin_dir = _plugin(
+        tmp_path,
+        "from plugin.sdk.plugin import lifecycle\n"
+        "class P:\n"
+        "    @lifecycle(id='startup', permissions=['system.network:connect'])\n"
+        "    async def a(self): ...\n",
+        '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
+    )
+    [error] = [message for message in _issues(plugin_dir, "error") if "does not take permissions=" in message]
+    assert error.startswith("@lifecycle in worker.py:4:")
+    _assert_all_locales(error)
 
 
 
@@ -1215,16 +1226,17 @@ def test_cli_only_checks_permissions_on_sdk_decorators(tmp_path):
     assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
 
 
-def test_cli_permissions_keyword_on_sdk_decorators_is_an_error(tmp_path):
+def test_cli_narrowing_outside_the_declarations_is_an_error(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "from plugin.sdk.plugin import plugin_entry\n"
         "class P:\n"
-        "    @plugin_entry(id='a', permissions=['system.network:connect'])\n"
+        "    @plugin_entry(id='a', permissions=['system.env:read'])\n"
         "    async def a(self): ...\n",
         '[permissions.ask]\n"system.network:connect" = { reason = "x" }\n',
     )
-    assert any("does not accept permissions=" in message for message in _issues(plugin_dir, "error"))
+    errors = _issues(plugin_dir, "error")
+    assert any(message.startswith("@plugin_entry in worker.py:4: permissions= lists") for message in errors)
 
 
 @pytest.mark.parametrize(
@@ -1273,7 +1285,6 @@ def test_cli_follows_sdk_import_aliases_for_decorators(tmp_path, imports, decora
     )
     errors = _issues(plugin_dir, "error")
     assert any(message.startswith("@plugin_entry in worker.py:4: permissions= lists") for message in errors)
-    assert any("does not accept permissions=" in message for message in errors)
 
 
 def test_cli_ignores_plugin_owned_helpers_with_sdk_names(tmp_path):
@@ -1350,11 +1361,11 @@ def test_cli_only_counts_module_level_sdk_imports_for_decorators(tmp_path):
     "source,line",
     [
         # SDK import in the class body, used by a method decorator there.
-        ("class P:\n    from plugin.sdk.plugin import hook\n    @hook(permissions=[])\n    def a(self): ...\n", 4),
+        ("class P:\n    from plugin.sdk.plugin import hook\n    @hook(permissions=['system.env:read'])\n    def a(self): ...\n", 4),
         # Function-local SDK import with an alias.
         (
             "def register():\n    from plugin.sdk.plugin import plugin_entry as entry\n"
-            "    @entry(id='a', permissions=[])\n    def a(): ...\n    return a\n",
+            "    @entry(id='a', permissions=['system.env:read'])\n    def a(): ...\n    return a\n",
             4,
         ),
     ],
@@ -1362,7 +1373,7 @@ def test_cli_only_counts_module_level_sdk_imports_for_decorators(tmp_path):
 def test_cli_resolves_sdk_decorators_in_their_scope(tmp_path, source, line):
     plugin_dir = _plugin(tmp_path, source, "[permissions]\n")
     errors = _issues(plugin_dir, "error")
-    assert any(f"worker.py:{line}:" in message and "does not accept permissions=" in message for message in errors)
+    assert any(f"worker.py:{line}:" in message and "permissions= lists" in message for message in errors)
 
 
 def test_cli_local_helper_shadows_a_module_level_sdk_import(tmp_path):
@@ -1379,7 +1390,7 @@ def test_cli_class_body_imports_are_not_visible_in_methods(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "class P:\n    from plugin.sdk.plugin import hook\n"
-        "    def make(self):\n        @hook(permissions=[])\n        def a(): ...\n        return a\n",
+        "    def make(self):\n        @hook(permissions=['system.env:read'])\n        def a(): ...\n        return a\n",
         "[permissions]\n",
     )
     assert not [message for message in _issues(plugin_dir) if "permissions=" in message]
@@ -1393,10 +1404,10 @@ def test_cli_class_body_imports_are_not_visible_in_methods(tmp_path):
     [
         # Later SDK import wins over an earlier local definition.
         ("def hook(**k):\n    return lambda f: f\nfrom plugin.sdk.plugin import hook\n"
-         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", True),
+         "class P:\n    @hook(permissions=['system.env:read'])\n    def a(self): ...\n", True),
         # Later local definition wins over an earlier SDK import.
         ("from plugin.sdk.plugin import hook\ndef hook(**k):\n    return lambda f: f\n"
-         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", False),
+         "class P:\n    @hook(permissions=['system.env:read'])\n    def a(self): ...\n", False),
         # A parameter shadows an enclosing SDK import.
         ("def register():\n    from plugin.sdk.plugin import hook\n"
          "    def build(hook):\n        @hook(permissions=['x'])\n        def a(): ...\n        return a\n    return build\n", False),
@@ -1469,14 +1480,14 @@ def test_sys_modules_access_beyond_membership_is_a_blind_spot(tmp_path, source, 
     [
         # Subscript / attribute assignment does not rebind the decorator name.
         ("from plugin.sdk.plugin import hook\nregistry = {}\nregistry[hook] = 1\nhook.note = 1\n"
-         "class P:\n    @hook(permissions=[])\n    def a(self): ...\n", True),
+         "class P:\n    @hook(permissions=['system.env:read'])\n    def a(self): ...\n", True),
         # A class body only sees what is bound before the class statement.
         ("def hook(**k):\n    return lambda f: f\n"
          "class P:\n    @hook(permissions=['x'])\n    def a(self): ...\n"
          "from plugin.sdk.plugin import hook\n", False),
         # Methods run later and see the module's final bindings.
         ("def hook(**k):\n    return lambda f: f\n"
-         "class P:\n    def make(self):\n        @hook(permissions=[])\n        def a(): ...\n        return a\n"
+         "class P:\n    def make(self):\n        @hook(permissions=['system.env:read'])\n        def a(): ...\n        return a\n"
          "from plugin.sdk.plugin import hook\n", True),
     ],
 )
@@ -1505,10 +1516,10 @@ def test_cli_plain_plugin_imports_keep_the_sdk_path(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "import plugin.sdk.plugin\nimport plugin.plugins.perm_demo.helpers\n"
-        "class P:\n    @plugin.sdk.plugin.hook(permissions=[])\n    def a(self): ...\n",
+        "class P:\n    @plugin.sdk.plugin.hook(permissions=['system.env:read'])\n    def a(self): ...\n",
         "[permissions]\n",
     )
-    assert any("does not accept permissions=" in message for message in _issues(plugin_dir, "error"))
+    assert any("permissions= lists" in message for message in _issues(plugin_dir, "error"))
 
 
 def test_cli_nested_class_body_uses_the_definition_time_snapshot(tmp_path):
@@ -1663,7 +1674,7 @@ def test_summary_location_matches_the_reported_basis():
     assert (row["basis"], row["line"]) == ("resolved_call", 7)
 
 
-def test_cli_rejects_permissions_on_every_sdk_decorator(tmp_path):
+def test_cli_checks_permissions_by_decorator_kind(tmp_path):
     plugin_dir = _plugin(
         tmp_path,
         "from plugin.sdk.plugin import lifecycle, before_entry\n"
@@ -1675,10 +1686,12 @@ def test_cli_rejects_permissions_on_every_sdk_decorator(tmp_path):
         "[permissions.require]\n",
     )
     errors = _issues(plugin_dir, "error")
-    assert any(message.startswith("@lifecycle in worker.py:4: the plugin SDK does not accept permissions=") for message in errors)
-    assert any(message.startswith("@before_entry in worker.py:6: the plugin SDK does not accept permissions=") for message in errors)
-    # Subset checks stay limited to components that narrow.
-    assert not any("permissions= lists" in message for message in errors)
+    # Not a component: the keyword itself is the error, no subset check.
+    assert any(message.startswith("@lifecycle in worker.py:4: this decorator does not take permissions=") for message in errors)
+    assert not any(message.startswith("@lifecycle in worker.py:4: permissions= lists") for message in errors)
+    # An entry hook alias is a component: subset check only.
+    assert any(message.startswith("@before_entry in worker.py:6: permissions= lists") for message in errors)
+    assert not any("@before_entry" in message and "does not take" in message for message in errors)
 
 
 @pytest.mark.parametrize(
@@ -1827,7 +1840,7 @@ def test_cli_rejects_permissions_on_sdk_class_decorators(tmp_path):
         encoding="utf-8",
     )
     errors = _issues(plugin_dir, "error")
-    assert any(message.startswith("@neko_plugin in __init__.py:4: the plugin SDK does not accept permissions=") for message in errors)
+    assert any(message.startswith("@neko_plugin in __init__.py:4: this decorator does not take permissions=") for message in errors)
 
 
 def test_type_checking_imports_do_not_bind_decorators(tmp_path):
@@ -1849,7 +1862,7 @@ def test_type_checking_imports_do_not_bind_decorators(tmp_path):
         (plugin_dir / "worker.py").read_text(encoding="utf-8").replace("if TYPE_CHECKING:", "if not TYPE_CHECKING:"),
         encoding="utf-8",
     )
-    assert [message for message in _issues(plugin_dir, "error") if "does not accept permissions=" in message]
+    assert [message for message in _issues(plugin_dir, "error") if "permissions= lists" in message]
 
 
 @pytest.mark.parametrize("excluded,shipped", [("ui", "ui/panel.js"), ("vendor", "vendor")])

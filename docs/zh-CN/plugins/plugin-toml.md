@@ -315,6 +315,22 @@ permissions = ["state:read"]
 
 这个顶层表和 `[[plugin.ui.panel]]` / `[[plugin.ui.guide]]` 里的 `permissions` 列表是两回事。
 
+#### 组件收窄
+
+组件可以在装饰器上写 `permissions=[...]`，表示自己只用到表里声明的一部分。支持的装饰器：`@plugin_entry`、`@llm_tool`、入口 hook（`@hook`、`@before_entry`、`@after_entry`、`@around_entry`、`@replace_entry`）、`@on_event`、`@custom_event`、`@timer_interval`，以及对应的 `plugin.entry` / `plugin.event` / `plugin.hook` / `plugin.timer` / `plugin.custom_event` 写法。`register_llm_tool`、`register_dynamic_entry` 和 `PluginRouter.add_entry` 也接受同名参数。
+
+```python
+@llm_tool(name="weather", permissions=["plugin_sdk.main_agent.memory:read"])
+async def weather(self, **_): ...
+```
+
+- 默认不写：组件继承声明的全部权限。收窄只用来告诉用户「关掉某个权限后哪些功能用不了」，不会限制组件实际能做什么。
+- 插件注册组件时，每个收窄都必须是 `[permissions.require]` + `[permissions.ask]` 的子集。写了其他权限的组件不会被注册（入口不可调用、事件处理不会订阅），插件日志里会写明是哪个组件、为什么。发布前 `neko-plugin check` 会报同样的问题。
+- 入口 hook 的权限会并入它的 `target` 匹配到的每个入口。hook 写了未声明的权限，这些入口会被关闭。
+  - 注意：没写 `permissions=` 的 hook 等于需要声明的全部权限，它匹配到的入口也就跟着继承全部。只要有一个这样的 hook 挂在 `target="*"` 上，所有入口的收窄都会失效；入口做了收窄时，请给 hook 也写上 `permissions=`。
+- `PluginRouter` 可以用类属性 `permissions = [...]`（或 `PluginRouter(permissions=[...])`）给它的全部入口收窄；入口自己或 `add_entry(..., permissions=...)` 写了的，以自己的为准。对已挂上的 router 调 `add_entry` 时写了未声明的权限，会返回 `Err(PermissionDeniedError)`。
+- `@neko_plugin`、`@lifecycle`、`@message` 等非组件装饰器不接受 `permissions=`。
+
 ---
 
 ### `[plugin_runtime]` 之后的自定义段 — 你的业务配置
