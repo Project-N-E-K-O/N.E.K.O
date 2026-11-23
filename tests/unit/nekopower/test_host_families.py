@@ -2600,9 +2600,23 @@ async def test_what_a_task_agent_started_before_it_became_a_member_takes_the_pro
 
     agents._start_next = next_one
     agents._queue.append("another member's commission that waits")
+    note, noting = agents._note_writer, []
+
+    async def noted(session_id: Any, **more: Any) -> None:
+        # While they are being noted, no task agent that changes files starts in the project.
+        project = agents._writes_in[one.id][0]
+        agents._writes_in["another member"] = (project, "another member")
+        agents._session_of["its commission"] = "another member"
+        noting.append((set(agents._noting) == {project}, agents._session_free_for("its commission")))
+        del agents._writes_in["another member"], agents._session_of["its commission"]
+        await note(session_id, **more)
+
+    agents._note_writer = noted
     try:
         placed = await agents._give_session(commission)
+        agents._note_writer = note
         await asyncio.sleep(0.01)
+        assert noting and set(noting) == {(True, False)} and agents._noting == set()
 
         # The one it started that can change files is noted with it; the one that reads is not. Nor
         # is the member that reads only, at work though it is: that it changes files was a guess.
@@ -2874,3 +2888,23 @@ async def test_what_waited_for_a_task_agent_noted_on_a_guess_is_looked_at_once_t
         assert agents._writes_in == {} and looked == [1]
     finally:
         agents._queue.clear()
+
+
+async def test_no_task_agent_that_changes_files_starts_in_a_project_while_its_task_agents_are_being_noted(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    agents = host.task_agents
+    agents._writes_in.update({"writer": ("Reports", "writer"), "elsewhere": ("Garden", "elsewhere")})
+    agents._session_of.update({"its commission": "writer", "another commission": "elsewhere", "a reader's": "reader"})
+    try:
+        assert all(agents._session_free_for(item) for item in ("its commission", "another commission", "a reader's"))
+        agents._noting.add("Reports")
+        # The one that changes files there waits; one of another project, and one that only reads, do not.
+        assert agents._session_free_for("its commission") is False
+        assert agents._session_free_for("another commission") and agents._session_free_for("a reader's")
+        agents._noting.discard("Reports")
+        assert agents._session_free_for("its commission")
+    finally:
+        agents._noting.clear()
+        agents._writes_in.clear()
+        for item in ("its commission", "another commission", "a reader's"):
+            agents._session_of.pop(item, None)

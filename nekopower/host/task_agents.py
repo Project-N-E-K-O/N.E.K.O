@@ -1311,6 +1311,11 @@ class TaskAgentManager:
         # told it then, in the user's words (``_handed_over``). Kept
         # apart from the leader's session, which is let go of in between.
         self._said_while_handed: dict[str, list[str]] = {}
+        # The projects whose task agents are being noted as ones that change
+        # files or not, several together (task agents that just became its
+        # members, and those they started): until all are, none that
+        # changes files starts in it, whatever else comes free meanwhile.
+        self._noting: set[str] = set()
         # The commissions a ``hand_over`` call is at work on: a second call
         # for one, made beside it, is refused before either awaits anything.
         self._handing_claims: set[str] = set()
@@ -1912,6 +1917,9 @@ class TaskAgentManager:
         # over. Those that read only do not wait, nor does the leader.
         where = self._writes_in.get(session_id)
         if where is not None:
+            if where[0] in self._noting:
+                # Who changes files in its project is being worked out: it waits until that is known.
+                return False
             for other, held in self._held_by.items():
                 theirs = self._writes_in.get(other)
                 # (A member and the task agents it started are one: they work on its commission.)
@@ -2010,14 +2018,23 @@ class TaskAgentManager:
                 guessed = {member for member in verdict.members if member not in self._writes_in}
                 for member in guessed:
                     self._writes_in[member] = (commission.project, member)
-            await self._note_writer(session.id, guessed=session.id in guessed, batch=bool(verdict.members))
-            if verdict.members:
-                # Task agents that became a project's members with it: each may be at work, and so
-                # may task agents they started, which were none of a project's when they began.
-                for other in {*verdict.members, *self._held_by} - {session.id}:
+            if not verdict.members:
+                await self._note_writer(session.id)
+                return commission
+            # Task agents that became a project's members with it: each may be at work, and so may
+            # task agents they started, which were none of a project's when they began. Until all
+            # of them are noted, none that changes files starts in the project (``_noting``): one
+            # that came free meanwhile would start beside one not noted yet.
+            noting = commission.project if commission.project and commission.project not in self._noting else None
+            if noting:
+                self._noting.add(noting)
+            try:
+                for other in {session.id, *verdict.members, *self._held_by}:
                     await self._note_writer(other, guessed=other in guessed, batch=True)
-                # What waited for one that was taken off is looked at once all of them are noted:
-                # looked at sooner, it would start beside one that was not noted yet.
+            finally:
+                if noting:
+                    self._noting.discard(noting)
+                # What waited is looked at once, now that all of them are noted.
                 if self._queue and not self._closed:
                     self._spawn(self._start_next())
             return commission
