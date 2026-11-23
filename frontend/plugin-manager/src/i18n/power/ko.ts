@@ -10,6 +10,7 @@ const messages: PowerMessages = {
     remote_backend: '백엔드가 다른 컴퓨터에서 실행 중이라 여기서는 설정을 볼 수만 있고 바꿀 수는 없어요.',
     stale: '이 설정이 다른 곳에서 바뀌었어요. 다시 불러왔으니 확인한 뒤 다시 시도해 주세요.',
     permissions_unreadable: '권한 설정 파일을 읽을 수 없어요. 파일을 고치거나 지운 뒤 다시 시도해 주세요.',
+    permissions_not_saved: '권한 설정을 저장하지 못했습니다(파일에 쓸 수 없음). 잠시 후 다시 시도하세요. 표시된 것은 지금 적용 중인 설정입니다.',
     no_model: '아직 사역마에게 모델을 설정하지 않았어요.',
     out_of_range: '값이 범위를 벗어났어요.',
     bad_number: '숫자를 입력해 주세요.',

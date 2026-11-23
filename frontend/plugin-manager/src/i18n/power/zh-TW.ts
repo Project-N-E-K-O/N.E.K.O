@@ -10,6 +10,7 @@ const messages: PowerMessages = {
     remote_backend: '後端執行在另一台機器上，這裡只能看設定，不能改。',
     stale: '這些設定在別處被改過了。已經重新讀取，請核對後再試。',
     permissions_unreadable: '權限設定檔讀不了。請修好或刪掉它再試。',
+    permissions_not_saved: '權限設定沒有存上（檔案寫不進去），請稍後再試。下面顯示的是現在生效的設定。',
     no_model: '還沒有給使魔設定模型。',
     out_of_range: '這個數值超出了範圍。',
     bad_number: '請填一個數字。',
