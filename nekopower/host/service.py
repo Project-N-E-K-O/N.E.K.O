@@ -69,7 +69,7 @@ from nekopower.host.leases import ActivityListener, BuiltinLeases
 from nekopower.host.ledger import ENDED_STATUSES, Commission, Ledger, Listener
 from nekopower.host.model_capabilities import ModelCapabilityStore
 from nekopower.host.outbox import OutboxSender, SendReport
-from nekopower.host.paths import HostPaths
+from nekopower.host.paths import DEFAULT_PROJECT, HostPaths
 from nekopower.host.runtimes import RUNTIME_DSH
 from nekopower.host.delivery import ManagedDelivery
 from nekopower.host.permissions import PermissionGate, PermissionStore
@@ -80,6 +80,7 @@ from nekopower.host.short_descriptions import ShortDescriptions
 from nekopower.host.space import TaskAgentSpace
 from nekopower.host.space_keeper import SpaceKeeper
 from nekopower.host.task_brain import ProgressListener, QueryAnswer, Receipt, TaskBrain, TurnCheck
+from nekopower.host.usage_limit import UsageLimitStore
 from nekopower.host.wakes import SessionWakes
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,10 @@ def _model_identity(base_url: Any, model: Any) -> str:
     from nekopower.host.model_capabilities import model_key
 
     return hashlib.sha256(model_key(base_url, model).encode("utf-8")).hexdigest()[:16]
+
+
+class ProjectNotMoved(RuntimeError):
+    """A project could not be put away: its directory could not be moved."""
 
 
 class ModelChanged(RuntimeError):
@@ -243,6 +248,10 @@ class NekoPowerHost:
             # is sent to the task agent model, as before there were slots.
             model_slots=model_slots,
         )
+        # How much the work on one commission may use before the user is
+        # asked, where the user set a number of their own (``usage_limit.py``).
+        self.usage_limit_store = UsageLimitStore(self.paths.usage_limit_json)
+        self.task_agents.usage_limit_of = self.usage_limit_store.get
         # Hands sessions what waits for them: a note another session wrote,
         # a time a task agent set for itself. Started by the first call that
         # does work, never at startup.
@@ -719,6 +728,30 @@ class NekoPowerHost:
         await self._shorten(page["entries"])
         return page
 
+    async def timeline_start(self) -> dict[str, str]:
+        """Return where to begin reading the timeline for what happened lately: ``{"after", "latest"}``.
+
+        The timeline is handed out forwards from a cursor, and a page that
+        opens wants the last stretch of it, not all there ever was.
+        ``after`` is a cursor that stands ``CONSOLE_TIMELINE_RECENT_EVENT_ROWS``
+        rows of the events and ``CONSOLE_TIMELINE_RECENT_MESSAGE_ROWS``
+        messages before the end of what is on record (``""`` when that is
+        the beginning: there is nothing before it to leave out);
+        ``latest`` stands at the end. Good for any filter: a cursor is a
+        place in the two tables, whatever is then kept of what follows it.
+        """
+        from config.nekopower_settings import (
+            CONSOLE_TIMELINE_RECENT_EVENT_ROWS,
+            CONSOLE_TIMELINE_RECENT_MESSAGE_ROWS,
+        )
+        from nekopower.host.timeline import cursor, parse_cursor
+
+        latest = (await self.ledger.timeline(project=None, lanlan_name=None, after=None, limit=0))["latest"]
+        events, messages = parse_cursor(latest)
+        events = max(0, events - CONSOLE_TIMELINE_RECENT_EVENT_ROWS)
+        messages = max(0, messages - CONSOLE_TIMELINE_RECENT_MESSAGE_ROWS)
+        return {"after": cursor(events, messages) if events or messages else "", "latest": latest}
+
     async def waits(self, project: str | None = None, lanlan_name: str | None = None) -> dict[str, Any]:
         """Return who waits for whom now: ``{"waits", "more"}``; see ``timeline.read_waits``.
 
@@ -746,6 +779,351 @@ class NekoPowerHost:
                 item["text"] = truncate_to_tokens(item["text"], TIMELINE_TEXT_MAX_TOKENS)
 
         await asyncio.to_thread(shorten)
+
+    # -- what a page shows of one session, of the commissions, of the MCP tools --
+    #
+    # For the console (``app/agent_server/api_console.py``). All of them
+    # only read, the two setters apart; no model is called.
+
+    async def transcript(
+        self, session_id: str, before: int | None = None, limit: int | None = None, at: int | None = None
+    ) -> dict[str, Any] | None:
+        """Return a page of what was said in a session, for showing it to the user; None for an unknown session.
+
+        ``{"readable": True, "entries": [...], "before": place | None}``:
+        the ``limit`` entries before the place ``before`` in the order they
+        were said (the last ones when ``before`` is None), and the place to
+        pass for the page before this one (None at the beginning); see
+        ``records.read_page`` for an entry. With ``at``, the one entry that
+        begins there, within a larger cap. A session the built-in runtime
+        keeps no record of comes back as ``{"readable": False, "reason":
+        ...}``: ``"dsh"`` when dsh holds it (it keeps what was said itself,
+        where the host cannot read it), ``"empty"`` when nothing was said
+        in it yet or what was said was removed. Raises ``ValueError`` with
+        a code: ``bad_place`` (no entry begins there), ``too_large`` (the
+        one entry asked for is too large to show).
+        """
+        from config import nekopower_settings as settings
+        from nekopower.host import records
+        from nekopower.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME
+
+        kept = await self.ledger.get_session(session_id)
+        if kept is None:
+            return None
+
+        def place() -> tuple[Path, bool, bool]:
+            session_dir = Path(self.task_agents.session_dir_of(kept))
+            path = session_dir / TRANSCRIPT_NAME
+            try:
+                written = path.stat().st_size > 0
+            except OSError:
+                written = False
+            return path, written, (session_dir / DSH_SESSION_NAME).is_file()
+
+        path, in_builtin, in_dsh = await asyncio.to_thread(place)
+        if not in_builtin:
+            return {"readable": False, "reason": "dsh" if in_dsh else "empty", "entries": [], "before": None}
+        try:
+            if at is not None:
+                entry = await asyncio.to_thread(
+                    records.read_whole_entry,
+                    path,
+                    int(at),
+                    entry_tokens=settings.CONSOLE_TRANSCRIPT_WHOLE_ENTRY_MAX_TOKENS,
+                    max_bytes=settings.CONSOLE_TRANSCRIPT_WHOLE_ENTRY_MAX_BYTES,
+                )
+                return {"readable": True, "entries": [entry], "before": None}
+            rows = settings.CONSOLE_TRANSCRIPT_PAGE_ENTRIES if limit is None else int(limit)
+            page = await asyncio.to_thread(
+                records.read_page,
+                path,
+                None if before is None else int(before),
+                max(1, min(rows, settings.CONSOLE_TRANSCRIPT_PAGE_MAX_ENTRIES)),
+                entry_tokens=settings.CONSOLE_TRANSCRIPT_ENTRY_MAX_TOKENS,
+                scan_bytes=settings.CONSOLE_TRANSCRIPT_SCAN_MAX_BYTES,
+            )
+        except records.NoSuchPlace:
+            raise ValueError("bad_place") from None
+        except records.EntryTooLarge:
+            raise ValueError("too_large") from None
+        except records.RecordError:
+            # Gone between the look and the read (cleaned, removed).
+            return {"readable": False, "reason": "empty", "entries": [], "before": None}
+        return {"readable": True, **page}
+
+    async def session_usage(self, session_id: str) -> dict[str, Any] | None:
+        """Return what a session used over all its commissions, and what its commission in hand may; None for an unknown one.
+
+        ``{"session": {requests, input, output, cache_read, cache_write,
+        tokens, context_tokens}, "window": ..., "commission": ...}``:
+        ``window`` what sessions of its model are managed for
+        (``ModelCapabilityStore.describe_window``; None when its model
+        cannot be told), ``commission`` what ``usage`` says of its latest
+        commission (``id``, ``used``, ``limit``, its own count), None for a
+        session that never had one.
+        """
+        self._first_use()
+        kept = await self.ledger.get_session(session_id)
+        if kept is None:
+            return None
+        latest = await self.ledger.select(session_id=session_id, limit=1)
+        in_hand = None
+        window = None
+        if latest:
+            usage = await self.usage(latest[0].id)
+            if usage is not None:
+                window = usage.get("window")
+                in_hand = {
+                    "id": latest[0].id,
+                    "title": latest[0].title,
+                    "status": "resting" if latest[0].resting else latest[0].status,
+                    "used": usage["used"],
+                    "limit": usage["limit"],
+                    "own": usage["commission"],
+                }
+        return {
+            "session": {
+                "requests": kept.requests,
+                "input": kept.tokens_in,
+                "output": kept.tokens_out,
+                "cache_read": kept.tokens_cache_read,
+                "cache_write": kept.tokens_cache_write,
+                "tokens": kept.tokens,
+                "context_tokens": kept.context_tokens,
+            },
+            "window": window,
+            "commission": in_hand,
+        }
+
+    async def commissions(
+        self,
+        statuses: tuple[str, ...] | None = None,
+        project: str | None = None,
+        days: float | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the commissions for a page that lists them, the newest first: ``{"commissions", "more"}``.
+
+        Those under way, and those that last changed within ``days`` days
+        (``CONSOLE_COMMISSIONS_DAYS`` when not given; 0 or less: however
+        long ago). ``statuses`` keeps to those in one of them; ``project``
+        to those of one project (``""`` for those of none). ``limit`` at
+        most (``CONSOLE_COMMISSIONS_ROWS`` when not given, never more than
+        ``CONSOLE_COMMISSIONS_MAX_ROWS``); ``more`` says some were left
+        out. Each is ``{"id", "title", "status", "reason", "result",
+        "source", "route", "project", "lanlan_name", "parent_id",
+        "session_id", "session", "runtime", "plugin_id", "entry_id",
+        "created_at", "started_at", "ended_at", "updated_at", "usage",
+        "ask"}``: ``status`` says ``resting`` for one that rests;
+        ``session`` is ``{"name", "kind", "preset", "title"}`` of the
+        session it is worked on in (None for one a plugin does, or not
+        handed over yet); ``usage`` its requests and tokens, those of the
+        task agents it started counted in; ``ask`` what it asks the user
+        while it waits for an answer, whole. Texts are cut to
+        ``TIMELINE_TEXT_MAX_TOKENS``.
+        """
+        import time
+
+        from config import nekopower_settings as settings
+        from nekopower.host.ledger import ACTIVE_STATUSES
+
+        rows = settings.CONSOLE_COMMISSIONS_ROWS if limit is None else int(limit)
+        rows = max(1, min(rows, settings.CONSOLE_COMMISSIONS_MAX_ROWS))
+        span = settings.CONSOLE_COMMISSIONS_DAYS if days is None else float(days)
+        wanted = None if statuses is None else frozenset(statuses)
+
+        def kept(item: Commission) -> bool:
+            shown = "resting" if item.resting else item.status
+            if wanted is not None and shown not in wanted and item.status not in wanted:
+                return False
+            return project is None or (item.project or "") == project
+
+        # One more than asked for of each: what is left over says there is more.
+        found: dict[str, Commission] = {}
+        under_way = await self.ledger.select(statuses=tuple(ACTIVE_STATUSES))
+        criteria: dict[str, Any] = {"limit": rows + 1 + len(under_way)}
+        if span > 0:
+            criteria["updated_since"] = time.time() - span * 86400.0
+        for item in [*under_way, *await self.ledger.select(**criteria)]:
+            if kept(item):
+                found.setdefault(item.id, item)
+        listed = sorted(found.values(), key=lambda item: item.created_at, reverse=True)
+        more = len(listed) > rows
+        listed = listed[:rows]
+
+        sessions: dict[str, Any] = {}
+        for item in listed:
+            if item.session_id and item.session_id not in sessions:
+                sessions[item.session_id] = await self.ledger.get_session(item.session_id)
+
+        def session_of(item: Commission) -> dict[str, Any] | None:
+            session = sessions.get(item.session_id or "")
+            if session is None:
+                return None
+            return {"name": session.name, "kind": session.kind, "preset": session.preset, "title": session.title}
+
+        out = [
+            {
+                "id": item.id,
+                "title": item.title,
+                "status": "resting" if item.resting else item.status,
+                "reason": item.status_reason or "",
+                "result": item.result_summary or "",
+                "source": item.source,
+                "route": item.route,
+                "project": item.project,
+                "lanlan_name": item.lanlan_name,
+                "parent_id": item.parent_id,
+                "session_id": item.session_id,
+                "session": session_of(item),
+                "runtime": item.runtime,
+                "plugin_id": item.plugin_id,
+                "entry_id": item.entry_id,
+                "created_at": item.created_at,
+                "started_at": item.started_at,
+                "ended_at": item.ended_at,
+                "updated_at": item.updated_at,
+                "usage": {"requests": item.requests, "tokens": item.tokens},
+                "ask": item.question() if item.status == "waiting_user" else None,
+            }
+            for item in listed
+        ]
+
+        def shorten() -> None:
+            from utils.tokenize import truncate_to_tokens
+
+            for row in out:
+                for name in ("title", "reason", "result"):
+                    row[name] = truncate_to_tokens(row[name], settings.TIMELINE_TEXT_MAX_TOKENS)
+
+        await asyncio.to_thread(shorten)
+        return {"commissions": out, "more": more}
+
+    async def mcp_tools(self) -> dict[str, Any]:
+        """Return the MCP tools there are by server, with how each server is set, for a page that shows them.
+
+        ``{"adapter", "plugins_on", "category", "servers", "unreadable"}``.
+        ``adapter`` is how the plugin that holds the connections stands
+        (``mcp_adapter``): ``"running"``, ``"stopped"`` (installed, not
+        running), or ``"missing"`` (not installed, or the plugin server
+        did not answer). ``plugins_on`` whether the plugins are switched on
+        (off, no tool is listed). ``category`` is ``{"mode", "auto"}`` of
+        the setting all servers share. Each server is ``{"server", "mode",
+        "effective", "tools"}``: ``mode`` what was set for it (``"auto"``:
+        nothing of its own, it goes by the shared setting), ``effective``
+        what that comes to, ``tools`` its tools as ``{"id", "name",
+        "description"}``. A server that has a setting and no tool now is
+        listed too, so that the setting can be seen and changed.
+        ``unreadable`` says the permission file cannot be read: every mode
+        reads as forbidden then, and none can be set.
+        """
+        from nekopower.host.capabilities import KIND_MCP_TOOL, MCP_ADAPTER_PLUGIN_ID
+        from nekopower.host.permissions import AUTO_POLICY, MCP_SERVER_CATEGORY
+
+        # A plugin server that does not answer lists nothing: the adapter reads as missing then.
+        found = next((item for item in await self.catalog.installed() if item.get("id") == MCP_ADAPTER_PLUGIN_ID), None)
+        adapter = "missing" if found is None else "running" if found.get("status") == "running" else "stopped"
+        tools: dict[str, list[dict[str, Any]]] = {}
+        for item in await self.registry.list():
+            if item.kind != KIND_MCP_TOOL:
+                continue
+            # An MCP tool is guarded by its server's setting: the key is the server's name.
+            server = str(item.permission_key).strip()
+            name = item.id.split(":", 2)[-1] if item.id.count(":") >= 2 else item.title
+            tools.setdefault(server, []).append({"id": item.id, "name": name, "description": item.description})
+        snapshot = await self.permission_store.snapshot()
+        configured = {str(name): mode for name, mode in snapshot["mcp_servers"].items() if name != "*"}
+        servers = []
+        for server in sorted({*tools, *configured}, key=str.casefold):
+            servers.append(
+                {
+                    "server": server,
+                    "mode": configured.get(server, "auto"),
+                    "effective": await self.permission_store.mode(MCP_SERVER_CATEGORY, server),
+                    "tools": tools.get(server, []),
+                }
+            )
+        return {
+            "adapter": adapter,
+            "plugins_on": self.registry.plugins_enabled(),
+            "category": {
+                "mode": snapshot["categories"].get(MCP_SERVER_CATEGORY, "auto"),
+                "auto": AUTO_POLICY[MCP_SERVER_CATEGORY],
+            },
+            "servers": servers,
+            "unreadable": bool(snapshot.get("unreadable")),
+        }
+
+    async def usage_limit(self) -> dict[str, Any]:
+        """Return how much the work on one commission may use before the user is asked, as a page shows it.
+
+        ``{"tokens", "set", "default", "min", "max"}``: ``tokens`` what
+        holds now (None for no limit), ``set`` what the user set (None
+        while the default holds), ``default`` the setting of the build,
+        ``min`` and ``max`` what it can be set within.
+        """
+        from config.nekopower_settings import TASK_AGENT_USAGE_LIMIT_TOKENS
+        from nekopower.host.usage_limit import bounds
+
+        chosen = await self.usage_limit_store.get()
+        default = int(TASK_AGENT_USAGE_LIMIT_TOKENS or 0)
+        least, most = bounds()
+        return {
+            "tokens": chosen if chosen is not None else (default or None),
+            "set": chosen,
+            "default": default or None,
+            "min": least,
+            "max": most,
+        }
+
+    async def set_usage_limit(self, tokens: int | None) -> dict[str, Any]:
+        """Set how much one commission may use before the user is asked; None goes back to the default.
+
+        Returns ``usage_limit``. Holds from the next model request on, for
+        commissions under way as well; what the user allowed one of them
+        beyond the limit stays. Raises ``ValueError`` (``out_of_range``)
+        for what is no whole number within the bounds, and nothing is
+        written.
+        """
+        await self.usage_limit_store.put(tokens)
+        return await self.usage_limit()
+
+    async def archive_project(self, project: str) -> dict[str, Any]:
+        """Put a project away into the archive, as the user asks; returns it as a page shows it.
+
+        What the host does by itself for a project nothing was commissioned
+        for in a long while, done now, and without the summary a model
+        writes then: no model is called. Nothing is removed: its rules,
+        entries and reviews go with it, its sessions stay in the ledger,
+        and a commission that names it later brings it back. Raises
+        ``LookupError`` for a project that is not there (or is archived
+        already), ``ProjectUnreadable`` for one whose record cannot be
+        read, ``ProjectBusy`` while something is at work in it or a
+        commission was filed under it meanwhile, ``ProjectNotMoved`` when
+        its directory could not be moved (a file in it is held open).
+        """
+        if self._shut_down:
+            raise HostShuttingDown("the host is shutting down")
+        # Not while its working directory is changed or a task agent is made for it.
+        async with self._project_lock:
+            # The one commissions of no project are filed under is not a project to put away.
+            kept, readable = (None, True) if project == DEFAULT_PROJECT else await self.space.read_project(project)
+            if kept is None:
+                raise LookupError(project)
+            if not readable:
+                raise ProjectUnreadable(project)
+            if await self._project_busy(project) is not None:
+                raise ProjectBusy("at_work")
+            # Looked at again where it is moved, under the lock commissions are filed under:
+            # one filed since the look above leaves it where it is.
+            archived = await self.space.archive_project(project, commissions=kept.commissions)
+            if archived is None:
+                again, _readable = await self.space.read_project(project)
+                if again is not None and again.commissions != kept.commissions:
+                    raise ProjectBusy("at_work")
+                # Its directory could not be moved (on Windows, while a file in it is held open).
+                raise ProjectNotMoved(project)
+            return archived.to_json()
 
     # -- dsh --------------------------------------------------------------
     #

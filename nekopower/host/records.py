@@ -41,6 +41,14 @@ class RecordError(Exception):
     """A record cannot be read as asked; the text is told to the task agent that asked."""
 
 
+class NoSuchPlace(RecordError):
+    """A page asked for a place in a record where no entry begins."""
+
+
+class EntryTooLarge(RecordError):
+    """An entry of a record is too large to be shown whole."""
+
+
 @dataclass(frozen=True, slots=True)
 class Hit:
     """One place in a record where the words looked for occur."""
@@ -263,3 +271,229 @@ def read_record(
         following=entries[end][0] if end < len(entries) else None,
         entries=len(entries),
     )
+
+
+# ---------------------------------------------------------------------------
+# For a page that shows a session's record to the user
+# ---------------------------------------------------------------------------
+#
+# Read from the end backwards, a page at a time: what is looked at first is
+# what was said last, and a long record is not read whole for it. A place
+# here is where the line of an entry begins in the file, counted in bytes:
+# a record is only ever added to (a line that was cut short by a crash is
+# dropped, never one that is whole), so the place of a whole line stays.
+
+_BACKWARD_CHUNK_BYTES = 256 * 1024
+
+
+def _cut(text: str, max_tokens: int) -> tuple[str, bool]:
+    """Return ``text`` within ``max_tokens``, and whether some of it was left out."""
+    from utils.tokenize import truncate_to_tokens
+
+    # A token is one byte at least: what is no longer than that in bytes fits.
+    if len(text.encode("utf-8", "replace")) <= max_tokens:
+        return text, False
+    kept = truncate_to_tokens(text, max_tokens)
+    return kept, kept != text
+
+
+def _plain(content: Any) -> str:
+    """Return the words of what a message holds: neither its pictures nor the tools it calls."""
+    if isinstance(content, str):
+        return content
+    parts = [
+        block["text"]
+        for block in (content if isinstance(content, list) else [])
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+    ]
+    return "\n".join(part for part in parts if part)
+
+
+def _page_entry(entry: dict[str, Any], max_tokens: int) -> dict[str, Any] | None:
+    """Return an entry of a record as a page shows it, or None for one with nothing to show.
+
+    ``role`` is ``user``, ``assistant``, ``tool_result``, ``notice`` or
+    ``summary``; ``text`` what was said, within ``max_tokens`` (``cut``
+    says some was left out); ``calls`` the tools a message of the task
+    agent calls, each with its arguments as JSON text within the same cap;
+    ``tool`` the tool a result is of, or the kind of a notice; ``failed``
+    whether the tool failed; ``pictures`` how many pictures it holds (none
+    is passed on); ``time`` when it was said, in seconds, where the record
+    says.
+    """
+    kind = entry.get("type")
+    message = entry.get("message") if kind == "message" and isinstance(entry.get("message"), dict) else None
+    role, tool, failed, content, stamp = None, None, False, None, None
+    if message is not None:
+        said_by = message.get("role")
+        content, stamp = message.get("content"), message.get("timestamp")
+        if said_by in ("user", "assistant"):
+            role = said_by
+        elif said_by == "toolResult":
+            role, tool, failed = "tool_result", _key(message, "tool_name"), bool(_key(message, "is_error"))
+        elif said_by == "custom":
+            role, tool = "notice", _key(message, "custom_type")
+        elif said_by in ("compactionSummary", "branchSummary"):
+            role = "summary"
+            if not _plain(content):
+                content = str(message.get("summary") or "")
+    elif kind == "custom_message":
+        role, tool, content, stamp = "notice", _key(entry, "custom_type"), entry.get("content"), entry.get("timestamp")
+    elif kind == "compaction":
+        role, content, stamp = "summary", str(entry.get("summary") or ""), entry.get("timestamp")
+    if role is None:
+        return None
+    blocks = content if isinstance(content, list) else []
+    calls = []
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "toolCall":
+            arguments = json.dumps(block.get("arguments") or {}, ensure_ascii=False, separators=(",", ":"))
+            shown, left_out = _cut(arguments, max_tokens)
+            calls.append({"name": str(block.get("name") or ""), "arguments": shown, "cut": left_out})
+    text, left_out = _cut(_plain(content).strip(), max_tokens)
+    pictures = sum(1 for block in blocks if isinstance(block, dict) and block.get("type") == "image")
+    if not text and not calls and not pictures:
+        return None
+    timed = isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and stamp > 0
+    return {
+        "role": role,
+        "text": text,
+        "cut": left_out,
+        "calls": calls,
+        "tool": str(tool) if tool else None,
+        "failed": failed,
+        "pictures": pictures,
+        # Milliseconds in the record; anything else is no time.
+        "time": stamp / 1000 if timed else None,
+    }
+
+
+def _whole_end(handle: Any, size: int) -> int:
+    """Return where the last whole line of a file of ``size`` bytes ends: just past its last newline."""
+    position = size
+    while position > 0:
+        step = min(_BACKWARD_CHUNK_BYTES, position)
+        position -= step
+        handle.seek(position)
+        found = handle.read(step).rfind(b"\n")
+        if found >= 0:
+            return position + found + 1
+    return 0
+
+
+def _lines_before(handle: Any, end: int, budget: int) -> Iterator[tuple[int, bytes]]:
+    """Yield ``(place, line)`` for the whole lines that end at ``end`` and before it, the last one first.
+
+    ``end`` is where a line begins (or the end of the last whole line).
+    Stops once ``budget`` bytes were read, though never before one line
+    was given: a line longer than the budget is read whole all the same,
+    or whoever reads a page at a time would be handed the same place again
+    and never get past it.
+    """
+    buffer, position, read, given = b"", end, 0, False
+    while position > 0 and (read < budget or not given):
+        step = min(_BACKWARD_CHUNK_BYTES, position)
+        position -= step
+        handle.seek(position)
+        buffer = handle.read(step) + buffer
+        read += step
+        pieces = buffer.split(b"\n")
+        # What stands before the first newline began before ``position``,
+        # unless the file begins there: it waits for the block before this.
+        first = 0 if position == 0 else 1
+        places, start = [], position
+        for piece in pieces[:-1]:
+            places.append((start, piece))
+            start += len(piece) + 1
+        for found in reversed(places[first:]):
+            given = True
+            yield found
+        buffer = pieces[0] + b"\n" if first else b""
+
+
+def _at_line_start(handle: Any, place: int) -> bool:
+    if place == 0:
+        return True
+    handle.seek(place - 1)
+    return handle.read(1) == b"\n"
+
+
+def read_page(
+    path: Path, before: int | None, limit: int, *, entry_tokens: int, scan_bytes: int
+) -> dict[str, Any]:
+    """Return a page of a record for showing it: the ``limit`` entries before the place ``before``, in order.
+
+    ``{"entries": [...], "before": place | None}``. ``before`` None reads
+    the last entries of the record; the ``before`` that comes back is to
+    be passed for the page before this one, and is None once the beginning
+    of the record is reached. Each entry is as ``_page_entry`` says, with
+    ``at``, its place. A page ends early when ``scan_bytes`` were read for
+    it (very long entries): what it has comes back, with where to go on.
+    A place that is none of this record raises ``RecordError``.
+    """
+    import os
+
+    try:
+        handle = path.open("rb")
+    except OSError as exc:
+        raise RecordError("this session has no record that can be read: nothing was said in it, or it was removed") from exc
+    try:
+        with handle:
+            size = os.fstat(handle.fileno()).st_size
+            if before is None:
+                end = _whole_end(handle, size)
+            else:
+                end = int(before)
+                if not 0 <= end <= size or not _at_line_start(handle, end):
+                    raise NoSuchPlace("no such place in this record")
+            found: list[dict[str, Any]] = []
+            reached = end
+            for place, raw in _lines_before(handle, end, scan_bytes):
+                reached = place
+                try:
+                    entry = json.loads(raw)
+                except ValueError:
+                    continue
+                shown = _page_entry(entry, entry_tokens) if isinstance(entry, dict) else None
+                if shown is not None:
+                    found.append({"at": place, **shown})
+                    if len(found) >= limit:
+                        break
+    except OSError as exc:
+        raise RecordError(f"the record of this session cannot be read ({type(exc).__name__})") from exc
+    found.reverse()
+    return {"entries": found, "before": reached if reached > 0 else None}
+
+
+def read_whole_entry(path: Path, at: int, *, entry_tokens: int, max_bytes: int) -> dict[str, Any]:
+    """Return the entry at the place ``at`` for showing it, within the larger cap ``entry_tokens``.
+
+    Raises ``RecordError`` for a place where no entry with something to
+    show begins, and for a line longer than ``max_bytes``.
+    """
+    try:
+        handle = path.open("rb")
+    except OSError as exc:
+        raise RecordError("this session has no record that can be read: nothing was said in it, or it was removed") from exc
+    try:
+        with handle:
+            # Past the end no line begins either: nothing is read there.
+            if at < 0 or not _at_line_start(handle, at):
+                raise NoSuchPlace("no such place in this record")
+            handle.seek(at)
+            raw = handle.readline(max_bytes + 1)
+    except OSError as exc:
+        raise RecordError(f"the record of this session cannot be read ({type(exc).__name__})") from exc
+    if len(raw) > max_bytes:
+        raise EntryTooLarge("this entry is too large to show")
+    if not raw.endswith(b"\n"):
+        # The line being written this moment.
+        raise NoSuchPlace("no such place in this record")
+    try:
+        entry = json.loads(raw)
+    except ValueError:
+        entry = None
+    shown = _page_entry(entry, entry_tokens) if isinstance(entry, dict) else None
+    if shown is None:
+        raise NoSuchPlace("no such place in this record")
+    return {"at": at, **shown}
