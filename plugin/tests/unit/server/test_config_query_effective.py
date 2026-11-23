@@ -80,6 +80,29 @@ async def test_get_plugin_effective_config_merges_base_and_overlay(monkeypatch: 
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_get_plugin_effective_config_ignores_overlay_permissions_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ConfigQueryService()
+
+    async def _base(*, plugin_id: str) -> dict[str, object]:
+        return {"plugin_id": plugin_id, "config": {"runtime": {"level": 1}}}
+
+    async def _overlay(*, plugin_id: str, profile_name: object) -> dict[str, object]:
+        return {
+            "plugin_id": plugin_id,
+            "config": {"runtime": {"level": 2}, "permissions": {"ask": {}}},
+        }
+
+    monkeypatch.setattr(service, "get_plugin_effective_base_config", _base)
+    monkeypatch.setattr(service, "get_plugin_profile_config", _overlay)
+
+    payload = await service.get_plugin_effective_config(plugin_id="demo", profile_name="dev")
+    assert payload["config"] == {"runtime": {"level": 2}}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_get_plugin_effective_config_keeps_manifest_tables_for_named_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
