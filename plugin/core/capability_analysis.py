@@ -693,6 +693,9 @@ _FS_WRITE = "system.fs:write"
 # Methods that make a plain socket accept connections. They continue the
 # "socket.socket" network pattern, so _NOT_UNDER keeps them out of it.
 _SOCKET_LISTEN_METHODS = ("bind", "listen", "accept")
+# Only a hint: a client may bind a local address before connecting (a UDP
+# server binds without listen, so it is not dropped either).
+_HINT_ONLY = ("socket.socket().bind",)
 
 # Standard-library and well-known third-party origins. A reference matches a
 # pattern when it equals it or continues it with "." or "()".
@@ -761,6 +764,8 @@ _EXTERNAL_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "xmlrpc.server.DocXMLRPCServer",
             "websockets.serve",
             "websockets.server.serve",
+            "websockets.asyncio.server.serve",
+            "websockets.sync.server.serve",
             "aiohttp.web.run_app",
             "aiohttp.web.TCPSite",
             "uvicorn.run",
@@ -1045,6 +1050,8 @@ def _reference_permissions(reference: _Reference) -> list[tuple[str, str, dict]]
                     basis = named
                 elif not reference.is_call:
                     basis = named if reference.rebound else BASIS_RESOLVED_REFERENCE
+            elif _matches(name, _HINT_ONLY):
+                basis = named
             results.append((permission, basis, {}))
     return results
 

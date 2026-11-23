@@ -218,10 +218,10 @@ CONNECT = "system.network:connect"
     [
         "import socket\nsocket.create_server(('', 1))",
         "from socket import create_server\ncreate_server(('', 1))",
-        "import socket\nsocket.socket().bind(('', 1))",
+        "import socket\nsocket.socket().bind(('', 1))\nsocket.socket().listen()",
         "import socket\ns = socket.socket(socket.AF_INET)\ns.listen()",
         "import socket\ns = socket.socket()\nconn, addr = s.accept()",
-        "from socket import socket as sock\nserver = sock()\nserver.bind(('', 1))",
+        "from socket import socket as sock\nserver = sock()\nserver.bind(('', 1))\nserver.listen()",
         "import asyncio\nasync def f(cb):\n    await asyncio.start_server(cb, '', 1)",
         "import asyncio\nasync def f(p):\n    await asyncio.get_running_loop().create_server(p, '', 1)",
         "import asyncio\nloop = asyncio.get_event_loop()\nloop.create_server(object, '', 1)",
@@ -240,6 +240,8 @@ CONNECT = "system.network:connect"
         "import xmlrpc.server\nxmlrpc.server.DocXMLRPCServer(('', 1))",
         "import websockets\nasync def f(h):\n    await websockets.serve(h, '', 1)",
         "from websockets.server import serve\nserve(object, '', 1)",
+        "from websockets.asyncio.server import serve\nasync def f(h):\n    await serve(h, '', 1)",
+        "from websockets.sync.server import serve\nserve(object, '', 1)",
         "from aiohttp import web\nweb.run_app(web.Application())",
         "import aiohttp.web\naiohttp.web.TCPSite(object, '', 1)",
         "import uvicorn\nuvicorn.run(object)",
@@ -256,6 +258,25 @@ def test_servers_are_direct_evidence_of_listen(tmp_path, source):
         # construction stays connect evidence; see the next test.)
         connect = report["permissions"].get(CONNECT, {"basis": None})
         assert connect["basis"] not in capability_analysis.DIRECT_BASES
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # A client choosing its local address before connecting.
+        "import socket\ns = socket.socket()\ns.bind(('127.0.0.1', 0))\ns.connect(('a', 1))\n",
+        # A UDP server: bind without listen.
+        "import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\ns.bind(('', 1))\ns.recvfrom(1024)\n",
+    ],
+)
+def test_bind_alone_is_only_possible_listen_evidence(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["permissions"][LISTEN]["basis"] == "resolved_name"
+    manifest = '[plugin]\nid = "x"\n[permissions.ask]\n"system.network:connect" = { reason = "x" }\n'
+    issues = compare_declarations(_scan(tmp_path, source, manifest=manifest))
+    assert [(issue.severity, issue.code) for issue in issues if issue.params["permission"] == LISTEN] == [
+        ("warning", "used_undeclared_possible")
+    ]
 
 
 def test_a_socket_that_binds_reports_listen_there_and_connect_only_where_it_is_made(tmp_path):
