@@ -58,7 +58,7 @@ launcher 是前台进程：绝不守护化脱管，属主进程一消失就把�
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `NEKO_MERGED` | 源码环境：`0`；冻结发行包：`1` | `1` 让 main、memory、agent 三个 HTTP 服务在同一进程中运行，但保留原有契约；`0` 保留三个服务进程。不会复用不完整或混合的已有后端；即使原本选择 merged，也会在隔离的回退端口上强制启动三个服务进程。 |
-| `OPENBLAS_NUM_THREADS` | `1`（未设置或为空时生效） | numpy 自带的 OpenBLAS 库使用的线程数。OpenBLAS 在 numpy 加载时为每个线程预留 32 MiB 缓冲区，按 CPU 核数的默认值会让每个导入 numpy 的进程白白预订数百 MiB。在 shell、`.env` 或容器里显式设置的值会保留。插件进程继承该设置。 |
+| `OPENBLAS_NUM_THREADS` | `1`（没有设置线程数时生效） | numpy 自带的 OpenBLAS 库使用的线程数。OpenBLAS 在 numpy 加载时为每个线程预留 32 MiB 缓冲区，按 CPU 核数的默认值会让每个导入 numpy 的进程白白预订数百 MiB。在 shell、`.env` 或容器里通过本变量、`GOTO_NUM_THREADS` 或 `OMP_NUM_THREADS` 设置的正整数会保留；空值、`0`、负数和非数字按未设置处理，因为 OpenBLAS 会忽略它们。插件进程继承该设置，N.E.K.O 启动的外部程序也会继承。 |
 
 源码开发、独立服务监管或需要 agent 故障隔离时应使用多进程模式。发行包可通过
 `NEKO_MERGED=0` 立即回退。

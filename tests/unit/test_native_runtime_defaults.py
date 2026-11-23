@@ -25,6 +25,7 @@ import pytest
 from config.native_runtime import (
     DEFAULT_OPENBLAS_THREADS,
     OPENBLAS_THREADS_ENV,
+    THREAD_COUNT_ENVS,
     apply_native_runtime_defaults,
 )
 
@@ -38,18 +39,43 @@ def test_unset_variable_gets_the_single_thread_default() -> None:
     assert DEFAULT_OPENBLAS_THREADS == "1"
 
 
-def test_explicit_setting_is_left_alone() -> None:
-    env = {OPENBLAS_THREADS_ENV: "4"}
+def test_openblas_reads_these_variables_in_this_order() -> None:
+    assert THREAD_COUNT_ENVS == (OPENBLAS_THREADS_ENV, "GOTO_NUM_THREADS", "OMP_NUM_THREADS")
+
+
+@pytest.mark.parametrize("value", ["4", " 2 ", "+3", "8 threads"])
+def test_explicit_thread_count_is_left_alone(value: str) -> None:
+    env = {OPENBLAS_THREADS_ENV: value}
     apply_native_runtime_defaults(env)
-    assert env == {OPENBLAS_THREADS_ENV: "4"}
+    assert env == {OPENBLAS_THREADS_ENV: value}
 
 
-def test_blank_setting_counts_as_unset() -> None:
-    # OpenBLAS ignores an empty value and sizes the pool from the CPU count.
-    for blank in ("", "   "):
-        env = {OPENBLAS_THREADS_ENV: blank}
-        apply_native_runtime_defaults(env)
-        assert env == {OPENBLAS_THREADS_ENV: "1"}
+@pytest.mark.parametrize("value", ["", "   ", "0", "-2", "one", "+", "threads 8"])
+def test_value_openblas_would_ignore_counts_as_unset(value: str) -> None:
+    # Measured: OpenBLAS sizes the pool from the CPU count for each of these.
+    env = {OPENBLAS_THREADS_ENV: value}
+    apply_native_runtime_defaults(env)
+    assert env == {OPENBLAS_THREADS_ENV: "1"}
+
+
+@pytest.mark.parametrize("name", ["GOTO_NUM_THREADS", "OMP_NUM_THREADS"])
+def test_thread_count_from_a_fallback_variable_is_not_overridden(name: str) -> None:
+    # OpenBLAS honours these when its own variable is unset; injecting "1"
+    # there would outrank them.
+    env = {name: "8"}
+    apply_native_runtime_defaults(env)
+    assert env == {name: "8"}
+
+    env = {OPENBLAS_THREADS_ENV: "0", name: "8"}
+    apply_native_runtime_defaults(env)
+    assert env == {OPENBLAS_THREADS_ENV: "0", name: "8"}
+
+
+@pytest.mark.parametrize("name", ["GOTO_NUM_THREADS", "OMP_NUM_THREADS"])
+def test_ignored_fallback_variable_does_not_block_the_default(name: str) -> None:
+    env = {name: "0"}
+    apply_native_runtime_defaults(env)
+    assert env == {name: "0", OPENBLAS_THREADS_ENV: "1"}
 
 
 # Only ``config`` is imported in the child. That package sits at the bottom of
@@ -70,16 +96,23 @@ print(json.dumps({
 
 @pytest.mark.parametrize(
     ("inherited", "expected"),
-    [(None, "1"), ("", "1"), ("   ", "1"), ("4", "4")],
-    ids=["unset", "empty", "blank", "explicit"],
+    [
+        ({}, "1"),
+        ({OPENBLAS_THREADS_ENV: ""}, "1"),
+        ({OPENBLAS_THREADS_ENV: "   "}, "1"),
+        ({OPENBLAS_THREADS_ENV: "0"}, "1"),
+        ({OPENBLAS_THREADS_ENV: "4"}, "4"),
+        ({"OMP_NUM_THREADS": "8"}, None),
+    ],
+    ids=["unset", "empty", "blank", "zero", "explicit", "omp-only"],
 )
-def test_importing_config_in_a_fresh_interpreter(inherited: str | None, expected: str) -> None:
+def test_importing_config_in_a_fresh_interpreter(inherited: dict[str, str], expected: str | None) -> None:
     # The test process imported ``config`` during collection, so its own
     # environment cannot show which branch ran. A new interpreter can.
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    env.pop(OPENBLAS_THREADS_ENV, None)
-    if inherited is not None:
-        env[OPENBLAS_THREADS_ENV] = inherited
+    for name in THREAD_COUNT_ENVS:
+        env.pop(name, None)
+    env.update(inherited)
 
     result = subprocess.run(
         [sys.executable, "-c", _CHILD_PROBE, str(ROOT), OPENBLAS_THREADS_ENV],
