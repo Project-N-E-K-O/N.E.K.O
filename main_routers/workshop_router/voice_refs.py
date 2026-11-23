@@ -289,10 +289,10 @@ async def upload_reference_audio(request: Request):
         }, status_code=409)
     except Exception as e:
         logger.error(f"上传参考语音失败: {e}")
-        # OSError messages carry server paths; keep them in the log only.
+        # Show the reason (disk full, permission denied, locked file) so the user can act on it.
         return JSONResponse({
             "success": False,
-            "error": "参考语音上传失败",
+            "error": f"参考语音上传失败: {e}",
         }, status_code=500)
 
 
@@ -341,10 +341,10 @@ async def remove_reference_audio(request: Request):
         }, status_code=409)
     except Exception as e:
         logger.error(f"删除参考语音失败: {e}")
-        # OSError messages carry server paths; keep them in the log only.
+        # Show the reason (disk full, permission denied, locked file) so the user can act on it.
         return JSONResponse({
             "success": False,
-            "error": "参考语音清理失败",
+            "error": f"参考语音清理失败: {e}",
         }, status_code=500)
 
 
