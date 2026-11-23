@@ -195,6 +195,9 @@ _SCHEMA_VERSION = 8
 # that stands for it (``TaskAgentManager._template_of``), which the ledger
 # cannot read, and which may be one of the user's that withholds tools.
 _LEADERS_SINCE_VERSION = 8
+# How many of the commissions a leader handed over last are looked at for
+# those it is to be told of (``handed_work``).
+_HANDED_LOOKED_AT = 200
 # The first version in which a session has a preset: the sessions of a ledger
 # of an earlier one are given theirs by their kind.
 _PRESETS_SINCE_VERSION = 7
@@ -2123,19 +2126,36 @@ class Ledger:
         name of its own, so that one a copy of the member's session then
         worked on, of which that session was told (``told_to_session``,
         ``forked_work``), is still one the leader is to hear of. Told of
-        how it ended: one that got stuck, was taken up again and ended
-        anew is told once more.
+        how it ended: the event says which ending it told of
+        (``ended_at``), and one that got stuck, was taken up again and
+        ended anew is told once more, also where it ended anew between
+        the leader being told and that being put on record. Looked for
+        among the ``_HANDED_LOOKED_AT`` it handed over last.
         """
 
         def work(conn: sqlite3.Connection) -> list[Commission]:
             rows = conn.execute(
                 "SELECT * FROM commissions WHERE handed_by = ? AND status IN ('done', 'blocked', 'failed', 'cancelled') "
-                "AND NOT EXISTS (SELECT 1 FROM events WHERE events.commission_id = commissions.id "
-                "AND events.type = 'told_to_leader' AND events.ts >= COALESCE(commissions.ended_at, 0)) "
                 "ORDER BY updated_at DESC LIMIT ?",
-                (session_id, limit),
+                (session_id, _HANDED_LOOKED_AT),
             ).fetchall()
-            return [item for item in (_commission(row) for row in rows) if item is not None]
+            found: list[Commission] = []
+            for item in (_commission(row) for row in rows):
+                if item is None:
+                    continue
+                told = conn.execute(
+                    "SELECT payload FROM events WHERE commission_id = ? AND type = 'told_to_leader' ORDER BY seq DESC LIMIT 1",
+                    (item.id,),
+                ).fetchone()
+                if told is not None:
+                    of = _load(told["payload"]).get("ended_at")
+                    # (One that says no ending told of it as it stood when it was written.)
+                    if not isinstance(of, (int, float)) or item.ended_at is None or of >= item.ended_at:
+                        continue
+                found.append(item)
+                if len(found) >= limit:
+                    break
+            return found
 
         return await self.run(work)
 

@@ -1600,9 +1600,16 @@ HANDED_OVER_ALREADY = "this commission was handed over to another task agent; en
 # start could change files; filled with str.format (preset, names: the
 # presets of this project that only read).
 LEADER_SUBAGENT_WRITES = (
-    "a task agent you start with subagent only reads, and {preset} can change files. To have "
-    "files changed, hand the commission over with hand_over; for a part whose result you need "
-    "back, name a preset that only reads: {names}"
+    "a task agent you start with subagent only reads, and {preset} can change files or run "
+    "commands. Hand that work over with hand_over; for a part whose result you need back, name "
+    "a preset that only reads: {names}"
+)
+# What hand_over is refused with while task agents the leader started for
+# the commission are still at work: what they hand back would come to
+# whoever has the commission by then.
+HAND_OVER_AGENTS_AT_WORK = (
+    "task agents you started for this commission are still at work; wait for them with "
+    "wait_agent, then hand it over"
 )
 
 # Added to the message that opens a commission worked on in a copy of a

@@ -1724,14 +1724,20 @@ async def test_what_the_ledger_finds_for_a_family_and_for_a_leader(tmp_path):
         # Told of how it ended: one that got stuck, was taken up again and ended anew is told once more.
         await ledger.transition(under_way.id, "working", reason="t")
         await ledger.transition(under_way.id, "blocked", reason="t", result_summary="which page?")
-        await ledger.append_event(under_way.id, "told_to_leader", {"commission_id": stopped.id})
-        assert await ledger.handed_work(leader.id, limit=5) == []
+        [stuck] = await ledger.handed_work(leader.id, limit=5)
+        assert (stuck.id, stuck.status) == (under_way.id, "blocked") and stuck.ended_at is not None
         await asyncio.sleep(0.05)
         await ledger.transition(under_way.id, "queued", reason="taken up again")
         await ledger.transition(under_way.id, "working", reason="t")
-        assert await ledger.handed_work(leader.id, limit=5) == []
         await ledger.transition(under_way.id, "done", reason="t", result_summary="help page written")
-        assert [item.result_summary for item in await ledger.handed_work(leader.id, limit=5)] == ["help page written"]
+        # Also where it ended anew before the leader's being told that it was stuck was put on record.
+        await ledger.append_event(
+            under_way.id, "told_to_leader", {"commission_id": stopped.id, "ended_at": stuck.ended_at}
+        )
+        [anew] = await ledger.handed_work(leader.id, limit=5)
+        assert (anew.result_summary, anew.ended_at > stuck.ended_at) == ("help page written", True)
+        await ledger.append_event(under_way.id, "told_to_leader", {"commission_id": stopped.id, "ended_at": anew.ended_at})
+        assert await ledger.handed_work(leader.id, limit=5) == []
         assert under_way.status not in ("done", "blocked", "failed", "cancelled")
     finally:
         await ledger.close()
@@ -1902,7 +1908,13 @@ async def test_a_leader_starts_no_task_agent_that_could_change_files(hosts, tmp_
         return [call("subagent", {"description": "a part of it", "prompt": "Do this part.", **arguments}), finish("tool_calls")]
 
     leader_llm = ScriptedLLM(
-        [starts(), starts(preset="worker"), starts(preset="scout"), [call("wait_agent", {"timeout_ms": 600_000}, "c4"), finish("tool_calls")], *_hand_over()]
+        [
+            starts(), starts(preset="worker"), starts(preset="inspector"), starts(preset="scout"),
+            # While the scout is at it the commission is not handed over: what it finds would go to whoever has it then.
+            _hand_over()[0],
+            [call("wait_agent", {"timeout_ms": 600_000}, "c4"), finish("tool_calls")],
+            *_hand_over(),
+        ]
     )
     scout_llm = ScriptedLLM([[wait, say("The header is in base.html."), finish()]])
     member_llm = ScriptedLLM([_report("header fixed")])
@@ -1920,20 +1932,24 @@ async def test_a_leader_starts_no_task_agent_that_could_change_files(hosts, tmp_
     await _allow_members(host)
 
     receipt = await _dispatch(host, "fix the header of the shop site")
-    await wait_until(lambda: len(scout_llm.requests) == 1, what="the scout being at work")
+    await wait_until(lambda: len(leader_llm.requests) == 6, what="the leader waiting for its scout")
 
-    # Neither the worker it gets when it names no preset nor one it names: only one that reads was started.
+    # Neither the worker it gets when it names no preset, nor one it names, nor an inspector, which
+    # keeps the shell: only one that reads was started.
     started = await host.ledger.select(parent_id=receipt.commission_id)
     assert [(await host.ledger.get_session(item.session_id)).preset for item in started] == ["scout"]
     (child_spec,) = [spec for spec in specs if not spec.top_level]
-    assert {"write", "edit"} <= set(child_spec.disabled_tools)
+    assert {"write", "edit", "bash", "pwsh"} <= set(child_spec.disabled_tools)
     wanted = brain_texts.LEADER_SUBAGENT_WRITES.split("{preset}")[0]
     answers = [str(message.get("content")) for message in leader_llm.requests[-1] if message.get("role") == "tool"]
     refused = [text for text in answers if wanted in text]
-    assert len(refused) == 2 and all("scout" in text and "hand_over" in text for text in refused)
+    assert len(refused) == 3 and all("scout, planner" in text and "hand_over" in text for text in refused)
+    assert [text for text in answers if brain_texts.HAND_OVER_AGENTS_AT_WORK in text] != []
+    assert host.task_agents._sessions[receipt.commission_id].handing_over is None
+    assert await _events(host, receipt.commission_id, "handed_over") == []
     release.set()
     done = await wait_status(host, receipt.commission_id, "done")
-    assert done.result_summary == "header fixed"
+    assert done.result_summary == "header fixed" and len(await _events(host, receipt.commission_id, "handed_over")) == 1
 
 
 async def test_a_project_in_a_git_repository_has_no_leader_as_shipped(hosts, tmp_path, monkeypatch):
@@ -2203,28 +2219,39 @@ async def test_no_leader_is_made_while_a_commission_is_being_placed(hosts, tmp_p
     )
     families = host.task_agents.families
     verdict = await families.decide(commission)
-    alive = host.ledger.session_alive
+    file = host.ledger.file_under_project
+    looked: list[str] = []
+    lead = host.ledger.lead_session
     reached, go_on = asyncio.Event(), asyncio.Event()
 
-    async def slowly(session: Any, now: float | None = None) -> bool:
+    async def looking(lanlan_name: str, project: str | None) -> Any:
+        looked.append(str(project))
+        return await lead(lanlan_name, project)
+
+    async def slowly(commission_id: str, project: str, **values: Any) -> Any:
         if not reached.is_set():
             # After the look that found the project without a leader, before the commission is the member's.
+            assert looked == ["Budget app"]
             reached.set()
             await go_on.wait()
-        return await alive(session, now)
+        return await file(commission_id, project, **values)
 
-    monkeypatch.setattr(host.ledger, "session_alive", slowly)
+    monkeypatch.setattr(host.ledger, "lead_session", looking)
+    monkeypatch.setattr(host.ledger, "file_under_project", slowly)
     placing = asyncio.ensure_future(families.place(commission, verdict))
     await asyncio.wait_for(reached.wait(), 10)
+    # However it is asked for: by the user for the project, or by opening a session with the leader's preset.
     deriving = asyncio.ensure_future(host.derive_leader("Budget app", "Lan"))
+    opening = asyncio.ensure_future(families.make_leader("Lan", "Budget app"))
     await asyncio.sleep(0.05)
 
     # It waits for the placing: the leader is made after the commission is the member's, not in between.
-    assert not deriving.done() and await host.ledger.lead_session("Lan", "Budget app") is None
+    assert not deriving.done() and not opening.done() and await lead("Lan", "Budget app") is None
     go_on.set()
     placed, session = await placing
-    made = await deriving
-    assert (placed.session_id, session.id, made["made"]) == (member.id, member.id, True)
+    made, (leader, _made) = await deriving, await opening
+    assert (placed.session_id, session.id) == (member.id, member.id)
+    assert made["session_id"] == leader.id and (await lead("Lan", "Budget app")).id == leader.id
     (decided,) = await _events(host, commission.id, "orchestrated")
     assert "placed" not in decided
 
@@ -2305,3 +2332,69 @@ async def test_the_board_lists_the_members_that_work_and_not_every_one_a_project
         assert set(await listed(lanlan_name="Mio")) == {theirs.id}
     finally:
         await ledger.close()
+
+
+async def test_a_new_member_that_could_change_files_through_the_shell_is_asked_about_as_well(hosts, tmp_path):
+    host, _leader = await _leader_asks(
+        hosts, tmp_path, _hand_over(preset="inspector", description="Checks the pages"), [_report("pages checked")]
+    )
+
+    receipt = await _dispatch(host, "check the pages of the shop site")
+    waiting = await wait_status(host, receipt.commission_id, "waiting_user")
+
+    # An inspector has no tool that writes a file and keeps the shell: asked about like one that writes.
+    question = waiting.question()
+    assert (question["kind"], question["category"], question["detail"]["preset"]) == ("permission", "open_session", "inspector")
+    assert await host.answer(receipt.commission_id, "yes", choice="once")
+    done = await wait_status(host, receipt.commission_id, "done")
+    member = await host.ledger.get_session(done.session_id)
+    assert (member.preset, done.result_summary) == ("inspector", "pages checked")
+    assert host.task_agents._writes_in[member.id] == ("Shop site", member.id)
+
+
+async def test_what_is_said_as_a_commission_is_handed_over_and_written_down_after_reaches_the_member(
+    hosts, tmp_path, monkeypatch
+):
+    at_first, at_work = asyncio.Event(), asyncio.Event()
+
+    async def first() -> None:
+        await at_first.wait()
+
+    async def working() -> None:
+        await at_work.wait()
+
+    called, ended = _hand_over()
+    leader_llm = ScriptedLLM([[first, *called], ended])
+    member_llm = ScriptedLLM([[working, *_report("header fixed")], [say("noted"), finish()]])
+    host = _host(hosts, tmp_path, _by_role(leader_llm, member_llm))
+    workdir = await _project(host, "Shop site", tmp_path)
+    _in_git(host, workdir)
+    await _allow_members(host)
+    receipt = await _dispatch(host, "fix the header of the shop site")
+    await wait_until(lambda: len(leader_llm.requests) == 1, what="the leader being at work")
+    append = host.ledger.append_event
+    writing, go_on = asyncio.Event(), asyncio.Event()
+
+    async def slowly(commission_id: str, kind: str, payload: dict[str, Any]) -> Any:
+        if kind == "told" and not writing.is_set():
+            writing.set()
+            await go_on.wait()
+        return await append(commission_id, kind, payload)
+
+    monkeypatch.setattr(host.ledger, "append_event", slowly)
+
+    # Said while the leader is at work, before it hands the commission over; written down only after it has.
+    telling = asyncio.ensure_future(host.tell(receipt.commission_id, "and make the logo smaller"))
+    await asyncio.wait_for(writing.wait(), 10)
+    at_first.set()
+    await wait_until(lambda: len(member_llm.requests) == 1, what="the member being at work on it")
+    assert receipt.commission_id not in host.task_agents._said_while_handed
+    go_on.set()
+    assert await telling is True
+    at_work.set()
+
+    await wait_until(
+        lambda: "and make the logo smaller" in json.dumps(member_llm.requests), what="the member being told it"
+    )
+    assert "and make the logo smaller" not in json.dumps(leader_llm.requests)
+    await _let_go(host)

@@ -1285,7 +1285,7 @@ class TaskAgentManager:
         # tells of the commissions the leader handed over, by the commission
         # it opens: on record as told once the session took the message
         # (``_note_opened``), under a name of its own (``told_to_leader``).
-        self._handed_said: dict[str, list[str]] = {}
+        self._handed_said: dict[str, list[tuple[str, float | None]]] = {}
         # What tells whether a commission is a side question
         # (``LexicalDecisionModel.side_question``), and, for a commission it
         # was asked of, what it was asked about and what it said: asked once
@@ -2043,14 +2043,18 @@ class TaskAgentManager:
 
         project = str(commission.project)
         about = await self._project_about(project) or commission.title
-        if await self._ledger.lead_session(commission.lanlan_name, project) is not None:
-            return await self._ledger.give_session(commission.id, kind="project", name=project, duty=about)
-        for member in await self._ledger.members(commission.lanlan_name, project):
-            if await self._ledger.session_alive(member):
-                moved = await self._ledger.update(commission.id, session_id=member.id)
-                return moved or commission, member
-        name = await self._ledger.member_name(commission.lanlan_name, project, project)
-        return await self._ledger.give_session(commission.id, kind="line", name=name, preset=WORKING_PRESET, duty=about)
+        # As where a commission is placed: no leader is made, and no other member named, between the look and the giving.
+        async with self.families.placing:
+            if await self._ledger.lead_session(commission.lanlan_name, project) is not None:
+                return await self._ledger.give_session(commission.id, kind="project", name=project, duty=about)
+            for member in await self._ledger.members(commission.lanlan_name, project):
+                if await self._ledger.session_alive(member):
+                    moved = await self._ledger.update(commission.id, session_id=member.id)
+                    return moved or commission, member
+            name = await self._ledger.member_name(commission.lanlan_name, project, project)
+            return await self._ledger.give_session(
+                commission.id, kind="line", name=name, preset=WORKING_PRESET, duty=about
+            )
 
     async def _note_writer(self, session_id: str | None) -> None:
         """Note whether a session writes files in a project, for one such to work there at a time (``_session_free_for``).
@@ -4671,9 +4675,12 @@ class TaskAgentManager:
                 logger.warning("noting that a session was told of what a copy of it did failed", exc_info=True)
         self._forks_said.pop(session.commission_id, None)
         # And what its leader handed over, said with the same message.
-        for told in list(self._handed_said.get(session.commission_id, ())):
+        for told, ended_at in list(self._handed_said.get(session.commission_id, ())):
             try:
-                await self._ledger.append_event(told, "told_to_leader", {"commission_id": session.commission_id})
+                # With the ending it was told of: one that ended anew since is told once more.
+                await self._ledger.append_event(
+                    told, "told_to_leader", {"commission_id": session.commission_id, "ended_at": ended_at}
+                )
             except Exception:  # noqa: BLE001 - told again with the next commission, which does little harm
                 logger.warning("noting that a leader was told what came of a commission it handed over failed", exc_info=True)
         self._handed_said.pop(session.commission_id, None)
@@ -6346,6 +6353,10 @@ class TaskAgentManager:
                 # Its leader handed it over while that was written.
                 self._said_while_handed[commission_id].append(text)
                 return True
+            if self._sessions.get(commission_id) is not session:
+                # It moved on while that was written (its leader handed it over, and it waits for
+                # the other task agent or is at work there): said where it is now.
+                return await self._wake_working(commission_id, text, reason=_WOKEN_REASON)
             await self._send_text(self._runtime_of(session), session, "steer", text)
             return True
         return False
@@ -7394,6 +7405,9 @@ class TaskAgentManager:
             raise RuntimeError(texts.HAND_OVER_TWICE)
         if commission.status != "working":
             raise RuntimeError("the commission is not at work; nothing is handed over")
+        if await self._ledger.select(parent_id=commission_id, statuses=_STILL_WORKING):
+            # What they hand back would wake the commission where it is by then: with a member that did not start them.
+            raise RuntimeError(texts.HAND_OVER_AGENTS_AT_WORK)
         brief = truncate_to_tokens(str(payload.get("brief") or ""), HAND_OVER_BRIEF_MAX_TOKENS)
         duty = " ".join(str(payload.get("description") or "").split()) or commission.title
         members = await self._ledger.members(leader.lanlan_name, leader.project)
@@ -7425,8 +7439,8 @@ class TaskAgentManager:
                 )
             except TemplateError as exc:
                 raise RuntimeError(f"the preset {preset!r} cannot be used: {exc}") from exc
-            if template.writes_files:
-                # Another task agent that can change files: the user's to allow.
+            if template.changes_files:
+                # Another task agent that can change files (through the shell as well): the user's to allow.
                 decision = await self._permissions.check(
                     commission_id,
                     OPEN_SESSION,
@@ -7546,27 +7560,29 @@ class TaskAgentManager:
                 await self._ledger.update(commission_id, session_id=to, handed_by=leader_id)
                 self._session_of[commission_id] = to
                 await self._note_writer(to)
-                try:
-                    # On record once the other task agent has it: one whose leader could not be
-                    # closed was not handed over, and says so nowhere.
-                    await self._ledger.append_event(
-                        commission_id,
-                        "handed_over",
-                        {"from": leader_id, "to": to, "name": name, "preset": preset, "new": made},
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001 - the note is for the record; it is handed over all the same
-                    logger.warning("noting that a leader handed its commission over failed", exc_info=True)
                 nonce = secrets.token_hex(8)
                 message = _Found(frame(texts.TASK_AGENT_HANDED_OVER.format(nonce=nonce), brief, nonce))
                 if await self._wake_working(commission_id, message, reason="handed over by the lead of its project"):
                     while said_meanwhile:
-                        # What the user said to it meanwhile, in the user's own words, after the brief.
-                        # (Whatever is said from here on finds it queued, and goes along with it.)
+                        # What the user said to it meanwhile, in the user's own words, after the brief:
+                        # at once, with nothing awaited between, so that it goes along with the brief
+                        # before the commission starts in the other task agent. (Whatever is said from
+                        # here on finds it queued, and goes along with it.)
                         await self._wake_working(
                             commission_id, said_meanwhile.pop(0), reason="said while it was handed over"
                         )
+                    try:
+                        # On record once it waits for the other task agent: one whose leader could
+                        # not be closed, or that could not be queued, was not handed over.
+                        await self._ledger.append_event(
+                            commission_id,
+                            "handed_over",
+                            {"from": leader_id, "to": to, "name": name, "preset": preset, "new": made},
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - the note is for the record; it is handed over all the same
+                        logger.warning("noting that a leader handed its commission over failed", exc_info=True)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
@@ -7575,7 +7591,15 @@ class TaskAgentManager:
                 commission_id, f"it could not be handed over to a member of its project: {exc}", said="run", detail=str(exc)
             )
         finally:
-            self._said_while_handed.pop(commission_id, None)
+            unsaid = self._said_while_handed.pop(commission_id, None)
+            if unsaid:
+                # Not handed over after all (stopped meanwhile, or it could not be queued): what the
+                # user said to it meanwhile is on record with it (``told``) and reaches nobody.
+                logger.warning(
+                    "commission %s was not handed over; %d thing(s) the user said to it meanwhile were not passed on",
+                    commission_id,
+                    len(unsaid),
+                )
             # The leader is free: what waits for it goes on.
             if self._queue and len(self._sessions) < self.limit and not self._closed:
                 self._spawn(self._start_next())
@@ -7650,12 +7674,13 @@ class TaskAgentManager:
         """Raise unless the task agent a leader starts is of a preset that changes no file.
 
         A leader does none of the work, and not through a task agent it
-        starts either: work that writes or edits files is a member's,
-        handed over, where one writes in the project at a time and the
-        user is asked about a new one (``_cb_hand_over``). What a leader
-        starts itself looks, plans or checks. Told by the preset as the
-        task agent would have it (``Template.under``); one that cannot be
-        read counts as one that writes.
+        starts either: work that changes files, with a tool or through
+        the shell, is a member's, handed over, where one does so in the
+        project at a time and the user is asked about a new one
+        (``_cb_hand_over``). What a leader starts itself looks or plans.
+        Told by the preset as the task agent would have it
+        (``Template.under``, ``Template.changes_files``); one that
+        cannot be read counts as one that changes files.
         """
         from config.prompts.prompts_nekopower_brain import LEADER_SUBAGENT_WRITES
         from nekopower.host.ledger import PRESET_OF_KIND
@@ -7667,7 +7692,7 @@ class TaskAgentManager:
         reads = [
             item.name
             for item in listed
-            if item.template is not None and item.name not in NOT_FOR_CHILDREN and not item.template.under(over).writes_files
+            if item.template is not None and item.name not in NOT_FOR_CHILDREN and not item.template.under(over).changes_files
         ]
         if wanted not in reads:
             raise RuntimeError(

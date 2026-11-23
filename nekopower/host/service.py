@@ -1018,7 +1018,7 @@ class NekoPowerHost:
             }
             if preset == LEADER_PRESET:
                 # The project's leader: its commissions come to it, and it hands them out.
-                session, _made = await self.ledger.project_session(lanlan_name.strip(), name, **card)
+                session, _made = await self.task_agents.families.make_leader(lanlan_name.strip(), name, **card)
             else:
                 # A member: it does the project's work itself.
                 session = await self.ledger.create_session(

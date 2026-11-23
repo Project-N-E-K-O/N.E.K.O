@@ -207,12 +207,8 @@ class Template:
     def writes_files(self) -> bool:
         """Whether its sessions have a tool that writes or edits a file.
 
-        By ``write`` and ``edit`` alone, on purpose: a preset that keeps
-        the shell and has neither (the built-in inspector) is there to
-        look at work and run its checks. The user is not asked before a
-        leader opens one, and a leader may start one itself: each
-        command it runs is the user's to allow as ever. Whether it takes
-        its turn at changing files in a project goes by ``changes_files``.
+        By ``write`` and ``edit`` alone. What a project holds its members
+        to goes by ``changes_files``, which counts the shell as well.
         """
         return not {"write", "edit"} <= self.withheld()
 
@@ -220,8 +216,13 @@ class Template:
     def changes_files(self) -> bool:
         """Whether its sessions can change files at all: with a tool that writes or edits one, or through the shell.
 
-        What one task agent at a time does in a project: a command can
-        change the files another is working on as well as ``write`` can.
+        What one task agent at a time does in a project, what the user is
+        asked about before a leader opens another such member, and what
+        no task agent a leader starts itself can: a command can change
+        the files another is working on as well as ``write`` can, and
+        once the user allowed commands they are not asked about one by
+        one. (The built-in inspector keeps the shell to run checks, and
+        so counts.)
         """
         return not {"write", "edit", "bash", "pwsh"} <= self.withheld()
 

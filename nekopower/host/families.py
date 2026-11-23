@@ -103,8 +103,10 @@ class Families:
         self._git: dict[str, tuple[float, bool]] = {}
         # Held while a commission is placed and while a leader is made: a
         # project gets no leader between the look that finds it without
-        # one and the commission being given to a member.
-        self._placing = asyncio.Lock()
+        # one and the commission being given to a member. (Also by what
+        # gives a commission its project's session without placing it,
+        # ``TaskAgentManager._project_home``.)
+        self.placing = asyncio.Lock()
 
     def set_judge(self, judge: Judge | None) -> None:
         """Set what asks the small model; without one, what the layers before it leave open is a new loose commission."""
@@ -306,7 +308,7 @@ class Families:
 
     async def place(self, commission: Commission, verdict: Verdict) -> tuple[Commission, Session]:
         """Give a commission the session a verdict sends it to (``_place``), one at a time and with no leader made meanwhile."""
-        async with self._placing:
+        async with self.placing:
             return await self._place(commission, verdict)
 
     async def _place(self, commission: Commission, verdict: Verdict) -> tuple[Commission, Session]:
@@ -533,13 +535,21 @@ class Families:
         if project not in known:
             raise LookupError(project)
         record = known[project]
-        async with self._placing:
-            return await self._ledger.project_session(
-                lanlan_name, project, workdir=record.workdir, duty=record.description or project
-            )
+        return await self.make_leader(lanlan_name, project, workdir=record.workdir, duty=record.description or project)
 
-    async def leader_notes(self, leader: Session, skip: str) -> tuple[str, list[str]]:
-        """Return what a leader is told as a commission opens in it, and the commissions it is told the outcome of.
+    async def make_leader(self, lanlan_name: str, project: str, **card: Any) -> tuple[Session, bool]:
+        """Return a project's leader for one character, making it with ``card`` when it has none; and whether it was made.
+
+        The one way a leader is made outside the placing of a commission,
+        and not while one is being placed: no leader appears between the
+        look that finds a project without one and the commission being
+        given to a member.
+        """
+        async with self.placing:
+            return await self._ledger.project_session(lanlan_name, project, **card)
+
+    async def leader_notes(self, leader: Session, skip: str) -> tuple[str, list[tuple[str, float | None]]]:
+        """Return what a leader is told as a commission opens in it, and the commissions it is told the outcome of (with when each ended).
 
         Put together from what is on record, with no model asked: what
         came of the commissions it handed over since it was last told,
@@ -622,7 +632,7 @@ class Families:
                     )
                 )
             parts.insert(1 if first else 0, texts.LEADER_HANDED_WORK.format(items="\n".join(items)))
-        return "\n\n".join(parts), [item.id for item in handed]
+        return "\n\n".join(parts), [(item.id, item.ended_at) for item in handed]
 
     async def member_notes(self, member: Session) -> str:
         """Return what a member is told of where others of its project worked; empty when all work where it does.
