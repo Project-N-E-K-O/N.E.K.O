@@ -352,7 +352,9 @@ class SocialHubPresenceBrowserTests(unittest.TestCase):
         html = (ROOT / 'templates/social_hub.html').read_text(encoding='utf-8').replace('{{ static_asset_version }}', 'test')
         self.page.route('**/social_hub', lambda route: route.fulfill(body=html, content_type='text/html; charset=utf-8'))
         self.page.goto('http://neko.test/social_hub')
-        self.page.wait_for_function('window.nekoSocialHub && !nekoSocialHub._state.loading')
+        self.page.wait_for_function(
+            'window.nekoSocialHub && !nekoSocialHub._state.loading && window.i18n && typeof window.t === "function"'
+        )
         self.open_menu()
         self.assertEqual(self.page.locator(MENU).evaluate('e=>e.parentNode.id'), 'neko-social-hub-root')
         self.assert_options_hit_test()
