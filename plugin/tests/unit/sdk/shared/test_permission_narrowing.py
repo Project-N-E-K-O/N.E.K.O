@@ -1287,3 +1287,45 @@ def test_event_handlers_follow_component_changes_too(tmp_path):
     assert instance.exclude_router(router)
     # No plugin_entry call in between: the custom-event path rebuilds too.
     assert executor._resolve("custom_x", "ping", registered_only=True) is None
+
+
+def test_component_changes_in_on_startup_are_picked_up(tmp_path):
+    """Host order: maps built, then on_startup runs, then the executor is created."""
+    from plugin.core.entry_executor import EntryExecutor
+
+    class R(PluginRouter):
+        @on_event(event_type="custom_x", id="ping")
+        async def ping(self, **_): ...
+
+    class Later(PluginRouter):
+        @on_event(event_type="custom_y", id="pong")
+        async def pong(self, **_): ...
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        pass
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    router = R(name="r")
+    instance.include_router(router)
+    events: dict = {}
+
+    def refresh():
+        events.clear()
+        for eid, item in instance.collect_entries().items():
+            events.setdefault(item.meta.event_type, {})[eid] = item.handler
+
+    refresh()
+    maps_generation = instance._components_generation
+    # on_startup: one router out, another in.
+    assert instance.exclude_router(router)
+    later = Later(name="later")
+    instance.include_router(later)
+    executor = EntryExecutor(
+        plugin_id="p", context=ctx, instance=instance, entries={}, metadata={}, events=events,
+        default_timeout=5.0, refresh=refresh, should_persist=lambda method: False,
+        persist=lambda: None, logger=ctx.logger, maps_generation=maps_generation,
+    )
+    assert executor._resolve("custom_x", "ping", registered_only=True) is None
+    assert executor._resolve("custom_y", "pong", registered_only=True) == later.pong

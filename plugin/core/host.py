@@ -1394,6 +1394,9 @@ def _plugin_process_runner(
             ctx._entry_map = entry_map
 
         initial_map, initial_meta_map, initial_events = _initial_entry_tables(instance, logger)
+        # The components generation these maps reflect; the executor is built
+        # after on_startup, which may change components again.
+        initial_maps_generation = getattr(instance, "_components_generation", None)
         entry_map.update(initial_map)
         entry_meta_map.update(initial_meta_map)
         events_by_type.update(initial_events)
@@ -1613,6 +1616,7 @@ def _plugin_process_runner(
             plugin_id=plugin_id, context=ctx, instance=instance, entries=entry_map,
             metadata=entry_meta_map, events=events_by_type, default_timeout=PLUGIN_TRIGGER_TIMEOUT,
             refresh=_rebuild_entry_map, should_persist=_should_persist, persist=_save_plugin_state, logger=logger,
+            maps_generation=initial_maps_generation,
         )
 
         async def _execute_command(msg: dict):

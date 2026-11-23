@@ -45,6 +45,10 @@ _WARN_KEYS_MAX = 1024
 _ENVELOPE_KEYS = frozenset({"success", "code", "data", "message", "error", "time", "trace_id"})
 
 
+# Default of EntryExecutor(maps_generation=...): the maps reflect the instance's current generation.
+_CURRENT = object()
+
+
 class EntryExecutor:
     """Own entry preparation and execution, without knowing about sockets or replies."""
 
@@ -62,12 +66,16 @@ class EntryExecutor:
         should_persist: Callable[[Any], bool],
         persist: Callable[[str], Awaitable[None]],
         logger: Any,
+        maps_generation: Any = _CURRENT,
     ):
         self.plugin_id = plugin_id
         self._context, self._instance = context, instance
         self._entries, self._metadata, self._events = entries, metadata, events
-        # Components generation the maps reflect (see _resolve).
-        seen = getattr(instance, "_components_generation", None)
+        # Components generation the maps reflect (see _resolve). The host
+        # passes the one read when it built the maps: changes made between
+        # then and now (in on_startup) still trigger a rebuild. Left out, the
+        # maps are taken to be current.
+        seen = getattr(instance, "_components_generation", None) if maps_generation is _CURRENT else maps_generation
         self._seen_generation = seen if isinstance(seen, int) else None
         self._default_timeout = default_timeout
         self._refresh, self._should_persist, self._persist = (
