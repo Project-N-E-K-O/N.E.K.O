@@ -394,6 +394,7 @@ def _initial_entry_tables(instance: Any, logger: Any) -> tuple[Dict[str, Any], D
             scanned.append((name, member, event_meta))
         # Keyed by (event_type, id): a timer and an entry may share an id.
         kept: Dict[tuple[str, str], Any] | None = None
+        check_failed = False
         if callable(narrow):
             from plugin.sdk.shared.core.events import EventHandler as _SdkEventHandler
 
@@ -410,11 +411,21 @@ def _initial_entry_tables(instance: Any, logger: Any) -> tuple[Dict[str, Any], D
                         kept[(etype_key, eid_key)] = item
             except Exception as e:
                 kept = None
+                check_failed = True
                 logger.warning("Permission narrowing check failed during fallback scan: {}", e)
 
         for name, member, event_meta in scanned:
             if event_meta:
                 eid = getattr(event_meta, "id", name)
+                if check_failed and getattr(event_meta, "permissions", None) is not None:
+                    # The check could not run: a component that narrows is not
+                    # registered unverified. Components without narrowing are
+                    # mapped as before.
+                    logger.error(
+                        "Component not registered: {} {!r} narrows permissions and the narrowing check failed",
+                        getattr(event_meta, "event_type", "plugin_entry"), eid,
+                    )
+                    continue
                 if kept is not None:
                     key = (str(getattr(event_meta, "event_type", None) or "plugin_entry"), str(eid))
                     if key not in kept:

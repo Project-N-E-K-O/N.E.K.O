@@ -1329,3 +1329,30 @@ def test_component_changes_in_on_startup_are_picked_up(tmp_path):
     )
     assert executor._resolve("custom_x", "ping", registered_only=True) is None
     assert executor._resolve("custom_y", "pong", registered_only=True) == later.pong
+
+
+def test_loader_fallback_skips_narrowed_components_when_the_check_fails(tmp_path, monkeypatch):
+    from plugin.core.host import _initial_entry_tables
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="narrowed", permissions=[ENV])
+        async def narrowed(self, **_): ...
+
+        @plugin_entry(id="plain_entry")
+        async def plain_entry(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("broken")
+
+    # Both collect_entries() and the narrowing check fail.
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    monkeypatch.setattr(instance, "_apply_permission_narrowing", broken)
+    entry_map, meta_map, _events = _initial_entry_tables(instance, ctx.logger)
+    assert "narrowed" not in entry_map
+    # Components without narrowing are mapped as before.
+    assert "plain_entry" in entry_map and "plain_entry" in meta_map
+    assert any("'narrowed'" in message and "narrowing check failed" in message for message in ctx.logger.errors)
