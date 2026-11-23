@@ -58,6 +58,7 @@ from config import APP_NAME
 from utils.logging_layout import (
     NEKO_STORAGE_SELECTED_ROOT_ENV, documents_directory,
     get_selected_storage_root as _get_selected_storage_root_from_env,
+    is_symlink_or_reparse_point as _is_symlink_or_reparse_point,
     log_directory_candidates, log_filename,
 )
 
@@ -88,35 +89,18 @@ def mark_project_handler(handler):
     handler._neko_pid = os.getpid()
 
 
-def _is_symlink_or_reparse_point(path: str | os.PathLike[str]) -> bool:
-    """Return True if path is a symbolic link or Windows symlink/junction reparse point."""
-    if not isinstance(path, (str, bytes, os.PathLike)):
-        return False
-    try:
-        if os.path.islink(path):
-            return True
-        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-        if reparse_flag:
-            st = os.lstat(path)
-            if getattr(st, "st_file_attributes", 0) & reparse_flag:
-                reparse_tag = getattr(st, "st_reparse_tag", 0)
-                blocked_tags = {
-                    getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
-                    getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003),
-                }
-                if reparse_tag in blocked_tags:
-                    return True
-    except OSError:
-        return os.path.islink(path)
-    return False
-
-
 def _assert_safe_log_file_target(path: str | os.PathLike[str], allowed_root: Path) -> Path:
-    """Validate that a log target is not a symlink/reparse point and stays within allowed_root."""
+    """Validate that allowed_root is a real directory and target is a safe non-symlink path inside it."""
+    root = Path(allowed_root)
+    if _is_symlink_or_reparse_point(root):
+        raise OSError(f"Refusing symlink/reparse allowed log root: {root}")
+    st_root = os.lstat(os.fspath(root))
+    if not stat.S_ISDIR(st_root.st_mode):
+        raise OSError(f"Allowed log root is not a directory: {root}")
     target = Path(path)
     if _is_symlink_or_reparse_point(target):
         raise OSError(f"Refusing symlink/reparse log target: {target}")
-    root_real = os.path.normcase(os.path.realpath(str(allowed_root)))
+    root_real = os.path.normcase(os.path.realpath(str(root)))
     parent_real = os.path.normcase(os.path.realpath(str(target.parent)))
     if os.path.commonpath([root_real, parent_real]) != root_real:
         raise ValueError(f"Log directory escapes allowed root: {target.parent}")
@@ -496,6 +480,8 @@ class RobustLoggerConfig:
     def _ensure_log_directory(self):
         """Ensure the log directory exists"""
         try:
+            if _is_symlink_or_reparse_point(self.log_dir):
+                return
             RobustLoggerConfig._create_directory_incrementally(self.log_dir)
         except Exception as e:
             print(f"Error: Failed to create log directory: {e}", file=sys.stderr)
@@ -520,6 +506,8 @@ class RobustLoggerConfig:
 
         for scan_dir in dirs_to_scan:
             try:
+                if _is_symlink_or_reparse_point(scan_dir):
+                    continue
                 for log_file in scan_dir.glob(f"{self.app_name}_*.log*"):
                     try:
                         file_mtime = datetime.fromtimestamp(log_file.stat().st_mtime)

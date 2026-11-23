@@ -312,9 +312,13 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     assert 'readlink -f "$INSTALL_DIR/venv"' in setup_sh
     assert '"$INSTALL_DIR"/venv.legacy.*' in setup_sh
     assert 'mv "$OLD_LEGACY_VENV" "$INSTALL_DIR/venv"' in setup_sh
+    assert '|| echo "⚠ 旧 venv 恢复失败：$OLD_LEGACY_VENV"' in setup_sh
+    assert 'if [ "$staging_real" != "$live_target" ]; then' in setup_sh
+    assert 'if [ "$SOURCE_DIR" -ef "$INSTALL_DIR" ]; then' in setup_sh
     assert 'STAGING_VENV="$INSTALL_DIR/venvs/venv-' in setup_sh
     assert "trap cleanup_staging_venv EXIT" in setup_sh
     lock_pos = setup_sh.find('flock -x "$LOCK_FILE"')
+    same_dir_guard_pos = setup_sh.find('if [ "$SOURCE_DIR" -ef "$INSTALL_DIR" ]; then')
     chown_root_pos = setup_sh.find('chown root:root "$INSTALL_DIR" "$INSTALL_DIR/venvs"')
     chmod_root_pos = setup_sh.find('chmod 755 "$INSTALL_DIR" "$INSTALL_DIR/venvs"')
     create_staging_pos = setup_sh.find('python3 -m venv "$STAGING_VENV"')
@@ -323,9 +327,13 @@ def test_local_server_dependencies_are_hash_pinned_and_venv_is_root_owned(server
     chmod_staging_pos = setup_sh.find('chmod -R a+rX,go-w "$STAGING_VENV"')
     install_files_pos = setup_sh.find("install -o root -g root")
     switch_link_pos = setup_sh.find('mv -Tf "$TMP_LINK" "$INSTALL_DIR/venv"')
+    staging_clear_pos = setup_sh.find('STAGING_VENV=""')
+    chown_link_pos = setup_sh.find('chown -h root:root "$INSTALL_DIR/venv"')
     restart_pos = setup_sh.find('systemctl restart "$SERVICE_NAME"')
     cleanup_old_pos = setup_sh.find('rm -rf "$legacy_venv"')
-    assert 0 <= lock_pos < chown_root_pos < create_staging_pos < pip_staging_pos < chown_staging_pos < install_files_pos < switch_link_pos < restart_pos < cleanup_old_pos
+    assert 0 <= lock_pos < same_dir_guard_pos < create_staging_pos
+    assert same_dir_guard_pos < setup_sh.find('rm -f "$INSTALL_DIR/$f"')
+    assert 0 <= lock_pos < chown_root_pos < create_staging_pos < pip_staging_pos < chown_staging_pos < install_files_pos < switch_link_pos < staging_clear_pos < chown_link_pos < restart_pos < cleanup_old_pos
     assert 0 <= chmod_root_pos < create_staging_pos
     assert 0 <= pip_staging_pos < chmod_staging_pos < install_files_pos
 

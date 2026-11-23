@@ -8,6 +8,7 @@ Importing this module never installs handlers, creates directories or cleans log
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import tempfile
 import re
@@ -193,8 +194,31 @@ def log_directory_candidates(app_name=None, *, documents=None, application=None,
     )
 
 
+def is_symlink_or_reparse_point(path: str | os.PathLike[str]) -> bool:
+    """Return True if path is a symbolic link or Windows symlink/junction reparse point."""
+    try:
+        if os.path.islink(path):
+            return True
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if reparse_flag:
+            st = os.lstat(path)
+            if getattr(st, "st_file_attributes", 0) & reparse_flag:
+                reparse_tag = getattr(st, "st_reparse_tag", 0)
+                blocked_tags = {
+                    getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
+                    getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003),
+                }
+                if reparse_tag in blocked_tags:
+                    return True
+    except OSError:
+        return os.path.islink(path)
+    return False
+
+
 def _can_use(directory: Path) -> bool:
     """Check the existing ancestor, without creating or probing the directory."""
+    if is_symlink_or_reparse_point(directory):
+        return False
     ancestor = directory
     while not ancestor.exists() and ancestor != ancestor.parent:
         ancestor = ancestor.parent

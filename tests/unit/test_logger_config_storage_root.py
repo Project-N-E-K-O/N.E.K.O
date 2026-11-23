@@ -227,6 +227,9 @@ class _MissingSelfParentPath:
     def __str__(self) -> str:
         return "/".join(self._parts[: self._index + 1])
 
+    def __fspath__(self) -> str:
+        return str(self)
+
 
 @pytest.mark.unit
 def test_test_directory_writable_terminates_on_missing_self_parent_root():
@@ -362,8 +365,17 @@ def test_logging_layout_log_subdirectory_allows_none_and_plain_name():
 @pytest.mark.parametrize("delay", [False, True])
 def test_iter_handlers_rejects_symlinked_main_and_error_log_targets(tmp_path, monkeypatch, delay):
     """Final log file targets must not follow symlinks outside the log root (delay=False and delay=True)."""
+    from datetime import date as real_date
+    import utils.logging_layout as logging_layout
     from utils.logger_config import RobustLoggerConfig, _SafeRotatingFileHandler
     from utils.logging_layout import log_filename
+
+    class _FixedDate(real_date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 11, 23)
+
+    monkeypatch.setattr(logging_layout, "date", _FixedDate)
 
     selected_root = tmp_path / "storage"
     log_dir = selected_root / "logs"
@@ -373,16 +385,16 @@ def test_iter_handlers_rejects_symlinked_main_and_error_log_targets(tmp_path, mo
     outside_main.write_text("UNTOUCHED_MAIN", encoding="utf-8")
     outside_error.write_text("UNTOUCHED_ERROR", encoding="utf-8")
 
-    main_target = log_dir / log_filename("Main")
-    error_target = log_dir / log_filename("Main", kind="error")
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
+    config = RobustLoggerConfig(service_name="Main")
+    main_target = Path(config.log_file)
+    error_target = config.log_dir / log_filename("Main", kind="error")
     try:
         main_target.symlink_to(outside_main)
         error_target.symlink_to(outside_error)
     except OSError:
         pytest.skip("symlinks unavailable in this environment")
 
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
-    config = RobustLoggerConfig(service_name="Main")
     handlers = list(config.iter_handlers(delay=delay))
 
     rotating_handlers = [h for h in handlers if isinstance(h, _SafeRotatingFileHandler)]
@@ -644,6 +656,83 @@ def test_test_directory_writable_rejects_symlink_and_falls_back_to_next_candidat
         file_handlers = [h for h in handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) == 2
         assert all(Path(h.baseFilename).parent == expected_dir for h in file_handlers)
+    finally:
+        for handler in handlers:
+            handler.close()
+
+
+@pytest.mark.unit
+def test_is_symlink_or_reparse_point_fails_closed_on_non_path_type():
+    """Non-path objects must fail closed via TypeError instead of returning False."""
+    from utils import logger_config, logging_layout
+
+    for bad_path in (object(), 123):
+        with pytest.raises(TypeError):
+            logging_layout.is_symlink_or_reparse_point(bad_path)
+        with pytest.raises(TypeError):
+            logger_config._is_symlink_or_reparse_point(bad_path)
+
+
+@pytest.mark.unit
+def test_select_log_directory_cold_reader_skips_symlinked_primary_candidate(tmp_path):
+    """Cold reader _can_use / select_log_directory must skip symlinked and dangling logs/ candidates."""
+    from utils import logging_layout
+
+    selected_root = tmp_path / "selected-root"
+    selected_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlinked_logs = selected_root / "logs"
+    try:
+        symlinked_logs.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    dangling_root = tmp_path / "dangling-root"
+    dangling_root.mkdir()
+    dangling_logs = dangling_root / "logs"
+    dangling_logs.symlink_to(tmp_path / "nonexistent-target", target_is_directory=True)
+
+    fallback_docs = tmp_path / "documents"
+    fallback_docs.mkdir()
+    fallback_logs = fallback_docs / "N.E.K.O" / "logs"
+
+    assert logging_layout._can_use(symlinked_logs) is False
+    assert logging_layout._can_use(dangling_logs) is False
+    chosen = logging_layout.select_log_directory([symlinked_logs, dangling_logs, fallback_logs])
+    assert chosen == fallback_logs
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("delay", [False, True])
+def test_iter_handlers_delay_probe_creates_no_files_when_last_resort_fallback_is_symlink(
+    tmp_path, monkeypatch, delay
+):
+    """When all candidates fail and last-resort fallback logs/ is a symlink, delay/live probes must not create files."""
+    import logging
+    from utils import logger_config as backend
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    fallback_logs = app_dir / "logs"
+    try:
+        fallback_logs.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable in this environment")
+
+    monkeypatch.setattr(backend, "log_directory_candidates", lambda *args, **kwargs: iter([]))
+    monkeypatch.setattr(backend, "_get_writable_application_directory", lambda: app_dir)
+
+    config = backend.RobustLoggerConfig(service_name="Main", log_level=logging.INFO)
+    handlers = list(config.iter_handlers(delay=delay))
+    try:
+        file_handlers = [h for h in handlers if isinstance(h, logging.FileHandler)]
+        stream_handlers = [h for h in handlers if isinstance(h, logging.StreamHandler)]
+        assert file_handlers == []
+        assert len(stream_handlers) >= 1
+        assert list(outside.iterdir()) == []
     finally:
         for handler in handlers:
             handler.close()

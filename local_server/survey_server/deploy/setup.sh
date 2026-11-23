@@ -51,6 +51,11 @@ fi
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 echo "✓ Python $PYTHON_VERSION"
 
+if [ "$SOURCE_DIR" -ef "$INSTALL_DIR" ]; then
+    echo "❌ SOURCE_DIR 与 INSTALL_DIR 相同（$INSTALL_DIR），请在安装目录以外的源码目录运行 setup.sh"
+    exit 1
+fi
+
 # 检查配套文件是否存在
 for f in server.py models.py security.py storage.py requirements.txt; do
     if [ ! -f "$SOURCE_DIR/$f" ]; then
@@ -75,13 +80,18 @@ TMP_LINK=""
 OLD_LEGACY_VENV=""
 cleanup_staging_venv() {
     if [ -n "${TMP_LINK:-}" ] && [ -L "$TMP_LINK" ]; then
-        sudo rm -f "$TMP_LINK"
+        sudo rm -f "$TMP_LINK" || true
     fi
     if [ -n "${OLD_LEGACY_VENV:-}" ] && [ -e "$OLD_LEGACY_VENV" ] && [ ! -e "$INSTALL_DIR/venv" ] && [ ! -L "$INSTALL_DIR/venv" ]; then
-        sudo mv "$OLD_LEGACY_VENV" "$INSTALL_DIR/venv"
+        sudo mv "$OLD_LEGACY_VENV" "$INSTALL_DIR/venv" || echo "⚠ 旧 venv 恢复失败：$OLD_LEGACY_VENV"
     fi
     if [ -n "${STAGING_VENV:-}" ] && [ -d "$STAGING_VENV" ]; then
-        sudo rm -rf "$STAGING_VENV"
+        local live_target staging_real
+        live_target="$(readlink -f "$INSTALL_DIR/venv" 2>/dev/null || true)"
+        staging_real="$(readlink -f "$STAGING_VENV" 2>/dev/null || printf '%s' "$STAGING_VENV")"
+        if [ "$staging_real" != "$live_target" ]; then
+            sudo rm -rf "$STAGING_VENV" || true
+        fi
     fi
 }
 trap cleanup_staging_venv EXIT
@@ -106,11 +116,11 @@ fi
 TMP_LINK="$INSTALL_DIR/venv.link.$$"
 sudo ln -sfn "$STAGING_VENV" "$TMP_LINK"
 sudo mv -Tf "$TMP_LINK" "$INSTALL_DIR/venv"
-sudo chown -h root:root "$INSTALL_DIR/venv"
 ACTIVE_VENV="$STAGING_VENV"
 TMP_LINK=""
 STAGING_VENV=""
 OLD_LEGACY_VENV=""
+sudo chown -h root:root "$INSTALL_DIR/venv"
 
 PYTHON_BIN="$INSTALL_DIR/venv/bin/python3"
 

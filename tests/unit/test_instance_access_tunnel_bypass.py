@@ -11,7 +11,9 @@ import pytest
 from fastapi import FastAPI, Request as FastAPIRequest, WebSocket
 from fastapi.testclient import TestClient
 from starlette.requests import Request as StarletteRequest
+from starlette.websockets import WebSocketDisconnect
 
+import config
 from config import MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from utils.http.internal_client import (
     InternalServiceSigningError,
@@ -66,6 +68,18 @@ def _build_guarded_app() -> FastAPI:
     return app
 
 
+_DEPLOYMENT_MODE_ENV_VARS = (
+    "NEKO_BEHIND_PROXY",
+    "NEKO_ACTIVITY_TRACKER_REMOTE",
+    "ACTIVITY_TRACKER_REMOTE",
+)
+
+
+def _clear_deployment_mode_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for env_key in _DEPLOYMENT_MODE_ENV_VARS:
+        monkeypatch.delenv(env_key, raising=False)
+
+
 @pytest.mark.parametrize(
     ("env_name", "env_val"),
     [
@@ -79,6 +93,7 @@ def test_remote_or_proxy_mode_closes_headerless_loopback_tunnel_bypass(
     env_val: str,
 ):
     """R1111-01: headerless loopback requests must be rejected on private HTTP and WS routes in proxy/remote mode."""
+    _clear_deployment_mode_env(monkeypatch)
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     monkeypatch.setenv(env_name, env_val)
 
@@ -88,13 +103,12 @@ def test_remote_or_proxy_mode_closes_headerless_loopback_tunnel_bypass(
     assert client.get("/private").status_code == 401
     assert client.post("/private").status_code == 401
 
-    # Headerless WebSocket on loopback (including /health) must also be rejected.
-    with pytest.raises(Exception):
-        with client.websocket_connect("ws://127.0.0.1:48911/socket"):
-            pass
-    with pytest.raises(Exception):
-        with client.websocket_connect("ws://127.0.0.1:48911/health"):
-            pass
+    # Headerless WebSocket on loopback (including /health) must also be rejected with close code 4401.
+    for ws_path in ("/socket", "/health"):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(f"ws://127.0.0.1:48911{ws_path}"):
+                pass
+        assert exc_info.value.code == 4401
 
     # Local unauthenticated GET/HEAD /health remains allowed without forwarding/browser headers.
     assert client.get("/health").status_code == 200
@@ -117,6 +131,7 @@ async def test_remote_or_proxy_mode_closes_raw_asgi_websocket_health_without_upg
     env_val: str,
 ):
     """R1111-01: raw ASGI WebSocket scopes on /health without Upgrade header must close with 4401."""
+    _clear_deployment_mode_env(monkeypatch)
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     monkeypatch.setenv(env_name, env_val)
 
@@ -454,165 +469,337 @@ async def test_migrated_internal_loopback_callers_succeed_under_proxy_mode(
     assert recorded[-1] == ("POST", "/notify_config_changed", True)
 
 
-def test_ast_guard_all_internal_loopback_httpx_clients_sign_requests():
-    """Static guard: every httpx client in an internal-service caller path must attach internal-service hooks."""
-    repo_root = Path(__file__).resolve().parents[2]
-    scan_roots = (
-        "app",
-        "main_logic",
-        "main_routers",
-        "memory",
-        "nekopower",
-        "plugin/server",
-        "plugin/sdk",
-        "plugin/plugins",
-        "services",
-        "utils",
+_INTERNAL_HTTPX_SCAN_ROOTS = (
+    "app",
+    "main_logic",
+    "main_routers",
+    "memory",
+    "nekopower",
+    "plugin/server",
+    "plugin/sdk",
+    "plugin/plugins",
+    "services",
+    "utils",
+)
+_INTERNAL_HTTPX_MODULE_INDICATORS = (
+    "MAIN_SERVER_PORT",
+    "MEMORY_SERVER_PORT",
+    "TOOL_SERVER_PORT",
+    "USER_PLUGIN_SERVER_PORT",
+    "USER_PLUGIN_BASE",
+    "resolve_user_plugin_base",
+    "_main_server_port",
+    "_main_server_base_url",
+    "plugin_server_url",
+    "_plugin_server_base",
+    "_agent_base",
+    "_main_base",
+    "48911",
+    "48912",
+    "48915",
+    "48916",
+)
+_INTERNAL_HTTPX_FUNC_INDICATORS = _INTERNAL_HTTPX_MODULE_INDICATORS + ("127.0.0.1", "localhost")
+_INTERNAL_HTTPX_HOOK_HELPERS = (
+    "internal_service_event_hooks",
+    "merge_internal_service_event_hooks",
+    "attach_internal_service_proof",
+    "attach_internal_service_proof_sync",
+)
+
+# Explicitly documented non-internal / special-auth httpx clients that coexist with local port constants.
+_INTERNAL_HTTPX_EXEMPT_SITES = {
+    ("app/main_server/preload.py", "_sync_preload_modules._warmup_httpx"),
+    ("app/main_server/web_app.py", "proxy_user_plugin_market_bridge"),
+    ("main_routers/characters_router/voice_cloning.py", "voice_clone"),
+    ("main_routers/community_oauth.py", "_refresh_oauth_token"),
+    ("main_routers/community_oauth.py", "_exchange_oauth_code"),
+    ("main_routers/community_oauth.py", "_bootstrap_session"),
+    ("main_routers/community_oauth.py", "_oauth_guest_bind"),
+    ("main_routers/community_oauth.py", "_revoke_tokens_best_effort"),
+    ("plugin/server/routes/knowledge_market.py", "_fetch_version_descriptor"),
+    ("plugin/server/routes/knowledge_market.py", "_download"),
+    ("plugin/server/routes/knowledge_market.py", "_report_subscription_best_effort"),
+    ("plugin/server/routes/knowledge_market.py", "_report_unsubscribe_best_effort"),
+    ("plugin/server/routes/market_bridge.py", "_proxy_market_catalog"),
+    ("plugin/server/routes/market_bridge.py", "_proxy_market_authenticated"),
+    ("plugin/server/routes/market_bridge.py", "market_feedback_avatars"),
+    ("plugin/server/routes/market_bridge.py", "_measure_github_proxy_sources.probe"),
+    ("plugin/server/routes/market_bridge.py", "_market_catalog_client"),
+    ("plugin/server/routes/market_bridge.py", "_exchange_oauth_code"),
+    ("plugin/server/routes/market_bridge.py", "_refresh_oauth_token"),
+    ("plugin/server/routes/market_bridge.py", "_revoke_oauth_token_best_effort"),
+    ("plugin/server/routes/market_bridge.py", "_fetch_auth_userinfo"),
+    ("plugin/server/routes/market_bridge.py", "_probe_market_user"),
+    ("plugin/server/routes/market_bridge.py", "_report_market_install"),
+}
+
+
+def _iter_ast_calls(tree: ast.AST):
+    stack: list[ast.AST] = []
+
+    def _visit(node: ast.AST):
+        pushed = False
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack.append(node)
+            pushed = True
+        elif isinstance(node, ast.Call):
+            yield node, list(stack)
+        for child in ast.iter_child_nodes(node):
+            yield from _visit(child)
+        if pushed:
+            stack.pop()
+
+    return _visit(tree)
+
+
+def _collect_httpx_import_bindings(tree: ast.AST) -> tuple[set[str], set[str]]:
+    mod_aliases = {"httpx"}
+    client_aliases = {"AsyncClient", "Client"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "httpx":
+                    mod_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "httpx":
+            for alias in node.names:
+                if alias.name in ("AsyncClient", "Client"):
+                    client_aliases.add(alias.asname or alias.name)
+    return mod_aliases, client_aliases
+
+
+def _expr_uses_hook_helper(node: ast.AST | None, source: str, hook_helpers: tuple[str, ...]) -> bool:
+    if node is None:
+        return False
+    seg = ast.get_source_segment(source, node) or ""
+    return any(helper in seg for helper in hook_helpers)
+
+
+def _dict_expr_binds_event_hooks(node: ast.AST, source: str, hook_helpers: tuple[str, ...]) -> bool:
+    if not isinstance(node, ast.Dict):
+        return False
+    return any(
+        isinstance(k, ast.Constant)
+        and k.value == "event_hooks"
+        and _expr_uses_hook_helper(v, source, hook_helpers)
+        for k, v in zip(node.keys, node.values)
     )
-    module_indicators = (
-        "MAIN_SERVER_PORT",
-        "MEMORY_SERVER_PORT",
-        "TOOL_SERVER_PORT",
-        "USER_PLUGIN_SERVER_PORT",
-        "USER_PLUGIN_BASE",
-        "resolve_user_plugin_base",
-        "_main_server_port",
-        "_main_server_base_url",
-        "plugin_server_url",
-        "_plugin_server_base",
-        "_agent_base",
-        "_main_base",
-        "48911",
-        "48912",
-        "48915",
-        "48916",
-    )
-    func_indicators = module_indicators + ("127.0.0.1", "localhost")
-    hook_helpers = (
-        "internal_service_event_hooks",
-        "merge_internal_service_event_hooks",
-        "attach_internal_service_proof",
-        "attach_internal_service_proof_sync",
-    )
 
-    # Explicitly documented non-internal / special-auth httpx clients that coexist with local port constants.
-    exempt_sites = {
-        ("app/main_server/preload.py", "_sync_preload_modules._warmup_httpx"),
-        ("app/main_server/web_app.py", "proxy_user_plugin_market_bridge"),
-        ("main_routers/characters_router/voice_cloning.py", "voice_clone"),
-        ("main_routers/community_oauth.py", "_refresh_oauth_token"),
-        ("main_routers/community_oauth.py", "_exchange_oauth_code"),
-        ("main_routers/community_oauth.py", "_bootstrap_session"),
-        ("main_routers/community_oauth.py", "_oauth_guest_bind"),
-        ("main_routers/community_oauth.py", "_revoke_tokens_best_effort"),
-        ("plugin/server/routes/knowledge_market.py", "_fetch_version_descriptor"),
-        ("plugin/server/routes/knowledge_market.py", "_download"),
-        ("plugin/server/routes/knowledge_market.py", "_report_subscription_best_effort"),
-        ("plugin/server/routes/knowledge_market.py", "_report_unsubscribe_best_effort"),
-        ("plugin/server/routes/market_bridge.py", "_proxy_market_catalog"),
-        ("plugin/server/routes/market_bridge.py", "_proxy_market_authenticated"),
-        ("plugin/server/routes/market_bridge.py", "market_feedback_avatars"),
-        ("plugin/server/routes/market_bridge.py", "_measure_github_proxy_sources.probe"),
-        ("plugin/server/routes/market_bridge.py", "_market_catalog_client"),
-        ("plugin/server/routes/market_bridge.py", "_exchange_oauth_code"),
-        ("plugin/server/routes/market_bridge.py", "_refresh_oauth_token"),
-        ("plugin/server/routes/market_bridge.py", "_revoke_oauth_token_best_effort"),
-        ("plugin/server/routes/market_bridge.py", "_fetch_auth_userinfo"),
-        ("plugin/server/routes/market_bridge.py", "_probe_market_user"),
-        ("plugin/server/routes/market_bridge.py", "_report_market_install"),
-    }
 
-    def _iter_calls(tree: ast.AST):
-        stack: list[ast.AST] = []
+def _kw_splat_sets_event_hooks(
+    call: ast.Call,
+    func_node: ast.AST | None,
+    source: str,
+    hook_helpers: tuple[str, ...],
+) -> bool:
+    for kw in call.keywords:
+        if kw.arg is not None:
+            continue
+        if _dict_expr_binds_event_hooks(kw.value, source, hook_helpers):
+            return True
+        if isinstance(kw.value, ast.Name) and func_node is not None:
+            var_name = kw.value.id
+            for stmt in ast.walk(func_node):
+                if isinstance(stmt, ast.Assign):
+                    for tgt in stmt.targets:
+                        if (
+                            isinstance(tgt, ast.Subscript)
+                            and isinstance(tgt.value, ast.Name)
+                            and tgt.value.id == var_name
+                            and isinstance(tgt.slice, ast.Constant)
+                            and tgt.slice.value == "event_hooks"
+                            and _expr_uses_hook_helper(stmt.value, source, hook_helpers)
+                        ):
+                            return True
+                        if (
+                            isinstance(tgt, ast.Name)
+                            and tgt.id == var_name
+                            and _dict_expr_binds_event_hooks(stmt.value, source, hook_helpers)
+                        ):
+                            return True
+                elif (
+                    isinstance(stmt, ast.Call)
+                    and isinstance(stmt.func, ast.Attribute)
+                    and isinstance(stmt.func.value, ast.Name)
+                    and stmt.func.value.id == var_name
+                ):
+                    if (
+                        stmt.func.attr == "setdefault"
+                        and len(stmt.args) >= 2
+                        and isinstance(stmt.args[0], ast.Constant)
+                        and stmt.args[0].value == "event_hooks"
+                        and _expr_uses_hook_helper(stmt.args[1], source, hook_helpers)
+                    ):
+                        return True
+                    if stmt.func.attr == "update":
+                        if stmt.args and _dict_expr_binds_event_hooks(stmt.args[0], source, hook_helpers):
+                            return True
+                        if any(
+                            ukw.arg == "event_hooks" and _expr_uses_hook_helper(ukw.value, source, hook_helpers)
+                            for ukw in stmt.keywords
+                        ):
+                            return True
+    return False
 
-        def _visit(node: ast.AST):
-            pushed = False
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                stack.append(node)
-                pushed = True
-            elif isinstance(node, ast.Call):
-                yield node, list(stack)
-            for child in ast.iter_child_nodes(node):
-                yield from _visit(child)
-            if pushed:
-                stack.pop()
 
-        return _visit(tree)
+def _scan_source_for_internal_httpx_clients(
+    source: str,
+    relpath: str,
+    *,
+    module_indicators: tuple[str, ...] = _INTERNAL_HTTPX_MODULE_INDICATORS,
+    func_indicators: tuple[str, ...] = _INTERNAL_HTTPX_FUNC_INDICATORS,
+    hook_helpers: tuple[str, ...] = _INTERNAL_HTTPX_HOOK_HELPERS,
+    exempt_sites: set[tuple[str, str]] = _INTERNAL_HTTPX_EXEMPT_SITES,
+) -> tuple[int, set[tuple[str, str]], list[str]]:
+    if "httpx" not in source and "AsyncClient" not in source and "Client(" not in source:
+        return 0, set(), []
+
+    tree = ast.parse(source, filename=relpath)
+    httpx_mod_aliases, httpx_client_aliases = _collect_httpx_import_bindings(tree)
+    mod_has_indicator = any(ind in source for ind in module_indicators)
 
     signed_count = 0
     seen_exemptions: set[tuple[str, str]] = set()
     unhooked: list[str] = []
 
-    for root_rel in scan_roots:
+    for call, owners in _iter_ast_calls(tree):
+        is_httpx_client = False
+        if (
+            isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in httpx_mod_aliases
+            and call.func.attr in ("AsyncClient", "Client")
+        ):
+            is_httpx_client = True
+        elif isinstance(call.func, ast.Name) and call.func.id in httpx_client_aliases:
+            is_httpx_client = True
+        if not is_httpx_client:
+            continue
+
+        qualname = ".".join(getattr(o, "name", "") for o in owners) or "<module>"
+        func_node = next(
+            (o for o in reversed(owners) if isinstance(o, (ast.FunctionDef, ast.AsyncFunctionDef))),
+            None,
+        )
+        func_source = (ast.get_source_segment(source, func_node) or "") if func_node else ""
+        if not mod_has_indicator and not any(ind in func_source for ind in func_indicators):
+            continue
+
+        has_hook = any(
+            kw.arg == "event_hooks" and _expr_uses_hook_helper(kw.value, source, hook_helpers)
+            for kw in call.keywords
+        )
+        if not has_hook:
+            has_hook = _kw_splat_sets_event_hooks(call, func_node, source, hook_helpers)
+
+        site_key = (relpath, qualname)
+        if has_hook:
+            signed_count += 1
+        elif site_key in exempt_sites:
+            seen_exemptions.add(site_key)
+        else:
+            unhooked.append(f"{relpath}:{call.lineno} ({qualname})")
+
+    return signed_count, seen_exemptions, unhooked
+
+
+def test_ast_guard_all_internal_loopback_httpx_clients_sign_requests():
+    """Static guard: every httpx client in an internal-service caller path must attach internal-service hooks."""
+    repo_root = Path(__file__).resolve().parents[2]
+    signed_count = 0
+    seen_exemptions: set[tuple[str, str]] = set()
+    unhooked: list[str] = []
+
+    for root_rel in _INTERNAL_HTTPX_SCAN_ROOTS:
         root_dir = repo_root / root_rel
         for path in sorted(root_dir.rglob("*.py")):
             if any(part in ("tests", "__pycache__") for part in path.parts) or path.name.startswith("test_"):
                 continue
             source = path.read_text(encoding="utf-8")
-            if "AsyncClient" not in source and "Client(" not in source:
-                continue
-            tree = ast.parse(source, filename=str(path))
-            mod_has_indicator = any(ind in source for ind in module_indicators)
             relpath = path.relative_to(repo_root).as_posix()
-
-            for call, owners in _iter_calls(tree):
-                is_httpx_client = False
-                if (
-                    isinstance(call.func, ast.Attribute)
-                    and isinstance(call.func.value, ast.Name)
-                    and call.func.value.id == "httpx"
-                    and call.func.attr in ("AsyncClient", "Client")
-                ):
-                    is_httpx_client = True
-                elif isinstance(call.func, ast.Name) and call.func.id in ("AsyncClient", "Client"):
-                    is_httpx_client = True
-                if not is_httpx_client:
-                    continue
-
-                qualname = ".".join(getattr(o, "name", "") for o in owners) or "<module>"
-                func_node = next(
-                    (o for o in reversed(owners) if isinstance(o, (ast.FunctionDef, ast.AsyncFunctionDef))),
-                    None,
-                )
-                func_source = (ast.get_source_segment(source, func_node) or "") if func_node else ""
-                if not mod_has_indicator and not any(ind in func_source for ind in func_indicators):
-                    continue
-
-                has_hook = False
-                has_kw_splat = any(kw.arg is None for kw in call.keywords)
-                for kw in call.keywords:
-                    if kw.arg == "event_hooks":
-                        seg = ast.get_source_segment(source, kw.value) or ""
-                        if any(helper in seg for helper in hook_helpers):
-                            has_hook = True
-                            break
-                if not has_hook and has_kw_splat and any(helper in func_source for helper in hook_helpers):
-                    has_hook = True
-
-                site_key = (relpath, qualname)
-                if has_hook:
-                    signed_count += 1
-                elif site_key in exempt_sites:
-                    seen_exemptions.add(site_key)
-                else:
-                    unhooked.append(f"{relpath}:{call.lineno} ({qualname})")
+            site_signed, site_exemptions, site_unhooked = _scan_source_for_internal_httpx_clients(
+                source,
+                relpath,
+            )
+            signed_count += site_signed
+            seen_exemptions |= site_exemptions
+            unhooked.extend(site_unhooked)
 
     assert signed_count >= 15, f"expected >= 15 signed internal httpx sites, found {signed_count}"
     assert not unhooked, f"unsigned httpx client(s) in internal-service paths: {unhooked}"
-    stale_exemptions = exempt_sites - seen_exemptions
+    stale_exemptions = _INTERNAL_HTTPX_EXEMPT_SITES - seen_exemptions
     assert not stale_exemptions, f"stale exemption(s) in exempt_sites: {sorted(stale_exemptions)}"
+
+
+def test_internal_httpx_ast_guard_catches_aliased_and_discarded_hook_calls():
+    """AST guard must flag aliased httpx constructors without hooks and discarded-hook **kwargs splats."""
+    aliased_client_src = (
+        "from httpx import AsyncClient as AsyncHTTPClient\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "async def call():\n"
+        "    async with AsyncHTTPClient(timeout=5) as c:\n"
+        "        return await c.get(f'http://127.0.0.1:{MAIN_SERVER_PORT}/x')\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(aliased_client_src, "synthetic/alias_client.py")
+    assert signed == 0
+    assert unhooked == ["synthetic/alias_client.py:4 (call)"]
+
+    aliased_mod_src = (
+        "import httpx as hx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "async def call():\n"
+        "    async with hx.AsyncClient(timeout=5) as c:\n"
+        "        return await c.get(f'http://127.0.0.1:{MAIN_SERVER_PORT}/x')\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(aliased_mod_src, "synthetic/alias_mod.py")
+    assert signed == 0
+    assert unhooked == ["synthetic/alias_mod.py:4 (call)"]
+
+    discarded_splat_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    _ = internal_service_event_hooks()\n"
+        "    return httpx.AsyncClient(**kwargs)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(discarded_splat_src, "synthetic/discarded_splat.py")
+    assert signed == 0
+    assert unhooked == ["synthetic/discarded_splat.py:6 (make)"]
+
+    bound_splat_src = (
+        "import httpx\n"
+        "from config import MAIN_SERVER_PORT\n"
+        "from utils.internal_http_client import merge_internal_service_event_hooks\n"
+        "def make(**kwargs):\n"
+        "    merged = dict(kwargs)\n"
+        "    merged['event_hooks'] = merge_internal_service_event_hooks(merged.get('event_hooks'))\n"
+        "    return httpx.AsyncClient(**merged)\n"
+    )
+    signed, _, unhooked = _scan_source_for_internal_httpx_clients(bound_splat_src, "synthetic/bound_splat.py")
+    assert signed == 1
+    assert unhooked == []
 
 
 async def test_untrusted_loopback_ports_do_not_receive_proof_while_dynamic_plugin_port_is_trusted(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Untrusted arbitrary local ports must never receive X-Neko-Internal-Service; dynamic plugin port is honored."""
+    _clear_deployment_mode_env(monkeypatch)
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
     monkeypatch.delenv("NEKO_USER_PLUGIN_SERVER_PORT", raising=False)
+    monkeypatch.setattr(config, "MAIN_SERVER_PORT", 48911, raising=False)
+    monkeypatch.setattr(config, "MEMORY_SERVER_PORT", 48912, raising=False)
+    monkeypatch.setattr(config, "TOOL_SERVER_PORT", 48915, raising=False)
+    monkeypatch.setattr(config, "USER_PLUGIN_SERVER_PORT", 48916, raising=False)
+    monkeypatch.setattr(config, "USER_PLUGIN_BASE", "http://127.0.0.1:48916", raising=False)
 
     arbitrary_req = httpx.Request("POST", "http://127.0.0.1:59999/arbitrary-callback")
     assert _should_attach_internal_service_proof(arbitrary_req) is False
+
+    dynamic_req = httpx.Request("POST", "http://127.0.0.1:59998/api/llm-tools/callback/p/t")
+    assert _should_attach_internal_service_proof(dynamic_req) is False
 
     seen_headers: list[dict[str, str]] = []
     mock_transport = httpx.MockTransport(
@@ -628,7 +815,6 @@ async def test_untrusted_loopback_ports_do_not_receive_proof_while_dynamic_plugi
 
     # When launcher publishes a dynamically bound plugin port, that port becomes trusted.
     monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "59998")
-    dynamic_req = httpx.Request("POST", "http://127.0.0.1:59998/api/llm-tools/callback/p/t")
     assert _should_attach_internal_service_proof(dynamic_req) is True
     assert _should_attach_internal_service_proof(httpx.Request("POST", "http://127.0.0.1:59999/other")) is False
 
@@ -714,6 +900,7 @@ async def test_internal_service_proof_fails_closed_when_asgi_server_port_unavail
     bad_server,
 ):
     """_request_signing_port must fail closed when ASGI scope['server'] lacks an int port, never falling back to Host header."""
+    _clear_deployment_mode_env(monkeypatch)
     monkeypatch.setenv("NEKO_INSTANCE_ACCESS_KEY", KEY)
     monkeypatch.setenv("NEKO_BEHIND_PROXY", "true")
 
