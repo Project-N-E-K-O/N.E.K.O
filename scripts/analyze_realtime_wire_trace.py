@@ -376,6 +376,7 @@ def analyze_h_b(segment):
             if (
                 data.get("decision") == "dispatch"
                 and data.get("phase") == "response_create_sent"
+                and event_id is not None
                 and data.get("create_event_id") == event_id
                 and abs(record.t - create.t) <= 2.0
             ):
@@ -387,12 +388,15 @@ def analyze_h_b(segment):
             for record in arbiter:
                 if record.t < create.t:
                     continue
+                if record.t - create.t > DONE_WINDOW_S:
+                    break
                 data = record.data
                 decision = data.get("decision")
                 if (
                     decision == "dispatch"
                     and data.get("phase") in ("completed", "failed")
-                    and (source is None or data.get("source") == source)
+                    and source is not None
+                    and data.get("source") == source
                 ):
                     end = record.t
                     end_reason = "dispatch_" + str(data.get("phase"))
@@ -402,13 +406,17 @@ def analyze_h_b(segment):
                     end_reason = "connection_" + str(data.get("outcome"))
                     break
         if end is None:
-            later_dones = [
-                record
-                for record in segment.records
-                if record.is_recv
-                and record.type == "response.done"
-                and record.t > create.t
-            ]
+            later_dones = (
+                [
+                    record
+                    for record in segment.records
+                    if record.is_recv
+                    and record.type == "response.done"
+                    and record.t > create.t
+                ]
+                if not has_arbiter
+                else []
+            )
             if later_dones and later_dones[0].t - create.t <= DONE_WINDOW_S:
                 end = later_dones[0].t
                 end_reason = "first_response_done (no arbiter data)"
@@ -434,7 +442,7 @@ def analyze_h_b(segment):
                 continue
             data = record.data
             decision = data.get("decision")
-            ours = source is None or data.get("owner_source") == source
+            ours = source is not None and data.get("owner_source") == source
             if decision == "terminal":
                 outcome = str(data.get("outcome"))
                 terminal_outcomes[outcome] = terminal_outcomes.get(outcome, 0) + 1
@@ -447,7 +455,7 @@ def analyze_h_b(segment):
                 ):
                     resolved_by = record
             elif decision == "timeout" and (
-                source is None or data.get("source") == source
+                source is not None and data.get("source") == source
             ):
                 kind = str(data.get("kind"))
                 timeouts.append(kind)

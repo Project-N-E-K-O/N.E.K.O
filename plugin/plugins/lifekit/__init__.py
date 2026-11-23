@@ -84,6 +84,20 @@ _SECRET_CONFIG_KEYS = frozenset({"amap_key", "baidu_map_key"})
 _PUBLIC_CONFIG_KEYS = frozenset(_EDITABLE_CONFIG_SCHEMA) - _SECRET_CONFIG_KEYS
 
 
+def _parse_bool(value: Any, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"{field_name} must be a boolean")
+
+
 def _public_config(config: Dict[str, Any]) -> Dict[str, Any]:
     public = {
         key: value
@@ -513,9 +527,9 @@ class LifeKitPlugin(NekoPluginBase):
                     return Err(SdkError(self._i18n.t("config.cache_nonnegative")))
                 updates["cache_ttl_seconds"] = ttl
             if "force_locale" in updates:
-                updates["force_locale"] = bool(updates["force_locale"])
+                updates["force_locale"] = _parse_bool(updates["force_locale"], field_name="force_locale")
             if "enable_geoip" in updates:
-                updates["enable_geoip"] = bool(updates["enable_geoip"])
+                updates["enable_geoip"] = _parse_bool(updates["enable_geoip"], field_name="enable_geoip")
             if "locale" in updates:
                 locale = str(updates["locale"])
                 if locale not in {"", *SUPPORTED_LOCALES}:

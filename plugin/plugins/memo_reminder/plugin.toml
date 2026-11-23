@@ -28,3 +28,7 @@ enabled = true
 [memo]
 max_reminders = 200
 timezone = "Asia/Shanghai"
+
+# Permissions this plugin needs from the user (see docs/plugins/plugin-toml.md).
+[permissions.require."plugin_sdk.main_agent.messages:push"]
+reason = { zh-CN = "到了设定的时间，在对话里提醒你。", zh-TW = "到了設定的時間，在對話裡提醒你。", en = "Remind you in the chat at the time you set.", ja = "設定した時刻に会話の中でお知らせします。", ko = "설정한 시간에 대화에서 알려 줍니다.", ru = "Напоминать вам в чате в заданное время.", es = "Avisarte en el chat a la hora que hayas fijado.", pt = "Lembrar você no chat no horário definido." }

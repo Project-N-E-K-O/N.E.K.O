@@ -8851,7 +8851,7 @@
   },
   "schema_version": 5,
   "sdk_version": "0.1.0",
-  "source_bytes": 702167,
+  "source_bytes": 713409,
   "source_files": [
     ".github/workflows/release.yml",
     ".github/workflows/verify.yml",
@@ -8929,5 +8929,5 @@
     "tests/test_smoke.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "86c1f84a72735d821eebafd06ce0abca2248b951e981ffa97430121f505c28a9"
+  "source_sha256": "e8bb3752a26ef9f410bc0268491202470256dc0bbfacc7b4f982020368feec3f"
 }
