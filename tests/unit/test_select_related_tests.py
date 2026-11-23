@@ -66,7 +66,11 @@ FILES = {
     "app/dynamic.py": "VALUE = 5\n",
     "app/server_mod.py": "VALUE = 6\n",
     "app/state_reset.py": "from app.reset_impl import do_reset\n\ndef reset():\n    do_reset()\n",
-    "app/reset_impl.py": "def do_reset():\n    pass\n",
+    "app/reset_impl.py": "from app.pkgy.thing import THING\n\ndef do_reset():\n    return THING\n",
+    "app/pkgy/__init__.py": "",
+    "app/pkgy/thing.py": "THING = 1\n",
+    "app/pkgx/core.py": "VALUE = 13\n",
+    "tests/fixtures/policy.json": "{}\n",
     "app/base_service.py": "VALUE = 7\n",
     "app/sub_service.py": "VALUE = 8\n",
     "app/engine.py": "VALUE = 9\n",
@@ -135,10 +139,12 @@ FILES = {
     # Names a doc and a workflow: the docs rule must win over the literal rule.
     "tests/unit/test_docs_reader.py": (
         "def test_docs():\n    assert 'docs/guide.md' and 'README.md' and 'workflows/docs.yml'\n"
+        "# see tests/conftest.py and core.py; the plugin docs live elsewhere\n"
     ),
     "tests/unit/sub/__init__.py": "",
     "tests/unit/sub/conftest.py": (
-        "import pytest\nimport tests.unit.pkgb\nfrom tests.unit.sub.sub_helper import fixture_value\n\n"
+        "import pytest\nimport tests.unit.pkgb\nfrom tests.unit.sub.sub_helper import fixture_value\n"
+        "from tests.unit.shared_helper import shared\n\nPOLICY = 'tests/fixtures/policy.json'\n\n"
         "@pytest.fixture(autouse=True)\ndef _sub_reset():\n    import app.sub_state\n    import app.gone_backend\n\n"
         "@pytest.fixture\ndef boot_dep():\n    import app.sub_backend\n    return app.sub_backend\n\n"
         "@pytest.fixture\ndef sub_service():\n    from app import sub_service\n    return sub_service\n\n"
@@ -153,7 +159,11 @@ FILES = {
     "tests/unit/test_uses_fixture_indirectly.py": (
         "import pytest\n\n@pytest.mark.usefixtures('wrapped_server')\ndef test_wrapped():\n    pass\n"
     ),
-    "tests/unit/sub/sub_helper.py": "def fixture_value():\n    return 1\n",
+    "tests/unit/sub/sub_helper.py": (
+        "SKIP = ['test_unrelated.py']\n\ndef fixture_value():\n    return 1\n"
+    ),
+    "tests/unit/shared_helper.py": "def shared():\n    return 1\n",
+    "tests/unit/pkgb/conftest.py": "from tests.unit.shared_helper import shared\n",
     "tests/unit/sub/test_a.py": "def test_a():\n    assert True\n",
     "tests/unit/sub/test_b.py": "class TestB:\n    def test_one(self):\n        pass\n\n    def test_two(self):\n        pass\n",
 }
@@ -339,6 +349,38 @@ def test_inherited_autouse_fixture_resolves_its_requests_in_the_child_directory(
 def test_deleted_module_imported_by_an_autouse_fixture_still_counts(repo):
     index = sel.build_index(repo, extra_modules={"app.gone_backend": "app/gone_backend.py"})
     assert _selected(index, "app/gone_backend.py") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
+
+
+def test_package_init_run_by_what_a_root_autouse_import_imports_selects_everything(index):
+    # The root autouse fixture imports app.state_reset -> app.reset_impl -> app.pkgy.thing,
+    # which runs app/pkgy/__init__.py on the way.
+    assert sel.select(index, ["app/pkgy/__init__.py"]).mode == "full"
+
+
+def test_helper_shared_by_two_conftests_scopes_both_directories(index):
+    assert _selected(index, "tests/unit/shared_helper.py") == [
+        "tests/unit/pkgb/test_c.py",
+        "tests/unit/sub/test_a.py",
+        "tests/unit/sub/test_b.py",
+    ]
+
+
+def test_file_a_conftest_names_selects_that_conftests_directory(index):
+    # sub/conftest.py names tests/fixtures/policy.json; no test there mentions it.
+    assert _selected(index, "tests/fixtures/policy.json") == ["tests/unit/sub/test_a.py", "tests/unit/sub/test_b.py"]
+
+
+def test_test_file_named_by_a_conftest_helper_only_selects_itself(index):
+    # sub_helper.py lists test_unrelated.py by name (a skip list); its conftest's tests do not depend on it.
+    assert _selected(index, "tests/unit/test_unrelated.py") == ["tests/unit/test_unrelated.py"]
+
+
+def test_shared_file_names_need_their_directories(index):
+    # app/core.py and app/pkgx/core.py share a name, so a bare "core.py" names neither.
+    assert "tests/unit/test_docs_reader.py" not in _selected(index, "app/core.py")
+    # "tests/conftest.py" in a comment is not plugin/tests/conftest.py.
+    assert sel._literal_for("plugin/tests/conftest.py") == ("plugin", "tests", "conftest.py")
+    assert _selected(index, "plugin/tests/conftest.py") == []
 
 
 def test_shard_marked_files_are_left_to_the_shards(index):

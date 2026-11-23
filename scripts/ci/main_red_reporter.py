@@ -343,7 +343,9 @@ def rerun_state(verdicts: list[str], failed_job_count: int) -> str | None:
 
 def collect_failure(gh: GitHub, run: dict, runs: list[dict]) -> FailureReport:
     repo = gh.repo
-    jobs = gh.get(f"/repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest&per_page=100")["jobs"]
+    # The jobs of the attempt this report is about, not of a re-run started since.
+    attempt = run.get("run_attempt", 1)
+    jobs = gh.get(f"/repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs?per_page=100")["jobs"]
     failed_jobs = [j for j in jobs if j.get("conclusion") in ("failure", "timed_out")]
     tests: list[str] = []
     verdicts: list[str] = []

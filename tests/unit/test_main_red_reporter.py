@@ -380,6 +380,22 @@ def test_a_re_run_attempt_is_reported_again():
     assert mr.run_marker(current) in comment
 
 
+def test_jobs_come_from_the_reported_attempt():
+    current = {**_failure(), "run_attempt": 2}
+    gh = FakeGitHub(current, _history(current))
+    requested = []
+    original = gh.get
+
+    def recording_get(path):
+        requested.append(path)
+        return original(path)
+
+    gh.get = recording_get
+    mr.collect_failure(gh, current, _history(current))
+    assert any(f"/actions/runs/5/attempts/2/jobs" in p for p in requested)
+    assert not any("filter=latest" in p for p in requested)
+
+
 def test_labels_are_settled_before_the_comment_that_marks_the_run_done():
     current = _failure()
     issue = {"number": 8, "body": mr.issue_marker("Unit Tests"), "labels": [{"name": "flaky"}], "html_url": "u"}

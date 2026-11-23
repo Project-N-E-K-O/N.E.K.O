@@ -78,6 +78,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -104,6 +105,7 @@ ROOT_CONFTESTS = ("tests/conftest.py", "tests/unit/conftest.py")
 SHARD_SHARE = 0.30
 MAX_SHARDS = 4
 MIN_LITERAL_LEN = 6
+COMMON_NAME_COUNT = 2  # a Python file name shared by this many files needs its directories too
 MIN_FILE_SECONDS = 0.01  # a fully skipped file still costs its import
 # Base names too generic to identify a file on their own; they are matched
 # together with their parent directory ("memory/__init__.py").
@@ -448,7 +450,7 @@ def build_index(root: Path, extra_modules: dict[str, str] | None = None) -> Repo
         used = _used_fixture_names(tree)
         deps[mod] |= _expand(visible, used, "deps") - {mod}
         weak_deps[mod] |= _expand(visible, used, "weak") - deps[mod] - {mod}
-    conftest_autouse = _autouse_closures(conftests, known, deps)
+    conftest_autouse = _autouse_closures(conftests, known, deps, weak_deps)
 
     test_tree_text = {rel: text for rel, text in texts.items() if rel.startswith("tests/")}
     tests: dict[str, TestFile] = {}
@@ -602,7 +604,10 @@ def _expand(visible: dict[str, list[_Fixture]], names: set[str], *attrs: str) ->
 
 
 def _autouse_closures(
-    conftests: dict[str, _Conftest], known: dict[str, str], deps: dict[str, set[str]]
+    conftests: dict[str, _Conftest],
+    known: dict[str, str],
+    deps: dict[str, set[str]],
+    weak_deps: dict[str, set[str]],
 ) -> dict[str, set[str]]:
     """Per conftest: application modules that run for every test in its directory.
 
@@ -632,9 +637,12 @@ def _autouse_closures(
                 if dep not in seen and outside_tests(dep):
                     seen.add(dep)
                     stack.append(dep)
-        # Package __init__ files on the way to those imports run too, without
-        # making everything else they import count.
-        seen |= {m for m in conftest.import_weak | _expand(visible, autouse, "import_weak") if outside_tests(m)}
+        # Package __init__ files on the way to any of those imports run too,
+        # without making everything else they import count.
+        executed = conftest.import_weak | _expand(visible, autouse, "import_weak")
+        for mod in seen:
+            executed |= weak_deps.get(mod, set())
+        seen |= {m for m in executed if outside_tests(m)}
         out[rel] = seen
     return out
 
@@ -693,15 +701,21 @@ def _test_tree_closure(index: RepoIndex, rel: str) -> set[str]:
     return {paths[m] for m in seen if m in paths}
 
 
-def _literal_for(rel: str) -> tuple[str, ...] | None:
-    """File-name tokens that must all appear in a test for it to count as naming ``rel``."""
+def _literal_for(rel: str, common: frozenset[str] = frozenset()) -> tuple[str, ...] | None:
+    """How a test names ``rel``: its file name, or its last directories and file name together.
+
+    ``common`` holds file names several Python files share (``core.py``);
+    like the generic names, those only count together with up to two of
+    their directories, so ``plugin/tests/conftest.py`` is not mistaken for
+    ``tests/conftest.py``.
+    """
     path = PurePosixPath(rel)
     if len(path.name) < MIN_LITERAL_LEN:
         return None
-    if path.name in GENERIC_BASENAMES and path.parent.name:
+    if (path.name in GENERIC_BASENAMES or path.name in common) and path.parent.name:
         # "templates/index.html" is often spelled ROOT / "templates" / "index.html",
-        # so the directory and the name are matched as separate tokens.
-        return (path.parent.name, path.name)
+        # so the parts are matched as separate tokens next to each other.
+        return (*path.parent.parts[-2:], path.name)
     return (path.name,)
 
 
@@ -710,11 +724,20 @@ def _tokens(text: str) -> frozenset[str]:
 
 
 def _mentioning(index: RepoIndex, literal: tuple[str, ...]) -> set[str]:
-    """Test-tree files naming every token of ``literal`` as a whole word (not inside a longer name)."""
+    """Test-tree files naming ``literal``: a whole file name, or a directory right before a file name.
+
+    The pair has to be adjacent ("config/__init__.py", ``"config" / "__init__.py"``,
+    ``"config", "__init__.py"``): two common words anywhere in a big file name nothing.
+    """
     if index.test_tree_tokens is None:
         index.test_tree_tokens = {p: _tokens(text) for p, text in index.test_tree_text.items()}
     wanted = set(literal)
-    return {p for p, tokens in index.test_tree_tokens.items() if wanted <= tokens}
+    found = {p for p, tokens in index.test_tree_tokens.items() if wanted <= tokens}
+    if len(literal) == 1:
+        return found
+    separator = r"['\"]?\s*[/\\,]\s*['\"]?"
+    pattern = re.compile(r"(?<![\w.-])" + separator.join(re.escape(part) for part in literal) + r"(?![\w-])")
+    return {p for p in found if pattern.search(index.test_tree_text[p])}
 
 
 def _ignored(rel: str) -> bool:
@@ -730,17 +753,16 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
             return Selection("full", f"global file changed: {rel}", sorted(candidates), changed)
 
     # Test-tree helpers loaded by conftest files behave like the conftest itself.
-    conftest_scope: dict[str, str] = {}  # helper path -> directory it scopes ("" = everything)
+    # A helper shared by several conftests scopes every one of their directories.
+    conftest_scope: dict[str, set[str]] = {}  # path -> directories it scopes ("" = everything)
     for rel in index.test_tree_text:
         if PurePosixPath(rel).name != "conftest.py":
             continue
         scope = "" if rel in ROOT_CONFTESTS else rel.rsplit("/", 1)[0] + "/"
         for helper in _test_tree_closure(index, rel):
-            previous = conftest_scope.get(helper)
-            if previous is None or len(scope) < len(previous):
-                conftest_scope[helper] = scope
+            conftest_scope.setdefault(helper, set()).add(scope)
     for rel in changed:
-        if conftest_scope.get(rel) == "" or rel in ROOT_CONFTESTS:
+        if "" in conftest_scope.get(rel, ()) or rel in ROOT_CONFTESTS:
             return Selection("full", f"file loaded by a root conftest changed: {rel}", sorted(candidates), changed)
 
     chosen: set[str] = set()
@@ -760,10 +782,13 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
         chosen |= {p for p in candidates if p.startswith(scope)}
     seeds: set[str] = set()
     literal_seeds: set[str] = set()
+    scoped_literal_seeds: set[str] = set()
+    name_counts = Counter(PurePosixPath(p).name for p in index.modules.values())
+    common_names = frozenset(n for n, count in name_counts.items() if count >= COMMON_NAME_COUNT)
     for rel in changed:
         if _ignored(rel):
             continue
-        scopes = {conftest_scope.get(rel) or ""}
+        scopes = set(conftest_scope.get(rel, ()))
         if PurePosixPath(rel).name in ("conftest.py", "__init__.py") and rel.startswith(TEST_ROOT + "/"):
             # A test package's __init__ runs before every test module in it, like a conftest.
             scopes.add(rel.rsplit("/", 1)[0] + "/")
@@ -772,9 +797,23 @@ def select(index: RepoIndex, changed: list[str]) -> Selection:
         mod = module_name(rel)
         if mod is not None:
             seeds.add(mod)
-        literal = _literal_for(rel)
+        literal = _literal_for(rel, common_names)
         if literal:
-            literal_seeds |= _mentioning(index, literal)
+            hits = _mentioning(index, literal)
+            literal_seeds |= hits
+            if not is_test_module(rel):
+                # A test file only matters to itself: a helper listing it by name
+                # (an exclusion list, say) does not make its conftest's tests depend on it.
+                scoped_literal_seeds |= hits
+
+    # A file a conftest (or a helper it loads) reads by name matters to every
+    # test in that conftest's directory, not only to the tests importing it.
+    for hit in sorted(scoped_literal_seeds):
+        scopes = conftest_scope.get(hit, set())  # a conftest is part of its own closure
+        if "" in scopes:
+            return Selection("full", f"a root conftest (via {hit}) reads a changed file", sorted(candidates), changed)
+        for scope in scopes:
+            chosen |= {p for p in candidates if p.startswith(scope)}
 
     affected = _reverse_closure(index, seeds | {index.path_to_module[p] for p in literal_seeds if p in index.path_to_module})
     chosen |= {index.modules[m] for m in affected if index.modules.get(m) in candidates}
