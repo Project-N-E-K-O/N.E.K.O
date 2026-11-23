@@ -361,7 +361,7 @@ async def replace_plugin(
     additional_targets: tuple[Path, ...] = (),
     preserve_targets: tuple[Path, ...] = (),
     initialize_runtime_config: bool = True,
-    install_changes_permissions: bool = False,
+    install_changed_permissions: Callable[[], bool] | None = None,
     restore_source_before_restart: Callable[[], Awaitable[None]] | None = None,
     validate_backup: Callable[[Path], Awaitable[None]] | None = None,
     validate_channel_specific: Callable[[], Awaitable[None]] | None = None,
@@ -513,13 +513,18 @@ async def replace_plugin(
                     type(source_exc).__name__,
                 )
         # Grants change only through a plugin start (which reconciles them)
-        # or through ``install_new`` when the caller says it may drop them;
-        # without either, a missing snapshot does not make this incomplete.
+        # or through ``install_new`` when the caller reports that it dropped
+        # them; without either, a missing snapshot does not make this
+        # incomplete.
         if code_restored and not await asyncio.to_thread(
             functools.partial(
                 permissions_before.restore,
                 plugin_id,
-                store_may_have_changed=was_running or install_changes_permissions,
+                store_may_have_changed=was_running
+                or (
+                    install_changed_permissions is not None
+                    and install_changed_permissions()
+                ),
             )
         ):
             restored = False

@@ -67,7 +67,7 @@ from plugin.server.application.plugins.operation_lock import serialized_plugin_o
 from plugin.server.application.plugins.permission_service import (
     bind_current_permission_source,
     bind_entry_permission_source,
-    forget_installed_plugins,
+    forget_plugin_grants,
 )
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
@@ -719,6 +719,7 @@ class PluginCliService:
 
         source_write_attempted = False
         requested_source_attempted = False
+        grants_dropped = False
         requested_source_written = False
         requested_source_warning: str | None = None
         source_restored = True
@@ -726,6 +727,7 @@ class PluginCliService:
         async def install_new() -> dict[str, object]:
             nonlocal source_write_attempted, requested_source_attempted
             nonlocal requested_source_written, requested_source_warning
+            nonlocal grants_dropped
             install_result = await asyncio.to_thread(
                 self._install_sync,
                 package=package,
@@ -755,11 +757,12 @@ class PluginCliService:
                 if warning is not None:
                     # The source still reads as the previous package's, so
                     # its grants would carry over: drop them before the
-                    # restart; the plugin is asked again.
+                    # restart; the plugin is asked again. Only the replaced
+                    # plugin's grants: the package is not validated yet, and
+                    # a rollback restores only this plugin's snapshot.
+                    grants_dropped = True
                     if not await asyncio.to_thread(
-                        forget_installed_plugins,
-                        install_result,
-                        plugin_ids=(plan.plugin_id,),
+                        forget_plugin_grants, (plan.plugin_id,)
                     ):
                         warning += "; permission grants of the previous package could not be cleared"
                 requested_source_warning = warning
@@ -786,25 +789,25 @@ class PluginCliService:
                     )
             if not requested_source_attempted:
                 return
-            if current_entry is None:
-                # Nothing to put back: the lock had no entry for the previous
-                # package, so a recorded source stays.
-                if requested_source_written:
-                    source_restored = False
-            else:
-                try:
-                    assert install_source_manager is not None
+            try:
+                assert install_source_manager is not None
+                if current_entry is not None:
                     await asyncio.to_thread(
                         install_source_manager.restore_entry_for_rollback,
                         current_entry,
                     )
-                except Exception as restore_exc:
+                elif requested_source_written:
+                    # No previous entry could be read (a replacement of a
+                    # directory without one is not planned), so a recorded
+                    # source cannot be undone.
                     source_restored = False
-                    logger.error(
-                        "requested install source rollback failed plugin_id={} err_type={}",
-                        plan.plugin_id,
-                        type(restore_exc).__name__,
-                    )
+            except Exception as restore_exc:
+                source_restored = False
+                logger.error(
+                    "requested install source rollback failed plugin_id={} err_type={}",
+                    plan.plugin_id,
+                    type(restore_exc).__name__,
+                )
             if not source_restored:
                 logger.error(
                     "requested install source not restored after rollback plugin_id={}",
@@ -817,7 +820,7 @@ class PluginCliService:
                 install_new=install_new,
                 preserve_targets=((target_dir,) if plan.manifestless_state else ()),
                 initialize_runtime_config=not plan.manifestless_state,
-                install_changes_permissions=install_source is not None,
+                install_changed_permissions=lambda: grants_dropped,
                 restore_source_before_restart=restore_source_before_restart,
                 validate_backup=(
                     validate_manual_takeover_backup

@@ -53,7 +53,7 @@ def test_replacement_callers_share_one_narrow_typed_transaction() -> None:
         "additional_targets",
         "preserve_targets",
         "initialize_runtime_config",
-        "install_changes_permissions",
+        "install_changed_permissions",
         "restore_source_before_restart",
         "validate_backup",
         "validate_channel_specific",
