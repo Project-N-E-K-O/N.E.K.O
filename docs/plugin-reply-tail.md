@@ -110,9 +110,18 @@ the original request. Register before returning: that scope accepts images only
 while its callback is running. A late background registration is rejected.
 Handler return values are ignored and never cause a model continuation.
 
-The subscribed entry must be a public `@plugin_entry` the plugin has registered
-with the host (its id does not start with `_`). The plugin service dispatches the
-completion callback only to such entries; any other entry id gets HTTP 404 with
+The subscribed entry must be a plugin entry the host has registered for the plugin,
+and its entry id must not start with `_`. These entries qualify:
+
+- a `@plugin_entry` method on the plugin class;
+- an entry of a router class listed in `__routers__` (without a `prefix`);
+- a `[[plugin.entries]]` row in `plugin.toml` that names a method on the plugin class;
+- an entry added with `register_dynamic_entry()`.
+
+A router that is only passed to `include_router()` (or included with a `prefix`) is not
+reported to the host, so its entries do not qualify; see [PluginRouter](/plugins/router).
+The plugin service dispatches the completion callback only to qualifying entries. For any
+other entry id, `subscribe` still succeeds, but each callback gets HTTP 404 with
 `detail.code="ENTRY_NOT_REGISTERED"` and the plugin is not invoked. The main server
 keeps that subscription, as with other non-`PLUGIN_NOT_RUNNING` 404 responses.
 
