@@ -380,7 +380,10 @@ class PluginRouter:
             # plugin.toml, and entry hooks targeting the id join it or close it
             # (it logs the refusal).
             try:
-                effective = resolve(full_entry_id, effective)
+                # Validation only: the entry records its own narrowing; hooks
+                # are joined again by collect_entries() of the plugin that
+                # includes the router.
+                resolve(full_entry_id, effective)
             except PermissionDeniedError as denied:
                 return Err(denied)
         elif self.is_bound and effective is not None:

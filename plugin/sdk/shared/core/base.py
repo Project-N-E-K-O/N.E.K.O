@@ -188,10 +188,15 @@ class NekoPluginBase:
         # are now (a router may have been excluded, an id registered again).
         if not getattr(self, "_narrowing_refused", None) and not narrowing_hooks:
             return "unchecked"
-        current = self.collect_entries().get(entry_id)
+        try:
+            current = self.collect_entries().get(entry_id)
+            gathered = self._gather_entries()
+        except Exception:
+            # Collecting fails (e.g. an id clash inside a router): fall back to
+            # what the last successful check refused.
+            return "closed" if (PLUGIN_ENTRY, entry_id) in getattr(self, "_narrowing_refused", set()) else "unchecked"
         if current is not None and (getattr(current.meta, "event_type", None) or PLUGIN_ENTRY) == PLUGIN_ENTRY:
             return "registered"
-        gathered = self._gather_entries()
         kept = self._apply_permission_narrowing(dict(gathered))
         refused_now = {
             (str(getattr(item.meta, "event_type", None) or PLUGIN_ENTRY), key)
@@ -203,8 +208,11 @@ class NekoPluginBase:
         # The executor's attribute fallback resolves a method by its name,
         # which need not be its entry id: a refused component stays refused
         # under its method name too.
+        # Only the candidate the executor would pick (the first that exists).
         for name in (entry_id, f"entry_{entry_id}"):
             candidate = getattr(type(self), name, None)
+            if candidate is None:
+                continue
             target = candidate.__func__ if isinstance(candidate, (staticmethod, classmethod)) else candidate
             meta = getattr(target, EVENT_META_ATTR, None)
             if meta is not None and (
@@ -212,6 +220,7 @@ class NekoPluginBase:
                 str(getattr(meta, "id", "")),
             ) in refused_now:
                 return "closed"
+            break
         if not narrowing_hooks:
             return "unchecked"
         component = Component(

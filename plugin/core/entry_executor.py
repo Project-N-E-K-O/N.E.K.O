@@ -195,6 +195,10 @@ class EntryExecutor:
         # map (the loader's fallback scan maps plain methods) or would come
         # from the attribute fallback. An id registered again with a valid
         # narrowing is "registered" and is picked up by a refresh.
+        if method is not None and event_id in self._metadata:
+            # Mapped from collect_entries() (it carries metadata), which
+            # already ran the check: no per-call cost for registered entries.
+            return method
         state_of = getattr(self._instance, "_entry_state", None)
         try:
             state = state_of(event_id) if callable(state_of) else None

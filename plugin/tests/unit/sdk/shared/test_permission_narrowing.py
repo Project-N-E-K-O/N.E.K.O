@@ -1038,3 +1038,96 @@ def test_a_refused_component_is_not_run_under_its_method_name(tmp_path):
     assert executor._resolve("plugin_entry", "run", registered_only=False) is None
     # Undecorated methods keep the attribute fallback they always had.
     assert executor._resolve("plugin_entry", "helper", registered_only=False) == instance.helper
+
+
+# --- maintainer round 2 -----------------------------------------------------------------------
+
+
+def test_a_refused_entry_x_method_does_not_close_a_valid_x_method(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        async def run(self, **_):
+            return "run"
+
+        @plugin_entry(id="outside", permissions=[ENV])
+        async def entry_run(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    instance.collect_entries()
+    executor = _executor_over(instance, ctx, {})
+    # The executor picks run() first; the refused entry_run() is not it.
+    assert executor._resolve("plugin_entry", "run", registered_only=False) == instance.run
+
+
+def test_registered_entries_skip_the_per_call_state_check(tmp_path):
+    from plugin.core.entry_executor import EntryExecutor
+
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="ok", permissions=[NET])
+        async def ok(self, **_): ...
+
+        @plugin_entry(id="bad", permissions=[ENV])
+        async def bad(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    collected = instance.collect_entries()
+    calls: list[str] = []
+    original = instance._entry_state
+    instance._entry_state = lambda entry_id: calls.append(entry_id) or original(entry_id)  # type: ignore[method-assign]
+    executor = EntryExecutor(
+        plugin_id="p", context=ctx, instance=instance,
+        entries={eid: item.handler for eid, item in collected.items()},
+        metadata={eid: item.meta for eid, item in collected.items()}, events={},
+        default_timeout=5.0, refresh=lambda: None, should_persist=lambda method: False,
+        persist=lambda: None, logger=ctx.logger,
+    )
+    assert executor._resolve("plugin_entry", "ok", registered_only=False) == instance.ok
+    assert calls == []
+    assert executor._resolve("plugin_entry", "bad", registered_only=False) is None
+    assert calls == ["bad"]
+
+
+def test_a_failing_collection_falls_back_to_the_recorded_refusals(tmp_path, monkeypatch):
+    @neko_plugin
+    class P(NekoPluginBase):
+        @plugin_entry(id="bad", permissions=[ENV])
+        async def bad(self, **_): ...
+
+        async def helper(self, **_):
+            return 1
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    instance.collect_entries()
+
+    def broken(**_kwargs):
+        raise RuntimeError("collect failed")
+
+    monkeypatch.setattr(instance, "collect_entries", broken)
+    assert instance._entry_state("bad") == "closed"
+    assert instance._entry_state("helper") == "unchecked"
+
+
+def test_add_entry_records_its_own_narrowing_not_the_hooks(tmp_path):
+    @neko_plugin
+    class P(NekoPluginBase):
+        @before_entry(target="*", permissions=[FS])
+        async def every(self, **_): ...
+
+    ctx = _ctx(tmp_path)
+    instance = P(ctx)
+    router = PluginRouter(name="dyn")
+    instance.include_router(router)
+
+    async def handler(payload):
+        return Ok({})
+
+    assert isinstance(asyncio.run(router.add_entry("x", handler, permissions=[NET])), Ok)
+    [own] = asyncio.run(router.list_entries()).value
+    # The router keeps the entry's own narrowing; the including plugin joins
+    # its hooks when it collects.
+    assert own.permissions == (NET,)
+    assert instance.collect_entries()["x"].meta.permissions == (NET, FS)
