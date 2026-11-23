@@ -33,6 +33,7 @@ def editor(page, running_server, emote_template_library_dir):
         switchTemplate, downloadPng, refreshTemplateArchiveSizes,
         pickedAnimations: () => [...pickedAnimations],
         syncWardrobePlacements, wardrobeSnapshot, addWardrobePlacement, removeStageImage,
+        persistWardrobePlacements, commitPartColors, restoreStageGraph,
         templateRemovalPending: key => pendingTemplateRemovals.has(key),
         queuedCaptureKinds: () => stageQueue.map(job => job.kind),
         activeCaptureKind: () => stageActiveJob?.kind,
@@ -1472,6 +1473,164 @@ def _save_wardrobe_test_sprites(editor, server, key, sprites):
         assert response.ok, response.text()
     editor.evaluate('''([key,sprites])=>localStorage.setItem(
         'neko.emote.wardrobeSprites.'+key,JSON.stringify(sprites))''', [key, sprites])
+
+
+@pytest.mark.parametrize('operation', ['add', 'remove'])
+@pytest.mark.parametrize('failure', ['corrupt', 'not-array', 'quota-once', 'quota-full'])
+def test_accessory_storage_failure_keeps_confirmed_files_and_live_changes(
+        editor, running_server, builtin_emote_template_dir, operation, failure):
+    def with_layer_flag(placements):
+        return [{**placement, 'behind': placement.get('behind', False)} for placement in placements]
+
+    key = 'builtin:yui-0.2'
+    sprite = {'id': 'sprite-00000000000000ed', 'x': .5, 'y': .5, 'size': .3}
+    _save_wardrobe_test_sprites(editor, running_server, key, [sprite])
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    editor.wait_for_function('''() => {
+        const image=document.querySelector('.wardrobe-placement img');
+        return image?.complete && image.naturalWidth===32 && !reviewEditor.wardrobeRestorationPending();
+    }''')
+    editor.evaluate('''([key,failure])=>{
+        const storageKey='neko.emote.wardrobeSprites.'+key;
+        const original=Storage.prototype.setItem;
+        if(failure==='corrupt')localStorage.setItem(storageKey,'{broken');
+        else if(failure==='not-array')localStorage.setItem(storageKey,'{}');
+        let remaining=failure==='quota-full'?Infinity:failure==='quota-once'?1:0;
+        Storage.prototype.setItem=function(name,value){
+            if(name===storageKey && remaining-->0)throw new DOMException('test quota','QuotaExceededError');
+            return original.call(this,name,value);
+        };
+        window.reviewRestoreStorage=()=>{Storage.prototype.setItem=original;};
+    }''', [key, failure])
+    if operation == 'add':
+        result = editor.evaluate('''async encoded=>{
+            const blob=new Blob([Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],{type:'image/png'});
+            try {await reviewEditor.addWardrobePlacement(blob);return 'ok';}
+            catch(error){return error.message;}
+        }''', base64.b64encode(_wardrobe_test_image()).decode())
+        assert result == 'ok'
+    else:
+        editor.locator('.wardrobe-placement').press('Delete')
+        editor.wait_for_function('!reviewEditor.isWardrobeBusy()')
+    live = editor.evaluate('JSON.parse(JSON.stringify(reviewEditor.wardrobeSnapshot()))')
+    assert len(live) == (2 if operation == 'add' else 0)
+    assert editor.locator('#emote-toast').inner_text() == editor.evaluate(
+        "reviewEditor.translate('emoteMaker.wardrobeSpriteSaveFailed')")
+    if failure != 'quota-full':
+        saved = editor.evaluate("key=>JSON.parse(localStorage.getItem('neko.emote.wardrobeSprites.'+key))", key)
+        assert with_layer_flag(saved) == with_layer_flag(live)
+    else:
+        assert editor.evaluate("key=>JSON.parse(localStorage.getItem('neko.emote.wardrobeSprites.'+key))", key) == [sprite]
+    editor.evaluate('reviewRestoreStorage();reviewEditor.persistWardrobePlacements()')
+    assert editor.evaluate("key=>JSON.parse(localStorage.getItem('neko.emote.wardrobeSprites.'+key))", key) == live
+    changed_id = live[-1]['id'] if operation == 'add' else sprite['id']
+    response = editor.request.get(running_server + '/api/emote-maker/library/texture', params={
+        'key': key, 'path': f'WardrobeSprites/{changed_id}.png'})
+    assert response.status == (200 if operation == 'add' else 404)
+    if operation == 'add':
+        assert response.body() == _wardrobe_test_image()
+    editor.reload(wait_until='networkidle')
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    editor.wait_for_function('''count=>reviewEditor.renderer()?.loaded
+        && reviewEditor.wardrobeSnapshot().length===count''', arg=len(live))
+    # A missing layer flag and false both place the accessory in front.
+    restored = editor.evaluate('JSON.parse(JSON.stringify(reviewEditor.wardrobeSnapshot()))')
+    assert with_layer_flag(restored) == with_layer_flag(live)
+
+
+@pytest.mark.parametrize('operation', ['add', 'remove'])
+def test_accessory_storage_retry_merges_changes_saved_while_its_commit_waits(
+        editor, running_server, builtin_emote_template_dir, operation):
+    key = 'builtin:yui-0.2'
+    original = {'id': 'sprite-00000000000000eb', 'x': .5, 'y': .5, 'size': .3}
+    other = {'id': 'sprite-00000000000000ec', 'x': .2, 'y': .2, 'size': .2}
+    _save_wardrobe_test_sprites(editor, running_server, key, [original])
+    editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+    editor.wait_for_function('''() => {
+        const image=document.querySelector('.wardrobe-placement img');
+        return image?.complete && image.naturalWidth===32 && !reviewEditor.wardrobeRestorationPending();
+    }''')
+    editor.evaluate('''key=>{
+        const original=Storage.prototype.setItem;let fail=true;
+        Storage.prototype.setItem=function(name,value){
+            if(fail && name==='neko.emote.wardrobeSprites.'+key){
+                fail=false;window.reviewStorageFailed=true;
+                throw new DOMException('test quota','QuotaExceededError');
+            }
+            return original.call(this,name,value);
+        };
+        window.reviewRestoreStorage=()=>{Storage.prototype.setItem=original;};
+    }''', key)
+    _start_paused_accessory_capture(editor, preview=True)
+    if operation == 'add':
+        editor.evaluate('''encoded=>{
+            const blob=new Blob([Uint8Array.from(atob(encoded),c=>c.charCodeAt(0))],{type:'image/png'});
+            window.reviewDeferredAdd=reviewEditor.addWardrobePlacement(blob);
+        }''', base64.b64encode(_wardrobe_test_image()).decode())
+    else:
+        editor.locator('.wardrobe-placement').press('Delete')
+    editor.wait_for_function("window.reviewStorageFailed && reviewEditor.queuedCaptureKinds().includes('wardrobe')")
+    changed = {**original, 'x': .42}
+    editor.evaluate('''([key,placements])=>localStorage.setItem(
+        'neko.emote.wardrobeSprites.'+key,JSON.stringify(placements))''', [key, [changed, other]])
+    _finish_accessory_capture(editor)
+    editor.wait_for_function('!reviewEditor.isWardrobeBusy()')
+    editor.evaluate('reviewRestoreStorage()')
+    if operation == 'add':
+        editor.evaluate('reviewDeferredAdd')
+    saved = editor.evaluate("key=>JSON.parse(localStorage.getItem('neko.emote.wardrobeSprites.'+key))", key)
+    if operation == 'add':
+        assert len(saved) == 3
+        assert saved[0] == changed and saved[-1] == other
+        assert saved[1]['id'] not in {original['id'], other['id']}
+    else:
+        assert saved == [other]
+
+
+@pytest.mark.parametrize('change', ['restoration', 'part-color', 'graph'])
+def test_advanced_preview_recovers_when_an_appearance_commit_invalidates_its_capture(
+        editor, running_server, builtin_emote_template_dir, change):
+    pending = []
+    if change == 'restoration':
+        key = 'builtin:yui-0.2'
+        sprite = {'id': 'sprite-00000000000000ee', 'x': .5, 'y': .5, 'size': .3}
+        _save_wardrobe_test_sprites(editor, running_server, key, [sprite])
+        editor.route('**/api/emote-maker/library/texture?**', lambda route: pending.append(route)
+                     if sprite['id'] in route.request.url and route.request.resource_type == 'image'
+                     else route.continue_())
+        editor.locator('[data-template-built-in="true"] .template-lib-open').click()
+        editor.wait_for_function('reviewEditor.renderer()?.loaded && document.querySelector(".wardrobe-placement img")')
+        assert len(pending) == 1
+    else:
+        _import(editor, spine_zip())
+    editor.evaluate('''() => {
+        let samples=0;
+        window.reviewCaptureHook=()=>{if(reviewEditor.activeCaptureKind()==='frames')samples++;};
+        window.reviewYieldGate=()=>samples===2&&!window.reviewReleasePreview
+            ? new Promise(resolve=>{window.reviewReleasePreview=resolve;}) : Promise.resolve();
+        reviewEditor.openStateStage();
+    }''')
+    editor.wait_for_function("typeof window.reviewReleasePreview==='function'")
+    if change == 'restoration':
+        pending[0].fulfill(content_type='image/png', body=_wardrobe_test_image())
+        editor.wait_for_function("reviewEditor.queuedCaptureKinds().includes('wardrobe')")
+    else:
+        editor.evaluate('''change => {
+            const q=reviewEditor;
+            q.queueStageCapture('review-appearance-change',100000,'wardrobe',()=>{
+                if(change==='part-color')q.commitPartColors(structuredClone(q.state.templateSlots));
+                else q.restoreStageGraph(structuredClone(q.stageSession().getGraph()));
+            });
+        }''', change)
+    editor.evaluate('reviewReleasePreview()')
+    editor.wait_for_function('''() => !reviewEditor.activeCaptureKind()
+        && !reviewEditor.queuedCaptureKinds().length''')
+    assert editor.locator('.st-stage').evaluate('''canvas=>{
+        const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+        return data.some((value,index)=>index%4===3&&value>0);
+    }''')
+    if change == 'restoration':
+        assert not editor.evaluate('reviewEditor.wardrobeRestorationPending()')
 
 
 def _start_paused_accessory_capture(editor, *, preview=False):

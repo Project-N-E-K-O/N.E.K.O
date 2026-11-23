@@ -1962,10 +1962,16 @@
         return commit();
     }
 
-    function persistWardrobePresence(key, placement, index, present) {
+    function persistWardrobePresence(key, placement, index, present, fallback) {
         const storageKey = `neko.emote.wardrobeSprites.${key}`;
-        const saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
-        if (!Array.isArray(saved)) throw new Error('sprite_save_failed');
+        let saved;
+        try {
+            saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+            if (!Array.isArray(saved)) throw new Error('sprite_save_failed');
+        } catch (error) {
+            if (!Array.isArray(fallback)) throw error;
+            saved = fallback;
+        }
         const next = saved.filter(item => item?.id !== placement.id);
         if (present) next.splice(Math.max(0, Math.min(index, next.length)), 0, structuredClone(placement));
         localStorage.setItem(storageKey, JSON.stringify(next));
@@ -2356,7 +2362,7 @@
                     current.restoreFailed = false;
                     updateWardrobeSprite(current);
                     scheduleWardrobeRetry(key);
-                    forgetStageFrames();
+                    invalidateWardrobeStageFrames();
                 });
             }, { once: true });
             image.addEventListener('error', () => {
@@ -2519,7 +2525,13 @@
             if (url) URL.revokeObjectURL(url);
             throw error;
         }
-        persistWardrobePresence(key, placement, index, present);
+        let persisted = true;
+        try {
+            persistWardrobePresence(key, placement, index, present);
+        } catch (_) {
+            persisted = false;
+            showToast(t('emoteMaker.wardrobeSpriteSaveFailed'));
+        }
         const commit = () => {
             if (key !== currentTemplateKey() || key !== wardrobeTemplateKey) {
                 if (url) URL.revokeObjectURL(url);
@@ -2543,6 +2555,13 @@
                 }
             }
             renderWardrobeArtwork();
+            if (!persisted) {
+                try {
+                    persistWardrobePresence(key, placement, index, present, wardrobeSnapshot());
+                } catch (_) {
+                    // The file operation succeeded; its storage failure was already reported.
+                }
+            }
             invalidateWardrobeStageFrames();
             scheduleWardrobeRetry(key);
         };
@@ -4974,6 +4993,7 @@
         rememberHistory(before, structuredClone(slots), (next) => restoreState({ templateSlots: next }));
         forgetStageFrames();
         applyNativeCharacterState({ render: true });
+        void stateStageSession?.refresh();
         updateHistoryButtons();
         persistTemplateSession();
         renderChangedPartColors();
