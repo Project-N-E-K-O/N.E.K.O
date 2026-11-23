@@ -1156,6 +1156,7 @@ SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_ZH = """\
 - rest 场景只用于开局 gameStance=withdrawn 的低落/退缩特殊情况。玩家温柔、哄哄、关怀的发言如果足以让状态转好，应输出 cancel_candidate。
 - rest 场景 stage >= 8 时：如果猫娘最近台词仍持续低落、疲惫、不想动，没有重新投入的迹象，输出 rest_needed + prepare_exit_prompt + rest；不要用 send_rescue_hint 拖延，休息提示本身就是在照顾她。
 - teaching 场景不走认输/休息窗口；如果输入里出现 teaching，应优先 cancel_candidate。
+- reasonForDebug 只写一句话，不超过 40 字；evidenceTags 最多 4 个短标签；counterAction 不超过 20 字。
 
 输出格式：
 {
@@ -1188,6 +1189,7 @@ SOCCER_PASSIVE_GUARD_SYSTEM_PROMPT_ZH_TW = """\
 - rest 場景只用在開局 gameStance=withdrawn 的低落／退縮特殊情況。玩家溫柔、哄哄、關心的發言如果足以讓狀態變好，就輸出 cancel_candidate。
 - rest 場景 stage >= 8 時：如果貓娘最近台詞仍持續低落、疲憊、不想動，沒有重新投入的跡象，輸出 rest_needed + prepare_exit_prompt + rest；不要用 send_rescue_hint 拖延，休息提示本身就是在照顧她。
 - teaching 場景不走認輸／休息視窗；如果輸入裡出現 teaching，應該優先 cancel_candidate。
+- reasonForDebug 只寫一句話，不超過 40 字；evidenceTags 最多 4 個短標籤；counterAction 不超過 20 字。
 
 輸出格式：
 {
@@ -1220,6 +1222,7 @@ Rules:
 - rest is only for opening gameStance=withdrawn. If the player speaks gently or comfortingly enough to improve that state, output cancel_candidate.
 - For rest at stage >= 8: if NEKO's recent lines are still persistently low, tired, or unwilling to move, with no sign of re-engaging, output rest_needed + prepare_exit_prompt + rest. Do not stall with send_rescue_hint; offering rest is itself the way to look after her.
 - Teaching should not use surrender/rest prompts; if the input is teaching, prefer cancel_candidate.
+- reasonForDebug is one sentence of at most 25 words; evidenceTags has at most 4 short tags; counterAction is at most 12 words.
 
 Output schema:
 {
