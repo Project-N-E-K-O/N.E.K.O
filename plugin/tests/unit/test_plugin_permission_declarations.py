@@ -334,7 +334,6 @@ def test_file_access_and_open_modes(tmp_path, call, expected, mode):
         ("import threading\nthreading.Thread(target=f).start()", "context_loss"),
         ("from concurrent.futures import ThreadPoolExecutor\nThreadPoolExecutor()", "context_loss"),
         ("async def f(loop, pool):\n    await loop.run_in_executor(pool, g)", "context_loss"),
-        ("async def f(loop):\n    await loop.run_in_executor(None, g)", "context_loss"),
         ("import importlib\nimportlib.import_module('subprocess')", "dynamic_import"),
         ("__import__('os')", "dynamic_import"),
         ("import sys\nsys.modules['os']", "dynamic_import"),
@@ -397,7 +396,7 @@ def test_report_carries_declarations_from_plugin_toml(tmp_path):
 
 
 def test_analyzer_version_was_bumped_for_the_new_report_fields():
-    assert capability_analysis.ANALYZER_VERSION >= 5
+    assert capability_analysis.ANALYZER_VERSION >= 6
 
 
 def test_function_attribution_follows_classes_and_nested_functions(tmp_path):
@@ -1491,6 +1490,54 @@ def test_process_pools_forks_and_downloads_are_direct_evidence(tmp_path, source,
     assert any(issue.code == "used_undeclared" and issue.params["permission"] == permission
                for issue in compare_declarations(report))
     assert scan_note(report) != "no_extra_usage"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "loop.run_in_executor(None, g)",
+        "loop.run_in_executor(executor=None, func=g)",
+        "asyncio.get_running_loop().run_in_executor(None, g, 1)",
+        "loop.run_in_executor(None, *rest)",
+    ],
+)
+def test_default_executor_keeps_the_context(tmp_path, call):
+    # The plugin runtime's default executor copies the submitting context.
+    report = _scan(tmp_path, f"import asyncio\nasync def f(loop):\n    await {call}")
+    assert report["status"] == "completed"
+    assert report["blind_spots"] == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "async def f(loop, pool):\n    await loop.run_in_executor(pool, g)",
+        "async def f(loop, pool):\n    await loop.run_in_executor(executor=pool, func=g)",
+        "async def f(loop, args):\n    await loop.run_in_executor(*args)",
+        "async def f(loop, opts):\n    await loop.run_in_executor(**opts)",
+        "async def f(loop):\n    await loop.run_in_executor(False, g)",
+        (
+            "from concurrent.futures import ThreadPoolExecutor\n"
+            "async def f(loop):\n    await loop.run_in_executor(ThreadPoolExecutor(), g)"
+        ),
+        (
+            "from concurrent.futures import ThreadPoolExecutor\n"
+            "with ThreadPoolExecutor() as pool:\n    pool.submit(g)"
+        ),
+        "import threading\nthreading.Thread(target=g).start()",
+        # A loop the plugin makes itself, or a replaced default executor.
+        "import asyncio\nloop = asyncio.new_event_loop()",
+        "from asyncio import new_event_loop\nloop = new_event_loop()",
+        "from asyncio.runners import Runner\nwith Runner() as runner:\n    runner.run(main())",
+        "import asyncio\nwith asyncio.Runner() as runner:\n    runner.run(main())",
+        "async def f(loop, pool):\n    loop.set_default_executor(pool)",
+    ],
+)
+def test_other_executors_and_threads_still_lose_the_context(tmp_path, source):
+    report = _scan(tmp_path, source)
+    assert report["status"] == "completed"
+    assert report["blind_spots"]
+    assert {spot["type"] for spot in report["blind_spots"]} == {"context_loss"}
 
 
 def test_process_pool_executor_is_still_a_context_loss_blind_spot(tmp_path):
