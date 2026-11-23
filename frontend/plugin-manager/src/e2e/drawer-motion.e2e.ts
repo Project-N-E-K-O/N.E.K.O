@@ -785,9 +785,9 @@ appearanceTest.describe('filter bar layout and interaction', () => {
         await openDrawerFully(page, MARKET_TOGGLE, MARKET_PANEL)
         await page.setViewportSize({ width: 720, height: 1000 })
       } else {
-        // Narrowed before the page loads, so it is laid out at this width from the start.
-        await page.setViewportSize({ width: 320, height: 1000 })
+        // Narrowed after the page has loaded, so the live reflow is what gets checked.
         await page.goto(`${PREVIEW_ORIGIN}/ui/market`)
+        await page.setViewportSize({ width: 320, height: 1000 })
       }
       const market = page.locator('[data-yui-guide-id="market-panel-root"]')
       const bar = market.locator('.wb-filter-bar')
