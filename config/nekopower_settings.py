@@ -179,6 +179,53 @@ FOLLOW_UP_ROWS = 8
 """Most commissions that are over a dispatched sentence is compared with."""
 
 # ---------------------------------------------------------------------------
+# The orchestrator: which task agent a new commission goes to
+# ---------------------------------------------------------------------------
+# Measured on the built-in free tier only (the scenarios in
+# ``tests/unit/nekopower/fixtures/orchestrator_scenarios.json``). Another
+# small model may want other numbers.
+
+ORCHESTRATOR_MIN_HITS = 2
+"""Least number of a sentence's own words (function words and particles left
+out) that must occur in what a project or a loose task agent is about for the
+sentence to be held against it at all. With fewer in every one of them the
+commission is a loose one of its own, and no model is asked: most one-off
+requests end here. Lower, and more one-off requests cost a call of the small
+model; higher, and more follow-ups in other words are missed."""
+
+ORCHESTRATOR_ATTACH_SCORE = 0.75
+ORCHESTRATOR_ATTACH_HITS = 5
+ORCHESTRATOR_ATTACH_MARGIN = 0.1
+"""When a match is clear enough to attach a sentence without asking the small
+model: this share of the sentence's own words (weighed) occurs there, on this
+many words at least, and the next best match is this far behind. High on
+purpose: a sentence attached to work it has nothing to do with is worked on
+with what was said about something else, which does more harm than one task
+agent too many."""
+
+ORCHESTRATOR_CANDIDATES_SHOWN = 4
+"""How many of the best matches the small model is shown."""
+
+ORCHESTRATOR_CANDIDATE_MAX_TOKENS = 90
+"""Cap on the line one project or loose task agent is shown to the small
+model as: its name or title, what it does, what it did lately."""
+
+ORCHESTRATOR_OUTPUT_MAX_TOKENS = 60
+"""Cap on the small model's answer: a number and a word, as JSON."""
+
+ORCHESTRATOR_FAMILY_MIN_OCCURRENCES = 3
+"""How often the same job has to have come up, this time included, for the
+loose task agents that did it to become a project. Follow-ups of one piece of
+work do not count: only commissions filed as new or as the same job once
+more."""
+
+ORCHESTRATOR_PEER_SHARE = 0.4
+ORCHESTRATOR_PEER_HITS = 2
+"""Which other loose task agents did the same thing as the one a sentence
+goes with: those that match the sentence on this many words at least, with
+this share of that one's score. They become members of the project with it."""
+
+# ---------------------------------------------------------------------------
 # Task agents
 # ---------------------------------------------------------------------------
 

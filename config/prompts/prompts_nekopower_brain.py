@@ -1437,6 +1437,115 @@ def build_side_question_request(*, task: str, user_said: str, waiting_for: str =
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# The orchestrator (``nekopower/host/orchestrator.py``): which task agent a
+# new commission goes to.
+# ---------------------------------------------------------------------------
+
+# Words that point back at something that was made before ("that list", "the
+# one from last time"): a sentence with one of them follows a matter up, and
+# is not the same job done once more. Narrower than ``VAGUE_REFERENCE_PATTERNS``,
+# which also holds particles every sentence has.
+REFERS_BACK_PATTERNS = (
+    r"那个|那個|那份|那几|那幾|那些|那篇|那张|那張|那本|那条|那條|上次|之前|刚才|剛才|刚刚|剛剛",
+    r"\b(?:earlier|previous(?:ly)?|last\s+time|those|that\s+one|the\s+one\s+from|before)\b",
+    r"さっき|前回|この前|あの|例の",
+    r"아까|지난번|저번|그때",
+    r"\b(?:раньше|в\s+прошлый\s+раз|тот|ту|те)\b",
+    r"\b(?:anterior(?:es)?|antes|aquel(?:la|los|las)?|aquele|aquela|da\s+[uú]ltima\s+vez|la\s+[uú]ltima\s+vez)\b",
+)
+
+# Words by which the user asks for a new task agent rather than one that is there.
+FRESH_START_PATTERNS = (
+    r"另开|另開|新开一|新開一|另起|单独开|單獨開|换一只|換一隻|不要接着|不要接著|重新开|重新開",
+    r"\b(?:start\s+a\s+new|a\s+fresh\s+one|from\s+scratch|a\s+separate\s+(?:one|agent|session)|do\s+not\s+continue|don['’]t\s+continue)\b",
+    r"新しく別の|別のを立ち上げ|最初からやり直",
+    r"새로\s*하나|따로\s*하나|처음부터\s*다시",
+    r"отдельн\w+\s+(?:агент\w*|сесси\w*)|с\s+нуля|заново",
+    r"\b(?:uno\s+nuevo|desde\s+cero|por\s+separado|um\s+novo|do\s+zero|em\s+separado)\b",
+)
+
+# What the orchestrator leaves out when it compares a sentence with what is
+# there. Text written without spaces is compared as overlapping pairs of
+# characters: a pair that holds one of these characters is a particle or a
+# pointer joined to a piece of a word, and says nothing of what the sentence
+# is about.
+ORCHESTRATOR_FILLER_CHARS = frozenset("的了吗嗎呢吧啊呀这這那把给給是")
+# Function words of the languages written with spaces, and pairs of
+# characters that are words every request may have.
+ORCHESTRATOR_FILLER_WORDS = frozenset(
+    """
+    一个 一個 一些 一份 一条 一條 一下 可以 需要 怎么 怎麼 什么 什麼 我们 我們 现在 現在
+    the a an and or but if so to of in on at by for with from into onto over under up out about as is are was were be
+    been it its this that these those there here i you he she we they me my your our their him her them do does did
+    can could will would should have has had not no yes please just also too very more most some any all each which
+    what who how when where why then than
+    el la los las un una unos unas y o de del al en con por para que es son este esta esto ese esa eso mi tu su
+    os as um uma uns umas e do da dos das em no na nos nas com isto esse essa isso meu teu seu
+    и в во на с со к ко по из у за от до о об не да что это как но или же ли бы
+    """.split()
+)
+
+# Asked of the small model when the words of a new request neither name a
+# project or a task agent nor clearly match or miss what is there: which of
+# the few best matches it belongs with, if any.
+# (The opening words are fixed: the built-in free tier takes a request by
+# them, "... automation assessment agent, ..." with the comma.)
+ORCHESTRATOR_PROMPT = (
+    "You are an agentic automation assessment agent, sorting requests. A new request has come in. Agents did earlier work, some of it "
+    "inside ongoing projects. Decide whether the request belongs with one of the CANDIDATES.\n"
+    "Each candidate is a project (ongoing work under a name, with what its agents do) or an agent that worked "
+    "on its own, with what it did.\n"
+    "The request belongs with a candidate when doing it well needs what that candidate made or learned. "
+    "Either it follows that work up: it changes, fixes, extends or asks about what the candidate made "
+    "(\"follow_up\"). Or it is the next round of the same recurring job, done the same way and kept in the "
+    "same place: the report for the next week, the changelog for the next version, one more piece in a "
+    "series the candidate started (\"recurrence\").\n"
+    "It does not belong when it is a separate errand that only looks alike: the same kind of task about "
+    "another thing (another parcel, another trip, another product), or one that shares a topic, a tool, a "
+    "file type or a few words with the candidate. The request may be in another language than the "
+    "candidate's notes and still belong.\n"
+    "Attaching a request to work it has nothing to do with is worse than starting fresh. When unsure, "
+    "answer 0.\n"
+    'Reply with JSON only: {"goes_to": <number of the candidate, or 0 for none>, '
+    '"relation": "follow_up" | "recurrence" | "new"}'
+)
+
+
+def build_orchestrator_request(*, task: str, user_said: str, candidates: list[str]) -> str:
+    """Return the user message of that question: the request, the user's own words when they differ, the numbered candidates."""
+    lines = [f"REQUEST: {task}"]
+    if user_said and user_said.strip() != task.strip():
+        lines.append(f"USER_SAID: {user_said}")
+    lines.append("CANDIDATES:")
+    lines.extend(f"{number}. {line}" for number, line in enumerate(candidates, 1))
+    return "\n".join(lines)
+
+
+# The same question, asked along with the fine selection when that one is
+# made anyway (there are plugins to choose from): added to the end of its
+# system text, with the candidates added to its user message.
+ORCHESTRATOR_SELECT_ADDENDUM = (
+    "\n\nALSO, when the user message gives CANDIDATES: say whether TASK belongs with one of them. Each is a "
+    "project (ongoing work under a name) or an agent that worked on its own, with what it did. TASK belongs "
+    "with a candidate when doing it well needs what that candidate made or learned: it changes, fixes, "
+    "extends or asks about what the candidate made (\"follow_up\"), or it is the next round of the same "
+    "recurring job, done the same way and kept in the same place, such as the report for the next week or "
+    "the changelog for the next version (\"recurrence\"). A separate errand that only looks alike (the same "
+    "kind of task about another thing, or a shared topic, tool or few words) does not belong; another "
+    "language than the candidate's notes does not matter. When unsure, answer 0. Add two keys to the JSON object: "
+    '"goes_to": <number of the candidate, or 0 for none>, "relation": "follow_up" | "recurrence" | "new". '
+    "This does not change how route is chosen."
+)
+
+
+def add_orchestrator_candidates(request: str, candidates: list[str]) -> str:
+    """Return the user message of the fine selection with the numbered candidates added."""
+    if not candidates:
+        return request
+    return "\n".join([request, "CANDIDATES:", *(f"{number}. {line}" for number, line in enumerate(candidates, 1))])
+
+
 # Added to the message that opens a commission worked on in a copy of a
 # project's session, the session itself being at another commission.
 TASK_AGENT_COMMISSION_IN_COPY = (
